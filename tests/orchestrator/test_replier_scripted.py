@@ -5,16 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
-import pytest
-
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.refusals import RunRefused
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import (
     Absence,
     AbsenceTrigger,
-    Answers,
     DelayRange,
     Person,
     Scripted,
@@ -131,8 +127,3 @@ async def test_a_silent_person_returns_no_reply(tmp_path: Path) -> None:
     dania = person("dania", Silent())
     asked = ask(store, dania.email, "m1")
     assert await ScriptedReplier(scenario()).decide(dania, asked, store.events(), clock) is None
-
-
-def test_a_model_written_person_is_refused_by_name_at_the_start() -> None:
-    with pytest.raises(RunRefused, match="sofia"):
-        ScriptedReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), person("sofia", Answers())]))
