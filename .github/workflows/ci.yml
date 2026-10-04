@@ -1,17 +1,117 @@
 name: ci
+
+# Every pull request and every push to a protected branch runs all of this. There is no
+# path filter on purpose: a workflow that does not start reports nothing, and the one
+# required check (`gate`) must always report.
 on:
+  pull_request:
   push:
     branches: [main, integration-main]
-  pull_request:
+  merge_group:
+
+# Nothing here needs a secret or write access, so a pull request from a fork gets the
+# same checks as one from a maintainer.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_LOCKED: "1"
+
 jobs:
-  checks:
+  types:
+    name: Type check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.12"
+          enable-cache: true
       - run: uv sync
       - run: uv run pyright
+
+  lints:
+    name: House lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      # The directory is the registration: a lint added to lints/ runs here with no edit to this file.
       - run: uv run python -m lints
-      - run: uv run pytest -q
+
+  workflows:
+    name: Workflow files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      - name: Conditions, expressions and syntax
+        run: uvx --from actionlint-py==1.7.12.24 actionlint
+      - name: Permissions, pinning and injection
+        run: uvx zizmor==1.30.1 --offline .github/workflows
+
+  tests:
+    name: Tests (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync
+      # Random order, in parallel, with no network beyond this machine (pyproject.toml).
+      # The seed is printed at the top of the output; rerun with -p randomly -p "randomly_seed=N".
+      - run: uv run pytest -q -n auto
+
+  # The ONE required status check. Branch rules name this job and nothing else, so a job
+  # above can be renamed, split or added without touching the rules. It runs always: a
+  # gate that is skipped reports nothing, which a branch rule cannot tell from "still running".
+  gate:
+    name: gate
+    if: always()
+    needs: [types, lints, workflows, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every job above succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | python3 -c '
+          import json, sys
+          needs = json.load(sys.stdin)
+          bad = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
+          for name, result in bad.items():
+              print(f"::error::{name}: {result}")
+          sys.exit(1 if bad else 0)'
