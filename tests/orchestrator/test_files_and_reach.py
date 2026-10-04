@@ -14,7 +14,8 @@ from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.reported import ReportedDriver
 from minutehand.application.files import FileRefused, load_agent, load_scenario
 from minutehand.application.refusals import RunRefused
-from minutehand.domain.agent import AgentUnderTest, Booked, Command, Polled, Reported
+from minutehand.domain.agent import AgentUnderTest, Booked, Command, GoalByMessage, Polled, Reported
+from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Scripted
 
 SCENARIO = """\
@@ -84,6 +85,12 @@ def test_reach_puts_the_reporting_source_first_and_the_polled_one_on_ticks() -> 
 def test_an_agent_with_only_booked_wakes_is_refused() -> None:
     with pytest.raises(RunRefused, match="only Booked"):
         reach_for(AgentUnderTest(name="a", wakes=[Booked()]))
+
+
+def test_an_agent_with_only_booked_wakes_that_takes_its_goal_by_message_has_no_driver() -> None:
+    reach = reach_for(AgentUnderTest(name="a", wakes=[Booked()], goal=GoalByMessage(provider="slack"),
+                                     inbound=[InboundTarget(provider="slack", url="http://a/events")]))
+    assert reach.main is None and reach.ticks is None
 
 
 def test_an_agent_with_two_reporting_sources_is_refused() -> None:

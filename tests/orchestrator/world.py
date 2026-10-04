@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -224,8 +224,8 @@ class Switchboard:
     def __init__(self) -> None:
         self.apps: dict[ProviderKey, ASGIApp] = {}
 
-    def mount(self, provider: ProviderKey, app: ASGIApp) -> None:
-        self.apps[provider] = app
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
+        self.apps = dict(apps)
 
     async def __call__(self, scope: dict[str, object], receive: object, send: object) -> None:
         path = scope["path"]
