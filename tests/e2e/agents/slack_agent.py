@@ -35,6 +35,7 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
+import socketserver  # noqa: E402
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -197,7 +198,14 @@ def serve(port: int, state: Path) -> None:
         def log_message(self, format: str, *args: object) -> None:
             print(format % args, flush=True)
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    class Server(ThreadingHTTPServer):
+        def server_bind(self) -> None:
+            # HTTPServer.server_bind looks up this machine's name with a reverse DNS query,
+            # which took over 30 seconds on GitHub's macOS runner. The name is not used.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", port
+
+    server = Server(("127.0.0.1", port), Handler)
     faulthandler.cancel_dump_traceback_later()
     print(f"listening on {port} as {agent.behaviour}", flush=True)
     server.serve_forever(poll_interval=0.05)
