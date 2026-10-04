@@ -16,14 +16,28 @@ from pathlib import Path
 from typing import Protocol
 
 from minutehand.application.checkpoint import (
-    Checkpoint, Pending, PendingBooking, PendingDirection, PendingFate, PendingReply, PendingWake, write_checkpoint,
+    Checkpoint,
+    Pending,
+    PendingBooking,
+    PendingDirection,
+    PendingFate,
+    PendingReply,
+    PendingWake,
+    write_checkpoint,
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import (
-    AgentReport, AgentStatus, AgentUnderTest, Booked, Commitment, GoalByMessage, WakeReason, WakeRequest,
+    AgentReport,
+    AgentStatus,
+    AgentUnderTest,
+    Booked,
+    Commitment,
+    GoalByMessage,
+    WakeReason,
+    WakeRequest,
 )
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
@@ -72,19 +86,27 @@ class Services:
         if len(keys) != len(set(keys)):
             raise RunRefused(f"two providers share a key: {sorted(keys)}")
         known = set(keys)
-        for role, mapping in (("pushes", self.pushes), ("tickets", self.tickets), ("editors", self.editors),
-                              ("schedulers", self.schedulers)):
+        for role, mapping in (
+            ("pushes", self.pushes),
+            ("tickets", self.tickets),
+            ("editors", self.editors),
+            ("schedulers", self.schedulers),
+        ):
             stray = sorted(set(mapping) - known)
             if stray:
                 raise RunRefused(f"{role} names providers that are not in the run: {', '.join(stray)}")
         for provider in self.providers:
             key = provider.manifest.key
             if provider.manifest.pushes_events != (key in self.pushes):
-                raise RunRefused(f"provider {key}: manifest pushes_events={provider.manifest.pushes_events} "
-                                 f"but it is{'' if key in self.pushes else ' not'} given as PushesEvents")
+                raise RunRefused(
+                    f"provider {key}: manifest pushes_events={provider.manifest.pushes_events} "
+                    f"but it is{'' if key in self.pushes else ' not'} given as PushesEvents"
+                )
             if provider.manifest.books_wakes != (key in self.schedulers):
-                raise RunRefused(f"provider {key}: manifest books_wakes={provider.manifest.books_wakes} "
-                                 f"but it is{'' if key in self.schedulers else ' not'} given as BooksWakes")
+                raise RunRefused(
+                    f"provider {key}: manifest books_wakes={provider.manifest.books_wakes} "
+                    f"but it is{'' if key in self.schedulers else ' not'} given as BooksWakes"
+                )
 
 
 @dataclass(frozen=True)
@@ -115,7 +137,7 @@ class Reach:
 class _Bookings:
     """`ports.provider.Wakes` for one scheduler provider: its bookings enter the run's pending set."""
 
-    def __init__(self, loop: "Orchestrator", provider: ProviderKey) -> None:
+    def __init__(self, loop: Orchestrator, provider: ProviderKey) -> None:
         self._loop = loop
         self._provider = provider
 
@@ -153,8 +175,10 @@ class Orchestrator:
             raise RunRefused(f"agent {agent.name} declares Booked wakes but no provider in the run books wakes")
         if isinstance(agent.goal, GoalByMessage):
             if agent.goal.provider not in services.pushes:
-                raise RunRefused(f"agent {agent.name} takes its goal by message on {agent.goal.provider}, "
-                                 "which is not a provider in the run that pushes events")
+                raise RunRefused(
+                    f"agent {agent.name} takes its goal by message on {agent.goal.provider}, "
+                    "which is not a provider in the run that pushes events"
+                )
         elif reach.for_reason(WakeReason.START) is None:
             raise RunRefused(f"agent {agent.name} takes its goal in the START wake and has no driver to receive it")
         self._scenario = scenario
@@ -184,10 +208,13 @@ class Orchestrator:
 
     def book(self, provider: ProviderKey, due: Due) -> None:
         self.cancel(provider, due.ref)
-        self._pending.append(PendingBooking(
-            due=Due(at=due.at, kind=DueKind.AGENT_WAKE, ref=f"booking:{provider}:{due.ref}"),
-            provider=provider, ref=due.ref,
-        ))
+        self._pending.append(
+            PendingBooking(
+                due=Due(at=due.at, kind=DueKind.AGENT_WAKE, ref=f"booking:{provider}:{due.ref}"),
+                provider=provider,
+                ref=due.ref,
+            )
+        )
 
     def cancel(self, provider: ProviderKey, ref: str) -> None:
         self._pending = [
@@ -203,10 +230,14 @@ class Orchestrator:
         for provider in self._services.providers:
             provider.seed(self._scenario, self._store)
         for i, direction in enumerate(self._scenario.directions):
-            self._pending.append(PendingDirection(
-                due=Due(at=self._scenario.starts_at + direction.after, kind=DueKind.DIRECTION, ref=f"direction:{i}"),
-                text=direction.text,
-            ))
+            self._pending.append(
+                PendingDirection(
+                    due=Due(
+                        at=self._scenario.starts_at + direction.after, kind=DueKind.DIRECTION, ref=f"direction:{i}"
+                    ),
+                    text=direction.text,
+                )
+            )
         if self._reach.every is not None:
             self._schedule_tick()
         self._record_new()
@@ -223,12 +254,16 @@ class Orchestrator:
         """Carry on from a checkpoint in a store that already holds the world up to it (a fork)."""
         started = time.monotonic()
         if self._clock.now() != checkpoint.now or self._clock.wake() != checkpoint.wake:
-            raise RunRefused(f"the clock is at {self._clock.now()} wake {self._clock.wake()}; "
-                             f"the checkpoint is at {checkpoint.now} wake {checkpoint.wake}")
+            raise RunRefused(
+                f"the clock is at {self._clock.now()} wake {self._clock.wake()}; "
+                f"the checkpoint is at {checkpoint.now} wake {checkpoint.wake}"
+            )
         self._begin()
         self._replies = self._store.replies()
         if len(self._replies) < checkpoint.replies:
-            raise RunRefused(f"the checkpoint counts {checkpoint.replies} replies; the store holds {len(self._replies)}")
+            raise RunRefused(
+                f"the checkpoint counts {checkpoint.replies} replies; the store holds {len(self._replies)}"
+            )
         self._pending = list(checkpoint.pending)
         self._fated = list(checkpoint.fated)
         self._commitments = checkpoint.commitments
@@ -242,18 +277,29 @@ class Orchestrator:
         if self._telemetry is not None:
             self._telemetry.run_started(self._store.run_id, self._scenario)
         if self._mounts is not None:
-            self._mounts.mount(self._store, self._clock, {
-                provider.manifest.key: provider.app(self._store, self._clock) for provider in self._services.providers
-            })
+            self._mounts.mount(
+                self._store,
+                self._clock,
+                {
+                    provider.manifest.key: provider.app(self._store, self._clock)
+                    for provider in self._services.providers
+                },
+            )
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))
 
     def _end(self, stop: StopReason, started: float) -> RunRecord:
         record = RunRecord(
-            run_id=self._store.run_id, scenario=self._scenario.name, seed=self._scenario.seed,
-            parent_run=self._parent_run, forked_at=self._forked_at,
-            started_at=self._scenario.starts_at, ended_at=self._clock.now(),
-            wall_seconds=time.monotonic() - started, stop=stop, wakes=self._wakes,
+            run_id=self._store.run_id,
+            scenario=self._scenario.name,
+            seed=self._scenario.seed,
+            parent_run=self._parent_run,
+            forked_at=self._forked_at,
+            started_at=self._scenario.starts_at,
+            ended_at=self._clock.now(),
+            wall_seconds=time.monotonic() - started,
+            stop=stop,
+            wakes=self._wakes,
         )
         result = self._scorer.score(record, self._store) if self._scorer is not None else None
         if self._telemetry is not None:
@@ -271,8 +317,12 @@ class Orchestrator:
         """The START wake. By message, the owner sends the goal first and a wake endpoint, if any, hears no goal."""
         wake = self._clock.begin_wake()
         provider = self._by_message
-        request = WakeRequest(run_id=self._store.run_id, now=self._clock.now(), reason=WakeReason.START,
-                              goal=self._scenario.goal if provider is None else None)
+        request = WakeRequest(
+            run_id=self._store.run_id,
+            now=self._clock.now(),
+            reason=WakeReason.START,
+            goal=self._scenario.goal if provider is None else None,
+        )
         driver = self._reach.for_reason(WakeReason.START)
 
         async def say_goal() -> None:
@@ -314,10 +364,17 @@ class Orchestrator:
         if deadline is None or self._clock.now() >= deadline:
             return
         self._clock.jump(deadline)
-        write_checkpoint(self._store, Checkpoint(
-            wake=self._clock.wake(), now=self._clock.now(), replies=len(self._replies), fated=self._fated,
-            commitments=self._commitments, pending=self._pending,
-        ))
+        write_checkpoint(
+            self._store,
+            Checkpoint(
+                wake=self._clock.wake(),
+                now=self._clock.now(),
+                replies=len(self._replies),
+                fated=self._fated,
+                commitments=self._commitments,
+                pending=self._pending,
+            ),
+        )
         self._record_new()
 
     async def _fire(self, fired: list[Pending]) -> None:
@@ -366,8 +423,14 @@ class Orchestrator:
         requests: list[tuple[AgentDriver, WakeRequest]] = []
         main = self._reach.for_reason(reason)
         if main is not None:
-            requests.append((main, WakeRequest(run_id=run_id, now=now, reason=reason,
-                                               direction="\n\n".join(directions) if directions else None)))
+            requests.append(
+                (
+                    main,
+                    WakeRequest(
+                        run_id=run_id, now=now, reason=reason, direction="\n\n".join(directions) if directions else None
+                    ),
+                )
+            )
         if WakeReason.TICK in reasons and reason is not WakeReason.TICK:
             ticks = self._reach.for_reason(WakeReason.TICK)
             if ticks is not None and ticks is not main:
@@ -375,7 +438,10 @@ class Orchestrator:
         return requests, reason
 
     async def _wake(
-        self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]],
+        self,
+        wake: int,
+        reason: WakeReason,
+        fire: Callable[[], Awaitable[None]],
         requests: list[tuple[AgentDriver, WakeRequest]],
     ) -> StopReason | None:
         """Change the world for what is due, send the wake, wait until the agent stops working, read what it did,
@@ -399,12 +465,16 @@ class Orchestrator:
         new = self._record_new()
         if not failed:
             await self._schedule(new)
-        self._wakes.append(WakeRecord(
-            index=wake, sim_time=self._clock.now(),
-            world_changes=sum(1 for e in new if e.wake == wake and e.actor is Actor.AGENT
-                              and e.operation not in _NOT_CHANGES),
-            commitments_changed=commitments_changed,
-        ))
+        self._wakes.append(
+            WakeRecord(
+                index=wake,
+                sim_time=self._clock.now(),
+                world_changes=sum(
+                    1 for e in new if e.wake == wake and e.actor is Actor.AGENT and e.operation not in _NOT_CHANGES
+                ),
+                commitments_changed=commitments_changed,
+            )
+        )
         if self._telemetry is not None:
             self._telemetry.wake_ended(wake)
         if failed:
@@ -431,19 +501,24 @@ class Orchestrator:
         """Take the agent's next wake, replacing the one it named before. Answers whether its commitments changed."""
         self._pending = [p for p in self._pending if not (isinstance(p, PendingWake) and p.reason is WakeReason.DUE)]
         if report.next_wake is not None:
-            self._pending.append(PendingWake(
-                due=Due(at=report.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE,
-            ))
+            self._pending.append(
+                PendingWake(
+                    due=Due(at=report.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"),
+                    reason=WakeReason.DUE,
+                )
+            )
         changed = report.commitments != self._commitments
         self._commitments = report.commitments
         return changed
 
     def _schedule_tick(self) -> None:
         assert self._reach.every is not None
-        self._pending.append(PendingWake(
-            due=Due(at=self._clock.now() + self._reach.every, kind=DueKind.AGENT_WAKE, ref="tick"),
-            reason=WakeReason.TICK,
-        ))
+        self._pending.append(
+            PendingWake(
+                due=Due(at=self._clock.now() + self._reach.every, kind=DueKind.AGENT_WAKE, ref="tick"),
+                reason=WakeReason.TICK,
+            )
+        )
 
     def _record_new(self) -> list[WorldEvent]:
         new = self._store.events(since=self._seen)
@@ -467,8 +542,12 @@ class Orchestrator:
                 for email in after.recipient_emails:
                     if email in self._people:
                         await self._ask(self._people[email], event, [h for h in history if h.seq <= event.seq])
-            if (event.operation in (Operation.CREATE, Operation.UPDATE) and isinstance(after, TicketSnapshot)
-                    and after.assignee_email in self._people and event.entity not in self._fated):
+            if (
+                event.operation in (Operation.CREATE, Operation.UPDATE)
+                and isinstance(after, TicketSnapshot)
+                and after.assignee_email in self._people
+                and event.entity not in self._fated
+            ):
                 self._fate(self._people[after.assignee_email], event)
 
     async def _say(self, provider: ProviderKey, text: str) -> None:
@@ -485,9 +564,12 @@ class Orchestrator:
         self._store.remember(reply)
         position = len(self._replies)
         self._replies.append(reply)
-        self._pending.append(PendingReply(
-            due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{position}"), reply=position,
-        ))
+        self._pending.append(
+            PendingReply(
+                due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{position}"),
+                reply=position,
+            )
+        )
 
     def _fate(self, person: Person, assigned: WorldEvent) -> None:
         fate = next((f for f in self._scenario.ticket_fates if f.assignee == person.key), None)
@@ -496,21 +578,34 @@ class Orchestrator:
         self._tickets(assigned.entity.provider)
         self._fated.append(assigned.entity)
         ticket = assigned.entity
-        self._pending.append(PendingFate(
-            due=Due(at=assigned.sim_time + fate.after, kind=DueKind.TICKET_FATE,
-                    ref=f"fate:{ticket.provider}:{ticket.external_id}"),
-            ticket=ticket, becomes=fate.becomes,
-        ))
+        self._pending.append(
+            PendingFate(
+                due=Due(
+                    at=assigned.sim_time + fate.after,
+                    kind=DueKind.TICKET_FATE,
+                    ref=f"fate:{ticket.provider}:{ticket.external_id}",
+                ),
+                ticket=ticket,
+                becomes=fate.becomes,
+            )
+        )
 
     async def _checkpoint(self) -> None:
         wake = self._clock.wake()
         if self._agent.state is not None:
             assert self._state_dir is not None
             await run_hook(self._agent.state.snapshot, wake_dir(self._state_dir, self._store.run_id, wake))
-        write_checkpoint(self._store, Checkpoint(
-            wake=wake, now=self._clock.now(), replies=len(self._replies), fated=self._fated,
-            commitments=self._commitments, pending=self._pending,
-        ))
+        write_checkpoint(
+            self._store,
+            Checkpoint(
+                wake=wake,
+                now=self._clock.now(),
+                replies=len(self._replies),
+                fated=self._fated,
+                commitments=self._commitments,
+                pending=self._pending,
+            ),
+        )
         self._record_new()
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
@@ -552,7 +647,17 @@ async def run_scenario(
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
-        scenario=scenario, agent=agent, reach=reach, store=store, clock=clock, services=services, replier=replier,
-        telemetry=telemetry, mounts=mounts, scorer=scorer, state_dir=state_dir, poll_interval=poll_interval,
+        scenario=scenario,
+        agent=agent,
+        reach=reach,
+        store=store,
+        clock=clock,
+        services=services,
+        replier=replier,
+        telemetry=telemetry,
+        mounts=mounts,
+        scorer=scorer,
+        state_dir=state_dir,
+        poll_interval=poll_interval,
         max_polls=max_polls,
     ).run()

@@ -35,7 +35,9 @@ def test_the_name_check_is_clean_once_the_name_is_corrected() -> None:
     for event in WORLD.events:
         after = event.after
         if isinstance(after, TicketSnapshot):
-            after = after.model_copy(update={"title": after.title.replace("Aiven", "Ayven"), "body": after.body.replace("Aiven", "Ayven")})
+            after = after.model_copy(
+                update={"title": after.title.replace("Aiven", "Ayven"), "body": after.body.replace("Aiven", "Ayven")}
+            )
         elif isinstance(after, MessageSnapshot):
             after = after.model_copy(update={"text": after.text.replace("Aiven", "Ayven")})
         fixed.append(event.model_copy(update={"after": after}))
@@ -73,6 +75,8 @@ def test_the_scorecard_counts_only_the_time_the_agent_itself_lost() -> None:
 
 def test_a_wait_nobody_followed_up_costs_the_whole_stretch() -> None:
     silent = [o.model_copy(update={"agent_touches": []}) for o in TIMELINE.obligations]
-    card = measure(TIMELINE.model_copy(update={"obligations": silent}), findings=[], met=3, ended_at=TIMELINE.wakes[-1].sim_time)
+    card = measure(
+        TIMELINE.model_copy(update={"obligations": silent}), findings=[], met=3, ended_at=TIMELINE.wakes[-1].sim_time
+    )
     assert (card.follow_ups_made, card.follow_ups_late) == (0, 3)
     assert card.time_lost > timedelta(days=3)

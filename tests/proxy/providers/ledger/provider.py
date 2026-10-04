@@ -24,13 +24,15 @@ from .manifest import MANIFEST
 
 def _entry(world: Store, actor: Actor, text: str) -> int:
     external_id = f"e{world.head() + 1}"
-    event = world.apply(Change(
-        entity=EntityRef(provider=MANIFEST.key, kind=EntityKind.RECORD, external_id=external_id),
-        operation=Operation.CREATE,
-        actor=actor,
-        body=json.dumps({"id": external_id, "text": text}),
-        after=RecordSnapshot(resource="entries", text=text),
-    ))
+    event = world.apply(
+        Change(
+            entity=EntityRef(provider=MANIFEST.key, kind=EntityKind.RECORD, external_id=external_id),
+            operation=Operation.CREATE,
+            actor=actor,
+            body=json.dumps({"id": external_id, "text": text}),
+            after=RecordSnapshot(resource="entries", text=text),
+        )
+    )
     return event.seq
 
 
@@ -39,12 +41,14 @@ class Ledger:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         async def whoami(request: Request) -> JSONResponse:
-            return JSONResponse({
-                "path": request.url.path,
-                "host": request.headers["host"],
-                "authorized": "authorization" in request.headers,
-                "access_token": "issued-by-ledger",
-            })
+            return JSONResponse(
+                {
+                    "path": request.url.path,
+                    "host": request.headers["host"],
+                    "authorized": "authorization" in request.headers,
+                    "access_token": "issued-by-ledger",
+                }
+            )
 
         async def create(request: Request) -> JSONResponse:
             payload = await request.json()

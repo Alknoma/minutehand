@@ -84,24 +84,31 @@ async def test_a_reply_arrives_signed_the_way_slack_signs(
 ) -> None:
     asked = await _asked(client, workspace, "tomas")
     workspace.clock.jump(START + timedelta(hours=7))
-    reply = PersonReply(person="tomas", in_reply_to=_message(asked["ts"]), text="yes, count me in",
-                        at=START + timedelta(hours=7))
+    reply = PersonReply(
+        person="tomas", in_reply_to=_message(asked["ts"]), text="yes, count me in", at=START + timedelta(hours=7)
+    )
 
-    await workspace.provider.deliver(reply, InboundTarget(provider="slack", url=agent.url), workspace.store,
-                                     workspace.clock)
+    await workspace.provider.deliver(
+        reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock
+    )
 
     [got] = agent.received
     verifier = SignatureVerifier(workspace.provider.signing_secret)
     assert verifier.is_valid_request(got.body, got.headers)
     assert not SignatureVerifier("another-secret").is_valid_request(got.body, got.headers)
     assert not SignatureVerifier(workspace.provider.signing_secret, clock=SimulatedTime(workspace)).is_valid_request(
-        got.body, got.headers), "the request timestamp is the send time, not world time"
+        got.body, got.headers
+    ), "the request timestamp is the send time, not world time"
     callback = json.loads(got.body)
     assert callback["type"] == "event_callback" and callback["team_id"] == state.TEAM_ID
     assert callback["event_time"] == int((START + timedelta(hours=7)).timestamp())
     event = callback["event"]
     assert (event["type"], event["channel"], event["user"], event["text"], event["channel_type"]) == (
-        "message", workspace.dm("tomas"), state.user_id("tomas"), "yes, count me in", "im",
+        "message",
+        workspace.dm("tomas"),
+        state.user_id("tomas"),
+        "yes, count me in",
+        "im",
     )
     assert "thread_ts" not in event
 
@@ -111,11 +118,16 @@ async def test_the_reply_is_in_the_world_as_the_person(
 ) -> None:
     asked = await _asked(client, workspace, "iris")
     reply = PersonReply(person="iris", in_reply_to=_message(asked["ts"]), text="I am", at=START)
-    await workspace.provider.deliver(reply, InboundTarget(provider="slack", url=agent.url), workspace.store,
-                                     workspace.clock)
+    await workspace.provider.deliver(
+        reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock
+    )
 
     written = workspace.store.events()[-1]
-    assert (written.actor, written.operation, written.entity.kind) == (Actor.PERSON, Operation.CREATE, EntityKind.MESSAGE)
+    assert (written.actor, written.operation, written.entity.kind) == (
+        Actor.PERSON,
+        Operation.CREATE,
+        EntityKind.MESSAGE,
+    )
     assert written.after == MessageSnapshot(text="I am", channel=workspace.dm("iris"), recipient_emails=[])
     history = await form(client, "conversations.history", channel=workspace.dm("iris"))
     assert text_of(history) == ["I am", "are you in for Thursday?"]
@@ -128,8 +140,9 @@ async def test_a_reply_to_a_channel_message_goes_in_its_thread(
 ) -> None:
     asked = await body(client, "chat.postMessage", channel=GENERAL, text="who owns the rollback plan?")
     reply = PersonReply(person="noor", in_reply_to=_message(asked["ts"]), text="I do", at=START)
-    await workspace.provider.deliver(reply, InboundTarget(provider="slack", url=agent.url), workspace.store,
-                                     workspace.clock)
+    await workspace.provider.deliver(
+        reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock
+    )
 
     event = json.loads(agent.received[0].body)["event"]
     assert (event["thread_ts"], event["channel_type"]) == (asked["ts"], "channel")
@@ -144,8 +157,9 @@ async def test_an_agent_that_answers_an_error_is_raised_not_swallowed(
     asked = await _asked(client, workspace, "tomas")
     reply = PersonReply(person="tomas", in_reply_to=_message(asked["ts"]), text="yes", at=START)
     with pytest.raises(DeliveryRefused) as refused:
-        await workspace.provider.deliver(reply, InboundTarget(provider="slack", url=agent.url), workspace.store,
-                                         workspace.clock)
+        await workspace.provider.deliver(
+            reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock
+        )
     assert refused.value.status == 500
 
 
@@ -155,29 +169,43 @@ async def test_an_agent_that_cannot_be_reached_is_refused_as_a_failed_agent(
     asked = await _asked(client, workspace, "tomas")
     reply = PersonReply(person="tomas", in_reply_to=_message(asked["ts"]), text="yes", at=START)
     with pytest.raises(AgentFailed, match="could not be reached"):
-        await workspace.provider.deliver(reply, InboundTarget(provider="slack", url="http://127.0.0.1:9/events"),
-                                         workspace.store, workspace.clock)
+        await workspace.provider.deliver(
+            reply, InboundTarget(provider="slack", url="http://127.0.0.1:9/events"), workspace.store, workspace.clock
+        )
 
 
 async def test_a_person_dms_the_bot_unprompted_as_a_signed_im_event(workspace: Workspace, agent: Agent) -> None:
-    await workspace.provider.say(PersonMessage(person="iris", text="Please chase the pricing.", at=START),
-                                 InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock)
+    await workspace.provider.say(
+        PersonMessage(person="iris", text="Please chase the pricing.", at=START),
+        InboundTarget(provider="slack", url=agent.url),
+        workspace.store,
+        workspace.clock,
+    )
 
     written = workspace.store.events()[-1]
     assert (written.actor, written.operation) == (Actor.PERSON, Operation.CREATE)
-    assert written.after == MessageSnapshot(text="Please chase the pricing.", channel=workspace.dm("iris"),
-                                            recipient_emails=[])
+    assert written.after == MessageSnapshot(
+        text="Please chase the pricing.", channel=workspace.dm("iris"), recipient_emails=[]
+    )
     [got] = agent.received
     assert SignatureVerifier(workspace.provider.signing_secret).is_valid_request(got.body, got.headers)
     event = json.loads(got.body)["event"]
-    assert (event["channel"], event["user"], event["channel_type"]) == (workspace.dm("iris"), state.user_id("iris"), "im")
+    assert (event["channel"], event["user"], event["channel_type"]) == (
+        workspace.dm("iris"),
+        state.user_id("iris"),
+        "im",
+    )
     assert "thread_ts" not in event
 
 
 async def test_a_message_from_someone_outside_the_workspace_is_refused(workspace: Workspace, agent: Agent) -> None:
     with pytest.raises(LookupError, match="not a member"):
-        await workspace.provider.say(PersonMessage(person="stranger", text="hi", at=START),
-                                     InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock)
+        await workspace.provider.say(
+            PersonMessage(person="stranger", text="hi", at=START),
+            InboundTarget(provider="slack", url=agent.url),
+            workspace.store,
+            workspace.clock,
+        )
     assert agent.received == []
 
 
@@ -188,8 +216,10 @@ async def test_the_secret_comes_from_the_variable_the_target_names(
     asked = await _asked(client, workspace, "tomas")
     reply = PersonReply(person="tomas", in_reply_to=_message(asked["ts"]), text="yes", at=START)
     await workspace.provider.deliver(
-        reply, InboundTarget(provider="slack", url=agent.url, secret_env="AGENT_SLACK_SIGNING_SECRET"),
-        workspace.store, workspace.clock,
+        reply,
+        InboundTarget(provider="slack", url=agent.url, secret_env="AGENT_SLACK_SIGNING_SECRET"),
+        workspace.store,
+        workspace.clock,
     )
     got = agent.received[0]
     assert SignatureVerifier("a-secret-the-runner-chose").is_valid_request(got.body, got.headers)
@@ -203,8 +233,10 @@ async def test_a_secret_variable_that_is_not_set_is_refused(
     reply = PersonReply(person="tomas", in_reply_to=_message(asked["ts"]), text="yes", at=START)
     with pytest.raises(LookupError):
         await workspace.provider.deliver(
-            reply, InboundTarget(provider="slack", url=agent.url, secret_env="AGENT_SLACK_SIGNING_SECRET"),
-            workspace.store, workspace.clock,
+            reply,
+            InboundTarget(provider="slack", url=agent.url, secret_env="AGENT_SLACK_SIGNING_SECRET"),
+            workspace.store,
+            workspace.clock,
         )
     assert agent.received == []
 
@@ -212,5 +244,6 @@ async def test_a_secret_variable_that_is_not_set_is_refused(
 async def test_a_reply_to_a_message_that_does_not_exist_is_refused(workspace: Workspace, agent: Agent) -> None:
     reply = PersonReply(person="tomas", in_reply_to=_message("1.000001"), text="yes", at=START)
     with pytest.raises(LookupError):
-        await workspace.provider.deliver(reply, InboundTarget(provider="slack", url=agent.url), workspace.store,
-                                         workspace.clock)
+        await workspace.provider.deliver(
+            reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock
+        )

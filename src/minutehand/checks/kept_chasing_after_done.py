@@ -35,8 +35,10 @@ class KeptChasingAfterDone:
             for event in view.events:
                 after = event.after
                 if (
-                    event.actor is not Actor.AGENT or event.operation is not Operation.CREATE
-                    or not isinstance(after, MessageSnapshot) or event.sim_time < o.settled_at
+                    event.actor is not Actor.AGENT
+                    or event.operation is not Operation.CREATE
+                    or not isinstance(after, MessageSnapshot)
+                    or event.sim_time < o.settled_at
                     or o.person not in {p.key for p in recipients(event, view.scenario)}
                 ):
                     continue

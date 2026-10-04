@@ -40,7 +40,7 @@ class ProxyRunning(RuntimeError):
     """A proxy is already running in this process."""
 
 
-_running: list["Proxy"] = []
+_running: list[Proxy] = []
 
 
 class Proxy:
@@ -80,11 +80,14 @@ class Proxy:
 
     async def __aenter__(self) -> Proxy:
         if _running:
-            raise ProxyRunning(f"a proxy is already running in this process on {_running[0].url}; "
-                               "mitmproxy allows one, so move it to the next run with mount()")
+            raise ProxyRunning(
+                f"a proxy is already running in this process on {_running[0].url}; "
+                "mitmproxy allows one, so move it to the next run with mount()"
+            )
         self._confdir.mkdir(parents=True, exist_ok=True)
-        master = Master(options.Options(listen_host=self._listen[0], listen_port=self._listen[1],
-                                        confdir=str(self._confdir)))
+        master = Master(
+            options.Options(listen_host=self._listen[0], listen_port=self._listen[1], confdir=str(self._confdir))
+        )
         master.addons.add(*default_addons())
         master.addons.add(self.addon)
         master.options.update(

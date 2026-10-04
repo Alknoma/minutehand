@@ -20,7 +20,14 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported, StateHooks
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import (
-    DelayRange, Person, PersonAsked, ReplyBehaviour, Scenario, Scripted, ScriptedReply, Silent,
+    DelayRange,
+    Person,
+    PersonAsked,
+    ReplyBehaviour,
+    Scenario,
+    Scripted,
+    ScriptedReply,
+    Silent,
 )
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, WorldEvent
 from minutehand.session import RUNS, WORLD
@@ -37,19 +44,26 @@ THANKS = "Thank you!"
 
 
 def answers(*, to_ask: int = 1, after: timedelta) -> Scripted:
-    return Scripted(delay=DelayRange(shortest=after, longest=after), replies=[ScriptedReply(to_ask=to_ask, text=ANSWER)])
+    return Scripted(
+        delay=DelayRange(shortest=after, longest=after), replies=[ScriptedReply(to_ask=to_ask, text=ANSWER)]
+    )
 
 
 NEVER_EXPECTED_TO_ANSWER = Scripted(replies=[])
 """Someone who answers nothing and from whom no answer is expected: the owner, thanked at the end."""
 
 
-def scenario(sofia: ReplyBehaviour, *, owner: ReplyBehaviour = Silent(), name: str = "partner_pricing") -> Scenario:
+def scenario(sofia: ReplyBehaviour, *, owner: ReplyBehaviour = Silent(), name: str = "partner_pricing") -> Scenario:  # noqa: B008 - a frozen model
     return Scenario(
-        name=name, goal="The partner pricing is confirmed with Sofia.", owner="owner", starts_at=T0,
+        name=name,
+        goal="The partner pricing is confirmed with Sofia.",
+        owner="owner",
+        starts_at=T0,
         deadline_after=timedelta(days=14),
-        people=[Person(key="owner", name="Olive Owner", email=OWNER, reply=owner),
-                Person(key="sofia", name="Sofia Romano", email=SOFIA, reply=sofia)],
+        people=[
+            Person(key="owner", name="Olive Owner", email=OWNER, reply=owner),
+            Person(key="sofia", name="Sofia Romano", email=SOFIA, reply=sofia),
+        ],
         expect=[PersonAsked(person="sofia"), PersonAsked(person="owner", mentions=["confirmed"])],
     )
 
@@ -75,7 +89,12 @@ class Launched:
 
 
 def agent_under_test(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, behaviour: str, *, by_message: bool = False, hooks: bool = False,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    behaviour: str,
+    *,
+    by_message: bool = False,
+    hooks: bool = False,
 ) -> Launched:
     """The agent under test, its behaviour chosen through the environment its command inherits."""
     monkeypatch.setenv("AGENT_BEHAVIOUR", behaviour)
@@ -90,11 +109,15 @@ def agent_under_test(
         goal=GoalByMessage(provider="slack") if by_message else GoalByWake(),
         wakes=[] if by_message else [Reported(wake_url=f"{base}/wake", report_url=f"{base}/report")],
         inbound=[InboundTarget(provider="slack", url=f"{base}/slack/events", secret_env=SECRET_VARIABLE)],
-        state=StateHooks(snapshot=[*program, "snapshot", str(state_file)],
-                         restore=[*program, "restore", str(state_file)]) if hooks else None,
+        state=StateHooks(
+            snapshot=[*program, "snapshot", str(state_file)], restore=[*program, "restore", str(state_file)]
+        )
+        if hooks
+        else None,
     )
-    return Launched(agent=agent, command=[*program, "serve", "--port", str(port), "--state", str(state_file)],
-                     state_file=state_file)
+    return Launched(
+        agent=agent, command=[*program, "serve", "--port", str(port), "--state", str(state_file)], state_file=state_file
+    )
 
 
 def world(state: Path, run_id: str, *, root: str | None = None) -> SqliteStore:
@@ -103,8 +126,14 @@ def world(state: Path, run_id: str, *, root: str | None = None) -> SqliteStore:
 
 
 def messages(events: list[WorldEvent], actor: Actor, to: str | None = None) -> list[WorldEvent]:
-    return [e for e in events if e.actor is actor and e.operation is Operation.CREATE
-            and isinstance(e.after, MessageSnapshot) and (to is None or to in e.after.recipient_emails)]
+    return [
+        e
+        for e in events
+        if e.actor is actor
+        and e.operation is Operation.CREATE
+        and isinstance(e.after, MessageSnapshot)
+        and (to is None or to in e.after.recipient_emails)
+    ]
 
 
 def texts(events: list[WorldEvent]) -> list[str]:

@@ -22,7 +22,7 @@ ModelEdit = PromptPatch | ModelSwap
 class HostPolicy(StrEnum):
     ANSWER = "answer"  # a provider claims the host and its fake answers
     TUNNEL = "tunnel"  # a model API with nothing to change: bytes pass through, never decrypted
-    EDIT = "edit"      # a model API the run changes: decrypted, edited, sent on upstream
+    EDIT = "edit"  # a model API the run changes: decrypted, edited, sent on upstream
     REFUSE = "refuse"  # nobody claims it: 502, recorded
 
 

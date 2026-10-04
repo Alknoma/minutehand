@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -18,7 +18,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, Scenario, SeededDocument
 
-START = datetime(2026, 9, 14, 8, 30, 0, tzinfo=timezone.utc)
+START = datetime(2026, 9, 14, 8, 30, 0, tzinfo=UTC)
 LATER = START + timedelta(hours=3, minutes=7, seconds=11, milliseconds=250)
 TOKEN = "ya29.any-token-the-run-hands-out"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -36,8 +36,12 @@ SCENARIO = Scenario(
         Person(key="dov", name="Dov Aranha", email="dov@example.com"),
     ],
     documents=[
-        SeededDocument(provider="google_drive", title="Supplier Shortlist", text="Three suppliers remain.\nPrices due Friday.",
-                       folder="Procurement"),
+        SeededDocument(
+            provider="google_drive",
+            title="Supplier Shortlist",
+            text="Three suppliers remain.\nPrices due Friday.",
+            folder="Procurement",
+        ),
         SeededDocument(provider="google_drive", title="Kickoff Notes", text="The review starts in September."),
         SeededDocument(provider="slack", title="Not a Drive file", text="belongs to another provider"),
     ],
@@ -65,7 +69,9 @@ def drive(tmp_path: Path) -> Drive:
     return Drive(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
 
 
-def client_for(provider: GoogleDriveProvider, store: SqliteStore, clock: RunClock, host: str = DRIVE_HOST) -> httpx.AsyncClient:
+def client_for(
+    provider: GoogleDriveProvider, store: SqliteStore, clock: RunClock, host: str = DRIVE_HOST
+) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=provider.app(store, clock)), base_url=f"https://{host}")
 
 
@@ -123,22 +129,47 @@ async def create_doc(api: httpx.AsyncClient, name: str, text: str, *, parent: st
     metadata: dict[str, object] = {"name": name, "mimeType": DOC}
     if parent is not None:
         metadata["parents"] = [parent]
-    return answer(await api.post(
-        "/upload/drive/v3/files", params={"uploadType": "multipart", "fields": "id,name,mimeType,parents,createdTime,modifiedTime"},
-        content=multipart(json.dumps(metadata), text.encode(), "text/plain"),
-        headers={**AUTH, "Content-Type": 'multipart/related; boundary="===b0undary=="'},
-    ))
+    return answer(
+        await api.post(
+            "/upload/drive/v3/files",
+            params={"uploadType": "multipart", "fields": "id,name,mimeType,parents,createdTime,modifiedTime"},
+            content=multipart(json.dumps(metadata), text.encode(), "text/plain"),
+            headers={**AUTH, "Content-Type": 'multipart/related; boundary="===b0undary=="'},
+        )
+    )
 
 
 def multipart(metadata: str, media: bytes, media_type: str, *, newline: bytes = b"\n") -> bytes:
     n = newline
     return (
-        b"--===b0undary==" + n + b"Content-Type: application/json" + n + b"MIME-Version: 1.0" + n + n
-        + metadata.encode() + n + b"--===b0undary==" + n + b"Content-Type: " + media_type.encode() + n
-        + b"MIME-Version: 1.0" + n + b"Content-Transfer-Encoding: binary" + n + n + media + n + b"--===b0undary==--"
+        b"--===b0undary=="
+        + n
+        + b"Content-Type: application/json"
+        + n
+        + b"MIME-Version: 1.0"
+        + n
+        + n
+        + metadata.encode()
+        + n
+        + b"--===b0undary=="
+        + n
+        + b"Content-Type: "
+        + media_type.encode()
+        + n
+        + b"MIME-Version: 1.0"
+        + n
+        + b"Content-Transfer-Encoding: binary"
+        + n
+        + n
+        + media
+        + n
+        + b"--===b0undary==--"
     )
 
 
 async def listed(api: httpx.AsyncClient, q: str, **params: str) -> Answer:
-    return answer(await api.get("/drive/v3/files", params={"q": q, "fields": "nextPageToken,files(id,name)", **params},
-                                headers=AUTH))
+    return answer(
+        await api.get(
+            "/drive/v3/files", params={"q": q, "fields": "nextPageToken,files(id,name)", **params}, headers=AUTH
+        )
+    )

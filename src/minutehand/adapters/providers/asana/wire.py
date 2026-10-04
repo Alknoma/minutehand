@@ -21,7 +21,7 @@ import html
 import json
 import re
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, TypeVar
 
@@ -84,7 +84,7 @@ def is_user_identifier(value: str) -> bool:
 
 def stamp(moment: datetime) -> str:
     """Asana's timestamp: UTC, milliseconds, `Z`."""
-    at = moment.astimezone(timezone.utc)
+    at = moment.astimezone(UTC)
     return at.strftime("%Y-%m-%dT%H:%M:%S.") + f"{at.microsecond // 1000:03d}Z"
 
 
@@ -196,8 +196,19 @@ def dump(entity: Model) -> str:
 Fields = dict[str, JsonValue]
 
 _TASK_UNSUPPORTED = (
-    "html_notes", "parent", "custom_fields", "tags", "followers", "memberships", "start_on", "start_at",
-    "assignee_section", "resource_subtype", "approval_status", "external", "liked",
+    "html_notes",
+    "parent",
+    "custom_fields",
+    "tags",
+    "followers",
+    "memberships",
+    "start_on",
+    "start_at",
+    "assignee_section",
+    "resource_subtype",
+    "approval_status",
+    "external",
+    "liked",
 )
 
 
@@ -292,10 +303,14 @@ def task_create(fields: Fields) -> TaskCreate:
     if not projects and workspace is None:
         raise bad("Missing input: workspace")
     return TaskCreate(
-        name=_string(fields, "name") or "", notes=_string(fields, "notes") or "",
+        name=_string(fields, "name") or "",
+        notes=_string(fields, "notes") or "",
         completed=_completed(fields) if "completed" in fields else False,
-        due_on=due_on, due_at=due_at, assignee=_assignee(fields) if "assignee" in fields else None,
-        projects=projects, workspace=workspace,
+        due_on=due_on,
+        due_at=due_at,
+        assignee=_assignee(fields) if "assignee" in fields else None,
+        projects=projects,
+        workspace=workspace,
     )
 
 
@@ -618,10 +633,12 @@ def one(item: Representation, tree: FieldTree | None) -> bytes:
 
 
 def many(items: Sequence[Representation], tree: FieldTree | None, next_page: NextPage | None) -> bytes:
-    return json.dumps({
-        "data": [shape(i, tree, full=False) for i in items],
-        "next_page": next_page.model_dump(mode="json") if next_page is not None else None,
-    }).encode()
+    return json.dumps(
+        {
+            "data": [shape(i, tree, full=False) for i in items],
+            "next_page": next_page.model_dump(mode="json") if next_page is not None else None,
+        }
+    ).encode()
 
 
 def unpaged(items: Sequence[Representation], tree: FieldTree | None) -> bytes:

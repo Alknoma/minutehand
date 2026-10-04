@@ -66,9 +66,11 @@ class Listener:
 
 
 def test_two_providers_claiming_one_host_are_rejected(registry: Registry) -> None:
-    with pytest.raises(ProviderConflict, match="ledger.example"):
-        registry.register(Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"]), lambda: Loopback(
-            Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"])))
+    with pytest.raises(ProviderConflict, match=r"ledger\.example"):
+        registry.register(
+            Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"]),
+            lambda: Loopback(Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"])),
+        )
 
 
 def test_a_host_inside_another_providers_wildcard_is_rejected(registry: Registry) -> None:
@@ -115,8 +117,10 @@ async def test_unclaimed_host_is_refused_and_recorded_without_contacting_it(
 ) -> None:
     async with Listener() as upstream, Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
         async with client(proxy, proxy.ca_cert) as http:
-            refused = await http.get(f"https://127.0.0.1:{upstream.port}/v1/things?x=1",
-                                     headers={"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"})
+            refused = await http.get(
+                f"https://127.0.0.1:{upstream.port}/v1/things?x=1",
+                headers={"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"},
+            )
         await asyncio.sleep(0.05)
         assert upstream.connections == 0
     assert refused.status_code == 502

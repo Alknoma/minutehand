@@ -21,7 +21,7 @@ import binascii
 import hashlib
 import json
 import types
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import Message
 from typing import Annotated, Literal, TypeVar, Union, get_args, get_origin
 from urllib.parse import parse_qsl
@@ -80,7 +80,12 @@ class Refusal(Exception):
 
 
 def drive_refusal(
-    code: int, reason: str, message: str, *, location: str | None = None, location_type: str | None = None,
+    code: int,
+    reason: str,
+    message: str,
+    *,
+    location: str | None = None,
+    location_type: str | None = None,
     domain: str = "global",
 ) -> Refusal:
     """A Drive v3 error: the classic envelope with one `errors` entry."""
@@ -98,7 +103,11 @@ def invalid(parameter: str, message: str | None = None) -> Refusal:
 
 def required(parameter: str, message: str | None = None) -> Refusal:
     return drive_refusal(
-        400, "required", message or f"Required parameter: {parameter}", location=parameter, location_type="parameter",
+        400,
+        "required",
+        message or f"Required parameter: {parameter}",
+        location=parameter,
+        location_type="parameter",
     )
 
 
@@ -121,7 +130,10 @@ def not_implemented(message: str) -> Refusal:
 
 def login_required() -> Refusal:
     item = ErrorItem(
-        domain="global", reason="required", message="Login Required.", location="Authorization",
+        domain="global",
+        reason="required",
+        message="Login Required.",
+        location="Authorization",
         locationType="header",
     )
     return Refusal(
@@ -137,7 +149,8 @@ def docs_refusal(code: int, status: str, message: str) -> Refusal:
 
 def docs_login_required() -> Refusal:
     refusal = docs_refusal(
-        401, "UNAUTHENTICATED",
+        401,
+        "UNAUTHENTICATED",
         "Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or"
         " other valid authentication credential.",
     )
@@ -207,8 +220,12 @@ PermissionType = Literal["user", "group", "domain", "anyone"]
 Role = Literal["owner", "organizer", "fileOrganizer", "writer", "commenter", "reader"]
 PERMISSION_TYPES: dict[str, PermissionType] = {"user": "user", "group": "group", "domain": "domain", "anyone": "anyone"}
 ROLES: dict[str, Role] = {
-    "owner": "owner", "organizer": "organizer", "fileOrganizer": "fileOrganizer", "writer": "writer",
-    "commenter": "commenter", "reader": "reader",
+    "owner": "owner",
+    "organizer": "organizer",
+    "fileOrganizer": "fileOrganizer",
+    "writer": "writer",
+    "commenter": "commenter",
+    "reader": "reader",
 }
 """Drive's closed vocabularies, keyed by how a request spells them. "editor" is the UI's word, not the API's."""
 
@@ -269,7 +286,7 @@ def md5(content: bytes) -> str:
 
 def rfc3339(moment: datetime) -> str:
     """Drive's timestamp: UTC, milliseconds, `Z`."""
-    utc = moment.astimezone(timezone.utc)
+    utc = moment.astimezone(UTC)
     return utc.strftime("%Y-%m-%dT%H:%M:%S") + f".{utc.microsecond // 1000:03d}Z"
 
 
@@ -300,10 +317,19 @@ class FileWrite(Model):
     id: str | None = None
 
 
-NOT_WRITABLE = frozenset({
-    "kind", "owners", "size", "md5Checksum", "version", "webViewLink", "explicitlyTrashed", "createdTime",
-    "modifiedTime",
-})
+NOT_WRITABLE = frozenset(
+    {
+        "kind",
+        "owners",
+        "size",
+        "md5Checksum",
+        "version",
+        "webViewLink",
+        "explicitlyTrashed",
+        "createdTime",
+        "modifiedTime",
+    }
+)
 """Fields Drive serves and refuses in a request body with 403 `fieldNotWritable`.
 
 `createdTime` and `modifiedTime` ARE writable on real Drive; this fake stamps every time from
@@ -636,7 +662,10 @@ def parse_mask(text: str) -> Mask | None:
 
 def _bad_mask(selection: str) -> Refusal:
     return drive_refusal(
-        400, "invalidParameter", f"Invalid field selection {selection}", location="fields",
+        400,
+        "invalidParameter",
+        f"Invalid field selection {selection}",
+        location="fields",
         location_type="parameter",
     )
 

@@ -21,7 +21,7 @@ nothing.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -58,10 +58,23 @@ class Op(StrEnum):
     CONTAINS = "contains"
 
 
-UNSUPPORTED_TERMS = frozenset({
-    "owners", "writers", "readers", "sharedWithMe", "visibility", "properties", "appProperties",
-    "shortcutDetails.targetId", "memberCount", "organizerCount", "hidden", "viewedByMeTime", "parents",
-})
+UNSUPPORTED_TERMS = frozenset(
+    {
+        "owners",
+        "writers",
+        "readers",
+        "sharedWithMe",
+        "visibility",
+        "properties",
+        "appProperties",
+        "shortcutDetails.targetId",
+        "memberCount",
+        "organizerCount",
+        "hidden",
+        "viewedByMeTime",
+        "parents",
+    }
+)
 """Terms in Drive's grammar that this fake refuses to evaluate rather than answer wrongly."""
 
 _TAKES: dict[Term, frozenset[Op]] = {
@@ -289,7 +302,7 @@ class _Parser:
             except ValueError as error:
                 raise QueryError(f"{value!r} is not an RFC 3339 date-time") from error
             if moment.tzinfo is None:
-                moment = moment.replace(tzinfo=timezone.utc)
+                moment = moment.replace(tzinfo=UTC)
             return TimeCompare(term=term, op=op, value=moment)
         return TextCompare(term=term, op=op, value=value)
 
@@ -326,7 +339,7 @@ def full_text_contains(text: str, needle: str) -> bool:
     if len(stripped) >= 2 and stripped[0] == stripped[-1] == '"':
         phrase = _words(stripped[1:-1])
         width = len(phrase)
-        return bool(phrase) and any(haystack[at:at + width] == phrase for at in range(len(haystack) - width + 1))
+        return bool(phrase) and any(haystack[at : at + width] == phrase for at in range(len(haystack) - width + 1))
     wanted = _words(stripped)
     present = set(haystack)
     return bool(wanted) and all(word in present for word in wanted)

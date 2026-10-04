@@ -25,9 +25,10 @@ from tests.orchestrator.world import RecordingClock
 
 def two_replies() -> Scenario:
     base = scenario()
-    people = [p if p.key != "sofia" else p.model_copy(update={"reply": scripted("Yes, 40k.", "Signing Friday.",
-                                                                                 hours=36)})
-              for p in base.people]
+    people = [
+        p if p.key != "sofia" else p.model_copy(update={"reply": scripted("Yes, 40k.", "Signing Friday.", hours=36)})
+        for p in base.people
+    ]
     return base.model_copy(update={"people": people})
 
 
@@ -36,9 +37,18 @@ async def fork(rig: Rig, parent: RunRecord, scn: Scenario, agent: AgentUnderTest
         return rig.open(parent.run_id, clock)
 
     return await fork_run(
-        fork=how, parent=parent, open_parent=open_parent, run_id="child", scenario=scn, agent=agent,
-        reach=reach_for(agent, env=rig.env()), services=rig.services(), replier_for=ScriptedReplier,
-        state_dir=rig.tmp / "state", mounts=rig.board, poll_interval=0.001,
+        fork=how,
+        parent=parent,
+        open_parent=open_parent,
+        run_id="child",
+        scenario=scn,
+        agent=agent,
+        reach=reach_for(agent, env=rig.env()),
+        services=rig.services(),
+        replier_for=ScriptedReplier,
+        state_dir=rig.tmp / "state",
+        mounts=rig.board,
+        poll_interval=0.001,
     )
 
 
@@ -65,7 +75,11 @@ async def test_a_fork_replays_earlier_replies_applies_a_person_change_and_leaves
     landed = [json.loads(p)["text"] for p in rig.chat.pushed]
     assert landed == ["Yes, 40k.", "CHANGED two"]
     assert [w.sim_time for w in child.wakes] == [
-        T0, T0 + timedelta(hours=36), T0 + timedelta(hours=48), T0 + timedelta(days=4)]
+        T0,
+        T0 + timedelta(hours=36),
+        T0 + timedelta(hours=48),
+        T0 + timedelta(days=4),
+    ]
     # The agent's own state was restored to the end of wake 1, not carried on from the parent's end.
     assert state(rig)["reasons"] == ["start", "person_replied", "person_replied", "due"]
     assert state(rig)["heard"] == ["Yes, 40k.", "CHANGED two"]
@@ -96,24 +110,31 @@ async def test_a_fork_of_an_agent_without_state_hooks_is_refused(rig: Rig) -> No
     agent = rig.agent("ask_silent")
     parent, store, _ = await rig.run(scenario(ticket_fates=[]), agent)
     with pytest.raises(RunRefused, match="no state hooks"):
-        await fork(rig, parent, scenario(ticket_fates=[]), agent,
-                   Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0]))
+        await fork(
+            rig, parent, scenario(ticket_fates=[]), agent, Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0])
+        )
 
 
 async def test_a_fork_between_checkpoints_is_refused(rig: Rig) -> None:
     agent = rig.agent("ask_silent", hooks=True)
     parent, store, _ = await rig.run(scenario(ticket_fates=[]), agent)
     with pytest.raises(RunRefused, match="no checkpoint at seq"):
-        await fork(rig, parent, scenario(ticket_fates=[]), agent,
-                   Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0] + 1))
+        await fork(
+            rig, parent, scenario(ticket_fates=[]), agent, Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0] + 1)
+        )
 
 
 async def test_a_prompt_patch_with_nothing_on_the_wire_is_refused(rig: Rig) -> None:
     agent = rig.agent("ask_silent", hooks=True)
     parent, store, _ = await rig.run(scenario(ticket_fates=[]), agent)
     with pytest.raises(RunRefused, match="prompt_patch"):
-        await fork(rig, parent, scenario(ticket_fates=[]), agent,
-                   Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0], overrides=[PromptPatch(text="Be brief.")]))
+        await fork(
+            rig,
+            parent,
+            scenario(ticket_fates=[]),
+            agent,
+            Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0], overrides=[PromptPatch(text="Be brief.")]),
+        )
 
 
 def test_a_deadline_shift_moves_the_childs_deadline() -> None:

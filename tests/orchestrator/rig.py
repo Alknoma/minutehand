@@ -4,7 +4,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from minutehand.adapters.agent.reach import reach_for
@@ -14,12 +14,12 @@ from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.domain.agent import AgentUnderTest, Command, StateHooks, WakeSource
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.run import RunRecord
-from minutehand.ports.clock import Clock
 from minutehand.domain.scenario import DelayRange, Person, ReplyBehaviour, Scenario, Scripted, ScriptedReply, Silent
+from minutehand.ports.clock import Clock
 from tests.orchestrator.world import CHAT, Chat, RecordingClock, Scheduler, Switchboard, serving
 
 AGENTS = Path(__file__).parent / "agents"
-T0 = datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc)  # a Monday
+T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
 
 
 def person(key: str, reply: ReplyBehaviour) -> Person:
@@ -28,16 +28,25 @@ def person(key: str, reply: ReplyBehaviour) -> Person:
 
 def scripted(*texts: str, hours: float) -> Scripted:
     delay = timedelta(hours=hours)
-    return Scripted(delay=DelayRange(shortest=delay, longest=delay),
-                    replies=[ScriptedReply(to_ask=n + 1, text=t) for n, t in enumerate(texts)])
+    return Scripted(
+        delay=DelayRange(shortest=delay, longest=delay),
+        replies=[ScriptedReply(to_ask=n + 1, text=t) for n, t in enumerate(texts)],
+    )
 
 
 def scenario(**overrides: object) -> Scenario:
     fields: dict[str, object] = {
-        "name": "pricing", "goal": "Pricing is confirmed and the legal review is done.", "owner": "owner",
-        "starts_at": T0, "deadline_after": timedelta(days=14),
-        "people": [person("owner", Silent()), person("sofia", scripted("Yes, 40k.", hours=36)),
-                   person("tom", Silent()), person("dania", Silent())],
+        "name": "pricing",
+        "goal": "Pricing is confirmed and the legal review is done.",
+        "owner": "owner",
+        "starts_at": T0,
+        "deadline_after": timedelta(days=14),
+        "people": [
+            person("owner", Silent()),
+            person("sofia", scripted("Yes, 40k.", hours=36)),
+            person("tom", Silent()),
+            person("dania", Silent()),
+        ],
         "ticket_fates": [{"assignee": "tom", "becomes": "done", "after": timedelta(days=3)}],
     }
     fields.update(overrides)
@@ -56,8 +65,10 @@ class Rig:
         state = None
         if hooks:
             hook = [sys.executable, str(AGENTS / "hooks.py")]
-            state = StateHooks(snapshot=[*hook, "snapshot", str(self.tmp / "agent")],
-                               restore=[*hook, "restore", str(self.tmp / "agent")])
+            state = StateHooks(
+                snapshot=[*hook, "snapshot", str(self.tmp / "agent")],
+                restore=[*hook, "restore", str(self.tmp / "agent")],
+            )
         return AgentUnderTest(
             name="asker",
             wakes=[Command(argv=[sys.executable, str(AGENTS / "asker.py"), behaviour]), *(extra or [])],
@@ -69,20 +80,37 @@ class Rig:
         return {"MH_BASE": self.base, "AGENT_STATE": str(self.tmp / "agent"), **more}
 
     def services(self) -> Services:
-        return Services(providers=[self.chat, self.sched], pushes={CHAT: self.chat}, tickets={CHAT: self.chat},
-                        editors={CHAT: self.chat}, schedulers={self.sched.manifest.key: self.sched})
+        return Services(
+            providers=[self.chat, self.sched],
+            pushes={CHAT: self.chat},
+            tickets={CHAT: self.chat},
+            editors={CHAT: self.chat},
+            schedulers={self.sched.manifest.key: self.sched},
+        )
 
     def open(self, run_id: str, clock: Clock) -> SqliteStore:
         return SqliteStore(self.tmp / "world.db", run_id, clock)
 
     async def run(
-        self, scn: Scenario, agent: AgentUnderTest, *, run_id: str = "root", env: dict[str, str] | None = None,
+        self,
+        scn: Scenario,
+        agent: AgentUnderTest,
+        *,
+        run_id: str = "root",
+        env: dict[str, str] | None = None,
     ) -> tuple[RunRecord, SqliteStore, RecordingClock]:
         clock = RecordingClock(scn.starts_at)
         store = self.open(run_id, clock)
         record = await run_scenario(
-            scenario=scn, agent=agent, reach=reach_for(agent, env=env or self.env()), store=store, clock=clock,
-            services=self.services(), replier=ScriptedReplier(scn), mounts=self.board, state_dir=self.tmp / "state",
+            scenario=scn,
+            agent=agent,
+            reach=reach_for(agent, env=env or self.env()),
+            store=store,
+            clock=clock,
+            services=self.services(),
+            replier=ScriptedReplier(scn),
+            mounts=self.board,
+            state_dir=self.tmp / "state",
             poll_interval=0.001,
         )
         return record, store, clock

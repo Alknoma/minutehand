@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 from minutehand.domain.scenario import (
-    Expectation, PersonAsked, TicketCreated, TicketDeleted, TicketInState,
+    Expectation,
+    PersonAsked,
+    TicketCreated,
+    TicketDeleted,
+    TicketInState,
 )
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
 
@@ -54,21 +58,24 @@ class Expectations:
         after = event.after
         if isinstance(expected, PersonAsked):
             return (
-                event.actor is Actor.AGENT and event.operation is Operation.CREATE
+                event.actor is Actor.AGENT
+                and event.operation is Operation.CREATE
                 and isinstance(after, MessageSnapshot)
                 and email[expected.person] in after.recipient_emails
                 and _has(after.text, expected.mentions)
             )
         if isinstance(expected, TicketCreated):
             return (
-                event.actor is Actor.AGENT and event.operation is Operation.CREATE
+                event.actor is Actor.AGENT
+                and event.operation is Operation.CREATE
                 and isinstance(after, TicketSnapshot)
                 and (expected.assignee is None or after.assignee_email == email[expected.assignee])
                 and _has(f"{after.title} {after.body}", expected.mentions)
             )
         if isinstance(expected, TicketDeleted):
             return (
-                event.actor is Actor.AGENT and event.operation is Operation.DELETE
+                event.actor is Actor.AGENT
+                and event.operation is Operation.DELETE
                 and event.entity.kind is EntityKind.TICKET
             )
         if isinstance(expected, TicketInState):

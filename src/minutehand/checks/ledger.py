@@ -56,7 +56,9 @@ def absences(scenario: Scenario, events: list[WorldEvent]) -> list[Away]:
             else:
                 continue
             starts = anchor + absence.starts_after
-            stretches.append(Away(person=person.key, starts=starts, ends=starts + absence.lasts, delegate=absence.delegate))
+            stretches.append(
+                Away(person=person.key, starts=starts, ends=starts + absence.lasts, delegate=absence.delegate)
+            )
     return stretches
 
 
@@ -106,12 +108,19 @@ def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonRepl
                 if reply is None and not silent and not is_away:
                     continue
                 settled = reply.at if reply is not None and reply.at <= head else None
-                opened.append(_Open(
-                    key=f"answer:{event.entity.provider}:{event.entity.external_id}:{person.key}",
-                    kind=ObligationKind.ANSWER_FROM_PERSON, person=person,
-                    entities=[event.entity, channel], opened_at=event.sim_time, opened_by=event.seq,
-                    expected_by=event.sim_time + _longest(person).longest, settled_at=settled, primary=event.entity,
-                ))
+                opened.append(
+                    _Open(
+                        key=f"answer:{event.entity.provider}:{event.entity.external_id}:{person.key}",
+                        kind=ObligationKind.ANSWER_FROM_PERSON,
+                        person=person,
+                        entities=[event.entity, channel],
+                        opened_at=event.sim_time,
+                        opened_by=event.seq,
+                        expected_by=event.sim_time + _longest(person).longest,
+                        settled_at=settled,
+                        primary=event.entity,
+                    )
+                )
         if not isinstance(after, TicketSnapshot):
             continue
         previous = holder.get(_ref(event.entity))
@@ -126,20 +135,32 @@ def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonRepl
         if not handed or person is None or after.state in FINISHED:
             continue
         fate = next((f for f in scenario.ticket_fates if f.assignee == person.key), None)
-        opened.append(_Open(
-            key=f"work:{event.entity.provider}:{event.entity.external_id}:{person.key}:{event.seq}",
-            kind=ObligationKind.WORK_WITH_PERSON, person=person, entities=[event.entity],
-            opened_at=event.sim_time, opened_by=event.seq,
-            expected_by=event.sim_time + fate.after if fate is not None else None,
-            settled_at=_finished(event.entity, event.seq, events), primary=event.entity,
-        ))
+        opened.append(
+            _Open(
+                key=f"work:{event.entity.provider}:{event.entity.external_id}:{person.key}:{event.seq}",
+                kind=ObligationKind.WORK_WITH_PERSON,
+                person=person,
+                entities=[event.entity],
+                opened_at=event.sim_time,
+                opened_by=event.seq,
+                expected_by=event.sim_time + fate.after if fate is not None else None,
+                settled_at=_finished(event.entity, event.seq, events),
+                primary=event.entity,
+            )
+        )
 
     ledger = [_finish(o, events, by_key, away) for o in opened]
     if scenario.deadline is not None:
-        ledger.append(Obligation(
-            key="deadline", kind=ObligationKind.DATE, opened_at=scenario.starts_at, opened_by=0,
-            expected_by=scenario.deadline, settled_at=scenario.deadline if head >= scenario.deadline else None,
-        ))
+        ledger.append(
+            Obligation(
+                key="deadline",
+                kind=ObligationKind.DATE,
+                opened_at=scenario.starts_at,
+                opened_by=0,
+                expected_by=scenario.deadline,
+                settled_at=scenario.deadline if head >= scenario.deadline else None,
+            )
+        )
     return ledger
 
 
@@ -147,8 +168,11 @@ def _finished(ticket: EntityRef, since: int, events: list[WorldEvent]) -> dateti
     """When the person holding this ticket first finished or cancelled it after `since`."""
     for event in events:
         if (
-            event.seq > since and event.entity == ticket and event.actor is Actor.PERSON
-            and isinstance(event.after, TicketSnapshot) and event.after.state in FINISHED
+            event.seq > since
+            and event.entity == ticket
+            and event.actor is Actor.PERSON
+            and isinstance(event.after, TicketSnapshot)
+            and event.after.state in FINISHED
         ):
             return event.sim_time
     return None
@@ -175,7 +199,14 @@ def _finish(o: _Open, events: list[WorldEvent], by_key: dict[str, Person], away:
         elif after_settled is None:
             after_settled = event.seq
     return Obligation(
-        key=o.key, kind=o.kind, person=o.person.key, entity=o.primary,
-        opened_at=o.opened_at, opened_by=o.opened_by, expected_by=o.expected_by, settled_at=o.settled_at,
-        agent_touches=touches, first_touch_after_settled=after_settled,
+        key=o.key,
+        kind=o.kind,
+        person=o.person.key,
+        entity=o.primary,
+        opened_at=o.opened_at,
+        opened_by=o.opened_by,
+        expected_by=o.expected_by,
+        settled_at=o.settled_at,
+        agent_touches=touches,
+        first_touch_after_settled=after_settled,
     )

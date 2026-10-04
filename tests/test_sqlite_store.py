@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import sqlite3
 import threading
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -15,13 +15,19 @@ from minutehand.domain.people import PersonReply
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Exchange, Operation, TicketSnapshot
 from minutehand.ports.store import Store
 
-START = datetime(2026, 8, 24, 10, 51, tzinfo=timezone.utc)
+START = datetime(2026, 8, 24, 10, 51, tzinfo=UTC)
 TICKET = EntityRef(provider="asana", kind=EntityKind.TICKET, external_id="T1")
 
 
 def ticket(title: str, operation: Operation = Operation.UPDATE) -> Change:
-    return Change(entity=TICKET, operation=operation, actor=Actor.AGENT, body=f'{{"name": "{title}"}}',
-                  parent="P1", after=TicketSnapshot(title=title))
+    return Change(
+        entity=TICKET,
+        operation=operation,
+        actor=Actor.AGENT,
+        body=f'{{"name": "{title}"}}',
+        parent="P1",
+        after=TicketSnapshot(title=title),
+    )
 
 
 @pytest.fixture
@@ -72,7 +78,9 @@ def test_children_list_live_entities_under_one_parent_in_pages(world: tuple[Sqli
     assert [s.entity.external_id for s in rest] == ["C"]
 
 
-def test_a_fork_sees_its_parent_up_to_the_fork_and_neither_sees_the_other_after(world: tuple[SqliteStore, RunClock]) -> None:
+def test_a_fork_sees_its_parent_up_to_the_fork_and_neither_sees_the_other_after(
+    world: tuple[SqliteStore, RunClock],
+) -> None:
     store, _ = world
     store.apply(ticket("one", Operation.CREATE))
     store.apply(ticket("two"))
@@ -127,7 +135,9 @@ def test_a_refused_call_is_readable_and_is_not_pinned_on_the_next_event(world: t
     assert store.events()[0].exchange == answered
     calls = store.calls()
     assert [(c.exchange.host, c.provider, c.first_seq > c.last_seq) for c in calls] == [
-        ("example.org", None, True), ("app.asana.com", "asana", False)]
+        ("example.org", None, True),
+        ("app.asana.com", "asana", False),
+    ]
 
 
 def test_one_call_that_wrote_two_events_is_on_both(world: tuple[SqliteStore, RunClock]) -> None:
@@ -146,7 +156,9 @@ def test_a_fork_sees_the_calls_made_before_it_and_not_those_after(world: tuple[S
     store.attach(before, first_seq=event.seq, last_seq=event.seq, provider="asana")
     fork = store.fork("what-if", at_seq=1, clock=RunClock(START))
     later = store.apply(ticket("two"))
-    store.attach(Exchange(method="POST", host="a.example", path="/after", status=200), first_seq=later.seq, last_seq=later.seq)
+    store.attach(
+        Exchange(method="POST", host="a.example", path="/after", status=200), first_seq=later.seq, last_seq=later.seq
+    )
     fork.attach(Exchange(method="GET", host="a.example", path="/in-fork", status=200), first_seq=2, last_seq=1)
     assert [c.exchange.path for c in fork.calls()] == ["/before", "/in-fork"]
     assert [c.exchange.path for c in store.calls()] == ["/before", "/after"]
@@ -161,7 +173,7 @@ def test_the_store_works_from_a_thread_that_did_not_open_it(world: tuple[SqliteS
             for n in range(25):
                 ref = EntityRef(provider="asana", kind=EntityKind.TICKET, external_id=f"{threading.get_ident()}-{n}")
                 store.apply(Change(entity=ref, operation=Operation.CREATE, actor=Actor.AGENT, body="{}", parent="P1"))
-        except BaseException as error:  # noqa: BLE001 - the test reports whatever a thread raised
+        except BaseException as error:
             failures.append(error)
 
     threads = [threading.Thread(target=write) for _ in range(4)]
@@ -180,7 +192,9 @@ def test_a_file_from_another_schema_version_is_refused(tmp_path: Path) -> None:
         SqliteStore(path, "root", RunClock(START))
 
 
-def test_an_entity_moved_to_another_parent_is_listed_only_under_the_new_one(world: tuple[SqliteStore, RunClock]) -> None:
+def test_an_entity_moved_to_another_parent_is_listed_only_under_the_new_one(
+    world: tuple[SqliteStore, RunClock],
+) -> None:
     store, _ = world
     store.apply(Change(entity=TICKET, operation=Operation.CREATE, actor=Actor.AGENT, body="{}", parent="P1"))
     store.apply(Change(entity=TICKET, operation=Operation.UPDATE, actor=Actor.AGENT, body="{}", parent="P2"))

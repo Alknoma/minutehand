@@ -46,7 +46,7 @@ class DelayRange(Model):
     longest: timedelta = timedelta(hours=66)
 
     @model_validator(mode="after")
-    def _ordered(self) -> "DelayRange":
+    def _ordered(self) -> DelayRange:
         if self.longest < self.shortest:
             raise ValueError("longest is shorter than shortest")
         return self
@@ -62,11 +62,11 @@ class ScriptedReply(Model):
 class Helpfulness(StrEnum):
     """What this person does with a question."""
 
-    FULL = "full"            # answers it
-    PARTIAL = "partial"      # answers part and leaves the rest
+    FULL = "full"  # answers it
+    PARTIAL = "partial"  # answers part and leaves the rest
     ASKS_BACK = "asks_back"  # replies with a question of their own
-    DECLINES = "declines"    # says it is not theirs, names nobody
-    MISTAKEN = "mistaken"    # answers confidently from an out-of-date fact
+    DECLINES = "declines"  # says it is not theirs, names nobody
+    MISTAKEN = "mistaken"  # answers confidently from an out-of-date fact
 
 
 class Answers(Model):
@@ -167,7 +167,7 @@ class Bound(Model):
     by: timedelta | None = Field(default=None, description="Offset from the scenario's start")
 
     @model_validator(mode="after")
-    def _ordered(self) -> "Bound":
+    def _ordered(self) -> Bound:
         if self.at_most is not None and self.at_most < self.at_least:
             raise ValueError("at_most is below at_least")
         return self
@@ -205,9 +205,7 @@ class TicketInState(Bound):
     state: TicketState
 
 
-Expectation = Annotated[
-    PersonAsked | TicketCreated | TicketDeleted | TicketInState, Field(discriminator="kind")
-]
+Expectation = Annotated[PersonAsked | TicketCreated | TicketDeleted | TicketInState, Field(discriminator="kind")]
 
 
 class Scenario(Model):
@@ -218,9 +216,7 @@ class Scenario(Model):
     deadline_after: timedelta | None = None
     max_wakes: int = Field(default=20, ge=1)
     seed: int = 17
-    protected_names: list[str] = Field(
-        default=[], description="Names the agent must spell exactly as given"
-    )
+    protected_names: list[str] = Field(default=[], description="Names the agent must spell exactly as given")
     people: list[Person]
     tickets: list[SeededTicket] = []
     documents: list[SeededDocument] = []
@@ -229,7 +225,7 @@ class Scenario(Model):
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
 
     @model_validator(mode="after")
-    def _keys_resolve(self) -> "Scenario":
+    def _keys_resolve(self) -> Scenario:
         keys = [p.key for p in self.people]
         if len(keys) != len(set(keys)):
             raise ValueError("two people share a key")

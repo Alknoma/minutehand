@@ -48,9 +48,7 @@ class Exchange(Model):
     status: int
     request_body: str | None = None
     response_body: str | None = None
-    traceparent: str | None = Field(
-        default=None, description="W3C trace context the caller sent, if any"
-    )
+    traceparent: str | None = Field(default=None, description="W3C trace context the caller sent, if any")
 
 
 class TicketSnapshot(Model):

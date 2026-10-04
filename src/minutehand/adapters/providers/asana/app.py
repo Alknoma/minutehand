@@ -26,17 +26,65 @@ from minutehand.ports.store import Store
 Handler = Callable[[Request], Awaitable[Response]]
 
 _JSON = "application/json; charset=utf-8"
-_SEARCH = ("text", "completed", "assignee.any", "projects.any", "sort_by", "sort_ascending", "limit",
-           "opt_fields", "opt_pretty")
+_SEARCH = (
+    "text",
+    "completed",
+    "assignee.any",
+    "projects.any",
+    "sort_by",
+    "sort_ascending",
+    "limit",
+    "opt_fields",
+    "opt_pretty",
+)
 _SEARCH_UNSUPPORTED = (
-    "assignee.not", "projects.not", "projects.all", "sections.any", "sections.not", "sections.all", "tags.any",
-    "tags.not", "tags.all", "teams.any", "followers.any", "followers.not", "created_by.any", "created_by.not",
-    "assigned_by.any", "assigned_by.not", "liked_by.not", "commented_on_by.not", "portfolios.any",
-    "due_on", "due_on.before", "due_on.after", "due_at.before", "due_at.after", "start_on", "start_on.before",
-    "start_on.after", "created_on", "created_on.before", "created_on.after", "created_at.before",
-    "created_at.after", "completed_on", "completed_on.before", "completed_on.after", "completed_at.before",
-    "completed_at.after", "modified_on", "modified_on.before", "modified_on.after", "modified_at.before",
-    "modified_at.after", "is_blocking", "is_blocked", "has_attachment", "is_subtask", "resource_subtype",
+    "assignee.not",
+    "projects.not",
+    "projects.all",
+    "sections.any",
+    "sections.not",
+    "sections.all",
+    "tags.any",
+    "tags.not",
+    "tags.all",
+    "teams.any",
+    "followers.any",
+    "followers.not",
+    "created_by.any",
+    "created_by.not",
+    "assigned_by.any",
+    "assigned_by.not",
+    "liked_by.not",
+    "commented_on_by.not",
+    "portfolios.any",
+    "due_on",
+    "due_on.before",
+    "due_on.after",
+    "due_at.before",
+    "due_at.after",
+    "start_on",
+    "start_on.before",
+    "start_on.after",
+    "created_on",
+    "created_on.before",
+    "created_on.after",
+    "created_at.before",
+    "created_at.after",
+    "completed_on",
+    "completed_on.before",
+    "completed_on.after",
+    "completed_at.before",
+    "completed_at.after",
+    "modified_on",
+    "modified_on.before",
+    "modified_on.after",
+    "modified_at.before",
+    "modified_at.after",
+    "is_blocking",
+    "is_blocked",
+    "has_attachment",
+    "is_subtask",
+    "resource_subtype",
 )
 _SORTS = ("modified_at", "created_at")
 _TYPEAHEAD = ("task", "user", "project")
@@ -103,23 +151,35 @@ class AsanaApi:
     # ------------------------------------------------------------------ representations
 
     def _workspace_out(self, workspace: wire.AsanaWorkspace) -> wire.WorkspaceOut:
-        return wire.WorkspaceOut(gid=workspace.gid, name=workspace.name, is_organization=workspace.is_organization,
-                                 email_domains=workspace.email_domains)
+        return wire.WorkspaceOut(
+            gid=workspace.gid,
+            name=workspace.name,
+            is_organization=workspace.is_organization,
+            email_domains=workspace.email_domains,
+        )
 
     def _workspace_of(self, gid: str) -> wire.WorkspaceOut:
         return self._workspace_out(_held(self._world.workspace(gid), gid))
 
     def _user_out(self, user: wire.AsanaUser) -> wire.UserOut:
-        return wire.UserOut(gid=user.gid, name=user.name, email=user.email,
-                            workspaces=[self._workspace_out(w) for w in self._world.workspaces()])
+        return wire.UserOut(
+            gid=user.gid,
+            name=user.name,
+            email=user.email,
+            workspaces=[self._workspace_out(w) for w in self._world.workspaces()],
+        )
 
     def _user_of(self, gid: str) -> wire.UserOut:
         return self._user_out(_held(self._world.user(gid), gid))
 
     def _project_out(self, project: wire.AsanaProject) -> wire.ProjectOut:
         return wire.ProjectOut(
-            gid=project.gid, name=project.name, notes=project.notes, archived=project.archived,
-            created_at=project.created_at, workspace=self._workspace_of(project.workspace),
+            gid=project.gid,
+            name=project.name,
+            notes=project.notes,
+            archived=project.archived,
+            created_at=project.created_at,
+            workspace=self._workspace_of(project.workspace),
             permalink_url=f"https://app.asana.com/0/{project.gid}/list",
         )
 
@@ -127,20 +187,30 @@ class AsanaApi:
         return self._project_out(_held(self._world.project(gid), gid))
 
     def _section_out(self, section: wire.AsanaSection) -> wire.SectionOut:
-        return wire.SectionOut(gid=section.gid, name=section.name, created_at=section.created_at,
-                               project=self._project_of(section.project))
+        return wire.SectionOut(
+            gid=section.gid, name=section.name, created_at=section.created_at, project=self._project_of(section.project)
+        )
 
     def _task_out(self, task: wire.AsanaTask) -> wire.TaskOut:
         first = task.memberships[0].project if task.memberships else "0"
         return wire.TaskOut(
-            gid=task.gid, name=task.name, notes=task.notes, html_notes=wire.html_notes(task.notes),
-            completed=task.completed, completed_at=task.completed_at, due_on=task.due_on, due_at=task.due_at,
-            created_at=task.created_at, modified_at=task.modified_at,
+            gid=task.gid,
+            name=task.name,
+            notes=task.notes,
+            html_notes=wire.html_notes(task.notes),
+            completed=task.completed,
+            completed_at=task.completed_at,
+            due_on=task.due_on,
+            due_at=task.due_at,
+            created_at=task.created_at,
+            modified_at=task.modified_at,
             assignee=self._user_of(task.assignee) if task.assignee is not None else None,
             created_by=self._user_of(task.created_by),
             memberships=[
-                wire.MembershipOut(project=self._project_of(m.project),
-                                   section=self._section_out(_held(self._world.section(m.section), m.section)))
+                wire.MembershipOut(
+                    project=self._project_of(m.project),
+                    section=self._section_out(_held(self._world.section(m.section), m.section)),
+                )
                 for m in task.memberships
             ],
             projects=[self._project_of(m.project) for m in task.memberships],
@@ -151,7 +221,10 @@ class AsanaApi:
     def _story_out(self, story: wire.AsanaStory) -> wire.StoryOut:
         task = self._world.task(story.task)
         return wire.StoryOut(
-            gid=story.gid, text=story.text, html_text=wire.html_notes(story.text), created_at=story.created_at,
+            gid=story.gid,
+            text=story.text,
+            html_text=wire.html_notes(story.text),
+            created_at=story.created_at,
             created_by=self._user_of(story.created_by),
             target=wire.Compact(gid=story.task, resource_type="task", name=task.name if task is not None else ""),
         )
@@ -203,8 +276,11 @@ class AsanaApi:
         query = _query(request)
         query.refuse(["team"])
         archived = query.boolean("archived")
-        found = [p for p in self._world.projects()
-                 if (workspace is None or p.workspace == workspace) and (archived is None or p.archived == archived)]
+        found = [
+            p
+            for p in self._world.projects()
+            if (workspace is None or p.workspace == workspace) and (archived is None or p.archived == archived)
+        ]
         self._world.saw(state.record_ref(workspace or state.WORKSPACE_GID), Operation.SEARCH)
         return self._listed(request, [self._project_out(p) for p in found])
 
@@ -276,12 +352,19 @@ class AsanaApi:
         assignee = self._user(sent.assignee, field="assignee", status=400) if sent.assignee is not None else None
         now = wire.stamp(self._clock.now())
         task = wire.AsanaTask(
-            gid=self._world.next_gid(), name=sent.name, notes=sent.notes, completed=sent.completed,
-            completed_at=now if sent.completed else None, due_on=_due_on(sent.due_on, sent.due_at),
-            due_at=sent.due_at, assignee=assignee.gid if assignee is not None else None, created_by=AGENT_GID,
+            gid=self._world.next_gid(),
+            name=sent.name,
+            notes=sent.notes,
+            completed=sent.completed,
+            completed_at=now if sent.completed else None,
+            due_on=_due_on(sent.due_on, sent.due_at),
+            due_at=sent.due_at,
+            assignee=assignee.gid if assignee is not None else None,
+            created_by=AGENT_GID,
             workspace=workspace,
             memberships=[wire.AsanaMembership(project=p.gid, section=self._first_section(p.gid)) for p in projects],
-            created_at=now, modified_at=now,
+            created_at=now,
+            modified_at=now,
         )
         self._world.put_task(task, operation=Operation.CREATE, actor=Actor.AGENT)
         return self._one(request, self._task_out(task), 201)
@@ -333,8 +416,13 @@ class AsanaApi:
     async def create_story(self, request: Request) -> Response:
         task = self._task(request.path_params["gid"])
         sent = wire.story_create(wire.envelope(await request.body()))
-        story = wire.AsanaStory(gid=self._world.next_gid(), text=sent.text, task=task.gid, created_by=AGENT_GID,
-                                created_at=wire.stamp(self._clock.now()))
+        story = wire.AsanaStory(
+            gid=self._world.next_gid(),
+            text=sent.text,
+            task=task.gid,
+            created_by=AGENT_GID,
+            created_at=wire.stamp(self._clock.now()),
+        )
         self._world.put_story(story, actor=Actor.AGENT)
         return self._one(request, self._story_out(story), 201)
 
@@ -374,8 +462,9 @@ class AsanaApi:
         text = (query.text("text") or "").strip().lower()
         if text:
             found = [t for t in found if text in t.name.lower() or text in t.notes.lower()]
-        found.sort(key=lambda t: (t.modified_at if sort_by == "modified_at" else t.created_at, t.gid),
-                   reverse=not ascending)
+        found.sort(
+            key=lambda t: (t.modified_at if sort_by == "modified_at" else t.created_at, t.gid), reverse=not ascending
+        )
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return _answer(wire.unpaged([self._task_out(t) for t in found[:limit]], wire.field_tree(query)))
 
@@ -391,14 +480,21 @@ class AsanaApi:
         words = (query.text("query") or "").strip().lower()
         found: list[wire.Representation]
         if resource_type == "task":
-            found = [self._task_out(t) for t in self._world.tasks()
-                     if t.workspace == workspace.gid and words in t.name.lower()]
+            found = [
+                self._task_out(t)
+                for t in self._world.tasks()
+                if t.workspace == workspace.gid and words in t.name.lower()
+            ]
         elif resource_type == "user":
-            found = [self._user_out(u) for u in self._world.users()
-                     if words in u.name.lower() or words in u.email.lower()]
+            found = [
+                self._user_out(u) for u in self._world.users() if words in u.name.lower() or words in u.email.lower()
+            ]
         else:
-            found = [self._project_out(p) for p in self._world.projects()
-                     if p.workspace == workspace.gid and words in p.name.lower()]
+            found = [
+                self._project_out(p)
+                for p in self._world.projects()
+                if p.workspace == workspace.gid and words in p.name.lower()
+            ]
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return _answer(wire.unpaged(found[:count], wire.field_tree(query)))
 

@@ -10,15 +10,25 @@ from minutehand.adapters.providers.asana import state
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot
 from tests.providers.asana.asana_workspace import (
-    CATERING, START, VENUE, WS, Workspace, body, create, data, items,
+    CATERING,
+    START,
+    VENUE,
+    WS,
+    Workspace,
+    body,
+    create,
+    data,
+    items,
 )
 
 
 async def test_a_created_task_reads_back_lists_under_its_project_and_is_found_by_search(
-    workspace: Workspace, client: httpx.AsyncClient,
+    workspace: Workspace,
+    client: httpx.AsyncClient,
 ) -> None:
-    made = await create(client, name="Order the signage", notes="Two banners.", projects=[VENUE],
-                        assignee="tomas@example.com")
+    made = await create(
+        client, name="Order the signage", notes="Two banners.", projects=[VENUE], assignee="tomas@example.com"
+    )
     read = data(await client.get(f"/tasks/{made['gid']}"))
     listed = items(await client.get(f"/projects/{VENUE}/tasks"))
     found = items(await client.get(f"/workspaces/{WS}/tasks/search", params={"text": "signage"}))
@@ -40,16 +50,21 @@ async def test_timestamps_are_the_runs_clock_not_the_machines(workspace: Workspa
     assert done["created_at"] == "2026-08-24T10:50:03.250Z"
 
 
-async def test_the_snapshot_carries_the_assignees_email_and_state(workspace: Workspace,
-                                                                 client: httpx.AsyncClient) -> None:
+async def test_the_snapshot_carries_the_assignees_email_and_state(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
     made = await create(client, name="Sign the lease", projects=[VENUE], assignee=state.user_gid("noor"))
     await client.put(f"/tasks/{made['gid']}", json={"data": {"completed": True, "assignee": "iris@example.com"}})
 
     writes = [e for e in workspace.store.events() if e.entity.external_id == made["gid"]]
-    assert [(e.actor, e.operation) for e in writes] == [(Actor.AGENT, Operation.CREATE), (Actor.AGENT, Operation.UPDATE)]
+    assert [(e.actor, e.operation) for e in writes] == [
+        (Actor.AGENT, Operation.CREATE),
+        (Actor.AGENT, Operation.UPDATE),
+    ]
     assert writes[0].entity.kind is EntityKind.TICKET
-    assert writes[0].after == TicketSnapshot(title="Sign the lease", project="Venue Move",
-                                             assignee_email="noor@example.com", state=TicketState.OPEN)
+    assert writes[0].after == TicketSnapshot(
+        title="Sign the lease", project="Venue Move", assignee_email="noor@example.com", state=TicketState.OPEN
+    )
     second = writes[1].after
     assert isinstance(second, TicketSnapshot)
     assert (second.assignee_email, second.state) == ("iris@example.com", TicketState.DONE)
@@ -69,12 +84,17 @@ async def test_gids_come_from_the_event_sequence(workspace: Workspace, client: h
 
 async def test_a_list_is_compact_and_opt_fields_narrows_it(client: httpx.AsyncClient) -> None:
     compact = items(await client.get(f"/projects/{VENUE}/tasks"))
-    asked = items(await client.get(f"/projects/{VENUE}/tasks",
-                                   params={"opt_fields": "name,completed,assignee.email,memberships.section.name"}))
+    asked = items(
+        await client.get(
+            f"/projects/{VENUE}/tasks", params={"opt_fields": "name,completed,assignee.email,memberships.section.name"}
+        )
+    )
 
     assert set(compact[0]) == {"gid", "resource_type", "name", "resource_subtype"}
     assert asked[1] == {
-        "gid": asked[1]["gid"], "name": "Return the old keys", "completed": True,
+        "gid": asked[1]["gid"],
+        "name": "Return the old keys",
+        "completed": True,
         "assignee": {"gid": state.user_gid("noor"), "email": "noor@example.com"},
         "memberships": [{"section": {"gid": state.section_gid(VENUE, state.wire.SectionRole.DONE), "name": "Done"}}],
     }
@@ -85,7 +105,8 @@ async def test_users_carry_no_email_until_it_is_asked_for(client: httpx.AsyncCli
     asked = items(await client.get(f"/workspaces/{WS}/users", params={"opt_fields": "email"}))
     assert all("email" not in u for u in compact)
     assert sorted(str(u["email"]) for u in asked) == sorted(
-        ["agent@workspace.example", "iris@example.com", "noor@example.com", "tomas@example.com"])
+        ["agent@workspace.example", "iris@example.com", "noor@example.com", "tomas@example.com"]
+    )
 
 
 async def test_me_is_the_agent_and_a_user_is_found_by_email(client: httpx.AsyncClient) -> None:
@@ -104,8 +125,11 @@ async def test_the_workspace_its_projects_and_their_sections(client: httpx.Async
 
     assert [w["gid"] for w in workspaces] == [WS]
     assert sorted(str(p["name"]) for p in projects) == ["Catering", "Venue Move"] and also == projects
-    assert one["name"] == "Venue Move" and one["workspace"] == {"gid": WS, "resource_type": "workspace",
-                                                                "name": "Simulated Workspace"}
+    assert one["name"] == "Venue Move" and one["workspace"] == {
+        "gid": WS,
+        "resource_type": "workspace",
+        "name": "Simulated Workspace",
+    }
     assert sorted(str(s["name"]) for s in sections) == ["Cancelled", "Done", "To do"]
 
 
@@ -149,7 +173,9 @@ async def test_reads_and_searches_are_recorded_as_the_agents(workspace: Workspac
     await client.get(f"/workspaces/{WS}/tasks/search", params={"text": "x"})
     seen = workspace.store.events(since=before)
     assert [(e.operation, e.entity.external_id) for e in seen] == [
-        (Operation.SEARCH, VENUE), (Operation.READ, task["gid"]), (Operation.SEARCH, WS),
+        (Operation.SEARCH, VENUE),
+        (Operation.READ, task["gid"]),
+        (Operation.SEARCH, WS),
     ]
     assert {e.actor for e in seen} == {Actor.AGENT} and all(e.after is None for e in seen)
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from minutehand.checks.ledger import recipients
 from minutehand.checks._waits import follow_up, reaction
+from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
 from minutehand.domain.world import Actor, Operation
 
@@ -18,12 +18,12 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
     for o in view.obligations:
         wait = follow_up(o, when, ended_at)
         if wait is None:
-            continue                                   # settled, or the run ended, before it was due
+            continue  # settled, or the run ended, before it was due
         due += 1
         made += wait.touch is not None
         if wait.late:
             late += 1
-            lost += wait.gap                           # never followed up: the whole stretch is the agent's
+            lost += wait.gap  # never followed up: the whole stretch is the agent's
             if wait.touch is not None:
                 slowest = wait.gap if slowest is None or wait.gap > slowest else slowest
     reactions = [r for r in (reaction(o, when, ended_at) for o in view.obligations) if r is not None]
@@ -64,7 +64,8 @@ def _burden(view: RunView) -> list[PersonBurden]:
         for person in recipients(event, view.scenario):
             messages[person.key] += 1
             if any(
-                o.person == person.key and o.opened_by < event.seq
+                o.person == person.key
+                and o.opened_by < event.seq
                 and (o.settled_at is None or event.sim_time < o.settled_at)
                 for o in waits
             ):

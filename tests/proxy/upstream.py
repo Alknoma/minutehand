@@ -36,14 +36,27 @@ def make_authority(directory: Path) -> Authority:
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "upstream test CA")])
     ca = (
         x509.CertificateBuilder()
-        .subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30))
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .add_extension(x509.KeyUsage(
-            digital_signature=True, key_cert_sign=True, crl_sign=True, content_commitment=False,
-            key_encipherment=False, data_encipherment=False, key_agreement=False, encipher_only=False,
-            decipher_only=False), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                key_cert_sign=True,
+                crl_sign=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
@@ -51,11 +64,15 @@ def make_authority(directory: Path) -> Authority:
     leaf = (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]))
-        .issuer_name(ca_name).public_key(key.public_key())
+        .issuer_name(ca_name)
+        .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30))
-        .add_extension(x509.SubjectAlternativeName(
-            [x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
@@ -64,8 +81,9 @@ def make_authority(directory: Path) -> Authority:
     authority = Authority(directory / "ca.pem", directory / "server.pem", directory / "server.key")
     authority.ca_cert.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
     authority.server_cert.write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
-    authority.server_key.write_bytes(key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    authority.server_key.write_bytes(
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    )
     return authority
 
 
@@ -98,7 +116,8 @@ async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, ups
             reply = json.dumps({"received": len(upstream.received)}).encode()
             writer.write(
                 b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"
-                + f"content-length: {len(reply)}\r\n\r\n".encode() + reply
+                + f"content-length: {len(reply)}\r\n\r\n".encode()
+                + reply
             )
             await writer.drain()
     except (asyncio.IncompleteReadError, ConnectionError, ssl.SSLError):

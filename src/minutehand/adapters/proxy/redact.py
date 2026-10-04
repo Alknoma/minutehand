@@ -14,10 +14,21 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 REDACTED = "[redacted]"
 
-CREDENTIAL_KEYS = frozenset({
-    "token", "access_token", "refresh_token", "id_token", "client_secret", "password",
-    "api_key", "apikey", "x-api-key", "authorization", "cookie",
-})
+CREDENTIAL_KEYS = frozenset(
+    {
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "client_secret",
+        "password",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "authorization",
+        "cookie",
+    }
+)
 """Exact names only: a tracker's issue `key` or a document's `secret` flag is data, not a credential."""
 
 
@@ -26,9 +37,7 @@ def _is_credential(name: str) -> bool:
 
 
 def _pairs(text: str) -> str:
-    return urlencode(
-        [(k, REDACTED if _is_credential(k) else v) for k, v in parse_qsl(text, keep_blank_values=True)]
-    )
+    return urlencode([(k, REDACTED if _is_credential(k) else v) for k, v in parse_qsl(text, keep_blank_values=True)])
 
 
 def path(raw: str) -> str:

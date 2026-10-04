@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -19,7 +19,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, Scenario, Silent, WorkingHours
 from minutehand.domain.world import Actor, Operation
 
-START = datetime(2026, 8, 24, 10, 50, 3, tzinfo=timezone.utc)
+START = datetime(2026, 8, 24, 10, 50, 3, tzinfo=UTC)
 TOKEN = "xoxb-simulated-run-token"
 
 SCENARIO = Scenario(
@@ -29,8 +29,12 @@ SCENARIO = Scenario(
     starts_at=START,
     people=[
         Person(key="iris", name="Iris Calder", email="iris@example.com", title="Programme lead"),
-        Person(key="tomas", name="Tomas Brandt", email="tomas@example.com",
-               working_hours=WorkingHours(timezone="Europe/Lisbon")),
+        Person(
+            key="tomas",
+            name="Tomas Brandt",
+            email="tomas@example.com",
+            working_hours=WorkingHours(timezone="Europe/Lisbon"),
+        ),
         Person(key="noor", name="Noor Halvorsen", email="noor@example.com", reply=Silent()),
     ],
 )
@@ -53,28 +57,54 @@ class Workspace:
     def channel_without_the_app(self, name: str, *, members: list[str]) -> str:
         """A public channel the scenario made and never invited the app to."""
         channel = wire.SlackChannel(
-            id=state.named_channel_id(name), name=name, is_channel=True,
-            created=int(START.timestamp()), creator=state.user_id(members[0]),
+            id=state.named_channel_id(name),
+            name=name,
+            is_channel=True,
+            created=int(START.timestamp()),
+            creator=state.user_id(members[0]),
         )
-        self.slack.write(state.channel_ref(channel.id), channel, operation=Operation.CREATE, actor=Actor.SCENARIO,
-                         parent=state.TEAM_ID)
+        self.slack.write(
+            state.channel_ref(channel.id),
+            channel,
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=state.TEAM_ID,
+        )
         for key in members:
             uid = state.user_id(key)
-            self.slack.write(state.membership_ref(channel.id, uid), wire.SlackMembership(channel=channel.id, user=uid),
-                             operation=Operation.CREATE, actor=Actor.SCENARIO, parent=channel.id)
+            self.slack.write(
+                state.membership_ref(channel.id, uid),
+                wire.SlackMembership(channel=channel.id, user=uid),
+                operation=Operation.CREATE,
+                actor=Actor.SCENARIO,
+                parent=channel.id,
+            )
         return channel.id
 
     def public_channel(self, name: str, *, archived: bool = False) -> str:
         """A public channel the app is in."""
         channel = wire.SlackChannel(
-            id=state.named_channel_id(name), name=name, is_channel=True, is_archived=archived,
-            created=int(START.timestamp()), creator=BOT_USER_ID,
+            id=state.named_channel_id(name),
+            name=name,
+            is_channel=True,
+            is_archived=archived,
+            created=int(START.timestamp()),
+            creator=BOT_USER_ID,
         )
-        self.slack.write(state.channel_ref(channel.id), channel, operation=Operation.CREATE, actor=Actor.SCENARIO,
-                         parent=state.TEAM_ID)
-        self.slack.write(state.membership_ref(channel.id, BOT_USER_ID),
-                         wire.SlackMembership(channel=channel.id, user=BOT_USER_ID),
-                         operation=Operation.CREATE, actor=Actor.SCENARIO, parent=channel.id)
+        self.slack.write(
+            state.channel_ref(channel.id),
+            channel,
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=state.TEAM_ID,
+        )
+        self.slack.write(
+            state.membership_ref(channel.id, BOT_USER_ID),
+            wire.SlackMembership(channel=channel.id, user=BOT_USER_ID),
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=channel.id,
+        )
         return channel.id
 
 
@@ -91,7 +121,9 @@ def workspace(tmp_path: Path) -> Workspace:
 
 
 def client_for(provider: SlackProvider, store: SqliteStore, clock: RunClock) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=provider.app(store, clock)), base_url="https://slack.com")
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=provider.app(store, clock)), base_url="https://slack.com"
+    )
 
 
 @pytest.fixture

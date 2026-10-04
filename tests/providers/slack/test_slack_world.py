@@ -16,7 +16,14 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
 from minutehand.domain.world import Actor, EntityKind
 from tests.providers.slack.slack_workspace import (
-    GENERAL, SCENARIO, START, Workspace, body, client_for, form, text_of,
+    GENERAL,
+    SCENARIO,
+    START,
+    Workspace,
+    body,
+    client_for,
+    form,
+    text_of,
 )
 
 
@@ -43,11 +50,13 @@ async def test_a_fork_sees_history_only_up_to_the_fork(workspace: Workspace, cli
         assert text_of(await form(forked, "conversations.history", channel=GENERAL)) == ["before the fork"]
         await body(forked, "chat.postMessage", channel=GENERAL, text="only in the fork")
         assert text_of(await form(forked, "conversations.history", channel=GENERAL)) == [
-            "only in the fork", "before the fork",
+            "only in the fork",
+            "before the fork",
         ]
 
     assert text_of(await form(client, "conversations.history", channel=GENERAL)) == [
-        "after, in the parent", "before the fork",
+        "after, in the parent",
+        "before the fork",
     ]
 
 
@@ -75,9 +84,14 @@ def test_the_manifest_claims_slack_and_imports_nothing_else_of_the_provider() ->
     assert (MANIFEST.key, MANIFEST.tier, MANIFEST.hosts) == ("slack", Tier.FINISHED, ["slack.com", "*.slack.com"])
     assert MANIFEST.pushes_events and MANIFEST.kinds == [EntityKind.MESSAGE, EntityKind.CHANNEL]
     loaded = subprocess.run(
-        [sys.executable, "-c",
-         "import sys, minutehand.adapters.providers.slack.manifest;"
-         "print(sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.slack.')))"],
-        capture_output=True, text=True, check=True,
+        [
+            sys.executable,
+            "-c",
+            "import sys, minutehand.adapters.providers.slack.manifest;"
+            "print(sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.slack.')))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     assert loaded.stdout.strip() == "['minutehand.adapters.providers.slack.manifest']"

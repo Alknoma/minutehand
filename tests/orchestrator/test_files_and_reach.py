@@ -73,10 +73,16 @@ def test_unparseable_yaml_and_an_unknown_suffix_are_refused_naming_the_file(tmp_
 
 
 def test_reach_puts_the_reporting_source_first_and_the_polled_one_on_ticks() -> None:
-    reach = reach_for(AgentUnderTest(name="a", wakes=[
-        Polled(wake_url="http://a/tick", every=timedelta(minutes=10)),
-        Reported(wake_url="http://a/wake", report_url="http://a/report"), Booked(),
-    ]))
+    reach = reach_for(
+        AgentUnderTest(
+            name="a",
+            wakes=[
+                Polled(wake_url="http://a/tick", every=timedelta(minutes=10)),
+                Reported(wake_url="http://a/wake", report_url="http://a/report"),
+                Booked(),
+            ],
+        )
+    )
     assert isinstance(reach.main, ReportedDriver) and isinstance(reach.ticks, PolledDriver)
     assert reach.every == timedelta(minutes=10)
     assert isinstance(reach_for(AgentUnderTest(name="a", wakes=[Command(argv=[sys.executable])])).main, CommandDriver)
@@ -88,8 +94,14 @@ def test_an_agent_with_only_booked_wakes_is_refused() -> None:
 
 
 def test_an_agent_with_only_booked_wakes_that_takes_its_goal_by_message_has_no_driver() -> None:
-    reach = reach_for(AgentUnderTest(name="a", wakes=[Booked()], goal=GoalByMessage(provider="slack"),
-                                     inbound=[InboundTarget(provider="slack", url="http://a/events")]))
+    reach = reach_for(
+        AgentUnderTest(
+            name="a",
+            wakes=[Booked()],
+            goal=GoalByMessage(provider="slack"),
+            inbound=[InboundTarget(provider="slack", url="http://a/events")],
+        )
+    )
     assert reach.main is None and reach.ticks is None
 
 
@@ -100,8 +112,10 @@ def test_an_agent_with_two_reporting_sources_is_refused() -> None:
 
 def test_a_fork_changes_file_loads_with_the_run_and_seq_given_beside_it(tmp_path: Path) -> None:
     path = tmp_path / "fork.yaml"
-    path.write_text("overrides:\n  - kind: person_change\n    person: sofia\n    reply: {kind: scripted, "
-                    "delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, text: 'Yes.'}]}\n")
+    path.write_text(
+        "overrides:\n  - kind: person_change\n    person: sofia\n    reply: {kind: scripted, "
+        "delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, text: 'Yes.'}]}\n"
+    )
     fork = load_fork(path, parent_run="r1", at_seq=7)
     assert (fork.parent_run, fork.at_seq, fork.samples) == ("r1", 7, 1)
     assert [o.kind for o in fork.overrides] == ["person_change"]

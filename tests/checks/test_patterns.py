@@ -9,13 +9,19 @@ import pytest
 
 from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import discover, evaluate
-
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
 ROOT = Path(__file__).parents[2]
 DESIGN_KEYS = {
-    "expiry_on_every_wait", "check_world_before_model", "absence_aware", "budgeted_follow_up", "bounded_asking",
-    "one_open_ask_per_person", "no_double_tick", "honest_closure", "confirm_names",
+    "expiry_on_every_wait",
+    "check_world_before_model",
+    "absence_aware",
+    "budgeted_follow_up",
+    "bounded_asking",
+    "one_open_ask_per_person",
+    "no_double_tick",
+    "honest_closure",
+    "confirm_names",
 }
 
 

@@ -25,8 +25,11 @@ class CommandDriver:
         self._last = None
         try:
             process = await asyncio.create_subprocess_exec(
-                *self._argv, env=self._env,
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                *self._argv,
+                env=self._env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
         except OSError as e:
             raise AgentFailed(f"{self._argv[0]} could not be started: {e}") from e

@@ -9,13 +9,21 @@ outside their working hours is pushed to the next moment they would answer.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import (
-    Absence, AbsenceTrigger, Answers, DelayRange, Person, Scenario, Scripted, Silent, WorkingHours,
+    Absence,
+    AbsenceTrigger,
+    Answers,
+    DelayRange,
+    Person,
+    Scenario,
+    Scripted,
+    Silent,
+    WorkingHours,
 )
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, WorldEvent
 from minutehand.ports.clock import Clock
@@ -53,7 +61,9 @@ class ScriptedReplier:
             return None
         drawn = asked.sim_time + delay_for(self._scenario.seed, asked, behaviour.delay)
         return PersonReply(
-            person=person.key, in_reply_to=asked.entity, text=text,
+            person=person.key,
+            in_reply_to=asked.entity,
+            text=text,
             at=available_at(drawn, person, self._scenario.starts_at, first_ask=asks[0].sim_time),
         )
 
@@ -61,9 +71,13 @@ class ScriptedReplier:
 def _asks_of(person: Person, history: list[WorldEvent]) -> list[WorldEvent]:
     """Every message the agent created to this person, in order."""
     return [
-        e for e in history
-        if e.actor is Actor.AGENT and e.operation is Operation.CREATE and e.entity.kind is EntityKind.MESSAGE
-        and isinstance(e.after, MessageSnapshot) and person.email in e.after.recipient_emails
+        e
+        for e in history
+        if e.actor is Actor.AGENT
+        and e.operation is Operation.CREATE
+        and e.entity.kind is EntityKind.MESSAGE
+        and isinstance(e.after, MessageSnapshot)
+        and person.email in e.after.recipient_emails
     ]
 
 
@@ -86,7 +100,7 @@ def available_at(at: datetime, person: Person, starts_at: datetime, *, first_ask
         if person.working_hours is not None:
             moved = _within_hours(moved, person.working_hours)
         if moved == at:
-            return at.astimezone(timezone.utc)
+            return at.astimezone(UTC)
         at = moved
     raise RunRefused(f"{person.key} is never available after {at}: absences and working hours leave no gap")
 

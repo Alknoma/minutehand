@@ -7,7 +7,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `lints` (`python -m lints`), `workflows` (actionlint, zizmor), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `gate` |
+| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `promotion`, `gate` |
 | `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency) |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
@@ -50,7 +50,6 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 | Tier | When | Required | State |
 |---|---|---|---|
 | **Gate**: types, lints, workflow lint, the whole test suite on three runners | Every pull request and merge-queue entry | Yes | On |
-| **Format and style**: `ruff check`, `ruff format --check` | Every pull request | Yes, behind `gate` | Off. 80 findings and 72 unformatted files today; switching it on needs one mechanical commit, made when no branch is in flight. |
 | **Build**: build the wheel, install it into a clean environment, run a scenario through the installed command; build the container image and run the same scenario through it | Every pull request | Yes, behind `gate` | Off. Needs the command line, which is on `feat/end-to-end`. |
 | **Nightly**: repeat runs, newest dependencies | Nightly | No. A failure is a signal about tomorrow, not about the pull request in front of you. | On |
 | **Conformance**: each provider's answers validated against the service's published API description; recorded real traffic replayed against the fake | Nightly | No | Off. Not built. |

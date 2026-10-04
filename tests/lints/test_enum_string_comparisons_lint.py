@@ -91,9 +91,12 @@ def test_membership_and_match_are_read_too(plant: Plant) -> None:
             return 0
         """,
     )
-    assert _lines(root) == [("minutehand/checks/use.py", 2)] * 2 + [("minutehand/checks/use.py", 5)] + [
-        ("minutehand/checks/use.py", 7)
-    ] * 2
+    assert (
+        _lines(root)
+        == [("minutehand/checks/use.py", 2)] * 2
+        + [("minutehand/checks/use.py", 5)]
+        + [("minutehand/checks/use.py", 7)] * 2
+    )
 
 
 def test_comparisons_beside_the_rule_are_left_alone(plant: Plant) -> None:

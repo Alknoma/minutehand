@@ -42,7 +42,8 @@ async def test_open_reaches_the_seeded_dm_and_is_idempotent(workspace: Workspace
 
 async def test_open_with_an_id_that_is_no_member_is_refused_user_not_found(client: httpx.AsyncClient) -> None:
     assert await form(client, "conversations.open", users="zlqYFcbnX5gBhZ9xQwErTyUiOp01") == {
-        "ok": False, "error": "user_not_found"
+        "ok": False,
+        "error": "user_not_found",
     }
 
 
@@ -67,7 +68,8 @@ async def test_open_with_two_people_makes_one_group_dm(client: httpx.AsyncClient
 
 async def test_an_unknown_channel_is_refused_channel_not_found(client: httpx.AsyncClient) -> None:
     assert await form(client, "conversations.info", channel="C0NOSUCHCHAN") == {
-        "ok": False, "error": "channel_not_found"
+        "ok": False,
+        "error": "channel_not_found",
     }
 
 
@@ -82,7 +84,8 @@ async def test_a_member_id_as_channel_posts_to_their_dm(workspace: Workspace, cl
 
 async def test_a_member_id_nobody_has_is_refused_channel_not_found(client: httpx.AsyncClient) -> None:
     assert await body(client, "chat.postMessage", channel="U_NOSUCHPERSON", text="nope") == {
-        "ok": False, "error": "channel_not_found"
+        "ok": False,
+        "error": "channel_not_found",
     }
 
 
@@ -92,7 +95,8 @@ async def test_reading_a_channel_the_app_is_not_in_is_refused_not_in_channel(
     leadership = workspace.channel_without_the_app("leadership", members=["iris"])
     assert await form(client, "conversations.history", channel=leadership) == {"ok": False, "error": "not_in_channel"}
     assert await body(client, "chat.postMessage", channel=leadership, text="hi") == {
-        "ok": False, "error": "not_in_channel"
+        "ok": False,
+        "error": "not_in_channel",
     }
 
 
@@ -106,8 +110,7 @@ async def test_is_member_reports_the_app_not_the_humans(workspace: Workspace, cl
 
 async def test_another_persons_dm_is_refused_channel_not_found(workspace: Workspace, client: httpx.AsyncClient) -> None:
     theirs = state.conversation_id([state.user_id("iris"), state.user_id("tomas")])
-    workspace.slack.open_conversation([state.user_id("iris"), state.user_id("tomas")], created=0,
-                                      actor=Actor.SCENARIO)
+    workspace.slack.open_conversation([state.user_id("iris"), state.user_id("tomas")], created=0, actor=Actor.SCENARIO)
     assert await form(client, "conversations.history", channel=theirs) == {"ok": False, "error": "channel_not_found"}
 
 
@@ -116,19 +119,22 @@ async def test_another_persons_dm_is_refused_channel_not_found(workspace: Worksp
 
 async def test_deleting_a_message_nobody_posted_is_refused_message_not_found(client: httpx.AsyncClient) -> None:
     assert await form(client, "chat.delete", channel=GENERAL, ts="1.000000") == {
-        "ok": False, "error": "message_not_found"
+        "ok": False,
+        "error": "message_not_found",
     }
 
 
 async def test_reacting_to_a_message_nobody_posted_is_refused_message_not_found(client: httpx.AsyncClient) -> None:
     assert await form(client, "reactions.add", channel=GENERAL, timestamp="1.000000", name="eyes") == {
-        "ok": False, "error": "message_not_found"
+        "ok": False,
+        "error": "message_not_found",
     }
 
 
 async def test_updating_a_message_nobody_posted_is_refused_message_not_found(client: httpx.AsyncClient) -> None:
     assert await body(client, "chat.update", channel=GENERAL, ts="1.000000", text="x") == {
-        "ok": False, "error": "message_not_found"
+        "ok": False,
+        "error": "message_not_found",
     }
 
 
@@ -138,13 +144,16 @@ async def test_more_than_fifty_blocks_is_refused_invalid_blocks(client: httpx.As
 
 
 async def test_fifty_blocks_sent_as_a_form_are_accepted(client: httpx.AsyncClient) -> None:
-    answer = await form(client, "chat.postMessage", channel=GENERAL, text="x", blocks=json.dumps([{"type": "divider"}] * 50))
+    answer = await form(
+        client, "chat.postMessage", channel=GENERAL, text="x", blocks=json.dumps([{"type": "divider"}] * 50)
+    )
     assert answer["ok"] is True
 
 
 async def test_text_past_forty_thousand_chars_is_refused_msg_too_long(client: httpx.AsyncClient) -> None:
     assert await body(client, "chat.postMessage", channel=GENERAL, text="x" * 40_001) == {
-        "ok": False, "error": "msg_too_long"
+        "ok": False,
+        "error": "msg_too_long",
     }
 
 
@@ -185,7 +194,8 @@ async def test_replies_return_the_parent_then_the_thread(client: httpx.AsyncClie
 
 async def test_a_reply_to_a_thread_nobody_started_is_refused_thread_not_found(client: httpx.AsyncClient) -> None:
     assert await body(client, "chat.postMessage", channel=GENERAL, text="x", thread_ts="1.000000") == {
-        "ok": False, "error": "thread_not_found"
+        "ok": False,
+        "error": "thread_not_found",
     }
 
 
@@ -194,19 +204,26 @@ async def test_history_honours_inclusive(client: httpx.AsyncClient) -> None:
     await body(client, "chat.postMessage", channel=GENERAL, text="the one before")
     card = await body(client, "chat.postMessage", channel=GENERAL, text="the card")
 
-    inclusive = await form(client, "conversations.history", channel=GENERAL, latest=str(card["ts"]), inclusive="1", limit="1")
-    exclusive = await form(client, "conversations.history", channel=GENERAL, latest=str(card["ts"]), inclusive="0", limit="1")
+    inclusive = await form(
+        client, "conversations.history", channel=GENERAL, latest=str(card["ts"]), inclusive="1", limit="1"
+    )
+    exclusive = await form(
+        client, "conversations.history", channel=GENERAL, latest=str(card["ts"]), inclusive="0", limit="1"
+    )
 
     assert text_of(inclusive) == ["the card"]
     assert text_of(exclusive) == ["the one before"]
 
 
-async def test_editing_a_persons_message_is_refused_cant_update_message(workspace: Workspace, client: httpx.AsyncClient) -> None:
+async def test_editing_a_persons_message_is_refused_cant_update_message(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
     ts = workspace.slack.next_ts(workspace.clock)
     theirs = wire.SlackMessage(ts=ts, user=state.user_id("iris"), text="mine", team=state.TEAM_ID)
     workspace.slack.write(state.message_ref(ts), theirs, operation=Operation.CREATE, actor=Actor.PERSON, parent=GENERAL)
     assert await body(client, "chat.update", channel=GENERAL, ts=ts, text="edited") == {
-        "ok": False, "error": "cant_update_message"
+        "ok": False,
+        "error": "cant_update_message",
     }
     assert await form(client, "chat.delete", channel=GENERAL, ts=ts) == {"ok": False, "error": "cant_delete_message"}
 
@@ -233,7 +250,9 @@ async def test_conversations_list_pages(workspace: Workspace, client: httpx.Asyn
     assert set(_ids(first, "channels")).isdisjoint(_ids(second, "channels"))
 
 
-async def test_conversations_list_lists_the_dms_only_when_asked(workspace: Workspace, client: httpx.AsyncClient) -> None:
+async def test_conversations_list_lists_the_dms_only_when_asked(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
     public = await form(client, "conversations.list")
     ims = await form(client, "conversations.list", types="im")
     assert _ids(public, "channels") == [GENERAL]
@@ -275,6 +294,7 @@ async def test_replies_page_oldest_first(client: httpx.AsyncClient) -> None:
     for n in range(3):
         await body(client, "chat.postMessage", channel=GENERAL, text=f"r{n}", thread_ts=parent["ts"])
     first = await form(client, "conversations.replies", channel=GENERAL, ts=str(parent["ts"]), limit="2")
-    rest = await form(client, "conversations.replies", channel=GENERAL, ts=str(parent["ts"]), limit="2",
-                      cursor=_cursor(first))
+    rest = await form(
+        client, "conversations.replies", channel=GENERAL, ts=str(parent["ts"]), limit="2", cursor=_cursor(first)
+    )
     assert text_of(first) == ["root", "r0"] and text_of(rest) == ["r1", "r2"] and rest["has_more"] is False

@@ -135,9 +135,18 @@ async def play(
             with _in_this_process(run_secrets):
                 async with _agent_process(command, env, agent, directory / AGENT_LOG):
                     record = await run_scenario(
-                        scenario=scenario, agent=agent, reach=reach_for(agent, env=env), store=store, clock=clock,
-                        services=services, replier=ScriptedReplier(scenario), telemetry=telemetry, mounts=proxy,
-                        scorer=judge, state_dir=state / RUNS, poll_interval=POLL_INTERVAL,
+                        scenario=scenario,
+                        agent=agent,
+                        reach=reach_for(agent, env=env),
+                        store=store,
+                        clock=clock,
+                        services=services,
+                        replier=ScriptedReplier(scenario),
+                        telemetry=telemetry,
+                        mounts=proxy,
+                        scorer=judge,
+                        state_dir=state / RUNS,
+                        poll_interval=POLL_INTERVAL,
                     )
             outcomes.append(_keep(directory, record, judge))
     return outcomes
@@ -183,10 +192,21 @@ async def fork(
             with _in_this_process(run_secrets):
                 async with _agent_process(command, env, agent, log):
                     records = await fork_run(
-                        fork=changes, parent=parent.record, open_parent=open_parent, run_id=child_id,
-                        scenario=scenario, agent=agent, reach=reach_for(agent, env=env), services=services,
-                        replier_for=ScriptedReplier, state_dir=state / RUNS, wire=routing, telemetry=telemetry,
-                        mounts=proxy, scorer=judge, poll_interval=POLL_INTERVAL,
+                        fork=changes,
+                        parent=parent.record,
+                        open_parent=open_parent,
+                        run_id=child_id,
+                        scenario=scenario,
+                        agent=agent,
+                        reach=reach_for(agent, env=env),
+                        services=services,
+                        replier_for=ScriptedReplier,
+                        state_dir=state / RUNS,
+                        wire=routing,
+                        telemetry=telemetry,
+                        mounts=proxy,
+                        scorer=judge,
+                        poll_interval=POLL_INTERVAL,
                     )
         finally:
             routing.apply(child_id, [])
@@ -241,7 +261,10 @@ class _Judge:
     def score(self, record: RunRecord, world: Store) -> RunResult:
         last = read_checkpoint(world)
         result = evaluate_run(
-            self._scenario, world.events(), record.wakes, world.replies(),
+            self._scenario,
+            world.events(),
+            record.wakes,
+            world.replies(),
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in world.calls() if call.provider is None],
         )
@@ -295,7 +318,9 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     manifests = {m.key: m for m in registry.manifests}
     unknown = sorted(named - set(manifests))
     if unknown:
-        raise RunRefused(f"no installed provider is named {', '.join(unknown)}; installed: {', '.join(sorted(manifests))}")
+        raise RunRefused(
+            f"no installed provider is named {', '.join(unknown)}; installed: {', '.join(sorted(manifests))}"
+        )
     providers: list[Provider] = [registry.provider(manifests[key]) for key in sorted(named)]
     pushes: dict[ProviderKey, PushesEvents] = {}
     tickets: dict[ProviderKey, HoldsTickets] = {}
@@ -327,8 +352,11 @@ def _agent_env(proxy: Proxy, run_secrets: Mapping[str, str]) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else."""
     ca = str(proxy.ca_cert)
     return {
-        "HTTPS_PROXY": proxy.url, "HTTP_PROXY": proxy.url, "NO_PROXY": "localhost,127.0.0.1",
-        **{name: ca for name in CA_VARIABLES}, **run_secrets,
+        "HTTPS_PROXY": proxy.url,
+        "HTTP_PROXY": proxy.url,
+        "NO_PROXY": "localhost,127.0.0.1",
+        **{name: ca for name in CA_VARIABLES},
+        **run_secrets,
     }
 
 
@@ -362,7 +390,10 @@ def _tail(log: Path) -> str:
 
 @asynccontextmanager
 async def _agent_process(
-    command: Sequence[str] | None, env: Mapping[str, str], agent: AgentUnderTest, log: Path,
+    command: Sequence[str] | None,
+    env: Mapping[str, str],
+    agent: AgentUnderTest,
+    log: Path,
 ) -> AsyncIterator[None]:
     if not command:
         yield
@@ -370,7 +401,11 @@ async def _agent_process(
     with log.open("ab") as out:
         try:
             process = await asyncio.create_subprocess_exec(
-                *command, env={**os.environ, **env}, stdin=asyncio.subprocess.DEVNULL, stdout=out, stderr=out,
+                *command,
+                env={**os.environ, **env},
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=out,
+                stderr=out,
             )
         except OSError as e:
             raise RunRefused(f"the agent's command {command[0]} could not be started: {e}") from e
@@ -380,7 +415,9 @@ async def _agent_process(
                 await _until_listening(process, url, log)
             yield
             if process.returncode is not None:
-                raise AgentExited(f"the agent's command exited {process.returncode} before the run ended:\n{_tail(log)}")
+                raise AgentExited(
+                    f"the agent's command exited {process.returncode} before the run ended:\n{_tail(log)}"
+                )
         finally:
             if process.returncode is None:
                 process.terminate()
@@ -399,14 +436,17 @@ async def _until_listening(process: asyncio.subprocess.Process, url: str, log: P
     give_up = loop.time() + LISTEN_TIMEOUT
     while True:
         if process.returncode is not None:
-            raise AgentExited(f"the agent's command exited {process.returncode} before {url} accepted connections:\n"
-                              f"{_tail(log)}")
+            raise AgentExited(
+                f"the agent's command exited {process.returncode} before {url} accepted connections:\n{_tail(log)}"
+            )
         try:
             _, writer = await asyncio.open_connection(host, port)
         except OSError:
             if loop.time() > give_up:
-                raise AgentExited(f"the agent's command did not accept connections on {url} within "
-                                  f"{LISTEN_TIMEOUT:.0f}s:\n{_tail(log)}") from None
+                raise AgentExited(
+                    f"the agent's command did not accept connections on {url} within "
+                    f"{LISTEN_TIMEOUT:.0f}s:\n{_tail(log)}"
+                ) from None
             await asyncio.sleep(0.05)
             continue
         writer.close()

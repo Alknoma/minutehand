@@ -11,7 +11,7 @@ wall time by the port, so the SDK stamps them when they open and close.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from opentelemetry._logs import Logger, LoggerProvider, SeverityNumber
 from opentelemetry.context import Context
@@ -49,7 +49,7 @@ SCOPE = "minutehand"
 ENDPOINT_VARIABLE = "OTEL_EXPORTER_OTLP_ENDPOINT"
 BODIES_VARIABLE = "MINUTEHAND_EXPORT_BODIES"
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _NANOSECOND_PER_MICROSECOND = 1000
 _PROPAGATOR = TraceContextTextMapPropagator()
 _NOT_A_CHANGE = frozenset({Operation.READ, Operation.SEARCH})
@@ -101,7 +101,9 @@ class OtelTelemetry:
         self._export_bodies = export_bodies
 
         meter = meter_provider.get_meter(SCOPE)
-        self._findings = meter.create_counter("minutehand.findings", unit="{finding}", description="Findings by check and kind")
+        self._findings = meter.create_counter(
+            "minutehand.findings", unit="{finding}", description="Findings by check and kind"
+        )
         self._wakes = meter.create_counter(
             "minutehand.wakes", unit="{wake}", description="Wakes, by whether the agent changed the world in them"
         )
@@ -114,8 +116,12 @@ class OtelTelemetry:
         self._follow_ups_late = meter.create_histogram(
             "minutehand.follow_ups_late", unit="{follow_up}", description="Follow-ups made after their wait expired"
         )
-        self._run_sim = meter.create_histogram("minutehand.run.sim_seconds", unit="s", description="Simulated length of a run")
-        self._run_wall = meter.create_histogram("minutehand.run.wall_seconds", unit="s", description="Real length of a run")
+        self._run_sim = meter.create_histogram(
+            "minutehand.run.sim_seconds", unit="s", description="Simulated length of a run"
+        )
+        self._run_wall = meter.create_histogram(
+            "minutehand.run.wall_seconds", unit="s", description="Real length of a run"
+        )
 
         self._run: Span | None = None
         self._wake_spans: dict[int, Span] = {}
@@ -241,7 +247,9 @@ class OtelTelemetry:
             span.end()
         self._wake_spans.clear()
         if self._run is not None:
-            self._run.set_attributes({"minutehand.stop": record.stop.value, "minutehand.wall_seconds": record.wall_seconds})
+            self._run.set_attributes(
+                {"minutehand.stop": record.stop.value, "minutehand.wall_seconds": record.wall_seconds}
+            )
             self._run.end()
             self._run = None
         self.flush()
@@ -279,5 +287,7 @@ def from_environment() -> OtelTelemetry:
 
     tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
-    meter_provider = SdkMeterProvider(resource=resource, metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter())])
+    meter_provider = SdkMeterProvider(
+        resource=resource, metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter())]
+    )
     return OtelTelemetry(tracer_provider, logger_provider, meter_provider, export_bodies=export_bodies)

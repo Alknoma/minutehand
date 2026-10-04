@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -18,7 +18,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, Scenario, SeededTicket, TicketState
 
-START = datetime(2026, 8, 24, 10, 50, 3, 250000, tzinfo=timezone.utc)
+START = datetime(2026, 8, 24, 10, 50, 3, 250000, tzinfo=UTC)
 TOKEN = "simulated-personal-access-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
@@ -34,8 +34,9 @@ SCENARIO = Scenario(
     ],
     tickets=[
         SeededTicket(provider="asana", project="Venue Move", title="Book the freight lift", assignee="tomas"),
-        SeededTicket(provider="asana", project="Venue Move", title="Return the old keys", assignee="noor",
-                     state=TicketState.DONE),
+        SeededTicket(
+            provider="asana", project="Venue Move", title="Return the old keys", assignee="noor", state=TicketState.DONE
+        ),
         SeededTicket(provider="asana", project="Catering", title="Confirm the menu", body="Vegetarian count first."),
         SeededTicket(provider="tracker", project="Elsewhere", title="Not an asana ticket"),
     ],
@@ -68,8 +69,9 @@ def workspace(tmp_path: Path) -> Workspace:
 
 
 def client_for(provider: AsanaProvider, store: SqliteStore, clock: RunClock) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=provider.app(store, clock)),
-                             base_url="https://app.asana.com", headers=AUTH)
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=provider.app(store, clock)), base_url="https://app.asana.com", headers=AUTH
+    )
 
 
 @pytest.fixture

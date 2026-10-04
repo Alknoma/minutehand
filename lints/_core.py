@@ -35,7 +35,7 @@ PACKAGE = "minutehand"
 SKIPPED_PARTS = frozenset({"__pycache__", "tests", ".venv"})
 """Path components, relative to the scan root, that put a file outside a scan."""
 
-REASON_LEADERS = " \t:—–-"
+REASON_LEADERS = " \t:—–-"  # noqa: RUF001 - the dashes a reason may follow, on purpose
 """Punctuation a reason may be introduced with after the marker."""
 
 

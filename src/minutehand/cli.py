@@ -55,8 +55,12 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     def state(sub: argparse.ArgumentParser) -> None:
-        sub.add_argument("--state", type=Path, default=None,
-                         help=f"where runs are kept (default ${STATE_VARIABLE} or {DEFAULT_STATE})")
+        sub.add_argument(
+            "--state",
+            type=Path,
+            default=None,
+            help=f"where runs are kept (default ${STATE_VARIABLE} or {DEFAULT_STATE})",
+        )
 
     run = commands.add_parser("run", help="run a scenario against an agent")
     run.add_argument("scenario", type=Path)
@@ -87,7 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     command: list[str] | None = None
     if "--" in args_in:
         split = args_in.index("--")
-        args_in, command = args_in[:split], args_in[split + 1:]
+        args_in, command = args_in[:split], args_in[split + 1 :]
         if not command:
             print("minutehand: nothing follows --; give the agent's command or leave -- out", file=sys.stderr)
             return 2
@@ -111,7 +115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _telemetry() -> OtelTelemetry | None:
     """OTLP export when its endpoint is set; otherwise none, rather than spans with nowhere to go."""
-    return from_environment() if ENDPOINT_VARIABLE in os.environ and os.environ[ENDPOINT_VARIABLE] else None
+    return from_environment() if os.environ.get(ENDPOINT_VARIABLE) else None
 
 
 def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
@@ -119,8 +123,9 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
     agent = load_agent(args.agent)
     telemetry = _telemetry()
     try:
-        outcomes = asyncio.run(session.play(scenario, agent, state=state, samples=args.samples, command=command,
-                                            telemetry=telemetry))
+        outcomes = asyncio.run(
+            session.play(scenario, agent, state=state, samples=args.samples, command=command, telemetry=telemetry)
+        )
     finally:
         if telemetry is not None:
             telemetry.shutdown()

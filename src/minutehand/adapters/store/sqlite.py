@@ -10,26 +10,37 @@ from __future__ import annotations
 import functools
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Concatenate
+from typing import Concatenate
 
 from pydantic import TypeAdapter
 
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
 from minutehand.domain.world import (
-    Actor, Change, EntityKind, EntityRef, Exchange, Operation, RecordedCall, Snapshot, Stored, WorldEvent,
+    Actor,
+    Change,
+    EntityKind,
+    EntityRef,
+    Exchange,
+    Operation,
+    RecordedCall,
+    Snapshot,
+    Stored,
+    WorldEvent,
 )
 from minutehand.ports.clock import Clock
 
 _SNAPSHOT = TypeAdapter(Snapshot)
 
-def _locked[**P, R](method: Callable[Concatenate["SqliteStore", P], R]) -> Callable[Concatenate["SqliteStore", P], R]:
+
+def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callable[Concatenate[SqliteStore, P], R]:
     """Run a store method under the store's lock, so it is safe from any thread."""
 
     @functools.wraps(method)
-    def inner(self: "SqliteStore", *args: P.args, **kwargs: P.kwargs) -> R:
+    def inner(self: SqliteStore, *args: P.args, **kwargs: P.kwargs) -> R:
         with self._lock:
             return method(self, *args, **kwargs)
 
@@ -81,7 +92,9 @@ class SqliteStore:
             )
         self._db.executescript(_SCHEMA)
         self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        self._db.execute("INSERT OR IGNORE INTO run(run_id, parent, forked_at, forked_calls) VALUES(?, NULL, NULL, NULL)", (run_id,))
+        self._db.execute(
+            "INSERT OR IGNORE INTO run(run_id, parent, forked_at, forked_calls) VALUES(?, NULL, NULL, NULL)", (run_id,)
+        )
         self._db.commit()
         self._lineage = self._load_lineage()
 
@@ -121,24 +134,49 @@ class SqliteStore:
     def apply(self, change: Change) -> WorldEvent:
         seq = self.head() + 1
         sim = self._clock.now()
-        wall = datetime.now(timezone.utc)  # clock-lint: exempt wall_time is the one field that records the machine clock
+        wall = datetime.now(UTC)  # clock-lint: exempt wall_time is the one field that records the machine clock
         ref = change.entity
         self._db.execute(
             "INSERT INTO event VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (self.run_id, seq, self._clock.wake(), sim.isoformat(), wall.isoformat(), change.actor.value,
-             change.operation.value, ref.provider, ref.kind.value, ref.external_id,
-             _SNAPSHOT.dump_json(change.after).decode() if change.after is not None else None),
+            (
+                self.run_id,
+                seq,
+                self._clock.wake(),
+                sim.isoformat(),
+                wall.isoformat(),
+                change.actor.value,
+                change.operation.value,
+                ref.provider,
+                ref.kind.value,
+                ref.external_id,
+                _SNAPSHOT.dump_json(change.after).decode() if change.after is not None else None,
+            ),
         )
         if change.operation is Operation.DELETE or change.body is not None:
             self._db.execute(
                 "INSERT INTO entity_version VALUES(?,?,?,?,?,?,?,?)",
-                (self.run_id, seq, ref.provider, ref.kind.value, ref.external_id, change.parent,
-                 None if change.operation is Operation.DELETE else change.body, sim.isoformat()),
+                (
+                    self.run_id,
+                    seq,
+                    ref.provider,
+                    ref.kind.value,
+                    ref.external_id,
+                    change.parent,
+                    None if change.operation is Operation.DELETE else change.body,
+                    sim.isoformat(),
+                ),
             )
         self._db.commit()
         return WorldEvent(
-            seq=seq, run_id=self.run_id, wake=self._clock.wake(), sim_time=sim, wall_time=wall,
-            actor=change.actor, operation=change.operation, entity=ref, after=change.after,
+            seq=seq,
+            run_id=self.run_id,
+            wake=self._clock.wake(),
+            sim_time=sim,
+            wall_time=wall,
+            actor=change.actor,
+            operation=change.operation,
+            entity=ref,
+            after=change.after,
         )
 
     @_locked
@@ -172,8 +210,13 @@ class SqliteStore:
             [provider, kind.value, parent, after or "", *mine_args, *newer_args, limit],
         ).fetchall()
         return [
-            Stored(entity=EntityRef(provider=provider, kind=kind, external_id=r[0]), body=r[1], parent=r[2], seq=r[3],
-                   sim_time=datetime.fromisoformat(r[4]))
+            Stored(
+                entity=EntityRef(provider=provider, kind=kind, external_id=r[0]),
+                body=r[1],
+                parent=r[2],
+                seq=r[3],
+                sim_time=datetime.fromisoformat(r[4]),
+            )
             for r in rows
         ]
 
@@ -191,8 +234,13 @@ class SqliteStore:
                 attached[seq] = call.exchange
         return [
             WorldEvent(
-                seq=r[1], run_id=r[0], wake=r[2], sim_time=datetime.fromisoformat(r[3]),
-                wall_time=datetime.fromisoformat(r[4]), actor=Actor(r[5]), operation=Operation(r[6]),
+                seq=r[1],
+                run_id=r[0],
+                wake=r[2],
+                sim_time=datetime.fromisoformat(r[3]),
+                wall_time=datetime.fromisoformat(r[4]),
+                actor=Actor(r[5]),
+                operation=Operation(r[6]),
                 entity=EntityRef(provider=r[7], kind=EntityKind(r[8]), external_id=r[9]),
                 after=_SNAPSHOT.validate_json(r[10]) if r[10] is not None else None,
                 exchange=attached.get(r[1]),
@@ -205,8 +253,16 @@ class SqliteStore:
         position = self._db.execute("SELECT COUNT(*) FROM exchange WHERE run_id=?", (self.run_id,)).fetchone()[0]
         self._db.execute(
             "INSERT INTO exchange VALUES(?,?,?,?,?,?,?,?)",
-            (self.run_id, position, first_seq, last_seq, provider, self._clock.wake(),
-             self._clock.now().isoformat(), exchange.model_dump_json()),
+            (
+                self.run_id,
+                position,
+                first_seq,
+                last_seq,
+                provider,
+                self._clock.wake(),
+                self._clock.now().isoformat(),
+                exchange.model_dump_json(),
+            ),
         )
         self._db.commit()
 
@@ -231,8 +287,14 @@ class SqliteStore:
             parts.append(clause)
         rows = self._db.execute(" UNION ALL ".join(parts) + " ORDER BY depth DESC, position", args).fetchall()
         return [
-            RecordedCall(exchange=Exchange.model_validate_json(r[8]), provider=r[5], first_seq=r[3], last_seq=r[4],
-                         wake=r[6], sim_time=datetime.fromisoformat(r[7]))
+            RecordedCall(
+                exchange=Exchange.model_validate_json(r[8]),
+                provider=r[5],
+                first_seq=r[3],
+                last_seq=r[4],
+                wake=r[6],
+                sim_time=datetime.fromisoformat(r[7]),
+            )
             for r in rows
         ]
 
@@ -248,7 +310,7 @@ class SqliteStore:
         return [PersonReply.model_validate_json(r[0]) for r in rows]
 
     @_locked
-    def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> "SqliteStore":
+    def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> SqliteStore:
         if not 0 <= at_seq <= self.head():
             raise ValueError(f"cannot fork at {at_seq}: this run's head is {self.head()}")
         recorded = self._db.execute(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -26,8 +26,8 @@ from minutehand.domain.scenario import Person, Scenario
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Exchange, Operation, TicketSnapshot, WorldEvent
 from minutehand.ports.telemetry import Telemetry
 
-START = datetime(2026, 8, 24, 10, 50, 3, tzinfo=timezone.utc)
-WALL = datetime(2026, 10, 4, 9, 0, 0, 123456, tzinfo=timezone.utc)
+START = datetime(2026, 8, 24, 10, 50, 3, tzinfo=UTC)
+WALL = datetime(2026, 10, 4, 9, 0, 0, 123456, tzinfo=UTC)
 CALLER_TRACE = "0af7651916cd43dd8448eb211c80319c"
 CALLER_SPAN = "b7ad6b7169203331"
 TRACEPARENT = f"00-{CALLER_TRACE}-{CALLER_SPAN}-01"
@@ -63,7 +63,11 @@ class Exported:
         return list(self.logs.get_finished_logs())
 
     def sums(self, metric: str) -> dict[frozenset[tuple[str, object]], float]:
-        return {frozenset((p.attributes or {}).items()): p.value for p in self._points(metric) if isinstance(p, NumberDataPoint)}
+        return {
+            frozenset((p.attributes or {}).items()): p.value
+            for p in self._points(metric)
+            if isinstance(p, NumberDataPoint)
+        }
 
     def histogram(self, metric: str) -> HistogramDataPoint:
         points = [p for p in self._points(metric) if isinstance(p, HistogramDataPoint)]
@@ -182,7 +186,9 @@ def test_run_wake_and_event_spans_carry_their_names_and_attributes(exported: Exp
     assert span.attributes["minutehand.actor"] == "agent"
 
 
-def test_an_event_span_is_stamped_with_wall_time_and_carries_simulated_time_as_two_attributes(exported: Exported) -> None:
+def test_an_event_span_is_stamped_with_wall_time_and_carries_simulated_time_as_two_attributes(
+    exported: Exported,
+) -> None:
     in_one_wake(exported, event(3))
 
     span = exported.span("asana create ticket")
@@ -215,7 +221,9 @@ def test_an_event_with_a_traceparent_joins_the_callers_trace_and_links_to_the_wa
     [None, "not-a-traceparent", f"00-{'0' * 32}-{CALLER_SPAN}-01", f"00-{CALLER_TRACE}-{CALLER_SPAN}"],
     ids=["absent", "garbage", "zero-trace-id", "missing-flags"],
 )
-def test_an_event_without_a_valid_traceparent_is_a_child_of_the_wake(exported: Exported, traceparent: str | None) -> None:
+def test_an_event_without_a_valid_traceparent_is_a_child_of_the_wake(
+    exported: Exported, traceparent: str | None
+) -> None:
     in_one_wake(exported, event(1, traceparent=traceparent))
 
     span = exported.span("asana create ticket")
@@ -292,7 +300,9 @@ def test_a_finding_is_a_log_record_in_the_trace_of_its_first_evidence(exported: 
 
     [log] = exported.finding_logs()
     evidence = next(
-        s for s in exported.spans.get_finished_spans() if s.attributes is not None and s.attributes["minutehand.seq"] == 2
+        s
+        for s in exported.spans.get_finished_spans()
+        if s.attributes is not None and s.attributes["minutehand.seq"] == 2
     )
     assert evidence.context is not None
     assert log.log_record.trace_id == evidence.context.trace_id
@@ -318,7 +328,11 @@ def test_a_finding_without_known_evidence_carries_no_trace_context(exported: Exp
 
 @pytest.mark.parametrize(
     ("severity", "number"),
-    [(Severity.ERROR, SeverityNumber.ERROR), (Severity.WARNING, SeverityNumber.WARN), (Severity.INFORMATION, SeverityNumber.INFO)],
+    [
+        (Severity.ERROR, SeverityNumber.ERROR),
+        (Severity.WARNING, SeverityNumber.WARN),
+        (Severity.INFORMATION, SeverityNumber.INFO),
+    ],
 )
 def test_a_findings_severity_maps_to_otel(exported: Exported, severity: Severity, number: SeverityNumber) -> None:
     exported.telemetry.found(finding([], severity))
@@ -351,9 +365,17 @@ def test_metrics_after_a_small_scripted_run(exported: Exported) -> None:
     t.run_ended(
         record(3),
         Effectiveness(
-            expectations_met=3, expectations_total=4, waits_opened=12, waits_open_at_end=5,
-            follow_ups_due=3, follow_ups_made=3, follow_ups_late=1,
-            time_lost=timedelta(days=1, hours=8, minutes=43), wakes=3, idle_wakes=1, failed_checks=5,
+            expectations_met=3,
+            expectations_total=4,
+            waits_opened=12,
+            waits_open_at_end=5,
+            follow_ups_due=3,
+            follow_ups_made=3,
+            follow_ups_late=1,
+            time_lost=timedelta(days=1, hours=8, minutes=43),
+            wakes=3,
+            idle_wakes=1,
+            failed_checks=5,
         ),
     )
 
@@ -382,13 +404,13 @@ def test_a_run_without_a_scorecard_still_records_its_length(exported: Exported) 
 class _Collector(BaseHTTPRequestHandler):
     paths: list[str] = []
 
-    def do_POST(self) -> None:  # noqa: N802 - http.server's naming
+    def do_POST(self) -> None:
         self.rfile.read(int(self.headers["Content-Length"] or 0))
         type(self).paths.append(self.path)
         self.send_response(200)
         self.end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - http.server's signature
+    def log_message(self, format: str, *args: object) -> None:
         return
 
 

@@ -30,7 +30,9 @@ class YouTrackProvider:
         issue, project = _located(youtrack, ticket)
         if issue.assignee is None:
             raise ValueError(f"{issue.idReadable} has no assignee to move it")
-        moved = youtrack.moved(issue, project, youtrack.state_for(project, to), by=issue.assignee, at=millis(clock.now()))
+        moved = youtrack.moved(
+            issue, project, youtrack.state_for(project, to), by=issue.assignee, at=millis(clock.now())
+        )
         youtrack.update_issue(moved, actor=Actor.PERSON)
 
     def edit(

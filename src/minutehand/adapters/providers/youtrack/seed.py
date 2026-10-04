@@ -54,14 +54,25 @@ def short_name(name: str, taken: set[str]) -> str:
 
 def project(index: int, name: str, key: str, *, leader: str, team: list[str]) -> wire.StoredProject:
     states = [
-        wire.StoredState(id=f"62-{index * len(_STATES) + n}", name=label, isResolved=resolved, ordinal=n, outcome=outcome)
+        wire.StoredState(
+            id=f"62-{index * len(_STATES) + n}", name=label, isResolved=resolved, ordinal=n, outcome=outcome
+        )
         for n, (label, resolved, outcome) in enumerate(_STATES)
     ]
     return wire.StoredProject(
-        id=f"0-{index}", shortName=key, name=name, leader=leader, team=team,
-        stateField=f"92-{2 * index + 1}", stateFieldDefinition=STATE_DEFINITION, stateBundle=f"60-{index}",
-        states=states, assigneeField=f"92-{2 * index + 2}", assigneeFieldDefinition=ASSIGNEE_DEFINITION,
-        assigneeBundle=f"61-{index}", teamGroup=f"3-{index}",
+        id=f"0-{index}",
+        shortName=key,
+        name=name,
+        leader=leader,
+        team=team,
+        stateField=f"92-{2 * index + 1}",
+        stateFieldDefinition=STATE_DEFINITION,
+        stateBundle=f"60-{index}",
+        states=states,
+        assigneeField=f"92-{2 * index + 2}",
+        assigneeFieldDefinition=ASSIGNEE_DEFINITION,
+        assigneeBundle=f"61-{index}",
+        teamGroup=f"3-{index}",
     )
 
 
@@ -89,9 +100,21 @@ def seed(scenario: Scenario, world: Store) -> None:
         home = projects[ticket.project]
         number = youtrack.next_number(home.id)
         settled = youtrack.state_for(home, ticket.state)
-        youtrack.create_issue(wire.StoredIssue(
-            id=youtrack.next_id(2), idReadable=f"{home.shortName}-{number}", numberInProject=number,
-            project=home.id, summary=ticket.title, description=ticket.body or None, reporter=reporter,
-            updater=reporter, created=at, updated=at, resolved=at if settled.isResolved else None,
-            state=settled.id, assignee=people[ticket.assignee].id if ticket.assignee is not None else None,
-        ), actor=Actor.SCENARIO)
+        youtrack.create_issue(
+            wire.StoredIssue(
+                id=youtrack.next_id(2),
+                idReadable=f"{home.shortName}-{number}",
+                numberInProject=number,
+                project=home.id,
+                summary=ticket.title,
+                description=ticket.body or None,
+                reporter=reporter,
+                updater=reporter,
+                created=at,
+                updated=at,
+                resolved=at if settled.isResolved else None,
+                state=settled.id,
+                assignee=people[ticket.assignee].id if ticket.assignee is not None else None,
+            ),
+            actor=Actor.SCENARIO,
+        )

@@ -11,11 +11,11 @@ from minutehand.domain.scenario import Model
 
 
 class StopReason(StrEnum):
-    AGENT_DONE = "agent_done"            # the agent reported it had finished
-    WAKE_LIMIT = "wake_limit"            # Scenario.max_wakes reached
+    AGENT_DONE = "agent_done"  # the agent reported it had finished
+    WAKE_LIMIT = "wake_limit"  # Scenario.max_wakes reached
     DEADLINE_PASSED = "deadline_passed"  # the clock passed the scenario's deadline
     NOTHING_PENDING = "nothing_pending"  # nothing is due and the agent named no next wake: it is stuck
-    AGENT_FAILED = "agent_failed"        # the agent could not be reached or answered with an error
+    AGENT_FAILED = "agent_failed"  # the agent could not be reached or answered with an error
 
 
 class RunRecord(Model):

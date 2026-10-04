@@ -41,8 +41,10 @@ _Loader.add_implicit_resolver(
 )
 _Loader.add_implicit_resolver(
     _FLOAT,
-    re.compile(r"^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9_]+(?:[eE][-+][0-9]+)?"
-               r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"),
+    re.compile(
+        r"^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9_]+(?:[eE][-+][0-9]+)?"
+        r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"
+    ),
     list("-+0123456789."),
 )
 
@@ -83,7 +85,7 @@ def _read(path: Path, model: type[BaseModel]) -> object:
     suffix = path.suffix.lower()
     try:
         if suffix in (".yaml", ".yml"):
-            raw: object = yaml.load(text, Loader=_Loader)  # noqa: S506 - _Loader is a SafeLoader
+            raw: object = yaml.load(text, Loader=_Loader)
         elif suffix == ".json":
             raw = json.loads(text)
         else:

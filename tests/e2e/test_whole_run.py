@@ -13,12 +13,26 @@ from minutehand.domain.checks import FindingKind, Stability
 from minutehand.domain.run import StopReason
 from minutehand.domain.world import Actor
 from tests.e2e.support import (
-    ANSWER, FOLLOW_UP, OWNER, QUESTION, SOFIA, T0, THANKS, NEVER_EXPECTED_TO_ANSWER, agent_under_test, answers, messages,
-    scenario, texts, world,
+    ANSWER,
+    FOLLOW_UP,
+    NEVER_EXPECTED_TO_ANSWER,
+    OWNER,
+    QUESTION,
+    SOFIA,
+    T0,
+    THANKS,
+    agent_under_test,
+    answers,
+    messages,
+    scenario,
+    texts,
+    world,
 )
 
 
-async def test_a_diligent_agent_and_a_person_who_answers_in_36_hours(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_diligent_agent_and_a_person_who_answers_in_36_hours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     launched = agent_under_test(tmp_path, monkeypatch, "diligent")
     scn = scenario(answers(after=timedelta(hours=36)))
 
@@ -41,8 +55,11 @@ async def test_a_diligent_agent_and_a_person_who_answers_in_36_hours(tmp_path: P
     # Every Slack call the agent made reached the Slack fake through the proxy, and is in the log as the agent's.
     calls = store.calls()
     assert calls and {(c.provider, c.exchange.host) for c in calls} == {("slack", "slack.com")}
-    assert {c.exchange.path.split("?")[0] for c in calls} >= {"/api/users.lookupByEmail", "/api/conversations.open",
-                                                               "/api/chat.postMessage"}
+    assert {c.exchange.path.split("?")[0] for c in calls} >= {
+        "/api/users.lookupByEmail",
+        "/api/conversations.open",
+        "/api/chat.postMessage",
+    }
     called = [e for e in events if e.exchange is not None]
     assert called and {e.actor for e in called} == {Actor.AGENT}
     assert [e for e in events if e.actor is Actor.PERSON and e.exchange is not None] == []
@@ -51,7 +68,8 @@ async def test_a_diligent_agent_and_a_person_who_answers_in_36_hours(tmp_path: P
 
 
 async def test_a_diligent_agent_follows_up_when_the_answer_comes_after_its_follow_up_window(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     launched = agent_under_test(tmp_path, monkeypatch, "diligent")
     scn = scenario(answers(after=timedelta(hours=60)))
@@ -69,7 +87,8 @@ async def test_a_diligent_agent_follows_up_when_the_answer_comes_after_its_follo
 
 
 async def test_an_agent_that_takes_its_goal_from_a_slack_dm_needs_no_wake_endpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     launched = agent_under_test(tmp_path, monkeypatch, "slack_only", by_message=True)
     scn = scenario(answers(after=timedelta(hours=36)), owner=NEVER_EXPECTED_TO_ANSWER)
@@ -91,7 +110,8 @@ async def test_an_agent_that_takes_its_goal_from_a_slack_dm_needs_no_wake_endpoi
 
 
 async def test_two_samples_are_two_runs_through_one_proxy_each_from_the_agents_first_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     launched = agent_under_test(tmp_path, monkeypatch, "diligent", hooks=True)
     scn = scenario(answers(after=timedelta(hours=36)))

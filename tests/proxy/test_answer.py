@@ -9,10 +9,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from minutehand.adapters.proxy.policy import Routing
-from minutehand.adapters.proxy.registry import Registry
 import pytest
 
+from minutehand.adapters.proxy.policy import Routing
+from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy, ProxyRunning
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
@@ -49,8 +49,9 @@ class RecordingTelemetry:
         raise AssertionError("the proxy never ends a run")
 
 
-async def test_port_zero_reports_the_bound_port(registry: Registry, store: SqliteStore, clock: RunClock,
-                                                tmp_path: Path) -> None:
+async def test_port_zero_reports_the_bound_port(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path
+) -> None:
     async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca", port=0) as proxy:
         assert proxy.port > 0
         assert proxy.ca_cert.is_file()
@@ -87,7 +88,10 @@ async def test_wildcard_host_is_answered_and_its_events_recorded(
     assert event.sim_time == START
     assert event.exchange is not None
     assert (event.exchange.host, event.exchange.path, event.exchange.status) == (
-        "acme.ledger.test", "/api/v2/entries", 201)
+        "acme.ledger.test",
+        "/api/v2/entries",
+        201,
+    )
     assert telemetry.events == [event]
 
 
@@ -131,15 +135,24 @@ async def test_exchange_keeps_traceparent_and_strips_credentials(
         "body": "body-secret-5",
         "form": "form-secret-6",
     }
-    headers = {"authorization": secrets["header"], "cookie": secrets["cookie"],
-               "x-api-key": secrets["api_key_header"], "traceparent": traceparent}
+    headers = {
+        "authorization": secrets["header"],
+        "cookie": secrets["cookie"],
+        "x-api-key": secrets["api_key_header"],
+        "traceparent": traceparent,
+    }
     async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
         async with client(proxy, proxy.ca_cert) as http:
-            created = await http.post(f"https://ledger.example/api/v2/entries?token={secrets['query']}&n=1",
-                                      json={"text": "hello", "api_key": secrets["body"]}, headers=headers)
-            seen = await http.post(f"https://ledger.example/api/v2/whoami?token={secrets['query']}",
-                                   content=f"token={secrets['form']}&channel=C1",
-                                   headers={**headers, "content-type": "application/x-www-form-urlencoded"})
+            created = await http.post(
+                f"https://ledger.example/api/v2/entries?token={secrets['query']}&n=1",
+                json={"text": "hello", "api_key": secrets["body"]},
+                headers=headers,
+            )
+            seen = await http.post(
+                f"https://ledger.example/api/v2/whoami?token={secrets['query']}",
+                content=f"token={secrets['form']}&channel=C1",
+                headers={**headers, "content-type": "application/x-www-form-urlencoded"},
+            )
             whoami = await http.get("https://ledger.example/api/v2/whoami", headers=headers)
     assert created.status_code == 201
     assert seen.status_code == 405  # the route is GET only; the call is recorded all the same
@@ -167,8 +180,12 @@ async def test_a_client_configured_only_by_environment_is_answered(
         env |= {"HTTPS_PROXY": proxy.url, "SSL_CERT_FILE": str(proxy.ca_cert)}
         program = "import httpx; r = httpx.get('https://ledger.example/api/v2/whoami'); print(r.status_code, r.text)"
         child = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", program, env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            sys.executable,
+            "-c",
+            program,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         out, err = await asyncio.wait_for(child.communicate(), timeout=30)
     assert child.returncode == 0, err.decode()

@@ -27,15 +27,15 @@ import sys as _sys
 # If this program has not started listening after 15 seconds, say where it is stuck.
 faulthandler.dump_traceback_later(15, exit=False, file=_sys.stderr)
 
-import json  # noqa: E402
+import json
 import os
 import shutil
+import socketserver
 import sys
 import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
-import socketserver  # noqa: E402
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -77,8 +77,15 @@ class Agent:
     def load(self) -> dict[str, object]:
         if self.state.exists():
             return json.loads(self.state.read_text())
-        return {"goal": None, "follow_ups": 0, "answer": None, "status": "idle", "next_wake": None,
-                "verified": [], "rejected": 0}
+        return {
+            "goal": None,
+            "follow_ups": 0,
+            "answer": None,
+            "status": "idle",
+            "next_wake": None,
+            "verified": [],
+            "rejected": 0,
+        }
 
     def save(self, state: dict[str, object]) -> None:
         self.state.parent.mkdir(parents=True, exist_ok=True)
@@ -152,7 +159,11 @@ class Agent:
             self.dm(env("OWNER_EMAIL"), f"Thanks: the pricing is confirmed ({event['text']}).")
             state["status"] = "done"
             state["next_wake"] = None
-        elif self.behaviour == "slack_only" and state["goal"] is None and event["user"] == self.user_id(env("OWNER_EMAIL")):
+        elif (
+            self.behaviour == "slack_only"
+            and state["goal"] is None
+            and event["user"] == self.user_id(env("OWNER_EMAIL"))
+        ):
             self.take_goal(state, event["text"], when)
         self.save(state)
         return True

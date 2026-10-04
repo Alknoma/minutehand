@@ -27,7 +27,14 @@ from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
 from minutehand.domain.scenario import Model, ProviderKey, Scenario, TicketState
 from minutehand.domain.world import (
-    Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, RecordSnapshot, TicketSnapshot,
+    Actor,
+    Change,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    RecordSnapshot,
+    TicketSnapshot,
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp, Wakes
@@ -61,7 +68,10 @@ class BookingIn(Model):
 
 class Chat:
     manifest = Manifest(
-        key=CHAT, tier=Tier.FINISHED, hosts=["chat.test"], kinds=[EntityKind.MESSAGE, EntityKind.TICKET],
+        key=CHAT,
+        tier=Tier.FINISHED,
+        hosts=["chat.test"],
+        kinds=[EntityKind.MESSAGE, EntityKind.TICKET],
         pushes_events=True,
     )
 
@@ -72,25 +82,38 @@ class Chat:
         async def post_message(request: Request) -> Response:
             sent = MessageIn.model_validate_json(await request.body())
             ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=f"m{world.head() + 1}")
-            world.apply(Change(
-                entity=ref, operation=Operation.CREATE, actor=Actor.AGENT, parent=sent.to,
-                body=json.dumps({"to": sent.to, "text": sent.text}),
-                after=MessageSnapshot(text=sent.text, channel=f"dm:{sent.to}", recipient_emails=[sent.to]),
-            ))
+            world.apply(
+                Change(
+                    entity=ref,
+                    operation=Operation.CREATE,
+                    actor=Actor.AGENT,
+                    parent=sent.to,
+                    body=json.dumps({"to": sent.to, "text": sent.text}),
+                    after=MessageSnapshot(text=sent.text, channel=f"dm:{sent.to}", recipient_emails=[sent.to]),
+                )
+            )
             return JSONResponse({"id": ref.external_id})
 
         async def inbox(request: Request) -> Response:
-            return Response("[" + ",".join(s.body for s in world.children(CHAT, EntityKind.MESSAGE, INBOX)) + "]",
-                            media_type="application/json")
+            return Response(
+                "[" + ",".join(s.body for s in world.children(CHAT, EntityKind.MESSAGE, INBOX)) + "]",
+                media_type="application/json",
+            )
 
         async def post_ticket(request: Request) -> Response:
             filed = TicketIn.model_validate_json(await request.body())
             ref = EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id=f"t{world.head() + 1}")
             body = TicketBody(title=filed.title, assignee=filed.assignee, state=TicketState.OPEN)
-            world.apply(Change(
-                entity=ref, operation=Operation.CREATE, actor=Actor.AGENT, parent="P", body=body.model_dump_json(),
-                after=TicketSnapshot(title=filed.title, project="P", assignee_email=filed.assignee),
-            ))
+            world.apply(
+                Change(
+                    entity=ref,
+                    operation=Operation.CREATE,
+                    actor=Actor.AGENT,
+                    parent="P",
+                    body=body.model_dump_json(),
+                    after=TicketSnapshot(title=filed.title, project="P", assignee_email=filed.assignee),
+                )
+            )
             return JSONResponse({"id": ref.external_id})
 
         async def get_ticket(request: Request) -> Response:
@@ -105,44 +128,64 @@ class Chat:
             self.pushed.append((await request.body()).decode())
             return JSONResponse({"ok": True})
 
-        return Starlette(routes=[
-            Route("/messages", post_message, methods=["POST"]),
-            Route("/inbox", inbox, methods=["GET"]),
-            Route("/tickets", post_ticket, methods=["POST"]),
-            Route("/tickets/{id}", get_ticket, methods=["GET"]),
-            Route("/pushed", pushed, methods=["POST"]),
-        ])
+        return Starlette(
+            routes=[
+                Route("/messages", post_message, methods=["POST"]),
+                Route("/inbox", inbox, methods=["GET"]),
+                Route("/tickets", post_ticket, methods=["POST"]),
+                Route("/tickets/{id}", get_ticket, methods=["GET"]),
+                Route("/pushed", pushed, methods=["POST"]),
+            ]
+        )
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         for n, seeded in enumerate(t for t in scenario.tickets if t.provider == CHAT):
             people = {p.key: p.email for p in scenario.people}
             email = people[seeded.assignee] if seeded.assignee else None
-            world.apply(Change(
-                entity=EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id=f"seed{n}"),
-                operation=Operation.CREATE, actor=Actor.SCENARIO, parent=seeded.project,
-                body=TicketBody(title=seeded.title, assignee=email, state=seeded.state).model_dump_json(),
-                after=TicketSnapshot(title=seeded.title, project=seeded.project, assignee_email=email,
-                                     state=seeded.state),
-            ))
+            world.apply(
+                Change(
+                    entity=EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id=f"seed{n}"),
+                    operation=Operation.CREATE,
+                    actor=Actor.SCENARIO,
+                    parent=seeded.project,
+                    body=TicketBody(title=seeded.title, assignee=email, state=seeded.state).model_dump_json(),
+                    after=TicketSnapshot(
+                        title=seeded.title, project=seeded.project, assignee_email=email, state=seeded.state
+                    ),
+                )
+            )
 
     async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None:
         ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=f"m{world.head() + 1}")
         body = json.dumps({"from": reply.person, "text": reply.text, "in_reply_to": reply.in_reply_to.external_id})
-        world.apply(Change(
-            entity=ref, operation=Operation.CREATE, actor=Actor.PERSON, parent=INBOX, body=body,
-            after=MessageSnapshot(text=reply.text, channel=f"dm:{reply.person}",
-                                  thread_of=reply.in_reply_to.external_id),
-        ))
+        world.apply(
+            Change(
+                entity=ref,
+                operation=Operation.CREATE,
+                actor=Actor.PERSON,
+                parent=INBOX,
+                body=body,
+                after=MessageSnapshot(
+                    text=reply.text, channel=f"dm:{reply.person}", thread_of=reply.in_reply_to.external_id
+                ),
+            )
+        )
         async with httpx.AsyncClient() as client:
             (await client.post(target.url, content=body)).raise_for_status()
 
     async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
         ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=f"m{world.head() + 1}")
         body = json.dumps({"from": message.person, "text": message.text})
-        world.apply(Change(
-            entity=ref, operation=Operation.CREATE, actor=Actor.PERSON, parent=INBOX, body=body,
-            after=MessageSnapshot(text=message.text, channel=f"dm:{message.person}"),
-        ))
+        world.apply(
+            Change(
+                entity=ref,
+                operation=Operation.CREATE,
+                actor=Actor.PERSON,
+                parent=INBOX,
+                body=body,
+                after=MessageSnapshot(text=message.text, channel=f"dm:{message.person}"),
+            )
+        )
         async with httpx.AsyncClient() as client:
             (await client.post(target.url, content=body)).raise_for_status()
 
@@ -162,15 +205,24 @@ class Chat:
             raise LookupError(f"no ticket {ticket.external_id}")
         was = TicketBody.model_validate_json(stored.body)
         now = TicketBody(title=was.title, assignee=assignee_email or was.assignee, state=state or was.state)
-        world.apply(Change(
-            entity=ticket, operation=Operation.UPDATE, actor=actor, parent=stored.parent, body=now.model_dump_json(),
-            after=TicketSnapshot(title=now.title, project=stored.parent, assignee_email=now.assignee, state=now.state),
-        ))
+        world.apply(
+            Change(
+                entity=ticket,
+                operation=Operation.UPDATE,
+                actor=actor,
+                parent=stored.parent,
+                body=now.model_dump_json(),
+                after=TicketSnapshot(
+                    title=now.title, project=stored.parent, assignee_email=now.assignee, state=now.state
+                ),
+            )
+        )
 
 
 class Scheduler:
-    manifest = Manifest(key=SCHED, tier=Tier.FINISHED, hosts=["sched.test"], kinds=[EntityKind.RECORD],
-                        books_wakes=True)
+    manifest = Manifest(
+        key=SCHED, tier=Tier.FINISHED, hosts=["sched.test"], kinds=[EntityKind.RECORD], books_wakes=True
+    )
 
     def __init__(self) -> None:
         self.fired: list[tuple[str, datetime]] = []
@@ -187,35 +239,50 @@ class Scheduler:
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         async def book(request: Request) -> Response:
             booking = BookingIn.model_validate_json(await request.body())
-            world.apply(Change(
-                entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=booking.ref),
-                operation=Operation.CREATE, actor=Actor.AGENT, body=booking.model_dump_json(),
-                after=RecordSnapshot(resource="schedules", text=booking.ref),
-            ))
+            world.apply(
+                Change(
+                    entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=booking.ref),
+                    operation=Operation.CREATE,
+                    actor=Actor.AGENT,
+                    body=booking.model_dump_json(),
+                    after=RecordSnapshot(resource="schedules", text=booking.ref),
+                )
+            )
             self._bound().book(Due(at=booking.at, kind=DueKind.AGENT_WAKE, ref=booking.ref))
             return JSONResponse({"ok": True})
 
         async def cancel(request: Request) -> Response:
             ref = request.path_params["ref"]
-            world.apply(Change(entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=ref),
-                               operation=Operation.DELETE, actor=Actor.AGENT))
+            world.apply(
+                Change(
+                    entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=ref),
+                    operation=Operation.DELETE,
+                    actor=Actor.AGENT,
+                )
+            )
             self._bound().cancel(ref)
             return JSONResponse({"ok": True})
 
-        return Starlette(routes=[
-            Route("/schedules", book, methods=["POST"]),
-            Route("/schedules/{ref}", cancel, methods=["DELETE"]),
-        ])
+        return Starlette(
+            routes=[
+                Route("/schedules", book, methods=["POST"]),
+                Route("/schedules/{ref}", cancel, methods=["DELETE"]),
+            ]
+        )
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scheduler starts with no bookings: a scenario has nothing to seed here."""
 
     async def fire(self, ref: str, world: Store, clock: Clock) -> None:
         self.fired.append((ref, clock.now()))
-        world.apply(Change(
-            entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=ref),
-            operation=Operation.UPDATE, actor=Actor.SCENARIO, body=json.dumps({"fired": ref}),
-        ))
+        world.apply(
+            Change(
+                entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=ref),
+                operation=Operation.UPDATE,
+                actor=Actor.SCENARIO,
+                body=json.dumps({"fired": ref}),
+            )
+        )
 
 
 class Switchboard:

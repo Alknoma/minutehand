@@ -19,8 +19,8 @@ from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
 from minutehand.domain.agent import AgentUnderTest
-from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
 from minutehand.domain.clock import Due, DueKind
+from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
@@ -83,12 +83,16 @@ async def fork_run(
     if fork.parent_run != parent.run_id:
         raise RunRefused(f"the fork names parent {fork.parent_run}; the record given is {parent.run_id}")
     if agent.state is None:
-        raise RunRefused(f"agent {agent.name} has no state hooks, so its own state cannot be rewound; "
-                         "declare `state: {snapshot: [...], restore: [...]}` or rerun from the beginning")
+        raise RunRefused(
+            f"agent {agent.name} has no state hooks, so its own state cannot be rewound; "
+            "declare `state: {snapshot: [...], restore: [...]}` or rerun from the beginning"
+        )
     on_wire = [o for o in fork.overrides if isinstance(o, (PromptPatch, ModelSwap))]
     if on_wire and wire is None:
-        raise RunRefused(f"the fork patches the agent's model calls ({', '.join(o.kind for o in on_wire)}) "
-                         "and nothing is on the wire to apply them")
+        raise RunRefused(
+            f"the fork patches the agent's model calls ({', '.join(o.kind for o in on_wire)}) "
+            "and nothing is on the wire to apply them"
+        )
     changed = changed_scenario(scenario, fork)
     records: list[RunRecord] = []
     for sample in range(fork.samples):
@@ -97,8 +101,10 @@ async def fork_run(
         parent_store = open_parent(clock)
         seqs = checkpoint_seqs(parent_store)
         if fork.at_seq not in seqs:
-            raise RunRefused(f"run {parent.run_id} has no checkpoint at seq {fork.at_seq}; "
-                             f"a fork is taken where a wake ended: {seqs}")
+            raise RunRefused(
+                f"run {parent.run_id} has no checkpoint at seq {fork.at_seq}; "
+                f"a fork is taken where a wake ended: {seqs}"
+            )
         child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         checkpoint = read_checkpoint(child)
         assert checkpoint is not None
@@ -114,7 +120,9 @@ async def fork_run(
         for override in fork.overrides:
             if isinstance(override, TicketEdit):
                 if override.entity.provider not in services.editors:
-                    raise RunRefused(f"the fork edits a ticket on {override.entity.provider}, which cannot edit tickets")
+                    raise RunRefused(
+                        f"the fork edits a ticket on {override.entity.provider}, which cannot edit tickets"
+                    )
                 editor = services.editors[override.entity.provider]
                 assignee = next((p.email for p in changed.people if p.key == override.assignee), None)
                 if override.assignee is not None and assignee is None:
@@ -126,17 +134,36 @@ async def fork_run(
         await run_hook(agent.state.restore, restore_from)
         if wire is not None and on_wire:
             wire.apply(child_id, on_wire)
-        records.append(await Orchestrator(
-            scenario=changed, agent=agent, reach=reach, store=child, clock=clock, services=services,
-            replier=replier, telemetry=telemetry, mounts=mounts, scorer=scorer, state_dir=state_dir,
-            poll_interval=poll_interval, max_polls=max_polls, parent_run=parent.run_id, forked_at=fork.at_seq,
-            prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],
-        ).resume(checkpoint))
+        records.append(
+            await Orchestrator(
+                scenario=changed,
+                agent=agent,
+                reach=reach,
+                store=child,
+                clock=clock,
+                services=services,
+                replier=replier,
+                telemetry=telemetry,
+                mounts=mounts,
+                scorer=scorer,
+                state_dir=state_dir,
+                poll_interval=poll_interval,
+                max_polls=max_polls,
+                parent_run=parent.run_id,
+                forked_at=fork.at_seq,
+                prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],
+            ).resume(checkpoint)
+        )
     return records
 
 
 async def _ask_again(
-    child: Store, scenario: Scenario, people: set[str], checkpoint: Checkpoint, replier: Replier, clock: Clock,
+    child: Store,
+    scenario: Scenario,
+    people: set[str],
+    checkpoint: Checkpoint,
+    replier: Replier,
+    clock: Clock,
 ) -> Checkpoint:
     """Put every message to a changed person that has no reply decided to them again, under their new behaviour.
 
@@ -151,7 +178,9 @@ async def _ask_again(
     count = len(replies)
     for event in events:
         after = event.after
-        if not (event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, MessageSnapshot)):
+        if not (
+            event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, MessageSnapshot)
+        ):
             continue
         for email in after.recipient_emails:
             if email not in changed or (event.entity, changed[email].key) in answered:
@@ -161,6 +190,8 @@ async def _ask_again(
                 continue
             reply = reply.model_copy(update={"at": max(reply.at, clock.now())})
             child.remember(reply)
-            pending.append(PendingReply(due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count))
+            pending.append(
+                PendingReply(due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count)
+            )
             count += 1
     return checkpoint.model_copy(update={"pending": pending, "replies": count})

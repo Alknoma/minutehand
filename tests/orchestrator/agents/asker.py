@@ -20,7 +20,9 @@ STATE = Path(os.environ.get("AGENT_STATE", ".")) / "state.json"
 
 def call(method: str, path: str, body: object | None = None) -> object:
     request = urllib.request.Request(
-        BASE + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+        BASE + path,
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
         headers={"content-type": "application/json"},
     )
     with urllib.request.urlopen(request) as response:
