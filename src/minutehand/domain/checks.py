@@ -11,6 +11,7 @@ from typing import Protocol
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
+from minutehand.domain.conversation import Judgement
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import EntityRef, Exchange, WorldEvent
 
@@ -44,6 +45,7 @@ class Finding(Model):
     wake: int | None = None
     evidence: list[int] = Field(default=[], description="WorldEvent.seq values")
     pattern: str | None = Field(default=None, description="Pattern.key: how a proactive agent avoids this")
+    judged: Judgement | None = Field(default=None, description="Set when a model judged this: which, how, and why")
 
 
 class Pattern(Model):

@@ -174,11 +174,15 @@ class Bound(Model):
 
 
 class PersonAsked(Bound):
-    """The agent sent this person a message."""
+    """The agent sent this person a message; with `about`, one that asks them about that, as a model judges it."""
 
     kind: Literal["person_asked"] = "person_asked"
     person: str = Field(description="Person.key")
     mentions: list[str] = Field(default=[], description="Words the message must contain, any case")
+    about: str | None = Field(
+        default=None,
+        description="What the message asks this person about, in meaning rather than words; a model judges it",
+    )
 
 
 class TicketCreated(Bound):

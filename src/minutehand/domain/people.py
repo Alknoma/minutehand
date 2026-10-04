@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.domain.conversation import Provenance
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityRef
 
@@ -15,6 +16,9 @@ class PersonReply(Model):
     in_reply_to: EntityRef
     text: str
     at: AwareDatetime = Field(description="Simulated time the reply lands")
+    written_by: Provenance | None = Field(
+        default=None, description="The model and prompt that wrote it; None is scripted"
+    )
 
 
 class PersonMessage(Model):
