@@ -43,6 +43,9 @@ from minutehand.ports.store import Store
 CHAT = "testchat"
 SCHED = "testsched"
 INBOX = "agent"
+SECRET = "the-runs-signing-secret"
+SIGNATURE = "x-chat-signature"
+"""The header the chat fake signs each push with: the secret itself, which is enough to tell which one it was."""
 
 
 class MessageIn(Model):
@@ -77,6 +80,7 @@ class Chat:
 
     def __init__(self) -> None:
         self.pushed: list[str] = []
+        self.signatures: list[str] = []
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         async def post_message(request: Request) -> Response:
@@ -126,6 +130,7 @@ class Chat:
 
         async def pushed(request: Request) -> Response:
             self.pushed.append((await request.body()).decode())
+            self.signatures.append(request.headers[SIGNATURE])
             return JSONResponse({"ok": True})
 
         return Starlette(
@@ -155,7 +160,9 @@ class Chat:
                 )
             )
 
-    async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None:
+    async def deliver(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
         ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=f"m{world.head() + 1}")
         body = json.dumps({"from": reply.person, "text": reply.text, "in_reply_to": reply.in_reply_to.external_id})
         world.apply(
@@ -171,9 +178,11 @@ class Chat:
             )
         )
         async with httpx.AsyncClient() as client:
-            (await client.post(target.url, content=body)).raise_for_status()
+            (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
 
-    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
+    async def say(
+        self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
         ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=f"m{world.head() + 1}")
         body = json.dumps({"from": message.person, "text": message.text})
         world.apply(
@@ -187,7 +196,7 @@ class Chat:
             )
         )
         async with httpx.AsyncClient() as client:
-            (await client.post(target.url, content=body)).raise_for_status()
+            (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
 
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         self._rewrite(ticket, Actor.PERSON, state=to, assignee_email=None, world=world)

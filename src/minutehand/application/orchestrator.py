@@ -163,6 +163,7 @@ class Orchestrator:
         mounts: Mounts | None = None,
         scorer: Scorer | None = None,
         state_dir: Path | None = None,
+        signing: Mapping[ProviderKey, str] | None = None,
         parent_run: str | None = None,
         forked_at: int | None = None,
         prior_wakes: Sequence[WakeRecord] = (),
@@ -190,6 +191,7 @@ class Orchestrator:
         self._mounts = mounts
         self._scorer = scorer
         self._state_dir = state_dir
+        self._signing = dict(signing or {})
         self._parent_run = parent_run
         self._forked_at = forked_at
         self._wakes: list[WakeRecord] = list(prior_wakes)
@@ -386,7 +388,9 @@ class Orchestrator:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
-                await self._pushes(provider).deliver(reply, self._inbound(provider), self._store, self._clock)
+                await self._pushes(provider).deliver(
+                    reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
+                )
         by_message = self._by_message
         for item in fired:
             if isinstance(item, PendingDirection) and by_message is not None:
@@ -546,7 +550,9 @@ class Orchestrator:
     async def _say(self, provider: ProviderKey, text: str) -> None:
         """The scenario's owner messages the agent: its goal, or a direction."""
         message = PersonMessage(person=self._scenario.owner, text=text, at=self._clock.now())
-        await self._pushes(provider).say(message, self._inbound(provider), self._store, self._clock)
+        await self._pushes(provider).say(
+            message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
+        )
 
     async def _ask(self, person: Person, asked: WorldEvent, history: list[WorldEvent]) -> None:
         reply = await self._replier.decide(person, asked, history, self._clock)
@@ -614,6 +620,11 @@ class Orchestrator:
             raise RunRefused(f"agent {self._agent.name} declares no inbound target for {provider}")
         return target
 
+    def _secret(self, provider: ProviderKey) -> str:
+        if provider not in self._signing:
+            raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
+        return self._signing[provider]
+
     def _tickets(self, provider: ProviderKey) -> HoldsTickets:
         if provider not in self._services.tickets:
             raise RunRefused(f"a ticket fate is due on {provider}, which holds no tickets a person can move")
@@ -633,8 +644,9 @@ async def run_scenario(
     mounts: Mounts | None = None,
     scorer: Scorer | None = None,
     state_dir: Path | None = None,
+    signing: Mapping[ProviderKey, str] | None = None,
 ) -> RunRecord:
-    """Run one scenario from its start."""
+    """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -649,4 +661,5 @@ async def run_scenario(
         mounts=mounts,
         scorer=scorer,
         state_dir=state_dir,
+        signing=signing,
     ).run()

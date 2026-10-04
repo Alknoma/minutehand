@@ -20,7 +20,7 @@ from minutehand.domain.world import Actor, EntityKind, TicketSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 from tests.orchestrator.rig import T0, Rig, scenario, scripted
-from tests.orchestrator.world import RecordingClock
+from tests.orchestrator.world import CHAT, SECRET, RecordingClock
 
 
 def two_replies() -> Scenario:
@@ -48,6 +48,7 @@ async def fork(rig: Rig, parent: RunRecord, scn: Scenario, agent: AgentUnderTest
         replier_for=ScriptedReplier,
         state_dir=rig.tmp / "state",
         mounts=rig.board,
+        signing={CHAT: SECRET},
     )
 
 

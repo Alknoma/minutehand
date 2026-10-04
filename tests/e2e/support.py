@@ -18,7 +18,7 @@ import pytest
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported, StateHooks
-from minutehand.domain.people import InboundTarget
+from minutehand.domain.people import GeneratedSecret, InboundTarget
 from minutehand.domain.scenario import (
     DelayRange,
     Person,
@@ -108,7 +108,9 @@ def agent_under_test(
         name=f"{behaviour}_agent",
         goal=GoalByMessage(provider="slack") if by_message else GoalByWake(),
         wakes=[] if by_message else [Reported(wake_url=f"{base}/wake", report_url=f"{base}/report")],
-        inbound=[InboundTarget(provider="slack", url=f"{base}/slack/events", secret_env=SECRET_VARIABLE)],
+        inbound=[
+            InboundTarget(provider="slack", url=f"{base}/slack/events", secret=GeneratedSecret(env=SECRET_VARIABLE))
+        ],
         state=StateHooks(
             snapshot=[*program, "snapshot", str(state_file)], restore=[*program, "restore", str(state_file)]
         )

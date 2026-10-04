@@ -16,7 +16,7 @@ from minutehand.domain.people import InboundTarget
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import DelayRange, Person, ReplyBehaviour, Scenario, Scripted, ScriptedReply, Silent
 from minutehand.ports.clock import Clock
-from tests.orchestrator.world import CHAT, Chat, RecordingClock, Scheduler, Switchboard, serving
+from tests.orchestrator.world import CHAT, SECRET, Chat, RecordingClock, Scheduler, Switchboard, serving
 
 AGENTS = Path(__file__).parent / "agents"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
@@ -111,6 +111,7 @@ class Rig:
             replier=ScriptedReplier(scn),
             mounts=self.board,
             state_dir=self.tmp / "state",
+            signing={CHAT: SECRET},
         )
         return record, store, clock
 

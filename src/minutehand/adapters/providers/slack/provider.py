@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import secrets
-
 from minutehand.adapters.providers.slack import inbound
 from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
@@ -20,28 +17,21 @@ from minutehand.ports.store import Store
 class SlackProvider:
     manifest: Manifest = MANIFEST
 
-    def __init__(self) -> None:
-        self.signing_secret = secrets.token_hex(16)
-        """Signs pushed events when the target names no variable; the runner injects it into the agent."""
-
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)
 
-    async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None:
-        await inbound.deliver(reply, target, world, clock, secret=self._secret(target))
+    async def deliver(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        await inbound.deliver(reply, target, world, clock, secret=secret)
 
-    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
-        await inbound.say(message, target, world, clock, secret=self._secret(target))
-
-    def _secret(self, target: InboundTarget) -> str:
-        if target.secret_env is None:
-            return self.signing_secret
-        if target.secret_env not in os.environ:
-            raise LookupError(f"the agent's signing secret variable {target.secret_env} is not set")
-        return os.environ[target.secret_env]
+    async def say(
+        self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        await inbound.say(message, target, world, clock, secret=secret)
 
 
 def build() -> SlackProvider:

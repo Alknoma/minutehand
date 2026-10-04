@@ -16,9 +16,9 @@ directory under the state directory, written by the models, so a later process c
 One proxy per process: mitmproxy keeps its master in a module global, so `play` and `fork` each start one
 and move it from sample to sample with `Proxy.mount`, and never two at once.
 
-The Slack provider signs pushed events with the secret in the variable its `InboundTarget.secret_env`
-names, read from this process's environment. Each run generates its secrets, sets them here for as long
-as the run lasts, and hands the same values to the agent's process.
+A provider signs the events it pushes with the secret its `InboundTarget.secret` resolves to for the run:
+one generated per run and handed to the agent's command, or the agent's own, read from a variable of this
+process. The secret is given to the provider with each push; it is never set in this process's environment.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ import sqlite3
 import threading
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -53,6 +54,7 @@ from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.experiment import Fork
+from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario
 from minutehand.domain.world import Actor, Operation
@@ -144,23 +146,23 @@ async def play(
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
-            run_secrets = _secrets(agent)
-            env = _agent_env(proxy, run_secrets)
-            with _in_this_process(run_secrets):
-                async with _agent_process(command, env, agent, directory / AGENT_LOG):
-                    record = await run_scenario(
-                        scenario=scenario,
-                        agent=agent,
-                        reach=reach_for(agent, env=env),
-                        store=store,
-                        clock=clock,
-                        services=services,
-                        replier=PeopleReplier(scenario, model),
-                        telemetry=telemetry,
-                        mounts=proxy,
-                        scorer=scorer,
-                        state_dir=state / RUNS,
-                    )
+            signing = signing_for(agent)
+            env = _agent_env(proxy, signing.for_agent)
+            async with _agent_process(command, env, agent, directory / AGENT_LOG):
+                record = await run_scenario(
+                    scenario=scenario,
+                    agent=agent,
+                    reach=reach_for(agent, env=env),
+                    store=store,
+                    clock=clock,
+                    services=services,
+                    replier=PeopleReplier(scenario, model),
+                    telemetry=telemetry,
+                    mounts=proxy,
+                    scorer=scorer,
+                    state_dir=state / RUNS,
+                    signing=signing.by_provider,
+                )
             outcomes.append(_keep(directory, record, scorer))
     return outcomes
 
@@ -194,35 +196,35 @@ async def fork(
     services = _services(changed, agent, registry)
     child_id = _new_run_id()
     scorer = _Judge(changed, model if judge else None, judging=judge)
-    run_secrets = _secrets(agent)
+    signing = signing_for(agent)
 
     def open_parent(clock: Clock) -> Store:
         return SqliteStore(world, parent_run, clock)
 
     holding = RunClock(scenario.starts_at)
     async with Proxy(routing, open_parent(holding), holding, confdir=state / "ca") as proxy:
-        env = _agent_env(proxy, run_secrets)
+        env = _agent_env(proxy, signing.for_agent)
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with _in_this_process(run_secrets):
-                async with _agent_process(command, env, agent, log):
-                    records = await fork_run(
-                        fork=changes,
-                        parent=parent.record,
-                        open_parent=open_parent,
-                        run_id=child_id,
-                        scenario=scenario,
-                        agent=agent,
-                        reach=reach_for(agent, env=env),
-                        services=services,
-                        replier_for=lambda s: PeopleReplier(s, model),
-                        state_dir=state / RUNS,
-                        wire=routing,
-                        telemetry=telemetry,
-                        mounts=proxy,
-                        scorer=scorer,
-                    )
+            async with _agent_process(command, env, agent, log):
+                records = await fork_run(
+                    fork=changes,
+                    parent=parent.record,
+                    open_parent=open_parent,
+                    run_id=child_id,
+                    scenario=scenario,
+                    agent=agent,
+                    reach=reach_for(agent, env=env),
+                    services=services,
+                    replier_for=lambda s: PeopleReplier(s, model),
+                    state_dir=state / RUNS,
+                    wire=routing,
+                    telemetry=telemetry,
+                    mounts=proxy,
+                    scorer=scorer,
+                    signing=signing.by_provider,
+                )
         finally:
             routing.apply(child_id, [])
     outcomes: list[Outcome] = []
@@ -497,9 +499,35 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     return Services(providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers)
 
 
-def _secrets(agent: AgentUnderTest) -> dict[str, str]:
-    """A fresh signing secret for every variable the agent's inbound targets name."""
-    return {t.secret_env: secrets.token_hex(16) for t in agent.inbound if t.secret_env is not None}
+@dataclass(frozen=True)
+class Signing:
+    """The secrets a run signs pushed events with: one per provider, and the ones the agent's command is given."""
+
+    by_provider: dict[ProviderKey, str]
+    for_agent: dict[str, str]
+
+
+def signing_for(agent: AgentUnderTest) -> Signing:
+    """Each inbound target's secret for this run: generated and handed to the agent's command, read from this
+    process's own variable (the secret an agent already running was configured with), or, when the target
+    names none, generated and given to no one. A variable named and not set refuses the run."""
+    by_provider: dict[ProviderKey, str] = {}
+    for_agent: dict[str, str] = {}
+    for target in agent.inbound:
+        source = target.secret
+        if isinstance(source, SecretFromEnvironment):
+            if source.env not in os.environ:
+                raise RunRefused(
+                    f"the agent's {target.provider} signing secret is read from {source.env}, which is not set "
+                    "in Minutehand's environment; set it to the secret the agent was configured with"
+                )
+            value = os.environ[source.env]
+        else:
+            value = secrets.token_hex(16)
+            if isinstance(source, GeneratedSecret):
+                for_agent[source.env] = value
+        by_provider.setdefault(target.provider, value)
+    return Signing(by_provider=by_provider, for_agent=for_agent)
 
 
 def _agent_env(proxy: Proxy, run_secrets: Mapping[str, str]) -> dict[str, str]:
@@ -512,21 +540,6 @@ def _agent_env(proxy: Proxy, run_secrets: Mapping[str, str]) -> dict[str, str]:
         **{name: ca for name in CA_VARIABLES},
         **run_secrets,
     }
-
-
-@contextmanager
-def _in_this_process(variables: Mapping[str, str]) -> Iterator[None]:
-    """Set the run's secrets in this process's environment, where the providers read them, for the run."""
-    before = {name: os.environ[name] if name in os.environ else None for name in variables}
-    os.environ.update(variables)
-    try:
-        yield
-    finally:
-        for name, value in before.items():
-            if value is None:
-                del os.environ[name]
-            else:
-                os.environ[name] = value
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:

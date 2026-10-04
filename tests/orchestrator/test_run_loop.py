@@ -9,6 +9,7 @@ from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from tests.orchestrator.rig import T0, Rig, scenario
+from tests.orchestrator.world import SECRET
 
 
 async def test_a_36_hour_reply_and_a_3_day_ticket_fate_move_the_clock_exactly_there(rig: Rig) -> None:
@@ -24,6 +25,7 @@ async def test_a_36_hour_reply_and_a_3_day_ticket_fate_move_the_clock_exactly_th
     assert isinstance(fate[0].after, TicketSnapshot) and fate[0].after.state is TicketState.DONE
     assert [r.text for r in store.replies()] == ["Yes, 40k."]
     assert len(rig.chat.pushed) == 1 and "Yes, 40k." in rig.chat.pushed[0]
+    assert rig.chat.signatures == [SECRET], "the reply is pushed signed with the secret the run was given"
 
 
 async def test_a_silent_person_never_replies_and_the_run_ends_with_nothing_pending(rig: Rig) -> None:
