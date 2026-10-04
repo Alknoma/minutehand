@@ -64,6 +64,7 @@ class WakeRequest(Model):
     now: AwareDatetime
     reason: WakeReason
     goal: str | None = Field(default=None, description="Set on the START wake only")
+    direction: str | None = Field(default=None, description="What the owner said; set on a DIRECTION wake only")
 
 
 class AgentReport(Model):

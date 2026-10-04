@@ -47,6 +47,16 @@ class HoldsTickets(Protocol):
         ...
 
 
+class EditsTickets(Protocol):
+    """A provider whose tickets the scenario can rewrite: how a fork's `TicketEdit` lands."""
+
+    def edit(
+        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
+    ) -> None:
+        """Change the ticket's state and/or assignee, recorded as actor SCENARIO. None leaves a field as it is."""
+        ...
+
+
 class Wakes(Protocol):
     """Where a scheduler provider registers what the agent booked. The orchestrator implements it."""
 
