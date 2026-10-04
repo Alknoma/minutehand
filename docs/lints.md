@@ -19,8 +19,8 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 | 1. Recurred | 72 reads across the 9 existing emulators: Slack 37, Asana 11, Teams 10, Jira 6, YouTrack 3, Graph 2, Drive 1, GitHub 1, Notion 1. |
 | 2. Catches what happened | Run `f431fc97f427`: a ticket filed on the mission's 30 August shows as created 24 August. The Slack `ts` at `docker/slack-emulator/main.py:1361` is one of the 72. |
 | 3. Seen to fail | `python -m lints.wall_clock` over the parent repository's emulator directory → 72 findings, exit 1. On `src/` → 0. |
-| 4. Fires on nothing adjacent | Matches `time.time`, `time.time_ns`, `datetime.now/utcnow/today`, `date.today` called as an attribute, however the owner is reached. `time.monotonic` and `time.perf_counter` (durations) are untouched. |
-| Cannot see | A clock function called by a bare name: `from time import time` then `time()`. |
+| 4. Fires on nothing adjacent | Matches `time.time`, `time.time_ns`, `datetime.now/utcnow/today`, `date.today`, however the owner is reached and under whatever name an import gives it (`import time as t; t.time()`, `from datetime import datetime as dt; dt.now()`), and a clock function imported by name and called bare (`from time import time; time()`). A bare name no clock import bound (a local `def time()`, `from time import monotonic as time`) is left alone. `time.monotonic` and `time.perf_counter` (durations) are untouched. |
+| Cannot see | A clock read through a name bound some other way: `now = datetime.now` then `now()`, `getattr(time, "time")()`. |
 | Escape | `# clock-lint: exempt <reason>` on the line. Two lines carry it: `SqliteStore.apply` filling `WorldEvent.wall_time`, and the Slack provider's `X-Slack-Request-Timestamp` (`adapters/providers/slack/inbound.py`), which the agent checks against its own machine clock. |
 | Cost | One marker at each place wall time is truly wanted. |
 
