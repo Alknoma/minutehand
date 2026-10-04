@@ -12,6 +12,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
+from urllib.parse import urlparse
 
 import asana  # pyright: ignore[reportMissingTypeStubs]
 import pytest
@@ -64,7 +65,7 @@ async def sdk(workspace: Workspace) -> AsyncIterator[Sdk]:
     port = server.servers[0].sockets[0].getsockname()[1]
     configuration = asana.Configuration()
     configuration.access_token = TOKEN
-    configuration.host = f"http://127.0.0.1:{port}{MANIFEST.path_prefix}"
+    configuration.host = f"http://127.0.0.1:{port}{urlparse(configuration.host).path}"  # the SDK's own /api/1.0
     client = asana.ApiClient(configuration)
     yield Sdk(tasks=asana.TasksApi(client), users=asana.UsersApi(client), projects=asana.ProjectsApi(client),
               stories=asana.StoriesApi(client))

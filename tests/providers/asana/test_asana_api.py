@@ -189,7 +189,7 @@ async def test_pages_follow_next_page_to_the_end(client: httpx.AsyncClient) -> N
     names: list[object] = []
     params = {"limit": "2"}
     pages = 0
-    while True:
+    while pages < 10:
         answer = body(await client.get(f"/projects/{VENUE}/tasks", params=params))
         page = answer["data"]
         assert isinstance(page, list) and len(page) <= 2

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from datetime import timedelta
@@ -41,6 +42,35 @@ async def test_the_workspace_survives_a_new_app_over_a_new_connection(workspace:
     assert read == {"gid": made["gid"], "name": "Written by the first app", "assignee": {
         "gid": state.user_gid("noor"), "email": "noor@example.com"}}
     assert [s["text"] for s in stories] == ["noted"]
+
+
+_READ_IN_A_NEW_PROCESS = """
+import asyncio, json, sys
+from pathlib import Path
+import httpx
+from minutehand.adapters.providers.asana.provider import build
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.run_clock import RunClock
+from tests.providers.asana.asana_workspace import AUTH, START
+
+async def main() -> None:
+    store = SqliteStore(Path(sys.argv[1]), "root", RunClock(START))
+    app = build().app(store, RunClock(START))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://app.asana.com",
+                                 headers=AUTH) as client:
+        read = await client.get(f"/tasks/{sys.argv[2]}", params={"opt_fields": "name"})
+    print(json.dumps(read.json()))
+
+asyncio.run(main())
+"""
+
+
+async def test_the_workspace_survives_a_new_process(workspace: Workspace, client: httpx.AsyncClient) -> None:
+    """Nothing the first app holds in memory, at any scope, reaches the second."""
+    made = await create(client, name="Written before the restart", workspace=WS)
+    read = subprocess.run([sys.executable, "-c", _READ_IN_A_NEW_PROCESS, str(workspace.path), str(made["gid"])],
+                          capture_output=True, text=True, check=True)
+    assert json.loads(read.stdout) == {"data": {"gid": made["gid"], "name": "Written before the restart"}}
 
 
 async def test_a_fork_sees_tasks_only_up_to_the_fork(workspace: Workspace, client: httpx.AsyncClient) -> None:
