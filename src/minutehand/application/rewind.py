@@ -95,7 +95,7 @@ async def fork_run(
         if fork.at_seq not in seqs:
             raise RunRefused(f"run {parent.run_id} has no checkpoint at seq {fork.at_seq}; "
                              f"a fork is taken where a wake ended: {seqs}")
-        child = parent_store.fork(child_id, at_seq=fork.at_seq)
+        child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         checkpoint = read_checkpoint(child)
         assert checkpoint is not None
         clock.jump(checkpoint.now)

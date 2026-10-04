@@ -60,9 +60,13 @@ class EditsTickets(Protocol):
 class Wakes(Protocol):
     """Where a scheduler provider registers what the agent booked. The orchestrator implements it."""
 
-    def book(self, due: Due) -> None: ...
+    def book(self, due: Due) -> None:
+        """Book a wake. A booking already pending under the same `ref` is replaced."""
+        ...
 
-    def cancel(self, ref: str) -> None: ...
+    def cancel(self, ref: str) -> None:
+        """Drop the pending booking with this `ref`; no error when there is none."""
+        ...
 
 
 class BooksWakes(Protocol):
@@ -73,5 +77,9 @@ class BooksWakes(Protocol):
         ...
 
     async def fire(self, ref: str, world: Store, clock: Clock) -> None:
-        """The clock reached a booking: deliver it the way the real scheduler would."""
+        """The clock reached a booking: deliver it the way the real scheduler would.
+
+        The booking has already left the pending set when this is called, so a recurring
+        schedule books its next occurrence under the same `ref` from here.
+        """
         ...
