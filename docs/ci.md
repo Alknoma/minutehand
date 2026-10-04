@@ -42,7 +42,8 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 | A superseded push keeps running | Only three of thirteen workflows set `concurrency` | A new push to a pull request cancels the run it replaces |
 | Actions pinned to a moving tag (`@v4`) | 24 uses of `actions/checkout@v4` | Every action is pinned to a commit; Dependabot proposes the bumps |
 | A workflow triggered by comments with write access (`agent-summon`) | Safe among colleagues; with outside contributors it runs on text a stranger wrote | None. No `pull_request_target`, no `issue_comment` trigger. `zizmor` fails the build if one appears. |
-| Three branches to promote through | `integration-main` → `staging-main` → `main`, each with its own tier | One branch and release tags. There is no deployment to stage. |
+| Three branches to promote through | `integration-main` → `staging-main` → `main`, each with its own tier | Two: work lands on `integration-main`, and `main` takes pull requests from `integration-main` only. There is no deployment to stage, so no third. |
+| The promotion check lived in a workflow that never fired for it | `source-branch-guard` sat in a workflow triggered for `integration-main` while acting only on `main`; it never ran, and two pull requests went straight into `main` | `promotion` is a job in the one workflow, has no `if`, runs on every event, and sits behind `gate` |
 
 ## Tiers
 
@@ -64,18 +65,25 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 - `nightly / repeat` exists to find them before a contributor does.
 - A test may be quarantined only with a marker that names an open issue; `--strict-markers` rejects an unknown marker.
 
-## Repository settings
+## Branches and who may merge
 
-These are settings on GitHub, not files, and none is applied yet.
+Applied on 2026-10-04 as the ruleset "integration-main and main: pull request and gate".
 
-| Setting | Value |
-|---|---|
-| Branch rule on `main` (and `integration-main` while it exists) | Pull request required; `gate` required; branch must be up to date or come through the merge queue; no force push; no deletion |
-| Reviews | One approval; a code owner's approval for `domain/`, `ports/`, `lints/`, `.github/`, `pyproject.toml`, `LICENSE.md` |
-| Merge methods | Merge commit only |
-| Merge queue | On, method merge commit |
-| Workflow permissions | Read-only token by default; workflows from first-time contributors need approval to run |
-| Head branches | Deleted after merge |
+| Rule | `integration-main` | `main` |
+|---|---|---|
+| Changes arrive by pull request; a direct push is rejected | Yes | Yes |
+| `gate` must pass, on a branch that is up to date with its target | Yes | Yes |
+| Where a pull request may come from | Any branch or fork | `integration-main` only (the `promotion` job) |
+| Merge method | Merge commit | Merge commit |
+| Force push, deletion | Refused | Refused |
+
+- **Anyone who can read the repo can open a pull request. Only people with write access can merge one**, and write access is held by Alknoma's members alone. Someone outside Alknoma who needs to label or triage gets the triage role, which cannot merge.
+- A ruleset that restricted updates to a list of maintainers was tried and removed: it turned every merge into a "bypass" merge.
+- Approvals required: none yet. Every pull request so far has one author, who cannot approve their own. With a second maintainer this becomes one approval, and a code owner's for the paths in `CODEOWNERS`.
+- Squash and rebase merging are switched off for the repository.
+- Seen to hold: a direct push to each branch was rejected; a pull request into `main` from another branch failed `promotion` and was blocked; a pull request whose merged result broke a lint was blocked until fixed.
+
+Not applied: the merge queue, deleting head branches after merge, approval of workflow runs from first-time contributors.
 
 ## Contributions and the licence
 
