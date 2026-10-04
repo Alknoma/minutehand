@@ -1,0 +1,480 @@
+{
+ "scenario": {
+  "name": "partner_pipeline_build",
+  "goal": "Ayven has three signed integration partnership agreements.",
+  "owner": "owner",
+  "starts_at": "2026-08-24T10:51:00Z",
+  "deadline_after": "P14D",
+  "max_wakes": 20,
+  "seed": 17,
+  "protected_names": [],
+  "people": [
+   {
+    "key": "owner",
+    "name": "owner",
+    "email": "owner@example.com",
+    "title": null,
+    "facts": [],
+    "stale_facts": [],
+    "reply": {
+     "kind": "answers",
+     "delay": {
+      "shortest": "PT6H",
+      "longest": "P2DT18H"
+     },
+     "helpfulness": "full",
+     "voice": null,
+     "model": null,
+     "temperature": 0.6
+    },
+    "working_hours": null,
+    "absences": []
+   },
+   {
+    "key": "sofia",
+    "name": "sofia",
+    "email": "sofia@example.com",
+    "title": null,
+    "facts": [],
+    "stale_facts": [],
+    "reply": {
+     "kind": "answers",
+     "delay": {
+      "shortest": "PT6H",
+      "longest": "P2DT18H"
+     },
+     "helpfulness": "full",
+     "voice": null,
+     "model": null,
+     "temperature": 0.6
+    },
+    "working_hours": null,
+    "absences": []
+   },
+   {
+    "key": "dania",
+    "name": "dania",
+    "email": "dania@example.com",
+    "title": null,
+    "facts": [],
+    "stale_facts": [],
+    "reply": {
+     "kind": "answers",
+     "delay": {
+      "shortest": "PT6H",
+      "longest": "P2DT18H"
+     },
+     "helpfulness": "full",
+     "voice": null,
+     "model": null,
+     "temperature": 0.6
+    },
+    "working_hours": null,
+    "absences": []
+   }
+  ],
+  "tickets": [],
+  "documents": [],
+  "ticket_fates": [],
+  "directions": [],
+  "expect": [
+   {
+    "at_least": 1,
+    "at_most": null,
+    "by": null,
+    "kind": "person_asked",
+    "person": "owner",
+    "mentions": []
+   },
+   {
+    "at_least": 1,
+    "at_most": null,
+    "by": null,
+    "kind": "ticket_created",
+    "assignee": "sofia",
+    "mentions": []
+   },
+   {
+    "at_least": 1,
+    "at_most": null,
+    "by": null,
+    "kind": "ticket_created",
+    "assignee": "dania",
+    "mentions": []
+   },
+   {
+    "at_least": 0,
+    "at_most": 0,
+    "by": null,
+    "kind": "ticket_deleted"
+   }
+  ]
+ },
+ "events": [
+  {
+   "seq": 1,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-27T10:51:11.228036Z",
+   "wall_time": "2026-08-27T10:51:11.228036Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "b_0c6aa79d-0"
+   },
+   "after": {
+    "kind": "message",
+    "text": "reminder",
+    "channel": "owner",
+    "recipient_emails": [],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 2,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-27T10:51:11.228036Z",
+   "wall_time": "2026-08-27T10:51:11.228036Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "03de8c757aaee5ab-1"
+   },
+   "after": {
+    "kind": "message",
+    "text": "reminder",
+    "channel": "owner",
+    "recipient_emails": [],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 3,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-30T10:51:11.228036Z",
+   "wall_time": "2026-08-30T10:51:11.228036Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "b_e1f6533b-2"
+   },
+   "after": {
+    "kind": "message",
+    "text": "reminder",
+    "channel": "owner",
+    "recipient_emails": [],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 4,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-09-01T14:08:23.171027Z",
+   "wall_time": "2026-09-01T14:08:23.171027Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "b_8ebb44c5-3"
+   },
+   "after": {
+    "kind": "message",
+    "text": "reminder",
+    "channel": "owner",
+    "recipient_emails": [],
+    "thread_of": null
+   },
+   "exchange": null
+  }
+ ],
+ "wakes": [
+  {
+   "index": 1,
+   "sim_time": "2026-08-24T10:51:00Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 2,
+   "sim_time": "2026-08-24T10:51:11.228036Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 3,
+   "sim_time": "2026-08-24T10:51:11.228036Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 4,
+   "sim_time": "2026-08-27T10:51:11.228036Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 5,
+   "sim_time": "2026-08-27T10:51:11.228036Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 6,
+   "sim_time": "2026-08-27T10:51:11.228036Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 7,
+   "sim_time": "2026-08-27T10:51:11.228036Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 8,
+   "sim_time": "2026-08-27T10:51:11.228036Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 9,
+   "sim_time": "2026-08-28T05:24:25.600039Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 10,
+   "sim_time": "2026-08-28T05:24:25.600039Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 11,
+   "sim_time": "2026-08-28T05:24:25.600039Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 12,
+   "sim_time": "2026-08-28T05:24:25.600039Z",
+   "world_changes": 0,
+   "commitments_changed": false
+  },
+  {
+   "index": 13,
+   "sim_time": "2026-08-29T05:24:25.600039Z",
+   "world_changes": 0,
+   "commitments_changed": false
+  },
+  {
+   "index": 14,
+   "sim_time": "2026-08-30T04:37:12.120210Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 15,
+   "sim_time": "2026-08-30T04:37:12.120210Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 16,
+   "sim_time": "2026-08-30T04:37:12.120210Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 17,
+   "sim_time": "2026-08-30T04:37:12.120210Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 18,
+   "sim_time": "2026-08-30T10:51:11.228036Z",
+   "world_changes": 0,
+   "commitments_changed": false
+  },
+  {
+   "index": 19,
+   "sim_time": "2026-09-01T14:08:23.171027Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  },
+  {
+   "index": 20,
+   "sim_time": "2026-09-01T14:08:23.171027Z",
+   "world_changes": 1,
+   "commitments_changed": false
+  }
+ ],
+ "obligations": [
+  {
+   "key": "b_f29bb4ed",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-24T10:51:00Z",
+   "opened_by": 1,
+   "due_at": null,
+   "settled_at": "2026-08-24T10:51:11.228036Z",
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_d97f380d",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-24T10:51:11.228036Z",
+   "opened_by": 1,
+   "due_at": null,
+   "settled_at": null,
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_0c6aa79d",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-24T10:51:11.228036Z",
+   "opened_by": 1,
+   "due_at": "2026-08-27T10:51:11.228036Z",
+   "settled_at": "2026-08-27T10:51:11.228036Z",
+   "agent_touches": [
+    1
+   ],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "03de8c757aaee5ab",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-27T10:51:11.228036Z",
+   "opened_by": 1,
+   "due_at": "2026-08-27T00:00:00Z",
+   "settled_at": "2026-08-30T04:37:12.120210Z",
+   "agent_touches": [
+    2
+   ],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_e1f6533b",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-27T10:51:11.228036Z",
+   "opened_by": 1,
+   "due_at": "2026-08-30T10:51:11.228036Z",
+   "settled_at": "2026-09-01T14:08:23.171027Z",
+   "agent_touches": [
+    3
+   ],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_b2fce8da",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-27T10:51:11.228036Z",
+   "opened_by": 1,
+   "due_at": "2026-08-29T10:51:11.228036Z",
+   "settled_at": "2026-08-28T05:24:25.600039Z",
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_8ebb44c5",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-28T05:24:25.600039Z",
+   "opened_by": 1,
+   "due_at": "2026-08-31T05:24:25.600039Z",
+   "settled_at": null,
+   "agent_touches": [
+    4
+   ],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_aa17fae3",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-28T05:24:25.600039Z",
+   "opened_by": 1,
+   "due_at": "2026-08-30T05:24:25.600039Z",
+   "settled_at": "2026-08-30T04:37:12.120210Z",
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_e216d526",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-28T05:24:25.600039Z",
+   "opened_by": 1,
+   "due_at": null,
+   "settled_at": null,
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_5397dd2c",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-30T04:37:12.120210Z",
+   "opened_by": 1,
+   "due_at": "2026-09-02T04:37:12.120210Z",
+   "settled_at": null,
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "b_f69636c0",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-08-30T04:37:12.120210Z",
+   "opened_by": 1,
+   "due_at": "2026-09-02T04:37:12.120210Z",
+   "settled_at": "2026-09-01T14:08:23.171027Z",
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  },
+  {
+   "key": "20fd34ea0182f1a9",
+   "kind": "answer_from_person",
+   "person": null,
+   "entity": null,
+   "opened_at": "2026-09-01T14:08:23.171027Z",
+   "opened_by": 1,
+   "due_at": "2026-09-07T23:59:59Z",
+   "settled_at": null,
+   "agent_touches": [],
+   "first_touch_after_settled": null
+  }
+ ],
+ "commitments": null
+}

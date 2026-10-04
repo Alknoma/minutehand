@@ -1,0 +1,354 @@
+{
+ "scenario": {
+  "name": "partner_pipeline_build",
+  "goal": "Ayven has three signed integration partnership agreements.",
+  "owner": "owner",
+  "starts_at": "2026-08-24T10:50:03.724630Z",
+  "deadline_after": "P14D",
+  "max_wakes": 20,
+  "seed": 17,
+  "protected_names": [
+   "Ayven"
+  ],
+  "people": [
+   {
+    "key": "owner",
+    "name": "Test User",
+    "email": "owner@example.com",
+    "title": null,
+    "facts": [],
+    "stale_facts": [],
+    "reply": {
+     "kind": "answers",
+     "delay": {
+      "shortest": "PT6H",
+      "longest": "P2DT18H"
+     },
+     "helpfulness": "full",
+     "voice": null,
+     "model": null,
+     "temperature": 0.6
+    },
+    "working_hours": null,
+    "absences": []
+   },
+   {
+    "key": "sofia",
+    "name": "Sofia Romano",
+    "email": "sofia@example.com",
+    "title": null,
+    "facts": [
+     "Ranks partner candidates on commercial credibility"
+    ],
+    "stale_facts": [],
+    "reply": {
+     "kind": "answers",
+     "delay": {
+      "shortest": "PT6H",
+      "longest": "P2DT18H"
+     },
+     "helpfulness": "partial",
+     "voice": "terse",
+     "model": null,
+     "temperature": 0.6
+    },
+    "working_hours": {
+     "timezone": "Europe/Rome",
+     "opens": "09:00:00",
+     "closes": "17:00:00",
+     "weekdays_only": true
+    },
+    "absences": []
+   },
+   {
+    "key": "marcus",
+    "name": "Marcus Adeyemi",
+    "email": "marcus@example.com",
+    "title": null,
+    "facts": [],
+    "stale_facts": [],
+    "reply": {
+     "kind": "answers",
+     "delay": {
+      "shortest": "PT6H",
+      "longest": "P2DT18H"
+     },
+     "helpfulness": "full",
+     "voice": null,
+     "model": null,
+     "temperature": 0.6
+    },
+    "working_hours": null,
+    "absences": []
+   },
+   {
+    "key": "dania",
+    "name": "Dania Kovac",
+    "email": "dania@example.com",
+    "title": null,
+    "facts": [],
+    "stale_facts": [],
+    "reply": {
+     "kind": "silent"
+    },
+    "working_hours": null,
+    "absences": []
+   }
+  ],
+  "tickets": [],
+  "documents": [],
+  "ticket_fates": [],
+  "directions": [],
+  "expect": [
+   {
+    "at_least": 1,
+    "at_most": null,
+    "by": null,
+    "kind": "person_asked",
+    "person": "owner",
+    "mentions": []
+   },
+   {
+    "at_least": 1,
+    "at_most": null,
+    "by": null,
+    "kind": "ticket_created",
+    "assignee": "sofia",
+    "mentions": []
+   },
+   {
+    "at_least": 1,
+    "at_most": null,
+    "by": null,
+    "kind": "ticket_created",
+    "assignee": "dania",
+    "mentions": []
+   },
+   {
+    "at_least": 0,
+    "at_most": 0,
+    "by": null,
+    "kind": "ticket_deleted"
+   }
+  ]
+ },
+ "events": [
+  {
+   "seq": 1,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T10:54:48.948516Z",
+   "wall_time": "2026-08-24T10:54:48.948516Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "asana",
+    "kind": "ticket",
+    "external_id": "1300000000000015"
+   },
+   "after": {
+    "kind": "ticket",
+    "title": "Rank Aiven integration candidates for commercial and partnership potential",
+    "body": "Evaluate the researched Aiven integration and partner candidates and produce a ranked recommendation.\n\nScope:\n- Rank candidates separately for commercial credibility and partnership likelihood.\n- Assess the substantiated candidates across cloud/platform, technology integration, implementation, consulting, and channel relevance.\n- Candidates to evaluate: AWS, Microsoft Azure, Google Cloud, Oracle Cloud, DigitalOcean, OVHcloud, Hasura, Lenses, Conduktor, Ververica, Humanitech, Navisite, NucleusTeq, Data Sleek, and IBT.\n- Use the available research synthesis as the evidence base, including marketplace listings and deployment relationships, AWS Data and Analytics Competency and Outposts support, Azure Kafka availability, GCP AlloyDB Omni promotion, OCI limited availability, co-developed and managed database offerings, native integrations, streaming and Kafka partnerships, provisioning, and implementation/channel evidence.\n- Identify the top candidates to send to Marcus Adeyemi for technical review, with a concise rationale and any evidence gaps or validation questions.\n\nAcceptance criteria:\n1. A ranked table or equivalent lists every candidate with commercial credibility and partnership-likelihood assessments.\n2. The scoring/ranking criteria are stated and applied consistently.\n3. A short prioritized shortlist is explicitly identified for Marcus Adeyemi's technical review.\n4. Recommendations distinguish evidence-backed relationships from candidates requiring further validation.\n5. Findings and source references are attached to or documented in the completed work item.\n\n---\n### Alknoma Context",
+    "project": "Backend Services",
+    "assignee_email": "sofia@example.com",
+    "state": "open"
+   },
+   "exchange": null
+  },
+  {
+   "seq": 2,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T10:54:50.750774Z",
+   "wall_time": "2026-08-24T10:54:50.750774Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "1787568890.750774"
+   },
+   "after": {
+    "kind": "message",
+    "text": "Hi \u2014 could you approve, decline, or reply to the pending ranking of Aiven integration candidates for commercial and partnership potential? Your response will let \u201cSecure Three Ayven Integration Partnerships\u201d move forward on this branch.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "channel": "dm-owner-1",
+    "recipient_emails": [
+     "owner@example.com"
+    ],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 3,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T10:59:44.040654Z",
+   "wall_time": "2026-08-24T10:59:44.040654Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "1787569184.040654"
+   },
+   "after": {
+    "kind": "message",
+    "text": "Hi Test, could you let me know who can approve Ayven\u2019s standard partnership terms now that Dania Kovac can\u2019t be assigned through the tracker? Your answer will let me file the follow-on actions.",
+    "channel": "dm-owner-2",
+    "recipient_emails": [
+     "owner@example.com"
+    ],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 4,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T11:00:02.816811Z",
+   "wall_time": "2026-08-24T11:00:02.816811Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "1787569202.816811"
+   },
+   "after": {
+    "kind": "message",
+    "text": "Hi \u2014 could you identify an alternative legal approver or routing path for Ayven\u2019s standard partnership terms? The legal-review ticket was rejected because Dania Kovac can\u2019t be assigned through the tracker, and your answer will let the agreement move toward approval.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "channel": "dm-owner-2",
+    "recipient_emails": [
+     "owner@example.com"
+    ],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 5,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T11:03:40.657574Z",
+   "wall_time": "2026-08-24T11:03:40.657574Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "1787569420.657574"
+   },
+   "after": {
+    "kind": "message",
+    "text": "Hi Test User, you\u2014could you let me know where \u201cStandard Partnership Terms \u2014 DRAFT\u201d can be accessed? Your reply will let us route it to Dania Kovac for external legal review.",
+    "channel": "dm-owner-2",
+    "recipient_emails": [
+     "owner@example.com"
+    ],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 6,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T11:12:18.528481Z",
+   "wall_time": "2026-08-24T11:12:18.528481Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "1787569938.528481"
+   },
+   "after": {
+    "kind": "message",
+    "text": "Hi \u2014 \u201cStandard Partnership Terms \u2014 DRAFT\u201d is now in the shared drive, and the planned note to Dania Kovac will link to it, so no attachment or pasted terms are needed. The routing is still awaiting your approval and hasn\u2019t been sent to Dania; could you confirm whether to approve it? Her approval is also needed before the draft can be used for signing.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "channel": "dm-owner-2",
+    "recipient_emails": [
+     "owner@example.com"
+    ],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 7,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T11:13:54.638973Z",
+   "wall_time": "2026-08-24T11:13:54.638973Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "1787570034.638973"
+   },
+   "after": {
+    "kind": "message",
+    "text": "Hi \u2014 could you approve, decline, or reply to the pending assessment of Aiven candidates for the signed integration partnership pursuit? Your response will determine whether work on \u201cSecure Three Ayven Integration Partnerships\u201d can proceed on this branch.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "channel": "dm-owner-1",
+    "recipient_emails": [
+     "owner@example.com"
+    ],
+    "thread_of": null
+   },
+   "exchange": null
+  },
+  {
+   "seq": 8,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T11:13:54.916011Z",
+   "wall_time": "2026-08-24T11:13:54.916011Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "asana",
+    "kind": "ticket",
+    "external_id": "1300000000000016"
+   },
+   "after": {
+    "kind": "ticket",
+    "title": "Assess Aiven candidates for signed integration partnership pursuit",
+    "body": "Assess Sofia Romano\u2019s completed shortlist of Aiven integration candidates for technical viability, integration scope, and implementation effort, then recommend exactly three candidates for commercially pursuing fully signed integration partnership agreements.\n\nCandidate shortlist: AWS, Microsoft Azure, Google Cloud, Oracle Cloud, DigitalOcean, OVHcloud, Hasura, Lenses, Conduktor, Ververica, Humanitech, Navisite, NucleusTeq, Data Sleek, and IBT.\n\nDeliverables:\n- Evaluate each candidate\u2019s technical and product fit with Aiven, including relevant integration or deployment evidence.\n- Define the likely integration scope, dependencies, architecture considerations, and implementation effort for viable candidates.\n- Assess commercial partnership potential, procurement/channel motion, customer reach, and agreement readiness.\n- Rank or score the candidates using explicit criteria and identify exactly three recommendations.\n- For each recommendation, state the proposed integration scope, estimated implementation effort, commercial rationale, key risks, and next steps toward a fully signed integration partnership agreement.\n- Clearly distinguish a signed integration partnership agreement from a letter of intent or verbal commitment; do not count an LOI or verbal commitment as completion.\n- Record evidence and assumptions, and identify any diligence required before commercial outreach.\n\nUse Sofia Romano\u2019s completed work item and the available research evidence as inputs; validate conclusions where needed.\n\n---\n### Alknoma Context",
+    "project": "Backend Services",
+    "assignee_email": "marcus@example.com",
+    "state": "open"
+   },
+   "exchange": null
+  },
+  {
+   "seq": 9,
+   "run_id": "f431fc97f427",
+   "wake": 1,
+   "sim_time": "2026-08-24T11:13:56.788896Z",
+   "wall_time": "2026-08-24T11:13:56.788896Z",
+   "actor": "agent",
+   "operation": "create",
+   "entity": {
+    "provider": "slack",
+    "kind": "message",
+    "external_id": "1787570036.788896"
+   },
+   "after": {
+    "kind": "message",
+    "text": "Hi \u2014 could you approve, decline, or reply to the request to route the draft partnership terms for the Ayven integration agreement review? It\u2019s now a day overdue, and your response is needed before work on securing the three Ayven integration partnerships can continue.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "channel": "dm-owner-1",
+    "recipient_emails": [
+     "owner@example.com"
+    ],
+    "thread_of": null
+   },
+   "exchange": null
+  }
+ ],
+ "wakes": [],
+ "obligations": [],
+ "commitments": null
+}
