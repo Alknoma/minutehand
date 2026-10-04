@@ -224,3 +224,6 @@ __marimo__/
 *.db
 *.db-wal
 *.db-shm
+
+# A run kept by `minutehand run` from the folder it was started in
+.minutehand/
