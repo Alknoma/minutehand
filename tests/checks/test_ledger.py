@@ -35,14 +35,59 @@ def test_a_reply_the_run_never_reached_does_not_settle() -> None:
     assert o.settled_at is None
 
 
-def test_an_ask_nobody_will_answer_opens_nothing_unless_the_person_is_silent_or_away() -> None:
+def test_an_ask_nobody_will_answer_opens_nothing_unless_the_person_is_silent() -> None:
     away = person("marcus", absences=[Absence(lasts=timedelta(days=2))])
     log = Log()
     log.message([SOFIA, DANIA, away], 1)
     opened = build(scenario(SOFIA, DANIA, away), log.events, [])
-    assert [o.person for o in opened] == ["dania", "marcus"]
+    assert [o.person for o in opened] == ["dania"]
     assert opened[0].expected_by == at(1) + DelayRange().longest and opened[0].settled_at is None
-    assert opened[1].expected_by == at(1) + timedelta(hours=2)
+    assert opened[0].patience == DelayRange().longest
+
+
+def test_a_thank_you_to_someone_away_who_already_answered_opens_no_wait() -> None:
+    # Until the replier's decision was the only source: a message to someone away opened a wait even when
+    # nobody would answer it, so the thank-you below was a second, never-settled wait on sofia.
+    away_after = person("sofia", absences=[Absence(starts_after=timedelta(hours=1.2), lasts=timedelta(days=9))])
+    log = Log()
+    ask = log.message([away_after], 0)
+    log.message([away_after], 1.5, text="Thank you!")
+    [o] = build(scenario(away_after), log.events, [reply(away_after, ask, 1)])
+    assert o.opened_by == ask.seq and o.settled_at == at(1)
+
+
+def test_a_follow_up_in_the_same_conversation_is_a_touch_on_the_open_wait_not_a_wait_of_its_own() -> None:
+    log = Log()
+    ask = log.message([DANIA], 0)
+    chased = log.message([DANIA], 48, text="Following up: could you review it?")
+    [o] = build(scenario(DANIA), log.events, [])
+    assert o.opened_by == ask.seq and o.agent_touches == [chased.seq]
+    assert o.expected_by == at(66)
+
+
+def test_a_message_after_the_wait_settled_or_in_another_conversation_opens_its_own() -> None:
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    elsewhere = log.message([DANIA], 0.5, channel="general")
+    other_channel = log.message([DANIA], 1, text="Any news?", channel="dm-dania")
+    later = log.message([SOFIA], 10, text="One more question: who signs?")
+    log.message([OWNER], 20, text="status")
+    opened = build(scenario(OWNER, SOFIA, DANIA), log.events, [reply(SOFIA, ask, 5), reply(SOFIA, later, 12)])
+    assert [(o.person, o.opened_by) for o in opened] == [
+        ("sofia", ask.seq),
+        ("dania", elsewhere.seq),
+        ("dania", other_channel.seq),
+        ("sofia", later.seq),
+    ]
+
+
+def test_an_answer_to_the_follow_up_settles_the_wait_it_chased() -> None:
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    chased = log.message([SOFIA], 3, text="Any news?")
+    log.message([OWNER], 60, text="status")
+    [o] = [o for o in build(scenario(OWNER, SOFIA), log.events, [reply(SOFIA, ask, 50), reply(SOFIA, chased, 4)])]
+    assert o.opened_by == ask.seq and o.settled_at == at(4)
 
 
 def test_a_handed_off_ticket_waits_for_its_fate_and_settles_only_when_the_person_finishes_it() -> None:

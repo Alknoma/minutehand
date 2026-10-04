@@ -3,11 +3,24 @@
 Nothing here reads what the agent says about itself. An ask is a message the
 agent sent; an answer is a reply the people stored; a hand-off is a ticket the
 agent filed or reassigned; its end is a later event by the person who holds it.
+
+Whether a message asked anything is the replier's decision, never the ledger's:
+a message opens a wait when the person has a reply decided to it, or when the
+person is `Silent`, whose every message is a question left unanswered. A message
+a person would not answer (a thank-you, a report) asked them nothing, whether or
+not they are away when it arrives.
+
+A message is the same ask as an earlier one, and so a follow-up on it rather
+than a wait of its own, when it goes to the same person in the same conversation
+(provider and channel, which a thread shares) while the earlier wait is still
+open. Nothing is read from the text, so this folds a second, different question
+asked in the same conversation before the first was answered into the first,
+and treats a reminder sent in another channel as a new ask.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime
 
@@ -82,8 +95,13 @@ class _Open(Model):
     opened_at: AwareDatetime
     opened_by: int
     expected_by: AwareDatetime | None
+    patience: timedelta | None = None
     settled_at: AwareDatetime | None
     primary: EntityRef
+    conversation: tuple[str, str] | None = None
+
+    def open_at(self, moment: datetime) -> bool:
+        return self.settled_at is None or moment < self.settled_at
 
 
 def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonReply]) -> list[Obligation]:
@@ -101,13 +119,26 @@ def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonRepl
         after = event.after
         if event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, MessageSnapshot):
             channel = EntityRef(provider=event.entity.provider, kind=EntityKind.CHANNEL, external_id=after.channel)
+            conversation = (event.entity.provider, after.channel)
             for person in recipients(event, scenario):
                 reply = answered.get((_ref(event.entity), person.key))
-                silent = isinstance(person.reply, Silent)
-                is_away = any(a.person == person.key and a.covers(event.sim_time) for a in away)
-                if reply is None and not silent and not is_away:
-                    continue
                 settled = reply.at if reply is not None and reply.at <= head else None
+                earlier = next(
+                    (
+                        o
+                        for o in opened
+                        if o.kind is ObligationKind.ANSWER_FROM_PERSON
+                        and o.person.key == person.key
+                        and o.conversation == conversation
+                        and o.open_at(event.sim_time)
+                    ),
+                    None,
+                )
+                if earlier is not None:
+                    opened[opened.index(earlier)] = _joined(earlier, event.entity, settled)
+                    continue
+                if reply is None and not isinstance(person.reply, Silent):
+                    continue
                 opened.append(
                     _Open(
                         key=f"answer:{event.entity.provider}:{event.entity.external_id}:{person.key}",
@@ -117,8 +148,10 @@ def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonRepl
                         opened_at=event.sim_time,
                         opened_by=event.seq,
                         expected_by=event.sim_time + _longest(person).longest,
+                        patience=_longest(person).longest,
                         settled_at=settled,
                         primary=event.entity,
+                        conversation=conversation,
                     )
                 )
         if not isinstance(after, TicketSnapshot):
@@ -164,6 +197,14 @@ def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonRepl
     return ledger
 
 
+def _joined(wait: _Open, message: EntityRef, answered: datetime | None) -> _Open:
+    """A follow-up on an open wait: the wait now also settles when this message is answered, if that is sooner."""
+    landed = [t for t in (wait.settled_at, answered) if t is not None]
+    return wait.model_copy(
+        update={"entities": [*wait.entities, message], "settled_at": min(landed) if landed else None}
+    )
+
+
 def _finished(ticket: EntityRef, since: int, events: list[WorldEvent]) -> datetime | None:
     """When the person holding this ticket first finished or cancelled it after `since`."""
     for event in events:
@@ -206,6 +247,7 @@ def _finish(o: _Open, events: list[WorldEvent], by_key: dict[str, Person], away:
         opened_at=o.opened_at,
         opened_by=o.opened_by,
         expected_by=o.expected_by,
+        patience=o.patience,
         settled_at=o.settled_at,
         agent_touches=touches,
         first_touch_after_settled=after_settled,
