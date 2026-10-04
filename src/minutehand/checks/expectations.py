@@ -17,12 +17,31 @@ from minutehand.domain.scenario import (
     TicketDeleted,
     TicketInState,
 )
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    TicketSnapshot,
+    WorldEvent,
+)
 
 
 def has_words(text: str, words: list[str]) -> bool:
     lowered = text.lower()
     return all(w.lower() in lowered for w in words)
+
+
+def _first_per_ticket(events: list[WorldEvent]) -> list[WorldEvent]:
+    """A ticket written twice in a state is one ticket in it: count tickets, not their versions."""
+    seen: set[EntityRef] = set()
+    first: list[WorldEvent] = []
+    for event in events:
+        if event.entity not in seen:
+            seen.add(event.entity)
+            first.append(event)
+    return first
 
 
 class Expectations:
@@ -42,6 +61,8 @@ class Expectations:
             matched = [e for e in view.events if self.matches(expected, e, email)]
             if expected.by is not None:
                 matched = [e for e in matched if e.sim_time <= start + expected.by]
+            if isinstance(expected, TicketInState):
+                matched = _first_per_ticket(matched)
             count = len(matched)
             too_few = count < expected.at_least
             too_many = expected.at_most is not None and count > expected.at_most

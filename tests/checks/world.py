@@ -29,6 +29,7 @@ from minutehand.domain.world import (
     Exchange,
     MessageSnapshot,
     Operation,
+    RecordSnapshot,
     Snapshot,
     TicketSnapshot,
     WorldEvent,
@@ -133,6 +134,11 @@ class Log:
             title=title, project=project, state=state, assignee_email=assignee.email if assignee else None
         )
         return self._add(hours, actor, operation, ref, snapshot, wake)
+
+    def record(self, resource: str, text: str, hours: float, *, wake: int = 1) -> WorldEvent:
+        """An agent write to a resource nobody has mapped to a ticket, message or document."""
+        ref = EntityRef(provider="generated", kind=EntityKind.RECORD, external_id=f"r{len(self.events) + 1}")
+        return self._add(hours, Actor.AGENT, Operation.CREATE, ref, RecordSnapshot(resource=resource, text=text), wake)
 
     def read(self, entity: EntityRef, hours: float, *, wake: int = 1) -> WorldEvent:
         return self._add(hours, Actor.AGENT, Operation.READ, entity, None, wake)

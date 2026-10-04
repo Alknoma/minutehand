@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
-from minutehand.domain.world import Actor, MessageSnapshot, Operation, TicketSnapshot
+from minutehand.domain.world import Actor, MessageSnapshot, Operation, RecordSnapshot, TicketSnapshot
 
 WORD = re.compile(r"[A-Za-z][A-Za-z0-9]+")
 
@@ -42,6 +42,8 @@ class NearMissName:
                 written = f"{event.after.title} {event.after.body}"
             elif isinstance(event.after, MessageSnapshot):
                 written = event.after.text
+            elif isinstance(event.after, RecordSnapshot):
+                written = event.after.text  # a resource nobody mapped: its strings are still what the agent wrote
             else:
                 continue
             for word in dict.fromkeys(WORD.findall(written)):
