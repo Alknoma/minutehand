@@ -3,6 +3,13 @@
 There is no registration list: a check is a class defined in a module of this
 package that has an `id`, a `needs` and a `run`. A module that defines one is
 picked up the moment it exists, so a check cannot sit here and gate nothing.
+A judged check is found the same way in `checks.judged`, by its `judge`.
+
+Judged checks run only when asked for (`evaluate_judged`), after every
+deterministic check, and never on an entity a deterministic check failed. Asked
+for with no model, each one is listed in `blocked`: a judged check that could not
+run never reads as one that passed. An `about` expectation counts as met only
+when `asked_about` judged it so.
 """
 
 from __future__ import annotations
@@ -10,12 +17,17 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
+from collections.abc import Callable
 from datetime import datetime
+from types import ModuleType
+from typing import Protocol
 
 from minutehand import checks as package
+from minutehand.checks import judged as judged_package
 from minutehand.checks._waits import ended_at
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
+from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.ledger import build
 from minutehand.domain.agent import Commitment
 from minutehand.domain.checks import (
@@ -29,8 +41,12 @@ from minutehand.domain.checks import (
     WakeRecord,
 )
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Model, Scenario
-from minutehand.domain.world import Exchange, WorldEvent
+from minutehand.domain.scenario import Model, PersonAsked, Scenario
+from minutehand.domain.world import EntityRef, Exchange, WorldEvent
+from minutehand.ports.model import JudgedCheck, ModelFailed
+from minutehand.ports.model import Model as LanguageModel
+
+NO_MODEL = "no model is configured"
 
 
 class RunResult(Model):
@@ -58,16 +74,36 @@ def _is_check(candidate: object) -> bool:
     )
 
 
-def discover() -> list[Check]:
-    """One instance of every check class defined in this package, ordered by id."""
-    found: list[Check] = []
-    for module_info in pkgutil.iter_modules(package.__path__):
+def _is_judged(candidate: object) -> bool:
+    if not inspect.isclass(candidate):
+        return False
+    attributes = vars(candidate)
+    return (
+        isinstance(attributes["id"] if "id" in attributes else None, str)
+        and isinstance(attributes["needs"] if "needs" in attributes else None, frozenset)
+        and isinstance(attributes["prompt_version"] if "prompt_version" in attributes else None, str)
+        and callable(attributes["judge"] if "judge" in attributes else None)
+    )
+
+
+def _classes(where: ModuleType, is_one: Callable[[object], bool]) -> list[type]:
+    """Every class `is_one` accepts that is defined in a module of the package `where`."""
+    found: list[type] = []
+    for module_info in pkgutil.iter_modules(where.__path__):
         if module_info.name.startswith("_"):
             continue
-        module = importlib.import_module(f"{package.__name__}.{module_info.name}")
-        for _, candidate in inspect.getmembers(module, _is_check):
+        module = importlib.import_module(f"{where.__name__}.{module_info.name}")
+        for _, candidate in inspect.getmembers(module, is_one):
             if candidate.__module__ == module.__name__:
-                found.append(candidate())
+                found.append(candidate)
+    return found
+
+
+class _Identified(Protocol):
+    id: str
+
+
+def _unique[C: _Identified](found: list[C]) -> list[C]:
     ids = [c.id for c in found]
     duplicated = sorted({i for i in ids if ids.count(i) > 1})
     if duplicated:
@@ -75,21 +111,80 @@ def discover() -> list[Check]:
     return sorted(found, key=lambda c: c.id)
 
 
-def evaluate(view: RunView, *, ended: datetime | None = None) -> RunResult:
-    """Every discovered check over a view that is already built."""
-    findings: list[Finding] = []
-    blocked: list[str] = []
-    notes: list[str] = []
-    met = len(view.scenario.expect)
+def discover() -> list[Check]:
+    """One instance of every check class defined in this package, ordered by id."""
+    found: list[Check] = [cls() for cls in _classes(package, _is_check)]
+    return _unique(found)
+
+
+def discover_judged() -> list[JudgedCheck]:
+    """One instance of every judged check class defined in `checks.judged`, ordered by id."""
+    found: list[JudgedCheck] = [cls() for cls in _classes(judged_package, _is_judged)]
+    return _unique(found)
+
+
+class _Tally:
+    """What the checks have said so far, and how many expectations are met."""
+
+    def __init__(self, view: RunView) -> None:
+        self.findings: list[Finding] = []
+        self.blocked: list[str] = []
+        self.notes: list[str] = []
+        self.met = len(view.scenario.expect)
+        self.unjudged = sum(1 for e in view.scenario.expect if isinstance(e, PersonAsked) and e.about is not None)
+
+    def add(self, check_id: str, report: CheckReport) -> None:
+        self.findings += report.findings
+        self.blocked += report.blocked
+        self.notes += [f"{check_id}: {n}" for n in report.notes]
+
+    def result(self, view: RunView, ended: datetime | None) -> RunResult:
+        met = self.met - self.unjudged
+        card = measure(view, self.findings, met=met, ended_at=ended or ended_at(view))
+        return RunResult(findings=self.findings, blocked=self.blocked, notes=self.notes, effectiveness=card)
+
+
+def _deterministic(view: RunView) -> _Tally:
+    tally = _Tally(view)
     for check in discover():
         report: CheckReport = check.run(view)
-        findings += report.findings
-        blocked += report.blocked
-        notes += [f"{check.id}: {n}" for n in report.notes]
+        tally.add(check.id, report)
         if isinstance(check, Expectations):
-            met -= len(report.findings)
-    card = measure(view, findings, met=met, ended_at=ended or ended_at(view))
-    return RunResult(findings=findings, blocked=blocked, notes=notes, effectiveness=card)
+            tally.met -= len(report.findings)
+    return tally
+
+
+def failed_entities(view: RunView, findings: list[Finding]) -> frozenset[EntityRef]:
+    """Every entity a failing finding names as its evidence."""
+    seqs = {seq for f in findings if f.kind is FindingKind.FAIL for seq in f.evidence}
+    return frozenset(e.entity for e in view.events if e.seq in seqs)
+
+
+def evaluate(view: RunView, *, ended: datetime | None = None) -> RunResult:
+    """Every deterministic check over a view that is already built. Judged checks are not run, and an `about`
+    expectation, which only `asked_about` can settle, is not counted as met."""
+    return _deterministic(view).result(view, ended)
+
+
+async def evaluate_judged(view: RunView, model: LanguageModel | None, *, ended: datetime | None = None) -> RunResult:
+    """Every deterministic check, then every judged check on what they did not fail. With no model, each judged
+    check is blocked; a model that fails partway blocks the check it failed in."""
+    tally = _deterministic(view)
+    failed = failed_entities(view, tally.findings)
+    for check in discover_judged():
+        if model is None:
+            tally.blocked.append(f"{check.id}: {NO_MODEL}")
+            continue
+        try:
+            report = await check.judge(view, model, failed=failed)
+        except ModelFailed as e:
+            tally.blocked.append(f"{check.id}: the model failed: {e}")
+            continue
+        tally.add(check.id, report)
+        if isinstance(check, AskedAbout):
+            tally.unjudged = 0
+            tally.met -= len(report.findings)
+    return tally.result(view, ended)
 
 
 def evaluate_run(
@@ -102,8 +197,22 @@ def evaluate_run(
     unmatched_calls: list[Exchange] | None = None,
     ended: datetime | None = None,
 ) -> RunResult:
-    """Build the obligations ledger from the world and the replies, then run every check."""
-    view = RunView(
+    """Build the obligations ledger from the world and the replies, then run every deterministic check."""
+    view = view_of(scenario, events, wakes, replies, commitments=commitments, unmatched_calls=unmatched_calls)
+    return evaluate(view, ended=ended)
+
+
+def view_of(
+    scenario: Scenario,
+    events: list[WorldEvent],
+    wakes: list[WakeRecord],
+    replies: list[PersonReply],
+    *,
+    commitments: list[Commitment] | None = None,
+    unmatched_calls: list[Exchange] | None = None,
+) -> RunView:
+    """What every check reads: the world, the wakes, and the obligations ledger built from the replies."""
+    return RunView(
         scenario=scenario,
         events=events,
         wakes=wakes,
@@ -111,7 +220,6 @@ def evaluate_run(
         commitments=commitments,
         unmatched_calls=unmatched_calls,
     )
-    return evaluate(view, ended=ended)
 
 
 def stability(results: list[RunResult]) -> Stability:

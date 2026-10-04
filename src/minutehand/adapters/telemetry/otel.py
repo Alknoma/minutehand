@@ -222,6 +222,9 @@ class OtelTelemetry:
             attributes.update(_sim_time(finding.at))
         if finding.wake is not None:
             attributes["minutehand.wake"] = finding.wake
+        if finding.judged is not None:
+            attributes["minutehand.judge.model"] = finding.judged.model
+            attributes["minutehand.judge.prompt_version"] = finding.judged.prompt_version
 
         evidence = self._spans_by_seq.get(finding.evidence[0]) if finding.evidence else None
         context = set_span_in_context(NonRecordingSpan(evidence) if evidence is not None else INVALID_SPAN)
