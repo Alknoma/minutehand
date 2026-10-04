@@ -48,9 +48,12 @@ def test_a_scenario_with_no_protected_names_says_so_and_finds_nothing() -> None:
     assert report.findings == [] and report.notes == ["scenario declares no protected_names"]
 
 
-def test_repeated_messages_are_flagged_for_review_not_failed() -> None:
+def test_only_the_real_repeat_is_flagged_for_review_not_the_template_alike_pairs() -> None:
+    # This asserted three flags until the check weighed shared wording by its rarity. Of the
+    # three, only [3, 4] asks the same thing twice (who can approve the terms now that the
+    # legal reviewer cannot be assigned); [4, 5] and [7, 9] share the agent's template.
     findings = RepeatedMessage().run(WORLD).findings
-    assert [f.kind for f in findings] == [FindingKind.REVIEW] * 3
+    assert [(f.kind, f.evidence) for f in findings] == [(FindingKind.REVIEW, [3, 4])]
     assert "18 seconds apart" in findings[0].message
 
 
