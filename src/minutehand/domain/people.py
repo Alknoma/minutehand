@@ -17,6 +17,14 @@ class PersonReply(Model):
     at: AwareDatetime = Field(description="Simulated time the reply lands")
 
 
+class PersonMessage(Model):
+    """Something a person says to the agent unprompted: the owner handing over the goal, or a direction."""
+
+    person: str = Field(description="Person.key")
+    text: str
+    at: AwareDatetime = Field(description="Simulated time the message is sent")
+
+
 class InboundTarget(Model):
     """Where a provider pushes events to the agent, the way the real service would."""
 

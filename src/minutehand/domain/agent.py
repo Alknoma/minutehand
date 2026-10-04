@@ -10,10 +10,10 @@ from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, model_validator
 
 from minutehand.domain.people import InboundTarget
-from minutehand.domain.scenario import Model
+from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityRef
 
 
@@ -151,13 +151,41 @@ class StateHooks(Model):
     restore: list[str] = Field(min_length=1)
 
 
+class GoalByWake(Model):
+    """The goal arrives in the START wake's `WakeRequest.goal`, and directions in DIRECTION wakes."""
+
+    kind: Literal["by_wake"] = "by_wake"
+
+
+class GoalByMessage(Model):
+    """The scenario's owner sends the goal as a message through this provider, as a person would, and every
+    scripted direction the same way. An agent reached like this may expose no wake endpoint at all."""
+
+    kind: Literal["by_message"] = "by_message"
+    provider: ProviderKey
+
+
+GoalSource = Annotated[GoalByWake | GoalByMessage, Field(discriminator="kind")]
+
+
 class AgentUnderTest(Model):
     """How the monitor reaches the agent. Replies and pushed events always wake it;
-    `wakes` lists every other way it comes back to work."""
+    `wakes` lists every other way it comes back to work, and may be empty when the goal is sent as a message."""
 
     name: str
-    wakes: list[WakeSource] = Field(min_length=1)
+    goal: GoalSource = GoalByWake()
+    wakes: list[WakeSource] = []
     inbound: list[InboundTarget] = []
     human_actions: list[HumanAction] = []
     inbox: Inbox | None = None
     state: StateHooks | None = None
+
+    @model_validator(mode="after")
+    def _goal_reaches_it(self) -> "AgentUnderTest":
+        if isinstance(self.goal, GoalByMessage):
+            if not any(t.provider == self.goal.provider for t in self.inbound):
+                raise ValueError(f"the goal is sent as a message on {self.goal.provider}, "
+                                 "and the agent declares no inbound target there")
+        elif not self.wakes:
+            raise ValueError("the goal is handed over in a wake, and the agent declares no way to be woken")
+        return self
