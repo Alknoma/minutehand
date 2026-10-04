@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from minutehand import session
-from minutehand.domain.checks import FindingKind
+from minutehand.checks.runner import stability
+from minutehand.domain.checks import FindingKind, Stability
 from minutehand.domain.run import StopReason
 from minutehand.domain.world import Actor
 from tests.e2e.support import (
@@ -87,3 +88,21 @@ async def test_an_agent_that_takes_its_goal_from_a_slack_dm_needs_no_wake_endpoi
     assert launched.state()["verified"] == [scn.goal, ANSWER]
     assert (outcome.result.effectiveness.expectations_met, outcome.result.effectiveness.expectations_total) == (2, 2)
     assert [f for f in outcome.result.findings if f.kind is FindingKind.FAIL] == []
+
+
+async def test_two_samples_are_two_runs_through_one_proxy_each_from_the_agents_first_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launched = agent_under_test(tmp_path, monkeypatch, "diligent", hooks=True)
+    scn = scenario(answers(after=timedelta(hours=36)))
+
+    outcomes = await session.play(scn, launched.agent, state=tmp_path / "state", samples=2, command=launched.command)
+
+    assert [o.record.stop for o in outcomes] == [StopReason.AGENT_DONE, StopReason.AGENT_DONE]
+    first, second = (world(tmp_path / "state", o.record.run_id) for o in outcomes)
+    assert first.run_id != second.run_id
+    for store in (first, second):
+        events = store.events()
+        assert texts(messages(events, Actor.AGENT, to=SOFIA)) == [QUESTION, THANKS]
+        assert len(store.calls()) == len([c for c in store.calls() if c.provider == "slack"]) > 0
+    assert stability([o.result for o in outcomes]) == Stability(samples=2, passed=2)

@@ -42,6 +42,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.rewind import changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
+from minutehand.application.state_hooks import run_hook, wake_dir
 from minutehand.checks.runner import RunResult, evaluate_run
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.experiment import Fork
@@ -109,6 +110,10 @@ async def play(
     `command`, when given, is the agent's own program: started before each run with only the proxy, its
     CA and the run's signing secrets added to this process's environment, waited for until it accepts
     connections, and stopped when the run ends.
+
+    Each sample after the first starts from the agent's own state as the first found it, restored through
+    its `StateHooks`. Without hooks the agent carries what it remembers from one sample into the next, and
+    the samples are not independent.
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
@@ -120,6 +125,8 @@ async def play(
     async with Proxy(routing, first[0], first[1], confdir=state / "ca") as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
+            if sample > 0 and agent.state is not None:
+                await run_hook(agent.state.restore, wake_dir(state / RUNS, first[0].run_id, 0))
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             judge = _Judge(scenario)
