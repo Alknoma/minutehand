@@ -94,13 +94,40 @@ jobs:
       # The seed is printed at the top of the output; rerun with -p randomly -p "randomly_seed=N".
       - run: uv run pytest -q -n auto
 
+  # main takes pull requests from integration-main and from nowhere else. A branch rule can
+  # only constrain the branch being written to, never the branch a pull request comes from,
+  # so this has to be a check. It has no `if`: it runs on every event and says yes on all but
+  # the one it exists for, because a job that is skipped is a job the gate cannot count on.
+  promotion:
+    name: Promotion source
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Only integration-main may merge into main
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" = "pull_request" ] && [ "$BASE_REF" = "main" ]; then
+            if [ "$HEAD_REF" != "integration-main" ] || [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+              echo "::error::'$HEAD_REPO:$HEAD_REF' cannot merge into main. main takes pull requests from integration-main only. Retarget this pull request at integration-main."
+              exit 1
+            fi
+            echo "Promotion from integration-main."
+          else
+            echo "Not a pull request into main; nothing to check."
+          fi
+
   # The ONE required status check. Branch rules name this job and nothing else, so a job
   # above can be renamed, split or added without touching the rules. It runs always: a
   # gate that is skipped reports nothing, which a branch rule cannot tell from "still running".
   gate:
     name: gate
     if: always()
-    needs: [types, lints, workflows, tests]
+    needs: [types, lints, workflows, tests, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
