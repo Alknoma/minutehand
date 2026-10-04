@@ -77,7 +77,6 @@ LISTEN_TIMEOUT = 30.0
 """Seconds the agent's process has to accept connections on its wake or inbound URL."""
 
 STOP_TIMEOUT = 5.0
-POLL_INTERVAL = 0.01
 
 
 class AgentExited(RunRefused):
@@ -161,7 +160,6 @@ async def play(
                         mounts=proxy,
                         scorer=scorer,
                         state_dir=state / RUNS,
-                        poll_interval=POLL_INTERVAL,
                     )
             outcomes.append(_keep(directory, record, scorer))
     return outcomes
@@ -224,7 +222,6 @@ async def fork(
                         telemetry=telemetry,
                         mounts=proxy,
                         scorer=scorer,
-                        poll_interval=POLL_INTERVAL,
                     )
         finally:
             routing.apply(child_id, [])

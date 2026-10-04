@@ -72,8 +72,6 @@ async def fork_run(
     telemetry: Telemetry | None = None,
     mounts: Mounts | None = None,
     scorer: Scorer | None = None,
-    poll_interval: float = 0.05,
-    max_polls: int = 1200,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -147,8 +145,6 @@ async def fork_run(
                 mounts=mounts,
                 scorer=scorer,
                 state_dir=state_dir,
-                poll_interval=poll_interval,
-                max_polls=max_polls,
                 parent_run=parent.run_id,
                 forked_at=fork.at_seq,
                 prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],

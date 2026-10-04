@@ -31,7 +31,7 @@ class PolledDriver:
             raise AgentFailed(f"POST {self._wake_url} answered {response.status_code}: {response.text[:500]}")
         self._answered = True
 
-    async def report(self) -> AgentReport:
+    async def settled(self) -> AgentReport:
         if not self._answered:
             raise AgentFailed(f"{self._wake_url} was asked for a report before it answered a wake")
         return AgentReport(status=AgentStatus.IDLE)

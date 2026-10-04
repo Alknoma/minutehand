@@ -111,7 +111,6 @@ class Rig:
             replier=ScriptedReplier(scn),
             mounts=self.board,
             state_dir=self.tmp / "state",
-            poll_interval=0.001,
         )
         return record, store, clock
 

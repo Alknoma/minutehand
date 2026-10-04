@@ -24,7 +24,7 @@ def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) ->
     polled: list[Polled] = []
     for source in agent.wakes:
         if isinstance(source, Reported):
-            main.append(ReportedDriver(source.wake_url, source.report_url))
+            main.append(ReportedDriver(source))
         elif isinstance(source, Command):
             main.append(CommandDriver(source.argv, env=env))
         elif isinstance(source, Polled):

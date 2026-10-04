@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import itertools
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -77,7 +80,6 @@ async def _run(rig: Rig, scn: Scenario, agent: AgentUnderTest, run_id: str) -> R
         clock=clock,
         services=Services(providers=[]),
         replier=ScriptedReplier(scn),
-        poll_interval=0.001,
     )
 
 
@@ -140,3 +142,99 @@ async def test_a_scripted_direction_wakes_the_agent_with_the_owners_words(rig: R
         (WakeReason.TICK, T0 + timedelta(hours=5)),
     ]
     assert heard == [None, "Prioritise the legal review.", None]
+
+
+class SlowAgent:
+    """Answers WORKING for `turn` seconds of real time after each wake, then DONE; its wake call takes `answer`."""
+
+    def __init__(self, *, turn: float, answer: float = 0.0) -> None:
+        self.turn = turn
+        self.answer = answer
+        self.polls: list[float] = []
+        self._woken = 0.0
+
+    def app(self) -> Starlette:
+        async def wake(request: Request) -> Response:
+            await asyncio.sleep(self.answer)
+            self._woken = time.monotonic()
+            return JSONResponse({"ok": True})
+
+        async def report(request: Request) -> Response:
+            self.polls.append(time.monotonic() - self._woken)
+            working = time.monotonic() - self._woken < self.turn
+            answer = AgentReport(status=AgentStatus.WORKING if working else AgentStatus.DONE)
+            return Response(answer.model_dump_json(), media_type="application/json")
+
+        return Starlette(routes=[Route("/wake", wake, methods=["POST"]), Route("/report", report, methods=["GET"])])
+
+
+def _reported(base: str, **limits: timedelta) -> AgentUnderTest:
+    source = Reported.model_validate({"wake_url": f"{base}/wake", "report_url": f"{base}/report", **limits})
+    return AgentUnderTest(name="slow", wakes=[source])
+
+
+def test_the_default_limits_give_a_wake_minutes_and_ask_for_the_report_every_few_seconds_at_most() -> None:
+    source = Reported(wake_url="http://agent/wake", report_url="http://agent/report")
+
+    assert source.working_limit >= timedelta(minutes=15)
+    assert source.wake_timeout >= timedelta(minutes=1)
+    assert timedelta(seconds=1) <= source.report_at_most_every <= timedelta(seconds=30)
+
+
+async def test_a_turn_of_two_seconds_is_waited_for_and_asked_about_a_handful_of_times(rig: Rig) -> None:
+    agent = SlowAgent(turn=2.0)
+    async with serving(agent.app()) as base:
+        under_test = _reported(
+            base,
+            report_first_after=timedelta(milliseconds=20),
+            report_at_most_every=timedelta(milliseconds=500),
+            working_limit=timedelta(seconds=20),
+        )
+        record = await _run(rig, scenario(ticket_fates=[]), under_test, "slow-turn")
+
+    assert record.stop is StopReason.AGENT_DONE, record.failure
+    # 20, 40, 80, 160, 320 ms, then every 500 ms: about nine asks for two seconds, not hundreds.
+    assert 4 <= len(agent.polls) <= 12, agent.polls
+    gaps = [b - a for a, b in itertools.pairwise(agent.polls)]
+    assert gaps[-1] > 0.3, gaps
+
+
+async def test_a_wake_still_working_past_its_limit_stops_the_run_agent_failed_naming_the_limit(rig: Rig) -> None:
+    agent = SlowAgent(turn=60.0)
+    async with serving(agent.app()) as base:
+        under_test = _reported(
+            base,
+            report_first_after=timedelta(milliseconds=20),
+            report_at_most_every=timedelta(milliseconds=100),
+            working_limit=timedelta(milliseconds=400),
+        )
+        started = time.monotonic()
+        record = await _run(rig, scenario(ticket_fates=[]), under_test, "too-slow")
+        took = time.monotonic() - started
+
+    assert record.stop is StopReason.AGENT_FAILED
+    assert record.failure is not None and "still answered WORKING 0.4 s" in record.failure
+    assert "working_limit" in record.failure
+    assert took < 5
+
+
+async def test_a_wake_call_slower_than_its_timeout_stops_the_run_agent_failed_naming_the_limit(rig: Rig) -> None:
+    agent = SlowAgent(turn=0.0, answer=1.0)
+    async with serving(agent.app()) as base:
+        record = await _run(
+            rig, scenario(ticket_fates=[]), _reported(base, wake_timeout=timedelta(milliseconds=200)), "slow-wake"
+        )
+
+    assert record.stop is StopReason.AGENT_FAILED
+    assert record.failure is not None and "did not answer within 0.2 s" in record.failure
+    assert "wake_timeout" in record.failure
+
+
+async def test_a_wake_call_inside_its_timeout_is_waited_for(rig: Rig) -> None:
+    agent = SlowAgent(turn=0.0, answer=1.0)
+    async with serving(agent.app()) as base:
+        record = await _run(
+            rig, scenario(ticket_fates=[]), _reported(base, wake_timeout=timedelta(seconds=5)), "slow-wake-ok"
+        )
+
+    assert record.stop is StopReason.AGENT_DONE, record.failure

@@ -237,6 +237,8 @@ def _describe(outcome: Outcome, points: list[ForkPoint]) -> str:
     if record.parent_run is not None:
         lines.append(f"  forked from {record.parent_run} at seq {record.forked_at}")
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
+    if record.failure is not None:
+        lines.append(f"  {record.failure}")
     for kind in _KIND_ORDER:
         found = [f for f in result.findings if f.kind is kind]
         if found:

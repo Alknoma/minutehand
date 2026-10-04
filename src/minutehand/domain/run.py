@@ -28,4 +28,5 @@ class RunRecord(Model):
     ended_at: AwareDatetime = Field(description="Simulated")
     wall_seconds: float = Field(ge=0)
     stop: StopReason
+    failure: str | None = Field(default=None, description="Why, when the run stopped AGENT_FAILED")
     wakes: list[WakeRecord]

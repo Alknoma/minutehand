@@ -7,7 +7,6 @@ from the world and schedule what the world owes back: people's replies and ticke
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -164,8 +163,6 @@ class Orchestrator:
         mounts: Mounts | None = None,
         scorer: Scorer | None = None,
         state_dir: Path | None = None,
-        poll_interval: float = 0.05,
-        max_polls: int = 1200,
         parent_run: str | None = None,
         forked_at: int | None = None,
         prior_wakes: Sequence[WakeRecord] = (),
@@ -193,8 +190,6 @@ class Orchestrator:
         self._mounts = mounts
         self._scorer = scorer
         self._state_dir = state_dir
-        self._poll_interval = poll_interval
-        self._max_polls = max_polls
         self._parent_run = parent_run
         self._forked_at = forked_at
         self._wakes: list[WakeRecord] = list(prior_wakes)
@@ -202,6 +197,7 @@ class Orchestrator:
         self._replies: list[PersonReply] = []
         self._fated: list[EntityRef] = []
         self._commitments: list[Commitment] | None = None
+        self._failure: str | None = None
         self._seen = 0
         self._people = {p.email: p for p in scenario.people}
 
@@ -244,7 +240,8 @@ class Orchestrator:
         self._record_new()
         try:
             await self._checkpoint()
-        except AgentFailed:
+        except AgentFailed as e:
+            self._failure = str(e)
             return await self._end(StopReason.AGENT_FAILED, started)
         stop = await self._start()
         if stop is None:
@@ -300,6 +297,7 @@ class Orchestrator:
             ended_at=self._clock.now(),
             wall_seconds=time.monotonic() - started,
             stop=stop,
+            failure=self._failure,
             wakes=self._wakes,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None
@@ -457,12 +455,13 @@ class Orchestrator:
             for driver, request in requests:
                 await driver.wake(request)
             for driver, _ in requests:
-                report = await self._settle(driver)
+                report = await driver.settled()
                 done = done or report.status is AgentStatus.DONE
                 if driver is self._reach.main:
                     commitments_changed = self._adopt(report)
-        except AgentFailed:
+        except AgentFailed as e:
             failed = True
+            self._failure = str(e)
         new = self._record_new()
         if not failed:
             await self._schedule(new)
@@ -482,21 +481,14 @@ class Orchestrator:
             return StopReason.AGENT_FAILED
         try:
             await self._checkpoint()
-        except AgentFailed:
+        except AgentFailed as e:
+            self._failure = str(e)
             return StopReason.AGENT_FAILED
         if done:
             return StopReason.AGENT_DONE
         if len(self._wakes) >= self._scenario.max_wakes:
             return StopReason.WAKE_LIMIT
         return None
-
-    async def _settle(self, driver: AgentDriver) -> AgentReport:
-        for _ in range(self._max_polls):
-            report = await driver.report()
-            if report.status is not AgentStatus.WORKING:
-                return report
-            await asyncio.sleep(self._poll_interval)
-        raise AgentFailed(f"agent {self._agent.name} was still working after {self._max_polls} polls")
 
     def _adopt(self, report: AgentReport) -> bool:
         """Take the agent's next wake, replacing the one it named before. Answers whether its commitments changed."""
@@ -641,8 +633,6 @@ async def run_scenario(
     mounts: Mounts | None = None,
     scorer: Scorer | None = None,
     state_dir: Path | None = None,
-    poll_interval: float = 0.05,
-    max_polls: int = 1200,
 ) -> RunRecord:
     """Run one scenario from its start."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
@@ -659,6 +649,4 @@ async def run_scenario(
         mounts=mounts,
         scorer=scorer,
         state_dir=state_dir,
-        poll_interval=poll_interval,
-        max_polls=max_polls,
     ).run()

@@ -76,11 +76,37 @@ class AgentReport(Model):
 
 
 class Reported(Model):
-    """The agent says when it next needs to wake. Exact, and needs an endpoint or adapter."""
+    """The agent says when it next needs to wake. Exact, and needs an endpoint or adapter.
+
+    A wake is over when `report_url` answers anything but WORKING. The defaults suit an agent whose turn takes
+    minutes: the report is asked for quickly at first and then less often, the wait doubling from
+    `report_first_after` up to `report_at_most_every`, and a wake still WORKING after `working_limit` stops the
+    run as AGENT_FAILED.
+    """
 
     kind: Literal["reported"] = "reported"
     wake_url: str
     report_url: str
+    wake_timeout: timedelta = Field(
+        default=timedelta(minutes=2),
+        gt=timedelta(0),
+        description="How long one call to wake_url or report_url may take",
+    )
+    report_first_after: timedelta = Field(
+        default=timedelta(milliseconds=100), gt=timedelta(0), description="The wait before the first ask for the report"
+    )
+    report_at_most_every: timedelta = Field(
+        default=timedelta(seconds=10), gt=timedelta(0), description="The longest wait between two asks for the report"
+    )
+    working_limit: timedelta = Field(
+        default=timedelta(minutes=30), gt=timedelta(0), description="How long one wake may stay WORKING"
+    )
+
+    @model_validator(mode="after")
+    def _backs_off(self) -> Reported:
+        if self.report_at_most_every < self.report_first_after:
+            raise ValueError("report_at_most_every is shorter than report_first_after")
+        return self
 
 
 class Booked(Model):
