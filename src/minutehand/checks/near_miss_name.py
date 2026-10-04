@@ -1,7 +1,7 @@
 """A protected name written almost, but not exactly, as the scenario gave it.
 
-The defect this exists for: an agent given the goal "three Ayven integration
-partnerships" researched Aiven, a different company, then filed two tickets and
+The defect this exists for: an agent given a goal naming one company researched
+a different company whose name is one letter away, then filed two tickets and
 sent two messages under that name (run f431fc97f427, 2026-08-24).
 """
 
@@ -27,6 +27,7 @@ def _distance(a: str, b: str) -> int:
 class NearMissName:
     id = "near_miss_name"
     needs = frozenset({Needs.WORLD})
+    pattern = "confirm_names"
 
     def run(self, view: RunView) -> CheckReport:
         names = view.scenario.protected_names
@@ -57,7 +58,7 @@ class NearMissName:
                                 at=event.sim_time,
                                 wake=event.wake,
                                 evidence=[event.seq],
-                        pattern="confirm_names",
+                                pattern=self.pattern,
                             )
                         )
         return CheckReport(findings=findings)
