@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
+import threading
 
 import pytest
 
-from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.people import PersonReply
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Exchange, Operation, TicketSnapshot
@@ -74,7 +76,7 @@ def test_a_fork_sees_its_parent_up_to_the_fork_and_neither_sees_the_other_after(
     store, _ = world
     store.apply(ticket("one", Operation.CREATE))
     store.apply(ticket("two"))
-    fork = store.fork("what-if", at_seq=1)
+    fork = store.fork("what-if", at_seq=1, clock=RunClock(START))
     assert fork.head() == 1
     seen = fork.get(TICKET)
     assert seen is not None and seen.body == '{"name": "one"}'
@@ -90,7 +92,7 @@ def test_a_fork_sees_its_parent_up_to_the_fork_and_neither_sees_the_other_after(
 def test_a_fork_past_the_head_is_refused(world: tuple[SqliteStore, RunClock]) -> None:
     store, _ = world
     with pytest.raises(ValueError, match="head is 0"):
-        store.fork("too-far", at_seq=5)
+        store.fork("too-far", at_seq=5, clock=RunClock(START))
 
 
 def test_an_exchange_is_returned_with_the_event_it_produced(world: tuple[SqliteStore, RunClock]) -> None:
@@ -113,3 +115,83 @@ def test_the_clock_refuses_to_run_backwards() -> None:
     clock = RunClock(START)
     with pytest.raises(ValueError, match="only moves forward"):
         clock.jump(START - timedelta(seconds=1))
+
+
+def test_a_refused_call_is_readable_and_is_not_pinned_on_the_next_event(world: tuple[SqliteStore, RunClock]) -> None:
+    store, _ = world
+    refused = Exchange(method="GET", host="example.org", path="/", status=502)
+    store.attach(refused, first_seq=store.head() + 1, last_seq=store.head())
+    event = store.apply(ticket("one", Operation.CREATE))
+    answered = Exchange(method="POST", host="app.asana.com", path="/api/1.0/tasks", status=201)
+    store.attach(answered, first_seq=event.seq, last_seq=event.seq, provider="asana")
+    assert store.events()[0].exchange == answered
+    calls = store.calls()
+    assert [(c.exchange.host, c.provider, c.first_seq > c.last_seq) for c in calls] == [
+        ("example.org", None, True), ("app.asana.com", "asana", False)]
+
+
+def test_one_call_that_wrote_two_events_is_on_both(world: tuple[SqliteStore, RunClock]) -> None:
+    store, _ = world
+    first = store.apply(ticket("one", Operation.CREATE))
+    second = store.apply(ticket("two"))
+    call = Exchange(method="POST", host="app.asana.com", path="/api/1.0/tasks", status=200)
+    store.attach(call, first_seq=first.seq, last_seq=second.seq, provider="asana")
+    assert [e.exchange for e in store.events()] == [call, call]
+
+
+def test_a_fork_sees_the_calls_made_before_it_and_not_those_after(world: tuple[SqliteStore, RunClock]) -> None:
+    store, _ = world
+    event = store.apply(ticket("one", Operation.CREATE))
+    before = Exchange(method="POST", host="a.example", path="/before", status=200)
+    store.attach(before, first_seq=event.seq, last_seq=event.seq, provider="asana")
+    fork = store.fork("what-if", at_seq=1, clock=RunClock(START))
+    later = store.apply(ticket("two"))
+    store.attach(Exchange(method="POST", host="a.example", path="/after", status=200), first_seq=later.seq, last_seq=later.seq)
+    fork.attach(Exchange(method="GET", host="a.example", path="/in-fork", status=200), first_seq=2, last_seq=1)
+    assert [c.exchange.path for c in fork.calls()] == ["/before", "/in-fork"]
+    assert [c.exchange.path for c in store.calls()] == ["/before", "/after"]
+
+
+def test_the_store_works_from_a_thread_that_did_not_open_it(world: tuple[SqliteStore, RunClock]) -> None:
+    store, _ = world
+    failures: list[BaseException] = []
+
+    def write() -> None:
+        try:
+            for n in range(25):
+                ref = EntityRef(provider="asana", kind=EntityKind.TICKET, external_id=f"{threading.get_ident()}-{n}")
+                store.apply(Change(entity=ref, operation=Operation.CREATE, actor=Actor.AGENT, body="{}", parent="P1"))
+        except BaseException as error:  # noqa: BLE001 - the test reports whatever a thread raised
+            failures.append(error)
+
+    threads = [threading.Thread(target=write) for _ in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert failures == []
+    assert [e.seq for e in store.events()] == list(range(1, 101))
+
+
+def test_a_file_from_another_schema_version_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    SqliteStore(path, "root", RunClock(START))
+    with sqlite3.connect(path) as db:
+        db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    with pytest.raises(RuntimeError, match="store schema"):
+        SqliteStore(path, "root", RunClock(START))
+
+
+def test_an_entity_moved_to_another_parent_is_listed_only_under_the_new_one(world: tuple[SqliteStore, RunClock]) -> None:
+    store, _ = world
+    store.apply(Change(entity=TICKET, operation=Operation.CREATE, actor=Actor.AGENT, body="{}", parent="P1"))
+    store.apply(Change(entity=TICKET, operation=Operation.UPDATE, actor=Actor.AGENT, body="{}", parent="P2"))
+    assert store.children("asana", EntityKind.TICKET, "P1") == []
+    assert [s.parent for s in store.children("asana", EntityKind.TICKET, "P2")] == ["P2"]
+
+
+def test_a_fork_stamps_from_its_own_clock_not_its_parents(world: tuple[SqliteStore, RunClock]) -> None:
+    store, clock = world
+    store.apply(ticket("one", Operation.CREATE))
+    clock.jump(START + timedelta(days=9))
+    fork = store.fork("what-if", at_seq=1, clock=RunClock(START + timedelta(days=1)))
+    assert fork.apply(ticket("forked")).sim_time == START + timedelta(days=1)
+    assert store.apply(ticket("parent")).sim_time == START + timedelta(days=9)
