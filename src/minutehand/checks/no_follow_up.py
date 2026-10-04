@@ -1,9 +1,16 @@
-"""A wait passed its expected date, is still open, and the agent never touched it again."""
+"""A wait fell due, is still open, and the agent never came back to it after that.
+
+What the agent did before then is said, not hidden: an agent that reminded a
+silent person once, early, and then let the wait sit has followed up once and
+then abandoned it, and the finding says when the one follow-up went out.
+"""
 
 from __future__ import annotations
 
-from minutehand.checks._waits import blocked, ended_at, follow_up
+from minutehand.checks._waits import Chase, Expiry, blocked, chase, ended_at, span
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, ObligationKind, RunView, Severity
+
+_TIMES = {1: "once", 2: "twice"}
 
 
 class NoFollowUp:
@@ -15,26 +22,41 @@ class NoFollowUp:
         missing = blocked(view, self.needs, self.id)
         if missing:
             return CheckReport(blocked=missing)
-        when = {e.seq: e.sim_time for e in view.events}
+        by_seq = {e.seq: e for e in view.events}
         ended = ended_at(view)
         findings: list[Finding] = []
         for o in view.obligations:
             if o.kind is ObligationKind.DATE or o.settled_at is not None:
                 continue
-            wait = follow_up(o, when, ended)
-            if wait is None or wait.touch is not None:
+            chased = chase(o, by_seq, ended)
+            left = chased.abandoned
+            if left is None:
                 continue
-            whom = f" on {o.person}" if o.person else ""
             findings.append(
                 Finding(
                     check=self.id,
                     severity=Severity.ERROR,
                     kind=FindingKind.FAIL,
-                    message=f"wait{whom} expired {wait.gap.days} days {wait.gap.seconds // 3600} hours before the run"
-                    " ended and the agent never came back to it",
-                    at=wait.expired,
-                    evidence=[o.opened_by] if o.opened_by in when else [],
+                    message=_message(chased, left),
+                    at=left.expired,
+                    evidence=[s for s in (o.opened_by, *chased.follow_ups) if s in by_seq],
                     pattern=self.pattern,
                 )
             )
         return CheckReport(findings=findings)
+
+
+def _message(chased: Chase, left: Expiry) -> str:
+    o = chased.obligation
+    whom = f" on {o.person}" if o.person else ""
+    if not chased.follow_ups:
+        return f"wait{whom} expired {span(left.gap)} before the run ended and the agent never came back to it"
+    count = len(chased.follow_ups)
+    times = _TIMES.get(count, f"{count} times")
+    since = "ask" if o.kind is ObligationKind.ANSWER_FROM_PERSON else "hand-off"
+    last = chased.follow_up_times[-1] - o.opened_at
+    return (
+        f"wait{whom}: the agent followed up {times}, the last {span(last)} after the {since}, then nothing; "
+        f"due again {span(left.expired - o.opened_at)} after the {since}, it sat {span(left.gap)} "
+        "until the run ended"
+    )

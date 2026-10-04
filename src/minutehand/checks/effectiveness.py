@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from minutehand.checks._waits import follow_up, reaction
+from minutehand.checks._waits import chase, reaction
 from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
 from minutehand.domain.world import Actor, Operation
@@ -12,20 +12,23 @@ from minutehand.domain.world import Actor, Operation
 
 def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime) -> Effectiveness:
     when = {e.seq: e.sim_time for e in view.events}
-    due = made = late = 0
+    by_seq = {e.seq: e for e in view.events}
+    waits = [o for o in view.obligations if o.kind is not ObligationKind.DATE]
+    due = late = 0
+    made: set[int] = set()
     lost = timedelta(0)
     slowest: timedelta | None = None
-    for o in view.obligations:
-        wait = follow_up(o, when, ended_at)
-        if wait is None:
-            continue  # settled, or the run ended, before it was due
-        due += 1
-        made += wait.touch is not None
-        if wait.late:
+    for o in waits:
+        chased = chase(o, by_seq, ended_at)
+        made.update(chased.follow_ups)  # one message chasing two waits is one follow-up
+        for expiry in chased.expiries:
+            due += 1
+            if not expiry.late:
+                continue
             late += 1
-            lost += wait.gap  # never followed up: the whole stretch is the agent's
-            if wait.touch is not None:
-                slowest = wait.gap if slowest is None or wait.gap > slowest else slowest
+            lost += expiry.gap  # never followed up: the whole stretch is the agent's
+            if expiry.touch is not None:
+                slowest = expiry.gap if slowest is None or expiry.gap > slowest else slowest
     reactions = [r for r in (reaction(o, when, ended_at) for o in view.obligations) if r is not None]
     slow = [r for r in reactions if r.slow]
     lost += sum((r.gap for r in slow), timedelta(0))
@@ -34,10 +37,10 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
     return Effectiveness(
         expectations_met=met,
         expectations_total=len(view.scenario.expect),
-        waits_opened=len(view.obligations),
-        waits_open_at_end=sum(1 for o in view.obligations if o.settled_at is None),
+        waits_opened=len(waits),
+        waits_open_at_end=sum(1 for o in waits if o.settled_at is None),
         follow_ups_due=due,
-        follow_ups_made=made,
+        follow_ups_made=len(made),
         follow_ups_late=late,
         time_lost=lost,
         slowest_follow_up=slowest,
