@@ -4,6 +4,8 @@
     minutehand findings <run_id> [--state DIR] [--json]
     minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--json] [-- <command...>]
     minutehand runs [--state DIR]
+    minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
+    minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
 
 Exit codes: 0 when no finding is a failure, 1 when any is (with samples, when any sample failed), 2 when
 the run could not be performed.
@@ -20,7 +22,9 @@ from datetime import timedelta
 from pathlib import Path
 
 from minutehand import session
+from minutehand.adapters.mcp import server as mcp_server
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
+from minutehand.adapters.web import app as viewer
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
 from minutehand.application.refusals import RunRefused
 from minutehand.checks.patterns import pattern
@@ -31,6 +35,7 @@ from minutehand.domain.scenario import Model
 from minutehand.session import ForkPoint, Outcome
 
 DEFAULT_STATE = Path(".minutehand")
+VIEW_PORT = 8081
 STATE_VARIABLE = "MINUTEHAND_STATE"
 
 _STOPPED = {
@@ -83,6 +88,13 @@ def _parser() -> argparse.ArgumentParser:
 
     listing = commands.add_parser("runs", help="every finished run")
     state(listing)
+
+    tools = commands.add_parser("mcp", help="serve the tools a coding agent calls, over MCP on stdio")
+    state(tools)
+
+    view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
+    view.add_argument("--port", type=int, default=VIEW_PORT)
+    state(view)
     return parser
 
 
@@ -107,6 +119,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _fork(args, state, command)
         if args.command == "findings":
             return _findings(args, state)
+        if args.command == "mcp":
+            return _mcp(state)
+        if args.command == "view":
+            return _view(state, args.port)
         return _runs(state)
     except (RunRefused, FileRefused, OSError) as e:
         print(f"minutehand: the run could not be performed: {e}", file=sys.stderr)
@@ -162,6 +178,17 @@ def _runs(state: Path) -> int:
         failed = sum(1 for f in outcome.result.findings if f.kind is FindingKind.FAIL)
         parent = f"  forked from {record.parent_run} at seq {record.forked_at}" if record.parent_run else ""
         print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed{parent}")
+    return 0
+
+
+def _mcp(state: Path) -> int:
+    mcp_server.serve(state)
+    return 0
+
+
+def _view(state: Path, port: int) -> int:
+    print(f"minutehand: the viewer is at http://127.0.0.1:{port}/ (state {state})", file=sys.stderr)
+    viewer.serve(state, port=port)
     return 0
 
 
