@@ -10,15 +10,17 @@ from minutehand.adapters.providers.slack import state
 from minutehand.adapters.providers.slack.provider import build
 from minutehand.adapters.providers.slack.state import BOT_USER_ID
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation
-from minutehand.ports.provider import Provider
+from minutehand.ports.provider import Provider, PushesEvents
 from tests.providers.slack.slack_workspace import (
     GENERAL, START, TOKEN, Workspace, body, form, messages_of, text_of,
 )
 
 
-def test_the_provider_is_a_provider() -> None:
-    as_provider: Provider = build()
-    assert as_provider.manifest.key == "slack"
+def test_the_provider_is_a_provider_that_pushes_events() -> None:
+    provider = build()
+    as_provider: Provider = provider
+    as_pusher: PushesEvents = provider
+    assert as_provider.manifest.key == "slack" and as_pusher is provider
 
 
 async def test_a_posted_message_reads_back_in_history(client: httpx.AsyncClient) -> None:
