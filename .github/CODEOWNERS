@@ -1,0 +1,10 @@
+# The contracts every part is written against, the house lints, the build and the licence
+# need a maintainer's review. Everything else needs any approving review.
+/src/minutehand/domain/   @HHMingD
+/src/minutehand/ports/    @HHMingD
+/lints/                   @HHMingD
+/.github/                 @HHMingD
+/pyproject.toml           @HHMingD
+/uv.lock                  @HHMingD
+/LICENSE.md               @HHMingD
+/CLAUDE.md                @HHMingD

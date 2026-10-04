@@ -1,0 +1,23 @@
+name: A fake behaves differently from the real service
+description: A provider accepts what the real service refuses, refuses what it accepts, or answers in a different shape.
+labels: [fidelity]
+body:
+  - type: input
+    id: provider
+    attributes: { label: Provider, placeholder: slack }
+    validations: { required: true }
+  - type: textarea
+    id: request
+    attributes:
+      label: The request
+      description: Method, path and body. Remove tokens and anything private.
+      render: http
+    validations: { required: true }
+  - type: textarea
+    id: real
+    attributes: { label: What the real service answers, render: json }
+    validations: { required: true }
+  - type: textarea
+    id: fake
+    attributes: { label: What the fake answers, render: json }
+    validations: { required: true }
