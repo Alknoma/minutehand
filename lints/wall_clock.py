@@ -5,65 +5,65 @@ clock ran eight days ahead, so a ticket filed on the mission's 30 August showed
 as created on the 24th (run f431fc97f427). Instances: the Slack fake's message
 `ts`, and the Asana and Drive fakes' created/modified times.
 
+Matched by call: `time.time`, `time.time_ns`, `datetime.now/utcnow/today`,
+`date.today`, however the owner is reached (`datetime.now`, `dt.datetime.now`).
+`time.monotonic` and `time.perf_counter` measure durations and are untouched.
+
 Fail-closed. The only way past is `# clock-lint: exempt <reason>` on the line.
+
+Run: python -m lints.wall_clock [root]
 """
 
 from __future__ import annotations
 
 import ast
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
+from lints._core import SRC, Finding, cli, exempt, sources
+
+NAME = "clock"
+TITLE = "Wall clock"
+GUIDANCE = "Take the time from ports.clock.Clock; `wall_time` is the one legitimate reader."
+
 BANNED = {
-    ("time", "time"), ("time", "time_ns"),
-    ("datetime", "now"), ("datetime", "utcnow"), ("datetime", "today"),
+    ("time", "time"),
+    ("time", "time_ns"),
+    ("datetime", "now"),
+    ("datetime", "utcnow"),
+    ("datetime", "today"),
     ("date", "today"),
 }
-MARKER = "# clock-lint: exempt"
 
 
-@dataclass(frozen=True)
-class Finding:
-    file: str
-    line: int
-    message: str
+def _owner(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
 
 
-def run(root: Path) -> list[Finding]:
+def run(root: Path = SRC) -> list[Finding]:
     findings: list[Finding] = []
-    for path in sorted(root.rglob("*.py")):
-        if {"tests", "__pycache__", ".venv"} & set(path.parts):
-            continue
-        text = path.read_text(encoding="utf-8")
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            continue
-        lines = text.splitlines()
-        for node in ast.walk(tree):
+    for source in sources(root):
+        for node in ast.walk(source.tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
                 continue
-            owner = node.func.value
-            name = owner.attr if isinstance(owner, ast.Attribute) else getattr(owner, "id", None)
-            if (name, node.func.attr) not in BANNED:
+            owner = _owner(node.func.value)
+            if (owner, node.func.attr) not in BANNED:
                 continue
-            line = lines[node.lineno - 1]
-            if MARKER in line and line.split(MARKER, 1)[1].strip(" :—-"):
+            if exempt(source.lines, NAME, node.lineno):
                 continue
             findings.append(
                 Finding(
-                    path.relative_to(root).as_posix(),
+                    source.rel,
                     node.lineno,
-                    f"{name}.{node.func.attr}() reads the machine clock; take the time from the run's clock",
+                    f"{owner}.{node.func.attr}() reads the machine clock; take the time from the run's clock",
                 )
             )
     return findings
 
 
 if __name__ == "__main__":
-    found = run(Path(sys.argv[1]) if len(sys.argv) > 1 else Path("src"))
-    for f in found:
-        print(f"{f.file}:{f.line}: {f.message}")
-    print(f"{len(found)} finding(s)")
-    sys.exit(1 if found else 0)
+    sys.exit(cli(TITLE, run, sys.argv[1:], guidance=GUIDANCE))
