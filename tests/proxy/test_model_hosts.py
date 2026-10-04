@@ -163,3 +163,18 @@ async def test_an_edited_call_verifies_the_model_api_certificate(
             response = await http.post(f"https://{MODEL_HOST}:{upstream.port}/v1/call", content=b"{}")
     assert response.status_code == 502
     assert upstream.received == []
+
+
+async def test_edits_applied_for_a_run_reach_the_model_api_and_clearing_them_tunnels_again(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    routing = Routing(registry, model_hosts=[MODEL_HOST])
+    assert routing.policy(MODEL_HOST) is HostPolicy.TUNNEL
+    routing.apply("child", [ModelSwap(to="model-terra")])
+    assert routing.policy(MODEL_HOST) is HostPolicy.EDIT
+    async with model_api(authority) as upstream:
+        async with Proxy(routing, store, clock, confdir=tmp_path / "ca", upstream_ca=authority.ca_cert) as proxy:
+            arrived = await _send(proxy, upstream, json.dumps({"model": "model-luna", "messages": []}).encode())
+    assert json.loads(arrived)["model"] == "model-terra"
+    routing.apply("child", [])
+    assert routing.policy(MODEL_HOST) is HostPolicy.TUNNEL

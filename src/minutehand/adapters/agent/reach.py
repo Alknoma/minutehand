@@ -9,7 +9,7 @@ from minutehand.adapters.agent.polled import PolledDriver
 from minutehand.adapters.agent.reported import ReportedDriver
 from minutehand.application.orchestrator import Reach
 from minutehand.application.refusals import RunRefused
-from minutehand.domain.agent import AgentUnderTest, Booked, Command, Polled, Reported
+from minutehand.domain.agent import AgentUnderTest, Booked, Command, GoalByMessage, Polled, Reported
 from minutehand.ports.agent import AgentDriver
 
 
@@ -17,7 +17,8 @@ def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) ->
     """`Reported` or `Command` answers every wake; `Polled` takes the ticks; `Booked` needs no driver.
 
     `env` is added to a `Command`'s environment. An agent with two of the first kind, or two `Polled`, is
-    refused: which of them a wake goes to would be a guess.
+    refused: which of them a wake goes to would be a guess. An agent that takes its goal by message may have
+    no driver at all; one that takes it in the START wake must have one.
     """
     main: list[AgentDriver] = []
     polled: list[Polled] = []
@@ -34,10 +35,10 @@ def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) ->
         raise RunRefused(f"agent {agent.name} declares {len(main)} Reported/Command wake sources; it may have one")
     if len(polled) > 1:
         raise RunRefused(f"agent {agent.name} declares {len(polled)} Polled wake sources; it may have one")
-    if not main and not polled:
+    if not main and not polled and not isinstance(agent.goal, GoalByMessage):
         raise RunRefused(
             f"agent {agent.name} declares only Booked wakes, so nothing can hand it the START wake and its goal; "
-            "add a Reported, Command or Polled source"
+            "add a Reported, Command or Polled source, or take the goal by message"
         )
     tick = polled[0] if polled else None
     return Reach(

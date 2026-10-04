@@ -11,7 +11,9 @@ from pathlib import Path
 
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
-from minutehand.adapters.proxy.server import Proxy
+import pytest
+
+from minutehand.adapters.proxy.server import Proxy, ProxyRunning
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import WakeReason
@@ -173,3 +175,25 @@ async def test_a_client_configured_only_by_environment_is_answered(
     status, body = out.decode().split(" ", 1)
     assert status == "200"
     assert json.loads(body)["path"] == "/whoami"
+
+
+async def test_a_second_proxy_while_one_runs_is_refused(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path
+) -> None:
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca"):
+        with pytest.raises(ProxyRunning, match="already running"):
+            async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca2"):
+                pass
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as again:
+        assert again.port > 0
+
+
+async def test_a_mounted_run_records_into_its_own_store(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, world_path: Path
+) -> None:
+    other = SqliteStore(world_path, "second", clock)
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
+        proxy.mount(other, clock, {})
+        async with client(proxy, proxy.ca_cert) as http:
+            await http.post("https://acme.ledger.test/api/v2/entries", json={"text": "filed"})
+    assert store.events() == [] and len(other.events()) == 1

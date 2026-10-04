@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -23,7 +23,7 @@ from starlette.routing import Route
 
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.people import InboundTarget, PersonReply
+from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
 from minutehand.domain.scenario import Model, ProviderKey, Scenario, TicketState
 from minutehand.domain.world import (
@@ -136,6 +136,16 @@ class Chat:
         async with httpx.AsyncClient() as client:
             (await client.post(target.url, content=body)).raise_for_status()
 
+    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
+        ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=f"m{world.head() + 1}")
+        body = json.dumps({"from": message.person, "text": message.text})
+        world.apply(Change(
+            entity=ref, operation=Operation.CREATE, actor=Actor.PERSON, parent=INBOX, body=body,
+            after=MessageSnapshot(text=message.text, channel=f"dm:{message.person}"),
+        ))
+        async with httpx.AsyncClient() as client:
+            (await client.post(target.url, content=body)).raise_for_status()
+
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         self._rewrite(ticket, Actor.PERSON, state=to, assignee_email=None, world=world)
 
@@ -214,8 +224,8 @@ class Switchboard:
     def __init__(self) -> None:
         self.apps: dict[ProviderKey, ASGIApp] = {}
 
-    def mount(self, provider: ProviderKey, app: ASGIApp) -> None:
-        self.apps[provider] = app
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
+        self.apps = dict(apps)
 
     async def __call__(self, scope: dict[str, object], receive: object, send: object) -> None:
         path = scope["path"]

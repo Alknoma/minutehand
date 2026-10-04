@@ -1,12 +1,15 @@
 """What a provider is. Two protocols, because most real services push nothing, and
-a method that returns nothing on their behalf would be a stub."""
+a method that returns nothing on their behalf would be a stub.
+
+The optional ports are runtime-checkable, so whoever builds a run can hold a provider its manifest says
+pushes events or books wakes to the port it claims, and refuse it loudly when it does not implement it."""
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, MutableMapping, Protocol
+from typing import Awaitable, Callable, MutableMapping, Protocol, runtime_checkable
 
 from minutehand.domain.clock import Due
-from minutehand.domain.people import InboundTarget, PersonReply
+from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Scenario, TicketState
 from minutehand.domain.world import EntityRef
@@ -31,6 +34,7 @@ class Provider(Protocol):
         ...
 
 
+@runtime_checkable
 class PushesEvents(Protocol):
     """A provider whose real service calls the agent: Slack events, Teams activities, webhooks."""
 
@@ -38,7 +42,13 @@ class PushesEvents(Protocol):
         """Record the reply in the world and push it to the agent the way the real service would."""
         ...
 
+    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
+        """The person messages the agent directly (in Slack, a DM to its bot), recorded as actor PERSON and
+        pushed like any event. How a goal or a direction sent by message reaches the agent."""
+        ...
 
+
+@runtime_checkable
 class HoldsTickets(Protocol):
     """A provider with tickets a person can finish or cancel. This is how a `TicketFate` lands."""
 
@@ -47,6 +57,7 @@ class HoldsTickets(Protocol):
         ...
 
 
+@runtime_checkable
 class EditsTickets(Protocol):
     """A provider whose tickets the scenario can rewrite: how a fork's `TicketEdit` lands."""
 
@@ -69,6 +80,7 @@ class Wakes(Protocol):
         ...
 
 
+@runtime_checkable
 class BooksWakes(Protocol):
     """A provider that is a scheduler: what the agent books here becomes a wake."""
 

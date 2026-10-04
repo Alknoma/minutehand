@@ -2,7 +2,8 @@
 
 The child shares the parent's log up to the checkpoint (`Store.fork`), so the world, the clock and the
 pending set come back by reading the log. Replies the parent's people had already decided are copied, not
-asked for again. The agent's own state comes back through its `StateHooks.restore`; without hooks the fork
+asked for again, except where a `PersonChange` makes someone answer who had decided not to: each message
+to them still unanswered at the fork is put to them again under their new behaviour. The agent's own state comes back through its `StateHooks.restore`; without hooks the fork
 is refused, because a world rewound under an agent that remembers the future is not a rerun.
 """
 
@@ -12,15 +13,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from minutehand.application.checkpoint import checkpoint_seqs, read_checkpoint
-from minutehand.application.orchestrator import Mounts, Orchestrator, Reach, Services
+from minutehand.application.checkpoint import Checkpoint, PendingReply, checkpoint_seqs, read_checkpoint
+from minutehand.application.orchestrator import Mounts, Orchestrator, Reach, Scorer, Services
 from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
+from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario
+from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
@@ -68,6 +71,7 @@ async def fork_run(
     wire: OnTheWire | None = None,
     telemetry: Telemetry | None = None,
     mounts: Mounts | None = None,
+    scorer: Scorer | None = None,
     poll_interval: float = 0.05,
     max_polls: int = 1200,
 ) -> list[RunRecord]:
@@ -103,6 +107,10 @@ async def fork_run(
             clock.begin_wake()
         for reply in parent_store.replies()[: checkpoint.replies]:
             child.remember(reply)
+        replier = replier_for(changed)
+        changed_people = {o.person for o in fork.overrides if isinstance(o, PersonChange)}
+        if changed_people:
+            checkpoint = await _ask_again(child, changed, changed_people, checkpoint, replier, clock)
         for override in fork.overrides:
             if isinstance(override, TicketEdit):
                 if override.entity.provider not in services.editors:
@@ -120,8 +128,39 @@ async def fork_run(
             wire.apply(child_id, on_wire)
         records.append(await Orchestrator(
             scenario=changed, agent=agent, reach=reach, store=child, clock=clock, services=services,
-            replier=replier_for(changed), telemetry=telemetry, mounts=mounts, state_dir=state_dir,
+            replier=replier, telemetry=telemetry, mounts=mounts, scorer=scorer, state_dir=state_dir,
             poll_interval=poll_interval, max_polls=max_polls, parent_run=parent.run_id, forked_at=fork.at_seq,
             prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],
         ).resume(checkpoint))
     return records
+
+
+async def _ask_again(
+    child: Store, scenario: Scenario, people: set[str], checkpoint: Checkpoint, replier: Replier, clock: Clock,
+) -> Checkpoint:
+    """Put every message to a changed person that has no reply decided to them again, under their new behaviour.
+
+    A reply decided before the fork stays as it was: a `PersonChange` does not withdraw what was already said.
+    A reply that would have landed before the fork lands at the fork instead, since the past is shared.
+    """
+    events = child.events()
+    replies = child.replies()
+    answered = {(r.in_reply_to, r.person) for r in replies}
+    changed = {p.email: p for p in scenario.people if p.key in people}
+    pending = list(checkpoint.pending)
+    count = len(replies)
+    for event in events:
+        after = event.after
+        if not (event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, MessageSnapshot)):
+            continue
+        for email in after.recipient_emails:
+            if email not in changed or (event.entity, changed[email].key) in answered:
+                continue
+            reply = await replier.decide(changed[email], event, [e for e in events if e.seq <= event.seq], clock)
+            if reply is None:
+                continue
+            reply = reply.model_copy(update={"at": max(reply.at, clock.now())})
+            child.remember(reply)
+            pending.append(PendingReply(due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count))
+            count += 1
+    return checkpoint.model_copy(update={"pending": pending, "replies": count})

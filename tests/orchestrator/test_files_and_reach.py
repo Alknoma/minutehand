@@ -12,9 +12,10 @@ from minutehand.adapters.agent.command import CommandDriver
 from minutehand.adapters.agent.polled import PolledDriver
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.reported import ReportedDriver
-from minutehand.application.files import FileRefused, load_agent, load_scenario
+from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
 from minutehand.application.refusals import RunRefused
-from minutehand.domain.agent import AgentUnderTest, Booked, Command, Polled, Reported
+from minutehand.domain.agent import AgentUnderTest, Booked, Command, GoalByMessage, Polled, Reported
+from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Scripted
 
 SCENARIO = """\
@@ -86,6 +87,28 @@ def test_an_agent_with_only_booked_wakes_is_refused() -> None:
         reach_for(AgentUnderTest(name="a", wakes=[Booked()]))
 
 
+def test_an_agent_with_only_booked_wakes_that_takes_its_goal_by_message_has_no_driver() -> None:
+    reach = reach_for(AgentUnderTest(name="a", wakes=[Booked()], goal=GoalByMessage(provider="slack"),
+                                     inbound=[InboundTarget(provider="slack", url="http://a/events")]))
+    assert reach.main is None and reach.ticks is None
+
+
 def test_an_agent_with_two_reporting_sources_is_refused() -> None:
     with pytest.raises(RunRefused, match="2 Reported/Command"):
         reach_for(AgentUnderTest(name="a", wakes=[Command(argv=["x"]), Command(argv=["y"])]))
+
+
+def test_a_fork_changes_file_loads_with_the_run_and_seq_given_beside_it(tmp_path: Path) -> None:
+    path = tmp_path / "fork.yaml"
+    path.write_text("overrides:\n  - kind: person_change\n    person: sofia\n    reply: {kind: scripted, "
+                    "delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, text: 'Yes.'}]}\n")
+    fork = load_fork(path, parent_run="r1", at_seq=7)
+    assert (fork.parent_run, fork.at_seq, fork.samples) == ("r1", 7, 1)
+    assert [o.kind for o in fork.overrides] == ["person_change"]
+
+
+def test_a_fork_changes_file_naming_its_own_seq_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "fork.yaml"
+    path.write_text("at_seq: 3\noverrides: []\n")
+    with pytest.raises(FileRefused, match="names at_seq"):
+        load_fork(path, parent_run="r1", at_seq=7)

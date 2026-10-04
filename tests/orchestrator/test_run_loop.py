@@ -36,12 +36,22 @@ async def test_a_silent_person_never_replies_and_the_run_ends_with_nothing_pendi
 
 
 async def test_a_silent_person_and_a_wake_past_the_deadline_end_the_run_at_the_deadline(rig: Rig) -> None:
-    record, _, clock = await rig.run(
+    record, store, clock = await rig.run(
         scenario(ticket_fates=[]), rig.agent("ask_silent"), env=rig.env(NEXT_WAKE_AFTER_HOURS=str(15 * 24)),
     )
 
     assert record.stop is StopReason.DEADLINE_PASSED
-    assert clock.jumps == [] and record.ended_at == T0
+    assert clock.jumps == [T0 + timedelta(days=14)] and record.ended_at == T0 + timedelta(days=14)
+    assert len(record.wakes) == 1 and store.events()[-1].sim_time == T0 + timedelta(days=14)
+
+
+async def test_with_nothing_pending_the_world_runs_on_to_the_deadline_without_waking_the_agent(rig: Rig) -> None:
+    record, store, clock = await rig.run(scenario(ticket_fates=[]), rig.agent("ask_silent"))
+
+    assert record.stop is StopReason.NOTHING_PENDING
+    assert clock.jumps == [T0 + timedelta(days=14)] and record.ended_at == T0 + timedelta(days=14)
+    assert [w.sim_time for w in record.wakes] == [T0]
+    assert store.events()[-1].sim_time == T0 + timedelta(days=14)
 
 
 async def test_max_wakes_stops_an_agent_that_always_asks_to_wake_again(rig: Rig) -> None:
@@ -55,7 +65,7 @@ async def test_a_booking_fires_at_its_time_and_a_cancelled_one_does_not(rig: Rig
     record, store, clock = await rig.run(scenario(ticket_fates=[]), rig.agent("book", extra=[Booked()]))
 
     assert rig.sched.fired == [("kept", T0 + timedelta(hours=5))]
-    assert clock.jumps == [T0 + timedelta(hours=5)]
+    assert clock.jumps == [T0 + timedelta(hours=5), T0 + timedelta(days=14)]
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=5)]
     assert record.stop is StopReason.NOTHING_PENDING
     deleted = [e for e in store.events() if e.operation is Operation.DELETE]

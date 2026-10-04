@@ -9,7 +9,7 @@ from minutehand.adapters.providers.slack import inbound
 from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.seed import seed
-from minutehand.domain.people import InboundTarget, PersonReply
+from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Scenario
 from minutehand.ports.clock import Clock
@@ -32,6 +32,9 @@ class SlackProvider:
 
     async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None:
         await inbound.deliver(reply, target, world, clock, secret=self._secret(target))
+
+    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
+        await inbound.say(message, target, world, clock, secret=self._secret(target))
 
     def _secret(self, target: InboundTarget) -> str:
         if target.secret_env is None:

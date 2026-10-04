@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -21,14 +21,18 @@ from minutehand.application.checkpoint import (
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
-from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Booked, Commitment, WakeReason, WakeRequest
+from minutehand.checks.runner import RunResult
+from minutehand.domain.agent import (
+    AgentReport, AgentStatus, AgentUnderTest, Booked, Commitment, GoalByMessage, WakeReason, WakeRequest,
+)
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
-from minutehand.domain.people import InboundTarget, PersonReply
+from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Person, ProviderKey, Scenario
 from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
 from minutehand.ports.agent import AgentDriver
+from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
 from minutehand.ports.store import Store
@@ -41,9 +45,16 @@ _PRIORITY = [WakeReason.PERSON_REPLIED, WakeReason.DIRECTION, WakeReason.DUE, Wa
 
 
 class Mounts(Protocol):
-    """Whoever serves the providers' APIs to the agent (the proxy). Told once per run, since a fork is a new world."""
+    """Whoever serves the providers' APIs to the agent (the proxy). Told once per run, since a fork is a new world:
+    from then on the calls it answers are recorded in `world`, and each provider in `apps` answers its hosts."""
 
-    def mount(self, provider: ProviderKey, app: ASGIApp) -> None: ...
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None: ...
+
+
+class Scorer(Protocol):
+    """Whoever judges a finished run (the checks). Its findings and scorecard end the run's telemetry."""
+
+    def score(self, record: RunRecord, world: Store) -> RunResult: ...
 
 
 @dataclass(frozen=True)
@@ -80,7 +91,8 @@ class Services:
 class Reach:
     """How the loop reaches the agent: `main` answers every wake but ticks; `ticks` answers a `Polled` rhythm.
 
-    Built from `AgentUnderTest.wakes` by `adapters.agent.reach_for`.
+    Built from `AgentUnderTest.wakes` by `adapters.agent.reach_for`. Neither is set for an agent reached only
+    through pushed events: its goal comes by message (`GoalByMessage`) and acknowledging a push ends its wake.
     """
 
     main: AgentDriver | None
@@ -90,17 +102,14 @@ class Reach:
     def __post_init__(self) -> None:
         if (self.ticks is None) != (self.every is None):
             raise RunRefused("a polled driver needs its interval, and an interval needs a polled driver")
-        if self.main is None and self.ticks is None:
-            raise RunRefused("the agent has no driver that can receive a wake")
         if self.every is not None and self.every <= timedelta(0):
             raise RunRefused(f"a polled interval must be positive, not {self.every}")
 
-    def for_reason(self, reason: WakeReason) -> AgentDriver:
+    def for_reason(self, reason: WakeReason) -> AgentDriver | None:
+        """The driver this wake goes to; None when the agent has no wake endpoint and hears only pushed events."""
         if reason is WakeReason.TICK and self.ticks is not None:
             return self.ticks
-        driver = self.main or self.ticks
-        assert driver is not None
-        return driver
+        return self.main or self.ticks
 
 
 class _Bookings:
@@ -130,6 +139,7 @@ class Orchestrator:
         replier: Replier,
         telemetry: Telemetry | None = None,
         mounts: Mounts | None = None,
+        scorer: Scorer | None = None,
         state_dir: Path | None = None,
         poll_interval: float = 0.05,
         max_polls: int = 1200,
@@ -141,6 +151,12 @@ class Orchestrator:
             raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
         if any(isinstance(w, Booked) for w in agent.wakes) and not services.schedulers:
             raise RunRefused(f"agent {agent.name} declares Booked wakes but no provider in the run books wakes")
+        if isinstance(agent.goal, GoalByMessage):
+            if agent.goal.provider not in services.pushes:
+                raise RunRefused(f"agent {agent.name} takes its goal by message on {agent.goal.provider}, "
+                                 "which is not a provider in the run that pushes events")
+        elif reach.for_reason(WakeReason.START) is None:
+            raise RunRefused(f"agent {agent.name} takes its goal in the START wake and has no driver to receive it")
         self._scenario = scenario
         self._agent = agent
         self._reach = reach
@@ -150,6 +166,7 @@ class Orchestrator:
         self._replier = replier
         self._telemetry = telemetry
         self._mounts = mounts
+        self._scorer = scorer
         self._state_dir = state_dir
         self._poll_interval = poll_interval
         self._max_polls = max_polls
@@ -225,8 +242,9 @@ class Orchestrator:
         if self._telemetry is not None:
             self._telemetry.run_started(self._store.run_id, self._scenario)
         if self._mounts is not None:
-            for provider in self._services.providers:
-                self._mounts.mount(provider.manifest.key, provider.app(self._store, self._clock))
+            self._mounts.mount(self._store, self._clock, {
+                provider.manifest.key: provider.app(self._store, self._clock) for provider in self._services.providers
+            })
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))
 
@@ -237,38 +255,74 @@ class Orchestrator:
             started_at=self._scenario.starts_at, ended_at=self._clock.now(),
             wall_seconds=time.monotonic() - started, stop=stop, wakes=self._wakes,
         )
+        result = self._scorer.score(record, self._store) if self._scorer is not None else None
         if self._telemetry is not None:
-            self._telemetry.run_ended(record, None)
+            for finding in result.findings if result is not None else []:
+                self._telemetry.found(finding)
+            self._telemetry.run_ended(record, result.effectiveness if result is not None else None)
         return record
 
+    @property
+    def _by_message(self) -> ProviderKey | None:
+        goal = self._agent.goal
+        return goal.provider if isinstance(goal, GoalByMessage) else None
+
     async def _start(self) -> StopReason | None:
+        """The START wake. By message, the owner sends the goal first and a wake endpoint, if any, hears no goal."""
         wake = self._clock.begin_wake()
+        provider = self._by_message
         request = WakeRequest(run_id=self._store.run_id, now=self._clock.now(), reason=WakeReason.START,
-                              goal=self._scenario.goal)
-        return await self._wake(wake, [(self._reach.for_reason(WakeReason.START), request)])
+                              goal=self._scenario.goal if provider is None else None)
+        driver = self._reach.for_reason(WakeReason.START)
+
+        async def say_goal() -> None:
+            if provider is not None:
+                await self._say(provider, self._scenario.goal)
+
+        return await self._wake(wake, WakeReason.START, say_goal, [(driver, request)] if driver is not None else [])
 
     async def _loop(self) -> StopReason:
         deadline = self._scenario.deadline
         while True:
             jump = next_jump(self._clock.now(), [p.due for p in self._pending])
             if jump is None:
+                self._run_on_to(deadline)
                 return StopReason.NOTHING_PENDING
             if deadline is not None and jump.now > deadline:
+                self._run_on_to(deadline)
                 return StopReason.DEADLINE_PASSED
             fired = [p for p in self._pending if p.due in jump.firing]
             self._pending = [p for p in self._pending if p.due not in jump.firing]
             self._clock.jump(jump.now)
-            reaches_agent = [p for p in fired if not isinstance(p, PendingFate)]
-            wake = self._clock.begin_wake() if reaches_agent else None
-            await self._fire(fired)
-            if wake is None:
+            if all(isinstance(p, PendingFate) for p in fired):
+                await self._fire(fired)
                 continue
-            stop = await self._wake(wake, self._requests(fired))
+            wake = self._clock.begin_wake()
+            requests, reason = self._requests(fired)
+
+            async def fire(due: list[Pending] = fired) -> None:
+                await self._fire(due)
+
+            stop = await self._wake(wake, reason, fire, requests)
             if stop is not None:
                 return stop
 
+    def _run_on_to(self, deadline: datetime | None) -> None:
+        """The world does not stop when the agent goes quiet: with nothing more due before it, the clock runs on
+        to the scenario's deadline, and a checkpoint there records the moment the run reached. Without it a run
+        would end where the agent stopped, and a wait it abandoned would never be seen to expire."""
+        if deadline is None or self._clock.now() >= deadline:
+            return
+        self._clock.jump(deadline)
+        write_checkpoint(self._store, Checkpoint(
+            wake=self._clock.wake(), now=self._clock.now(), replies=len(self._replies), fated=self._fated,
+            commitments=self._commitments, pending=self._pending,
+        ))
+        self._record_new()
+
     async def _fire(self, fired: list[Pending]) -> None:
-        """Change the world for what is due, in a fixed order: tickets, then replies, then bookings."""
+        """Change the world for what is due, in a fixed order: tickets, then replies, then directions sent by
+        message, then bookings."""
         for item in fired:
             if isinstance(item, PendingFate):
                 self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
@@ -277,6 +331,10 @@ class Orchestrator:
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
                 await self._pushes(provider).deliver(reply, self._inbound(provider), self._store, self._clock)
+        by_message = self._by_message
+        for item in fired:
+            if isinstance(item, PendingDirection) and by_message is not None:
+                await self._say(by_message, item.text)
         for item in fired:
             if isinstance(item, PendingBooking):
                 await self._services.schedulers[item.provider].fire(item.ref, self._store, self._clock)
@@ -284,9 +342,11 @@ class Orchestrator:
             if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
                 self._schedule_tick()
 
-    def _requests(self, fired: list[Pending]) -> list[tuple[AgentDriver, WakeRequest]]:
-        """One request per driver that must hear of this wake. A wake made only of bookings sends none:
-        the scheduler's own delivery is the wake."""
+    def _requests(self, fired: list[Pending]) -> tuple[list[tuple[AgentDriver, WakeRequest]], WakeReason]:
+        """One request per driver that must hear of this wake, and the reason the wake carries. A wake made only
+        of bookings sends none: the scheduler's own delivery is the wake. Nor does one that reaches an agent
+        with no wake endpoint: the pushed event is the wake. A direction sent by message is not repeated in
+        the request."""
         reasons: set[WakeReason] = set()
         directions: list[str] = []
         for item in fired:
@@ -294,31 +354,39 @@ class Orchestrator:
                 reasons.add(WakeReason.PERSON_REPLIED)
             elif isinstance(item, PendingDirection):
                 reasons.add(WakeReason.DIRECTION)
-                directions.append(item.text)
+                if self._by_message is None:
+                    directions.append(item.text)
             elif isinstance(item, PendingWake):
                 reasons.add(item.reason)
         if not reasons:
-            return []
+            return [], WakeReason.DUE
         reason = next(r for r in _PRIORITY if r in reasons)
         now = self._clock.now()
         run_id = self._store.run_id
-        first = WakeRequest(run_id=run_id, now=now, reason=reason,
-                            direction="\n\n".join(directions) if directions else None)
-        requests = [(self._reach.for_reason(reason), first)]
+        requests: list[tuple[AgentDriver, WakeRequest]] = []
+        main = self._reach.for_reason(reason)
+        if main is not None:
+            requests.append((main, WakeRequest(run_id=run_id, now=now, reason=reason,
+                                               direction="\n\n".join(directions) if directions else None)))
         if WakeReason.TICK in reasons and reason is not WakeReason.TICK:
             ticks = self._reach.for_reason(WakeReason.TICK)
-            if ticks is not requests[0][0]:
+            if ticks is not None and ticks is not main:
                 requests.append((ticks, WakeRequest(run_id=run_id, now=now, reason=WakeReason.TICK)))
-        return requests
+        return requests, reason
 
-    async def _wake(self, wake: int, requests: list[tuple[AgentDriver, WakeRequest]]) -> StopReason | None:
-        """Send the wake, wait until the agent stops working, read what it did, and checkpoint."""
+    async def _wake(
+        self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]],
+        requests: list[tuple[AgentDriver, WakeRequest]],
+    ) -> StopReason | None:
+        """Change the world for what is due, send the wake, wait until the agent stops working, read what it did,
+        and checkpoint. An agent that refuses a pushed event fails the wake as one that refuses the wake does."""
         if self._telemetry is not None:
-            self._telemetry.wake_started(wake, requests[0][1].reason if requests else WakeReason.DUE, self._clock.now())
+            self._telemetry.wake_started(wake, reason, self._clock.now())
         failed = False
         done = False
         commitments_changed = False
         try:
+            await fire()
             for driver, request in requests:
                 await driver.wake(request)
             for driver, _ in requests:
@@ -403,6 +471,11 @@ class Orchestrator:
                     and after.assignee_email in self._people and event.entity not in self._fated):
                 self._fate(self._people[after.assignee_email], event)
 
+    async def _say(self, provider: ProviderKey, text: str) -> None:
+        """The scenario's owner messages the agent: its goal, or a direction."""
+        message = PersonMessage(person=self._scenario.owner, text=text, at=self._clock.now())
+        await self._pushes(provider).say(message, self._inbound(provider), self._store, self._clock)
+
     async def _ask(self, person: Person, asked: WorldEvent, history: list[WorldEvent]) -> None:
         reply = await self._replier.decide(person, asked, history, self._clock)
         if reply is None:
@@ -470,6 +543,7 @@ async def run_scenario(
     replier: Replier,
     telemetry: Telemetry | None = None,
     mounts: Mounts | None = None,
+    scorer: Scorer | None = None,
     state_dir: Path | None = None,
     poll_interval: float = 0.05,
     max_polls: int = 1200,
@@ -479,5 +553,6 @@ async def run_scenario(
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
         scenario=scenario, agent=agent, reach=reach, store=store, clock=clock, services=services, replier=replier,
-        telemetry=telemetry, mounts=mounts, state_dir=state_dir, poll_interval=poll_interval, max_polls=max_polls,
+        telemetry=telemetry, mounts=mounts, scorer=scorer, state_dir=state_dir, poll_interval=poll_interval,
+        max_polls=max_polls,
     ).run()
