@@ -1,9 +1,11 @@
-"""The replier for people whose replies are fixed text (`Scripted`) or who never answer (`Silent`).
+"""The replier for people whose replies are fixed text (`Scripted`) or who never answer (`Silent`), and when
+any reply lands, whoever wrote it.
 
-No model call: the reply to the nth ask is the scripted text for that ask, and it lands after a delay drawn
-from the person's `DelayRange` by hashing the scenario's seed with the asked message's id, so the same seed
-gives the same delays on every run and a fork. A delay that lands inside one of the person's absences or
-outside their working hours is pushed to the next moment they would answer.
+No model call: the reply to the nth ask is the scripted text for that ask. When it lands is `lands_at`, which
+the model-written replier calls too: a delay drawn from the person's `DelayRange` by hashing the scenario's
+seed with the asked message's id, so the same seed gives the same delays on every run and a fork. A delay
+that lands inside one of the person's absences or outside their working hours is pushed to the next moment
+they would answer.
 """
 
 from __future__ import annotations
@@ -34,16 +36,7 @@ _MAX_PUSHES = 1000
 
 class ScriptedReplier:
     def __init__(self, scenario: Scenario) -> None:
-        written = [p.key for p in scenario.people if isinstance(p.reply, Answers)]
-        if written:
-            raise RunRefused(
-                f"people whose replies a model writes (reply kind 'answers') are not supported by the scripted "
-                f"replier: {', '.join(written)}; give each a 'scripted' or 'silent' reply"
-            )
-        for person in scenario.people:
-            hours = person.working_hours
-            if hours is not None and hours.opens >= hours.closes:
-                raise RunRefused(f"{person.key}: working hours open at {hours.opens} and close at {hours.closes}")
+        refuse_unworkable_hours(scenario)
         self._scenario = scenario
 
     async def decide(
@@ -59,13 +52,32 @@ class ScriptedReplier:
         text = next((r.text for r in behaviour.replies if r.to_ask == len(asks)), None)
         if text is None:
             return None
-        drawn = asked.sim_time + delay_for(self._scenario.seed, asked, behaviour.delay)
         return PersonReply(
             person=person.key,
             in_reply_to=asked.entity,
             text=text,
-            at=available_at(drawn, person, self._scenario.starts_at, first_ask=asks[0].sim_time),
+            at=lands_at(self._scenario, person, asked, history, behaviour.delay),
         )
+
+
+def refuse_unworkable_hours(scenario: Scenario) -> None:
+    """Working hours that close before they open leave no moment to answer in; refused before the run."""
+    for person in scenario.people:
+        hours = person.working_hours
+        if hours is not None and hours.opens >= hours.closes:
+            raise RunRefused(f"{person.key}: working hours open at {hours.opens} and close at {hours.closes}")
+
+
+def lands_at(
+    scenario: Scenario, person: Person, asked: WorldEvent, history: list[WorldEvent], delay: DelayRange
+) -> datetime:
+    """When this person's reply to `asked` lands, whoever wrote it: the seeded delay, then pushed past their
+    absences and outside their working hours. An absence ON_FIRST_ASK starts from the first message `history`
+    shows the agent sent them."""
+    asks = _asks_of(person, [e for e in history if e.seq <= asked.seq])
+    first_ask = asks[0].sim_time if asks else asked.sim_time
+    drawn = asked.sim_time + delay_for(scenario.seed, asked, delay)
+    return available_at(drawn, person, scenario.starts_at, first_ask=first_ask)
 
 
 def _asks_of(person: Person, history: list[WorldEvent]) -> list[WorldEvent]:

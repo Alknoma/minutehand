@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 from pydantic import Field
 
 from minutehand.adapters.agent.reach import reach_for
+from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -44,18 +45,19 @@ from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
 from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier_model import PeopleReplier
 from minutehand.application.rewind import changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
-from minutehand.checks.runner import RunResult, evaluate_run
+from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.experiment import Fork
 from minutehand.domain.run import RunRecord
-from minutehand.domain.scenario import Model, ProviderKey, Scenario
+from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -111,8 +113,13 @@ async def play(
     samples: int = 1,
     command: Sequence[str] | None = None,
     telemetry: Telemetry | None = None,
+    model: LanguageModel | None = None,
+    judge: bool = False,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
+
+    `model` writes the replies of `Answers` people and, with `judge`, runs the judged checks; a scenario
+    with an `Answers` person and no model is refused before anything starts.
 
     `command`, when given, is the agent's own program: started before each run with only the proxy, its
     CA and the run's signing secrets added to this process's environment, waited for until it accepts
@@ -124,6 +131,7 @@ async def play(
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
+    _refuse_unwritten(scenario, model)
     registry = Registry.installed()
     routing = Routing(registry)
     services = _services(scenario, agent, registry)
@@ -136,7 +144,7 @@ async def play(
                 await run_hook(agent.state.restore, wake_dir(state / RUNS, first[0].run_id, 0))
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
-            judge = _Judge(scenario)
+            scorer = _Judge(scenario, model if judge else None, judging=judge)
             run_secrets = _secrets(agent)
             env = _agent_env(proxy, run_secrets)
             with _in_this_process(run_secrets):
@@ -148,14 +156,14 @@ async def play(
                         store=store,
                         clock=clock,
                         services=services,
-                        replier=ScriptedReplier(scenario),
+                        replier=PeopleReplier(scenario, model),
                         telemetry=telemetry,
                         mounts=proxy,
-                        scorer=judge,
+                        scorer=scorer,
                         state_dir=state / RUNS,
                         poll_interval=POLL_INTERVAL,
                     )
-            outcomes.append(_keep(directory, record, judge))
+            outcomes.append(_keep(directory, record, scorer))
     return outcomes
 
 
@@ -166,6 +174,8 @@ async def fork(
     state: Path,
     command: Sequence[str] | None = None,
     telemetry: Telemetry | None = None,
+    model: LanguageModel | None = None,
+    judge: bool = False,
 ) -> list[Outcome]:
     """Rerun a finished run from one of its checkpoints with `changes` applied, once per `Fork.samples`.
 
@@ -180,11 +190,12 @@ async def fork(
     agent = AgentUnderTest.model_validate_json((directory / AGENT).read_text(encoding="utf-8"))
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
+    _refuse_unwritten(changed, model)
     registry = Registry.installed()
     routing = Routing(registry)
     services = _services(changed, agent, registry)
     child_id = _new_run_id()
-    judge = _Judge(changed)
+    scorer = _Judge(changed, model if judge else None, judging=judge)
     run_secrets = _secrets(agent)
 
     def open_parent(clock: Clock) -> Store:
@@ -207,12 +218,12 @@ async def fork(
                         agent=agent,
                         reach=reach_for(agent, env=env),
                         services=services,
-                        replier_for=ScriptedReplier,
+                        replier_for=lambda s: PeopleReplier(s, model),
                         state_dir=state / RUNS,
                         wire=routing,
                         telemetry=telemetry,
                         mounts=proxy,
-                        scorer=judge,
+                        scorer=scorer,
                         poll_interval=POLL_INTERVAL,
                     )
         finally:
@@ -221,7 +232,7 @@ async def fork(
     for record in records:
         child = run_dir(state, record.run_id)
         _write_inputs(child, changed, agent)
-        outcomes.append(_keep(child, record, judge))
+        outcomes.append(_keep(child, record, scorer))
     return outcomes
 
 
@@ -383,15 +394,18 @@ def _read_only(path: Path) -> sqlite3.Connection:
 
 
 class _Judge:
-    """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it."""
+    """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it;
+    with `judging`, the judged checks too, by `model` or blocked for want of one."""
 
-    def __init__(self, scenario: Scenario) -> None:
+    def __init__(self, scenario: Scenario, model: LanguageModel | None, *, judging: bool) -> None:
         self._scenario = scenario
+        self._model = model
+        self._judging = judging
         self.results: dict[str, RunResult] = {}
 
-    def score(self, record: RunRecord, world: Store) -> RunResult:
+    async def score(self, record: RunRecord, world: Store) -> RunResult:
         last = read_checkpoint(world)
-        result = evaluate_run(
+        view = view_of(
             self._scenario,
             world.events(),
             record.wakes,
@@ -399,8 +413,20 @@ class _Judge:
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in world.calls() if call.provider is None],
         )
+        result = await evaluate_judged(view, self._model) if self._judging else evaluate(view)
         self.results[record.run_id] = result
         return result
+
+
+def _refuse_unwritten(scenario: Scenario, model: LanguageModel | None) -> None:
+    """An `Answers` person needs a model to write their replies; without one the run is refused before it starts."""
+    written = [p.key for p in scenario.people if isinstance(p.reply, Answers)]
+    if written and model is None:
+        raise RunRefused(
+            f"a model writes the replies of {', '.join(written)} (reply kind 'answers'), and no model is "
+            f"configured: set {MODEL_VARIABLE} and {API_KEY_VARIABLE}, and {BASE_URL_VARIABLE} for a service "
+            "other than OpenAI's"
+        )
 
 
 def _new_run_id() -> str:

@@ -2,6 +2,9 @@
 
 Each expectation selects events of one macro kind (a person was asked, a ticket
 was created, deleted, or reached a state) and bounds how many there must be.
+
+A `PersonAsked` with `about` asks what a message means, which no word match can
+answer: it is left to the judged check `asked_about`, and noted here as left.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from minutehand.domain.scenario import (
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
 
 
-def _has(text: str, words: list[str]) -> bool:
+def has_words(text: str, words: list[str]) -> bool:
     lowered = text.lower()
     return all(w.lower() in lowered for w in words)
 
@@ -31,8 +34,12 @@ class Expectations:
         email = {p.key: p.email for p in view.scenario.people}
         start = view.scenario.starts_at
         findings: list[Finding] = []
+        notes: list[str] = []
         for expected in view.scenario.expect:
-            matched = [e for e in view.events if self._matches(expected, e, email)]
+            if isinstance(expected, PersonAsked) and expected.about is not None:
+                notes.append(f"{self.describe(expected)}: left to the judged check asked_about")
+                continue
+            matched = [e for e in view.events if self.matches(expected, e, email)]
             if expected.by is not None:
                 matched = [e for e in matched if e.sim_time <= start + expected.by]
             count = len(matched)
@@ -46,15 +53,15 @@ class Expectations:
                     check=self.id,
                     severity=Severity.ERROR,
                     kind=FindingKind.FAIL,
-                    message=f"{self._describe(expected)}: wanted {wanted}, found {count}",
+                    message=f"{self.describe(expected)}: wanted {wanted}, found {count}",
                     evidence=[e.seq for e in matched],
                     pattern=self.pattern,
                 )
             )
-        return CheckReport(findings=findings)
+        return CheckReport(findings=findings, notes=notes)
 
     @staticmethod
-    def _matches(expected: Expectation, event: WorldEvent, email: dict[str, str]) -> bool:
+    def matches(expected: Expectation, event: WorldEvent, email: dict[str, str]) -> bool:
         after = event.after
         if isinstance(expected, PersonAsked):
             return (
@@ -62,7 +69,7 @@ class Expectations:
                 and event.operation is Operation.CREATE
                 and isinstance(after, MessageSnapshot)
                 and email[expected.person] in after.recipient_emails
-                and _has(after.text, expected.mentions)
+                and has_words(after.text, expected.mentions)
             )
         if isinstance(expected, TicketCreated):
             return (
@@ -70,7 +77,7 @@ class Expectations:
                 and event.operation is Operation.CREATE
                 and isinstance(after, TicketSnapshot)
                 and (expected.assignee is None or after.assignee_email == email[expected.assignee])
-                and _has(f"{after.title} {after.body}", expected.mentions)
+                and has_words(f"{after.title} {after.body}", expected.mentions)
             )
         if isinstance(expected, TicketDeleted):
             return (
@@ -87,10 +94,11 @@ class Expectations:
         raise TypeError(f"no matcher for {type(expected).__name__}")
 
     @staticmethod
-    def _describe(expected: Expectation) -> str:
+    def describe(expected: Expectation) -> str:
         if isinstance(expected, PersonAsked):
             words = f" mentioning {expected.mentions}" if expected.mentions else ""
-            return f"{expected.person} asked{words}"
+            about = f" about {expected.about!r}" if expected.about is not None else ""
+            return f"{expected.person} asked{about}{words}"
         if isinstance(expected, TicketCreated):
             words = f" mentioning {expected.mentions}" if expected.mentions else ""
             return f"ticket created for {expected.assignee or 'anyone'}{words}"
