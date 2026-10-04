@@ -83,7 +83,11 @@ class Wakes(Protocol):
 
 @runtime_checkable
 class BooksWakes(Protocol):
-    """A provider that is a scheduler: what the agent books here becomes a wake."""
+    """A provider that is a scheduler: what the agent books here becomes a wake.
+
+    The booking is in the run's log; what it delivers to (a queue) need not be, so a fork whose checkpoint
+    holds a pending booking is refused (`application.rewind`).
+    """
 
     def bind(self, wakes: Wakes) -> None:
         """Called once before the run; the provider books through `wakes` as the agent's calls arrive."""
