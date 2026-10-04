@@ -15,11 +15,14 @@ What the world log holds, and what it does not:
   did (a delivery, a re-booking, a delete after completion) is `actor=SCENARIO`.
   The schedule record carries `next_at`, so what is pending is in the log too.
 - **moto keeps AWS's own state in process memory, outside the `Store`.** Queues,
-  their messages, and moto's copy of each schedule are not in the log, so a fork
-  cannot rewind them: a run forked before a delivery still finds the delivered
-  message in its queue, and a queue created after the fork point still exists.
-  moto's SQS backend holds a `threading.RLock` and cannot be pickled or deep-copied,
-  so there is no clean per-run snapshot of it.
+  their messages, and moto's copy of each schedule are not in the log, and each
+  run's app takes a fresh account (below), so a fork cannot reach them at all: the
+  schedule record it shares with its parent names the parent's account, whose
+  queues live only in the memory of the process that played the parent. A fork
+  whose checkpoint holds a pending booking is therefore refused before it starts
+  (`application.rewind`); `fire` raises `LookupError` on a schedule targeting
+  another account. moto's SQS backend holds a `threading.RLock` and cannot be
+  pickled or deep-copied, so there is no per-run snapshot to restore instead.
 - **moto reads the machine clock.** SQS DelaySeconds, VisibilityTimeout,
   MessageRetentionPeriod, long-poll WaitTimeSeconds and every Sent/Creation
   timestamp run on real time, not the run's clock; and moto refuses a cron
