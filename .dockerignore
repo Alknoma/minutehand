@@ -1,0 +1,9 @@
+# The image is built from these files and nothing else.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE.md
+!src/
+**/__pycache__
+**/*.py[co]
