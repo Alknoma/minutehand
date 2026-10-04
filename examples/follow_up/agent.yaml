@@ -1,0 +1,20 @@
+# How Minutehand reaches the agent in agent.py. The port is the one agent.py listens on.
+name: follow_up_agent
+
+# The goal arrives on the first wake (POST /wake with reason "start").
+goal:
+  kind: by_wake
+
+# The agent says when it next wants waking: Minutehand asks GET /report after every wake
+# and wakes it again (POST /wake with reason "due") when the simulated clock gets there.
+wakes:
+  - kind: reported
+    wake_url: http://127.0.0.1:8700/wake
+    report_url: http://127.0.0.1:8700/report
+
+# Messages people send the agent in Slack are pushed here, signed with a secret Minutehand
+# makes for each run and hands to the agent in this environment variable.
+inbound:
+  - provider: slack
+    url: http://127.0.0.1:8700/slack/events
+    secret_env: AGENT_SLACK_SIGNING_SECRET

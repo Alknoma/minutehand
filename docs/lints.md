@@ -18,9 +18,10 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 | What pyright cannot see | `datetime.now()` type-checks. Which clock a timestamp came from is not in its type. |
 | 1. Recurred | 72 reads across the 9 existing emulators: Slack 37, Asana 11, Teams 10, Jira 6, YouTrack 3, Graph 2, Drive 1, GitHub 1, Notion 1. |
 | 2. Catches what happened | Run `f431fc97f427`: a ticket filed on the mission's 30 August shows as created 24 August. The Slack `ts` at `docker/slack-emulator/main.py:1361` is one of the 72. |
-| 3. Seen to fail | `python -m lints.wall_clock <alknoma-cloud>/research-services/docker` → 72 findings, exit 1. On `src/` → 0. |
-| 4. Fires on nothing adjacent | Matches `time.time`, `time.time_ns`, `datetime.now/utcnow/today`, `date.today` by call. `time.monotonic` and `time.perf_counter` (durations) are untouched. |
-| Escape | `# clock-lint: exempt <reason>` on the line. `wall_time` on `WorldEvent` is the one legitimate reader. |
+| 3. Seen to fail | `python -m lints.wall_clock` over the parent repository's emulator directory → 72 findings, exit 1. On `src/` → 0. |
+| 4. Fires on nothing adjacent | Matches `time.time`, `time.time_ns`, `datetime.now/utcnow/today`, `date.today` called as an attribute, however the owner is reached. `time.monotonic` and `time.perf_counter` (durations) are untouched. |
+| Cannot see | A clock function called by a bare name: `from time import time` then `time()`. |
+| Escape | `# clock-lint: exempt <reason>` on the line. Two lines carry it: `SqliteStore.apply` filling `WorldEvent.wall_time`, and the Slack provider's `X-Slack-Request-Timestamp` (`adapters/providers/slack/inbound.py`), which the agent checks against its own machine clock. |
 | Cost | One marker at each place wall time is truly wanted. |
 
 ### 2. `import_boundaries` — written
@@ -65,6 +66,7 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 | Test | Answer |
 |---|---|
 | The rule | Every directory under `adapters/providers/` has a manifest, is registered under `minutehand.providers`, claims at least one host, and no two providers claim the same host. |
+| Since then | Built-in providers are found by walking `adapters/providers/`, not by entry point. `Registry` refuses at load a manifest with no `provider.py`, two providers with one key, and overlapping hosts; `Manifest.hosts` requires at least one. Only an installed package's entry point is still a string nothing checks before load. |
 | What pyright cannot see | Entry points are strings in `pyproject.toml`; host patterns are strings. |
 | 1. Recurred | Two instances of a fake existing in the tree and missing from where it is declared: `github_emulator` is absent from `_build-emulator-images.yml` and every workflow; `youtrack-emulator/Dockerfile` says `EXPOSE 8090` while the service listens on 8091. |
 | 2. Catches what happened | Yes for the first (declared set ≠ directory set). The port mismatch disappears with one process. |
@@ -77,6 +79,6 @@ Refused: two instances is thin.
 
 | Need | Why not a lint | What it is instead |
 |---|---|---|
-| A fake accepts what the real API refuses | Needs the real API, or its published document | Response validation against the OpenAPI document in the provider's tests; a scheduled job against real accounts |
-| A fake's response drifts from the real one | Same | Capture mode: record real traffic, replay against the fake, diff |
+| A fake accepts what the real API refuses | Needs the real API, or its published document | Response validation against the OpenAPI document in the provider's tests; a scheduled job against real accounts. Neither is built: each provider's refusal tests are written by hand. |
+| A fake's response drifts from the real one | Same | Capture mode: record real traffic, replay against the fake, diff. Not built. The nightly job runs the suite against the newest release of each service's client library. |
 | A scenario names a person who does not exist | pyright cannot see YAML, but `Scenario._keys_resolve` already rejects it at load | A validator, already written |

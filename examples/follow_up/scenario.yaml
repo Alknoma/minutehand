@@ -1,0 +1,33 @@
+# Rosa answers a day and a half after she is asked: before the agent's two-day follow-up is due.
+name: offsite_venue
+goal: Confirm the venue for the team offsite with Rosa.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"   # a Monday; the clock is simulated, so any date will do
+deadline_after: P14D                # give up after two simulated weeks
+
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    reply:
+      kind: silent
+
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    reply:
+      kind: scripted
+      delay:
+        shortest: PT36H
+        longest: PT36H
+      replies:
+        - to_ask: 1                   # her answer to the first message she gets
+          text: The lakeside hall, booked for the 14th.
+
+# What has to have happened by the end for the run to pass.
+expect:
+  - kind: person_asked
+    person: rosa
+  - kind: person_asked
+    person: owen
+    mentions: [confirmed]
