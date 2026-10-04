@@ -66,9 +66,10 @@ class Mounts(Protocol):
 
 
 class Scorer(Protocol):
-    """Whoever judges a finished run (the checks). Its findings and scorecard end the run's telemetry."""
+    """Whoever judges a finished run (the checks). Its findings and scorecard end the run's telemetry.
+    Async, because a judged check waits on a model."""
 
-    def score(self, record: RunRecord, world: Store) -> RunResult: ...
+    async def score(self, record: RunRecord, world: Store) -> RunResult: ...
 
 
 @dataclass(frozen=True)
@@ -244,11 +245,11 @@ class Orchestrator:
         try:
             await self._checkpoint()
         except AgentFailed:
-            return self._end(StopReason.AGENT_FAILED, started)
+            return await self._end(StopReason.AGENT_FAILED, started)
         stop = await self._start()
         if stop is None:
             stop = await self._loop()
-        return self._end(stop, started)
+        return await self._end(stop, started)
 
     async def resume(self, checkpoint: Checkpoint) -> RunRecord:
         """Carry on from a checkpoint in a store that already holds the world up to it (a fork)."""
@@ -271,7 +272,7 @@ class Orchestrator:
         stop = await self._start() if checkpoint.wake == 0 else None
         if stop is None:
             stop = await self._loop()
-        return self._end(stop, started)
+        return await self._end(stop, started)
 
     def _begin(self) -> None:
         if self._telemetry is not None:
@@ -288,7 +289,7 @@ class Orchestrator:
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))
 
-    def _end(self, stop: StopReason, started: float) -> RunRecord:
+    async def _end(self, stop: StopReason, started: float) -> RunRecord:
         record = RunRecord(
             run_id=self._store.run_id,
             scenario=self._scenario.name,
@@ -301,7 +302,7 @@ class Orchestrator:
             stop=stop,
             wakes=self._wakes,
         )
-        result = self._scorer.score(record, self._store) if self._scorer is not None else None
+        result = await self._scorer.score(record, self._store) if self._scorer is not None else None
         if self._telemetry is not None:
             for finding in result.findings if result is not None else []:
                 self._telemetry.found(finding)
