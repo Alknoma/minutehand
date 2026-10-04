@@ -24,7 +24,7 @@ def client(proxy: Proxy, trust: Path) -> httpx.AsyncClient:
 def exchanges(world_path: Path) -> list[tuple[int, int, Exchange]]:
     """Every attached exchange, including those that produced no event and so no `Store.events` row."""
     with sqlite3.connect(world_path) as db:
-        rows = db.execute("SELECT first_seq, last_seq, exchange FROM exchange ORDER BY rowid").fetchall()
+        rows = db.execute("SELECT first_seq, last_seq, exchange FROM exchange ORDER BY position").fetchall()
     return [(r[0], r[1], Exchange.model_validate_json(r[2])) for r in rows]
 
 

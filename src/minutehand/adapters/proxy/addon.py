@@ -83,7 +83,7 @@ class ProxyAddon:
             async with self._recording:
                 first = self.store.head() + 1
                 flow.response = _json_response(502, "no provider claims this host", host)
-                self._record(flow, host, flow.request.path, first)
+                self._record(flow, host, flow.request.path, first, None)
 
     def _app(self, manifest: Manifest) -> ASGIApp:
         if manifest.key not in self._apps:
@@ -104,7 +104,7 @@ class ProxyAddon:
                 raise
             finally:
                 flow.request.path = original
-                self._record(flow, host, original, first)
+                self._record(flow, host, original, first, manifest.key)
 
     def _edit(self, flow: http.HTTPFlow, host: str) -> None:
         try:
@@ -116,7 +116,7 @@ class ProxyAddon:
         if edited is not None:
             flow.request.content = edited
 
-    def _record(self, flow: http.HTTPFlow, host: str, path: str, first: int) -> None:
+    def _record(self, flow: http.HTTPFlow, host: str, path: str, first: int, provider: str | None) -> None:
         request, response = flow.request, flow.response
         assert response is not None
         exchange = Exchange(
@@ -131,7 +131,7 @@ class ProxyAddon:
             traceparent=_first_header(request, TRACEPARENT),
         )
         last = self.store.head()
-        self.store.attach(exchange, first_seq=first, last_seq=last)
+        self.store.attach(exchange, first_seq=first, last_seq=last, provider=provider)
         if self.telemetry is not None and last >= first:
             for event in self.store.events(since=first - 1):
                 self.telemetry.recorded(event)

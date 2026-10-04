@@ -132,3 +132,18 @@ class Stored(Model):
     parent: str | None
     seq: int = Field(description="The event that wrote this version")
     sim_time: AwareDatetime
+
+
+class RecordedCall(Model):
+    """One HTTP call the proxy saw, with the events it produced, if any.
+
+    `provider` is None when no provider claimed the host: the call was refused.
+    `first_seq > last_seq` means the call produced no event.
+    """
+
+    exchange: Exchange
+    provider: ProviderKey | None
+    first_seq: int
+    last_seq: int
+    wake: int
+    sim_time: AwareDatetime

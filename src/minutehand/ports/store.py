@@ -11,7 +11,8 @@ from typing import Protocol
 
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
-from minutehand.domain.world import Change, EntityKind, EntityRef, Exchange, Stored, WorldEvent
+from minutehand.domain.world import Change, EntityKind, EntityRef, Exchange, RecordedCall, Stored, WorldEvent
+from minutehand.ports.clock import Clock
 
 
 class Store(Protocol):
@@ -39,8 +40,15 @@ class Store(Protocol):
         """The latest sequence number this run can see."""
         ...
 
-    def attach(self, exchange: Exchange, *, first_seq: int, last_seq: int) -> None:
-        """Tie one HTTP call to the events it produced. `first_seq > last_seq` means it produced none."""
+    def attach(self, exchange: Exchange, *, first_seq: int, last_seq: int, provider: ProviderKey | None = None) -> None:
+        """Record one HTTP call and tie it to the events it produced.
+
+        `first_seq > last_seq` means it produced none. `provider` is None for a host nobody claimed.
+        """
+        ...
+
+    def calls(self) -> list[RecordedCall]:
+        """Every recorded call this run can see, in order, including those that produced no event."""
         ...
 
     def remember(self, reply: PersonReply) -> None:
@@ -50,6 +58,10 @@ class Store(Protocol):
     def replies(self) -> list[PersonReply]:
         ...
 
-    def fork(self, run_id: str, *, at_seq: int) -> "Store":
-        """A child run that sees this log up to `at_seq` and nothing after."""
+    def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> "Store":
+        """A child run that sees this log up to `at_seq` and nothing after.
+
+        The child stamps from `clock`, its own: a fork starts at an earlier moment than its
+        parent has reached, and a clock does not run backwards.
+        """
         ...
