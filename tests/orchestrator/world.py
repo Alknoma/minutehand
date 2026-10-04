@@ -23,7 +23,7 @@ from starlette.routing import Route
 
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.people import InboundTarget, PersonReply
+from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
 from minutehand.domain.scenario import Model, ProviderKey, Scenario, TicketState
 from minutehand.domain.world import (
@@ -132,6 +132,16 @@ class Chat:
             entity=ref, operation=Operation.CREATE, actor=Actor.PERSON, parent=INBOX, body=body,
             after=MessageSnapshot(text=reply.text, channel=f"dm:{reply.person}",
                                   thread_of=reply.in_reply_to.external_id),
+        ))
+        async with httpx.AsyncClient() as client:
+            (await client.post(target.url, content=body)).raise_for_status()
+
+    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
+        ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=f"m{world.head() + 1}")
+        body = json.dumps({"from": message.person, "text": message.text})
+        world.apply(Change(
+            entity=ref, operation=Operation.CREATE, actor=Actor.PERSON, parent=INBOX, body=body,
+            after=MessageSnapshot(text=message.text, channel=f"dm:{message.person}"),
         ))
         async with httpx.AsyncClient() as client:
             (await client.post(target.url, content=body)).raise_for_status()
