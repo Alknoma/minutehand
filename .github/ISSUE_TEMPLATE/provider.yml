@@ -1,0 +1,15 @@
+name: A service that needs a provider
+description: An agent talks to a service Minutehand has no fake for.
+labels: [provider]
+body:
+  - type: input
+    id: service
+    attributes: { label: Service and API, placeholder: "Linear, GraphQL API" }
+    validations: { required: true }
+  - type: input
+    id: description
+    attributes: { label: Link to its API description, description: "An OpenAPI document, or its API reference." }
+  - type: textarea
+    id: calls
+    attributes: { label: The calls your agent makes, description: "The handful that matter. `minutehand findings` lists refused hosts as unmatched calls." }
+    validations: { required: true }

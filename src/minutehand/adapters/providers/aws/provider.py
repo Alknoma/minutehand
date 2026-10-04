@@ -104,6 +104,15 @@ class AwsProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         self._account = fresh_account()
+        # moto builds a boto3 client to read each service's model. Building one resolves
+        # credentials, and with none configured botocore goes looking on the network (the
+        # instance-metadata address). This process must never use, or look for, real AWS
+        # credentials, so it is given dummy ones before moto builds anything.
+        os.environ.update(
+            AWS_ACCESS_KEY_ID="minutehand", AWS_SECRET_ACCESS_KEY="minutehand",
+            AWS_SESSION_TOKEN="minutehand", AWS_EC2_METADATA_DISABLED="true",
+        )
+        os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
         moto: ASGIApp = WsgiToAsgi(DomainDispatcherApplication(create_backend_app))
         account = self._account.encode()
 
