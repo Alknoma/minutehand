@@ -13,6 +13,33 @@ The project under test changes by zero lines: its outbound calls are intercepted
 | Checks: `near_miss_name`, `repeated_message`, `expectations`, the `effectiveness` scorecard | Written, tested on a real captured run |
 | Proxy, providers, orchestrator, people, telemetry, command line, MCP, viewer | Not built; see `docs/design.md` |
 
+## Quick start
+
+From a checkout, with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv tool install .                     # the `minutehand` command, in an environment of its own
+cd examples/follow_up
+pip install slack_sdk                 # the example agent's one library, in the agent's own Python
+
+minutehand run scenario.yaml --agent agent.yaml -- python agent.py
+# exits 0: Rosa answers in a day and a half and the agent finishes
+
+AGENT_BEHAVIOUR=forgetful minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
+# exits 1: Rosa never answers, the agent never follows up, and the no_follow_up finding names the fix
+```
+
+Or in a container, with the example mounted and its agent started inside:
+
+```bash
+docker build --target example -t minutehand-example .
+docker run --rm -v "$PWD/examples:/examples:ro" -w /examples/follow_up \
+  minutehand-example run scenario.yaml --agent agent.yaml -- python agent.py
+```
+
+`docker build -t minutehand .` builds the image without the example's library. `examples/follow_up/README.md`
+walks through both runs.
+
 ## Develop
 
 ```bash

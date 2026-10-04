@@ -7,7 +7,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `promotion`, `gate` |
+| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `promotion`, `gate` |
 | `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency) |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
@@ -50,7 +50,7 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 | Tier | When | Required | State |
 |---|---|---|---|
 | **Gate**: types, lints, workflow lint, the whole test suite on three runners | Every pull request and merge-queue entry | Yes | On |
-| **Build**: build the wheel, install it into a clean environment, run a scenario through the installed command; build the container image and run the same scenario through it | Every pull request | Yes, behind `gate` | Off. Needs the command line, which is on `feat/end-to-end`. |
+| **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help` and both `examples/follow_up` scenarios (exit 0, and exit 1 with `no_follow_up` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
 | **Nightly**: repeat runs, newest dependencies | Nightly | No. A failure is a signal about tomorrow, not about the pull request in front of you. | On |
 | **Conformance**: each provider's answers validated against the service's published API description; recorded real traffic replayed against the fake | Nightly | No | Off. Not built. |
 | **Mutation**: a mutation tester over `domain/`, the store and the checks, reporting what survives | Weekly | No, reported as a trend | Off. Not built. Today "seen to fail" is a claim in the pull request, checked by the reviewer. |

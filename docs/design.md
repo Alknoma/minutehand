@@ -1,6 +1,6 @@
 # Minutehand
 
-Draft, 2026-10-04. Code quoted here is in `src/minutehand/` and `lints/`, type-checks clean under pyright, and is tested against captured run `f431fc97f427` (`tests/data/partner_pipeline/`). The spike scripts named below (`spike/…`) were one-off proofs and are not in this repo; their results are recorded here.
+Reconciled with the code on `integration-main` (`9d86c6c`), 2026-10-04. Every code block below is quoted from `src/minutehand/` as it stands. Each part says whether it is built and tested, built with a known limit, or designed and not built. Results of one-off spike scripts, which are not in this repo, are kept only in "Evidence".
 
 ## Abstract
 
@@ -12,6 +12,29 @@ Two pillars, in this order:
 2. **Rewind.** Any run can be restarted from any moment with the prompt, the model, the people or the world changed, and played forward again, with no change to the agent's code.
 
 It is one process: it intercepts the agent's outbound API calls, owns the clock, plays the people and records every change. A coding agent reaches it over MCP, so "simulate it and fix what it finds" is a loop that needs no person in it.
+
+## What exists
+
+Tests are `def test_` functions counted per directory: 465 in all, 592 cases once parametrised. `uv run pytest -q -n auto` runs every one with sockets disabled except to `127.0.0.1`, `::1` and `localhost`.
+
+| Part | What it does | State | Tests | Known limits |
+|---|---|---|---|---|
+| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 9 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
+| World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls and replies; forks share it | Built and tested | 16 (`tests/test_sqlite_store.py`) | The file carries schema version 2 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
+| Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels or edits model APIs, refuses the rest | Built and tested | 27 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are never recorded. |
+| Slack provider | 14 Web API methods; message events pushed to the agent, signed | Built and tested | 69 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
+| Asana provider | 20 routes over users, workspaces, projects, sections, tasks and stories | Built and tested | 55 (`tests/providers/asana/`) | Any bearer token is accepted. |
+| YouTrack provider | 14 routes, each at `/api` and `/youtrack/api` | Built and tested | 60 (`tests/providers/youtrack/`) | Any bearer token is accepted. |
+| Google Drive provider | 14 Drive v3 routes, Docs v1 `documents.get`, Google's `/token` | Built and tested | 62 (`tests/providers/google_drive/`) | Sign-in is not verified; any bearer token is accepted. Content is capped at 5 MiB per file. |
+| AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
+| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 36 (`tests/orchestrator/`) | A fork starts only at a checkpoint (the end of a wake). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Checks, ledger, scorecard, patterns: `checks/` | 12 checks, the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
+| Telemetry: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/`) | World-event spans are emitted when a wake ends, not as calls arrive. |
+| Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`; starts the agent's own command | Built and tested | 9 (`tests/e2e/`) | Whole runs are tested with the Slack provider only. Samples without `StateHooks` are not independent. |
+| Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
+| MCP tools, control API and viewer, container image, model-written people, judged checks, generated providers, human actions, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
+
+No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
 
 ## Positioning
 
@@ -25,9 +48,9 @@ What is sold is the know-how, in three forms:
 
 | Form | What it is | Where it comes from |
 |---|---|---|
-| **Scenarios** | The situations: a person goes quiet, a person is away, a date moves, an approval is declined, a weekly task recurs, a deadline closes in | Ayven's 21 field-observation cases |
-| **Checks** | What going wrong looks like in each | The nine failure categories captured from Ayven's own runs, and the incidents behind each guard |
-| **Patterns** | The design that stops it, with a working implementation to read | How Ayven does it |
+| **Scenarios** | The situations: a person goes quiet, a person is away, a date moves, an approval is declined, a weekly task recurs, a deadline closes in | 21 field-observation cases from a production agent |
+| **Checks** | What going wrong looks like in each | The nine failure categories captured from that agent's runs, and the incidents behind each guard |
+| **Patterns** | The design that stops it, with a working implementation to read | How that agent does it |
 
 A finding carries its pattern (`Finding.pattern`), so the coding agent that reads "followed up 33 hours late" is handed "give every wait an expiry and wake on it" in the same answer.
 
@@ -35,33 +58,33 @@ Monitoring is how the know-how is delivered. It is not the product.
 
 ## Problem
 
-Measured on alknoma-cloud, 2026-10-04:
+Measured on the parent repository's field-observation harness, 2026-10-04:
 
 | What | Evidence |
 |---|---|
-| A run reports no pass or fail | `FieldRunSummary.terminal_reason` is the only verdict. Run `f431fc97f427` ended `turns_exhausted` while the agent had researched the wrong company, filed two tickets under that name, and sent a reminder 33 hours late. |
+| A run reports no pass or fail | The run summary's terminal reason is the only verdict. Run `f431fc97f427` ended "turns exhausted" while the agent had researched the wrong company, filed two tickets under that name, and sent a reminder 33 hours late. |
 | The fakes run on the real clock | `lints/wall_clock.py` finds 72 machine-clock reads across the 9 emulators (Slack 37, Asana 11, Teams 10, Jira 6, YouTrack 3, Graph 2, Drive 1, GitHub 1, Notion 1). The mission clock reached 1 September; every ticket and message was stamped 24 August. |
-| The harness is welded to one agent | `runner.py` imports `select_action`, `scheduling_now` and `IssueRepositoryImpl`, reads `nextCheck`/`nextStaleCheck`/`activeExecutionId` from Firestore, and writes `simulatedNow` directly. |
-| People's replies skip the world | Replies are posted to the `/bridge` endpoint of `request_response_service`. No inbound Slack event is ever produced. |
-| Production code carries the test stack | 29 switch sites: 10 base-URL swaps, 12 credential bypasses, 7 parallel fake adapters (`EmulatorDriveService` alone is 539 lines). |
+| The harness is welded to one agent | The harness's runner imports the agent's action selection, its scheduling clock and its issue repository, reads the agent's next-check fields from its database, and writes the simulated time there directly. |
+| People's replies skip the world | Replies are posted to an internal bridge endpoint of the agent's own service. No inbound Slack event is ever produced. |
+| Production code carries the test stack | 29 switch sites: 10 base-URL swaps, 12 credential bypasses, 7 parallel fake adapters (the fake Drive service alone is 539 lines). |
 | Ten containers, state in memory | Five fakes (Teams, Graph, Drive, Notion, GitHub) hold the world in process memory; four (Slack, Jira, Asana, YouTrack) reload and rewrite whole JSON files on mutation. The tenth container is Firebase's own emulator. |
-| It cannot gate a change | Field observation is excluded from CI (`-m "not field_observation"`), is manual, and takes 30–90 minutes a run. |
+| It cannot gate a change | Field observation is excluded from CI, is manual, and takes 30–90 minutes a run. |
 
 ## Solution
 
 One process with five parts:
 
-1. **Proxy.** The agent's container sets `HTTPS_PROXY`. Calls to hosts a provider claims are answered by that provider's fake. Calls to model APIs pass through. Anything else is refused and recorded.
-2. **Providers.** One module per SaaS, loaded on its first request. Each answers the real API's routes, writes to the store, and turns each call into a `WorldEvent`.
-3. **Clock.** Minutehand's clock is the only clock in a run. `next_jump()` moves it to the next moment something is due, every provider stamps from it, and the agent is told the time by it.
-4. **People.** A scenario's `Person` replies after a simulated delay, through the provider as a real inbound event.
-5. **Checks.** Functions over `RunView` that return `CheckReport`. Deterministic first; anything that needs judgement answers `review`.
+1. **Proxy.** The agent's process gets `HTTPS_PROXY`. Calls to hosts a provider claims are answered by that provider's fake. Calls to model APIs are tunnelled without being decrypted, or decrypted and edited when a fork changes the prompt or model. Anything else is refused with 502 and recorded.
+2. **Providers.** One package per service. Its manifest loads at start; its code loads on its first call. Each answers the real API's routes, reads and writes only through `ports.store.Store`, and records every call as `Change`s, which the store turns into `WorldEvent`s.
+3. **Clock.** `RunClock` is the only clock in a run. `next_jump()` moves it to the next moment something is due, every provider stamps from it, and the agent is told the time in `WakeRequest.now`.
+4. **People.** A scenario's `Person` replies after a simulated delay, through the provider as a real inbound event. Replies are scripted text or silence today.
+5. **Checks.** Classes over `RunView` that return `CheckReport`. Deterministic first; anything that needs judgement answers `FindingKind.REVIEW`.
 
-The agent under test declares how it comes back to work (`AgentUnderTest.wakes`). At most it answers `WakeRequest` with `AgentReport`; an agent that books its own wake-ups answers nothing.
+The agent under test declares how it is reached (`AgentUnderTest`): where it takes its goal (`GoalByWake` or `GoalByMessage`), how it comes back to work (`wakes`), and where pushed events reach it (`inbound`). At most it answers `WakeRequest` with `AgentReport`. An agent that takes its goal as a Slack message and books its own wake-ups answers nothing.
 
 ## Examples
 
-### A scenario
+### A scenario and an agent file
 
 ```yaml
 name: partner_pipeline_build
@@ -71,73 +94,79 @@ starts_at: 2026-08-24T10:50:03Z
 deadline_after: P14D
 protected_names: [Ayven]
 people:
-  - {key: owner,  name: Test User,      email: owner@example.com}
-  - {key: sofia,  name: Sofia Romano,   email: sofia@example.com}
+  - {key: owner,  name: Test User,      email: owner@example.com, reply: {kind: silent}}
+  - {key: sofia,  name: Sofia Romano,   email: sofia@example.com,
+     reply: {kind: scripted, replies: [{to_ask: 1, text: "Signed and sent back."}]}}
   - {key: dania,  name: Dania Kovac,    email: dania@example.com, reply: {kind: silent}}
 ticket_fates:
   - {assignee: sofia, becomes: done, after: P3D}
+expect:
+  - {kind: person_asked,   person: owner}
+  - {kind: ticket_created, assignee: dania, by: P5D}
 ```
 
-`Scenario.model_validate` rejects an unknown field, a duplicate `Person.key`, and any `assignee`, `owner` or `delegate` that names nobody.
+`Scenario.model_validate` rejects an unknown field, a duplicate `Person.key`, and any `owner`, `assignee`, `delegate` or expected `person` that names nobody. `Person.reply` defaults to `Answers`, a model-written reply, and `ScriptedReplier` refuses a run in which anyone has it; every person in a runnable scenario says `scripted` or `silent`. YAML is read without implicit timestamps or base-60 numbers (`application/files.py`), so `opens: 09:00` is a time, not 540.
 
-### A check that ran on the real capture
-
-```
-$ python tests/test_against_captured_run.py .../runs/f431fc97f427__partner_pipeline_build
-near_miss_name: 4 finding(s)
-  [fail] wrote "Aiven" where the scenario says "Ayven"  evidence=[1]
-  [fail] wrote "Aiven" where the scenario says "Ayven"  evidence=[2]
-  [fail] wrote "Aiven" where the scenario says "Ayven"  evidence=[7]
-  [fail] wrote "Aiven" where the scenario says "Ayven"  evidence=[8]
-repeated_message: 3 finding(s)
-  [review] two messages to the same person 18 seconds apart with no reply between  evidence=[3, 4]
-  [review] two messages to the same person 217 seconds apart with no reply between  evidence=[4, 5]
-  [review] two messages to the same person 2 seconds apart with no reply between  evidence=[7, 9]
-expectations: 1 finding(s)
-  [fail] ticket created for dania: wanted at least 1, found 0  evidence=[]
-near_miss_name on the same run with the name corrected: 0 findings
+```yaml
+name: forgetful_agent
+wakes:
+  - {kind: reported, wake_url: "http://127.0.0.1:8765/wake", report_url: "http://127.0.0.1:8765/report"}
+inbound:
+  - {provider: slack, url: "http://127.0.0.1:8765/slack/events", secret_env: AGENT_SLACK_SIGNING_SECRET}
 ```
 
-`near_miss_name` finds the two tickets and two messages and goes clean when the name is corrected. `repeated_message` is imprecise on this capture: one of its three flags is the real duplicate. It measured wall time because the capture has no simulated time on messages; it answers `review` for that reason.
+### A whole run
+
+The e2e test agent (`tests/e2e/agents/slack_agent.py`, behaviour `forgetful`: asks once on stock `slack_sdk` and never comes back), a scenario where Sofia and the owner are silent, run with the command that `tests/e2e/test_cli.py` drives:
+
+```
+$ minutehand run scenario.yaml --agent agent.yaml --state state -- python slack_agent.py serve --port 8765 --state agent.json
+run d799b57b7ad2: partner_pricing
+  stopped at 2026-09-07 10:00 UTC (simulated) because nothing more was due and the agent asked for no wake
+
+fail (2)
+  expectations: owner asked mentioning ['confirmed']: wanted at least 1, found 0
+    pattern honest_closure: Honest closure. Closing is decided from the state of the world, not from the agent's last message.
+  no_follow_up: wait on sofia expired 11 days 6 hours before the run ended and the agent never came back to it
+    pattern expiry_on_every_wait: An expiry on every wait. Every wait carries an expected-by date and the agent wakes on it.
+
+scorecard
+  expectations met: 1 of 2
+  waits opened: 2, still open at the end: 1
+  follow-ups due: 1, made: 0, late: 1
+  time the agent lost: 11.2 days
+  wakes: 1, of which changed nothing: 0
+  messages to people: 1
+  failed checks: 2
+
+checkpoints to fork from: after wake 0 at seq 14, after wake 1 at seq 18, after wake 1 at seq 19
+exit 1
+```
+
+The agent stopped after one wake; the clock ran on to the deadline (seq 19 is that checkpoint), so the wait it abandoned was seen to expire.
+
+### The checks on a captured run
+
+`tests/data/partner_pipeline/` is run `f431fc97f427`, converted to this package's models. `tests/test_checks_on_reference_run.py` asserts:
+
+| Check | Result |
+|---|---|
+| `near_miss_name` | 4 failures, each `wrote "Aiven" where the scenario says "Ayven"`: two tickets and two messages. 0 once the name is corrected. |
+| `repeated_message` | 1 review, evidence `[3, 4]`, "18 seconds apart". The two template-alike pairs it once flagged score below `SAME_ASK`. |
+| `expectations` | 1 failure: `ticket created for dania: wanted at least 1, found 0`. The legal-review ticket the goal depended on was never filed. |
 
 ### The loop a coding agent runs
 
+Built, on the command line:
+
 ```
-run_scenario(name="partner_pipeline_build")        -> run_id, 4 fail, 2 review
-show_evidence(run_id, finding=1)                   -> the ticket as filed, the wake it was filed in, the trace id
-  ... edits the agent's code ...
-rerun_from(run_id, wake=2)                         -> restores the checkpoint before wake 2, replays recorded replies
+minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, findings, scorecard, checkpoints; exit 1 on any FAIL
+minutehand findings <run_id>                                   -> the same report, read back from the state directory
+minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
+minutehand runs
 ```
 
-## Spike: one process, intercepted calls, existing fakes
-
-Run on 2026-10-04 with `spike/run_spike.py` (macOS, Python 3.12, mitmproxy 12.2.3) and again as one container (`spike/Dockerfile`).
-
-| Claim | Result |
-|---|---|
-| mitmproxy can be embedded and answer for real hostnames | Yes. `DumpMaster` plus one addon that calls `mitmproxy.addons.asgiapp.serve()`. |
-| The existing Flask fakes mount unchanged | Yes for Slack and Asana, with the two adjustments below. |
-| A provider loads on first use | Slack imported on call 1 (0.01 s), Asana on call 4 (0.01 s), GitHub never. |
-| A client needs environment variables only | Yes. `slack_sdk.WebClient(token=…)` with its default `https://slack.com/api/` and plain `httpx.get("https://app.asana.com/api/1.0/workspaces")` were both answered by the fakes with only `HTTPS_PROXY` and `SSL_CERT_FILE` set. |
-| Trace context survives | The `traceparent` header on the Asana call was recorded on its `exchange` row. |
-| An unclaimed host is refused | `https://example.org/` got 502 and an `exchange` row with no provider. |
-
-| Measure | As a process | As one container |
-|---|---|---|
-| Ready to accept calls | 0.26–0.54 s over five starts | 1.6 s including `docker run` |
-| Memory, no provider loaded | 87 MB | 57 MiB |
-| Memory, Slack and Asana loaded | 91–97 MB | 58 MiB |
-| Image size | n/a | 367 MB on `python:3.12-slim` |
-| One call | p50 0.9 ms, p95 1.0 ms | not measured |
-| Eight clients at once | 1,401 calls a second | not measured |
-
-What the spike turned up:
-
-- **Two options are required so the real host is never contacted:** `connection_strategy="lazy"` and `upstream_cert=False`. They were set; the absence of upstream traffic was not checked by watching the network.
-- **The fakes seed themselves inside `if __name__ == "__main__"`.** An import does not run that, so Slack answered `invalid_auth` until the loader copied `data/defaults/*.json` into place. A `Provider.seed()` call replaces this.
-- **The Asana fake serves at the root; the real API is under `/api/1.0`.** Our adapter's base URL hid the difference. An intercepted client sends the real path, so a manifest carries a path prefix.
-- **The fakes still stamp with the machine clock.** The Slack `ts` in the spike is the real date while the recorded `sim_time` is 30 August. This is the 72-read defect, unchanged until providers take the clock.
-- **mitmproxy's app host buffers each response whole and does not implement WebSockets** (its own docstring). Streaming responses and Slack Socket Mode need a different path.
+Designed, not built: the same loop as MCP tools (see "What a coding agent calls").
 
 ## Architecture
 
@@ -145,27 +174,38 @@ What the spike turned up:
 
 ```
 src/minutehand/
-  domain/            pure: no I/O, no clock reads, no provider imports
-    scenario.py      Scenario, Person, Answers, Helpfulness, WorkingHours, Absence, SeededTicket, TicketFate, Expectation
-    world.py         WorldEvent, Exchange, EntityRef, TicketSnapshot, MessageSnapshot
-    agent.py         WakeRequest, AgentReport, AgentUnderTest, WakeSource, HumanAction, Inbox, StateHooks
-    provider.py      Manifest, Tier
-    experiment.py    Fork, Override, PromptPatch, ModelSwap, PersonChange, TicketEdit
-    checks.py        Finding, CheckReport, Pattern, Obligation, Stability, RunView, Check
-    clock.py         Due, Jump, next_jump()
-  application/       orchestrator (the wake loop), check runner, replier
+  domain/             pure: no I/O, no clock reads
+    scenario.py       Model, Scenario, Person, Answers, Scripted, Silent, DelayRange, WorkingHours, Absence,
+                      SeededTicket, SeededDocument, TicketFate, Direction, PersonAsked, TicketCreated,
+                      TicketDeleted, TicketInState
+    world.py          WorldEvent, Change, Stored, Exchange, RecordedCall, EntityRef,
+                      TicketSnapshot, MessageSnapshot, DocumentSnapshot, RecordSnapshot
+    agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
+                      GoalByWake, GoalByMessage, HumanAction, Inbox, StateHooks
+    people.py         PersonReply, PersonMessage, InboundTarget
+    provider.py       Manifest, Tier
+    experiment.py     Fork, CallMatch, PromptPatch, ModelSwap, PersonChange, TicketEdit, DeadlineShift
+    checks.py         Finding, CheckReport, Pattern, Obligation, Stability, Effectiveness, PersonBurden,
+                      WakeRecord, RunView, Check
+    clock.py          Due, Jump, next_jump()
+    run.py            RunRecord, StopReason
+  ports/              Store, Clock, Provider, PushesEvents, HoldsTickets, EditsTickets, BooksWakes, Wakes,
+                      AgentDriver, Replier, Telemetry
+  application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, replier_scripted.py,
+                      run_clock.py, state_hooks.py, files.py, refusals.py
+  checks/             one module per check; runner.py, ledger.py, effectiveness.py, patterns.py, _waits.py
   adapters/
-    proxy/           interception, host routing, pass-through policy
-    providers/<name> manifest.py, app.py, normalise.py, seed.py, inbound.py
-    store/           SQLite
-    telemetry/       OpenTelemetry export
-    mcp/             the tools a coding agent calls
-    web/             control API and the viewer
-  checks/            one file per check
-lints/               discovered by directory, no registration
+    proxy/            server.py, addon.py, policy.py, registry.py, hosts.py, edit.py, redact.py
+    providers/<key>/  manifest.py, provider.py, app.py, wire.py, state.py, seed.py
+    store/            sqlite.py
+    agent/            reported.py, polled.py, command.py, reach.py
+    telemetry/        otel.py
+  session.py          the composition root: play(), fork(), load(), runs(), fork_points()
+  cli.py              minutehand run | findings | fork | runs
+lints/                discovered by directory, no registration
 ```
 
-`domain/` and `application/` never import `adapters/`. A provider never imports another provider.
+`lints/import_boundaries.py` holds the direction: `domain` imports nothing from `application`, `adapters` or `ports`; `ports` nothing from `application` or `adapters`; `application` nothing from `adapters`; `checks` only `domain` and `ports`; a provider nothing from another provider. `session.py` is the one module that imports both `application` and `adapters`.
 
 ### Data models
 
@@ -175,124 +215,208 @@ The contract with the agent:
 
 ```python
 class WakeRequest(Model):
+    """ "It is now `now`; go." Sent each time the clock reaches a due moment."""
+
     run_id: str
     now: AwareDatetime
-    reason: WakeReason  # START | DUE | PERSON_REPLIED | DIRECTION | TICK
-    goal: str | None = None  # set on the START wake only
+    reason: WakeReason
+    goal: str | None = Field(default=None, description="Set on the START wake only")
+    direction: str | None = Field(default=None, description="What the owner said; set on a DIRECTION wake only")
 
 
 class AgentReport(Model):
-    status: AgentStatus  # WORKING | IDLE | DONE
+    """The answer to "are you still working?" and "when do you next need to wake?"."""
+
+    status: AgentStatus
     next_wake: AwareDatetime | None = None
     commitments: list[Commitment] | None = None
 
 
 WakeSource = Annotated[Reported | Booked | Polled | Command, Field(discriminator="kind")]
 
+GoalSource = Annotated[GoalByWake | GoalByMessage, Field(discriminator="kind")]
+
 
 class AgentUnderTest(Model):
     name: str
-    wakes: list[WakeSource]  # at least one; replies and pushed events always wake it
+    goal: GoalSource = GoalByWake()
+    wakes: list[WakeSource] = []
+    inbound: list[InboundTarget] = []
+    human_actions: list[HumanAction] = []
+    inbox: Inbox | None = None
+    state: StateHooks | None = None
 ```
 
-An agent may need none of this: one that books its wake-ups with an intercepted scheduler declares `Booked` and exposes nothing. See "How the clock knows what is next".
+`WakeReason` is `START | DUE | PERSON_REPLIED | DIRECTION | TICK`; `AgentStatus` is `WORKING | IDLE | DONE`. `AgentUnderTest` refuses a goal sent by message on a provider it declares no inbound target for, and a goal handed over in a wake when it declares no way to be woken. `wakes` may be empty when the goal comes by message.
 
-What a provider records, the same for every provider:
+What every provider records:
 
 ```python
 class WorldEvent(Model):
-    seq: int
+    """One change, or one read, in a shape that is the same for every provider."""
+
+    seq: int = Field(ge=1)
     run_id: str
-    wake: int  # 0 is setup
+    wake: int = Field(ge=0, description="The agent wake this happened in; 0 is setup")
     sim_time: AwareDatetime
     wall_time: AwareDatetime
-    actor: Actor  # AGENT | PERSON | SCENARIO
-    operation: Operation  # CREATE | UPDATE | DELETE | READ | SEARCH
+    actor: Actor
+    operation: Operation
     entity: EntityRef
-    after: Snapshot | None = None  # TicketSnapshot | MessageSnapshot | DocumentSnapshot
-    exchange: Exchange | None = None  # the raw HTTP call, provider's own format, as text
+    after: Snapshot | None = None
+    exchange: Exchange | None = None
 ```
 
-What a check returns, after `alknoma-cloud/research-services/lints/_core.py`:
+`Actor` is `AGENT | PERSON | SCENARIO`; `Operation` is `CREATE | UPDATE | DELETE | READ | SEARCH`; `Snapshot` is `TicketSnapshot | MessageSnapshot | DocumentSnapshot | RecordSnapshot`. A provider hands the store a `Change` (the entity, its body as the provider's own JSON text, its parent, its snapshot); `Store.apply` gives it a `seq` and both clocks. The proxy ties the HTTP call (`Exchange`, no headers, credentials redacted by `adapters/proxy/redact.py`) to the events written while answering it.
+
+What a check returns, after the parent repository's lint core:
 
 ```python
 class Finding(Model):
     check: str
-    severity: Severity  # ERROR | WARNING | INFORMATION  (how loud)
-    kind: FindingKind  # FAIL | REVIEW | INFORMATIONAL  (what the reader must do)
+    severity: Severity
+    kind: FindingKind
     message: str
-    at: AwareDatetime | None = None  # simulated time
+    at: AwareDatetime | None = Field(default=None, description="Simulated time")
     wake: int | None = None
-    evidence: list[int] = []  # WorldEvent.seq
+    evidence: list[int] = Field(default=[], description="WorldEvent.seq values")
+    pattern: str | None = Field(default=None, description="Pattern.key: how a proactive agent avoids this")
 
 
 class CheckReport(Model):
     findings: list[Finding] = []
-    blocked: list[str] = []  # the check could not read its input: it did not run
+    blocked: list[str] = []
     notes: list[str] = []
 ```
 
+`Severity` (`ERROR | WARNING | INFORMATION`) is how loud; `FindingKind` (`FAIL | REVIEW | INFORMATIONAL`) is what the reader must do. A check that could not read its input puts the reason in `blocked` and did not run.
+
 ### The provider port
 
-Two protocols, because five of the nine providers push nothing and a method that returns `[]` is a stub:
+Six protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
 
 ```python
 class Provider(Protocol):
-    manifest: Manifest  # name, hosts, entity kinds
+    manifest: Manifest
 
-    def app(self, store: Store, clock: Clock) -> ASGIApp: ...
-    def normalise(self, exchange: Exchange) -> list[WorldEvent]: ...
-    def seed(self, scenario: Scenario, store: Store) -> None: ...
+    def app(self, world: Store, clock: Clock) -> ASGIApp: ...
+
+    def seed(self, scenario: Scenario, world: Store) -> None: ...
 
 
-class PushesEvents(Protocol):  # Slack, Teams, Graph, Notion
-    def deliver(self, reply: PersonReply, target: AgentInbound) -> None: ...
+@runtime_checkable
+class PushesEvents(Protocol):
+    async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None: ...
+
+    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None: ...
+
+
+@runtime_checkable
+class HoldsTickets(Protocol):
+    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None: ...
+
+
+@runtime_checkable
+class EditsTickets(Protocol):
+    def edit(
+        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
+    ) -> None: ...
+
+
+class Wakes(Protocol):
+    def book(self, due: Due) -> None: ...
+
+    def cancel(self, ref: str) -> None: ...
+
+
+@runtime_checkable
+class BooksWakes(Protocol):
+    def bind(self, wakes: Wakes) -> None: ...
+
+    async def fire(self, ref: str, world: Store, clock: Clock) -> None: ...
 ```
 
-Jira, Asana, YouTrack, GitHub and Drive implement `Provider` only. A person "replying" on those is a state change in the store (`TicketFate`), which the agent finds on its next read.
+| Provider | `Manifest.key` | Hosts (`path_prefix`) | Ports beyond `Provider` |
+|---|---|---|---|
+| Slack | `slack` | `slack.com`, `*.slack.com` | `PushesEvents` |
+| Asana | `asana` | `app.asana.com` (`/api/1.0`) | `HoldsTickets`, `EditsTickets` |
+| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api` and `/youtrack/api`) | `HoldsTickets`, `EditsTickets` |
+| Google Drive | `google_drive` | `www.googleapis.com`, `oauth2.googleapis.com`, `docs.googleapis.com` | none |
+| AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
+
+All five are `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
 
 ### Flow of one wake
 
 ```
-orchestrator: next_jump(now, pending) -> Jump
-  clock.set(jump.now)                         every provider now stamps this time
-  for due in jump.firing:
-    PERSON_REPLY  -> provider.deliver(...)    a real inbound event reaches the agent
-    TICKET_FATE   -> store.update(...)        recorded as actor=SCENARIO
-    AGENT_WAKE    -> POST wake_url WakeRequest(now, reason)
-  until AgentReport.status != WORKING:        poll report_url
-    proxy: request -> provider.app -> store -> Exchange -> normalise -> WorldEvent
-  store.checkpoint(wake)
-  pending += AgentReport.next_wake, replies owed for new asks
-checks.run(RunView) -> CheckReport -> store, telemetry, exit code
+Orchestrator.run():
+  every provider seeds the world (actor SCENARIO); directions and the first Polled tick enter `pending`
+  checkpoint (wake 0)
+  START wake: by message, the owner says the goal (PushesEvents.say); otherwise WakeRequest(START, goal)
+  loop:
+    jump = next_jump(now, pending)
+      None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
+      jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
+    clock.jump(jump.now)
+    only ticket fates fired -> HoldsTickets.transition, no wake
+    otherwise, one wake:
+      fire in order: fates (transition), replies (PushesEvents.deliver), directions by message (say),
+                     bookings (BooksWakes.fire), the next Polled tick
+      WakeRequest to each driver that must hear of it; poll AgentDriver.report() until not WORKING
+      read the new events: an agent message to a person -> Replier.decide -> a pending reply
+                           an agent ticket assigned to a person with a TicketFate -> a pending fate
+      AgentReport.next_wake replaces the agent's previous DUE wake
+      checkpoint: StateHooks.snapshot, then a Checkpoint row in the log
+      stop on DONE (AGENT_DONE), Scenario.max_wakes (WAKE_LIMIT), AgentFailed (AGENT_FAILED)
+  RunRecord -> Scorer (every check) -> Telemetry.found, Telemetry.run_ended
 ```
+
+- When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
+- A wake made only of bookings sends no `WakeRequest` and polls no report: the scheduler's delivery is the wake, and the loop does not wait for the agent to act on it.
+- A wake whose only news is a pushed event, to an agent with no wake endpoint, sends nothing either: the push is the wake.
+- Every `Polled` tick is a wake and counts toward `Scenario.max_wakes` (default 20).
+- An agent that refuses a pushed event fails the wake as one that refuses the wake does.
 
 ## Implementation
 
-### Storage: SQLite, one file per run
+### Storage: SQLite, one file per root run
 
 | Option | Verdict |
 |---|---|
-| **SQLite (WAL)** | Chosen. In the standard library, one file, on disk, one writer with any number of readers (the viewer reads while a run writes), and the world can be read "as of" any sequence number with plain SQL. |
+| **SQLite (WAL)** | Chosen. In the standard library, one file, on disk, one writer with any number of readers, and the world can be read "as of" any sequence number with plain SQL. |
 | DuckDB | Not for the world: column store, weak at many small transactional writes. Useful read-only for questions across many runs; it attaches SQLite files directly. |
 | LMDB / RocksDB | No query language; every listing endpoint (`conversations.history`, issue search) would be hand-written scans. |
 | Postgres | A second process. Breaks "one container, one command". |
-| JSON files (today) | Rewrites the whole file per mutation and holds it all in memory. |
+| JSON files (the parent repository's fakes) | Rewrites the whole file per mutation and holds it all in memory. |
+
+What a run leaves behind (`session.py`):
 
 ```
-<state>/catalog.db                     runs, scenarios
-<state>/runs/<run_id>/world.db         entity_version, event, exchange, wake, finding, reply
-<state>/blobs/<sha256>                 any body over 64 KB
+<state>/ca/                          the proxy's CA, made on first use and reused
+<state>/runs/<run_id>/world.db       the world, for a run started from the beginning; a fork writes
+                                     into its root run's file
+<state>/runs/<run_id>/record.json    `RunRecord`
+<state>/runs/<run_id>/result.json    `RunResult`: findings, blocked checks, notes, the scorecard
+<state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
+<state>/runs/<run_id>/agent.json     `AgentUnderTest`
+<state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
+<state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks`
 ```
 
-- `entity_version` is the world: append-only, one row per change, read "as of" a sequence number (see "The changelog, rewind and forks"). Providers page through it with SQL; nothing is held in process memory between requests.
-- `event` and `exchange` are append-only too.
-- `reply` stores every person's reply the first time it is produced. `rerun_from` replays them, so a rerun does not call a model for the people.
-- One file per root run isolates parallel runs and makes deletion a directory removal. A fork lives in its parent's file.
+`world.db` holds five tables: `run` (each run and the seq and call count it was forked at), `event`, `entity_version`, `exchange` and `reply`.
+
+- `entity_version` is the world: append-only, one row per change, read "as of" a sequence number. Providers page through it with `Store.children`; nothing is held in process memory between requests.
+- `event` and `exchange` are append-only too. A call that produced no event is recorded with `first_seq > last_seq`.
+- `reply` stores every person's reply the first time it is decided. A fork copies the parent's replies up to its checkpoint, so a rerun asks no one again.
+- One file per root run isolates parallel runs. A fork lives in its root's file.
+- One `sqlite3` connection per store, shared across threads behind one lock: a provider served from a worker thread writes through it.
+- `SCHEMA_VERSION = 2` is stamped into `user_version`; a file with tables and another version is refused, not guessed at.
 
 ### One container
 
-Achievable for every SaaS fake. One image, one process, two ports:
+Designed, not built. Today Minutehand runs as one Python process: `Proxy` listens on `127.0.0.1` on a port the system picks, and `minutehand run … -- <command>` starts the agent's own process beside it.
+
+The design: one image, one process, two ports.
 
 | Port | Serves |
 |---|---|
@@ -315,23 +439,24 @@ services:
     volumes: ["minutehand-ca:/ca:ro"]
 ```
 
-Without Docker: `uvx minutehand up`.
-
-Three limits:
+Three limits of the design:
 - **The agent's own database is not a SaaS fake.** Firebase's emulator suite is Google's and stays a separate container.
 - **The agent's container must trust the CA.** One environment variable per HTTP library, as above.
-- **A client that ignores proxy settings** uses the `/p/<provider>/` base URL instead, which is a configuration change in the agent.
+- **A client that ignores proxy settings** would use the `/p/<provider>/` base URL instead, which is a configuration change in the agent. That base-URL mode is not built.
 
 ### Lazy loading
 
-- A provider's `manifest.py` is data only: name, host patterns, the path prefix the real API uses, entity kinds. All manifests load at start; nothing else does.
-- The proxy maps a request's host to a manifest and imports that provider's `app` on first use (`importlib.import_module`).
-- Providers register under the entry-point group `minutehand.providers`, so a provider can ship as a separate package.
-- Per-customer hosts (`*.atlassian.net`, a self-hosted YouTrack) are wildcard patterns in the manifest plus hosts a scenario declares.
+Built and tested (`test_provider_module_is_imported_on_its_first_request`).
+
+- A provider is a package with `manifest.py` (`MANIFEST: Manifest`, data only) and `provider.py` (`build() -> Provider`). `Registry.installed()` imports every manifest; nothing else.
+- Built-in providers are found by walking `minutehand.adapters.providers`. An installed package names itself under the entry-point group `minutehand.providers`, with its package as the value; an entry point whose name differs from its manifest's key is refused.
+- The proxy maps a request's host to a manifest and builds that provider on the first call (`Registry.provider`). `session.play` builds the providers the scenario and the agent name before the run, because it seeds them and holds them to their ports; any other installed provider is still built on its first call, unseeded.
+- Host patterns are an exact lower-case host or `*.` and a domain; a wildcard does not claim its own apex. Two providers claiming overlapping hosts, or one key, are refused when registered.
+- Hosts a scenario declares (a self-hosted YouTrack) are designed, not built.
 
 ### Thousands of services
 
-Nine hand-written fakes took about 19,400 lines. That does not reach thousands, so a provider has a `Tier`, and only the top one is written by hand.
+Designed, not built. Five hand-written providers exist, all `Tier.FINISHED`; the parent repository's nine fakes took about 19,400 lines. That does not reach thousands, so a provider has a `Tier`, and only the top one is written by hand.
 
 | `Tier` | What it is | Made from | Effort per service |
 |---|---|---|---|
@@ -341,55 +466,61 @@ Nine hand-written fakes took about 19,400 lines. That does not reach thousands, 
 | `FINISHED` | Refusals, pushed events, sign-in, known quirks | Hand work | Weeks; reserved for what every agent touches (Slack, Teams, the big trackers) |
 
 - **One engine, not thousands of providers.** `GENERATED` is a single provider whose manifests are produced from descriptions. The APIs.guru directory holds roughly 1,900–2,500 public descriptions.
-- **MCP is the shorter road.** A remote MCP server lists its tools with schemas. The same engine can stand in for any of them, and an agent that reaches its services through MCP needs nothing else.
-- **An unmapped resource is still checked.** A generated provider emits `RecordSnapshot(resource, text)`. Checks that need only the written text run on it; checks that need a ticket's assignee do not, and say so in `blocked`.
+- **MCP is the shorter road.** A remote MCP server lists its tools with schemas. The same engine can stand in for any of them.
+- **An unmapped resource is recorded as `RecordSnapshot(resource, text)`.** The AWS provider and the Drive provider's permissions and comments emit it today. Of the checks, only `acted_after_deadline` reads it: `near_miss_name` and `repeated_message` read tickets and messages only, and `duplicate_ticket` tickets only.
 - **Mapping is data.** Which resource is a ticket and which field is its title is a short mapping file per service, drafted by a coding agent and reviewed.
 - **Prior art:** FetchSandbox generates a stateful sandbox from an OpenAPI document and is hosted; Prism and Microcks serve examples without state. Nango's provider catalogue (1,000+ APIs) is under the Elastic License and cannot be copied into this repo.
 - **Unproven:** how much of a real service's behaviour create-read-update-delete over its description actually covers. This needs measuring on five services before the tier is promised.
 
 ### Hosts the proxy does not own
 
-| Host | Default |
-|---|---|
-| Claimed by a provider | Answered by the fake |
-| A model API (`api.openai.com`, `api.anthropic.com`, …; configurable list) | Passed through untouched |
-| Anything else | Refused with 502 and recorded; surfaces as an `unmatched_call` finding |
+Built and tested (`tests/proxy/`). `Routing.policy(host)` decides by host alone:
 
-Capture mode flips the last row to "passed through and recorded", which is how a provider's fidelity is measured against the real API.
+| `HostPolicy` | When | What happens |
+|---|---|---|
+| `ANSWER` | A provider claims the host | Its app answers with the manifest's `path_prefix` stripped; the call is recorded. A provider that fails to load answers 500; the call never reaches the real host. |
+| `TUNNEL` | A model host (`DEFAULT_MODEL_HOSTS`: `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`) with no edit for this run | Bytes pass through, never decrypted, never recorded |
+| `EDIT` | A model host the run edits | Decrypted, edited, sent on with the upstream certificate verified; not recorded. An edit that fails answers 502 rather than sending the request unedited. |
+| `REFUSE` | Anything else | 502 and recorded with no provider; surfaces as an `unmatched_call` finding |
+
+A model host that overlaps a provider's claim is refused when `Routing` is built. The model-host list is a `Routing` argument; the CLI uses the default. Upstream connections open only when a request is forwarded (`connection_strategy="lazy"`) and the certificate shown to the client is minted, not copied (`upstream_cert=False`); `test_claimed_host_is_answered_without_contacting_it` and `test_unclaimed_host_is_refused_and_recorded_without_contacting_it` watch a listener receive no connection.
+
+Capture mode, which would pass the last row through and record it to measure a provider against the real API, is designed, not built.
 
 ### What "right" means for a scenario
 
-A scenario states what must be true of the world, in macro terms: a person was asked, a ticket was created, deleted, or reached a state. Each is a typed selector with a count and an optional time bound.
+Built and tested. A scenario states what must be true of the world, in macro terms: a person was asked, a ticket was created, deleted, or reached a state. Each is a typed selector with a count (`Bound.at_least`, default 1; `at_most`) and an optional time bound (`by`, an offset from `starts_at`).
 
 ```yaml
 expect:
-  - {kind: person_asked,   person: owner}
-  - {kind: ticket_created, assignee: sofia}
-  - {kind: ticket_created, assignee: dania, by: P5D}
-  - {kind: ticket_created, mentions: [Aiven], at_least: 0, at_most: 0}
+  - {kind: person_asked,    person: owner}
+  - {kind: ticket_created,  assignee: sofia}
+  - {kind: ticket_created,  assignee: dania, by: P5D}
+  - {kind: ticket_created,  mentions: [Aiven], at_least: 0, at_most: 0}
   - {kind: ticket_deleted}                      # default: at most 0
+  - {kind: ticket_in_state, assignee: sofia, state: done}
 ```
 
-On the reference run, `expectations` reports one failure: `ticket created for dania: wanted at least 1, found 0`. The legal-review ticket the goal depends on was never filed; both attempts were declined.
-
-`mentions` is a literal word match. "Was Sofia asked about pricing" in the sense of meaning, not words, is a judged check and is queued with the others.
+`mentions` is a case-insensitive substring match on the message text or the ticket's title and body. "Was Sofia asked about pricing" in the sense of meaning, not words, is a judged check and is designed, not built.
 
 ### A person acting in the agent's own product
 
-Some of what a person does never touches a SaaS. In alknoma-cloud an approval is decided at `operation_gateway`'s `/api/v1/consent/decide` and a question is answered at `request_response_service`'s `/bridge`. No fake can stand in for those: they are the agent's own endpoints.
+Designed, not built: `HumanAction` and `Inbox` are models in `domain/agent.py` and nothing reads them.
+
+Some of what a person does never touches a SaaS: approving an operation in the agent's own web app, answering a question on its own page. No fake can stand in for those: they are the agent's own endpoints.
 
 ```python
 class HumanAction(Model):
-    name: str
-    description: str  # when a person would do this; the persona reads it
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    description: str = Field(description="When a person would do this; the persona reads it")
     method: Literal["POST", "PUT", "PATCH", "DELETE"] = "POST"
-    url: str  # may hold {argument} placeholders
-    body: str | None  # JSON text with {argument} placeholders
-    arguments: list[ActionArgument]
+    url: str = Field(description="May hold {argument} placeholders")
+    body: str | None = Field(default=None, description="JSON text with {argument} placeholders")
+    arguments: list[ActionArgument] = []
 
 
-class Inbox(Model):  # where the monitor learns what is waiting on a person
-    url: str
+class Inbox(Model):
+    url: str = Field(description="Lists what is pending; may hold {person_email}")
     id_field: str
     summary_field: str
 ```
@@ -404,23 +535,35 @@ A run ends with a scorecard. It is computed from the world and the clock; nothin
 
 ```python
 class Effectiveness(Model):
-    expectations_met: int
-    expectations_total: int
-    waits_opened: int
-    waits_open_at_end: int
-    follow_ups_due: int  # waits that passed their expected date while still open
-    follow_ups_made: int
-    follow_ups_late: int
-    time_lost: timedelta  # late follow-ups plus slow reactions: what the agent added
-    slowest_follow_up: timedelta | None
-    wakes: int
-    idle_wakes: int
-    failed_checks: int
+    expectations_met: int = Field(ge=0)
+    expectations_total: int = Field(ge=0)
+    waits_opened: int = Field(ge=0)
+    waits_open_at_end: int = Field(ge=0)
+    follow_ups_due: int = Field(ge=0, description="Waits that passed their expected date while still open")
+    follow_ups_made: int = Field(ge=0)
+    follow_ups_late: int = Field(ge=0)
+    time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
+    slowest_follow_up: timedelta | None = None
+    reactions_due: int = Field(
+        default=0, ge=0, description="Settled waits naming a person or entity, so a reaction can be timed"
+    )
+    reactions_slow: int = Field(
+        default=0, ge=0, description="Of those, the agent's next touch came after the grace, or never"
+    )
+    slowest_reaction: timedelta | None = None
+    messages_to_people: int = Field(default=0, ge=0)
+    burden: list[PersonBurden] = Field(default=[], description="Messages per person, in Scenario.people order")
+    messages_per_outcome: float | None = Field(
+        default=None, description="messages_to_people per expectation met; None when none was met"
+    )
+    wakes: int = Field(ge=0)
+    idle_wakes: int = Field(ge=0, description="Wakes that changed nothing")
+    failed_checks: int = Field(ge=0)
 ```
 
-The rule that makes it fair: time the world itself took is not the agent's. A person who needed three days, or a reviewer who never answered, costs the agent nothing. `time_lost` counts only the stretch between the moment the agent should have acted and the moment it did.
+The rule that makes it fair: time the world itself took is not the agent's. A person who needed three days, or a reviewer who never answered, costs the agent nothing. `time_lost` counts only the stretch between the moment the agent should have acted and the moment it did, beyond `GRACE` (one hour, `checks/_waits.py`): a follow-up after a wait's `expected_by`, and a reaction after a wait settled. A wait never followed up costs its whole stretch, from expiry to its settling or the run's end.
 
-The reference run, scored by `tests/test_effectiveness_on_captured_run.py` from the run's own turn files:
+The reference run, scored by `tests/test_checks_on_reference_run.py` from the run's own turn files (`timeline.json`):
 
 ```
 expectations_met       3 of 4      the legal-review ticket was never filed
@@ -428,76 +571,100 @@ waits_opened           12          5 still open when the run stopped
 follow_ups_due         3           made 3, late 1
 time_lost              1 day, 8:43 one reminder, 33 hours after the wait expired
 wakes                  20          3 changed nothing
-failed_checks          5           4 wrong company name, 1 unmet expectation
 ```
+
+These waits are read from the captured agent's own records, which predate the ledger and name no person or entity, so no reaction is timed on this run.
 
 | Layer | Answers | State |
 |---|---|---|
-| Scorecard (`Effectiveness`) | How well, in numbers that compare across runs, prompts and models | Model and `measure()` written; run on one capture |
-| Expectations | Did the world end up right | Written; run on one capture |
-| Checks | Which known failure, where, with evidence | Three written |
-| Patterns | What design fixes it | Nine listed |
-| Stability | How often, over several samples | Model only |
+| Scorecard (`Effectiveness`, `checks/effectiveness.py`) | How well, in numbers that compare across runs, prompts and models | Built and tested; ends every run |
+| Expectations (`checks/expectations.py`) | Did the world end up right | Built and tested |
+| Checks | Which known failure, where, with evidence | 12 built and tested (below) |
+| Patterns (`checks/patterns.py`) | What design fixes it | 9, each with a page in `docs/patterns/` |
+| Stability (`Stability`) | How often, over several samples | Built: `--samples N` reports "passed k of N" |
+
+The checks, discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, `needs` and `run`; no registration):
+
+| `id` | Kind of finding | `Pattern.key` |
+|---|---|---|
+| `acted_after_deadline` | `FAIL`; `REVIEW` for a wake whose late writes are all messages | `budgeted_follow_up` |
+| `chased_absent_person` | `FAIL`: messaged someone away while a delegate covered | `absence_aware` |
+| `duplicate_ticket` | `FAIL`: the same normalised title filed twice in one project while the first was open | `one_open_ask_per_person` |
+| `expectations` | `FAIL` per unmet expectation | `honest_closure` |
+| `idle_wake` | `REVIEW`: a wake that changed nothing in the world and nothing the agent was waiting on | `check_world_before_model` |
+| `kept_chasing_after_done` | `REVIEW`: a message threaded under an answered ask, or naming a finished ticket | `one_open_ask_per_person` |
+| `late_follow_up` | `FAIL`: a follow-up more than `GRACE` after the wait expired | `expiry_on_every_wait` |
+| `near_miss_name` | `FAIL`: a protected name written one letter off | `confirm_names` |
+| `no_follow_up` | `FAIL`: a wait expired and the agent never touched it again | `expiry_on_every_wait` |
+| `repeated_message` | `REVIEW`: two messages to one channel within five minutes, no reply between, sharing rare wording | `one_open_ask_per_person` |
+| `slow_to_react` | `FAIL`: an answer landed or work was finished and the agent came back late or never | `expiry_on_every_wait` |
+| `unmatched_call` | `REVIEW`: a call to a host no provider claims | none |
 
 Not built:
 
 - **The earliest the work could have finished,** given how the people and systems behaved. With it, `time_lost` becomes "finished four days later than was possible". It needs to know which waits depend on which.
-- **Reaction time to an answer.** The capture does not record when a reply reached the agent, so `time_lost` here is late follow-ups only.
-- **Burden on people:** messages per person, per outcome. The data is in the log; the measure is not written.
-- The reference scores above read waits from Ayven's own mission records, because the obligations ledger that would derive them from the world is not built.
+- **A cross-check against `AgentReport.commitments`.** The commitments are kept in each checkpoint and only change `WakeRecord.commitments_changed`.
 
 ### Pillar two: the changelog, rewind and forks
 
 The world is a log, not a state. Every change any provider makes is one row with a sequence number and the simulated time, and a fake's "current state" is a question asked of that log.
 
-```
-entity_version(provider, kind, external_id, seq, sim_time, wall_time, actor, body)   -- append-only
+```sql
+CREATE TABLE IF NOT EXISTS entity_version(
+  run_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  provider TEXT NOT NULL, kind TEXT NOT NULL, external_id TEXT NOT NULL,
+  parent TEXT, body TEXT, sim_time TEXT NOT NULL,
+  PRIMARY KEY (run_id, seq));
 ```
 
 - **The world as of any moment is a query:** the latest version of each entity at or below a sequence number. Rewinding does not restore anything; it moves the point the fakes read from.
-- **A fork is a child run that shares its parent's log up to a sequence number** and writes its own rows after it. No copy is made, so forking a two-week run costs nothing and any number can branch from one moment.
+- **A fork is a child run that shares its parent's log up to a sequence number** and writes its own rows after it (`SqliteStore.fork`). No copy is made. It also sees the calls its parent had recorded by then, and none after.
 - **Providers do not know.** They read and write through the store, which applies "as of" for them.
-- Per-wake file checkpoints become an optimisation for long logs, not the mechanism.
+- **A fork starts only at a checkpoint.** At the end of every wake, and at setup and at the deadline the clock runs on to, the run loop appends a `Checkpoint` (the clock, the decided reply count, scheduled fates, commitments, everything pending) as an entity in the same log (`application/checkpoint.py`). `fork_run` refuses any other `at_seq`; `minutehand findings` lists the ones that exist.
 
 What a rewind needs beyond the world:
 
-| Part | How it comes back |
-|---|---|
-| The clock and everything pending | Rows in the same log |
-| People's replies already given | The `reply` table; replayed up to the fork, written fresh after it |
-| The agent's own state | Locally: `StateHooks`, a snapshot and a restore command named in the agent file. Hosted: a snapshot of the whole virtual machine the agent runs in, which needs no hooks. |
+| Part | How it comes back | State |
+|---|---|---|
+| The clock and everything pending | The `Checkpoint` row at the fork's seq | Built |
+| People's replies already given | The `reply` table; copied up to the fork, decided fresh after it | Built |
+| The agent's own state | Locally: `StateHooks`, a snapshot and a restore command named in the agent file, each given `MINUTEHAND_SNAPSHOT_DIR` | Built |
+| | Hosted: a snapshot of the whole virtual machine the agent runs in, which needs no hooks | Designed, not built |
+| AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. A booking pending at the fork names the parent's account and raises `LookupError` when it fires. | Known limit |
 
-Without a way to restore the agent's own state, `rerun_from` is refused and a rerun starts at the beginning.
+Without `StateHooks`, `fork_run` is refused: a world rewound under an agent that remembers the future is not a rerun.
 
 A fork can change something, and none of it touches the agent's code:
 
 ```python
-Override = PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift
+Override = Annotated[PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift, Field(discriminator="kind")]
 
 
 class Fork(Model):
     parent_run: str
-    at_seq: int  # the last WorldEvent.seq shared with the parent
-    overrides: list[Override]
-    samples: int = 1
+    at_seq: int = Field(ge=0, description="The last WorldEvent.seq the fork shares with its parent")
+    overrides: list[Override] = []
+    samples: int = Field(default=1, ge=1)
 ```
 
-| Override | What changes | Where |
-|---|---|---|
-| `PersonChange`, `TicketEdit`, `DeadlineShift` | The people and the world from the fork onward | In Minutehand; recorded as `actor=SCENARIO` rows |
-| `PromptPatch`, `ModelSwap` | The agent's prompt or model | On the wire. The agent's request to its model provider already passes through the proxy; the proxy edits the body and sends it on. |
+| Override | What changes | Where | Tested |
+|---|---|---|---|
+| `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every message to them still unanswered at the fork is put to them again | `changed_scenario`, `_ask_again` in `application/rewind.py` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
+| `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | `EditsTickets.edit` | `tests/orchestrator/test_rewind.py` |
+| `DeadlineShift` | The scenario's deadline | `changed_scenario` | `tests/orchestrator/test_rewind.py` |
+| `PromptPatch`, `ModelSwap` | The agent's prompt or model | On the wire: the proxy's `EDIT` policy rewrites the body of the agent's request to its model API | At the proxy only (`tests/proxy/test_model_hosts.py`); not through a whole run |
 
-`spike/prompt_patch.py` shows the second kind working: a client posted a request with model `gpt-5.6-luna` and a one-line system prompt; the upstream host received `gpt-5.6-terra` and the prompt with a sentence appended; the user message was untouched. Both legs were real TLS and the client was unchanged.
-
-- The agent's model calls are still never recorded or replayed. A patch changes the request and the real model answers it.
+- `adapters/proxy/edit.py` knows three wire shapes that carry a system prompt: OpenAI chat completions (`messages[0]` with role `system` or `developer`), OpenAI responses (`instructions`), Anthropic messages (`system`). A body no edit applies to goes on byte for byte. Edits match the request as the agent sent it, so a model swap cannot change which prompt patches apply.
+- `CallMatch` picks which of an agent's several prompts a patch applies to (`host`, `model`, `system_contains`). How reliably `system_contains` singles one out in a real agent is untested.
+- The agent's model calls are never recorded or replayed. A patch changes the request and the real model answers it.
 - Patching means the proxy opens model traffic it otherwise only tunnels, so it sees prompts and the API key. Locally that stays on the developer's machine. Hosted, it is a trust decision for the customer.
-- `CallMatch` picks which of an agent's several prompts a patch applies to. How reliably `system_contains` singles one out in a real agent is untested.
+- `Routing.apply` sets the edits for the run about to play; one run plays at a time through one proxy.
 
-What alknoma-cloud has today is the inference half. `iua_single_turn` restores one captured model step of the update agent (its inputs and message history, 27 cases) and reruns that single step under the current prompt. It stops after the step and restores nothing in Slack or the trackers.
+The parent repository's nearest equivalent restores one captured model step (its inputs and message history) and reruns that step under the current prompt. It restores nothing in Slack or the trackers.
 
 ### Hosted
 
-Hosted Minutehand keeps every run's log and can rewind or fork any of them on request. Each run executes in its own small virtual machine whose only route out is the proxy.
+Designed, not built. Hosted Minutehand keeps every run's log and can rewind or fork any of them on request. Each run executes in its own small virtual machine whose only route out is the proxy.
 
 | Problem locally | Why the virtual machine removes it |
 |---|---|
@@ -505,103 +672,106 @@ Hosted Minutehand keeps every run's log and can rewind or fork any of them on re
 | A faked date must stay near the real one | The machine's clock is set to the simulated time; the proxy outside holds the real clock and issues certificates valid for the simulated date |
 | An agent that reads the clock without the system library is out of reach | Every process on the machine sees the same clock |
 
-None of this is built or tested. It is the reason the hosted service is more than the open-source tool run for you.
+It is the reason the hosted service is more than the open-source tool run for you.
 
 ### How the clock knows what is next
 
-The clock jumps to the earliest `Due`. Four things produce one, and a run may use several at once.
+The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`, `TICKET_FATE`). Four sources produce one, and a run may use several at once (`adapters/agent/reach.py` assembles them into `Reach`).
 
-| Source | What the agent must do | Exact? | Cost of a quiet fortnight |
-|---|---|---|---|
-| **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider. | Yes | None |
-| **`Booked`**: the agent books wake-ups with a scheduler (Cloud Tasks, EventBridge Scheduler, QStash, a delayed queue message) | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and calls the agent back when the clock reaches it. | Yes | None |
-| **`Reported`**: the agent answers `next_wake` | An endpoint, or an adapter beside its tests | Yes | None |
-| **`Polled`**: the agent is invoked every N minutes and decides for itself | Declare the rhythm | Yes, at that rhythm | One call per tick: 4,032 calls for 14 days at 5 minutes |
+| Source | What the agent must do | Exact? | Cost of a quiet fortnight | State |
+|---|---|---|---|---|
+| **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider. | Yes | None | Built (Slack) |
+| **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built (AWS); not tested through a whole run |
+| **`Reported`**: the agent answers `next_wake` at `report_url` | An endpoint, or an adapter beside its tests | Yes | None | Built and tested |
+| **`Command`**: one process per wake, `WakeRequest` on stdin, `AgentReport` on stdout | A command | Yes | None | Built and tested |
+| **`Polled`**: the agent is invoked every `every` (default 5 minutes) and decides for itself | Declare the rhythm | Yes, at that rhythm | One call per tick: 4,032 calls for 14 days at 5 minutes, each a wake counted against `Scenario.max_wakes` | Built and tested |
 
-- `Polled` never skips a tick. Skipping is only safe when the agent says when it next matters, which is `Reported`.
-- Ayven is `Reported` through an adapter: `next_wake = min(nextCheck, nextStaleCheck)`. Its scheduler is an in-process loop reading Firestore, which nothing can intercept.
-- `Booked` is the source that makes a stranger's agent work with no adapter. `spike/booked_wake.py` shows it on AWS: an agent using the stock `boto3` SDK, with no endpoint override, created an EventBridge Scheduler schedule for 27 August targeting its SQS queue. Its queue poll returned nothing on the 24th and the 26th. When the clock was moved to the 27th the booking fired and the next poll returned the message. AWS itself is answered by `moto` (Apache-2.0), mounted in the same process.
+- `Polled` never skips a tick, never names a next wake and never reports `DONE`. Skipping is only safe when the agent says when it next matters, which is `Reported`.
+- An agent may declare one `Reported` or `Command` source and one `Polled` source; `reach_for` refuses two of either. An agent with only `Booked` wakes must take its goal by message.
+- An agent whose scheduler is an in-process loop over its own database is `Reported` through an adapter: nothing can intercept that loop.
+- `Booked` is the source that makes a stranger's agent work with no adapter. `tests/providers/aws/test_aws_provider.py` shows it at the provider: a stock `boto3` client with no endpoint override creates an EventBridge Scheduler schedule targeting an SQS queue; `ReceiveMessage` finds nothing before the booking fires and the schedule's input after.
 
-Every scheduler is translated into one internal shape, so the clock knows nothing about any vendor:
+Every scheduler is translated into one internal shape (`Due`, booked through `Wakes`), so the clock knows nothing about any vendor:
 
 | Scheduler | How the agent books | How the wake is delivered | State |
 |---|---|---|---|
-| AWS EventBridge Scheduler, SQS delay | JSON over HTTPS; `moto` already fakes the storage | Into the target queue, where the agent's own poll finds it; or an HTTP call for a target mapped to a URL in the agent file | Spike works for a one-time schedule to SQS |
-| Google Cloud Tasks | gRPC by default, plus a token fetch from Google's sign-in host; no `moto` equivalent | An HTTP call to the task's URL | Not attempted. gRPC responses need trailers, which the app host used elsewhere does not produce. |
+| AWS EventBridge Scheduler | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule` with `at(...)`, `rate(...)` or `cron(...)` (no `L`, `W`, `#`), a timezone, start and end dates, state, `ActionAfterCompletion` | Into the target SQS queue (with `MessageGroupId` for FIFO), where the agent's own poll finds it | Built and tested at the provider. Any other target raises when it fires. Each booking and delivery is a `RecordSnapshot` in the log; the queues themselves are in moto's memory. |
+| SQS delay | `DelaySeconds` | moto's own, on the machine clock | Not on the run's clock |
+| Google Cloud Tasks | gRPC by default, plus a token fetch from Google's sign-in host; no `moto` equivalent | An HTTP call to the task's URL | Not attempted. gRPC responses need trailers, which the app host does not produce. |
 | A fixed schedule set at deploy time (Cloud Scheduler, a Kubernetes CronJob, Vercel cron) | Not booked at run time at all | `Polled`, with the schedule written in the agent file | Designed |
 | A workflow engine's timers (Temporal, Inngest) | Inside the engine | The engine's own time-skipping test server would have to be driven | Not designed |
 
 ### What the agent is waiting on
 
-The monitor does not need to be told. It plays every person and owns the clock, so it already knows what was asked, when the answer landed, and what the agent did in between.
+Built and tested (`checks/ledger.py`, `tests/checks/test_ledger.py`). The monitor does not need to be told. It plays every person and owns the clock, so it derives every wait from the world and the stored replies.
 
 ```python
 class Obligation(Model):
     key: str
-    kind: ObligationKind  # ANSWER_FROM_PERSON | WORK_WITH_PERSON | DATE
-    person: str | None  # Person.key
-    entity: EntityRef | None
+    kind: ObligationKind
+    person: str | None = Field(default=None, description="Person.key")
+    entity: EntityRef | None = None
     opened_at: AwareDatetime
-    opened_by: int  # WorldEvent.seq of the ask or hand-off
-    due_at: AwareDatetime | None  # when the world will settle it; None is never
-    settled_at: AwareDatetime | None
-    agent_touches: list[int]  # agent events on the same person or entity while open
-    first_touch_after_settled: int | None
+    opened_by: int = Field(description="WorldEvent.seq of the ask or hand-off")
+    expected_by: AwareDatetime | None = Field(
+        default=None, description="After this, silence is the agent's to act on; None means no date applies"
+    )
+    settled_at: AwareDatetime | None = Field(default=None, description="When the answer landed or the work was done")
+    agent_touches: list[int] = Field(default=[], description="Agent events on the same person or entity while open")
+    first_touch_after_settled: int | None = None
 ```
 
-| Opens when | Settles when | Checks it feeds |
-|---|---|---|
-| The agent messages a person and that person's `ReplyBehaviour` would answer | The reply is delivered | No follow-up after silence; follow-up while the person was away; asked twice; slow to act on the answer |
-| The agent assigns a ticket to a person | `TicketFate` lands | Never looked again; kept chasing after it was done |
-| The scenario fixes a date | The clock passes it | Acted before it; nothing done by the deadline |
+| `ObligationKind` | Opens when | `expected_by` | Settles when |
+|---|---|---|---|
+| `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, is `Silent`, or is away at that moment | The message's time plus the person's `DelayRange.longest` | The reply's time, if the run reached it |
+| `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus that person's `TicketFate.after`; none without a fate | The person moves it to `DONE` or `CANCELLED` |
+| `DATE` | The scenario has a deadline | The deadline | The run reaches it |
 
-`AgentReport.commitments` stays optional and becomes a cross-check: the agent believes it is waiting on something the world shows as answered, or the reverse.
+A touch is any later agent event on the ask's entity or channel, or an agent message to the person or their delegate. `no_follow_up`, `late_follow_up`, `slow_to_react`, `kept_chasing_after_done` and the scorecard read the ledger; `chased_absent_person` reads the absences directly.
+
+`AgentReport.commitments` stays optional. The cross-check it would allow (the agent believes it is waiting on something the world shows as answered, or the reverse) is not built.
 
 ### Time, for the agent
 
 From least to most invasive; the fakes are on Minutehand's clock in every case.
 
-1. `WakeRequest.now`. The agent uses it as its "now" for the wake.
-2. `GET :8081/clock`. For agents that read the time more than once per wake.
-3. The system clock, faked from outside with `libfaketime`. No code change in the agent.
+1. `WakeRequest.now`. The agent uses it as its "now" for the wake. Built.
+2. `GET :8081/clock`. For agents that read the time more than once per wake. Not built.
+3. The system clock, faked from outside with `libfaketime`. No code change in the agent. Not built; see "Evidence" for the spike that tried it.
 
-Option 3 was tried on 2026-10-04 (`spike/faketime/`, an unmodified Python program in a Linux container, clock set by writing a file):
+What follows from that spike:
 
-| Question | Result |
-|---|---|
-| Does the program's clock follow the file while it runs? | Yes, three jumps across 14 days, each read back within a minute of the value written. The sub-minute difference was not investigated. |
-| Does a secure connection to a real model API still work under a faked date? | 14 and 60 days ahead: yes, for `api.openai.com` and `api.anthropic.com`. 200 days ahead: no, "certificate has expired". 60 days back: no, "certificate is not yet valid". |
-| Does a program asleep on its own timer wake when the clock jumps? | No. `asyncio.sleep(8)` took 8 real seconds across a two-hour jump. |
-
-What follows:
-
-- **A run must start at the real date and stay inside the real certificates' lifetime,** about two months ahead, unless model-API traffic is terminated at the proxy and re-sent from the real clock. Terminating it means the proxy decrypts prompts it otherwise only tunnels.
-- **A scenario with a fixed past `starts_at` cannot use option 3.** `starts_at` defaults to the moment the run begins.
+- **A run under option 3 must start at the real date and stay inside the real certificates' lifetime,** about two months ahead, unless model-API traffic is terminated at the proxy and re-sent from the real clock. Terminating it means the proxy decrypts prompts it otherwise only tunnels.
+- **A scenario with a fixed past `starts_at` cannot use option 3.** `Scenario.starts_at` is required and fixed in the scenario file today.
 - **An agent that polls on a short real-time loop works under option 3:** after a jump its next poll reads the new time. The cost is one real poll interval per jump.
 - **An agent that sleeps until a far-off moment does not wake.** It needs `Booked` or `Reported`.
 - **The monitor still cannot see when an in-process scheduler next wants to run.** Jumping straight to the next reply would skip a follow-up the agent meant to send in between, and the run would blame the agent for lateness the jump caused. Such an agent is `Polled` at a declared rhythm, or `Reported`.
 - Untested: a JVM under a faked clock (the Firestore emulator), Node, and a faked clock across several containers at once.
 
+Real time still enters a run in three places: `WorldEvent.wall_time`; the Slack provider's `X-Slack-Request-Timestamp`, which the agent's signature verifier checks against its own clock; and moto, which runs SQS delays, visibility timeouts and timestamps on the machine clock.
+
 ### Telemetry
 
-OpenTelemetry SDK only, exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The SQLite store is the record; telemetry is an export of it.
+Built and tested (`tests/telemetry/test_otel_telemetry.py`). OpenTelemetry SDK, exported over OTLP/HTTP; the CLI builds it only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The SQLite store is the record; telemetry is an export of it.
 
 - **Spans**
 
   | Span | Parent | Carries |
   |---|---|---|
-  | `minutehand.run` | none | `minutehand.run_id`, `minutehand.scenario`, `minutehand.seed` |
-  | `minutehand.wake` | run | `minutehand.wake`, `minutehand.wake.reason`, `minutehand.sim_time` |
-  | `<provider> <operation> <kind>`, e.g. `asana create ticket` | the caller's span | HTTP semantic-convention attributes, `minutehand.entity.id`, `minutehand.sim_time` |
+  | `minutehand.run` | none | `minutehand.run_id`, `minutehand.scenario`, `minutehand.seed`, simulated start; at the end `minutehand.stop`, `minutehand.wall_seconds` |
+  | `minutehand.wake` | run | `minutehand.wake`, `minutehand.wake.reason`, simulated time |
+  | `<provider> <operation> <kind>`, e.g. `asana create ticket`, `SpanKind.SERVER` | the caller's span; else the wake; else the run | `minutehand.seq`, `minutehand.wake`, `minutehand.entity.id`, `minutehand.actor`, simulated time; with a call, `http.request.method`, `server.address`, `url.path`, `http.response.status_code` |
 
-- **Joining the agent's trace.** When the intercepted request carries a W3C `traceparent`, the provider span is created as its child, so what happened in the world sits in the same trace as the model call that caused it. Without one, the span parents to `minutehand.wake`.
-- **Simulated time.** Span timestamps are wall time, because backends reject or misplace future timestamps. Simulated time travels as `minutehand.sim_time` (ISO 8601 string) and `minutehand.sim_time_unix_nano` (int), since OTLP has no datetime attribute type.
-- **Findings.** One log record per `Finding`, linked to the spans of its evidence, with `minutehand.check`, `minutehand.finding.kind` and OTel severity from `Finding.severity`.
-- **A fake's 4xx is not an error.** A provider refusing bad input is the fake working; the span status stays unset.
-- **Bodies stay local** unless `MINUTEHAND_EXPORT_BODIES=1`. They are large and carry customer-shaped text.
-- **Metrics.** `minutehand.findings{check,kind}`, `minutehand.wakes{changed}`, `minutehand.commitment.overdue` (histogram, simulated seconds), `minutehand.run.sim_seconds`, `minutehand.run.wall_seconds`.
+- **Joining the agent's trace.** When the intercepted request carried a valid W3C `traceparent`, the world-event span is created as its child and linked to its wake, so what happened in the world sits in the same trace as the model call that caused it.
+- **Simulated time.** A world-event span starts and ends at its event's `wall_time`, because backends reject or misplace future timestamps. Simulated time travels as `minutehand.sim_time` (ISO 8601 string) and `minutehand.sim_time_unix_nano` (int). World-event spans are emitted when the run loop reads a wake's new events, after the wake.
+- **Findings.** One log record per `Finding` (`event_name="minutehand.finding"`), in the trace of the span of its first evidence, with `minutehand.check`, `minutehand.finding.kind`, `minutehand.evidence`, `minutehand.pattern`, and OTel severity from `Finding.severity`.
+- **A fake's 4xx is not an error.** A provider refusing bad input is the fake working; the span status stays unset. A 5xx sets status `ERROR`.
+- **Bodies stay local** unless `MINUTEHAND_EXPORT_BODIES=1` (`minutehand.request.body`, `minutehand.response.body`).
+- **Metrics.** `minutehand.findings{check,kind}`, `minutehand.wakes{changed}`, and per run, by scenario, the histograms `minutehand.time_lost_seconds`, `minutehand.idle_wakes`, `minutehand.follow_ups_late`, `minutehand.run.sim_seconds`, `minutehand.run.wall_seconds`.
 
 ### What a coding agent calls
+
+Designed, not built. `mcp` is a declared dependency; no module imports it.
 
 | MCP tool | Returns |
 |---|---|
@@ -611,68 +781,72 @@ OpenTelemetry SDK only, exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is
 | `show_evidence(run_id, finding)` | the `WorldEvent`s, their `Exchange`s, the wake, the trace id |
 | `rerun_from(run_id, wake)` | a new `run_id` started from that checkpoint |
 
-`minutehand run scenario.yaml --agent …` is the same thing for CI and exits 1 when any finding is `FindingKind.FAIL`.
+What exists is the command line (`cli.py`):
+
+```
+minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--json] [-- <command...>]
+minutehand findings <run_id> [--state DIR] [--json]
+minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--json] [-- <command...>]
+minutehand runs [--state DIR]
+```
+
+Exit 0 when no finding is `FindingKind.FAIL`, 1 when any is (with samples, when any sample failed), 2 when the run could not be performed. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
 
 ### Distribution: a tool beside the codebase, never a dependency of it
 
 The target is zero lines changed in the project under test. Minutehand is installed and run the way a linter is, outside the project's own dependencies.
 
-| Channel | For | Touches the project |
-|---|---|---|
-| PyPI, run as `uvx minutehand …` | Anyone with Python 3.12 available | Nothing. `uvx` runs it from its own environment; it is not added to the project's requirements. |
-| Docker image, built from the same release | Any stack, and CI | Nothing |
-| The git repo | Contributors and provider authors; also `uvx --from git+https://…` before the first release | Nothing |
+| Channel | For | Touches the project | State |
+|---|---|---|---|
+| PyPI, run as `uvx minutehand …` | Anyone with Python 3.12 available | Nothing. `uvx` runs it from its own environment. | Not published; `pyproject.toml` declares the `minutehand` console script, version 0.0.1 |
+| Docker image, built from the same release | Any stack, and CI | Nothing | Not built |
+| The git repo | Contributors and provider authors; also `uvx --from git+https://…` before the first release | Nothing | Exists |
 
-PyPI and the repo are not alternatives: the repo is the source, PyPI and the image are how a release reaches a user. The names `minutehand` and `minute-hand` are unclaimed on PyPI and npm as of 2026-10-04 and stay claimable by anyone until a first upload.
+PyPI and the repo are not alternatives: the repo is the source, PyPI and the image are how a release reaches a user. The names `minutehand` and `minute-hand` were unclaimed on PyPI and npm on 2026-10-04 and stay claimable by anyone until a first upload.
 
-One command wraps the project's own start command and injects everything through the environment:
+One command wraps the agent's own start command and injects everything through the environment:
 
 ```
-uvx minutehand run scenario.yaml -- docker compose up
-uvx minutehand run scenario.yaml -- python -m my_agent
+minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 ```
 
-| What the run needs | How it gets there with no code change | Where it stops being free |
+| What the run needs | How it gets there with no code change | State |
 |---|---|---|
-| Outbound calls reach the fakes | `HTTPS_PROXY` and the CA variables set on the wrapped command; for Compose, an override file written outside the repo and passed with `-f` | A client that pins certificates. Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`, also an environment variable; to verify. |
-| Pushed events reach the agent | The agent's event URL and the name of its signing-secret variable are in the scenario's agent file; the secret is generated per run and injected | Nothing |
-| The agent wakes at the right moments | Replies, pushed events and `Booked` wake-ups need nothing. `Polled` needs a URL in the agent file. | `Reported` needs an endpoint or an adapter. That is code, though it can live outside the project. |
-| The agent agrees on what time it is | `libfaketime` preloaded through the same wrapper; works for a Python process (see "Time, for the agent") | Runs must start at the real date and stay within about two months. An agent that sleeps on its own long timer does not wake on a jump. |
-| Scenarios and the agent file | Plain files, in the project or anywhere else | Nothing |
+| Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=localhost,127.0.0.1`, and the CA in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE` | Built. A client that pins certificates is out of reach. Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; unverified. For Compose, an override file passed with `-f` is designed, not built. |
+| The agent is up before the run starts | Minutehand waits up to 30 seconds for its wake URL, or else its first inbound URL, to accept connections, and fails the run if the command exits first; its output goes to `agent.log` | Built |
+| Pushed events reach the agent | The agent's event URL and the name of its signing-secret variable are in the agent file; a secret is generated per run and set in both processes | Built |
+| The agent wakes at the right moments | Replies, pushed events and `Booked` wake-ups need nothing. `Polled` needs a URL in the agent file. | Built. `Reported` needs an endpoint or an adapter, which is code, though it can live outside the project. |
+| The agent agrees on what time it is | `WakeRequest.now`; `libfaketime` preloaded through the same wrapper | `WakeRequest.now` built; `libfaketime` not built |
+| Scenarios and the agent file | Plain YAML or JSON files, in the project or anywhere else | Built |
 
-- There is no client package and nothing to import. A pytest plugin may come later as a convenience; it is not the path.
-- mitmproxy requires Python 3.12 and pins 27 dependencies, which is one more reason the tool never enters a project's environment.
-- Providers register under the entry-point group `minutehand.providers`. The nine ship inside `minutehand`; anything else is `minutehand-provider-<name>`, installed into the tool's environment with `uvx --with`.
+- There is no client package and nothing to import.
+- mitmproxy requires Python 3.12 and pins many dependencies, which is one more reason the tool never enters a project's environment.
+- Providers register under the entry-point group `minutehand.providers`. Five ship inside `minutehand`; anything else is `minutehand-provider-<name>`, installed into the tool's environment with `uvx --with`.
 
 ### Python, not Rust
 
-| | Measured on the Python spike |
-|---|---|
-| Per call, one client | p50 0.9 ms, p95 1.0 ms |
-| Eight clients at once | 1,401 calls a second, p50 5.4 ms |
-| Ready | 0.26–0.54 s |
-| Memory | 57 MiB in a container; 94 MB after 1,100 calls as a process |
-
-- A run's time is the agent's model calls, seconds each. A fake that answers in a millisecond is not on the critical path, and Rust would not shorten a run.
-- Providers are where the work is, and they are written by Python-speaking agent builders and by coding agents. The nine existing fakes are Python and ran unchanged.
-- What Rust would buy: one static binary with no runtime, and an image far smaller than 367 MB. Both matter for distribution, not for speed.
-- The seam that keeps the door open: a provider speaks HTTP in and out (ASGI) and a store interface. The proxy and store behind that seam can be replaced without touching a provider.
+- A run's time is the agent's model calls, seconds each. A fake that answers in about a millisecond (see "Evidence") is not on the critical path, and Rust would not shorten a run.
+- Providers are where the work is, and they are written by Python-speaking agent builders and by coding agents.
+- What Rust would buy: one static binary with no runtime, and a smaller image. Both matter for distribution, not for speed.
+- The seam that keeps the door open: a provider speaks ASGI and a store interface. The proxy and store behind that seam can be replaced without touching a provider.
 - Revisit when a measurement says so: memory or latency with a large world, or adoption blocked by needing Python.
 
 ### Packages
 
-| Package | Use | Note |
-|---|---|---|
-| `mitmproxy` 12.x (MIT) | Proxy, TLS interception, HTTP/2, pass-through and capture | Embedded through one addon; each provider is an ASGI or WSGI app served with `asgiapp.serve()`. Proven in the spike above. Its app host does not do WebSockets or streaming. |
-| `pydantic` 2 | Every model | |
-| `starlette` | Provider apps, control API | The nine existing fakes are Flask (WSGI) and can be mounted unchanged while each is ported. |
-| `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http` | Telemetry | |
-| `mcp` | MCP server | |
-| `datamodel-code-generator` | Pydantic models for provider payloads from each provider's OpenAPI document | Asana publishes one (`Asana/openapi`); YouTrack serves one at `/api/openapi.json`. Slack's official spec repo is abandoned. The rest are unconfirmed. |
-| `openapi-core` | Validate every fake's responses against the provider's published document | The conformance test that needs no real account. |
-| `libfaketime` | Time for agents that cannot be told the time | Optional, unproven, see above. |
-| `duckdb` | Questions across many run files | Optional. |
-| `uv`, `ruff`, `pyright`, `pytest` | Tooling | |
+| Package | Use |
+|---|---|
+| `mitmproxy` 12.x (MIT) | Proxy, TLS interception, tunnelling and editing model calls. Embedded through one addon; each provider's ASGI app is served with `asgiapp.serve()`, which does not do WebSockets or streaming. |
+| `pydantic` 2 | Every model |
+| `starlette` | Every provider app |
+| `asgiref` | `WsgiToAsgi` around moto's WSGI server |
+| `moto[server]` (Apache-2.0) | AWS |
+| `httpx` | Agent drivers; Slack's pushed events |
+| `pyyaml` | Scenario, agent and fork files |
+| `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http` | Telemetry |
+| `mcp`, `flask` | Declared in `pyproject.toml`; no module in `src/` imports either |
+| `uv`, `ruff`, `pyright`, `pytest` (with `pytest-xdist`, `pytest-socket`, `pytest-timeout`, `pytest-randomly`) | Tooling |
+
+Named by the design and not dependencies: `datamodel-code-generator` (Pydantic models from a provider's OpenAPI document; Asana publishes one, YouTrack serves one at `/api/openapi.json`, Slack's official spec repo is abandoned), `openapi-core` (validate a fake's responses against the published document), `libfaketime`, `duckdb`.
 
 Codebases worth reading before writing a provider: `vercel-labs/emulate` (Apache-2.0; Slack, Google, GitHub surfaces), LocalStack (lazy service loading), `moto` (one server, many services).
 
@@ -680,91 +854,103 @@ Codebases worth reading before writing a provider: `vercel-labs/emulate` (Apache
 
 ```python
 class Pattern(Model):
-    key: str
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     title: str
-    failure: str  # what the agent does wrong, in one sentence
-    design: str  # what a proactive agent does instead
-    reference: str | None
+    failure: str = Field(description="What the agent does wrong, in one sentence")
+    design: str = Field(description="What a proactive agent does instead")
+    reference: str | None = Field(default=None, description="Where a working implementation can be read")
 ```
 
-The first set, each taken from a mechanism that exists in alknoma-cloud:
+Nine, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/patterns/<key>.md`. Each is taken from a mechanism a production agent has.
 
-| `Pattern.key` | Failure | Design | In Ayven |
-|---|---|---|---|
-| `expiry_on_every_wait` | Waits on something forever | Every wait carries an expected-by date and the agent wakes on it | `Blocker.expectedResolutionBy`, `nextStaleCheck` |
-| `check_world_before_model` | Spends a model call to learn nothing changed | On waking, look at the world with plain code first; involve the model only when judgement is needed | `filter_actually_stale`, `stale_preflight` |
-| `absence_aware` | Chases someone who is away | Know who is away and until when; extend the wait or go to their delegate | `_absence_prefilter` |
-| `budgeted_follow_up` | Follows up too often, or too late | Space reminders across the time left before the deadline | `chase.py` |
-| `bounded_asking` | Asks for input indefinitely | After a fixed number of attempts, stop asking and deliver the best available version | `_PIVOT_ESCALATION_THRESHOLD` |
-| `one_open_ask_per_person` | Sends the same question twice | Track what is already open with each person before asking | `duplicate_judge.py` |
-| `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | `_guard_cadence_tick_duplicate` |
-| `honest_closure` | Reports done when it is not | Closing is decided from the state of the world, not from the agent's last message | `closure_evaluation.py` |
-| `confirm_names` | Acts on a name it guessed | A name that matters is carried exactly as given, and an assumption is asked about before it is acted on | None. Run `f431fc97f427` shows Ayven lacks it. |
+| `Pattern.key` | Failure | Design | Found by | Reference mechanism |
+|---|---|---|---|---|
+| `expiry_on_every_wait` | Waits on something forever | Every wait carries an expected-by date and the agent wakes on it | `late_follow_up`, `no_follow_up`, `slow_to_react` | An expected-by date on every blocker and one "next stale check" time derived from them, which the scheduler books |
+| `check_world_before_model` | Spends a model call to learn nothing changed | On waking, look at the world with plain code first; involve the model only when judgement is needed | `idle_wake` | A filter to the waits actually stale, and a cheap preflight that ends the wake when none is |
+| `absence_aware` | Chases someone who is away | Know who is away and until when; extend the wait or go to their delegate | `chased_absent_person` | An absence filter over every follow-up before it is sent, rerouting to the named cover |
+| `budgeted_follow_up` | Follows up too often, or too late | Space reminders across the time left before the deadline | `acted_after_deadline` | The next reminder computed from the time remaining and the number already sent |
+| `bounded_asking` | Asks for input indefinitely | After a fixed number of attempts, stop asking and deliver the best available version | none | A count of attempts per unmet need and a pivot to best-effort delivery past a threshold |
+| `one_open_ask_per_person` | Sends the same question twice | Track what is already open with each person before asking | `repeated_message`, `duplicate_ticket`, `kept_chasing_after_done` | A judge that compares each outgoing question with those already open with the same person |
+| `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | none | A check for an existing instance in the current period before each cadence tick creates anything |
+| `honest_closure` | Reports done when it is not | Closing is decided from the state of the world, not from the agent's last message | `expectations` | Closure evaluated against the recorded state of every piece of work the goal depends on |
+| `confirm_names` | Acts on a name it guessed | A name that matters is carried exactly as given, and an assumption is asked about before it is acted on | `near_miss_name` | None. Run `f431fc97f427` is the evidence one is needed. |
 
-- Patterns are documentation in the repo, one page each, and data the tool returns. They are not code the user must import.
-- The Ayven column is what makes them more than advice. Publishing the implementations they point to is the separate, heavier product.
+- Patterns are documentation in the repo, one page each, and data the tool returns (`pattern(key)`; the CLI prints the pattern under each finding). They are not code the user must import.
+- The reference mechanisms are what make them more than advice. Publishing the implementations they point to is the separate, heavier product.
 - A scenario library graded from easy to hard, with a pass mark, is the form in which this becomes a standard others measure against. It is not designed yet.
 
 ## Queued behind a working emulator suite
 
 ### People written by a model
 
+Designed, not built. The models exist; `ScriptedReplier` refuses any person whose reply is `Answers`, naming them, before the run starts.
+
 ```python
 class Person(Model):
-    key: str
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     name: str
     email: str
-    title: str | None
-    facts: list[str]  # all a model reply may draw on
-    stale_facts: list[str]  # what they believe that is no longer true
-    reply: ReplyBehaviour  # Answers | Scripted | Silent
-    working_hours: WorkingHours | None
-    absences: list[Absence]
+    title: str | None = None
+    facts: list[str] = Field(default=[], description="What this person knows; all a model reply may draw on")
+    stale_facts: list[str] = Field(default=[], description="What they believe that is no longer true")
+    reply: ReplyBehaviour = Answers()
+    working_hours: WorkingHours | None = None
+    absences: list[Absence] = []
 
 
 class Answers(Model):
-    delay: DelayRange
-    helpfulness: Helpfulness  # FULL | PARTIAL | ASKS_BACK | DECLINES | MISTAKEN
-    voice: str | None  # terse, formal, chatty
-    model: str | None
-    temperature: float = 0.6
+    kind: Literal["answers"] = "answers"
+    delay: DelayRange = DelayRange()
+    helpfulness: Helpfulness = Helpfulness.FULL
+    voice: str | None = Field(default=None, description="How they write: terse, formal, chatty")
+    model: str | None = Field(default=None, description="None uses the run's default model")
+    temperature: float = Field(default=0.6, ge=0, le=2)
 ```
 
-- Each knob changes what the agent has to cope with: `PARTIAL` and `ASKS_BACK` force a second round, `DECLINES` forces a reroute, `MISTAKEN` plus `stale_facts` tests whether the agent verifies, `working_hours` and `absences` test timing.
-- The replier's first decision is whether a message needs an answer at all. That decision is what opens an `Obligation`.
-- A reply is stored the first time it is written. `rerun_from` replays it, so a rerun costs no model call for the people and plays out the same.
-- Replies arrive through the provider as real inbound events.
+What is built for people today (`application/replier_scripted.py`, `ScriptedReplier`):
+
+- `Scripted`: the nth message the agent sends a person gets the `ScriptedReply` with `to_ask == n`, or no reply. `Silent`: never.
+- The delay is drawn from the person's `DelayRange` (default 6 to 66 hours) by hashing the scenario's `seed` with the asked message's identity, so the same seed gives the same delays on every run and every fork.
+- A reply that would land inside an `Absence` (from the start, or from the first ask) or outside `WorkingHours` (in the person's own timezone) moves to the next moment they would answer.
+- A reply is stored the first time it is decided and arrives through the provider as a real inbound event: a threaded reply in a channel, a new message in a DM.
+
+Designed:
+
+- Each knob changes what the agent has to cope with: `PARTIAL` and `ASKS_BACK` force a second round, `DECLINES` forces a reroute, `MISTAKEN` plus `stale_facts` tests whether the agent verifies.
+- The replier's first decision is whether a message needs an answer at all. That decision is what opens an `Obligation` (`Replier.decide` returning `None` already opens none).
+- A model-written reply is stored the first time it is written. A fork replays it, so a rerun costs no model call for the people and plays out the same.
 
 ### Checks that need a model
 
-"Does this ticket make sense to the person it was assigned to" cannot be computed. A judged check implements the same `Check` protocol and returns the same `Finding`, with three differences:
+Designed, not built. "Does this ticket make sense to the person it was assigned to" cannot be computed. A judged check implements the same `Check` protocol and returns the same `Finding`, with three differences:
 
 - `FindingKind.REVIEW` unless the scenario sets a pass rate over several samples.
 - The model, its prompt version and its rationale are recorded with the finding.
 - It runs after the deterministic checks and only on entities they passed, so a ticket already failed for a wrong name is not judged for clarity.
 
-Every finding, judged or not, becomes one OpenTelemetry log record linked to the span of the entity it is about, so "tickets judged unclear, by scenario, across ten thousand runs" is a query in whatever store receives the telemetry.
+Every finding, judged or not, becomes one OpenTelemetry log record in the trace of the entity it is about, so "tickets judged unclear, by scenario, across ten thousand runs" is a query in whatever store receives the telemetry.
 
 ## Build tracks
 
-One thing first, then eleven in parallel, then three that need the others.
+The contracts came first, alone; the parallel tracks were written against them.
 
-| Order | Track | Needs |
-|---|---|---|
-| First, alone | **Contracts**: the models in `domain/`, the `Provider` and store interfaces, the control API | Nothing. Everything below codes against these, so parallel work before they settle collides. |
-| Parallel | **Proxy runtime**: host routing, lazy load, CA, pass-through policy, base-URL mode | Contracts |
-| Parallel | **Store**: schema, events, checkpoints, blobs | Contracts |
-| Parallel | **Clock and orchestrator**: `next_jump`, wake sources, the run loop, `rerun_from` | Contracts |
-| Parallel ×4 | **Providers**: Slack, YouTrack, Asana, Drive. Each: mount the existing fake, move its state to the store, take the clock, normalise, seed, port its refusal tests | Contracts. Independent of each other. |
-| Parallel | **Scheduler provider** (`Booked`) | Contracts |
-| Parallel | **Checks and the obligations ledger** | Contracts. Can be built against the 21 captured runs today. |
-| Parallel | **Telemetry export** | Contracts |
-| Parallel | **Surfaces**: CLI, MCP, viewer | Contracts; the store for real data |
-| Then | **alknoma-cloud adoption**: one container in compose and CI, the adapter, the deletions | Proxy runtime, the four providers |
-| Then | **People written by a model** | Orchestrator, Slack provider |
-| Then | **Generated providers** (the `GENERATED` engine), then **judged checks** | Store, checks |
+| Track | State |
+|---|---|
+| **Contracts**: the models in `domain/`, the protocols in `ports/` | Built |
+| **Proxy runtime**: host routing, lazy load, CA, tunnel, edit and refusal policy | Built. Base-URL mode not built. |
+| **Store**: schema, events, checkpoints | Built. Checkpoints are rows in the log. Blobs not built. |
+| **Clock and orchestrator**: `next_jump`, wake sources, the run loop, forks | Built. The fork is `minutehand fork --at <seq>`, not `rerun_from`. |
+| **Providers**: Slack, YouTrack, Asana, Drive | Built, each written new over the store and the clock rather than mounting the parent repository's fakes |
+| **Scheduler provider** (`Booked`) | Built for AWS |
+| **Checks and the obligations ledger** | Built |
+| **Telemetry export** | Built |
+| **Surfaces**: CLI, MCP, viewer | CLI built. MCP and viewer not built. |
+| **Composition and end-to-end**: `session.py`, files, agent drivers, a real agent process on stock `slack_sdk` | Built |
+| **Adoption in the parent repository**: one container in compose and CI, the adapter, the deletions | Not built here; see the adoption guide in `docs/` |
+| **People written by a model** | Not built |
+| **Generated providers** (the `GENERATED` engine), then **judged checks** | Not built |
 
-The four providers are the widest fan-out and the only fully independent work. The other parallel tracks share the store and the run loop, so they settle those interfaces between them early. The remaining five fakes (Jira, Teams, Graph, Notion, GitHub) are five more parallel pieces once the first four show the pattern.
+The remaining five fakes of the parent repository (Jira, Teams, Graph, Notion, GitHub) are five more parallel pieces, following the four providers' pattern.
 
 ## Licence
 
@@ -778,26 +964,81 @@ Decided 2026-10-04: the licence must stop anyone else selling Minutehand as a ho
 | AGPL-3.0 | No. Hosting is allowed; changes must be published. | Yes | Grafana, k6 |
 | Apache-2.0 | No | Yes | LocalStack before 2026, vercel-labs/emulate |
 
-Proposed: FSL-1.1-ALv2 for the tool from its first commit. Starting under it avoids the relicensing that drew forks at HashiCorp, Redis and LocalStack. The cost: it cannot be called open source, only source-available or fair source, and some companies' policies admit OSI licences only. Confirm with a lawyer before the first public commit.
+FSL-1.1-ALv2 for the tool from its first commit; `LICENSE.md` carries it today. Starting under it avoids the relicensing that drew forks at HashiCorp, Redis and LocalStack. The cost: it cannot be called open source, only source-available or fair source, and some companies' policies admit OSI licences only. Confirm with a lawyer before the first public commit.
 
 ## Testing
 
-- A check ships with the run it was written for and a test that the check goes clean when the defect is removed from that run (`tests/test_against_captured_run.py`).
-- A provider ships with refusal tests ("refuses what the real API refuses"), ported from the nine suites in alknoma-cloud, plus response validation against the provider's OpenAPI document where one exists.
-- `python -m lints` runs every lint in `lints/`. See `docs/lints.md`.
-- Conformance against the real APIs needs real accounts and is a scheduled job, not a lint.
+- `uv run pytest -q -n auto`: every test, hermetic. Sockets are refused except to `127.0.0.1`, `::1` and `localhost`, each test fails at 60 seconds, the order is random every run, and a warning raised against our own code is an error (`pyproject.toml`). `.github/workflows/nightly.yml` repeats the suite five times and runs it against the newest release of every client library.
+- A check is tested on a hand-built world whose obligations come from the real ledger (`tests/checks/world.py`). The checks written for the captured run are tested on it, including that `near_miss_name` goes clean when the defect is removed from the run (`tests/test_checks_on_reference_run.py`).
+- A provider is tested over its ASGI app, against the store as its only state, through its refusals (`test_*_refusals.py`; AWS's are in `test_aws_provider.py`), and through the service's own client library over a real socket (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`; YouTrack over plain HTTP). Response validation against a provider's OpenAPI document is not built.
+- Whole runs start a real agent process (`tests/e2e/agents/slack_agent.py`) through `session.play`, `session.fork` and the `minutehand` command.
+- `uv run python -m lints` runs every lint in `lints/`. See `docs/lints.md`.
+- Conformance against the real APIs needs real accounts and is a scheduled job, not a lint. Not built.
+
+## Evidence
+
+Measurements from 2026-10-04, from throwaway spike scripts that are not in this repo. Each is kept because a decision above rests on it; where code now proves the same thing, the test is cited instead.
+
+**Interception, one process** (macOS, Python 3.12, mitmproxy 12.2.3, the parent repository's Flask fakes for Slack and Asana mounted unchanged; again as one container on `python:3.12-slim`). Decides "Python, not Rust" and the one-container design.
+
+| Measure | As a process | As one container |
+|---|---|---|
+| Ready to accept calls | 0.26–0.54 s over five starts | 1.6 s including `docker run` |
+| Memory, no provider loaded | 87 MB | 57 MiB |
+| Memory, Slack and Asana loaded | 91–97 MB | 58 MiB |
+| Memory after 1,100 calls | 94 MB | not measured |
+| Image size | n/a | 367 MB |
+| One call | p50 0.9 ms, p95 1.0 ms | not measured |
+| Eight clients at once | 1,401 calls a second, p50 5.4 ms | not measured |
+
+Performance is known only at this scale: two providers, a few calls. Nothing is measured on the providers in this repo, with thousands of entities, or with concurrent runs.
+
+What that spike found that code now proves:
+
+| Finding | Now proved by |
+|---|---|
+| mitmproxy can be embedded and answer for real hostnames | `tests/proxy/test_answer.py` |
+| A client needs environment variables only | `test_a_client_configured_only_by_environment_is_answered`; the Asana, Drive and AWS client tests |
+| `traceparent` survives onto the recorded call | `test_exchange_keeps_traceparent_and_strips_credentials` |
+| An unclaimed host is refused with 502 and recorded | `test_unclaimed_host_is_refused_and_recorded_without_contacting_it` |
+| `connection_strategy="lazy"` and `upstream_cert=False` keep the real host uncontacted (the spike set them and did not watch the network) | The two `…_without_contacting_it` tests, which do |
+| The real Asana API is under `/api/1.0` and a fake at the root misses it | `Manifest.path_prefix`; `test_exact_host_is_answered_with_the_path_prefix_stripped` |
+| A provider loads on first use | `test_provider_module_is_imported_on_its_first_request` |
+| A second embedded master served certificates its CA did not sign | `ProxyRunning`; `test_a_second_proxy_while_one_runs_is_refused` |
+| Prompt edits on the wire leave the client unchanged and the user message untouched | `tests/proxy/test_model_hosts.py` |
+| An agent on stock `boto3` books an EventBridge Scheduler schedule that the clock fires into SQS | `tests/providers/aws/test_aws_provider.py` |
+
+Still true of mitmproxy and kept as a limit: its app host buffers each response whole and does not implement WebSockets (its own docstring). Streaming responses and Slack Socket Mode need a different path.
+
+**A faked system clock** (`libfaketime`, an unmodified Python program in a Linux container, clock set by writing a file). Decides "Time, for the agent".
+
+| Question | Result |
+|---|---|
+| Does the program's clock follow the file while it runs? | Yes, three jumps across 14 days, each read back within a minute of the value written. The sub-minute difference was not investigated. |
+| Does a secure connection to a real model API still work under a faked date? | 14 and 60 days ahead: yes, for `api.openai.com` and `api.anthropic.com`. 200 days ahead: no, "certificate has expired". 60 days back: no, "certificate is not yet valid". |
+| Does a program asleep on its own timer wake when the clock jumps? | No. `asyncio.sleep(8)` took 8 real seconds across a two-hour jump. |
 
 ## Known issues / limitations
 
-- **The agent under test is a model, and its variance is reported, not hidden.** One run fails the build on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding.
-- **`repeated_message` is imprecise** (one true flag of three on the reference run).
-- **The obligations ledger is designed, not built.** Whether "this message needs an answer" can be decided reliably by the replier is unproven.
-- **Performance is measured only at spike scale:** two providers, five calls. Nothing is known about memory or speed with thousands of entities or concurrent runs.
+- **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample after the first starts from the agent's state at the first sample's start through `StateHooks.restore`; without hooks the samples are not independent.
+- **One proxy per process.** mitmproxy keeps its master in a module global; `Proxy` refuses a second and is moved from run to run with `mount`.
+- **A fork starts only at a checkpoint,** and only for an agent with `StateHooks`.
+- **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
+- **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
+- **Every provider accepts any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana, YouTrack and Drive accept any bearer token; Drive's `/token` verifies nothing.
+- **No fake's wire details have been verified against the real service.**
+- **`PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run.**
+- **A booking's wake is not awaited.** A wake made only of bookings sends no request and polls no report, so the clock may move on before a `Booked` agent acts on the delivery.
+- **`repeated_message` measures its five-minute window in wall time.** On the reference run it flags the one real repeat; in a simulated run, messages days apart in simulated time can be seconds apart in wall time.
+- **The enum-comparison lint judges a field by its name, not its type** (`docs/lints.md`).
+- **The store's file carries a schema version and refuses other versions;** there is no migration.
 - **Out of scope:** browser OAuth flows, certificate-pinned clients, Slack Socket Mode, reading back from real providers in production, the hosted service.
 
 ## References
 
-- `docs/lints.md`: the lints proposed for this repo.
-- `docs/adopting-in-alknoma-cloud.md`: how alknoma-cloud consumes this and what must keep working.
-- alknoma-cloud `docs/features/field-observation/design.md`, `.claude/rules/lints.md`.
+- `docs/lints.md`: the lints of this repo, each with its five tests.
+- `docs/patterns/`: one page per pattern.
+- `docs/ci.md`: the branches, the gate, and what CI runs.
+- The adoption guide in `docs/`: how the parent repository consumes this and what must keep working.
+- The parent repository's field-observation design and lint rules.
 - Reference run page: https://claude.ai/artifact/AEpfatMwhGw2rcs7D428S7

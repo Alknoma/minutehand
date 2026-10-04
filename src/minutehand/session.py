@@ -26,17 +26,22 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import sqlite3
+import threading
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from pydantic import Field
 
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
-from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
 from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused
@@ -46,9 +51,11 @@ from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
+from minutehand.domain.checks import WakeRecord
 from minutehand.domain.experiment import Fork
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario
+from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
@@ -254,9 +261,133 @@ def runs(state: Path) -> list[Outcome]:
 
 def fork_points(state: Path, run_id: str) -> list[ForkPoint]:
     """Every point this run can be forked from, in order."""
-    outcome = load(state, run_id)
-    world = SqliteStore(_root_dir(state, outcome.record) / WORLD, run_id, RunClock(outcome.record.started_at))
+    with reading(state, run_id) as world:
+        return points_in(world)
+
+
+def points_in(world: Store) -> list[ForkPoint]:
+    """The checkpoints a world's log holds, each a point a fork may be taken from."""
     return [ForkPoint(wake=e.wake, seq=e.seq) for e in world.events() if e.entity == CHECKPOINT]
+
+
+class Logged(Model):
+    """A run as the world file holding it knows it: finished, or still being written by another process."""
+
+    run_id: str
+    root: str = Field(description="The run whose directory holds the world file")
+    parent_run: str | None
+    forked_at: int | None
+    finished: bool
+
+
+def logged(state: Path) -> list[Logged]:
+    """Every run any world file under `state` holds, finished or not, root runs in directory order and each
+    root's forks after it in the order they were taken."""
+    base = state / RUNS
+    if not base.is_dir():
+        return []
+    found: list[Logged] = []
+    for directory in sorted(base.iterdir()):
+        path = directory / WORLD
+        if not path.is_file():
+            continue
+        for run_id, parent, forked_at in _ReadOnlyStore.runs_in(path):
+            finished = (run_dir(state, run_id) / RECORD).is_file()
+            found.append(
+                Logged(run_id=run_id, root=directory.name, parent_run=parent, forked_at=forked_at, finished=finished)
+            )
+    return found
+
+
+def find(state: Path, run_id: str) -> Logged:
+    """One run, finished or still being written; refused when no world file holds it."""
+    for entry in logged(state):
+        if entry.run_id == run_id:
+            return entry
+    raise RunRefused(f"no run {run_id} under {state / RUNS}")
+
+
+@contextmanager
+def reading(state: Path, run_id: str) -> Iterator[Store]:
+    """A run's world opened for reading only, so a run another process is still writing can be read without
+    taking its write lock; closed on leaving. A fork is read from its root run's file."""
+    entry = find(state, run_id)
+    store = _ReadOnlyStore(run_dir(state, entry.root) / WORLD, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+def scenario_of(state: Path, run_id: str) -> Scenario:
+    """The scenario as this run played it. A fork still running has not written its own yet, so it answers
+    the scenario of the run it was forked from, before the fork's changes."""
+    entry = find(state, run_id)
+    while True:
+        path = run_dir(state, entry.run_id) / SCENARIO
+        if path.is_file():
+            return Scenario.model_validate_json(path.read_text(encoding="utf-8"))
+        if entry.parent_run is None:
+            raise RunRefused(f"run {run_id} has written no scenario yet")
+        entry = find(state, entry.parent_run)
+
+
+def wakes_of(state: Path, run_id: str, world: Store) -> list[WakeRecord]:
+    """The run's wakes: from its record once it has finished, and from the checkpoints in its log while it
+    runs. A wake still in progress has no checkpoint and is not listed. Whether a running wake changed the
+    agent's commitments is not in the log, so those records say it did not."""
+    if (run_dir(state, run_id) / RECORD).is_file():
+        return load(state, run_id).record.wakes
+    events = world.events()
+    changes: dict[int, int] = {}
+    for event in events:
+        if event.actor is Actor.AGENT and event.operation not in (Operation.READ, Operation.SEARCH):
+            changes[event.wake] = changes.get(event.wake, 0) + 1
+    wakes: dict[int, WakeRecord] = {}
+    for event in events:
+        if event.entity == CHECKPOINT and event.wake >= 1 and event.wake not in wakes:
+            wakes[event.wake] = WakeRecord(
+                index=event.wake,
+                sim_time=event.sim_time,
+                world_changes=changes.get(event.wake, 0),
+                commitments_changed=False,
+            )
+    return list(wakes.values())
+
+
+class _ReadOnlyStore(SqliteStore):
+    """A world file opened with SQLite's read-only mode: nothing is created, stamped or locked for writing,
+    and a run still being written in WAL mode is read as of its last commit. Any write raises."""
+
+    def __init__(self, path: Path, run_id: str, clock: Clock) -> None:
+        self.run_id = run_id
+        self._path = path
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._db = _read_only(path)
+        found = self._db.execute("PRAGMA user_version").fetchone()[0]
+        if found != SCHEMA_VERSION:
+            self._db.close()
+            raise RunRefused(f"{path} was written with store schema {found}; this version reads {SCHEMA_VERSION}")
+        self._lineage = self._load_lineage()
+
+    def close(self) -> None:
+        self._db.close()
+
+    @staticmethod
+    def runs_in(path: Path) -> list[tuple[str, str | None, int | None]]:
+        """Each run the file holds, with its parent and the seq it was forked at, in the order written."""
+        db = _read_only(path)
+        try:
+            return [(r[0], r[1], r[2]) for r in db.execute("SELECT run_id, parent, forked_at FROM run ORDER BY rowid")]
+        except sqlite3.OperationalError:
+            return []  # the writer has created the file and not yet its tables: it holds no run yet
+        finally:
+            db.close()
+
+
+def _read_only(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
 
 
 # -- the parts of a run ---------------------------------------------------------------------------------------
