@@ -21,6 +21,7 @@ def _has(text: str, words: list[str]) -> bool:
 class Expectations:
     id = "expectations"
     needs = frozenset({Needs.WORLD})
+    pattern = "honest_closure"
 
     def run(self, view: RunView) -> CheckReport:
         email = {p.key: p.email for p in view.scenario.people}
@@ -43,6 +44,7 @@ class Expectations:
                     kind=FindingKind.FAIL,
                     message=f"{self._describe(expected)}: wanted {wanted}, found {count}",
                     evidence=[e.seq for e in matched],
+                    pattern=self.pattern,
                 )
             )
         return CheckReport(findings=findings)

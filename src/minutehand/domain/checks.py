@@ -13,7 +13,7 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
 from minutehand.domain.scenario import Model, Scenario
-from minutehand.domain.world import EntityRef, WorldEvent
+from minutehand.domain.world import EntityRef, Exchange, WorldEvent
 
 
 class Severity(StrEnum):
@@ -33,6 +33,7 @@ class Needs(StrEnum):
     WAKES = "wakes"
     OBLIGATIONS = "obligations"
     COMMITMENTS = "commitments"
+    CALLS = "calls"
 
 
 class Finding(Model):
@@ -105,6 +106,14 @@ class Stability(Model):
         return self.passed / self.samples
 
 
+class PersonBurden(Model):
+    """What the agent asked of one person."""
+
+    person: str = Field(description="Person.key")
+    messages: int = Field(ge=0, description="Messages the agent sent them")
+    follow_ups: int = Field(ge=0, description="Of those, sent while an earlier ask of theirs was still open")
+
+
 class Effectiveness(Model):
     """How well the agent carried the work, measured from the world and the clock.
 
@@ -121,6 +130,14 @@ class Effectiveness(Model):
     follow_ups_late: int = Field(ge=0)
     time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
     slowest_follow_up: timedelta | None = None
+    reactions_due: int = Field(default=0, ge=0, description="Settled waits naming a person or entity, so a reaction can be timed")
+    reactions_slow: int = Field(default=0, ge=0, description="Of those, the agent's next touch came after the grace, or never")
+    slowest_reaction: timedelta | None = None
+    messages_to_people: int = Field(default=0, ge=0)
+    burden: list[PersonBurden] = Field(default=[], description="Messages per person, in Scenario.people order")
+    messages_per_outcome: float | None = Field(
+        default=None, description="messages_to_people per expectation met; None when none was met"
+    )
     wakes: int = Field(ge=0)
     idle_wakes: int = Field(ge=0, description="Wakes that changed nothing")
     failed_checks: int = Field(ge=0)
@@ -141,6 +158,10 @@ class RunView(Model):
     wakes: list[WakeRecord]
     obligations: list[Obligation] = []
     commitments: list[Commitment] | None = None
+    unmatched_calls: list[Exchange] | None = Field(
+        default=None,
+        description="Calls to hosts no provider claims, which produced no event; None when nobody could say",
+    )
 
 
 class Check(Protocol):
