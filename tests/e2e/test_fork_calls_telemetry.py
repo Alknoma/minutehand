@@ -36,6 +36,7 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     assert parent.record.stop is StopReason.NOTHING_PENDING
     parent_events = world(state, parent.record.run_id).events()
+    parent_calls = world(state, parent.record.run_id).calls()
     parent_files = {p.name: p.read_bytes() for p in session.run_dir(state, parent.record.run_id).glob("*.json")}
 
     after_first_wake = next(p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1)
@@ -52,8 +53,12 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     assert [e for e in child_events if e.seq <= after_first_wake.seq] == [
         e for e in parent_events if e.seq <= after_first_wake.seq]
     assert texts(messages(child_events, Actor.PERSON)) == [ANSWER]
+    # The child's own calls are recorded in the child, each tied to the event it produced.
+    after_fork = [e for e in messages(child_events, Actor.AGENT) if e.seq > after_first_wake.seq]
+    assert len(after_fork) == 2 and all(e.exchange is not None and e.exchange.host == "slack.com" for e in after_fork)
     # The parent's log and files are as they were.
     assert world(state, parent.record.run_id).events() == parent_events
+    assert world(state, parent.record.run_id).calls() == parent_calls
     assert {p.name: p.read_bytes() for p in session.run_dir(state, parent.record.run_id).glob("*.json")} == parent_files
     assert launched.state()["verified"] == [ANSWER]
 
