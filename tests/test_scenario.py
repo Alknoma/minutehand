@@ -6,8 +6,11 @@ from minutehand.domain.experiment import Fork
 from minutehand.domain.scenario import Scenario
 
 BASE = {
-    "name": "partner_pipeline", "goal": "Three signed agreements.", "owner": "owner",
-    "starts_at": "2026-08-24T10:50:03Z", "people": [{"key": "owner", "name": "Owner", "email": "owner@example.com"}],
+    "name": "partner_pipeline",
+    "goal": "Three signed agreements.",
+    "owner": "owner",
+    "starts_at": "2026-08-24T10:50:03Z",
+    "people": [{"key": "owner", "name": "Owner", "email": "owner@example.com"}],
 }
 
 
@@ -29,19 +32,34 @@ def test_ticket_deleted_defaults_to_must_not_happen() -> None:
 def test_an_agent_needs_at_least_one_way_to_come_back_to_work() -> None:
     with pytest.raises(ValidationError):
         AgentUnderTest.model_validate({"name": "a", "wakes": []})
-    agent = AgentUnderTest.model_validate({"name": "a", "wakes": [{"kind": "booked"}, {"kind": "polled", "wake_url": "http://a/tick"}]})
+    agent = AgentUnderTest.model_validate(
+        {"name": "a", "wakes": [{"kind": "booked"}, {"kind": "polled", "wake_url": "http://a/tick"}]}
+    )
     assert [w.kind for w in agent.wakes] == ["booked", "polled"]
 
 
 def test_an_agent_given_its_goal_by_message_needs_no_wake_source_but_an_inbound_target() -> None:
-    agent = AgentUnderTest.model_validate({"name": "a", "goal": {"kind": "by_message", "provider": "slack"},
-                                           "inbound": [{"provider": "slack", "url": "http://a/slack/events"}]})
+    agent = AgentUnderTest.model_validate(
+        {
+            "name": "a",
+            "goal": {"kind": "by_message", "provider": "slack"},
+            "inbound": [{"provider": "slack", "url": "http://a/slack/events"}],
+        }
+    )
     assert agent.wakes == []
     with pytest.raises(ValidationError, match="no inbound target there"):
         AgentUnderTest.model_validate({"name": "a", "goal": {"kind": "by_message", "provider": "slack"}})
 
 
 def test_a_fork_carries_typed_overrides() -> None:
-    fork = Fork.model_validate({"parent_run": "r1", "at_seq": 2, "overrides": [
-        {"kind": "prompt_patch", "text": " Confirm the name."}, {"kind": "model_swap", "to": "another-model"}]})
+    fork = Fork.model_validate(
+        {
+            "parent_run": "r1",
+            "at_seq": 2,
+            "overrides": [
+                {"kind": "prompt_patch", "text": " Confirm the name."},
+                {"kind": "model_swap", "to": "another-model"},
+            ],
+        }
+    )
     assert [o.kind for o in fork.overrides] == ["prompt_patch", "model_swap"]

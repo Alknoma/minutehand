@@ -39,7 +39,7 @@ def strip_prefix(path: str, prefix: str) -> str:
         return path
     if path != prefix and not path.startswith((prefix + "/", prefix + "?")):
         return path
-    rest = path[len(prefix):]
+    rest = path[len(prefix) :]
     return rest if rest.startswith("/") else "/" + rest
 
 
@@ -133,7 +133,9 @@ class ProxyAddon:
             host=host,
             path=redact.path(path),
             status=response.status_code,
-            request_body=redact.body(request.get_text(strict=False) or None, _first_header(request, "content-type") or ""),
+            request_body=redact.body(
+                request.get_text(strict=False) or None, _first_header(request, "content-type") or ""
+            ),
             response_body=redact.body(
                 response.get_text(strict=False) or None, _first_header(response, "content-type") or ""
             ),

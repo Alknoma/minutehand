@@ -37,7 +37,9 @@ async def test_a_silent_person_never_replies_and_the_run_ends_with_nothing_pendi
 
 async def test_a_silent_person_and_a_wake_past_the_deadline_end_the_run_at_the_deadline(rig: Rig) -> None:
     record, store, clock = await rig.run(
-        scenario(ticket_fates=[]), rig.agent("ask_silent"), env=rig.env(NEXT_WAKE_AFTER_HOURS=str(15 * 24)),
+        scenario(ticket_fates=[]),
+        rig.agent("ask_silent"),
+        env=rig.env(NEXT_WAKE_AFTER_HOURS=str(15 * 24)),
     )
 
     assert record.stop is StopReason.DEADLINE_PASSED

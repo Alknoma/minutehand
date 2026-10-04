@@ -47,5 +47,7 @@ class SlowToReact:
                     pattern=self.pattern,
                 )
             )
-        notes = [f"{untimed} settled obligation(s) name no person or entity; no reaction can be timed"] if untimed else []
+        notes = (
+            [f"{untimed} settled obligation(s) name no person or entity; no reaction can be timed"] if untimed else []
+        )
         return CheckReport(findings=findings, notes=notes)

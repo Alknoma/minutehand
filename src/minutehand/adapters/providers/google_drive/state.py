@@ -25,7 +25,15 @@ from collections.abc import Iterator
 from minutehand.adapters.providers.google_drive import wire
 from minutehand.adapters.providers.google_drive.manifest import MANIFEST
 from minutehand.domain.world import (
-    Actor, Change, DocumentSnapshot, EntityKind, EntityRef, Operation, RecordSnapshot, Stored, WorldEvent,
+    Actor,
+    Change,
+    DocumentSnapshot,
+    EntityKind,
+    EntityRef,
+    Operation,
+    RecordSnapshot,
+    Stored,
+    WorldEvent,
 )
 from minutehand.ports.store import Store
 
@@ -180,10 +188,16 @@ class DriveWorld:
 
     def write_file(self, stored: wire.StoredFile, *, operation: Operation, actor: Actor) -> WorldEvent:
         parents = stored.file.parents
-        return self._store.apply(Change(
-            entity=file_ref(stored.file.id), operation=operation, actor=actor, body=wire.dump(stored),
-            parent=parents[0] if parents else None, after=snapshot(stored),
-        ))
+        return self._store.apply(
+            Change(
+                entity=file_ref(stored.file.id),
+                operation=operation,
+                actor=actor,
+                body=wire.dump(stored),
+                parent=parents[0] if parents else None,
+                after=snapshot(stored),
+            )
+        )
 
     def delete_file(self, stored: wire.StoredFile, *, actor: Actor) -> list[WorldEvent]:
         """Delete a file and, for a folder, everything under it, deepest first."""
@@ -192,10 +206,16 @@ class DriveWorld:
             for child in list(self.children(stored.file.id)):
                 events += self.delete_file(child, actor=actor)
         parents = stored.file.parents
-        events.append(self._store.apply(Change(
-            entity=file_ref(stored.file.id), operation=Operation.DELETE, actor=actor,
-            parent=parents[0] if parents else None,
-        )))
+        events.append(
+            self._store.apply(
+                Change(
+                    entity=file_ref(stored.file.id),
+                    operation=Operation.DELETE,
+                    actor=actor,
+                    parent=parents[0] if parents else None,
+                )
+            )
+        )
         return events
 
     # ------------------------------------------------------------------ people and permissions
@@ -207,20 +227,31 @@ class DriveWorld:
         return wire.parse(wire.DriveUser, stored.body)
 
     def write_user(self, user: wire.DriveUser, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=user_ref(user.permissionId), operation=Operation.CREATE, actor=actor, body=wire.dump(user),
-            parent=USERS,
-        ))
+        return self._store.apply(
+            Change(
+                entity=user_ref(user.permissionId),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(user),
+                parent=USERS,
+            )
+        )
 
     def grants(self, file: str) -> list[wire.Permission]:
         return [wire.parse(wire.Permission, s.body) for s in self._pages(EntityKind.RECORD, file)]
 
     def write_grant(self, file: str, permission: wire.Permission, *, operation: Operation, actor: Actor) -> WorldEvent:
         who = permission.emailAddress or permission.domain or permission.type
-        return self._store.apply(Change(
-            entity=grant_ref(file, permission.id), operation=operation, actor=actor, body=wire.dump(permission),
-            parent=file, after=RecordSnapshot(resource="permission", text=f"{permission.role} {who}"),
-        ))
+        return self._store.apply(
+            Change(
+                entity=grant_ref(file, permission.id),
+                operation=operation,
+                actor=actor,
+                body=wire.dump(permission),
+                parent=file,
+                after=RecordSnapshot(resource="permission", text=f"{permission.role} {who}"),
+            )
+        )
 
     # ------------------------------------------------------------------ comments
 
@@ -229,10 +260,16 @@ class DriveWorld:
         return [wire.parse(wire.Comment, s.body) for s in self._pages(EntityKind.COMMENT, file)]
 
     def write_comment(self, file: str, comment: wire.Comment, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=comment_ref(comment.id), operation=Operation.CREATE, actor=actor, body=wire.dump(comment),
-            parent=file, after=RecordSnapshot(resource="comment", text=comment.content),
-        ))
+        return self._store.apply(
+            Change(
+                entity=comment_ref(comment.id),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(comment),
+                parent=file,
+                after=RecordSnapshot(resource="comment", text=comment.content),
+            )
+        )
 
     # ------------------------------------------------------------------ reads
 

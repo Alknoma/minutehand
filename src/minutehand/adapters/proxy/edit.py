@@ -75,9 +75,7 @@ def _matches(where: CallMatch, host: str, model: str | None, system: str | None)
         return False
     if where.model is not None and where.model != model:
         return False
-    if where.system_contains is not None and (system is None or where.system_contains not in system):
-        return False
-    return True
+    return not (where.system_contains is not None and (system is None or where.system_contains not in system))
 
 
 def apply_edits(body: bytes, host: str, edits: list[ModelEdit]) -> bytes | None:

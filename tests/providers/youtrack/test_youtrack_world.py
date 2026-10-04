@@ -67,7 +67,10 @@ async def test_a_fork_sees_issues_only_up_to_the_fork(instance: Instance, client
     assert mine["idReadable"] == "LAUNCH-4"
     parent = entities(await client.get("/api/issues", params={"query": "project: LAUNCH", "fields": "summary"}))
     assert [i["summary"] for i in parent] == [
-        "Write the release notes", "Book the venue", "Before the fork", "After, in the parent",
+        "Write the release notes",
+        "Book the venue",
+        "Before the fork",
+        "After, in the parent",
     ]
 
 
@@ -77,19 +80,29 @@ def test_seeding_writes_people_the_agent_projects_and_issues_as_the_scenario(ins
 
     youtrack = instance.youtrack
     assert [(u.id, u.login, u.email) for u in youtrack.users()] == [
-        ("1-0", "agent-bot", "agent-bot@youtrack.invalid"), (IRIS, "iris", "iris@example.com"),
-        (TOMAS, "tomas", "tomas@example.com"), (NOOR, "noor", "noor@example.com"),
+        ("1-0", "agent-bot", "agent-bot@youtrack.invalid"),
+        (IRIS, "iris", "iris@example.com"),
+        (TOMAS, "tomas", "tomas@example.com"),
+        (NOOR, "noor", "noor@example.com"),
     ]
     projects = youtrack.projects()
-    assert [(p.id, p.shortName, p.name) for p in projects] == [(LAUNCH, "LAUNCH", "Launch"), (FIELD_OPS, "FIELDOPS", "Field Ops")]
+    assert [(p.id, p.shortName, p.name) for p in projects] == [
+        (LAUNCH, "LAUNCH", "Launch"),
+        (FIELD_OPS, "FIELDOPS", "Field Ops"),
+    ]
     assert all([s.name for s in p.states] == ["Open", "In Progress", "Fixed", "Won't fix"] for p in projects)
     assert all(p.team == ["1-0", IRIS, TOMAS, NOOR] for p in projects)
 
     tickets = [e for e in events if e.entity.kind is EntityKind.TICKET]
     assert [e.after for e in tickets] == [
         TicketSnapshot(title="Write the release notes", project="LAUNCH", assignee_email="tomas@example.com"),
-        TicketSnapshot(title="Book the venue", body="Forty seats", project="LAUNCH", assignee_email="noor@example.com",
-                       state=TicketState.DONE),
+        TicketSnapshot(
+            title="Book the venue",
+            body="Forty seats",
+            project="LAUNCH",
+            assignee_email="noor@example.com",
+            state=TicketState.DONE,
+        ),
         TicketSnapshot(title="Ship the demo kits", project="FIELDOPS"),
     ]
     issue = youtrack.find_issue("LAUNCH-1")
@@ -112,10 +125,13 @@ def _assigned(instance: Instance, readable: str) -> str:
     return issue.id
 
 
-@pytest.mark.parametrize(("to", "value", "resolved"), [
-    (TicketState.DONE, "Fixed", True),
-    (TicketState.CANCELLED, "Won't fix", True),
-])
+@pytest.mark.parametrize(
+    ("to", "value", "resolved"),
+    [
+        (TicketState.DONE, "Fixed", True),
+        (TicketState.CANCELLED, "Won't fix", True),
+    ],
+)
 async def test_transition_moves_the_issue_as_its_assignee(
     instance: Instance, client: httpx.AsyncClient, to: TicketState, value: str, resolved: bool
 ) -> None:
@@ -127,11 +143,19 @@ async def test_transition_moves_the_issue_as_its_assignee(
     last = instance.store.events()[-1]
     assert (last.actor, last.operation, last.entity) == (Actor.PERSON, Operation.UPDATE, state.issue_ref(issue_id))
     assert last.after == TicketSnapshot(
-        title="Write the release notes", project="LAUNCH", assignee_email="tomas@example.com", state=to,
+        title="Write the release notes",
+        project="LAUNCH",
+        assignee_email="tomas@example.com",
+        state=to,
     )
-    read = entity(await client.get("/api/issues/LAUNCH-1", params={
-        "fields": "resolved,updated,updater(login),customFields(name,value(name))",
-    }))
+    read = entity(
+        await client.get(
+            "/api/issues/LAUNCH-1",
+            params={
+                "fields": "resolved,updated,updater(login),customFields(name,value(name))",
+            },
+        )
+    )
     assert read["resolved"] == (millis_now(instance.clock) if resolved else None)
     assert read["updated"] == millis_now(instance.clock)
     assert read["updater"] == {"login": "tomas", "$type": "User"}
@@ -139,7 +163,9 @@ async def test_transition_moves_the_issue_as_its_assignee(
     assert "LAUNCH-1" in readable_ids(found)
     custom = read["customFields"]
     assert isinstance(custom, list) and custom[0] == {
-        "name": "State", "value": {"name": value, "$type": "StateBundleElement"}, "$type": "StateIssueCustomField",
+        "name": "State",
+        "value": {"name": value, "$type": "StateBundleElement"},
+        "$type": "StateIssueCustomField",
     }
 
 
@@ -156,38 +182,59 @@ def test_transition_back_to_open_clears_resolved(instance: Instance) -> None:
 
 def test_transition_of_an_unassigned_issue_is_refused(instance: Instance) -> None:
     with pytest.raises(ValueError, match="no assignee"):
-        instance.provider.transition(state.issue_ref(_assigned(instance, "FIELDOPS-1")), TicketState.DONE,
-                                     instance.store, instance.clock)
+        instance.provider.transition(
+            state.issue_ref(_assigned(instance, "FIELDOPS-1")), TicketState.DONE, instance.store, instance.clock
+        )
 
 
 def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) -> None:
     issue_id = _assigned(instance, "LAUNCH-1")
 
-    instance.provider.edit(state.issue_ref(issue_id), state=TicketState.CANCELLED, assignee_email="iris@example.com",
-                           world=instance.store, clock=instance.clock)
+    instance.provider.edit(
+        state.issue_ref(issue_id),
+        state=TicketState.CANCELLED,
+        assignee_email="iris@example.com",
+        world=instance.store,
+        clock=instance.clock,
+    )
 
     last = instance.store.events()[-1]
     assert (last.actor, last.operation) == (Actor.SCENARIO, Operation.UPDATE)
-    assert last.after == TicketSnapshot(title="Write the release notes", project="LAUNCH",
-                                        assignee_email="iris@example.com", state=TicketState.CANCELLED)
+    assert last.after == TicketSnapshot(
+        title="Write the release notes",
+        project="LAUNCH",
+        assignee_email="iris@example.com",
+        state=TicketState.CANCELLED,
+    )
 
 
 def test_edit_with_nothing_named_leaves_both_fields(instance: Instance) -> None:
     issue_id = _assigned(instance, "LAUNCH-2")
 
-    instance.provider.edit(state.issue_ref(issue_id), state=None, assignee_email=None, world=instance.store,
-                           clock=instance.clock)
+    instance.provider.edit(
+        state.issue_ref(issue_id), state=None, assignee_email=None, world=instance.store, clock=instance.clock
+    )
 
     last = instance.store.events()[-1]
     assert last.actor is Actor.SCENARIO
-    assert last.after == TicketSnapshot(title="Book the venue", body="Forty seats", project="LAUNCH",
-                                        assignee_email="noor@example.com", state=TicketState.DONE)
+    assert last.after == TicketSnapshot(
+        title="Book the venue",
+        body="Forty seats",
+        project="LAUNCH",
+        assignee_email="noor@example.com",
+        state=TicketState.DONE,
+    )
 
 
 def test_edit_to_an_email_nobody_has_is_refused(instance: Instance) -> None:
-    with pytest.raises(LookupError, match="nobody@example.com"):
-        instance.provider.edit(state.issue_ref(_assigned(instance, "LAUNCH-1")), state=None,
-                               assignee_email="nobody@example.com", world=instance.store, clock=instance.clock)
+    with pytest.raises(LookupError, match=r"nobody@example\.com"):
+        instance.provider.edit(
+            state.issue_ref(_assigned(instance, "LAUNCH-1")),
+            state=None,
+            assignee_email="nobody@example.com",
+            world=instance.store,
+            clock=instance.clock,
+        )
 
 
 def test_the_provider_meets_its_three_ports() -> None:
@@ -200,19 +247,29 @@ def test_the_provider_meets_its_three_ports() -> None:
 
 def test_the_manifest_claims_youtrack_and_imports_nothing_else_of_the_provider() -> None:
     assert (MANIFEST.key, MANIFEST.tier, MANIFEST.hosts, MANIFEST.path_prefix) == (
-        "youtrack", Tier.FINISHED, ["*.youtrack.cloud", "*.myjetbrains.com"], "",
+        "youtrack",
+        Tier.FINISHED,
+        ["*.youtrack.cloud", "*.myjetbrains.com"],
+        "",
     )
     assert MANIFEST.kinds == [EntityKind.TICKET, EntityKind.COMMENT] and not MANIFEST.pushes_events
     loaded = subprocess.run(
-        [sys.executable, "-c",
-         "import sys, minutehand.adapters.providers.youtrack.manifest;"
-         "print(sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.youtrack.')))"],
-        capture_output=True, text=True, check=True,
+        [
+            sys.executable,
+            "-c",
+            "import sys, minutehand.adapters.providers.youtrack.manifest;"
+            "print(sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.youtrack.')))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     assert loaded.stdout.strip() == "['minutehand.adapters.providers.youtrack.manifest']"
 
 
-@pytest.mark.parametrize("host", ["lanternworks.youtrack.cloud", "Lanternworks.YouTrack.Cloud", "lanternworks.myjetbrains.com"])
+@pytest.mark.parametrize(
+    "host", ["lanternworks.youtrack.cloud", "Lanternworks.YouTrack.Cloud", "lanternworks.myjetbrains.com"]
+)
 def test_the_installed_registry_routes_both_host_families_here(host: str) -> None:
     claimed = Registry.installed().claimant(host)
     assert claimed is not None and claimed.key == "youtrack"
@@ -228,8 +285,13 @@ def test_hosts_outside_both_families_are_not_claimed(host: str) -> None:
 @pytest.mark.parametrize("prefix", ["/api", "/youtrack/api"])
 async def test_both_path_shapes_answer_on_both_host_families(instance: Instance, base: str, prefix: str) -> None:
     async with client_for(instance.provider, instance.store, instance.clock, base_url=base) as c:
-        made = entity(await c.post(f"{prefix}/issues", params={"fields": "idReadable"},
-                                   json={"project": {"id": LAUNCH}, "summary": f"Filed at {prefix}"}))
+        made = entity(
+            await c.post(
+                f"{prefix}/issues",
+                params={"fields": "idReadable"},
+                json={"project": {"id": LAUNCH}, "summary": f"Filed at {prefix}"},
+            )
+        )
         read = entity(await c.get(f"{prefix}/issues/{made['idReadable']}", params={"fields": "summary"}))
         me = entity(await c.get(f"{prefix}/users/me", params={"fields": "login"}))
 

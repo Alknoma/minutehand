@@ -49,11 +49,7 @@ class RepeatedMessage:
     pattern = "one_open_ask_per_person"
 
     def run(self, view: RunView) -> CheckReport:
-        sent = [
-            e
-            for e in view.events
-            if e.operation is Operation.CREATE and isinstance(e.after, MessageSnapshot)
-        ]
+        sent = [e for e in view.events if e.operation is Operation.CREATE and isinstance(e.after, MessageSnapshot)]
         runs = {e.seq: _runs(e.after.text) for e in sent if isinstance(e.after, MessageSnapshot)}
         written = [runs[e.seq] for e in sent if e.actor is Actor.AGENT]
         seen_in = Counter(r for message in written for r in message)

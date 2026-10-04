@@ -41,14 +41,22 @@ def authority(tmp_path: Path) -> Authority:
 
 async def _send(proxy: Proxy, upstream: Upstream, body: bytes) -> bytes:
     async with client(proxy, proxy.ca_cert) as http:
-        response = await http.post(f"https://{MODEL_HOST}:{upstream.port}/v1/call", content=body,
-                                   headers={"content-type": "application/json", "authorization": "Bearer sk-model"})
+        response = await http.post(
+            f"https://{MODEL_HOST}:{upstream.port}/v1/call",
+            content=body,
+            headers={"content-type": "application/json", "authorization": "Bearer sk-model"},
+        )
     assert response.status_code == 200, response.text
     return upstream.received[-1].body
 
 
 async def _through_edits(
-    body: object, registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority,
+    body: object,
+    registry: Registry,
+    store: SqliteStore,
+    clock: RunClock,
+    tmp_path: Path,
+    authority: Authority,
     edits: Sequence[Override] = EDITS,
 ) -> tuple[bytes, bytes]:
     raw = json.dumps(body).encode()
@@ -66,7 +74,8 @@ async def test_chat_completions_system_message_is_patched_and_model_swapped(
     body = {
         "model": "model-luna",
         "messages": [{"role": "system", "content": "CHAT agent."}, {"role": "user", "content": "CHAT is not here"}],
-        "temperature": 0.2, "tools": [{"type": "function", "function": {"name": "file", "parameters": {}}}],
+        "temperature": 0.2,
+        "tools": [{"type": "function", "function": {"name": "file", "parameters": {}}}],
     }
     _, arrived = await _through_edits(body, registry, store, clock, tmp_path, authority)
     expected = json.loads(json.dumps(body))
@@ -82,9 +91,10 @@ async def test_chat_completions_developer_message_with_text_parts_is_patched(
 ) -> None:
     body = {
         "model": "model-sol",
-        "messages": [{"role": "developer", "content": [{"type": "text", "text": "CHAT one."},
-                                                       {"type": "text", "text": "Two."}]},
-                     {"role": "user", "content": "hi"}],
+        "messages": [
+            {"role": "developer", "content": [{"type": "text", "text": "CHAT one."}, {"type": "text", "text": "Two."}]},
+            {"role": "user", "content": "hi"},
+        ],
     }
     _, arrived = await _through_edits(body, registry, store, clock, tmp_path, authority)
     expected = json.loads(json.dumps(body))
@@ -95,20 +105,32 @@ async def test_chat_completions_developer_message_with_text_parts_is_patched(
 async def test_responses_instructions_are_patched_by_find_and_replace(
     registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
 ) -> None:
-    body = {"model": "model-sol", "instructions": "RESPONSES: plan this week.", "input": "plan this week", "store": False}
+    body = {
+        "model": "model-sol",
+        "instructions": "RESPONSES: plan this week.",
+        "input": "plan this week",
+        "store": False,
+    }
     _, arrived = await _through_edits(body, registry, store, clock, tmp_path, authority)
     assert json.loads(arrived) == {**body, "instructions": "RESPONSES: plan this fortnight."}
 
 
-@pytest.mark.parametrize("system", [
-    "ANTHROPIC agent.",
-    [{"type": "text", "text": "ANTHROPIC agent.", "cache_control": {"type": "ephemeral"}}],
-])
+@pytest.mark.parametrize(
+    "system",
+    [
+        "ANTHROPIC agent.",
+        [{"type": "text", "text": "ANTHROPIC agent.", "cache_control": {"type": "ephemeral"}}],
+    ],
+)
 async def test_anthropic_system_is_patched_and_model_swapped(
     system: object, registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
 ) -> None:
-    body = {"model": "model-luna", "max_tokens": 64, "system": system,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]}
+    body = {
+        "model": "model-luna",
+        "max_tokens": 64,
+        "system": system,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+    }
     _, arrived = await _through_edits(body, registry, store, clock, tmp_path, authority)
     expected = json.loads(json.dumps(body))
     expected["model"] = "model-terra"
@@ -122,8 +144,11 @@ async def test_anthropic_system_is_patched_and_model_swapped(
 async def test_a_call_no_edit_matches_goes_on_byte_for_byte(
     registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
 ) -> None:
-    body = {"model": "model-sol", "messages": [{"role": "system", "content": "Some other prompt, é."}],
-            "temperature": 1.0}
+    body = {
+        "model": "model-sol",
+        "messages": [{"role": "system", "content": "Some other prompt, é."}],
+        "temperature": 1.0,
+    }
     raw, arrived = await _through_edits(body, registry, store, clock, tmp_path, authority)
     assert arrived == raw
 

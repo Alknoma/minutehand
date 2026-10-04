@@ -48,16 +48,29 @@ DOCS_HOST = "docs.googleapis.com"
 JSON = "application/json; charset=UTF-8"
 CONVERTS_TO_DOC = frozenset({"text/plain", "text/markdown"})
 """Media this fake converts into a Google Doc's text. Drive converts more (HTML, Word); those are refused loudly."""
-DOC_EXPORTS_NOT_BUILT = frozenset({
-    "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.oasis.opendocument.text", "application/rtf", "text/html", "application/zip",
-    "application/epub+zip",
-})
+DOC_EXPORTS_NOT_BUILT = frozenset(
+    {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.oasis.opendocument.text",
+        "application/rtf",
+        "text/html",
+        "application/zip",
+        "application/epub+zip",
+    }
+)
 """Formats real Drive exports a Doc to and this fake does not render."""
 ORDER_KEYS = frozenset({"name", "createdTime", "modifiedTime", "folder", "starred"})
-ORDER_KEYS_NOT_BUILT = frozenset({
-    "name_natural", "quotaBytesUsed", "recency", "sharedWithMeTime", "viewedByMeTime", "modifiedByMeTime",
-})
+ORDER_KEYS_NOT_BUILT = frozenset(
+    {
+        "name_natural",
+        "quotaBytesUsed",
+        "recency",
+        "sharedWithMeTime",
+        "viewedByMeTime",
+        "modifiedByMeTime",
+    }
+)
 
 Handler = Callable[[Request], Awaitable[Response]]
 
@@ -112,7 +125,8 @@ class DriveApi:
     def _not_root(self, stored: wire.StoredFile) -> None:
         if stored.file.id == ROOT_ID:
             raise wire.forbidden(
-                "insufficientFilePermissions", "The user does not have sufficient permissions for this file.",
+                "insufficientFilePermissions",
+                "The user does not have sufficient permissions for this file.",
             )
 
     def _served(self, stored: wire.StoredFile, *, trashed_above: bool | None = None) -> wire.DriveFile:
@@ -124,7 +138,10 @@ class DriveApi:
         folder = self._file(folder_id)
         if folder.file.mimeType != wire.FOLDER:
             raise wire.drive_refusal(
-                400, "invalid", f"The specified parent is not a folder: {folder_id}.", location="parents",
+                400,
+                "invalid",
+                f"The specified parent is not a folder: {folder_id}.",
+                location="parents",
                 location_type="other",
             )
         return folder
@@ -161,7 +178,7 @@ class DriveApi:
                 matched.append(served)
         for key, descending in reversed(order):
             matched.sort(key=_sort_key(key), reverse=descending)
-        page = matched[offset:offset + size]
+        page = matched[offset : offset + size]
         more = offset + size < len(matched)
         self._drive.saw(state.file_ref(ROOT_ID), Operation.SEARCH)
         return _json(wire.FileList(files=page, nextPageToken=wire.encode_page(offset + size) if more else None), mask)
@@ -201,7 +218,10 @@ class DriveApi:
             raise wire.not_implemented(f"this simulation does not render a Google Doc as {call.mimeType}")
         else:
             raise wire.drive_refusal(
-                400, "badRequest", "The requested conversion is not supported.", location="convertTo",
+                400,
+                "badRequest",
+                "The requested conversion is not supported.",
+                location="convertTo",
                 location_type="parameter",
             )
         if len(exported) > wire.EXPORT_LIMIT_BYTES:
@@ -235,7 +255,8 @@ class DriveApi:
             raise wire.invalid("uploadType")
         if len(media) > wire.MAX_CONTENT_BYTES:
             raise wire.drive_refusal(
-                413, "uploadTooLarge",
+                413,
+                "uploadTooLarge",
                 f"Media is {len(media)} bytes; this simulation stores at most {wire.MAX_CONTENT_BYTES} per file.",
             )
         return found, media, media_type
@@ -256,10 +277,21 @@ class DriveApi:
         size, checksum = _measured(content)
         stored = wire.StoredFile(
             file=wire.DriveFile(
-                id=new_id, name=meta.name or "Untitled", mimeType=mime, description=meta.description,
-                starred=bool(meta.starred), trashed=trashed, explicitlyTrashed=trashed, parents=[parent],
-                owners=[state.agent()], createdTime=now, modifiedTime=now, version=str(seq),
-                webViewLink=wire.web_view_link(new_id, mime), size=size, md5Checksum=checksum,
+                id=new_id,
+                name=meta.name or "Untitled",
+                mimeType=mime,
+                description=meta.description,
+                starred=bool(meta.starred),
+                trashed=trashed,
+                explicitlyTrashed=trashed,
+                parents=[parent],
+                owners=[state.agent()],
+                createdTime=now,
+                modifiedTime=now,
+                version=str(seq),
+                webViewLink=wire.web_view_link(new_id, mime),
+                size=size,
+                md5Checksum=checksum,
             ),
             content=content,
         )
@@ -282,8 +314,12 @@ class DriveApi:
         return _json(self._served(updated), wire.selection(call.fields, wire.DriveFile, wire.FILE_DEFAULT))
 
     def _updated(
-        self, stored: wire.StoredFile, found: dict[str, JsonValue], call: wire.CallQuery,
-        *, content: wire.DocText | wire.Blob | None,
+        self,
+        stored: wire.StoredFile,
+        found: dict[str, JsonValue],
+        call: wire.CallQuery,
+        *,
+        content: wire.DocText | wire.Blob | None,
     ) -> wire.StoredFile:
         self._not_root(stored)
         if (refused := wire.unwritable(found, also=frozenset({"parents", "id"}))) is not None:
@@ -296,7 +332,10 @@ class DriveApi:
             mime = meta.mimeType
         seq = self._drive.next_seq()
         changes: dict[str, object] = {
-            "mimeType": mime, "parents": self._moved(stored, call), "modifiedTime": self._now(), "version": str(seq),
+            "mimeType": mime,
+            "parents": self._moved(stored, call),
+            "modifiedTime": self._now(),
+            "version": str(seq),
         }
         if meta.name is not None:
             changes["name"] = meta.name
@@ -324,10 +363,15 @@ class DriveApi:
         parents = [p for p in current if p not in removed]
         for folder_id in added:
             folder = self._folder(folder_id)
-            if folder.file.id == stored.file.id or any(a.file.id == stored.file.id for a in self._drive.ancestors(folder)):
+            if folder.file.id == stored.file.id or any(
+                a.file.id == stored.file.id for a in self._drive.ancestors(folder)
+            ):
                 raise wire.drive_refusal(
-                    400, "invalid", "A folder cannot be moved into itself or a folder inside it.",
-                    location="addParents", location_type="parameter",
+                    400,
+                    "invalid",
+                    "A folder cannot be moved into itself or a folder inside it.",
+                    location="addParents",
+                    location_type="parameter",
                 )
             if folder.file.id not in parents:
                 parents.append(folder.file.id)
@@ -360,13 +404,22 @@ class DriveApi:
         new_id = state.file_id(seq)
         now = self._now()
         copied = wire.StoredFile(
-            file=source.file.model_copy(update={
-                "id": new_id, "name": meta.name or f"Copy of {source.file.name}", "parents": [parent],
-                "description": meta.description if meta.description is not None else source.file.description,
-                "starred": bool(meta.starred), "trashed": False, "explicitlyTrashed": False,
-                "owners": [state.agent()], "createdTime": now, "modifiedTime": now, "version": str(seq),
-                "webViewLink": wire.web_view_link(new_id, source.file.mimeType),
-            }),
+            file=source.file.model_copy(
+                update={
+                    "id": new_id,
+                    "name": meta.name or f"Copy of {source.file.name}",
+                    "parents": [parent],
+                    "description": meta.description if meta.description is not None else source.file.description,
+                    "starred": bool(meta.starred),
+                    "trashed": False,
+                    "explicitlyTrashed": False,
+                    "owners": [state.agent()],
+                    "createdTime": now,
+                    "modifiedTime": now,
+                    "version": str(seq),
+                    "webViewLink": wire.web_view_link(new_id, source.file.mimeType),
+                }
+            ),
             content=source.content,
         )
         self._drive.write_file(copied, operation=Operation.CREATE, actor=Actor.AGENT)
@@ -378,10 +431,16 @@ class DriveApi:
         """The owner, then what was granted on the file, then what it inherits from the folders above it."""
         found: dict[str, wire.Permission] = {}
         for owner in stored.file.owners:
-            found.setdefault(owner.permissionId, wire.Permission(
-                id=owner.permissionId, type="user", role="owner", emailAddress=owner.emailAddress,
-                displayName=owner.displayName,
-            ))
+            found.setdefault(
+                owner.permissionId,
+                wire.Permission(
+                    id=owner.permissionId,
+                    type="user",
+                    role="owner",
+                    emailAddress=owner.emailAddress,
+                    displayName=owner.displayName,
+                ),
+            )
         for holder in [stored, *self._drive.ancestors(stored)]:
             for permission in self._drive.grants(holder.file.id):
                 found.setdefault(permission.id, permission)
@@ -395,9 +454,13 @@ class DriveApi:
         every = self._permissions(stored)
         more = offset + size < len(every)
         self._drive.saw(state.file_ref(stored.file.id), Operation.READ)
-        return _json(wire.PermissionList(
-            permissions=every[offset:offset + size], nextPageToken=wire.encode_page(offset + size) if more else None,
-        ), mask)
+        return _json(
+            wire.PermissionList(
+                permissions=every[offset : offset + size],
+                nextPageToken=wire.encode_page(offset + size) if more else None,
+            ),
+            mask,
+        )
 
     async def permissions_create(self, request: Request, call: wire.CallQuery) -> Response:
         stored = self._file(request.path_params["file_id"])
@@ -406,18 +469,30 @@ class DriveApi:
         mask = wire.selection(call.fields, wire.Permission, wire.PERMISSION_DEFAULT)
         existing = any(p.id == permission.id for p in self._drive.grants(stored.file.id))
         self._drive.write_grant(
-            stored.file.id, permission, operation=Operation.UPDATE if existing else Operation.CREATE,
+            stored.file.id,
+            permission,
+            operation=Operation.UPDATE if existing else Operation.CREATE,
             actor=Actor.AGENT,
         )
         return _json(permission, mask)
 
     def _permission(self, asked: wire.PermissionWrite, *, transfer: bool) -> wire.Permission:
         if asked.type not in wire.PERMISSION_TYPES:
-            raise wire.drive_refusal(400, "invalid", f"Invalid value for PermissionType: {asked.type}",
-                                     location="permission.type", location_type="other")
+            raise wire.drive_refusal(
+                400,
+                "invalid",
+                f"Invalid value for PermissionType: {asked.type}",
+                location="permission.type",
+                location_type="other",
+            )
         if asked.role not in wire.ROLES:
-            raise wire.drive_refusal(400, "invalid", f"Invalid value for Role: {asked.role}",
-                                     location="permission.role", location_type="other")
+            raise wire.drive_refusal(
+                400,
+                "invalid",
+                f"Invalid value for Role: {asked.role}",
+                location="permission.role",
+                location_type="other",
+            )
         kind, role = wire.PERMISSION_TYPES[asked.type], wire.ROLES[asked.role]
         if kind in ("user", "group") and not asked.emailAddress:
             raise _sharing_refused("A permission of type user or group needs an emailAddress.")
@@ -428,22 +503,32 @@ class DriveApi:
         if role == "owner":
             if not transfer:
                 raise wire.forbidden(
-                    "forbidden", "The transferOwnership parameter must be enabled when the permission role is 'owner'.",
+                    "forbidden",
+                    "The transferOwnership parameter must be enabled when the permission role is 'owner'.",
                 )
             raise wire.not_implemented("transferring ownership")
         if asked.emailAddress:
             person = self._drive.user(asked.emailAddress)
             return wire.Permission(
-                id=state.permission_id(asked.emailAddress), type=kind, role=role, emailAddress=asked.emailAddress,
+                id=state.permission_id(asked.emailAddress),
+                type=kind,
+                role=role,
+                emailAddress=asked.emailAddress,
                 displayName=person.displayName if person is not None else None,
             )
         if kind == "domain" and asked.domain:
             return wire.Permission(
-                id=state.domain_permission_id(asked.domain), type=kind, role=role, domain=asked.domain,
+                id=state.domain_permission_id(asked.domain),
+                type=kind,
+                role=role,
+                domain=asked.domain,
                 allowFileDiscovery=bool(asked.allowFileDiscovery),
             )
         return wire.Permission(
-            id=state.ANYONE_PERMISSION_ID, type=kind, role=role, allowFileDiscovery=bool(asked.allowFileDiscovery),
+            id=state.ANYONE_PERMISSION_ID,
+            type=kind,
+            role=role,
+            allowFileDiscovery=bool(asked.allowFileDiscovery),
         )
 
     # ------------------------------------------------------------------ comments
@@ -458,9 +543,13 @@ class DriveApi:
         every = self._drive.comments(stored.file.id)
         more = offset + size < len(every)
         self._drive.saw(state.file_ref(stored.file.id), Operation.READ)
-        return _json(wire.CommentList(
-            comments=every[offset:offset + size], nextPageToken=wire.encode_page(offset + size) if more else None,
-        ), mask)
+        return _json(
+            wire.CommentList(
+                comments=every[offset : offset + size],
+                nextPageToken=wire.encode_page(offset + size) if more else None,
+            ),
+            mask,
+        )
 
     async def comments_create(self, request: Request, call: wire.CallQuery) -> Response:
         if call.fields is None:
@@ -473,9 +562,13 @@ class DriveApi:
         me = state.agent()
         now = self._now()
         comment = wire.Comment(
-            id=state.comment_id(self._drive.next_seq()), createdTime=now, modifiedTime=now,
+            id=state.comment_id(self._drive.next_seq()),
+            createdTime=now,
+            modifiedTime=now,
             author=wire.DriveUser(displayName=me.displayName, permissionId=me.permissionId, me=True),
-            htmlContent=html.escape(asked.content), content=asked.content, anchor=asked.anchor,
+            htmlContent=html.escape(asked.content),
+            content=asked.content,
+            anchor=asked.anchor,
             quotedFileContent=asked.quotedFileContent,
         )
         self._drive.write_comment(stored.file.id, comment, actor=Actor.AGENT)
@@ -523,7 +616,9 @@ async def token(request: Request) -> Response:
         presented = asked.refresh_token
         missing = "refresh_token"
     else:
-        failed = wire.OAuthError(error="unsupported_grant_type", error_description=f"Invalid grant_type: {asked.grant_type}")
+        failed = wire.OAuthError(
+            error="unsupported_grant_type", error_description=f"Invalid grant_type: {asked.grant_type}"
+        )
         return _json(failed, status=400)
     if not presented:
         failed = wire.OAuthError(error="invalid_request", error_description=f"Missing required parameter: {missing}")
@@ -540,7 +635,9 @@ def _sharing_refused(why: str) -> wire.Refusal:
 
 
 def _not_writable(field: str) -> wire.Refusal:
-    return wire.forbidden("fieldNotWritable", f"The resource body includes fields which are not directly writable: {field}.")
+    return wire.forbidden(
+        "fieldNotWritable", f"The resource body includes fields which are not directly writable: {field}."
+    )
 
 
 def _empty(mime: str) -> wire.DocText | wire.Blob | None:
@@ -576,8 +673,13 @@ def _measured(content: wire.DocText | wire.Blob | None) -> tuple[str | None, str
 
 def _candidate(stored: wire.StoredFile, served: wire.DriveFile) -> drive_query.Candidate:
     return drive_query.Candidate(
-        name=served.name, mime_type=served.mimeType, parents=served.parents or [], trashed=served.trashed,
-        starred=served.starred, created=wire.moment(served.createdTime), modified=wire.moment(served.modifiedTime),
+        name=served.name,
+        mime_type=served.mimeType,
+        parents=served.parents or [],
+        trashed=served.trashed,
+        starred=served.starred,
+        created=wire.moment(served.createdTime),
+        modified=wire.moment(served.modifiedTime),
         full_text="\n".join([served.name, served.description or "", state.readable_text(stored)]),
     )
 

@@ -33,8 +33,9 @@ T = TypeVar("T")
 def behind_the_proxy(app: ASGIApp) -> ASGIApp:
     """The app as the proxy serves it: the real API's prefix removed from the path."""
 
-    async def serve(scope: Scope, receive: Callable[[], Awaitable[Message]],
-                    send: Callable[[Message], Awaitable[None]]) -> None:
+    async def serve(
+        scope: Scope, receive: Callable[[], Awaitable[Message]], send: Callable[[Message], Awaitable[None]]
+    ) -> None:
         if scope["type"] == "http":
             path = scope["path"]
             assert isinstance(path, str)
@@ -55,10 +56,15 @@ class Sdk:
 
 @pytest.fixture
 async def sdk(workspace: Workspace) -> AsyncIterator[Sdk]:
-    server = uvicorn.Server(uvicorn.Config(
-        behind_the_proxy(workspace.provider.app(workspace.store, workspace.clock)), host="127.0.0.1", port=0,
-        log_level="warning", lifespan="off",
-    ))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            behind_the_proxy(workspace.provider.app(workspace.store, workspace.clock)),
+            host="127.0.0.1",
+            port=0,
+            log_level="warning",
+            lifespan="off",
+        )
+    )
     serving = asyncio.create_task(server.serve())
     while not server.started:
         await asyncio.sleep(0.01)
@@ -67,8 +73,12 @@ async def sdk(workspace: Workspace) -> AsyncIterator[Sdk]:
     configuration.access_token = TOKEN
     configuration.host = f"http://127.0.0.1:{port}{urlparse(configuration.host).path}"  # the SDK's own /api/1.0
     client = asana.ApiClient(configuration)
-    yield Sdk(tasks=asana.TasksApi(client), users=asana.UsersApi(client), projects=asana.ProjectsApi(client),
-              stories=asana.StoriesApi(client))
+    yield Sdk(
+        tasks=asana.TasksApi(client),
+        users=asana.UsersApi(client),
+        projects=asana.ProjectsApi(client),
+        stories=asana.StoriesApi(client),
+    )
     server.should_exit = True
     await serving
 
@@ -81,20 +91,28 @@ async def test_the_sdk_hands_a_task_to_a_person_and_reads_it_back(sdk: Sdk, work
     me = await off_loop(lambda: sdk.users.get_user("me", {}))
     projects = await off_loop(lambda: list(sdk.projects.get_projects_for_workspace(WS, {})))
     venue = next(p["gid"] for p in projects if p["name"] == "Venue Move")
-    made = await off_loop(lambda: sdk.tasks.create_task(
-        {"data": {"name": "Collect the badges", "projects": [venue], "assignee": "tomas@example.com"}}, {}))
+    made = await off_loop(
+        lambda: sdk.tasks.create_task(
+            {"data": {"name": "Collect the badges", "projects": [venue], "assignee": "tomas@example.com"}}, {}
+        )
+    )
     read = await off_loop(lambda: sdk.tasks.get_task(made["gid"], {"opt_fields": "name,assignee.email,completed"}))
     await off_loop(lambda: sdk.stories.create_story_for_task({"data": {"text": "By Friday please"}}, made["gid"], {}))
     found = await off_loop(lambda: list(sdk.tasks.search_tasks_for_workspace(WS, {"text": "badges"})))
 
     assert me["gid"] == state.AGENT_GID
     assert venue == VENUE
-    assert read == {"gid": made["gid"], "name": "Collect the badges", "completed": False,
-                    "assignee": {"gid": state.user_gid("tomas"), "email": "tomas@example.com"}}
+    assert read == {
+        "gid": made["gid"],
+        "name": "Collect the badges",
+        "completed": False,
+        "assignee": {"gid": state.user_gid("tomas"), "email": "tomas@example.com"},
+    }
     assert [t["gid"] for t in found] == [made["gid"]]
     created = next(e for e in workspace.store.events() if e.entity.external_id == made["gid"])
     assert created.actor is Actor.AGENT and created.after == TicketSnapshot(
-        title="Collect the badges", project="Venue Move", assignee_email="tomas@example.com", state=TicketState.OPEN)
+        title="Collect the badges", project="Venue Move", assignee_email="tomas@example.com", state=TicketState.OPEN
+    )
 
 
 async def test_the_sdk_follows_next_page_to_the_last_page(sdk: Sdk, workspace: Workspace) -> None:
@@ -119,8 +137,9 @@ async def test_the_sdk_completes_and_deletes_a_task(sdk: Sdk) -> None:
 
 async def test_a_refusal_reaches_the_sdk_as_its_own_error(sdk: Sdk) -> None:
     with pytest.raises(ApiException) as refused:
-        await off_loop(lambda: sdk.tasks.create_task({"data": {"name": "x", "projects": [VENUE],
-                                                               "assignee": "jsmith"}}, {}))
+        await off_loop(
+            lambda: sdk.tasks.create_task({"data": {"name": "x", "projects": [VENUE], "assignee": "jsmith"}}, {})
+        )
     assert refused.value.status == 400
     answered = refused.value.body
     assert answered is not None

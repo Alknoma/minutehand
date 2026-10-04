@@ -58,7 +58,7 @@ class Commitment(Model):
 
 
 class WakeRequest(Model):
-    """"It is now `now`; go." Sent each time the clock reaches a due moment."""
+    """ "It is now `now`; go." Sent each time the clock reaches a due moment."""
 
     run_id: str
     now: AwareDatetime
@@ -181,11 +181,13 @@ class AgentUnderTest(Model):
     state: StateHooks | None = None
 
     @model_validator(mode="after")
-    def _goal_reaches_it(self) -> "AgentUnderTest":
+    def _goal_reaches_it(self) -> AgentUnderTest:
         if isinstance(self.goal, GoalByMessage):
             if not any(t.provider == self.goal.provider for t in self.inbound):
-                raise ValueError(f"the goal is sent as a message on {self.goal.provider}, "
-                                 "and the agent declares no inbound target there")
+                raise ValueError(
+                    f"the goal is sent as a message on {self.goal.provider}, "
+                    "and the agent declares no inbound target there"
+                )
         elif not self.wakes:
             raise ValueError("the goal is handed over in a wake, and the agent declares no way to be woken")
         return self

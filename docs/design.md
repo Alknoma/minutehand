@@ -177,19 +177,22 @@ The contract with the agent:
 class WakeRequest(Model):
     run_id: str
     now: AwareDatetime
-    reason: WakeReason                      # START | DUE | PERSON_REPLIED | DIRECTION | TICK
-    goal: str | None = None                 # set on the START wake only
+    reason: WakeReason  # START | DUE | PERSON_REPLIED | DIRECTION | TICK
+    goal: str | None = None  # set on the START wake only
+
 
 class AgentReport(Model):
-    status: AgentStatus                     # WORKING | IDLE | DONE
+    status: AgentStatus  # WORKING | IDLE | DONE
     next_wake: AwareDatetime | None = None
     commitments: list[Commitment] | None = None
 
+
 WakeSource = Annotated[Reported | Booked | Polled | Command, Field(discriminator="kind")]
+
 
 class AgentUnderTest(Model):
     name: str
-    wakes: list[WakeSource]                 # at least one; replies and pushed events always wake it
+    wakes: list[WakeSource]  # at least one; replies and pushed events always wake it
 ```
 
 An agent may need none of this: one that books its wake-ups with an intercepted scheduler declares `Booked` and exposes nothing. See "How the clock knows what is next".
@@ -200,14 +203,14 @@ What a provider records, the same for every provider:
 class WorldEvent(Model):
     seq: int
     run_id: str
-    wake: int                               # 0 is setup
+    wake: int  # 0 is setup
     sim_time: AwareDatetime
     wall_time: AwareDatetime
-    actor: Actor                            # AGENT | PERSON | SCENARIO
-    operation: Operation                    # CREATE | UPDATE | DELETE | READ | SEARCH
+    actor: Actor  # AGENT | PERSON | SCENARIO
+    operation: Operation  # CREATE | UPDATE | DELETE | READ | SEARCH
     entity: EntityRef
-    after: Snapshot | None = None           # TicketSnapshot | MessageSnapshot | DocumentSnapshot
-    exchange: Exchange | None = None        # the raw HTTP call, provider's own format, as text
+    after: Snapshot | None = None  # TicketSnapshot | MessageSnapshot | DocumentSnapshot
+    exchange: Exchange | None = None  # the raw HTTP call, provider's own format, as text
 ```
 
 What a check returns, after `alknoma-cloud/research-services/lints/_core.py`:
@@ -215,16 +218,17 @@ What a check returns, after `alknoma-cloud/research-services/lints/_core.py`:
 ```python
 class Finding(Model):
     check: str
-    severity: Severity                      # ERROR | WARNING | INFORMATION  (how loud)
-    kind: FindingKind                       # FAIL | REVIEW | INFORMATIONAL  (what the reader must do)
+    severity: Severity  # ERROR | WARNING | INFORMATION  (how loud)
+    kind: FindingKind  # FAIL | REVIEW | INFORMATIONAL  (what the reader must do)
     message: str
-    at: AwareDatetime | None = None         # simulated time
+    at: AwareDatetime | None = None  # simulated time
     wake: int | None = None
-    evidence: list[int] = []                # WorldEvent.seq
+    evidence: list[int] = []  # WorldEvent.seq
+
 
 class CheckReport(Model):
     findings: list[Finding] = []
-    blocked: list[str] = []                 # the check could not read its input: it did not run
+    blocked: list[str] = []  # the check could not read its input: it did not run
     notes: list[str] = []
 ```
 
@@ -234,12 +238,14 @@ Two protocols, because five of the nine providers push nothing and a method that
 
 ```python
 class Provider(Protocol):
-    manifest: Manifest                                  # name, hosts, entity kinds
+    manifest: Manifest  # name, hosts, entity kinds
+
     def app(self, store: Store, clock: Clock) -> ASGIApp: ...
     def normalise(self, exchange: Exchange) -> list[WorldEvent]: ...
     def seed(self, scenario: Scenario, store: Store) -> None: ...
 
-class PushesEvents(Protocol):                           # Slack, Teams, Graph, Notion
+
+class PushesEvents(Protocol):  # Slack, Teams, Graph, Notion
     def deliver(self, reply: PersonReply, target: AgentInbound) -> None: ...
 ```
 
@@ -375,14 +381,17 @@ Some of what a person does never touches a SaaS. In alknoma-cloud an approval is
 ```python
 class HumanAction(Model):
     name: str
-    description: str                 # when a person would do this; the persona reads it
+    description: str  # when a person would do this; the persona reads it
     method: Literal["POST", "PUT", "PATCH", "DELETE"] = "POST"
-    url: str                         # may hold {argument} placeholders
-    body: str | None                 # JSON text with {argument} placeholders
+    url: str  # may hold {argument} placeholders
+    body: str | None  # JSON text with {argument} placeholders
     arguments: list[ActionArgument]
 
-class Inbox(Model):                  # where the monitor learns what is waiting on a person
-    url: str; id_field: str; summary_field: str
+
+class Inbox(Model):  # where the monitor learns what is waiting on a person
+    url: str
+    id_field: str
+    summary_field: str
 ```
 
 - **Two ways to supply them.** Listed in the agent file, which changes nothing in the codebase. Or marked in the agent's own API description: any operation carrying `x-minutehand: human_action` is learned when the run starts. The mark is data on the route, not an import.
@@ -395,13 +404,17 @@ A run ends with a scorecard. It is computed from the world and the clock; nothin
 
 ```python
 class Effectiveness(Model):
-    expectations_met: int;  expectations_total: int
-    waits_opened: int;      waits_open_at_end: int
-    follow_ups_due: int     # waits that passed their expected date while still open
-    follow_ups_made: int;   follow_ups_late: int
-    time_lost: timedelta    # late follow-ups plus slow reactions: what the agent added
+    expectations_met: int
+    expectations_total: int
+    waits_opened: int
+    waits_open_at_end: int
+    follow_ups_due: int  # waits that passed their expected date while still open
+    follow_ups_made: int
+    follow_ups_late: int
+    time_lost: timedelta  # late follow-ups plus slow reactions: what the agent added
     slowest_follow_up: timedelta | None
-    wakes: int;             idle_wakes: int
+    wakes: int
+    idle_wakes: int
     failed_checks: int
 ```
 
@@ -461,9 +474,10 @@ A fork can change something, and none of it touches the agent's code:
 ```python
 Override = PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift
 
+
 class Fork(Model):
     parent_run: str
-    at_seq: int                 # the last WorldEvent.seq shared with the parent
+    at_seq: int  # the last WorldEvent.seq shared with the parent
     overrides: list[Override]
     samples: int = 1
 ```
@@ -524,14 +538,14 @@ The monitor does not need to be told. It plays every person and owns the clock, 
 ```python
 class Obligation(Model):
     key: str
-    kind: ObligationKind                    # ANSWER_FROM_PERSON | WORK_WITH_PERSON | DATE
-    person: str | None                      # Person.key
+    kind: ObligationKind  # ANSWER_FROM_PERSON | WORK_WITH_PERSON | DATE
+    person: str | None  # Person.key
     entity: EntityRef | None
     opened_at: AwareDatetime
-    opened_by: int                          # WorldEvent.seq of the ask or hand-off
-    due_at: AwareDatetime | None            # when the world will settle it; None is never
+    opened_by: int  # WorldEvent.seq of the ask or hand-off
+    due_at: AwareDatetime | None  # when the world will settle it; None is never
     settled_at: AwareDatetime | None
-    agent_touches: list[int]                # agent events on the same person or entity while open
+    agent_touches: list[int]  # agent events on the same person or entity while open
     first_touch_after_settled: int | None
 ```
 
@@ -668,8 +682,8 @@ Codebases worth reading before writing a provider: `vercel-labs/emulate` (Apache
 class Pattern(Model):
     key: str
     title: str
-    failure: str        # what the agent does wrong, in one sentence
-    design: str         # what a proactive agent does instead
+    failure: str  # what the agent does wrong, in one sentence
+    design: str  # what a proactive agent does instead
     reference: str | None
 ```
 
@@ -697,17 +711,21 @@ The first set, each taken from a mechanism that exists in alknoma-cloud:
 
 ```python
 class Person(Model):
-    key: str; name: str; email: str; title: str | None
-    facts: list[str]                 # all a model reply may draw on
-    stale_facts: list[str]           # what they believe that is no longer true
-    reply: ReplyBehaviour            # Answers | Scripted | Silent
+    key: str
+    name: str
+    email: str
+    title: str | None
+    facts: list[str]  # all a model reply may draw on
+    stale_facts: list[str]  # what they believe that is no longer true
+    reply: ReplyBehaviour  # Answers | Scripted | Silent
     working_hours: WorkingHours | None
     absences: list[Absence]
 
+
 class Answers(Model):
     delay: DelayRange
-    helpfulness: Helpfulness         # FULL | PARTIAL | ASKS_BACK | DECLINES | MISTAKEN
-    voice: str | None                # terse, formal, chatty
+    helpfulness: Helpfulness  # FULL | PARTIAL | ASKS_BACK | DECLINES | MISTAKEN
+    voice: str | None  # terse, formal, chatty
     model: str | None
     temperature: float = 0.6
 ```

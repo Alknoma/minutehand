@@ -190,7 +190,9 @@ _AT = re.compile(r"at\((\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\)")
 _RATE = re.compile(r"rate\((\d+) (minute|minutes|hour|hours|day|days)\)")
 _CRON = re.compile(r"cron\((.+)\)")
 _UNITS = {"minute": timedelta(minutes=1), "hour": timedelta(hours=1), "day": timedelta(days=1)}
-_MONTHS = {m: i + 1 for i, m in enumerate(["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])}
+_MONTHS = {
+    m: i + 1 for i, m in enumerate(["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])
+}
 _WEEKDAYS = {d: i + 1 for i, d in enumerate(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"])}
 
 
@@ -213,7 +215,10 @@ def _cron(text: str, fields: list[str]) -> Cron:
         raise Refusal("ValidationException", f"Invalid Schedule Expression {text}.")
     minute, hour, dom, month, dow, year = fields
     if (dom == "?") == (dow == "?"):
-        raise Refusal("ValidationException", f"Invalid Schedule Expression {text}: exactly one of day-of-month and day-of-week must be '?'.")
+        raise Refusal(
+            "ValidationException",
+            f"Invalid Schedule Expression {text}: exactly one of day-of-month and day-of-week must be '?'.",
+        )
     return Cron(
         minutes=_field(text, minute, 0, 59, {}),
         hours=_field(text, hour, 0, 23, {}),

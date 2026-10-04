@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -35,8 +35,14 @@ SCENARIO = Scenario(
     ],
     tickets=[
         SeededTicket(provider="youtrack", project="Launch", title="Write the release notes", assignee="tomas"),
-        SeededTicket(provider="youtrack", project="Launch", title="Book the venue", body="Forty seats",
-                     assignee="noor", state=TicketState.DONE),
+        SeededTicket(
+            provider="youtrack",
+            project="Launch",
+            title="Book the venue",
+            body="Forty seats",
+            assignee="noor",
+            state=TicketState.DONE,
+        ),
         SeededTicket(provider="youtrack", project="Field Ops", title="Ship the demo kits"),
         SeededTicket(provider="asana", project="Launch", title="Not a YouTrack task"),
     ],
@@ -61,8 +67,13 @@ class Instance:
 
     def outsider(self) -> wire.StoredUser:
         """A user the instance has who is on no project's team."""
-        user = wire.StoredUser(id="1-99", login="vendor", fullName="Visiting Vendor", email="vendor@example.net",
-                               ringId="00000000-0000-4000-8000-000000000099")
+        user = wire.StoredUser(
+            id="1-99",
+            login="vendor",
+            fullName="Visiting Vendor",
+            email="vendor@example.net",
+            ringId="00000000-0000-4000-8000-000000000099",
+        )
         self.youtrack.write_user(user, actor=Actor.SCENARIO)
         return user
 
@@ -77,11 +88,17 @@ def instance(tmp_path: Path) -> Instance:
 
 
 def client_for(
-    provider: YouTrackProvider, store: SqliteStore, clock: RunClock, base_url: str = HOST, token: str | None = TOKEN,
+    provider: YouTrackProvider,
+    store: SqliteStore,
+    clock: RunClock,
+    base_url: str = HOST,
+    token: str | None = TOKEN,
 ) -> httpx.AsyncClient:
     headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=provider.app(store, clock)), base_url=base_url, headers=headers,
+        transport=httpx.ASGITransport(app=provider.app(store, clock)),
+        base_url=base_url,
+        headers=headers,
     )
 
 
@@ -115,8 +132,9 @@ def refusal(response: httpx.Response, status: int) -> Json:
     return found
 
 
-async def create(client: httpx.AsyncClient, summary: str, *, project: str = LAUNCH, fields: str = "id,idReadable",
-                 **extra: object) -> Json:
+async def create(
+    client: httpx.AsyncClient, summary: str, *, project: str = LAUNCH, fields: str = "id,idReadable", **extra: object
+) -> Json:
     payload: Json = {"project": {"id": project}, "summary": summary, **extra}
     return entity(await client.post("/api/issues", params={"fields": fields}, json=payload))
 

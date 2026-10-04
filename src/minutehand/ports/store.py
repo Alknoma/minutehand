@@ -55,10 +55,9 @@ class Store(Protocol):
         """Keep a person's reply so a rerun plays the same one."""
         ...
 
-    def replies(self) -> list[PersonReply]:
-        ...
+    def replies(self) -> list[PersonReply]: ...
 
-    def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> "Store":
+    def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> Store:
         """A child run that sees this log up to `at_seq` and nothing after.
 
         The child stamps from `clock`, its own: a fork starts at an earlier moment than its

@@ -223,7 +223,7 @@ def _comparisons(tree: ast.Module) -> Iterator[tuple[ast.expr, ast.Constant, ast
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             scope = node
         if isinstance(node, ast.Compare) and isinstance(node.left, (ast.Name, ast.Attribute)):
-            for op, comparator in zip(node.ops, node.comparators):
+            for op, comparator in zip(node.ops, node.comparators, strict=False):
                 if isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)):
                     for literal in _string_literals(comparator):
                         yield node.left, literal, scope

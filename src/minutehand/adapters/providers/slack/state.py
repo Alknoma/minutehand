@@ -194,18 +194,30 @@ class SlackWorld:
         others = [m for m in members if m != BOT_USER_ID]
         if len(set(members)) <= 2:
             channel = wire.SlackChannel(
-                id=cid, is_im=True, is_private=True, created=created, creator=BOT_USER_ID,
+                id=cid,
+                is_im=True,
+                is_private=True,
+                created=created,
+                creator=BOT_USER_ID,
                 user=others[0] if others else BOT_USER_ID,
             )
         else:
             channel = wire.SlackChannel(
-                id=cid, name="mpdm-" + "--".join(sorted(members)) + "-1", is_mpim=True, is_group=True,
-                is_private=True, created=created, creator=BOT_USER_ID,
+                id=cid,
+                name="mpdm-" + "--".join(sorted(members)) + "-1",
+                is_mpim=True,
+                is_group=True,
+                is_private=True,
+                created=created,
+                creator=BOT_USER_ID,
             )
         self.write(channel_ref(cid), channel, operation=Operation.CREATE, actor=actor, parent=TEAM_ID)
         for member in sorted(set(members)):
             self.write(
-                membership_ref(cid, member), wire.SlackMembership(channel=cid, user=member),
-                operation=Operation.CREATE, actor=actor, parent=cid,
+                membership_ref(cid, member),
+                wire.SlackMembership(channel=cid, user=member),
+                operation=Operation.CREATE,
+                actor=actor,
+                parent=cid,
             )
         return channel

@@ -39,7 +39,12 @@ class Refusal(Exception):
     """YouTrack answered with an error status. `error` and `description` are its own words."""
 
     def __init__(
-        self, status: int, error: str, description: str, *, developer_message: str | None = None,
+        self,
+        status: int,
+        error: str,
+        description: str,
+        *,
+        developer_message: str | None = None,
         field: str | None = None,
     ) -> None:
         super().__init__(description)
@@ -59,8 +64,10 @@ class ErrorOut(Wire):
 
 def error_body(refusal: Refusal) -> bytes:
     answer = ErrorOut(
-        error=refusal.error, error_description=refusal.description,
-        error_developer_message=refusal.developer_message, error_field=refusal.field,
+        error=refusal.error,
+        error_description=refusal.description,
+        error_developer_message=refusal.developer_message,
+        error_field=refusal.field,
     )
     return answer.model_dump_json(exclude_none=True).encode()
 
@@ -76,7 +83,11 @@ def bad_request(description: str) -> Refusal:
 def value_not_allowed() -> Refusal:
     """The refusal for a field value the field will not take: a state not in the bundle, an assignee off the team."""
     return Refusal(
-        400, "", "Value is not allowed", developer_message="Value is not allowed", field="value",
+        400,
+        "",
+        "Value is not allowed",
+        developer_message="Value is not allowed",
+        field="value",
     )
 
 

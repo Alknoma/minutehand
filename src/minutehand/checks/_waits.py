@@ -66,8 +66,11 @@ def follow_up(o: Obligation, when: dict[int, datetime], ended: datetime) -> Foll
     after = sorted((when[s], s) for s in o.agent_touches if s in when and when[s] >= expired)
     first = after[0] if after else None
     return FollowUp(
-        obligation=o, expired=expired, closes=closes,
-        touch=first[1] if first else None, touched_at=first[0] if first else None,
+        obligation=o,
+        expired=expired,
+        closes=closes,
+        touch=first[1] if first else None,
+        touched_at=first[0] if first else None,
     )
 
 
@@ -81,8 +84,11 @@ def reaction(o: Obligation, when: dict[int, datetime], ended: datetime) -> React
         return None
     touch = o.first_touch_after_settled
     return Reaction(
-        obligation=o, settled=o.settled_at, touch=touch,
-        touched_at=when[touch] if touch is not None and touch in when else None, ended=max(ended, o.settled_at),
+        obligation=o,
+        settled=o.settled_at,
+        touch=touch,
+        touched_at=when[touch] if touch is not None and touch in when else None,
+        ended=max(ended, o.settled_at),
     )
 
 

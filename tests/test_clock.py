@@ -1,15 +1,18 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from minutehand.domain.clock import Due, DueKind, next_jump
 
-NOW = datetime(2026, 8, 24, 10, 51, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 24, 10, 51, tzinfo=UTC)
 
 
 def test_the_clock_jumps_to_the_earliest_pending_moment_and_fires_only_what_is_due() -> None:
-    jump = next_jump(NOW, [
-        Due(at=NOW + timedelta(days=3), kind=DueKind.AGENT_WAKE, ref="next_wake"),
-        Due(at=NOW + timedelta(hours=40), kind=DueKind.PERSON_REPLY, ref="owner"),
-    ])
+    jump = next_jump(
+        NOW,
+        [
+            Due(at=NOW + timedelta(days=3), kind=DueKind.AGENT_WAKE, ref="next_wake"),
+            Due(at=NOW + timedelta(hours=40), kind=DueKind.PERSON_REPLY, ref="owner"),
+        ],
+    )
     assert jump is not None and jump.now == NOW + timedelta(hours=40)
     assert [d.ref for d in jump.firing] == ["owner"]
 

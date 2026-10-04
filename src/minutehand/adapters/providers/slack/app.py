@@ -58,7 +58,9 @@ class SlackApi:
             if method not in self._methods:
                 raise wire.Refusal("unknown_method")
             presented = wire.read_call(
-                request.url.query, _header(request, "content-type") or "", await request.body(),
+                request.url.query,
+                _header(request, "content-type") or "",
+                await request.body(),
                 _header(request, "authorization"),
             )
             self._authenticate(presented)
@@ -85,7 +87,7 @@ class SlackApi:
     def _channel(self, channel: str) -> wire.SlackChannel:
         """A conversation the app can see: public channels, and anything private it is in."""
         found = self._world.channel(channel) if channel else None
-        if found is None or (found.is_private or found.is_im or found.is_mpim) and not self._in(found):
+        if found is None or ((found.is_private or found.is_im or found.is_mpim) and not self._in(found)):
             raise wire.Refusal("channel_not_found")
         return found
 
@@ -117,10 +119,15 @@ class SlackApi:
         if not replies:
             return root
         users = list(dict.fromkeys(m.user for m in replies))
-        return root.model_copy(update={
-            "thread_ts": root.ts, "reply_count": len(replies), "reply_users": users,
-            "reply_users_count": len(users), "latest_reply": replies[-1].ts,
-        })
+        return root.model_copy(
+            update={
+                "thread_ts": root.ts,
+                "reply_count": len(replies),
+                "reply_users": users,
+                "reply_users_count": len(users),
+                "latest_reply": replies[-1].ts,
+            }
+        )
 
     # ------------------------------------------------------------------ auth, users
 
@@ -128,8 +135,12 @@ class SlackApi:
         wire.read_args(wire.NoArgs, presented)
         self._world.saw(state.user_ref(BOT_USER_ID), Operation.READ)
         return wire.AuthTest(
-            url="https://simulated.slack.com/", team=state.TEAM_NAME, user=state.BOT_NAME,
-            team_id=state.TEAM_ID, user_id=BOT_USER_ID, bot_id=BOT_ID,
+            url="https://simulated.slack.com/",
+            team=state.TEAM_NAME,
+            user=state.BOT_NAME,
+            team_id=state.TEAM_ID,
+            user_id=BOT_USER_ID,
+            bot_id=BOT_ID,
         )
 
     def users_list(self, presented: wire.Presented) -> wire.Ok:
@@ -152,8 +163,11 @@ class SlackApi:
     def users_lookup_by_email(self, presented: wire.Presented) -> wire.Ok:
         email = wire.read_args(wire.EmailArgs, presented).email.strip().lower()
         found = next(
-            (u for u in self._world.every_user() if email and u.profile.email is not None
-             and u.profile.email.lower() == email),
+            (
+                u
+                for u in self._world.every_user()
+                if email and u.profile.email is not None and u.profile.email.lower() == email
+            ),
             None,
         )
         if found is None:
@@ -198,7 +212,9 @@ class SlackApi:
             if not (channel.is_im or channel.is_mpim):
                 raise wire.Refusal("channel_not_found")
             self._world.saw(state.channel_ref(channel.id), Operation.READ)
-            return wire.Opened(no_op=True, already_open=True, channel=channel if args.return_im else wire.OpenedId(id=channel.id))
+            return wire.Opened(
+                no_op=True, already_open=True, channel=channel if args.return_im else wire.OpenedId(id=channel.id)
+            )
         wanted = [u.strip() for u in args.users.split(",") if u.strip()]
         if not wanted:
             raise wire.Refusal("users_list_not_supplied")
@@ -209,7 +225,8 @@ class SlackApi:
         if not opened:
             self._world.saw(state.channel_ref(channel.id), Operation.READ)
         return wire.Opened(
-            no_op=not opened, already_open=not opened,
+            no_op=not opened,
+            already_open=not opened,
             channel=channel if args.return_im else wire.OpenedId(id=channel.id),
         )
 
@@ -247,7 +264,8 @@ class SlackApi:
         every = self._world.messages(channel.id)
         roots = [m for m in reversed(every) if m.thread_ts is None or m.thread_ts == m.ts]
         window = [
-            m for m in roots
+            m
+            for m in roots
             if _within(Decimal(m.ts), oldest=oldest, latest=latest, inclusive=inclusive)
             and (resume is None or Decimal(m.ts) < wire.timestamp(resume, "invalid_cursor"))
         ]
@@ -255,7 +273,8 @@ class SlackApi:
         page, more = window[:limit], len(window) > limit
         self._world.saw(state.channel_ref(channel.id), Operation.READ)
         return wire.MessageList(
-            messages=[self._summarised(m, every) for m in page], has_more=more,
+            messages=[self._summarised(m, every) for m in page],
+            has_more=more,
             response_metadata=wire.ResponseMetadata(next_cursor=wire.encode_cursor(page[-1].ts) if more else ""),
         )
 
@@ -275,8 +294,10 @@ class SlackApi:
         resume = wire.decode_cursor(args.cursor)
         every = self._world.messages(channel.id)
         replies = [
-            m for m in every
-            if m.thread_ts == root_ts and m.ts != root_ts
+            m
+            for m in every
+            if m.thread_ts == root_ts
+            and m.ts != root_ts
             and _within(Decimal(m.ts), oldest=oldest, latest=latest, inclusive=args.inclusive)
             and (resume is None or Decimal(m.ts) > wire.timestamp(resume, "invalid_cursor"))
         ]
@@ -285,7 +306,8 @@ class SlackApi:
         page, more = thread[:limit], len(thread) > limit
         self._world.saw(state.message_ref(root_ts), Operation.READ)
         return wire.MessageList(
-            messages=page, has_more=more,
+            messages=page,
+            has_more=more,
             response_metadata=wire.ResponseMetadata(next_cursor=wire.encode_cursor(page[-1].ts) if more else ""),
         )
 
@@ -308,11 +330,22 @@ class SlackApi:
                 raise wire.Refusal("thread_not_found")
             thread_ts = parent.thread_ts or parent.ts
         message = wire.SlackMessage(
-            ts=self._world.next_ts(self._clock), user=BOT_USER_ID, text=args.text, team=state.TEAM_ID,
-            bot_id=BOT_ID, app_id=state.APP_ID, thread_ts=thread_ts, blocks=args.blocks, attachments=args.attachments,
+            ts=self._world.next_ts(self._clock),
+            user=BOT_USER_ID,
+            text=args.text,
+            team=state.TEAM_ID,
+            bot_id=BOT_ID,
+            app_id=state.APP_ID,
+            thread_ts=thread_ts,
+            blocks=args.blocks,
+            attachments=args.attachments,
         )
         self._world.write(
-            state.message_ref(message.ts), message, operation=Operation.CREATE, actor=Actor.AGENT, parent=channel.id,
+            state.message_ref(message.ts),
+            message,
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            parent=channel.id,
             after=self._snapshot(channel.id, message),
         )
         return wire.Posted(channel=channel.id, ts=message.ts, message=message)
@@ -336,13 +369,20 @@ class SlackApi:
         text = message.text if args.text is None else args.text
         blocks = message.blocks if args.blocks is None else args.blocks
         wire.check_message(text, blocks)
-        updated = message.model_copy(update={
-            "text": text, "blocks": blocks,
-            "attachments": message.attachments if args.attachments is None else args.attachments,
-            "edited": wire.SlackEdited(user=BOT_USER_ID, ts=self._world.next_ts(self._clock)),
-        })
+        updated = message.model_copy(
+            update={
+                "text": text,
+                "blocks": blocks,
+                "attachments": message.attachments if args.attachments is None else args.attachments,
+                "edited": wire.SlackEdited(user=BOT_USER_ID, ts=self._world.next_ts(self._clock)),
+            }
+        )
         self._world.write(
-            state.message_ref(updated.ts), updated, operation=Operation.UPDATE, actor=Actor.AGENT, parent=channel.id,
+            state.message_ref(updated.ts),
+            updated,
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            parent=channel.id,
             after=self._snapshot(channel.id, updated),
         )
         return wire.Updated(channel=channel.id, ts=updated.ts, text=updated.text, message=updated)
@@ -378,8 +418,11 @@ class SlackApi:
                 name=name, users=[*same.users, BOT_USER_ID], count=same.count + 1
             )
         self._world.write(
-            state.message_ref(message.ts), message.model_copy(update={"reactions": reactions}),
-            operation=Operation.UPDATE, actor=Actor.AGENT, parent=channel.id,
+            state.message_ref(message.ts),
+            message.model_copy(update={"reactions": reactions}),
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            parent=channel.id,
         )
         return wire.Ok()
 
@@ -387,9 +430,7 @@ class SlackApi:
 def _within(ts: Decimal, *, oldest: Decimal | None, latest: Decimal | None, inclusive: bool) -> bool:
     if oldest is not None and (ts < oldest if inclusive else ts <= oldest):
         return False
-    if latest is not None and (ts > latest if inclusive else ts >= latest):
-        return False
-    return True
+    return not (latest is not None and (ts > latest if inclusive else ts >= latest))
 
 
 def build_app(store: Store, clock: Clock) -> Starlette:

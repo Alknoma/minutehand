@@ -7,7 +7,6 @@ from minutehand.checks.no_follow_up import NoFollowUp
 from minutehand.checks.slow_to_react import SlowToReact
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.scenario import Silent
-
 from tests.checks.world import Log, at, person, reply, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 

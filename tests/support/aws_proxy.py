@@ -125,9 +125,7 @@ class AwsProxy:
 
     def client(self, service: str, region: str = "us-east-1") -> BaseClient:
         """A stock boto3 client: dummy credentials, the proxy, the CA. No endpoint_url."""
-        session = Session(
-            aws_access_key_id="test", aws_secret_access_key="test", region_name=region
-        )
+        session = Session(aws_access_key_id="test", aws_secret_access_key="test", region_name=region)
         return session.client(
             service,
             config=Config(proxies={"https": f"http://127.0.0.1:{self.port}"}, retries={"max_attempts": 1}),

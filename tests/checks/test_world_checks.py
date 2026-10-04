@@ -11,7 +11,6 @@ from minutehand.checks.repeated_message import RepeatedMessage
 from minutehand.checks.unmatched_call import UnmatchedCall
 from minutehand.domain.checks import FindingKind, WakeRecord
 from minutehand.domain.world import Actor, Exchange, Operation, TicketState
-
 from tests.checks.world import Log, at, person, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
@@ -49,8 +48,9 @@ def test_the_same_title_in_another_project_or_after_the_first_was_closed_is_not_
     log = Log()
     log.ticket("Review the contract", SOFIA, 0, external_id="T1")
     log.ticket("Review the contract", SOFIA, 1, project="Sales")
-    log.ticket("Review the contract", SOFIA, 2, operation=Operation.UPDATE, state=TicketState.CANCELLED,
-               external_id="T1")
+    log.ticket(
+        "Review the contract", SOFIA, 2, operation=Operation.UPDATE, state=TicketState.CANCELLED, external_id="T1"
+    )
     log.ticket("Review the contract", SOFIA, 3)
     assert DuplicateTicket().run(view(scenario(SOFIA), log)).findings == []
 
@@ -89,14 +89,20 @@ def test_a_call_no_provider_claimed_is_flagged_for_review() -> None:
 def test_no_unmatched_calls_is_clean_and_an_unknown_list_is_blocked() -> None:
     assert UnmatchedCall().run(view(scenario(OWNER), Log(), unmatched=[])).findings == []
     report = UnmatchedCall().run(view(scenario(OWNER), Log()))
-    assert report.findings == [] and report.blocked == ["unmatched_call: nobody recorded which calls reached no provider"]
+    assert report.findings == [] and report.blocked == [
+        "unmatched_call: nobody recorded which calls reached no provider"
+    ]
 
 
 def test_the_same_ask_sent_twice_seconds_apart_is_a_repeat() -> None:
     log = Log()
     log.message([OWNER], 0, text="Could you send me the signed contract for Northwind?", wall=at(0))
-    log.message([OWNER], 0, text="Could you send me the signed contract for Northwind please?",
-                wall=at(0) + timedelta(seconds=20))
+    log.message(
+        [OWNER],
+        0,
+        text="Could you send me the signed contract for Northwind please?",
+        wall=at(0) + timedelta(seconds=20),
+    )
     [finding] = RepeatedMessage().run(view(scenario(OWNER), log)).findings
     assert finding.evidence == [1, 2] and "20 seconds apart" in finding.message
 
@@ -106,8 +112,9 @@ def test_two_asks_written_from_one_template_about_different_things_are_not_a_rep
     template = "Could you approve, decline, or reply to the pending {}? Your response lets the work move on."
     log.message([OWNER], 0, text=template.format("ranking of vendors"), channel="a", wall=at(0))
     log.message([OWNER], 0, text=template.format("budget for the offsite"), channel="b", wall=at(0))
-    log.message([OWNER], 0, text=template.format("hiring plan for next quarter"), channel="b",
-                wall=at(0) + timedelta(seconds=5))
+    log.message(
+        [OWNER], 0, text=template.format("hiring plan for next quarter"), channel="b", wall=at(0) + timedelta(seconds=5)
+    )
     assert RepeatedMessage().run(view(scenario(OWNER), log)).findings == []
 
 

@@ -27,6 +27,7 @@ Run: python -m lints.boundary_dicts [root]
 from __future__ import annotations
 
 import ast
+import contextlib
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -57,10 +58,8 @@ def _offending(annotation: ast.expr | None) -> Iterator[str]:
     if annotation is None:
         return
     if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-        try:
+        with contextlib.suppress(SyntaxError):
             yield from _offending(ast.parse(annotation.value, mode="eval").body)
-        except SyntaxError:
-            pass
         return
     if isinstance(annotation, ast.Subscript):
         args = annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice]
@@ -83,9 +82,7 @@ def _offending(annotation: ast.expr | None) -> Iterator[str]:
 
 def _is_wire(rel: str) -> bool:
     parts = Path(rel).parts
-    return parts[-1] == "wire.py" and any(
-        parts[i : i + 2] == ("adapters", "providers") for i in range(len(parts) - 1)
-    )
+    return parts[-1] == "wire.py" and any(parts[i : i + 2] == ("adapters", "providers") for i in range(len(parts) - 1))
 
 
 def _pydantic_classes(parsed: list[Source]) -> set[str]:
@@ -133,7 +130,9 @@ def run(root: Path = SRC) -> list[Finding]:
             for found in _offending(annotation):
                 if exempt(source.lines, NAME, annotation.lineno, end_lineno=annotation.end_lineno):
                     continue
-                findings.append(Finding(source.rel, annotation.lineno, f"{where} is `{found}`, a dict without a contract"))
+                findings.append(
+                    Finding(source.rel, annotation.lineno, f"{where} is `{found}`, a dict without a contract")
+                )
     return findings
 
 

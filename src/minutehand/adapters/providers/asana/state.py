@@ -28,7 +28,16 @@ from minutehand.adapters.providers.asana import wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import (
-    Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, Snapshot, Stored, TicketSnapshot, WorldEvent,
+    Actor,
+    Change,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    Snapshot,
+    Stored,
+    TicketSnapshot,
+    WorldEvent,
 )
 from minutehand.ports.store import Store
 
@@ -194,40 +203,64 @@ class AsanaWorld:
         first = self.project(task.memberships[0].project) if task.memberships else None
         sections = [s for s in (self.section(m.section) for m in task.memberships) if s is not None]
         return TicketSnapshot(
-            title=task.name, body=task.notes, project=first.name if first is not None else None,
-            assignee_email=assignee.email if assignee is not None else None, state=task_state(task, sections),
+            title=task.name,
+            body=task.notes,
+            project=first.name if first is not None else None,
+            assignee_email=assignee.email if assignee is not None else None,
+            state=task_state(task, sections),
         )
 
     # ------------------------------------------------------------------ writes
 
     def put_record(
-        self, record: wire.AsanaWorkspace | wire.AsanaUser | wire.AsanaProject | wire.AsanaSection, *,
-        parent: str, actor: Actor,
+        self,
+        record: wire.AsanaWorkspace | wire.AsanaUser | wire.AsanaProject | wire.AsanaSection,
+        *,
+        parent: str,
+        actor: Actor,
     ) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=record_ref(record.gid), operation=Operation.CREATE, actor=actor, body=wire.dump(record),
-            parent=parent,
-        ))
+        return self._store.apply(
+            Change(
+                entity=record_ref(record.gid),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(record),
+                parent=parent,
+            )
+        )
 
     def put_task(self, task: wire.AsanaTask, *, operation: Operation, actor: Actor) -> WorldEvent:
         parent = task.memberships[0].project if task.memberships else task.workspace
         after: Snapshot = self.snapshot(task)
-        return self._store.apply(Change(
-            entity=task_ref(task.gid), operation=operation, actor=actor, body=wire.dump(task), parent=parent,
-            after=after,
-        ))
+        return self._store.apply(
+            Change(
+                entity=task_ref(task.gid),
+                operation=operation,
+                actor=actor,
+                body=wire.dump(task),
+                parent=parent,
+                after=after,
+            )
+        )
 
     def delete_task(self, task: wire.AsanaTask, *, actor: Actor) -> WorldEvent:
         parent = task.memberships[0].project if task.memberships else task.workspace
-        return self._store.apply(Change(entity=task_ref(task.gid), operation=Operation.DELETE, actor=actor,
-                                        parent=parent))
+        return self._store.apply(
+            Change(entity=task_ref(task.gid), operation=Operation.DELETE, actor=actor, parent=parent)
+        )
 
     def put_story(self, story: wire.AsanaStory, *, actor: Actor) -> WorldEvent:
         """A comment reaches nobody: Asana pushes nothing to the agent, so no person is asked by one."""
-        return self._store.apply(Change(
-            entity=story_ref(story.gid), operation=Operation.CREATE, actor=actor, body=wire.dump(story),
-            parent=story.task, after=MessageSnapshot(text=story.text, channel=story.task, thread_of=story.task),
-        ))
+        return self._store.apply(
+            Change(
+                entity=story_ref(story.gid),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(story),
+                parent=story.task,
+                after=MessageSnapshot(text=story.text, channel=story.task, thread_of=story.task),
+            )
+        )
 
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
@@ -235,14 +268,21 @@ class AsanaWorld:
 
     def moved(self, task: wire.AsanaTask, to: TicketState, *, now: datetime) -> wire.AsanaTask:
         """The task as a person leaves it after moving it to `to`: ticked or not, and in the matching section."""
-        role = {TicketState.OPEN: wire.SectionRole.TODO, TicketState.DONE: wire.SectionRole.DONE,
-                TicketState.CANCELLED: wire.SectionRole.CANCELLED}[to]
+        role = {
+            TicketState.OPEN: wire.SectionRole.TODO,
+            TicketState.DONE: wire.SectionRole.DONE,
+            TicketState.CANCELLED: wire.SectionRole.CANCELLED,
+        }[to]
         completed = to is not TicketState.OPEN
         at = wire.stamp(now)
-        return task.model_copy(update={
-            "completed": completed,
-            "completed_at": (task.completed_at if task.completed else at) if completed else None,
-            "memberships": [wire.AsanaMembership(project=m.project, section=section_gid(m.project, role))
-                            for m in task.memberships],
-            "modified_at": at,
-        })
+        return task.model_copy(
+            update={
+                "completed": completed,
+                "completed_at": (task.completed_at if task.completed else at) if completed else None,
+                "memberships": [
+                    wire.AsanaMembership(project=m.project, section=section_gid(m.project, role))
+                    for m in task.memberships
+                ],
+                "modified_at": at,
+            }
+        )

@@ -80,35 +80,63 @@ async def say(message: PersonMessage, target: InboundTarget, world: Store, clock
 
 
 async def _write_and_push(
-    slack: SlackWorld, channel: wire.SlackChannel, author: str, text: str, thread_ts: str | None,
-    target: InboundTarget, clock: Clock, secret: str,
+    slack: SlackWorld,
+    channel: wire.SlackChannel,
+    author: str,
+    text: str,
+    thread_ts: str | None,
+    target: InboundTarget,
+    clock: Clock,
+    secret: str,
 ) -> None:
-    message = wire.SlackMessage(ts=slack.next_ts(clock), user=author, text=text, team=state.TEAM_ID, thread_ts=thread_ts)
+    message = wire.SlackMessage(
+        ts=slack.next_ts(clock), user=author, text=text, team=state.TEAM_ID, thread_ts=thread_ts
+    )
     event = slack.write(
-        state.message_ref(message.ts), message, operation=Operation.CREATE, actor=Actor.PERSON, parent=channel.id,
+        state.message_ref(message.ts),
+        message,
+        operation=Operation.CREATE,
+        actor=Actor.PERSON,
+        parent=channel.id,
         after=MessageSnapshot(
-            text=text, channel=channel.id, recipient_emails=slack.human_emails(channel.id, besides=author),
+            text=text,
+            channel=channel.id,
+            recipient_emails=slack.human_emails(channel.id, besides=author),
             thread_of=thread_ts,
         ),
     )
-    body = wire.event_body(wire.EventCallback(
-        team_id=state.TEAM_ID, api_app_id=state.APP_ID, event_id=f"Ev{event.seq:010d}",
-        event_time=int(clock.now().timestamp()),
-        authorizations=[wire.Authorization(team_id=state.TEAM_ID, user_id=state.BOT_USER_ID)],
-        event=wire.MessageEvent(
-            channel=channel.id, user=author, text=text, ts=message.ts, event_ts=message.ts,
-            channel_type=wire.event_channel_type(channel), team=state.TEAM_ID, thread_ts=thread_ts,
-        ),
-    ))
+    body = wire.event_body(
+        wire.EventCallback(
+            team_id=state.TEAM_ID,
+            api_app_id=state.APP_ID,
+            event_id=f"Ev{event.seq:010d}",
+            event_time=int(clock.now().timestamp()),
+            authorizations=[wire.Authorization(team_id=state.TEAM_ID, user_id=state.BOT_USER_ID)],
+            event=wire.MessageEvent(
+                channel=channel.id,
+                user=author,
+                text=text,
+                ts=message.ts,
+                event_ts=message.ts,
+                channel_type=wire.event_channel_type(channel),
+                team=state.TEAM_ID,
+                thread_ts=thread_ts,
+            ),
+        )
+    )
     stamp = str(int(time.time()))  # clock-lint: exempt the request's send time, checked against the agent's own clock
     try:
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
-            answered = await client.post(target.url, content=body, headers={
-                "Content-Type": "application/json",
-                "X-Slack-Request-Timestamp": stamp,
-                "X-Slack-Signature": sign(secret, stamp, body),
-                "User-Agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
-            })
+            answered = await client.post(
+                target.url,
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Slack-Request-Timestamp": stamp,
+                    "X-Slack-Signature": sign(secret, stamp, body),
+                    "User-Agent": "Slackbot 1.0 (+https://api.slack.com/robots)",
+                },
+            )
     except httpx.HTTPError as e:
         raise DeliveryRefused(target.url, None, repr(e)) from e
     if not answered.is_success:

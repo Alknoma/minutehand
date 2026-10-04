@@ -12,7 +12,14 @@ from minutehand.adapters.providers.slack.state import BOT_USER_ID
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation
 from minutehand.ports.provider import Provider, PushesEvents
 from tests.providers.slack.slack_workspace import (
-    GENERAL, START, TOKEN, Workspace, body, form, messages_of, text_of,
+    GENERAL,
+    START,
+    TOKEN,
+    Workspace,
+    body,
+    form,
+    messages_of,
+    text_of,
 )
 
 
@@ -54,7 +61,9 @@ async def test_ts_is_the_clock_and_unique_inside_one_instant(workspace: Workspac
     assert [float(s) for s in stamps] == sorted(float(s) for s in stamps)
 
 
-async def test_a_dm_records_the_recipient_email_on_its_snapshot(workspace: Workspace, client: httpx.AsyncClient) -> None:
+async def test_a_dm_records_the_recipient_email_on_its_snapshot(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
     opened = await form(client, "conversations.open", users=state.user_id("tomas"))
     channel = opened["channel"]
     assert isinstance(channel, dict)
@@ -71,7 +80,9 @@ async def test_a_dm_records_the_recipient_email_on_its_snapshot(workspace: Works
     assert stored is not None and stored.parent == workspace.dm("tomas")
 
 
-async def test_a_channel_message_is_addressed_to_every_human_in_it(workspace: Workspace, client: httpx.AsyncClient) -> None:
+async def test_a_channel_message_is_addressed_to_every_human_in_it(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
     await body(client, "chat.postMessage", channel=GENERAL, text="all hands")
     after = workspace.store.events()[-1].after
     assert isinstance(after, MessageSnapshot)
@@ -87,7 +98,9 @@ async def test_a_blocks_only_message_is_recorded_with_the_text_its_reader_sees(
     assert isinstance(after, MessageSnapshot) and after.text == "sign-off needed"
 
 
-async def test_reads_are_recorded_as_reads_and_listings_as_searches(workspace: Workspace, client: httpx.AsyncClient) -> None:
+async def test_reads_are_recorded_as_reads_and_listings_as_searches(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
     before = workspace.store.head()
     await form(client, "conversations.history", channel=GENERAL)
     await form(client, "users.info", user=state.user_id("iris"))
@@ -155,5 +168,6 @@ async def test_lookup_by_email_finds_the_seeded_person(client: httpx.AsyncClient
     user = answer["user"]
     assert isinstance(user, dict) and user["id"] == state.user_id("tomas") and user["tz"] == "Europe/Lisbon"
     assert await form(client, "users.lookupByEmail", email="nobody@example.com") == {
-        "ok": False, "error": "users_not_found"
+        "ok": False,
+        "error": "users_not_found",
     }

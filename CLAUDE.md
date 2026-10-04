@@ -32,7 +32,7 @@ Each norm is one sentence. `docs/design.md` is the design; read it in full befor
 - Never assert a test works because it passes; show it fails when the thing it tests is removed, and say in the final report which mutation you tried.
 - No bare `MagicMock()` for one of our own types: use the real `SqliteStore` and `RunClock`, which are fast, before any double.
 - A test that deliberately triggers a refusal says so in its name (`test_..._is_refused`, `test_..._rejects_...`).
-- `uv run pytest -q`, `uv run pyright` and `uv run python -m lints` all pass before a commit.
+- `uv run pytest -q`, `uv run pyright`, `uv run python -m lints`, `uv run ruff format --check .` and `uv run ruff check .` all pass before a commit.
 
 ## Git
 

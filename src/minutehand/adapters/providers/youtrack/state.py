@@ -135,9 +135,7 @@ class YouTrackWorld:
     def project_named(self, name: str) -> wire.StoredProject | None:
         """A project by its short name or its name, as a query or a path names one."""
         wanted = name.strip().lower()
-        return next(
-            (p for p in self.projects() if p.shortName.lower() == wanted or p.name.lower() == wanted), None
-        )
+        return next((p for p in self.projects() if p.shortName.lower() == wanted or p.name.lower() == wanted), None)
 
     def issue(self, issue: str) -> wire.StoredIssue | None:
         stored = self._store.get(issue_ref(issue))
@@ -190,7 +188,9 @@ class YouTrackWorld:
             raise LookupError(f"{issue.idReadable} names project {issue.project}, which does not exist")
         assignee = self.user(issue.assignee) if issue.assignee is not None else None
         return TicketSnapshot(
-            title=issue.summary, body=issue.description or "", project=project.shortName,
+            title=issue.summary,
+            body=issue.description or "",
+            project=project.shortName,
             assignee_email=assignee.email if assignee is not None else None,
             state=self.state_of(project, issue).outcome,
         )
@@ -198,44 +198,82 @@ class YouTrackWorld:
     # ------------------------------------------------------------------ writes
 
     def write_user(self, user: wire.StoredUser, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=user_ref(user.id), operation=Operation.CREATE, actor=actor, body=wire.dump(user), parent=USERS,
-        ))
+        return self._store.apply(
+            Change(
+                entity=user_ref(user.id),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(user),
+                parent=USERS,
+            )
+        )
 
     def write_project(self, project: wire.StoredProject, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=project_ref(project.id), operation=Operation.CREATE, actor=actor, body=wire.dump(project),
-            parent=PROJECTS,
-        ))
+        return self._store.apply(
+            Change(
+                entity=project_ref(project.id),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(project),
+                parent=PROJECTS,
+            )
+        )
 
     def create_issue(self, issue: wire.StoredIssue, *, actor: Actor) -> WorldEvent:
         """Its readable id, then the issue: a fork between the two has spent the number and holds no issue."""
         after = self.snapshot(issue)
-        self._store.apply(Change(
-            entity=alias_ref(issue.idReadable), operation=Operation.CREATE, actor=actor,
-            body=wire.dump(wire.StoredAlias(issue=issue.id)), parent=issue.project,
-        ))
-        return self._store.apply(Change(
-            entity=issue_ref(issue.id), operation=Operation.CREATE, actor=actor, body=wire.dump(issue),
-            parent=issue.project, after=after,
-        ))
+        self._store.apply(
+            Change(
+                entity=alias_ref(issue.idReadable),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(wire.StoredAlias(issue=issue.id)),
+                parent=issue.project,
+            )
+        )
+        return self._store.apply(
+            Change(
+                entity=issue_ref(issue.id),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(issue),
+                parent=issue.project,
+                after=after,
+            )
+        )
 
     def update_issue(self, issue: wire.StoredIssue, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=issue_ref(issue.id), operation=Operation.UPDATE, actor=actor, body=wire.dump(issue),
-            parent=issue.project, after=self.snapshot(issue),
-        ))
+        return self._store.apply(
+            Change(
+                entity=issue_ref(issue.id),
+                operation=Operation.UPDATE,
+                actor=actor,
+                body=wire.dump(issue),
+                parent=issue.project,
+                after=self.snapshot(issue),
+            )
+        )
 
     def delete_issue(self, issue: wire.StoredIssue, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=issue_ref(issue.id), operation=Operation.DELETE, actor=actor, parent=issue.project,
-        ))
+        return self._store.apply(
+            Change(
+                entity=issue_ref(issue.id),
+                operation=Operation.DELETE,
+                actor=actor,
+                parent=issue.project,
+            )
+        )
 
     def write_comment(self, comment: wire.StoredComment, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(Change(
-            entity=comment_ref(comment.id), operation=Operation.CREATE, actor=actor, body=wire.dump(comment),
-            parent=comment.issue,
-        ))
+        return self._store.apply(
+            Change(
+                entity=comment_ref(comment.id),
+                operation=Operation.CREATE,
+                actor=actor,
+                body=wire.dump(comment),
+                parent=comment.issue,
+            )
+        )
 
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
@@ -244,7 +282,13 @@ class YouTrackWorld:
     # ------------------------------------------------------------------ moves
 
     def moved(
-        self, issue: wire.StoredIssue, project: wire.StoredProject, to: wire.StoredState, *, by: str, at: int,
+        self,
+        issue: wire.StoredIssue,
+        project: wire.StoredProject,
+        to: wire.StoredState,
+        *,
+        by: str,
+        at: int,
     ) -> wire.StoredIssue:
         """The issue in state `to`: `resolved` is set when it enters a resolved state and cleared when it leaves one."""
         was = self.state_of(project, issue)

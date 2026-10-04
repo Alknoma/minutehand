@@ -6,7 +6,8 @@ pushes events or books wakes to the port it claims, and refuse it loudly when it
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, MutableMapping, Protocol, runtime_checkable
+from collections.abc import Awaitable, Callable, MutableMapping
+from typing import Protocol, runtime_checkable
 
 from minutehand.domain.clock import Due
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply

@@ -12,7 +12,7 @@ class HostPattern:
     text: str
 
     def __post_init__(self) -> None:
-        body = self.text[len(WILDCARD):] if self.is_wildcard else self.text
+        body = self.text[len(WILDCARD) :] if self.is_wildcard else self.text
         if not body or "*" in body or body != body.lower() or body.startswith(".") or body.endswith("."):
             raise ValueError(f"not a host pattern: {self.text!r} (an exact lower-case host, or '*.' and a domain)")
 
@@ -23,7 +23,7 @@ class HostPattern:
     @property
     def domain(self) -> str:
         """The exact host, or the domain a wildcard covers the subdomains of."""
-        return self.text[len(WILDCARD):] if self.is_wildcard else self.text
+        return self.text[len(WILDCARD) :] if self.is_wildcard else self.text
 
     def matches(self, host: str) -> bool:
         host = host.lower()

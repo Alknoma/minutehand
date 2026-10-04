@@ -58,3 +58,18 @@ typeCheckingMode = "standard"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+
+[tool.ruff.lint]
+# Named here so the same rules run on every machine and in CI.
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "E501",    # the formatter wraps code; a long sentence in a docstring or message is left alone
+    "RUF012",  # a list default on a Pydantic model is copied per instance; the rule assumes a plain class
+    "SIM401",  # suggests dict.get, which the house rules forbid on anything crossing a boundary
+    "SIM117",  # nested `with` blocks are sometimes the clearer shape
+    "UP047",   # rewriting generic functions to PEP 695 is a style change with no checker behind it
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The test agent arms a stuck-startup dump before it imports anything else.
+"tests/e2e/agents/slack_agent.py" = ["E402"]

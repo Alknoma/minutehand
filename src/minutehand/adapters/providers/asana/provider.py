@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from minutehand.adapters.providers.asana import wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.seed import seed
 from minutehand.adapters.providers.asana.state import AsanaWorld
-from minutehand.adapters.providers.asana import wire
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Scenario, TicketState
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation

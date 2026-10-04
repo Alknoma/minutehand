@@ -17,7 +17,17 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
 from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, Operation
 from tests.providers.google_drive.drive_world import (
-    AUTH, DOC, FOLDER, SCENARIO, START, Drive, answer, client_for, create_doc, listed, names_of,
+    AUTH,
+    DOC,
+    FOLDER,
+    SCENARIO,
+    START,
+    Drive,
+    answer,
+    client_for,
+    create_doc,
+    listed,
+    names_of,
 )
 
 
@@ -28,8 +38,9 @@ async def test_the_drive_survives_a_new_app_over_a_new_connection(drive: Drive) 
     reopened = SqliteStore(drive.path, "root", RunClock(START))
     async with client_for(build(), reopened, RunClock(START)) as second:
         found = names_of(await listed(second, "fullText contains 'first'"))
-        exported = await second.get(f"/drive/v3/files/{made['id']}/export", params={"mimeType": "text/markdown"},
-                                    headers=AUTH)
+        exported = await second.get(
+            f"/drive/v3/files/{made['id']}/export", params={"mimeType": "text/markdown"}, headers=AUTH
+        )
 
     assert found == ["Written First"]
     assert exported.content == b"by the first app"
@@ -90,19 +101,33 @@ def test_seeded_ids_are_the_same_in_every_run(tmp_path: Path) -> None:
 
 
 async def test_the_token_endpoint_answers_a_service_account_assertion(oauth: httpx.AsyncClient) -> None:
-    signed_in = answer(await oauth.post("/token", data={
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": "header.claims.signature",
-    }))
+    signed_in = answer(
+        await oauth.post(
+            "/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": "header.claims.signature",
+            },
+        )
+    )
     assert set(signed_in) == {"access_token", "expires_in", "token_type"}
     assert signed_in["token_type"] == "Bearer" and signed_in["expires_in"] == 3599
     assert str(signed_in["access_token"]).startswith("ya29.")
 
 
 async def test_the_token_endpoint_answers_a_refresh_token(oauth: httpx.AsyncClient, api: httpx.AsyncClient) -> None:
-    refreshed = answer(await oauth.post("/token", data={
-        "grant_type": "refresh_token", "refresh_token": "1//refresh", "client_id": "client.example",
-        "client_secret": "s", "scope": "https://www.googleapis.com/auth/drive",
-    }))
+    refreshed = answer(
+        await oauth.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": "1//refresh",
+                "client_id": "client.example",
+                "client_secret": "s",
+                "scope": "https://www.googleapis.com/auth/drive",
+            },
+        )
+    )
     assert refreshed["scope"] == "https://www.googleapis.com/auth/drive"
     listing = await api.get("/drive/v3/files", headers={"Authorization": f"Bearer {refreshed['access_token']}"})
     assert listing.status_code == 200
@@ -110,7 +135,9 @@ async def test_the_token_endpoint_answers_a_refresh_token(oauth: httpx.AsyncClie
 
 async def test_the_token_endpoint_rejects_an_unknown_grant_or_a_missing_assertion(oauth: httpx.AsyncClient) -> None:
     unknown = answer(await oauth.post("/token", data={"grant_type": "password"}), 400)
-    missing = answer(await oauth.post("/token", data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer"}), 400)
+    missing = answer(
+        await oauth.post("/token", data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer"}), 400
+    )
     assert unknown["error"] == "unsupported_grant_type"
     assert missing["error"] == "invalid_request"
 
@@ -120,10 +147,15 @@ def test_the_provider_is_registered_and_its_manifest_imports_nothing_else() -> N
     assert MANIFEST.hosts == ["www.googleapis.com", "oauth2.googleapis.com", "docs.googleapis.com"]
     assert MANIFEST.kinds == [EntityKind.DOCUMENT, EntityKind.COMMENT] and not MANIFEST.pushes_events
     loaded = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; from minutehand.adapters.proxy.registry import Registry; r = Registry.installed();"
-         "print(r.claimant('docs.googleapis.com').key,"
-         " sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.google_drive.')))"],
-        capture_output=True, text=True, check=True,
+        [
+            sys.executable,
+            "-c",
+            "import sys; from minutehand.adapters.proxy.registry import Registry; r = Registry.installed();"
+            "print(r.claimant('docs.googleapis.com').key,"
+            " sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.google_drive.')))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     assert loaded.stdout.strip() == "google_drive ['minutehand.adapters.providers.google_drive.manifest']"

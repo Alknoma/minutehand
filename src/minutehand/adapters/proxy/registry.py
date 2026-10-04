@@ -81,9 +81,7 @@ class Registry:
         for point in points:
             manifest = self._load_package(point.module)
             if manifest.key != point.name:
-                raise ProviderConflict(
-                    f"entry point {point.name!r} names a package whose manifest is {manifest.key!r}"
-                )
+                raise ProviderConflict(f"entry point {point.name!r} names a package whose manifest is {manifest.key!r}")
 
     def _load_package(self, package: str) -> Manifest:
         manifest = importlib.import_module(f"{package}.manifest").MANIFEST
@@ -112,8 +110,6 @@ class Registry:
         if entry.provider is None:
             provider = entry.build()
             if provider.manifest != entry.manifest:
-                raise ProviderConflict(
-                    f"{manifest.key!r} was registered with one manifest and built with another"
-                )
+                raise ProviderConflict(f"{manifest.key!r} was registered with one manifest and built with another")
             entry.provider = provider
         return entry.provider

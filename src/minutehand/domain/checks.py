@@ -4,10 +4,9 @@ read its input did not run, which is `blocked` and never a finding."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from enum import StrEnum
 from typing import Protocol
-
-from datetime import timedelta
 
 from pydantic import AwareDatetime, Field
 
@@ -69,8 +68,8 @@ class CheckReport(Model):
 
 class ObligationKind(StrEnum):
     ANSWER_FROM_PERSON = "answer_from_person"  # the agent asked someone something
-    WORK_WITH_PERSON = "work_with_person"      # the agent handed someone a ticket
-    DATE = "date"                              # a date the scenario fixed
+    WORK_WITH_PERSON = "work_with_person"  # the agent handed someone a ticket
+    DATE = "date"  # a date the scenario fixed
 
 
 class Obligation(Model):
@@ -130,8 +129,12 @@ class Effectiveness(Model):
     follow_ups_late: int = Field(ge=0)
     time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
     slowest_follow_up: timedelta | None = None
-    reactions_due: int = Field(default=0, ge=0, description="Settled waits naming a person or entity, so a reaction can be timed")
-    reactions_slow: int = Field(default=0, ge=0, description="Of those, the agent's next touch came after the grace, or never")
+    reactions_due: int = Field(
+        default=0, ge=0, description="Settled waits naming a person or entity, so a reaction can be timed"
+    )
+    reactions_slow: int = Field(
+        default=0, ge=0, description="Of those, the agent's next touch came after the grace, or never"
+    )
     slowest_reaction: timedelta | None = None
     messages_to_people: int = Field(default=0, ge=0)
     burden: list[PersonBurden] = Field(default=[], description="Messages per person, in Scenario.people order")

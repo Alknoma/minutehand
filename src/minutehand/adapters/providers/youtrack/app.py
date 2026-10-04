@@ -85,7 +85,11 @@ class YouTrackApi:
 
     def _user_out(self, user: wire.StoredUser) -> wire.UserOut:
         return wire.UserOut(
-            id=user.id, login=user.login, fullName=user.fullName, name=user.fullName, email=user.email,
+            id=user.id,
+            login=user.login,
+            fullName=user.fullName,
+            name=user.fullName,
+            email=user.email,
             ringId=user.ringId,
         )
 
@@ -97,9 +101,11 @@ class YouTrackApi:
 
     def _state_field_out(self, project: wire.StoredProject) -> wire.StateProjectFieldOut:
         return wire.StateProjectFieldOut(
-            id=project.stateField, field=self._definition(project.stateFieldDefinition, "State", "state[1]"),
+            id=project.stateField,
+            field=self._definition(project.stateFieldDefinition, "State", "state[1]"),
             bundle=wire.StateBundleOut(
-                id=project.stateBundle, values=[self._state_value_out(s) for s in project.states],
+                id=project.stateBundle,
+                values=[self._state_value_out(s) for s in project.states],
             ),
         )
 
@@ -108,7 +114,8 @@ class YouTrackApi:
 
     def _assignee_field_out(self, project: wire.StoredProject) -> wire.UserProjectFieldOut:
         return wire.UserProjectFieldOut(
-            id=project.assigneeField, field=self._definition(project.assigneeFieldDefinition, "Assignee", "user[1]"),
+            id=project.assigneeField,
+            field=self._definition(project.assigneeFieldDefinition, "Assignee", "user[1]"),
             bundle=wire.UserBundleOut(id=project.assigneeBundle, aggregatedUsers=self._team(project)),
         )
 
@@ -118,7 +125,10 @@ class YouTrackApi:
     def _project_out(self, project: wire.StoredProject) -> wire.ProjectOut:
         team = self._team(project)
         return wire.ProjectOut(
-            id=project.id, name=project.name, shortName=project.shortName, description=project.description,
+            id=project.id,
+            name=project.name,
+            shortName=project.shortName,
+            description=project.description,
             leader=self._user_out(self._stored_user(project.leader)),
             team=wire.UserGroupOut(id=project.teamGroup, name=f"{project.name} Team", usersCount=len(team), users=team),
             customFields=self._project_fields_out(project),
@@ -128,12 +138,14 @@ class YouTrackApi:
         assignee = self._stored_user(issue.assignee) if issue.assignee is not None else None
         return [
             wire.StateIssueFieldOut(
-                id=project.stateField, name="State",
+                id=project.stateField,
+                name="State",
                 value=self._state_value_out(self._world.state_of(project, issue)),
                 projectCustomField=self._state_field_out(project),
             ),
             wire.UserIssueFieldOut(
-                id=project.assigneeField, name="Assignee",
+                id=project.assigneeField,
+                name="Assignee",
                 value=self._user_out(assignee) if assignee is not None else None,
                 projectCustomField=self._assignee_field_out(project),
             ),
@@ -141,8 +153,11 @@ class YouTrackApi:
 
     def _comment_out(self, comment: wire.StoredComment) -> wire.CommentOut:
         return wire.CommentOut(
-            id=comment.id, text=comment.text, textPreview=comment.text,
-            author=self._user_out(self._stored_user(comment.author)), created=comment.created,
+            id=comment.id,
+            text=comment.text,
+            textPreview=comment.text,
+            author=self._user_out(self._stored_user(comment.author)),
+            created=comment.created,
             updated=comment.updated,
         )
 
@@ -156,11 +171,19 @@ class YouTrackApi:
         project = self._home(issue)
         comments = [self._comment_out(c) for c in self._world.comments(issue.id)]
         return wire.IssueOut(
-            id=issue.id, idReadable=issue.idReadable, numberInProject=issue.numberInProject, summary=issue.summary,
-            description=issue.description, project=self._project_out(project),
+            id=issue.id,
+            idReadable=issue.idReadable,
+            numberInProject=issue.numberInProject,
+            summary=issue.summary,
+            description=issue.description,
+            project=self._project_out(project),
             reporter=self._user_out(self._stored_user(issue.reporter)),
-            updater=self._user_out(self._stored_user(issue.updater)), created=issue.created, updated=issue.updated,
-            resolved=issue.resolved, customFields=self._issue_fields_out(project, issue), comments=comments,
+            updater=self._user_out(self._stored_user(issue.updater)),
+            created=issue.created,
+            updated=issue.updated,
+            resolved=issue.resolved,
+            customFields=self._issue_fields_out(project, issue),
+            comments=comments,
             commentsCount=len(comments),
         )
 
@@ -182,7 +205,7 @@ class YouTrackApi:
 
     def _page[T](self, request: Request, items: list[T]) -> list[T]:
         start, limit = wire.page_bounds(_param(request, "$skip"), _param(request, "$top"))
-        return items[start:] if limit is None else items[start:start + limit]
+        return items[start:] if limit is None else items[start : start + limit]
 
     def _answer(self, request: Request, answer: wire.Answer | Sequence[wire.Answer]) -> tuple[int, bytes]:
         return 200, wire.render(answer, wire.parse_fields(_param(request, "fields")))
@@ -192,15 +215,26 @@ class YouTrackApi:
     def me(self, request: Request, _: bytes) -> tuple[int, bytes]:
         me = self._world.me()
         self._world.saw(state.user_ref(me.id), Operation.READ)
-        return self._answer(request, wire.MeOut(
-            id=me.id, login=me.login, fullName=me.fullName, name=me.fullName, email=me.email, ringId=me.ringId,
-        ))
+        return self._answer(
+            request,
+            wire.MeOut(
+                id=me.id,
+                login=me.login,
+                fullName=me.fullName,
+                name=me.fullName,
+                email=me.email,
+                ringId=me.ringId,
+            ),
+        )
 
     def users(self, request: Request, _: bytes) -> tuple[int, bytes]:
         wanted = (_param(request, "query") or "").strip().lower()
         found = [
-            u for u in self._world.users()
-            if not wanted or wanted in u.login.lower() or wanted in u.fullName.lower()
+            u
+            for u in self._world.users()
+            if not wanted
+            or wanted in u.login.lower()
+            or wanted in u.fullName.lower()
             or (u.email is not None and wanted in u.email.lower())
         ]
         page: list[wire.Answer] = [self._user_out(u) for u in self._page(request, found)]
@@ -332,9 +366,17 @@ class YouTrackApi:
         me, now = self._world.me(), self._now()
         number = self._world.next_number(project.id)
         issue = wire.StoredIssue(
-            id=self._world.next_id(2), idReadable=f"{project.shortName}-{number}", numberInProject=number,
-            project=project.id, summary=body.summary, description=body.description, reporter=me.id, updater=me.id,
-            created=now, updated=now, state=project.states[0].id,
+            id=self._world.next_id(2),
+            idReadable=f"{project.shortName}-{number}",
+            numberInProject=number,
+            project=project.id,
+            summary=body.summary,
+            description=body.description,
+            reporter=me.id,
+            updater=me.id,
+            created=now,
+            updated=now,
+            state=project.states[0].id,
         )
         issue = self._with_fields(project, issue, body.customFields, by=me.id, at=now)
         self._world.create_issue(issue, actor=Actor.AGENT)
@@ -373,13 +415,22 @@ class YouTrackApi:
 
     def _comment(self, issue: wire.StoredIssue, text: str) -> wire.StoredComment:
         comment = wire.StoredComment(
-            id=self._world.next_id(4), issue=issue.id, text=text, author=self._world.me().id, created=self._now(),
+            id=self._world.next_id(4),
+            issue=issue.id,
+            text=text,
+            author=self._world.me().id,
+            created=self._now(),
         )
         self._world.write_comment(comment, actor=Actor.AGENT)
         return comment
 
     def _with_fields(
-        self, project: wire.StoredProject, issue: wire.StoredIssue, writes: list[wire.CustomFieldIn], *, by: str,
+        self,
+        project: wire.StoredProject,
+        issue: wire.StoredIssue,
+        writes: list[wire.CustomFieldIn],
+        *,
+        by: str,
         at: int,
     ) -> wire.StoredIssue:
         """The issue with a `customFields` block applied, every write checked before any is kept."""
@@ -400,9 +451,12 @@ class YouTrackApi:
 
     def _state_value(self, project: wire.StoredProject, value: wire.EntityIn) -> wire.StoredState:
         found = next(
-            (s for s in project.states
-             if (value.id is not None and s.id == value.id)
-             or (value.name is not None and s.name.lower() == value.name.strip().lower())),
+            (
+                s
+                for s in project.states
+                if (value.id is not None and s.id == value.id)
+                or (value.name is not None and s.name.lower() == value.name.strip().lower())
+            ),
             None,
         )
         if found is None:
@@ -412,8 +466,10 @@ class YouTrackApi:
     def _assignable(self, project: wire.StoredProject, value: wire.EntityIn) -> wire.StoredUser:
         """A user the Assignee field takes: one who exists and is on the project's team."""
         found = (
-            self._world.user(value.id) if value.id is not None
-            else self._world.user_by_login(value.login) if value.login is not None
+            self._world.user(value.id)
+            if value.id is not None
+            else self._world.user_by_login(value.login)
+            if value.login is not None
             else None
         )
         if found is None or found.id not in project.team:
@@ -442,20 +498,31 @@ class YouTrackApi:
             if body.comment is not None and body.comment.strip():
                 self._comment(before, body.comment)
         answer = wire.CommandListOut(
-            query=body.query or "", issues=[wire.IssueRefOut(id=i.id, idReadable=i.idReadable) for i in targets],
+            query=body.query or "",
+            issues=[wire.IssueRefOut(id=i.id, idReadable=i.idReadable) for i in targets],
             commands=[wire.ParsedCommandOut(description=f"{c.word.value} {c.value}") for c in commands],
-            comment=body.comment, silent=body.silent,
+            comment=body.comment,
+            silent=body.silent,
         )
         return self._answer(request, answer)
 
     def _commanded(
-        self, project: wire.StoredProject, issue: wire.StoredIssue, commands: list[Command], *, me: wire.StoredUser,
+        self,
+        project: wire.StoredProject,
+        issue: wire.StoredIssue,
+        commands: list[Command],
+        *,
+        me: wire.StoredUser,
         at: int,
     ) -> wire.StoredIssue:
         for command in commands:
             if command.word is CommandWord.STATE:
                 issue = self._world.moved(
-                    issue, project, self._state_value(project, wire.EntityIn(name=command.value)), by=me.id, at=at,
+                    issue,
+                    project,
+                    self._state_value(project, wire.EntityIn(name=command.value)),
+                    by=me.id,
+                    at=at,
                 )
             else:
                 login = me.login if command.value.lower() == ME else command.value
@@ -503,7 +570,8 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         reason = "Not Found" if status == 404 else "Method Not Allowed" if status == 405 else "Server Error"
         return Response(
             wire.error_body(wire.Refusal(status, reason, f"{request.method} {request.url.path} is not served")),
-            status_code=status, media_type=_JSON,
+            status_code=status,
+            media_type=_JSON,
         )
 
     return Starlette(routes=routes, exception_handlers={404: refused, 405: refused})

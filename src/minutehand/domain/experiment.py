@@ -59,9 +59,7 @@ class DeadlineShift(Model):
     by: timedelta
 
 
-Override = Annotated[
-    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift, Field(discriminator="kind")
-]
+Override = Annotated[PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift, Field(discriminator="kind")]
 
 
 class Fork(Model):

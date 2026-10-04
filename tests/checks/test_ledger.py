@@ -6,14 +6,13 @@ from datetime import timedelta
 from pathlib import Path
 
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.checks.ledger import build
 from minutehand.application.run_clock import RunClock
+from minutehand.checks.ledger import build
 from minutehand.checks.runner import evaluate_run
 from minutehand.domain.checks import ObligationKind
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Absence, DelayRange, Silent, TicketFate, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
-
 from tests.checks.world import START, Log, at, person, reply, scenario
 
 OWNER, SOFIA, MARCUS = person("owner"), person("sofia"), person("marcus")
@@ -49,10 +48,24 @@ def test_an_ask_nobody_will_answer_opens_nothing_unless_the_person_is_silent_or_
 def test_a_handed_off_ticket_waits_for_its_fate_and_settles_only_when_the_person_finishes_it() -> None:
     log = Log()
     filed = log.ticket("Review the contract", SOFIA, 0, external_id="T1")
-    log.ticket("Review the contract", SOFIA, 10, actor=Actor.SCENARIO, operation=Operation.UPDATE,
-               state=TicketState.DONE, external_id="T1")
-    log.ticket("Review the contract", SOFIA, 20, actor=Actor.PERSON, operation=Operation.UPDATE,
-               state=TicketState.DONE, external_id="T1")
+    log.ticket(
+        "Review the contract",
+        SOFIA,
+        10,
+        actor=Actor.SCENARIO,
+        operation=Operation.UPDATE,
+        state=TicketState.DONE,
+        external_id="T1",
+    )
+    log.ticket(
+        "Review the contract",
+        SOFIA,
+        20,
+        actor=Actor.PERSON,
+        operation=Operation.UPDATE,
+        state=TicketState.DONE,
+        external_id="T1",
+    )
     fate = TicketFate(assignee="sofia", becomes=TicketState.DONE, after=timedelta(days=3))
     [o] = build(scenario(SOFIA, fates=[fate]), log.events, [])
     assert o.kind is ObligationKind.WORK_WITH_PERSON and o.opened_by == filed.seq
@@ -103,9 +116,15 @@ def test_the_ledger_reads_a_real_store_and_its_stored_replies(tmp_path: Path) ->
     store = SqliteStore(tmp_path / "world.db", "run", clock)
     clock.begin_wake()
     message = EntityRef(provider="chat", kind=EntityKind.MESSAGE, external_id="m1")
-    ask = store.apply(Change(entity=message, operation=Operation.CREATE, actor=Actor.AGENT, body="{}",
-                             after=MessageSnapshot(text="Could you sign?", channel="dm",
-                                                   recipient_emails=[SOFIA.email])))
+    ask = store.apply(
+        Change(
+            entity=message,
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            body="{}",
+            after=MessageSnapshot(text="Could you sign?", channel="dm", recipient_emails=[SOFIA.email]),
+        )
+    )
     store.remember(PersonReply(person="sofia", in_reply_to=message, text="Signed.", at=at(1)))
     clock.jump(at(9))
     clock.begin_wake()

@@ -109,8 +109,10 @@ class AwsProvider:
         # instance-metadata address). This process must never use, or look for, real AWS
         # credentials, so it is given dummy ones before moto builds anything.
         os.environ.update(
-            AWS_ACCESS_KEY_ID="minutehand", AWS_SECRET_ACCESS_KEY="minutehand",
-            AWS_SESSION_TOKEN="minutehand", AWS_EC2_METADATA_DISABLED="true",
+            AWS_ACCESS_KEY_ID="minutehand",
+            AWS_SECRET_ACCESS_KEY="minutehand",
+            AWS_SESSION_TOKEN="minutehand",
+            AWS_EC2_METADATA_DISABLED="true",
         )
         os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
         moto: ASGIApp = WsgiToAsgi(DomainDispatcherApplication(create_backend_app))
@@ -123,12 +125,19 @@ class AwsProvider:
             headers = _headers(scope)
             try:
                 call = schedule_call(
-                    str(scope["method"]), _header(headers, b"host"), str(scope["path"]),
-                    _query(scope), body,
+                    str(scope["method"]),
+                    _header(headers, b"host"),
+                    str(scope["path"]),
+                    _query(scope),
+                    body,
                 )
             except Refusal as refused:
-                await _respond(send, refused.status, [(b"x-amzn-errortype", refused.error_type.encode()),
-                                                      (b"content-type", b"application/json")], refused.body())
+                await _respond(
+                    send,
+                    refused.status,
+                    [(b"x-amzn-errortype", refused.error_type.encode()), (b"content-type", b"application/json")],
+                    refused.body(),
+                )
                 return
             forwarded = dict(scope)
             forwarded["headers"] = [(k, v) for k, v in headers if k != b"x-moto-account-id"] + [
@@ -149,8 +158,15 @@ class AwsProvider:
             wakes.cancel(arn)
             world.apply(Change(entity=entity, operation=Operation.DELETE, actor=Actor.AGENT, parent=call.group))
             return
-        record = ScheduleRecord.of(call.request, arn=arn, name=call.name, group=call.group, region=call.region,
-                                   account=self.account, now=clock.now())
+        record = ScheduleRecord.of(
+            call.request,
+            arn=arn,
+            name=call.name,
+            group=call.group,
+            region=call.region,
+            account=self.account,
+            now=clock.now(),
+        )
         if call.kind is CallKind.UPDATE:
             wakes.cancel(arn)
         if record.next_at is not None:
@@ -171,25 +187,41 @@ class AwsProvider:
         if record.target_input is None:
             raise ValueError(f"schedule {ref} has no Target.Input to put on {queue.arn}")
         message = sqs_backends[self.account][queue.region].send_message(
-            queue.queue, record.target_input, group_id=record.message_group_id,
+            queue.queue,
+            record.target_input,
+            group_id=record.message_group_id,
         )
-        delivered = QueueMessageRecord(queue_arn=queue.arn, message_id=message.id, body=record.target_input,
-                                       message_group_id=record.message_group_id, schedule_arn=ref)
-        world.apply(Change(
-            entity=EntityRef(provider=MANIFEST.key, kind=EntityKind.RECORD, external_id=message.id),
-            operation=Operation.CREATE, actor=Actor.SCENARIO, body=delivered.model_dump_json(), parent=queue.arn,
-            after=RecordSnapshot(resource="queue_message", text=record.target_input),
-        ))
+        delivered = QueueMessageRecord(
+            queue_arn=queue.arn,
+            message_id=message.id,
+            body=record.target_input,
+            message_group_id=record.message_group_id,
+            schedule_arn=ref,
+        )
+        world.apply(
+            Change(
+                entity=EntityRef(provider=MANIFEST.key, kind=EntityKind.RECORD, external_id=message.id),
+                operation=Operation.CREATE,
+                actor=Actor.SCENARIO,
+                body=delivered.model_dump_json(),
+                parent=queue.arn,
+                after=RecordSnapshot(resource="queue_message", text=record.target_input),
+            )
+        )
         following = record.occurrence_after(max(clock.now(), record.next_at))
         if following is not None:
             self._bound().book(Due(at=following, kind=DueKind.AGENT_WAKE, ref=ref))
-            world.apply(_schedule_change(record.model_copy(update={"next_at": following}), Operation.UPDATE,
-                                         Actor.SCENARIO))
+            world.apply(
+                _schedule_change(record.model_copy(update={"next_at": following}), Operation.UPDATE, Actor.SCENARIO)
+            )
             return
         if record.action_after_completion is ActionAfterCompletion.DELETE:
             scheduler_backends[self.account][record.region].delete_schedule(record.group, record.name)
-            world.apply(Change(entity=_schedule_entity(ref), operation=Operation.DELETE, actor=Actor.SCENARIO,
-                               parent=record.group))
+            world.apply(
+                Change(
+                    entity=_schedule_entity(ref), operation=Operation.DELETE, actor=Actor.SCENARIO, parent=record.group
+                )
+            )
             return
         world.apply(_schedule_change(record.model_copy(update={"next_at": None}), Operation.UPDATE, Actor.SCENARIO))
 
@@ -210,9 +242,14 @@ def _schedule_entity(arn: str) -> EntityRef:
 
 
 def _schedule_change(record: ScheduleRecord, operation: Operation, actor: Actor) -> Change:
-    return Change(entity=_schedule_entity(record.arn), operation=operation, actor=actor,
-                  body=record.model_dump_json(), parent=record.group,
-                  after=RecordSnapshot(resource="schedule", text=record.text()))
+    return Change(
+        entity=_schedule_entity(record.arn),
+        operation=operation,
+        actor=actor,
+        body=record.model_dump_json(),
+        parent=record.group,
+        after=RecordSnapshot(resource="schedule", text=record.text()),
+    )
 
 
 # --- ASGI plumbing ---------------------------------------------------------------------------

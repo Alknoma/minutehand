@@ -69,8 +69,9 @@ class AwsRun:
         target_fields: dict[str, object] = {"Arn": target, "RoleArn": ROLE, "Input": f'{{"wake": "{name}"}}'}
         if "SqsParameters" in extra:
             target_fields["SqsParameters"] = extra.pop("SqsParameters")
-        response = call(Name=name, ScheduleExpression=expression, FlexibleTimeWindow={"Mode": "OFF"},
-                        Target=target_fields, **extra)
+        response = call(
+            Name=name, ScheduleExpression=expression, FlexibleTimeWindow={"Mode": "OFF"}, Target=target_fields, **extra
+        )
         return response["ScheduleArn"]
 
     def poll(self, url: str) -> list[str]:
@@ -89,8 +90,9 @@ class AwsRun:
 
     def log(self) -> list[tuple[Actor, Operation, str | None]]:
         events = self.proxy.on_loop(self.store.events)
-        return [(e.actor, e.operation, e.after.resource if isinstance(e.after, RecordSnapshot) else None)
-                for e in events]
+        return [
+            (e.actor, e.operation, e.after.resource if isinstance(e.after, RecordSnapshot) else None) for e in events
+        ]
 
     def stop(self) -> None:
         if self._owns_proxy:
@@ -117,8 +119,7 @@ def test_it_satisfies_the_ports() -> None:
 def test_a_one_time_schedule_books_its_instant_in_utc(run: AwsRun) -> None:
     _, queue = run.queue()
     arn = run.schedule("follow-up", "at(2026-08-27T10:51:00)", queue)
-    assert run.wakes.pending == [Due(at=datetime(2026, 8, 27, 10, 51, tzinfo=UTC),
-                                     kind=DueKind.AGENT_WAKE, ref=arn)]
+    assert run.wakes.pending == [Due(at=datetime(2026, 8, 27, 10, 51, tzinfo=UTC), kind=DueKind.AGENT_WAKE, ref=arn)]
 
 
 def test_a_one_time_schedule_books_its_instant_in_its_own_timezone(run: AwsRun) -> None:
@@ -185,7 +186,9 @@ def test_a_recurring_schedule_stops_at_its_end_date(run: AwsRun) -> None:
     run.advance()
     run.advance()
     assert run.wakes.pending == []
-    stored = run.proxy.on_loop(lambda: run.store.get(EntityRef(provider="aws", kind=EntityKind.RECORD, external_id=arn)))
+    stored = run.proxy.on_loop(
+        lambda: run.store.get(EntityRef(provider="aws", kind=EntityKind.RECORD, external_id=arn))
+    )
     assert stored is not None and '"next_at":null' in stored.body
 
 
@@ -193,8 +196,7 @@ def test_an_update_rebooks(run: AwsRun) -> None:
     _, queue = run.queue()
     arn = run.schedule("follow-up", "at(2026-08-27T10:51:00)", queue)
     run.schedule("follow-up", "at(2026-08-29T08:00:00)", queue, update=True)
-    assert run.wakes.pending == [Due(at=datetime(2026, 8, 29, 8, 0, tzinfo=UTC),
-                                     kind=DueKind.AGENT_WAKE, ref=arn)]
+    assert run.wakes.pending == [Due(at=datetime(2026, 8, 29, 8, 0, tzinfo=UTC), kind=DueKind.AGENT_WAKE, ref=arn)]
 
 
 def test_a_delete_cancels(run: AwsRun) -> None:

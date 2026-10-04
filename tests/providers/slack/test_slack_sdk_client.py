@@ -25,10 +25,15 @@ T = TypeVar("T")
 
 @pytest.fixture
 async def sdk(workspace: Workspace) -> AsyncIterator[WebClient]:
-    server = uvicorn.Server(uvicorn.Config(
-        workspace.provider.app(workspace.store, workspace.clock), host="127.0.0.1", port=0, log_level="warning",
-        lifespan="off",
-    ))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            workspace.provider.app(workspace.store, workspace.clock),
+            host="127.0.0.1",
+            port=0,
+            log_level="warning",
+            lifespan="off",
+        )
+    )
     serving = asyncio.create_task(server.serve())
     while not server.started:
         await asyncio.sleep(0.01)

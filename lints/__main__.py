@@ -48,7 +48,7 @@ def run_one(name: str, root: Path = SRC) -> LintRun:
         title: str = module.TITLE
         guidance: str = getattr(module, "GUIDANCE", "")
         findings: list[Finding] = module.run(root)
-    except Exception:  # noqa: BLE001 — any failure to run is reported as blocked, never swallowed
+    except Exception:
         reason = traceback.format_exc().strip().splitlines()[-1]
         print(f"{name}: COULD NOT RUN — {reason}")
         return LintRun(name, blocked=reason)

@@ -6,19 +6,35 @@ them; the obligations come from the real ledger, never written by hand.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from minutehand.checks.ledger import build
 from minutehand.domain.checks import RunView, WakeRecord
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import (
-    Absence, Answers, DelayRange, Expectation, Person, ReplyBehaviour, Scenario, TicketFate, TicketState,
+    Absence,
+    Answers,
+    DelayRange,
+    Expectation,
+    Person,
+    ReplyBehaviour,
+    Scenario,
+    TicketFate,
+    TicketState,
 )
 from minutehand.domain.world import (
-    Actor, EntityKind, EntityRef, Exchange, MessageSnapshot, Operation, Snapshot, TicketSnapshot, WorldEvent,
+    Actor,
+    EntityKind,
+    EntityRef,
+    Exchange,
+    MessageSnapshot,
+    Operation,
+    Snapshot,
+    TicketSnapshot,
+    WorldEvent,
 )
 
-START = datetime(2026, 9, 7, 9, tzinfo=timezone.utc)
+START = datetime(2026, 9, 7, 9, tzinfo=UTC)
 QUICK = Answers(delay=DelayRange(shortest=timedelta(hours=1), longest=timedelta(hours=2)))
 
 
@@ -37,8 +53,14 @@ def scenario(
     expect: list[Expectation] | None = None,
 ) -> Scenario:
     return Scenario(
-        name="hand_built", goal="Get the contract signed.", owner=people[0].key, starts_at=START,
-        deadline_after=deadline_after, people=list(people), ticket_fates=fates or [], expect=expect or [],
+        name="hand_built",
+        goal="Get the contract signed.",
+        owner=people[0].key,
+        starts_at=START,
+        deadline_after=deadline_after,
+        people=list(people),
+        ticket_fates=fates or [],
+        expect=expect or [],
     )
 
 
@@ -48,30 +70,68 @@ class Log:
     def __init__(self) -> None:
         self.events: list[WorldEvent] = []
 
-    def _add(self, hours: float, actor: Actor, operation: Operation, entity: EntityRef,
-             after: Snapshot | None, wake: int, wall: datetime | None = None) -> WorldEvent:
+    def _add(
+        self,
+        hours: float,
+        actor: Actor,
+        operation: Operation,
+        entity: EntityRef,
+        after: Snapshot | None,
+        wake: int,
+        wall: datetime | None = None,
+    ) -> WorldEvent:
         moment = at(hours)
         event = WorldEvent(
-            seq=len(self.events) + 1, run_id="hand", wake=wake, sim_time=moment, wall_time=wall or moment,
-            actor=actor, operation=operation, entity=entity, after=after,
+            seq=len(self.events) + 1,
+            run_id="hand",
+            wake=wake,
+            sim_time=moment,
+            wall_time=wall or moment,
+            actor=actor,
+            operation=operation,
+            entity=entity,
+            after=after,
         )
         self.events.append(event)
         return event
 
-    def message(self, to: list[Person], hours: float, text: str = "Could you send the signed contract?", *,
-                actor: Actor = Actor.AGENT, channel: str = "dm", thread_of: str | None = None,
-                wake: int = 1, wall: datetime | None = None) -> WorldEvent:
+    def message(
+        self,
+        to: list[Person],
+        hours: float,
+        text: str = "Could you send the signed contract?",
+        *,
+        actor: Actor = Actor.AGENT,
+        channel: str = "dm",
+        thread_of: str | None = None,
+        wake: int = 1,
+        wall: datetime | None = None,
+    ) -> WorldEvent:
         ref = EntityRef(provider="chat", kind=EntityKind.MESSAGE, external_id=f"m{len(self.events) + 1}")
-        snapshot = MessageSnapshot(text=text, channel=channel, recipient_emails=[p.email for p in to],
-                                   thread_of=thread_of)
+        snapshot = MessageSnapshot(
+            text=text, channel=channel, recipient_emails=[p.email for p in to], thread_of=thread_of
+        )
         return self._add(hours, actor, Operation.CREATE, ref, snapshot, wake, wall)
 
-    def ticket(self, title: str, assignee: Person | None, hours: float, *, project: str = "Legal",
-               actor: Actor = Actor.AGENT, operation: Operation = Operation.CREATE,
-               state: TicketState = TicketState.OPEN, external_id: str | None = None, wake: int = 1) -> WorldEvent:
-        ref = EntityRef(provider="tracker", kind=EntityKind.TICKET, external_id=external_id or f"t{len(self.events) + 1}")
-        snapshot = TicketSnapshot(title=title, project=project, state=state,
-                                  assignee_email=assignee.email if assignee else None)
+    def ticket(
+        self,
+        title: str,
+        assignee: Person | None,
+        hours: float,
+        *,
+        project: str = "Legal",
+        actor: Actor = Actor.AGENT,
+        operation: Operation = Operation.CREATE,
+        state: TicketState = TicketState.OPEN,
+        external_id: str | None = None,
+        wake: int = 1,
+    ) -> WorldEvent:
+        ref = EntityRef(
+            provider="tracker", kind=EntityKind.TICKET, external_id=external_id or f"t{len(self.events) + 1}"
+        )
+        snapshot = TicketSnapshot(
+            title=title, project=project, state=state, assignee_email=assignee.email if assignee else None
+        )
         return self._add(hours, actor, operation, ref, snapshot, wake)
 
     def read(self, entity: EntityRef, hours: float, *, wake: int = 1) -> WorldEvent:
@@ -82,9 +142,18 @@ def reply(who: Person, to: WorldEvent, hours: float) -> PersonReply:
     return PersonReply(person=who.key, in_reply_to=to.entity, text="Here it is.", at=at(hours))
 
 
-def view(world: Scenario, log: Log, replies: list[PersonReply] | None = None, *,
-         wakes: list[WakeRecord] | None = None, unmatched: list[Exchange] | None = None) -> RunView:
+def view(
+    world: Scenario,
+    log: Log,
+    replies: list[PersonReply] | None = None,
+    *,
+    wakes: list[WakeRecord] | None = None,
+    unmatched: list[Exchange] | None = None,
+) -> RunView:
     return RunView(
-        scenario=world, events=log.events, wakes=wakes or [],
-        obligations=build(world, log.events, replies or []), unmatched_calls=unmatched,
+        scenario=world,
+        events=log.events,
+        wakes=wakes or [],
+        obligations=build(world, log.events, replies or []),
+        unmatched_calls=unmatched,
     )

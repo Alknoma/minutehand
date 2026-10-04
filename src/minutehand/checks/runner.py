@@ -13,13 +13,20 @@ import pkgutil
 from datetime import datetime
 
 from minutehand import checks as package
-from minutehand.checks.ledger import build
 from minutehand.checks._waits import ended_at
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
+from minutehand.checks.ledger import build
 from minutehand.domain.agent import Commitment
 from minutehand.domain.checks import (
-    Check, CheckReport, Effectiveness, Finding, FindingKind, RunView, Stability, WakeRecord,
+    Check,
+    CheckReport,
+    Effectiveness,
+    Finding,
+    FindingKind,
+    RunView,
+    Stability,
+    WakeRecord,
 )
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Scenario
@@ -97,8 +104,12 @@ def evaluate_run(
 ) -> RunResult:
     """Build the obligations ledger from the world and the replies, then run every check."""
     view = RunView(
-        scenario=scenario, events=events, wakes=wakes, obligations=build(scenario, events, replies),
-        commitments=commitments, unmatched_calls=unmatched_calls,
+        scenario=scenario,
+        events=events,
+        wakes=wakes,
+        obligations=build(scenario, events, replies),
+        commitments=commitments,
+        unmatched_calls=unmatched_calls,
     )
     return evaluate(view, ended=ended)
 
@@ -108,4 +119,3 @@ def stability(results: list[RunResult]) -> Stability:
     if not results:
         raise ValueError("stability needs at least one sample")
     return Stability(samples=len(results), passed=sum(1 for r in results if r.exit_code == 0))
-
