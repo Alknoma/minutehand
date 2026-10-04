@@ -330,7 +330,7 @@
    "entity": null,
    "opened_at": "2026-08-24T10:51:00Z",
    "opened_by": 1,
-   "due_at": null,
+   "expected_by": null,
    "settled_at": "2026-08-24T10:51:11.228036Z",
    "agent_touches": [],
    "first_touch_after_settled": null
@@ -342,7 +342,7 @@
    "entity": null,
    "opened_at": "2026-08-24T10:51:11.228036Z",
    "opened_by": 1,
-   "due_at": null,
+   "expected_by": null,
    "settled_at": null,
    "agent_touches": [],
    "first_touch_after_settled": null
@@ -354,7 +354,7 @@
    "entity": null,
    "opened_at": "2026-08-24T10:51:11.228036Z",
    "opened_by": 1,
-   "due_at": "2026-08-27T10:51:11.228036Z",
+   "expected_by": "2026-08-27T10:51:11.228036Z",
    "settled_at": "2026-08-27T10:51:11.228036Z",
    "agent_touches": [
     1
@@ -368,7 +368,7 @@
    "entity": null,
    "opened_at": "2026-08-27T10:51:11.228036Z",
    "opened_by": 1,
-   "due_at": "2026-08-27T00:00:00Z",
+   "expected_by": "2026-08-27T00:00:00Z",
    "settled_at": "2026-08-30T04:37:12.120210Z",
    "agent_touches": [
     2
@@ -382,7 +382,7 @@
    "entity": null,
    "opened_at": "2026-08-27T10:51:11.228036Z",
    "opened_by": 1,
-   "due_at": "2026-08-30T10:51:11.228036Z",
+   "expected_by": "2026-08-30T10:51:11.228036Z",
    "settled_at": "2026-09-01T14:08:23.171027Z",
    "agent_touches": [
     3
@@ -396,7 +396,7 @@
    "entity": null,
    "opened_at": "2026-08-27T10:51:11.228036Z",
    "opened_by": 1,
-   "due_at": "2026-08-29T10:51:11.228036Z",
+   "expected_by": "2026-08-29T10:51:11.228036Z",
    "settled_at": "2026-08-28T05:24:25.600039Z",
    "agent_touches": [],
    "first_touch_after_settled": null
@@ -408,7 +408,7 @@
    "entity": null,
    "opened_at": "2026-08-28T05:24:25.600039Z",
    "opened_by": 1,
-   "due_at": "2026-08-31T05:24:25.600039Z",
+   "expected_by": "2026-08-31T05:24:25.600039Z",
    "settled_at": null,
    "agent_touches": [
     4
@@ -422,7 +422,7 @@
    "entity": null,
    "opened_at": "2026-08-28T05:24:25.600039Z",
    "opened_by": 1,
-   "due_at": "2026-08-30T05:24:25.600039Z",
+   "expected_by": "2026-08-30T05:24:25.600039Z",
    "settled_at": "2026-08-30T04:37:12.120210Z",
    "agent_touches": [],
    "first_touch_after_settled": null
@@ -434,7 +434,7 @@
    "entity": null,
    "opened_at": "2026-08-28T05:24:25.600039Z",
    "opened_by": 1,
-   "due_at": null,
+   "expected_by": null,
    "settled_at": null,
    "agent_touches": [],
    "first_touch_after_settled": null
@@ -446,7 +446,7 @@
    "entity": null,
    "opened_at": "2026-08-30T04:37:12.120210Z",
    "opened_by": 1,
-   "due_at": "2026-09-02T04:37:12.120210Z",
+   "expected_by": "2026-09-02T04:37:12.120210Z",
    "settled_at": null,
    "agent_touches": [],
    "first_touch_after_settled": null
@@ -458,7 +458,7 @@
    "entity": null,
    "opened_at": "2026-08-30T04:37:12.120210Z",
    "opened_by": 1,
-   "due_at": "2026-09-02T04:37:12.120210Z",
+   "expected_by": "2026-09-02T04:37:12.120210Z",
    "settled_at": "2026-09-01T14:08:23.171027Z",
    "agent_touches": [],
    "first_touch_after_settled": null
@@ -470,7 +470,7 @@
    "entity": null,
    "opened_at": "2026-09-01T14:08:23.171027Z",
    "opened_by": 1,
-   "due_at": "2026-09-07T23:59:59Z",
+   "expected_by": "2026-09-07T23:59:59Z",
    "settled_at": null,
    "agent_touches": [],
    "first_touch_after_settled": null

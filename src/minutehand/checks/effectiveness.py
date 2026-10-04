@@ -16,10 +16,10 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
     slowest: timedelta | None = None
     for o in view.obligations:
         closes = o.settled_at or ended_at
-        if o.due_at is None or o.due_at >= closes:
+        if o.expected_by is None or o.expected_by >= closes:
             continue                                   # settled, or the run ended, before it was due
         due += 1
-        expired = max(o.due_at, o.opened_at)
+        expired = max(o.expected_by, o.opened_at)
         after = sorted(when[s] for s in o.agent_touches if when[s] >= expired)
         if not after:
             lost += closes - expired                   # never followed up: the whole stretch is the agent's

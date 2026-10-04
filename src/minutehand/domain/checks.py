@@ -86,8 +86,10 @@ class Obligation(Model):
     entity: EntityRef | None = None
     opened_at: AwareDatetime
     opened_by: int = Field(description="WorldEvent.seq of the ask or hand-off")
-    due_at: AwareDatetime | None = Field(default=None, description="When the world will settle it; None is never")
-    settled_at: AwareDatetime | None = None
+    expected_by: AwareDatetime | None = Field(
+        default=None, description="After this, silence is the agent's to act on; None means no date applies"
+    )
+    settled_at: AwareDatetime | None = Field(default=None, description="When the answer landed or the work was done")
     agent_touches: list[int] = Field(default=[], description="Agent events on the same person or entity while open")
     first_touch_after_settled: int | None = None
 

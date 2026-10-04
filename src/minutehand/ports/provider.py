@@ -8,7 +8,8 @@ from typing import Awaitable, Callable, MutableMapping, Protocol
 from minutehand.domain.clock import Due
 from minutehand.domain.people import InboundTarget, PersonReply
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.world import EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -35,6 +36,14 @@ class PushesEvents(Protocol):
 
     async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None:
         """Record the reply in the world and push it to the agent the way the real service would."""
+        ...
+
+
+class HoldsTickets(Protocol):
+    """A provider with tickets a person can finish or cancel. This is how a `TicketFate` lands."""
+
+    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
+        """Move the ticket to `to` the way its assignee would, recorded as actor PERSON."""
         ...
 
 
