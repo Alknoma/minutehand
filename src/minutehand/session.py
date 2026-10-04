@@ -504,7 +504,7 @@ def _secrets(agent: AgentUnderTest) -> dict[str, str]:
 
 def _agent_env(proxy: Proxy, run_secrets: Mapping[str, str]) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else."""
-    ca = str(proxy.ca_cert)
+    ca = str(proxy.ca_bundle)
     return {
         "HTTPS_PROXY": proxy.url,
         "HTTP_PROXY": proxy.url,
