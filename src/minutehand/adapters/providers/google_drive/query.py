@@ -143,8 +143,8 @@ class _Kind(StrEnum):
     LITERAL = "literal"
     WORD = "word"
     OP = "op"
-    OPEN = "("
-    CLOSE = ")"
+    OPEN = "open"
+    CLOSE = "close"
 
 
 _TOKEN = re.compile(r"\s+|\(|\)|<=|>=|!=|=|<|>|[A-Za-z_][A-Za-z0-9_.]*")
