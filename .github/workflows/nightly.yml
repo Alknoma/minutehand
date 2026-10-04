@@ -1,0 +1,50 @@
+name: nightly
+
+# What is too slow or too noisy for a pull request: the suite repeated to surface tests
+# that only sometimes fail, and the suite against the newest release of every client
+# library the providers imitate, to catch a service's own client moving under a fake.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: Suite five times, five orders
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: |
+          for round in 1 2 3 4 5; do
+            echo "::group::round $round"
+            uv run pytest -q -n auto
+            echo "::endgroup::"
+          done
+
+  newest-clients:
+    name: Against the newest client libraries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      # The lockfile is deliberately ignored here: this job asks what breaks tomorrow.
+      - run: uv sync --upgrade
+      - run: uv pip list
+      - run: uv run pytest -q -n auto
