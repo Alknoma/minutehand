@@ -1,0 +1,137 @@
+"""The mitmproxy addon: route each intercepted call by its host, answer or refuse it, and record it.
+
+A claimed host is answered by its provider's ASGI app and the call is recorded as an
+`Exchange` tied to the events the provider wrote while answering. An unclaimed host
+is refused with 502 and recorded the same way. A model API is tunnelled without being
+decrypted, unless the run edits its requests; then it is decrypted, edited and sent on,
+and neither its request nor its response is stored.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+
+from mitmproxy import http, tls
+from mitmproxy.addons import asgiapp
+
+from minutehand.adapters.proxy import redact
+from minutehand.adapters.proxy.edit import apply_edits
+from minutehand.adapters.proxy.policy import HostPolicy, Routing
+from minutehand.domain.provider import Manifest
+from minutehand.domain.world import Exchange
+from minutehand.ports.clock import Clock
+from minutehand.ports.provider import ASGIApp
+from minutehand.ports.store import Store
+from minutehand.ports.telemetry import Telemetry
+
+logger = logging.getLogger(__name__)
+
+TRACEPARENT = "traceparent"
+
+
+def strip_prefix(path: str, prefix: str) -> str:
+    """The path a provider's app sees: the real API's prefix removed, when the path is under it."""
+    if not prefix:
+        return path
+    if path != prefix and not path.startswith((prefix + "/", prefix + "?")):
+        return path
+    rest = path[len(prefix):]
+    return rest if rest.startswith("/") else "/" + rest
+
+
+def _json_response(status: int, message: str, host: str) -> http.Response:
+    return http.Response.make(
+        status, json.dumps({"error": message, "host": host}).encode(), {"content-type": "application/json"}
+    )
+
+
+def _first_header(message: http.Message, name: str) -> str | None:
+    values = message.headers.get_all(name)
+    return values[0] if values else None
+
+
+class ProxyAddon:
+    def __init__(self, routing: Routing, store: Store, clock: Clock, telemetry: Telemetry | None = None) -> None:
+        self.routing = routing
+        self.store = store
+        self.clock = clock
+        self.telemetry = telemetry
+        self._apps: dict[str, ASGIApp] = {}
+        # One answered call at a time, so the events between two reads of the head
+        # are exactly the events this call produced.
+        self._recording = asyncio.Lock()
+
+    def tls_clienthello(self, data: tls.ClientHelloData) -> None:
+        host = data.client_hello.sni
+        if host is None and data.context.server.address is not None:
+            host = data.context.server.address[0]
+        if host is not None and self.routing.policy(host) is HostPolicy.TUNNEL:
+            data.ignore_connection = True
+
+    async def request(self, flow: http.HTTPFlow) -> None:
+        host = flow.request.pretty_host
+        policy = self.routing.policy(host)
+        if policy is HostPolicy.ANSWER:
+            manifest = self.routing.claimant(host)
+            assert manifest is not None
+            await self._answer(flow, host, manifest)
+        elif policy is HostPolicy.EDIT:
+            self._edit(flow, host)
+        elif policy is HostPolicy.REFUSE:
+            async with self._recording:
+                first = self.store.head() + 1
+                flow.response = _json_response(502, "no provider claims this host", host)
+                self._record(flow, host, flow.request.path, first)
+
+    def _app(self, manifest: Manifest) -> ASGIApp:
+        if manifest.key not in self._apps:
+            self._apps[manifest.key] = self.routing.registry.provider(manifest).app(self.store, self.clock)
+        return self._apps[manifest.key]
+
+    async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest) -> None:
+        async with self._recording:
+            first = self.store.head() + 1
+            original = flow.request.path
+            try:
+                app = self._app(manifest)
+                flow.request.path = strip_prefix(original, manifest.path_prefix)
+                await asgiapp.serve(app, flow)
+            except Exception:
+                # Never let a claimed host fall through to the real service.
+                flow.response = _json_response(500, f"provider {manifest.key!r} failed to load", host)
+                raise
+            finally:
+                flow.request.path = original
+                self._record(flow, host, original, first)
+
+    def _edit(self, flow: http.HTTPFlow, host: str) -> None:
+        try:
+            edited = apply_edits(flow.request.content or b"", host, self.routing.edits_for(host))
+        except Exception:
+            # An edit that fails must not send the agent's request on unedited.
+            flow.response = _json_response(502, "the run's model edits could not be applied", host)
+            raise
+        if edited is not None:
+            flow.request.content = edited
+
+    def _record(self, flow: http.HTTPFlow, host: str, path: str, first: int) -> None:
+        request, response = flow.request, flow.response
+        assert response is not None
+        exchange = Exchange(
+            method=request.method,
+            host=host,
+            path=redact.path(path),
+            status=response.status_code,
+            request_body=redact.body(request.get_text(strict=False) or None, _first_header(request, "content-type") or ""),
+            response_body=redact.body(
+                response.get_text(strict=False) or None, _first_header(response, "content-type") or ""
+            ),
+            traceparent=_first_header(request, TRACEPARENT),
+        )
+        last = self.store.head()
+        self.store.attach(exchange, first_seq=first, last_seq=last)
+        if self.telemetry is not None and last >= first:
+            for event in self.store.events(since=first - 1):
+                self.telemetry.recorded(event)
