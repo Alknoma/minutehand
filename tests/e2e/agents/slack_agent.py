@@ -21,7 +21,13 @@ set), STRAY_URL (fetched once when the goal arrives).
 
 from __future__ import annotations
 
-import json
+import faulthandler
+import sys as _sys
+
+# If this program has not started listening after 15 seconds, say where it is stuck.
+faulthandler.dump_traceback_later(15, exit=False, file=_sys.stderr)
+
+import json  # noqa: E402
 import os
 import shutil
 import sys
@@ -192,6 +198,7 @@ def serve(port: int, state: Path) -> None:
             print(format % args, flush=True)
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    faulthandler.cancel_dump_traceback_later()
     print(f"listening on {port} as {agent.behaviour}", flush=True)
     server.serve_forever(poll_interval=0.05)
 
