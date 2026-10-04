@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 from minutehand.adapters.providers.google_drive import state
+from minutehand.adapters.providers.google_drive.provider import build
 from minutehand.adapters.providers.google_drive.state import ROOT_ID
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.run_clock import RunClock
 from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, Operation, RecordSnapshot
 from tests.providers.google_drive.drive_world import (
-    AUTH, DOC, FOLDER, LATER, Drive, answer, client_for, create_doc, files_of, listed, multipart, names_of,
+    AUTH, DOC, FOLDER, LATER, SCENARIO, START, Drive, answer, client_for, create_doc, files_of, listed, multipart, names_of,
 )
 
 
@@ -126,10 +130,17 @@ async def test_a_write_is_an_agent_event_on_a_document_with_title_mime_type_and_
     assert (renamed.operation, renamed.after) == (Operation.UPDATE, DocumentSnapshot(title="Freight Contract v2", mime_type=DOC))
 
 
-async def test_file_ids_come_from_the_event_sequence(drive: Drive, api: httpx.AsyncClient) -> None:
+async def test_file_ids_come_from_the_event_sequence(drive: Drive, api: httpx.AsyncClient, tmp_path: Path) -> None:
     next_seq = drive.store.head() + 1
     made = await create_doc(api, "Minutes", "text")
-    assert made["id"] == state.file_id(next_seq)
+
+    again = SqliteStore(tmp_path / "again.db", "root", RunClock(START))
+    build().seed(SCENARIO, again)
+    async with client_for(build(), again, RunClock(START)) as replay:
+        remade = await create_doc(replay, "Minutes", "text")
+
+    assert str(made["id"]).startswith(f"1F{next_seq:08d}") and len(str(made["id"])) == 30
+    assert remade["id"] == made["id"], "the same call at the same point of the log mints the same id"
 
 
 async def test_a_listing_is_a_search_and_a_get_is_a_read(drive: Drive, api: httpx.AsyncClient) -> None:
