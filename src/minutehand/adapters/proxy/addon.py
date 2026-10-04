@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping
 
 from mitmproxy import http, tls
 from mitmproxy.addons import asgiapp
@@ -20,6 +21,7 @@ from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.domain.provider import Manifest
+from minutehand.domain.scenario import ProviderKey
 from minutehand.domain.world import Exchange
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -62,6 +64,13 @@ class ProxyAddon:
         # One answered call at a time, so the events between two reads of the head
         # are exactly the events this call produced.
         self._recording = asyncio.Lock()
+
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
+        """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
+        its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`."""
+        self.store = world
+        self.clock = clock
+        self._apps = dict(apps)
 
     def tls_clienthello(self, data: tls.ClientHelloData) -> None:
         host = data.client_hello.sni

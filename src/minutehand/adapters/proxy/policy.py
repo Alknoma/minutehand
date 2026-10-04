@@ -45,6 +45,11 @@ class Routing:
                         )
         self.edits: list[ModelEdit] = [o for o in overrides if isinstance(o, PromptPatch | ModelSwap)]
 
+    def apply(self, run_id: str, overrides: list[ModelEdit]) -> None:
+        """`application.rewind.OnTheWire`: the model edits for the run about to play. One run plays at a time
+        through one proxy, so the edits are the proxy's until the next call; `[]` sends model calls on untouched."""
+        self.edits = list(overrides)
+
     def is_model_host(self, host: str) -> bool:
         return any(pattern.matches(host) for pattern in self._model_hosts)
 

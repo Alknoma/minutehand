@@ -3,6 +3,11 @@
     async with Proxy(routing, store, clock, confdir=state / "ca") as proxy:
         env = {"HTTPS_PROXY": proxy.url, "SSL_CERT_FILE": str(proxy.ca_cert)}
 
+One proxy runs in a process at a time. mitmproxy keeps its running master in a module global
+(`mitmproxy.ctx.master`), and a second master started beside the first served certificates its own CA
+did not sign; starting a second while one runs is refused. A process that plays several runs starts one
+proxy and moves it from run to run with `mount`.
+
 Two options keep a claimed or refused host from ever being contacted: connections
 upstream are opened only when a request is forwarded (`connection_strategy="lazy"`),
 and the certificate shown to the client is minted from the name it asked for rather
@@ -11,6 +16,7 @@ than copied from the real server (`upstream_cert=False`).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from types import TracebackType
 
@@ -21,11 +27,20 @@ from mitmproxy.master import Master
 
 from minutehand.adapters.proxy.addon import ProxyAddon
 from minutehand.adapters.proxy.policy import Routing
+from minutehand.domain.scenario import ProviderKey
 from minutehand.ports.clock import Clock
+from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 CA_CERT = "mitmproxy-ca-cert.pem"
+
+
+class ProxyRunning(RuntimeError):
+    """A proxy is already running in this process."""
+
+
+_running: list["Proxy"] = []
 
 
 class Proxy:
@@ -59,7 +74,14 @@ class Proxy:
         """The CA a client must trust; created in `confdir` on first start and reused after."""
         return self._confdir / CA_CERT
 
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
+        """`application.orchestrator.Mounts`: the run the proxy now answers and records for."""
+        self.addon.mount(world, clock, apps)
+
     async def __aenter__(self) -> Proxy:
+        if _running:
+            raise ProxyRunning(f"a proxy is already running in this process on {_running[0].url}; "
+                               "mitmproxy allows one, so move it to the next run with mount()")
         self._confdir.mkdir(parents=True, exist_ok=True)
         master = Master(options.Options(listen_host=self._listen[0], listen_port=self._listen[1],
                                         confdir=str(self._confdir)))
@@ -80,6 +102,7 @@ class Proxy:
             raise OSError("the proxy started but reports no listening address")
         self.host, self.port = bound[0][0], bound[0][1]
         self._master = master
+        _running.append(self)
         return self
 
     async def __aexit__(
@@ -88,6 +111,7 @@ class Proxy:
         master, self._master = self._master, None
         if master is None:
             return
+        _running.remove(self)
         server = master.addons.get("proxyserver")
         assert isinstance(server, Proxyserver)
         await server.servers.update([])
