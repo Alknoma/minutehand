@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from minutehand.application.ledger import build
+from minutehand.checks.ledger import build
 from minutehand.domain.checks import RunView, WakeRecord
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import (

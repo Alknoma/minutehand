@@ -9,7 +9,7 @@ finished. Whether it chased or merely thanked is a judgement, so this answers
 from __future__ import annotations
 
 from minutehand.checks._waits import blocked
-from minutehand.application.ledger import recipients
+from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, ObligationKind, RunView, Severity
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, TicketSnapshot
 

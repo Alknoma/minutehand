@@ -6,7 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.ledger import build
+from minutehand.checks.ledger import build
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.runner import evaluate_run
 from minutehand.domain.checks import ObligationKind

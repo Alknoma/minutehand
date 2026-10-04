@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from minutehand.application.ledger import recipients
+from minutehand.checks.ledger import recipients
 from minutehand.checks._waits import follow_up, reaction
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
 from minutehand.domain.world import Actor, Operation

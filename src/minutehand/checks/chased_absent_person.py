@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.application.ledger import absences, recipients
+from minutehand.checks.ledger import absences, recipients
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 from minutehand.domain.world import Actor, Operation
 

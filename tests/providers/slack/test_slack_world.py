@@ -38,7 +38,7 @@ async def test_a_fork_sees_history_only_up_to_the_fork(workspace: Workspace, cli
     at = workspace.store.head()
     await body(client, "chat.postMessage", channel=GENERAL, text="after, in the parent")
 
-    fork = workspace.store.fork("what-if", at_seq=at)
+    fork = workspace.store.fork("what-if", at_seq=at, clock=workspace.clock)
     async with client_for(workspace.provider, fork, workspace.clock) as forked:
         assert text_of(await form(forked, "conversations.history", channel=GENERAL)) == ["before the fork"]
         await body(forked, "chat.postMessage", channel=GENERAL, text="only in the fork")

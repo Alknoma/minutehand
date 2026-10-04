@@ -13,7 +13,7 @@ import pkgutil
 from datetime import datetime
 
 from minutehand import checks as package
-from minutehand.application.ledger import build
+from minutehand.checks.ledger import build
 from minutehand.checks._waits import ended_at
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
