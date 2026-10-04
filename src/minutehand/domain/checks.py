@@ -1,4 +1,4 @@
-"""What a check answers with. The shape follows alknoma-cloud's `lints/_core.py`:
+"""What a check answers with. The shape follows the parent repository's lint core:
 severity is how loud, kind is what the reader must do, and a check that could not
 read its input did not run, which is `blocked` and never a finding."""
 
