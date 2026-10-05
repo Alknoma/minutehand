@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 import pytest
+from notion_client import APIResponseError
 
 from tests.providers.notion.notion_world import (
     AGENT_TOKEN,
@@ -25,6 +26,7 @@ from tests.providers.notion.notion_world import (
     refusal,
     scenario,
     seeded,
+    through_proxy,
 )
 
 
@@ -364,3 +366,14 @@ async def test_a_workspace_top_page_from_an_internal_integration_is_refused(api:
         400,
         "validation_error",
     )
+
+
+async def test_a_rate_limit_is_refused_to_the_sdk_without_a_retry_and_keeps_retry_after(tmp_path: Path) -> None:
+    """notion-client 2.2.1 has no retry: a 429 reaches the caller as `APIResponseError`, Retry-After on it."""
+    world = faulted(tmp_path, [{"kind": "rate_limited", "times": 1, "retry_after": 30}])
+    async for sdk in through_proxy(tmp_path, world, "async"):
+        with pytest.raises(APIResponseError) as raised:
+            await sdk(lambda c: c.users.me())
+        assert raised.value.code == "rate_limited" and raised.value.headers["retry-after"] == "30"
+        assert (await sdk(lambda c: c.users.me()))["type"] == "bot"
+    world.store.close()
