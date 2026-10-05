@@ -1,6 +1,7 @@
 """Every byte the store keeps on disk, as a search for a secret must see it.
 
-The world file, its write-ahead log and anything beside them, raw; and then every stored body decompressed, since a secret that reached a compressed body would not appear in the raw bytes and
+The world file, its write-ahead log and anything beside them, raw; and then every stored body and every pooled
+snapshot file decompressed, since a secret that reached a compressed body would not appear in the raw bytes and
 the search would pass for the wrong reason.
 """
 
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import zstandard
 
-from minutehand.adapters.store.sqlite import Codec
+from minutehand.adapters.store.sqlite import POOL_SUFFIX, Codec
 
 
 def everything(directory: Path) -> bytes:
@@ -26,4 +27,6 @@ def everything(directory: Path) -> bytes:
                 kept.append(unpack.decompress(stored) if Codec(codec) is Codec.ZSTD else stored)
         finally:
             db.close()
+    for pooled in (p for p in found if p.suffix == ".zst" and p.parent.parent.name.endswith(POOL_SUFFIX)):
+        kept.append(unpack.decompress(pooled.read_bytes(), max_output_size=1 << 31))
     return b"".join(kept)
