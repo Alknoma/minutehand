@@ -48,7 +48,7 @@ from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import Happening, Person, ProviderKey, Scenario, TicketHappening
+from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
 from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
 from minutehand.ports.agent import AgentDriver, Reports
 from minutehand.ports.clock import Clock
@@ -57,8 +57,10 @@ from minutehand.ports.provider import (
     ActsOnTickets,
     ASGIApp,
     BooksWakes,
+    ChangesDocuments,
     EditsTickets,
     HoldsTickets,
+    NotifiesChanges,
     Provider,
     PushesEvents,
     PushesInteractions,
@@ -397,6 +399,18 @@ class Orchestrator:
             self._clock.jump(jump.now)
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
                 await self._fire(fired)
+                watched = self._watched(fired)
+                if not watched:
+                    continue
+                stop = await self._wake(
+                    self._clock.begin_wake(),
+                    WakeReason.DUE,
+                    lambda watched=watched: self._notify(watched),
+                    [],
+                    [self._reach.main] if self._reach.main is not None else [],
+                )
+                if stop is not None:
+                    return stop
                 continue
             wake = self._clock.begin_wake()
             requests, reason = self._requests(fired)
@@ -404,6 +418,7 @@ class Orchestrator:
 
             async def fire(due: list[Pending] = fired) -> None:
                 await self._fire(due)
+                await self._notify(self._watched(due))
 
             stop = await self._wake(wake, reason, fire, requests, settle)
             if stop is not None:
@@ -465,10 +480,15 @@ class Orchestrator:
 
     async def _happen(self, happening: Happening) -> None:
         """What a person does by themselves lands through the port its family has: a ticket happening through the
-        ticket provider's `ActsOnTickets`, a messaging happening pushed through `PushesEvents`."""
+        ticket provider's `ActsOnTickets`, a document happening through the document provider's `ChangesDocuments`,
+        a messaging happening pushed through `PushesEvents`."""
         if isinstance(happening, TicketHappening):
             provider = self._scenario.happening_ticket(happening).provider
             self._acts(provider).act(happening, self._scenario, self._store, self._clock)
+            return
+        if isinstance(happening, DocumentHappening):
+            provider = self._scenario.happening_document(happening).provider
+            self._changes(provider).change(happening, self._scenario, self._store, self._clock)
             return
         await self._pushes(happening.provider).happen(
             happening,
@@ -479,16 +499,19 @@ class Orchestrator:
         )
 
     def _unheard(self, pending: Pending) -> bool:
-        """A pending happening the agent is not told of: one on a ticket, which the agent finds on its next read.
-        A messaging happening is pushed to the agent, and that push is a wake, as a reply's is."""
+        """A pending happening the agent is not told of as it lands: one on a ticket or a document, which the agent
+        finds on its next read (a document's provider may then tell a watching agent, `_watched`). A messaging
+        happening is pushed to the agent, and that push is a wake, as a reply's is."""
         return isinstance(pending, PendingHappening) and isinstance(
-            self._scenario.happenings[pending.happening], TicketHappening
+            self._scenario.happenings[pending.happening], TicketHappening | DocumentHappening
         )
 
     def _delivered_to(self, fired: list[Pending]) -> list[AgentDriver]:
         """A wake made only of bookings sends no request, since the scheduler's delivery is the wake, but the agent
         still acts on what was delivered: the loop waits on its main driver until it is no longer working."""
-        if self._reach.main is None or not any(isinstance(p, PendingBooking) for p in fired):
+        if self._reach.main is None:
+            return []
+        if not any(isinstance(p, PendingBooking) for p in fired) and not self._watched(fired):
             return []
         return [self._reach.main]
 
@@ -790,6 +813,24 @@ class Orchestrator:
             raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
         return self._signing[provider]
 
+    def _changes(self, provider: ProviderKey) -> ChangesDocuments:
+        found = next((p for p in self._services.providers if p.manifest.key == provider), None)
+        if not isinstance(found, ChangesDocuments):
+            raise RunRefused(f"a happening changes a seeded {provider} document, and {provider} cannot change one")
+        return found
+
+    def _watched(self, fired: list[Pending]) -> list[NotifiesChanges]:
+        """The providers a document happening just landed in whose agent asked to be told of changes: telling it is
+        a wake, as a pushed event is. A change nobody watches is found on the agent's next read, as a ticket's is."""
+        happenings = [self._scenario.happenings[p.happening] for p in fired if isinstance(p, PendingHappening)]
+        providers = {self._scenario.happening_provider(h) for h in happenings if isinstance(h, DocumentHappening)}
+        found = [p for p in self._services.providers if p.manifest.key in providers]
+        return [p for p in found if isinstance(p, NotifiesChanges) and p.watched(self._store, self._clock)]
+
+    async def _notify(self, watched: list[NotifiesChanges]) -> None:
+        for changer in watched:
+            await changer.notify(self._store, self._clock)
+
     def _tickets(self, provider: ProviderKey) -> HoldsTickets:
         if provider not in self._services.tickets:
             raise RunRefused(f"a ticket fate is due on {provider}, which holds no tickets a person can move")
@@ -804,16 +845,22 @@ class Orchestrator:
 
 def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, services: Services) -> None:
     """Every happening lands through a port its provider has, checked before anything is seeded: a ticket happening
-    needs the ticket's provider in the run implementing `ActsOnTickets`; a messaging happening needs its provider
+    needs the ticket's provider in the run implementing `ActsOnTickets`, a document happening the document's provider
+    implementing `ChangesDocuments`; a messaging happening needs its provider
     pushing events and the agent declaring an inbound target for it."""
     for n, happening in enumerate(scenario.happenings, start=1):
         provider = scenario.happening_provider(happening)
+        found = next((p for p in services.providers if p.manifest.key == provider), None)
         if isinstance(happening, TicketHappening):
-            found = next((p for p in services.providers if p.manifest.key == provider), None)
             if isinstance(found, ActsOnTickets):
                 continue
             why = "is not in this run" if found is None else "has no tickets a person can act on"
             what = f"{happening.person} {happening.action.kind} the seeded ticket {happening.ticket!r}"
+        elif isinstance(happening, DocumentHappening):
+            if isinstance(found, ChangesDocuments):
+                continue
+            why = "is not in this run" if found is None else "has no documents a person can change"
+            what = f"{happening.person} {happening.action.kind} the seeded document {happening.document!r}"
         else:
             if provider not in services.pushes:
                 why = "pushes no events to the agent"

@@ -1,121 +1,201 @@
-"""The Drive a scenario starts with: My Drive, its people, their access, and the scenario's documents.
+"""The Drive a scenario starts with: everyone's My Drive, the shared drives, the documents, who may see them,
+how the agent signs in, and the faults the scenario declared.
 
-- My Drive is owned by the scenario's owner.
-- Every person is a user; the owner holds My Drive and everyone else, the agent
-  included, is granted `writer` on it, which every file below inherits.
-- Each `SeededDocument` for this provider is a Google Doc owned by the owner, in its
-  `folder` (a folder under My Drive, made the first time a document names it) or in
-  My Drive itself.
+- Every person is a user with a My Drive of their own; so is every sign-in that is not a person's (a service
+  account), named by its credential.
+- A `SharedSpace` is a shared drive whose members are granted on its root.
+- Each `SeededDocument` is a file owned by its owner (the scenario's owner when it names none), in its owner's
+  My Drive or its shared drive, under its folder path, made the first time a path names it. A DOCUMENT is a
+  Google Doc whose text is read as Markdown; a SPREADSHEET a Google Sheet of its rows; a PRESENTATION a Google
+  Slides deck; a FILE an uploaded file of its `mime_type`. It was last changed `modified_before_start`
+  before the scenario starts, by `modified_by`.
+- With no `SignIn` for this provider, any credential signs in as the scenario's owner.
+- Its own seed (`DriveSeed`, the scenario's `ProviderSeed` for `google_drive`) declares the faults: the next
+  `times` calls of a Google operation, from `after` on, refused with a `wire.FaultKind`.
 
-Everything is written as actor SCENARIO, stamped with the store's clock, which is at
-the scenario's start while it is being set up.
+Everything is written as actor SCENARIO.
 """
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.google_drive import state, wire
+from datetime import timedelta
+
+from pydantic import Field
+
+from minutehand.adapters.providers.google_drive import docs, slides, state, wire
+from minutehand.adapters.providers.google_drive.app import OPERATIONS
 from minutehand.adapters.providers.google_drive.manifest import MANIFEST
-from minutehand.adapters.providers.google_drive.state import ROOT_ID, ROOT_NAME, DriveWorld
-from minutehand.domain.scenario import Person, Scenario
+from minutehand.adapters.providers.google_drive.state import (
+    ROLES,
+    ROOT_NAME,
+    DriveWorld,
+    ensure_folder,
+    folder_file,
+    grant,
+)
+from minutehand.domain.scenario import DocumentKind, Model, Person, Scenario, SeededDocument
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
 
-def _user(person: Person) -> wire.DriveUser:
+class FaultSeed(Model):
+    """The next `times` calls of `operation`, from `after` on, are refused with `kind`."""
+
+    operation: str = Field(min_length=1, description="Google's own name for the call, e.g. 'documents.get'")
+    kind: wire.FaultKind
+    times: int = Field(default=1, ge=1)
+    after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="Offset from the scenario's start")
+
+
+class DriveSeed(Model):
+    """What only Drive seeds, as the body of the scenario's `ProviderSeed` for `google_drive`."""
+
+    faults: list[FaultSeed] = []
+
+
+def drive_seed(scenario: Scenario) -> DriveSeed:
+    found = scenario.provider_seed(MANIFEST.key)
+    return DriveSeed() if found is None else DriveSeed.model_validate_json(found.body)
+
+
+def user_of(person: Person) -> wire.DriveUser:
     return wire.DriveUser(
-        displayName=person.name,
-        emailAddress=person.email,
-        permissionId=state.permission_id(person.email),
+        displayName=person.name, emailAddress=person.email, permissionId=state.permission_id(person.email)
     )
 
 
-def _file(
-    file_id: str,
-    name: str,
-    mime_type: str,
+def _robot(credential: str) -> wire.DriveUser:
+    return wire.DriveUser(
+        displayName=credential.split("@", 1)[0], emailAddress=credential, permissionId=state.permission_id(credential)
+    )
+
+
+def _seed_document(
+    drive: DriveWorld,
+    document: SeededDocument,
     *,
-    parent: str | None,
+    root: wire.StoredFile,
     owner: wire.DriveUser,
+    modifier: wire.DriveUser,
     stamp: str,
-    version: int,
-    content: wire.DocText | None,
+    changed: str,
 ) -> wire.StoredFile:
-    return wire.StoredFile(
+    parent = ensure_folder(drive, root, document.folder, owner, stamp, Actor.SCENARIO)
+    blob = (
+        drive.keep_blob(document.text.encode("utf-8"), actor=Actor.SCENARIO)
+        if document.kind is DocumentKind.FILE
+        else None
+    )
+    seq = drive.next_seq()
+    file_id = state.file_id(seq)
+    content: wire.Content | None
+    if document.kind is DocumentKind.DOCUMENT:
+        mime, content = wire.DOCUMENT, docs.from_markdown(file_id, document.text)
+    elif document.kind is DocumentKind.SPREADSHEET:
+        mime, content = wire.SPREADSHEET, wire.Sheet(rows=document.rows)
+    elif document.kind is DocumentKind.PRESENTATION:
+        mime, content = wire.PRESENTATION, slides.deck_from_text(file_id, document.text)
+    else:
+        mime, content = document.mime_type or "text/plain", blob
+    made = wire.StoredFile(
         file=wire.DriveFile(
             id=file_id,
-            name=name,
-            mimeType=mime_type,
-            parents=[parent] if parent is not None else None,
-            owners=[owner],
-            createdTime=stamp,
-            modifiedTime=stamp,
-            version=str(version),
-            webViewLink=wire.web_view_link(file_id, mime_type),
+            name=document.title,
+            mimeType=mime,
+            parents=[parent.file.id],
+            owners=[owner] if root.file.driveId is None else None,
+            createdTime=changed,
+            modifiedTime=changed,
+            version=str(seq),
+            webViewLink=wire.web_view_link(file_id, mime),
+            size=str(blob.size) if blob is not None else None,
+            md5Checksum=blob.md5 if blob is not None else None,
+            driveId=root.file.driveId,
+            lastModifyingUser=modifier,
+            shared=True if document.shared_with else None,
         ),
         content=content,
     )
+    drive.write_file(made, operation=Operation.CREATE, actor=Actor.SCENARIO)
+    return made
 
 
 def seed(scenario: Scenario, world: Store) -> None:
     drive = DriveWorld(world)
-    stamp = wire.rfc3339(scenario.starts_at)
-    owner_person = next(p for p in scenario.people if p.key == scenario.owner)
-    owner = _user(owner_person)
+    start = scenario.starts_at
+    stamp = wire.rfc3339(start)
+    people = {p.key: p for p in scenario.people}
+    users = {p.key: user_of(p) for p in scenario.people}
+    sign_ins = [s for s in scenario.sign_ins if s.provider == MANIFEST.key]
+    robots = [_robot(s.credential) for s in sign_ins if s.person is None]
 
-    for user in [*(_user(p) for p in scenario.people), state.agent()]:
+    for key, user in users.items():
+        drive.keep_person(key, user)
+    for user in [*users.values(), *robots]:
+        assert user.emailAddress is not None
         drive.write_user(user, actor=Actor.SCENARIO)
-
-    root = _file(
-        ROOT_ID, ROOT_NAME, wire.FOLDER, parent=None, owner=owner, stamp=stamp, version=drive.next_seq(), content=None
-    )
-    drive.write_file(root, operation=Operation.CREATE, actor=Actor.SCENARIO)
-
-    grantees = [_user(p) for p in scenario.people if p.key != scenario.owner] + [state.agent()]
-    for grantee in grantees:
-        assert grantee.emailAddress is not None
-        drive.write_grant(
-            ROOT_ID,
-            wire.Permission(
-                id=grantee.permissionId,
-                type="user",
-                role="writer",
-                emailAddress=grantee.emailAddress,
-                displayName=grantee.displayName,
-            ),
-            operation=Operation.CREATE,
-            actor=Actor.SCENARIO,
+        root = folder_file(
+            state.root_id(user.emailAddress),
+            ROOT_NAME,
+            parent=None,
+            owner=user,
+            drive_id=None,
+            stamp=stamp,
+            version=drive.next_seq(),
         )
+        drive.write_file(root, operation=Operation.CREATE, actor=Actor.SCENARIO)
 
-    folders: dict[str, str] = {}
+    if not sign_ins:
+        owner = people[scenario.owner]
+        drive.keep_credential(state.ANY_CREDENTIAL, wire.Credential(email=owner.email), operation=Operation.CREATE)
+    for sign_in in sign_ins:
+        email = people[sign_in.person].email if sign_in.person is not None else sign_in.credential
+        credential = wire.Credential(email=email, service_account="@" in sign_in.credential)
+        drive.keep_credential(state.secret_digest(sign_in.credential), credential, operation=Operation.CREATE)
+
+    spaces: dict[str, wire.StoredFile] = {}
+    for space in scenario.spaces:
+        if space.provider != MANIFEST.key:
+            continue
+        seq = drive.next_seq()
+        drive_id = state.drive_id(seq)
+        drive.write_drive(wire.SharedDrive(id=drive_id, name=space.name, createdTime=stamp), actor=Actor.SCENARIO)
+        root = folder_file(drive_id, space.name, parent=None, owner=None, drive_id=drive_id, stamp=stamp, version=seq)
+        drive.write_file(root, operation=Operation.CREATE, actor=Actor.SCENARIO)
+        for member in space.members:
+            grant(drive, root, users[member.person], ROLES[member.role], actor=Actor.SCENARIO)
+        spaces[space.name] = root
+
     for document in scenario.documents:
         if document.provider != MANIFEST.key:
             continue
-        parent = ROOT_ID
-        if document.folder is not None:
-            if document.folder not in folders:
-                seq = drive.next_seq()
-                folder = _file(
-                    state.file_id(seq),
-                    document.folder,
-                    wire.FOLDER,
-                    parent=ROOT_ID,
-                    owner=owner,
-                    stamp=stamp,
-                    version=seq,
-                    content=None,
-                )
-                drive.write_file(folder, operation=Operation.CREATE, actor=Actor.SCENARIO)
-                folders[document.folder] = folder.file.id
-            parent = folders[document.folder]
-        seq = drive.next_seq()
-        made = _file(
-            state.file_id(seq),
-            document.title,
-            wire.DOCUMENT,
-            parent=parent,
+        owner = users[document.owner or scenario.owner]
+        assert owner.emailAddress is not None
+        root = spaces[document.space] if document.space is not None else drive.file(state.root_id(owner.emailAddress))
+        assert root is not None
+        made = _seed_document(
+            drive,
+            document,
+            root=root,
             owner=owner,
+            modifier=users[document.modified_by] if document.modified_by else owner,
             stamp=stamp,
-            version=seq,
-            content=wire.DocText(text=document.text),
+            changed=wire.rfc3339(start - document.modified_before_start),
         )
-        drive.write_file(made, operation=Operation.CREATE, actor=Actor.SCENARIO)
+        drive.keep_seeded(document.title, made.file.id)
+        for access in document.shared_with:
+            grant(drive, made, users[access.person], ROLES[access.role], actor=Actor.SCENARIO)
+
+    for position, fault in enumerate(drive_seed(scenario).faults):
+        if fault.operation not in OPERATIONS:
+            raise ValueError(
+                f"a fault names {fault.operation!r}, which is not a Google Drive, Docs or Slides call this simulation "
+                f"answers; it answers {', '.join(sorted(OPERATIONS))}"
+            )
+        stored = wire.StoredFault(
+            operation=fault.operation,
+            kind=fault.kind,
+            after=wire.rfc3339(start + fault.after),
+            remaining=fault.times,
+        )
+        drive.keep_fault(f"fault{position:04d}", stored, operation=Operation.CREATE)

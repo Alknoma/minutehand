@@ -203,11 +203,118 @@ class SeededTicket(Model):
     comments: list[SeededComment] = []
 
 
+class DocumentKind(StrEnum):
+    """What a seeded document is, whatever its provider calls it."""
+
+    DOCUMENT = "document"  # a word-processor document; `text` is Markdown: headings, lists, tables, links
+    SPREADSHEET = "spreadsheet"  # `rows` are its cells, first sheet only
+    PRESENTATION = "presentation"  # `text`: one slide per block of lines separated by a blank line
+    FILE = "file"  # an uploaded file: `text` is its content, as UTF-8, of `mime_type`
+
+
+class AccessRole(StrEnum):
+    """What a person may do with a document or a shared space, from least to most."""
+
+    READER = "reader"
+    COMMENTER = "commenter"
+    WRITER = "writer"
+    ORGANIZER = "organizer"
+
+
+class Access(Model):
+    person: str = Field(description="Person.key")
+    role: AccessRole = AccessRole.WRITER
+
+
 class SeededDocument(Model):
     provider: ProviderKey
     title: str
-    text: str
-    folder: str | None = None
+    text: str = ""
+    kind: DocumentKind = DocumentKind.DOCUMENT
+    rows: list[list[str]] = Field(default=[], description="A spreadsheet's cells, row by row")
+    mime_type: str | None = Field(default=None, description="A FILE's media type; text/plain when None")
+    folder: str | None = Field(
+        default=None, description="A folder path, '/'-separated, made the first time it is named"
+    )
+    owner: str | None = Field(default=None, description="Person.key; None is the scenario's owner")
+    space: str | None = Field(default=None, description="SharedSpace.name it lives in; None is its owner's own")
+    shared_with: list[Access] = []
+    modified_before_start: timedelta = Field(
+        default=timedelta(0), ge=timedelta(0), description="How long before the scenario starts it was last changed"
+    )
+    modified_by: str | None = Field(default=None, description="Person.key who changed it last; None is its owner")
+
+    @model_validator(mode="after")
+    def _content_fits_kind(self) -> SeededDocument:
+        if self.rows and self.kind is not DocumentKind.SPREADSHEET:
+            raise ValueError(f"document {self.title!r} has rows but is a {self.kind.value}")
+        if self.mime_type is not None and self.kind is not DocumentKind.FILE:
+            raise ValueError(f"document {self.title!r} has a mime_type but is a {self.kind.value}")
+        return self
+
+
+class SharedSpace(Model):
+    """A place documents live that no one person owns: a shared drive."""
+
+    provider: ProviderKey
+    name: str
+    members: list[Access] = Field(min_length=1)
+
+
+class SignIn(Model):
+    """A credential the agent signs in to a provider with, and whom it signs in as.
+
+    The provider decides what the credential is: for Google, a refresh token or a service account's email.
+    Once a scenario names any sign-in for a provider, a credential it does not name is refused."""
+
+    provider: ProviderKey
+    credential: str = Field(min_length=1)
+    person: str | None = Field(default=None, description="Person.key; None: an account of its own, not a person's")
+
+
+class Edited(Model):
+    """The person adds a paragraph at the end of the document."""
+
+    kind: Literal["edited"] = "edited"
+    append: str = Field(min_length=1)
+
+
+class Renamed(Model):
+    kind: Literal["renamed"] = "renamed"
+    to: str = Field(min_length=1)
+
+
+class Moved(Model):
+    kind: Literal["moved"] = "moved"
+    folder: str = Field(description="A folder path in the same place, made if it is not there")
+
+
+class Shared(Model):
+    kind: Literal["shared"] = "shared"
+    access: Access
+
+
+class Trashed(Model):
+    kind: Literal["trashed"] = "trashed"
+
+
+DocumentAction = Annotated[Edited | Renamed | Moved | Shared | Trashed, Field(discriminator="kind")]
+
+
+class DocumentHappening(Model):
+    """A person changes a seeded document at a moment, with no agent involved: edits, renames, moves, shares or
+    trashes it.
+
+    It lands on the run's clock through the provider that holds the document (`ports.provider.ChangesDocuments`),
+    recorded as that person's change. It wakes nobody, unless the agent asked that provider to be told of changes
+    (`ports.provider.NotifiesChanges`): then telling it is a wake, as a pushed event is.
+    """
+
+    kind: Literal["document"] = "document"
+    person: str = Field(description="Person.key of whoever changes it")
+    document: str = Field(description="The title of the seeded document changed; it names exactly one")
+    after: timedelta = Field(gt=timedelta(0), description="Offset from the scenario's start")
+    action: DocumentAction
 
 
 class ProviderSeed(Model):
@@ -392,12 +499,13 @@ class TicketHappening(Model):
     action: TicketAction
 
 
-Happening = Annotated[TicketHappening | MessagingHappening, Field(discriminator="kind")]
-"""Something a person does by themselves, unprompted, at a moment the scenario sets: one family per kind of thing
-acted on, each landing through the port its provider implements, and a scenario whose happening names a provider
-without that port is refused before the run starts. A ticket happening wakes nobody; a messaging happening is pushed
-to the agent, as a reply is. A third family, a person editing, renaming, moving, sharing or trashing a document
-(landing through a document provider's own port), joins this union as its own members with their own `kind`s."""
+Happening = Annotated[TicketHappening | DocumentHappening | MessagingHappening, Field(discriminator="kind")]
+"""Something a person does by themselves, unprompted, at a moment the scenario sets. Three families, one per kind of
+thing acted on, each landing through the port its provider implements: a `TicketHappening` through `ActsOnTickets`,
+a `DocumentHappening` through `ChangesDocuments`, a `MessagingHappening` through `PushesEvents.happen`. A scenario
+whose happening lands on a provider without that port is refused before the run starts. A ticket happening wakes
+nobody; a document happening wakes the agent only when it watches that provider's changes; a messaging happening is
+pushed to the agent, as a reply is. A new family is a new member with its own `kind` and its own port."""
 
 
 class RateLimited(Model):
@@ -522,6 +630,8 @@ class _ScenarioBody(Model):
     people: list[Person]
     tickets: list[SeededTicket] = []
     documents: list[SeededDocument] = []
+    spaces: list[SharedSpace] = []
+    sign_ins: list[SignIn] = []
     ticket_fates: list[TicketFate] = []
     directions: list[Direction] = []
     channels: list[SeededChannel] = Field(default=[], description="Conversations that exist when the run starts")
@@ -563,11 +673,17 @@ class _ScenarioBody(Model):
         named += [e.assignee for e in self.expect if isinstance(e, (TicketCreated, TicketInState)) and e.assignee]
         named += [k for e in self.expect if isinstance(e, Relayed) for k in (e.said_by, e.to)]
         named += [h.action.to for h in self._ticket_happenings() if isinstance(h.action, Reassigns) and h.action.to]
+        named += [k for d in self.documents for k in (d.owner, d.modified_by) if k is not None]
+        named += [a.person for d in self.documents for a in d.shared_with]
+        named += [a.person for s in self.spaces for a in s.members]
+        named += [s.person for s in self.sign_ins if s.person is not None]
+        named += [h.action.access.person for h in self._document_happenings() if isinstance(h.action, Shared)]
         missing = sorted(set(named) - known)
         if missing:
             raise ValueError(f"no such person: {', '.join(missing)}")
         for happening in self._ticket_happenings():
             self.happening_ticket(happening)
+        self._places_resolve()
         seeded = [s.provider for s in self.provider_seeds]
         twice = sorted({p for p in seeded if seeded.count(p) > 1})
         if twice:
@@ -586,14 +702,29 @@ class _ScenarioBody(Model):
             )
         return found[0]
 
+    def happening_document(self, happening: DocumentHappening) -> SeededDocument:
+        """The one seeded document a happening changes, found by its title."""
+        found = [d for d in self.documents if d.title == happening.document]
+        if len(found) != 1:
+            raise ValueError(
+                f"a happening changes the seeded document {happening.document!r}, and {len(found)} seeded documents "
+                "have that title; it must name exactly one"
+            )
+        return found[0]
+
     def happening_provider(self, happening: Happening) -> ProviderKey:
-        """The provider a happening lands on: the one holding its seeded ticket, or the one it names."""
+        """The provider a happening lands on: the one holding its seeded ticket or document, or the one it names."""
         if isinstance(happening, TicketHappening):
             return self.happening_ticket(happening).provider
+        if isinstance(happening, DocumentHappening):
+            return self.happening_document(happening).provider
         return happening.provider
 
     def _ticket_happenings(self) -> list[TicketHappening]:
         return [h for h in self.happenings if isinstance(h, TicketHappening)]
+
+    def _document_happenings(self) -> list[DocumentHappening]:
+        return [h for h in self.happenings if isinstance(h, DocumentHappening)]
 
     def provider_seed(self, provider: str) -> ProviderSeed | None:
         """The provider's own seed, when the scenario gives it one."""
@@ -605,7 +736,7 @@ class _ScenarioBody(Model):
         if len(names) != len([c for c in self.channels if c.name is not None]):
             raise ValueError("two seeded channels share a name")
         posts = {(c.provider, p.key) for c in self.channels for p in _every_post(c.history) if p.key is not None}
-        messaging = [h for h in self.happenings if not isinstance(h, TicketHappening)]
+        messaging = [h for h in self.happenings if not isinstance(h, TicketHappening | DocumentHappening)]
         for happening in sorted(messaging, key=lambda h: h.after):
             channel = happening.channel if isinstance(happening, (PersonPosts, PersonReacts, PersonCommands)) else None
             if isinstance(happening, PersonJoins):
@@ -629,6 +760,21 @@ class _ScenarioBody(Model):
                     raise ValueError(f"two posts share the key {happening.key!r}")
                 posts.add((happening.provider, happening.key))
 
+    def _places_resolve(self) -> None:
+        """Every space a document names exists, every changed document exists, and no title is seeded twice in
+        one provider."""
+        spaces = [(s.provider, s.name) for s in self.spaces]
+        if len(spaces) != len(set(spaces)):
+            raise ValueError("two shared spaces of one provider share a name")
+        for document in self.documents:
+            if document.space is not None and (document.provider, document.space) not in spaces:
+                raise ValueError(f"document {document.title!r} is in space {document.space!r}, which is not seeded")
+        titles = [(d.provider, d.title) for d in self.documents]
+        if len(titles) != len(set(titles)):
+            raise ValueError("two seeded documents of one provider share a title")
+        for happening in self._document_happenings():
+            self.happening_document(happening)
+
     def _refuse_tell(self, relayed: Relayed) -> None:
         """A tell the agent could write without hearing it from `said_by`, or that `said_by` can never say."""
         tell = relayed.tell.casefold()
@@ -639,7 +785,15 @@ class _ScenarioBody(Model):
         elsewhere += [(f"seeded ticket {t.title!r}", f"{t.title} {t.body}") for t in self.tickets]
         elsewhere += [(f"a comment on {t.title!r}", c.text) for t in self.tickets for c in t.comments]
         elsewhere += [(f"the {s.provider} seed", s.body) for s in self.provider_seeds]
-        elsewhere += [(f"seeded document {d.title!r}", f"{d.title} {d.text}") for d in self.documents]
+        elsewhere += [
+            (f"seeded document {d.title!r}", " ".join([d.title, d.text, *(cell for row in d.rows for cell in row)]))
+            for d in self.documents
+        ]
+        elsewhere += [
+            (f"the change to {h.document!r}", h.action.append)
+            for h in self._document_happenings()
+            if isinstance(h.action, Edited)
+        ]
         elsewhere += [
             (f"{h.person}'s comment on {h.ticket!r}", h.action.text)
             for h in self._ticket_happenings()

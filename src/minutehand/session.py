@@ -77,7 +77,14 @@ from minutehand.domain.world import Actor, Operation
 from minutehand.ports.agent import Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ASGIApp,
+    BooksWakes,
+    EditsTickets,
+    HoldsTickets,
+    Provider,
+    PushesEvents,
+)
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -573,6 +580,8 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     call, but it is not seeded and no ticket fate or reply can land on it.
     """
     named: set[ProviderKey] = {t.provider for t in scenario.tickets} | {d.provider for d in scenario.documents}
+    named |= {s.provider for s in scenario.spaces} | {s.provider for s in scenario.provider_seeds}
+    named |= {c.provider for c in scenario.channels}
     named |= {t.provider for t in agent.inbound}
     if isinstance(agent.goal, GoalByMessage):
         named.add(agent.goal.provider)

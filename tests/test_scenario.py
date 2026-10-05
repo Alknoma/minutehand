@@ -235,3 +235,85 @@ def test_a_thread_reply_older_than_its_post_is_rejected() -> None:
             ago=timedelta(hours=1),
             replies=[SeededPost(by="owner", text="r", ago=timedelta(hours=2))],
         )
+
+
+DOC = {"provider": "google_drive", "title": "Plan"}
+
+
+def test_a_document_change_or_share_naming_nobody_real_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="no such person: rosa"):
+        Scenario.model_validate({**BASE, "documents": [{**DOC, "shared_with": [{"person": "rosa"}]}]})
+    with pytest.raises(ValidationError, match="no such person: rosa"):
+        Scenario.model_validate(
+            {
+                **BASE,
+                "documents": [DOC],
+                "happenings": [
+                    {
+                        "kind": "document",
+                        "document": "Plan",
+                        "person": "rosa",
+                        "after": "PT1H",
+                        "action": {"kind": "trashed"},
+                    }
+                ],
+            }
+        )
+
+
+def test_a_change_to_a_document_that_is_not_seeded_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="'Budget', and 0 seeded documents have that title"):
+        Scenario.model_validate(
+            {
+                **BASE,
+                "documents": [DOC],
+                "happenings": [
+                    {
+                        "kind": "document",
+                        "document": "Budget",
+                        "person": "owner",
+                        "after": "PT1H",
+                        "action": {"kind": "renamed", "to": "Old"},
+                    }
+                ],
+            }
+        )
+
+
+def test_a_document_in_a_space_that_is_not_seeded_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="space 'Team', which is not seeded"):
+        Scenario.model_validate({**BASE, "documents": [{**DOC, "space": "Team"}]})
+
+
+def test_rows_on_anything_but_a_spreadsheet_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="has rows but is a document"):
+        Scenario.model_validate({**BASE, "documents": [{**DOC, "rows": [["a"]]}]})
+
+
+def test_a_tell_a_person_edits_into_a_document_is_refused() -> None:
+    with pytest.raises(ValidationError, match="appears in the change to 'Plan'"):
+        Scenario.model_validate(
+            {
+                **BASE,
+                "people": [
+                    *BASE["people"],
+                    {
+                        "key": "rosa",
+                        "name": "Rosa",
+                        "email": "rosa@example.com",
+                        "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": "Lakeside hall."}]},
+                    },
+                ],
+                "documents": [DOC],
+                "happenings": [
+                    {
+                        "kind": "document",
+                        "document": "Plan",
+                        "person": "owner",
+                        "after": "PT1H",
+                        "action": {"kind": "edited", "append": "Venue: lakeside hall"},
+                    }
+                ],
+                "expect": [{"kind": "relayed", "said_by": "rosa", "to": "owner", "tell": "lakeside hall"}],
+            }
+        )

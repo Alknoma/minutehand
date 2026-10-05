@@ -138,10 +138,14 @@ def test_a_service_account_signs_in_and_its_minted_token_is_routed_to_the_same_w
         listed = session.get("https://www.googleapis.com/drive/v3/files")
         assert listed.status_code == 200, listed.text
         answered = [(c.exchange.host, c.exchange.status) for c in world.calls() if c.provider is not None]
-        assert answered == [("oauth2.googleapis.com", 200), ("www.googleapis.com", 200)]
-        # google-auth may also ask iamcredentials.googleapis.com, which no provider claims, in the background:
-        # carrying the minted token, it is this world's, refused and kept with it.
-        assert all(c.exchange.status == 502 for c in world.unmatched_calls())
+        # google-auth may also ask iamcredentials.googleapis.com in the background, which the Drive provider
+        # answers: carrying the minted token, it is this world's, and kept with it.
+        assert [a for a in answered if a[0] != "iamcredentials.googleapis.com"] == [
+            ("oauth2.googleapis.com", 200),
+            ("www.googleapis.com", 200),
+        ]
+        assert all(status == 200 for _, status in answered)
+        assert world.unmatched_calls() == []
     finally:
         served.client.close_world(world.world_id)
 

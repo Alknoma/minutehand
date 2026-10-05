@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -11,7 +12,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from minutehand.adapters.providers.google_drive.app import DOCS_HOST, DRIVE_HOST, OAUTH_HOST
+from minutehand.adapters.providers.google_drive import state, wire
+from minutehand.adapters.providers.google_drive.app import DOCS_HOST, DRIVE_HOST, OAUTH_HOST, SLIDES_HOST
 from minutehand.adapters.providers.google_drive.provider import GoogleDriveProvider, build
 from minutehand.adapters.providers.google_drive.state import DriveWorld
 from minutehand.adapters.store.sqlite import SqliteStore
@@ -20,8 +22,11 @@ from minutehand.domain.scenario import Person, Scenario, SeededDocument
 
 START = datetime(2026, 9, 14, 8, 30, 0, tzinfo=UTC)
 LATER = START + timedelta(hours=3, minutes=7, seconds=11, milliseconds=250)
-TOKEN = "ya29.any-token-the-run-hands-out"
+TOKEN = "ya29.a token the run issued to the owner"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
+OWNER = "mara@example.com"
+ROOT_ID = state.root_id(OWNER)
+"""The owner's My Drive: with no sign-in declared, the agent signs in as the owner."""
 
 DOC = "application/vnd.google-apps.document"
 FOLDER = "application/vnd.google-apps.folder"
@@ -66,7 +71,17 @@ def drive(tmp_path: Path) -> Drive:
     store = SqliteStore(tmp_path / "world.db", "root", clock)
     provider = build()
     provider.seed(SCENARIO, store)
+    issue(store, TOKEN, OWNER)
     return Drive(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+
+
+def issue(store: SqliteStore, token: str, email: str, *, lasts: timedelta = timedelta(days=30)) -> None:
+    """A token as `/token` would have issued it, lasting long enough for a test that jumps the clock. The token
+    endpoint itself is tested through Google's own client."""
+    DriveWorld(store).keep_token(
+        token,
+        wire.AccessToken(email=email, expires=wire.rfc3339(START + lasts), credential=state.ANY_CREDENTIAL),
+    )
 
 
 def client_for(
@@ -84,6 +99,12 @@ async def api(drive: Drive) -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture
 async def docs(drive: Drive) -> AsyncIterator[httpx.AsyncClient]:
     async with client_for(drive.provider, drive.store, drive.clock, DOCS_HOST) as c:
+        yield c
+
+
+@pytest.fixture
+async def presentations(drive: Drive) -> AsyncIterator[httpx.AsyncClient]:
+    async with client_for(drive.provider, drive.store, drive.clock, SLIDES_HOST) as c:
         yield c
 
 
@@ -173,3 +194,15 @@ async def listed(api: httpx.AsyncClient, q: str, **params: str) -> Answer:
             "/drive/v3/files", params={"q": q, "fields": "nextPageToken,files(id,name)", **params}, headers=AUTH
         )
     )
+
+
+def unsigned_assertion(issuer: str, *, subject: str | None = None) -> str:
+    """A service account's JWT as google-auth shapes it, signed by nobody: the fake reads its claims only."""
+
+    def part(value: dict[str, object]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    claims: dict[str, object] = {"iss": issuer, "scope": "https://www.googleapis.com/auth/drive", "aud": "x"}
+    if subject is not None:
+        claims["sub"] = subject
+    return f"{part({'alg': 'RS256', 'typ': 'JWT'})}.{part(claims)}.c2lnbmF0dXJl"
