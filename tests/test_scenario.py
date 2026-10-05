@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -90,3 +91,36 @@ def test_a_scenario_file_with_a_start_keeps_it_whenever_the_run_starts() -> None
 def test_a_played_scenario_without_its_start_is_rejected() -> None:
     with pytest.raises(ValidationError, match="starts_at"):
         Scenario.model_validate({k: v for k, v in BASE.items() if k != "starts_at"})
+
+
+def test_a_provider_seed_written_as_structure_is_kept_as_its_json_text() -> None:
+    scenario = Scenario.model_validate(
+        {**BASE, "provider_seeds": [{"provider": "asana", "body": {"tags": ["urgent"]}}]}
+    )
+    seed = scenario.provider_seed("asana")
+    assert seed is not None and json.loads(seed.body) == {"tags": ["urgent"]}
+    assert scenario.provider_seed("youtrack") is None
+
+
+def test_two_seeds_for_one_provider_are_rejected() -> None:
+    twice = [{"provider": "asana", "body": {}}, {"provider": "asana", "body": {}}]
+    with pytest.raises(ValidationError, match="more than one provider seed for asana"):
+        Scenario.model_validate({**BASE, "provider_seeds": twice})
+
+
+def test_a_happening_on_a_ticket_nobody_seeded_is_rejected() -> None:
+    happening = {"person": "owner", "ticket": "Ghost", "after": "P1D", "action": {"kind": "deletes"}}
+    with pytest.raises(ValidationError, match="'Ghost', and 0 seeded tickets have that title"):
+        Scenario.model_validate({**BASE, "happenings": [happening]})
+
+
+def test_a_happening_that_reassigns_to_nobody_real_is_rejected() -> None:
+    ticket = {"provider": "asana", "project": "P", "title": "Book the hall"}
+    happening = {
+        "person": "owner",
+        "ticket": "Book the hall",
+        "after": "P1D",
+        "action": {"kind": "reassigns", "to": "mira"},
+    }
+    with pytest.raises(ValidationError, match="no such person: mira"):
+        Scenario.model_validate({**BASE, "tickets": [ticket], "happenings": [happening]})
