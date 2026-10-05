@@ -10,7 +10,8 @@ reference says it, at the page given; **observed** means someone saw Slack do it
 | Opening a DM with a member answers an IM (`D…`) id | documented | `test_opening_a_dm_with_a_member_answers_an_im_id` | https://docs.slack.dev/reference/methods/conversations.open |
 | An id in `users` that is no member is `user_not_found`, and no DM is made | documented | `test_opening_a_dm_with_an_id_that_is_no_member_is_refused_user_not_found` | https://docs.slack.dev/reference/methods/conversations.open |
 | One unknown id in a group DM refuses the whole call | documented | `test_one_unknown_id_in_a_group_dm_refuses_the_whole_open_user_not_found` | https://docs.slack.dev/reference/methods/conversations.open |
-| A token Slack never issued is `invalid_auth` (shape only, see below) | documented | `test_a_token_that_is_not_slacks_is_refused_invalid_auth` | https://docs.slack.dev/reference/methods/auth.test |
+| A token not shaped like Slack's is `invalid_auth` | documented | `test_a_token_that_is_not_slacks_is_refused_invalid_auth` | https://docs.slack.dev/reference/methods/auth.test |
+| A well-shaped token the workspace never issued is `invalid_auth`: once a scenario declares a Slack sign-in, only the tokens it declares are answered (none declared: any token is the app's) | documented | `test_a_token_the_workspace_never_issued_is_refused_invalid_auth` | https://docs.slack.dev/reference/methods/auth.test |
 | Every member carries `tz` and `tz_offset` | documented | `test_every_member_is_served_with_a_timezone` | https://docs.slack.dev/reference/methods/users.info |
 | An unknown channel id, or a channel's name, is `channel_not_found` and is never provisioned | documented | `test_a_channel_that_is_not_an_existing_id_is_refused_channel_not_found` | https://docs.slack.dev/reference/methods/conversations.info |
 | A member id as `channel` posts into that member's DM with the app | documented | `test_a_member_id_as_the_channel_posts_into_the_dm_with_the_app` | https://docs.slack.dev/reference/methods/chat.postMessage |
@@ -55,7 +56,6 @@ reference says it, at the page given; **observed** means someone saw Slack do it
 | `missing_scope` naming `needed` and `provided` for a token without `groups:read` | Covered as a declared fault (row above); a declared `Refused` carries the code only, not `needed`/`provided`. No token carries scopes here. |
 | `email` served only with `users:read.email` | Same: no token carries scopes here. |
 | `token_revoked` for one fixed token string | A fixed credential is the emulator's own; the code is covered as a declared fault (row above). |
-| `invalid_auth` for an `xoxb-` token nobody issued | Not yet default: only the token's shape is checked. Refusing a token the world does not know needs the scenario's `sign_ins` for `slack` written to the world at seed time (as `google_drive/seed.py` does) and checked in `_authenticate`; `seed.py` is outside this change. |
 | A fixed CI token that lists private channels | A credential of the emulator's own. |
 | `_post_as`, a body field that sets the author | The emulator's private dialect; a person's message here is a scenario happening. |
 | `/health` | The emulator's own route. |

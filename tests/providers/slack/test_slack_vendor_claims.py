@@ -9,6 +9,7 @@ table of them, and the list of the old emulator's habits that were not carried o
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,9 +18,13 @@ from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID
+from minutehand.adapters.providers.slack.provider import build
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.run_clock import RunClock
+from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import Actor, Operation
 from tests.providers.slack.intercepted import Intercepted, data, off_loop
-from tests.providers.slack.slack_workspace import GENERAL, START, Workspace
+from tests.providers.slack.slack_workspace import GENERAL, SCENARIO, START, Workspace, client_for, form
 
 DIVIDER: dict[str, Any] = {"type": "divider"}
 PROSE: dict[str, Any] = {"type": "section", "text": {"type": "mrkdwn", "text": "Two invoices wait on you"}}
@@ -415,3 +420,25 @@ async def test_a_view_of_more_than_a_hundred_blocks_is_refused_invalid_arguments
 
     assert answer["error"] == "invalid_arguments"
     assert len(shown["view"]["blocks"]) == 100
+
+
+SIGNED_IN = "xoxb-the-one-this-workspace-issued"
+
+
+async def test_a_token_the_workspace_never_issued_is_refused_invalid_auth(tmp_path: Path) -> None:
+    """DOCUMENTED: a token Slack did not issue for this workspace is `invalid_auth`, while the one it issued
+    is answered. A scenario that declares a Slack sign-in names every token the workspace knows.
+    https://docs.slack.dev/reference/methods/auth.test"""
+    scenario = Scenario.model_validate(
+        {**SCENARIO.model_dump(), "sign_ins": [{"provider": "slack", "credential": SIGNED_IN}]}
+    )
+    clock = RunClock(START)
+    store = SqliteStore(tmp_path / "world.db", "root", clock)
+    provider = build()
+    provider.seed(scenario, store)
+    async with client_for(provider, store, clock) as c:
+        known = await form(c, "auth.test", token=SIGNED_IN)
+        stranger = await form(c, "auth.test", token="xoxb-well-shaped-but-never-issued")
+
+    assert known["ok"] is True
+    assert stranger["ok"] is False and stranger["error"] == "invalid_auth"
