@@ -10,8 +10,9 @@ from typing import Any
 import pytest
 from notion_client import APIResponseError
 
+from minutehand.domain.scenario import DocumentHappening, FieldSet
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
-from tests.providers.notion.notion_world import OTHER_TOKEN, START, Sdk, World, ids
+from tests.providers.notion.notion_world import OTHER_TOKEN, START, Sdk, World, ids, scenario
 
 
 async def _refused_not_found(sdk: Sdk, call: Any, token: str | None = None) -> None:
@@ -149,16 +150,24 @@ async def test_an_agent_conversation_from_a_token_to_an_archived_row(async_sdk: 
         assert row["id"] in [r["id"] for r in found["results"]], shape
 
     world.clock.jump(START + timedelta(days=1, hours=3))
-    world.provider.person_sets_property(
-        row["id"], "Status", "In progress", by="dov@example.com", world=world.store, clock=world.clock
+    world.provider.change(
+        DocumentHappening(
+            person="dov",
+            document="Launch site",
+            after=timedelta(days=1, hours=3),
+            action=FieldSet(field="Status", value="Done"),
+        ),
+        scenario(),
+        world.store,
+        world.clock,
     )
     changed = world.store.events()[-1]
     assert changed.actor is Actor.PERSON and isinstance(changed.after, RecordSnapshot)
 
     moving = await sdk(
-        lambda c: c.databases.query(database_id, filter={"property": "Status", "status": {"equals": "In progress"}})
+        lambda c: c.databases.query(database_id, filter={"property": "Status", "status": {"equals": "Done"}})
     )
-    seen = next(r for r in moving["results"] if r["id"] == row["id"])
+    seen = next(r for r in moving["results"] if r["id"] == ids("launch"))
     assert seen["last_edited_by"]["id"] == dov["id"] and seen["last_edited_time"] == "2026-09-15T11:30:00.000Z"
 
     await sdk(lambda c: c.pages.update(row["id"], archived=True))

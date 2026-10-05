@@ -451,7 +451,7 @@ class Editor:
             created_by=by,
             rich_text=text,
         )
-        self.world.write_comment(found, actor=self._actor)
+        self.world.write_comment(found, actor=self._actor, at=self.now())
         return found
 
 

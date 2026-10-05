@@ -971,6 +971,48 @@ class StoredCount(Model):
     count: int
 
 
+class WebhookEvent(StrEnum):
+    """The event types a webhook subscription can ask for that this provider sends."""
+
+    PAGE_CREATED = "page.created"
+    PAGE_CONTENT_UPDATED = "page.content_updated"
+    PAGE_PROPERTIES_UPDATED = "page.properties_updated"
+    PAGE_DELETED = "page.deleted"
+    PAGE_UNDELETED = "page.undeleted"
+    COMMENT_CREATED = "comment.created"
+
+
+class StoredWebhook(Model):
+    """Minutehand's own: a webhook subscription of one integration, set up in its settings, never on the API."""
+
+    kind: Literal["webhook"] = "webhook"
+    id: str
+    workspace: str
+    integration: str = Field(description="The integration's bot user id")
+    url: str
+    verification_token: str = Field(description="What Notion hands the subscriber once, and signs every event with")
+    events: list[WebhookEvent]
+    verified: bool
+
+
+class StoredOwedEvent(Model):
+    """Minutehand's own: an event a subscription is owed and has not been sent; deleted once sent."""
+
+    kind: Literal["owed"] = "owed"
+    id: str
+    subscription: str
+    type: WebhookEvent
+    timestamp: str
+    entity_id: str
+    entity_type: Literal["page", "comment"]
+    author: str
+    author_type: UserType
+    parent: Parent
+    page_id: str | None = Field(default=None, description="For a comment: the page it is on")
+    updated_blocks: list[str] = []
+    updated_properties: list[str] = []
+
+
 Stored = Annotated[
     StoredPage
     | StoredDatabase
@@ -980,7 +1022,9 @@ Stored = Annotated[
     | StoredWorkspace
     | StoredComment
     | StoredSchedule
-    | StoredCount,
+    | StoredCount
+    | StoredWebhook
+    | StoredOwedEvent,
     Field(discriminator="kind"),
 ]
 _STORED: TypeAdapter[Stored] = TypeAdapter(Stored)

@@ -1,24 +1,36 @@
-"""The Notion provider: the public API, the seeded workspaces, and what people do in them without the agent.
+"""The Notion provider: the public API, the seeded workspaces, what people do in them without the agent, and
+the webhooks that tell an integration of it.
 
-Notion pushes nothing to the agent in this simulation (webhooks are not built), so this is a
-`Provider`. A person's act is a provider method (`person_edits`, `person_sets_property`,
-`person_comments`, `person_archives`): it lands at the clock's time as that person's change,
-recorded as actor PERSON, and the agent finds it on its next read. Nothing in the run loop
-or the standing mode calls these yet; the shared port that will is not on integration-main.
+It is `ChangesDocuments`: a `DocumentHappening` lands on the page or database row its seeded document was written as
+(`seed.document_page`), as that person, recorded as actor PERSON: `Edited` appends paragraphs, `Renamed` sets the
+title, `Trashed` archives, `Commented` writes a comment, `FieldSet` sets a row's property from its text. A page
+cannot be moved or shared by a person here, and the manifest says so, so a scenario asking for either is refused
+at load. It is `NotifiesChanges`: a seeded webhook subscription (`NotionSeed.webhooks`) is told of every change
+it is owed, signed as Notion signs it (`webhooks.py`).
 """
 
 from __future__ import annotations
 
 from pydantic import JsonValue
 
-from minutehand.adapters.providers.notion import wire
+from minutehand.adapters.providers.notion import webhooks, wire
 from minutehand.adapters.providers.notion.app import build_app
 from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.manifest import MANIFEST
-from minutehand.adapters.providers.notion.seed import SeedValue, person_id, seed, value_request
-from minutehand.adapters.providers.notion.state import NotionWorld
+from minutehand.adapters.providers.notion.seed import SeedValue, document_page, person_id, seed, value_request
+from minutehand.adapters.providers.notion.state import NotionWorld, is_row
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import (
+    Commented,
+    DocumentHappening,
+    Edited,
+    FieldSet,
+    Moved,
+    Renamed,
+    Scenario,
+    Shared,
+    Trashed,
+)
 from minutehand.domain.world import Actor
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -34,40 +46,78 @@ class NotionProvider:
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)
 
-    # ------------------------------------------------------------------ people acting
+    # ------------------------------------------------------------------ ChangesDocuments
 
-    def person_edits(self, page: str, text: str, *, by: str, world: Store, clock: Clock) -> None:
-        """The person writes `text` at the end of a page or row, one paragraph a line."""
-        editor, user = _as_person(page, by, world, clock)
-        paragraphs: list[JsonValue] = [
-            {"type": "paragraph", "paragraph": {"rich_text": wire.text_run(line)}} for line in text.split("\n")
-        ]
-        editor.append(editor.page(page).id, paragraphs, after=None, by=user)
+    def change(self, happening: DocumentHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        """The person does the happening's action to the page or row its document was written as. A page the agent
+        has deleted for good is not there, and nothing is written."""
+        page = document_page(scenario, scenario.happening_document(happening).title)
+        found = NotionWorld(world).page(page)
+        if found is None:
+            return
+        email = next(p.email for p in scenario.people if p.key == happening.person)
+        editor, user = _as_person(page, email, world, clock)
+        action = happening.action
+        if isinstance(action, Edited):
+            paragraphs: list[JsonValue] = [
+                {"type": "paragraph", "paragraph": {"rich_text": wire.text_run(line)}}
+                for line in action.append.split("\n")
+            ]
+            editor.append(found.id, paragraphs, after=None, by=user)
+        elif isinstance(action, Renamed):
+            editor.update_page(
+                page, {"properties": {_title_property(editor, found): {"title": wire.text_run(action.to)}}}, by=user
+            )
+        elif isinstance(action, Trashed):
+            editor.archive(page, by=user)
+        elif isinstance(action, Commented):
+            editor.comment(page, None, wire.text_run(action.text), by=user)
+        elif isinstance(action, FieldSet):
+            self._sets(editor, found, action, scenario, user)
+        else:
+            assert isinstance(action, Moved | Shared)
+            raise ValueError(f"a person cannot {action.kind} a Notion page here; the scenario is refused at load")
 
-    def person_sets_property(
-        self, row: str, property: str, value: SeedValue, *, by: str, world: Store, clock: Clock
-    ) -> None:
-        """The person sets one property of a database row: a select's or status's option by name, a date as ISO
-        text, people by email, a relation by row id, as a seed writes them."""
-        editor, user = _as_person(row, by, world, clock)
-        found = editor.page(row)
-        if found.parent.id is None:
-            raise ValueError(f"{row} is not a row of a database")
-        database = editor.database(found.parent.id)
-        if property not in database.schema_:
-            raise ValueError(f"database {database.id} has no property {property}")
-        emails = {u.email: u.id for u in NotionWorld(world).users(found.workspace) if u.email}
-        raw = value_request(database.schema_[property], value, {}, emails, by_id=True)
-        editor.update_page(row, {"properties": {property: raw}}, by=user)
+    @staticmethod
+    def _sets(editor: Editor, row: wire.StoredPage, action: FieldSet, scenario: Scenario, user: str) -> None:
+        """One property of a database row, from the happening's text: a number, `true`/`false`, comma-separated
+        option names, person keys or row ids for a property holding several, anything else as written."""
+        if not is_row(row):
+            raise ValueError(f"{row.id} is a page, not a row of a database, so it has no {action.field!r} to set")
+        assert row.parent.id is not None
+        database = editor.database(row.parent.id)
+        if action.field not in database.schema_:
+            raise ValueError(f"database {database.id} has no property {action.field!r}")
+        schema = database.schema_[action.field]
+        kind = wire.schema_type(schema)
+        value: SeedValue = action.value
+        if kind is wire.PropertyType.NUMBER:
+            value = float(action.value) if "." in action.value else int(action.value)
+        elif kind is wire.PropertyType.CHECKBOX:
+            value = action.value.strip().lower() == "true"
+        elif kind in (wire.PropertyType.MULTI_SELECT, wire.PropertyType.PEOPLE, wire.PropertyType.RELATION):
+            value = [v.strip() for v in action.value.split(",") if v.strip()]
+        users = editor.world.users(row.workspace)
+        emails = {u.email: u.id for u in users if u.email}
+        emails |= {p.key: emails[p.email] for p in scenario.people if p.email in emails}
+        raw = value_request(schema, value, {}, emails, by_id=True)
+        editor.update_page(row.id, {"properties": {action.field: raw}}, by=user)
 
-    def person_comments(self, page: str, text: str, *, by: str, world: Store, clock: Clock) -> None:
-        editor, user = _as_person(page, by, world, clock)
-        editor.comment(page, None, wire.text_run(text), by=user)
+    # ------------------------------------------------------------------ NotifiesChanges
 
-    def person_archives(self, page: str, *, by: str, world: Store, clock: Clock) -> None:
-        """The person moves a page or row to the trash."""
-        editor, user = _as_person(page, by, world, clock)
-        editor.archive(page, by=user)
+    def watched(self, world: Store, clock: Clock) -> bool:
+        return webhooks.watching(NotionWorld(world))
+
+    async def notify(self, world: Store, clock: Clock) -> None:
+        await webhooks.deliver(NotionWorld(world), clock)
+
+
+def _title_property(editor: Editor, page: wire.StoredPage) -> str:
+    if not is_row(page):
+        return "title"
+    assert page.parent.id is not None
+    schema = editor.database(page.parent.id).schema_
+    return next(name for name, prop in schema.items() if wire.schema_type(prop) is wire.PropertyType.TITLE)
 
 
 def _as_person(object_id: str, email: str, world: Store, clock: Clock) -> tuple[Editor, str]:

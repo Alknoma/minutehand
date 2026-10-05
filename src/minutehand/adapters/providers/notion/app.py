@@ -22,6 +22,7 @@ and search leaves it out. A capability the integration lacks answers 403
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from collections.abc import Awaitable, Callable, Sequence
@@ -35,7 +36,7 @@ from starlette.routing import Match, Route, Router
 from starlette.types import Receive, Scope, Send
 
 from minutehand.adapters.providers.notion import query as notion_query
-from minutehand.adapters.providers.notion import wire
+from minutehand.adapters.providers.notion import webhooks, wire
 from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row, page_ref, record_ref, title_of
 from minutehand.domain.world import Actor, Operation
@@ -163,38 +164,13 @@ class NotionApi:
 
     # ------------------------------------------------------------------ sharing
 
-    def _ancestry(self, object_id: str, workspace: str) -> list[str] | None:
-        """The object and the pages and databases above it, nearest first; None when it is not in the workspace."""
-        chain: list[str] = []
-        current: str | None = object_id
-        while current is not None and current not in chain:
-            page = self._world.page(current)
-            database = None if page is not None else self._world.database(current)
-            if page is not None:
-                if page.workspace != workspace:
-                    return None
-                chain.append(current)
-                current = page.parent.id
-                continue
-            if database is not None:
-                if database.workspace != workspace:
-                    return None
-                chain.append(current)
-                current = database.parent.id
-                continue
-            holder = self._world.holding(workspace, current)
-            if holder is None:
-                return chain or None
-            current = holder.id
-        return chain
-
     def reaches(self, call: Call, object_id: str) -> bool:
-        chain = self._ancestry(object_id, call.workspace)
+        chain = self._world.ancestry(object_id, call.workspace)
         return chain is not None and any(c in call.integration.shared for c in chain)
 
     def _buried(self, object_id: str, workspace: str) -> bool:
         """Archived itself, or under an archived page or database."""
-        for above in self._ancestry(object_id, workspace) or []:
+        for above in self._world.ancestry(object_id, workspace) or []:
             page = self._world.page(above)
             if page is not None and page.archived:
                 return True
@@ -753,7 +729,7 @@ class NotionApi:
             raise wire.invalid("block_id should be given in the query.")
         page = self._page(call, wire.canonical_id(raw, "block_id"))
         comments = self._world.comments(page.id)
-        comments.sort(key=lambda c: (c.created_time, c.id))
+        comments.sort(key=lambda c: c.created_time)
         self._world.saw(page_ref(page), Operation.READ)
         return self._listed(
             request,
@@ -888,12 +864,27 @@ class NotionApi:
 
 
 class NotionApp:
-    """Routes, and Notion's answer to a path or method it does not serve."""
+    """Routes, and Notion's answer to a path or method it does not serve. Once a call that may have changed
+    something is answered, what webhook subscriptions are owed is sent (`webhooks.deliver`) in a task of its own,
+    so the caller's answer never waits on its own webhook endpoint."""
 
-    def __init__(self, api: NotionApi, routes: list[Route]) -> None:
+    def __init__(self, api: NotionApi, routes: list[Route], world: NotionWorld, clock: Clock) -> None:
         self._api = api
         self._router = Router(routes=routes)
         self._routes = routes
+        self._world = world
+        self._clock = clock
+        self._sending: set[asyncio.Task[None]] = set()
+        self._one_at_a_time = asyncio.Lock()
+
+    async def _deliver(self) -> None:
+        async with self._one_at_a_time:
+            await webhooks.deliver(self._world, self._clock)
+
+    async def settled(self) -> None:
+        """Wait for every delivery already started."""
+        while self._sending:
+            await asyncio.gather(*list(self._sending))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -908,6 +899,10 @@ class NotionApp:
                 await self._api.refused(request, refusal)(scope, receive, send)
                 return
         await self._router(scope, receive, send)
+        if scope["type"] == "http" and scope["method"] != "GET" and webhooks.watching(self._world):
+            task = asyncio.create_task(self._deliver())
+            self._sending.add(task)
+            task.add_done_callback(self._sending.discard)
 
 
 def build_app(store: Store, clock: Clock) -> NotionApp:
@@ -939,4 +934,4 @@ def build_app(store: Store, clock: Clock) -> NotionApp:
         route("/v1/comments", "POST", api.comments_create, wire.Capability.INSERT_COMMENTS),
         Route("/v1/oauth/token", api.token, methods=["POST"]),
     ]
-    return NotionApp(api, routes)
+    return NotionApp(api, routes, NotionWorld(store), clock)

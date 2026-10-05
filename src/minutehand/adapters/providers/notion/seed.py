@@ -29,7 +29,7 @@ from minutehand.adapters.providers.notion import wire
 from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.manifest import MANIFEST
 from minutehand.adapters.providers.notion.state import NotionWorld
-from minutehand.domain.scenario import Model, Person, Scenario
+from minutehand.domain.scenario import Model, Person, Scenario, SeededDocument
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
@@ -63,6 +63,11 @@ class SeedBlock(Model):
 class SeedPage(Model):
     key: str
     title: str
+    document: str | None = Field(
+        default=None,
+        description="The title of a seeded Notion document this page is (the same as `title`): with no blocks, its "
+        "body is the document's text, and a happening names it by that title",
+    )
     parent: str | None = Field(default=None, description="The key of the page it sits under; None at the top")
     blocks: list[SeedBlock] = []
     created_by: str | None = Field(default=None, description="Person.key; the scenario's owner when None")
@@ -79,6 +84,11 @@ class SeedProperty(Model):
 
 class SeedRow(Model):
     key: str
+    document: str | None = Field(
+        default=None,
+        description="The title of a seeded Notion document this row is: its title property is the document's title, "
+        "its body the document's text, and a happening names it by that title",
+    )
     values: dict[str, SeedValue] = Field(description="By property name")
     blocks: list[SeedBlock] = []
     created_by: str | None = None
@@ -129,6 +139,26 @@ class SeedIntegration(Model):
         return self
 
 
+class SeedWebhook(Model):
+    """A webhook subscription set up in an integration's settings: where Notion sends its events, the token it
+    signs them with, and which events it asked for."""
+
+    integration: str = Field(description="The key of the integration it belongs to")
+    url: str
+    verification_token: str = Field(min_length=1, description="Notion's own shape is secret_ and 43 characters")
+    events: list[wire.WebhookEvent] = [
+        wire.WebhookEvent.PAGE_CREATED,
+        wire.WebhookEvent.PAGE_CONTENT_UPDATED,
+        wire.WebhookEvent.PAGE_PROPERTIES_UPDATED,
+        wire.WebhookEvent.PAGE_DELETED,
+    ]
+    verified: bool = Field(
+        default=False,
+        description="Whether the subscriber has verified it already; when not, it is sent the verification request "
+        "first, and counts as verified once that is answered 2xx",
+    )
+
+
 class SeedWorkspace(Model):
     key: str
     name: str
@@ -163,6 +193,7 @@ SeedFault = Annotated[RateLimited | Conflicting, Field(discriminator="kind")]
 
 class NotionSeed(Model):
     workspaces: list[SeedWorkspace] = []
+    webhooks: list[SeedWebhook] = []
     faults: list[SeedFault] = []
 
     @model_validator(mode="after")
@@ -187,6 +218,9 @@ class NotionSeed(Model):
         for fault in self.faults:
             if fault.integration is not None and fault.integration not in integrations:
                 raise ValueError(f"a fault names no integration: {fault.integration}")
+        for hook in self.webhooks:
+            if hook.integration not in integrations:
+                raise ValueError(f"a webhook names no integration: {hook.integration}")
         return self
 
 
@@ -263,9 +297,29 @@ def seed(scenario: Scenario, world: Store) -> None:
     now = scenario.starts_at
     owner = next(p for p in scenario.people if p.key == scenario.owner)
     people = {p.key: p for p in scenario.people}
+    documents = {d.title: d for d in scenario.documents if d.provider == MANIFEST.key}
+    claimed = [r.document for w in workspaces for d in w.databases for r in d.rows if r.document is not None]
+    claimed += [p.document for w in workspaces for p in w.pages if p.document is not None]
+    unknown = sorted(set(claimed) - set(documents))
+    if unknown:
+        raise ValueError(f"a Notion row is the seeded document {unknown[0]!r}, which is no seeded Notion document")
     for workspace in workspaces:
-        _seed_workspace(notion, workspace, people, owner, now)
-    _seed_documents(notion, workspaces[0], scenario, owner, now)
+        _seed_workspace(notion, workspace, people, owner, now, documents)
+    _seed_documents(notion, workspaces[0], scenario, owner, now, set(claimed))
+    for n, hook in enumerate(found.webhooks):
+        where = next(w for w in workspaces for i in w.integrations if i.key == hook.integration)
+        notion.write_webhook(
+            wire.StoredWebhook(
+                id=wire.minted_id("webhook", where.key, str(n)),
+                workspace=object_id(where.key, where.key),
+                integration=object_id(where.key, hook.integration),
+                url=hook.url,
+                verification_token=hook.verification_token,
+                events=hook.events,
+                verified=hook.verified,
+            ),
+            operation=Operation.CREATE,
+        )
     planned: list[wire.PlannedFault] = []
     for fault in found.faults:
         bot = None
@@ -295,6 +349,7 @@ def _seed_workspace(
     people: dict[str, Person],
     owner: Person,
     now: datetime,
+    documents: dict[str, SeededDocument],
 ) -> None:
     ws = object_id(workspace.key, workspace.key)
     notion.write_workspace(wire.StoredWorkspace(id=ws, name=workspace.name))
@@ -345,11 +400,16 @@ def _seed_workspace(
         )
         if page.parent is not None and page.parent not in ids:
             raise ValueError(f"page {page.key} sits under {page.parent}, which is no page")
+        if page.document is not None and page.document != page.title:
+            raise ValueError(f"page {page.key} is the document {page.document!r}, and is titled {page.title!r}")
+        blocks = [_block_json(b) for b in page.blocks]
+        if page.document is not None and not blocks and documents[page.document].text:
+            blocks = _paragraphs(documents[page.document].text)[: wire.MAX_CHILDREN]
         editor.create_page(
             ids[page.key],
             parent,
             {"title": {"title": wire.text_run(page.title)}},
-            [_block_json(b) for b in page.blocks],
+            blocks,
             by=who(page.created_by),
             icon={"emoji": page.emoji} if page.emoji else None,
         )
@@ -375,17 +435,25 @@ def _seed_workspace(
     for database in workspace.databases:
         made = notion.database(ids[database.key])
         assert made is not None
+        title = next(p.name for p in database.properties if p.type is wire.PropertyType.TITLE)
         for row in database.rows:
             values: wire.Json = {}
             for name, value in row.values.items():
                 if name not in made.schema_:
                     raise ValueError(f"row {row.key} sets {name}, which database {database.key} does not have")
                 values[name] = value_request(made.schema_[name], value, ids, by_person)
+            blocks = [_block_json(b) for b in row.blocks]
+            if row.document is not None:
+                if title in row.values:
+                    raise ValueError(f"row {row.key} is the document {row.document!r}, whose title is its {title}")
+                document = documents[row.document]
+                values[title] = {"title": wire.text_run(document.title)}
+                blocks = blocks or (_paragraphs(document.text) if document.text else [])
             editor.create_page(
                 ids[row.key],
                 wire.Parent(type=wire.ParentType.DATABASE_ID, id=ids[database.key]),
                 values,
-                [_block_json(b) for b in row.blocks],
+                blocks[: wire.MAX_CHILDREN],
                 by=who(row.created_by),
             )
     for page in workspace.pages:
@@ -504,6 +572,7 @@ def _seed_documents(
     scenario: Scenario,
     owner: Person,
     now: datetime,
+    rows: set[str],
 ) -> None:
     documents = [d for d in scenario.documents if d.provider == MANIFEST.key]
     if not documents:
@@ -515,6 +584,8 @@ def _seed_documents(
     made: list[str] = []
     folders: dict[str, str] = {}
     for n, document in enumerate(documents):
+        if document.title in rows:
+            continue
         parent = wire.Parent(type=wire.ParentType.WORKSPACE)
         if document.folder is not None:
             if document.folder not in folders:
@@ -523,13 +594,13 @@ def _seed_documents(
                 folders[document.folder] = folder_id
                 made.append(folder_id)
             parent = wire.Parent(type=wire.ParentType.PAGE_ID, id=folders[document.folder])
-        page_id = wire.minted_id("seed", workspace.key, "document", str(n))
-        paragraphs: list[JsonValue] = [
-            {"type": "paragraph", "paragraph": {"rich_text": wire.text_run(line) if line else []}}
-            for line in document.text.split("\n")
-        ]
+        page_id = _document_page(workspace.key, n)
         editor.create_page(
-            page_id, parent, {"title": {"title": wire.text_run(document.title)}}, paragraphs[: wire.MAX_CHILDREN], by=by
+            page_id,
+            parent,
+            {"title": {"title": wire.text_run(document.title)}},
+            _paragraphs(document.text)[: wire.MAX_CHILDREN],
+            by=by,
         )
         if document.folder is None:
             made.append(page_id)
@@ -537,3 +608,27 @@ def _seed_documents(
         notion.write_integration(
             integration.model_copy(update={"shared": [*integration.shared, *made]}), operation=Operation.UPDATE
         )
+
+
+def _paragraphs(text: str) -> list[JsonValue]:
+    return [
+        {"type": "paragraph", "paragraph": {"rich_text": wire.text_run(line) if line else []}}
+        for line in text.split("\n")
+    ]
+
+
+def _document_page(workspace: str, position: int) -> str:
+    return wire.minted_id("seed", workspace, "document", str(position))
+
+
+def document_page(scenario: Scenario, title: str) -> str:
+    """The id of the page or row a seeded Notion document was written as."""
+    workspaces = read(scenario).workspaces or [DEFAULT_WORKSPACE]
+    for workspace in workspaces:
+        bridged = [p.key for p in workspace.pages if p.document == title]
+        bridged += [r.key for d in workspace.databases for r in d.rows if r.document == title]
+        if bridged:
+            return object_id(workspace.key, bridged[0])
+    documents = [d for d in scenario.documents if d.provider == MANIFEST.key]
+    position = next(n for n, d in enumerate(documents) if d.title == title)
+    return _document_page(workspaces[0].key, position)

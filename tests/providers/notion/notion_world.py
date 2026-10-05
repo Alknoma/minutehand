@@ -90,10 +90,16 @@ NOTION: dict[str, object] = {
                 },
             ],
             "pages": [
-                {"key": "handbook", "title": "Team Handbook", "blocks": blocks_of_every_kind()},
+                {
+                    "key": "handbook",
+                    "title": "Team Handbook",
+                    "document": "Team Handbook",
+                    "blocks": blocks_of_every_kind(),
+                },
                 {
                     "key": "onboarding",
                     "title": "Onboarding",
+                    "document": "Onboarding",
                     "parent": "handbook",
                     "blocks": [{"type": "paragraph", "text": f"Step {n}"} for n in range(150)],
                 },
@@ -122,8 +128,8 @@ NOTION: dict[str, object] = {
                     "rows": [
                         {
                             "key": "launch",
+                            "document": "Launch site",
                             "values": {
-                                "Name": "Launch site",
                                 "Status": "In progress",
                                 "Priority": "High",
                                 "Tags": ["web"],
@@ -156,8 +162,20 @@ NOTION: dict[str, object] = {
     ]
 }
 
+BRIDGED = [
+    SeededDocument(provider="notion", title="Team Handbook"),
+    SeededDocument(provider="notion", title="Onboarding"),
+    SeededDocument(provider="notion", title="Launch site"),
+]
+"""The scenario's documents the seed's pages and row are: what a happening names."""
+
 MARA = Person(key="mara", name="Mara Lindqvist", email="mara@example.com")
 DOV = Person(key="dov", name="Dov Aranha", email="dov@example.com")
+
+
+def _bridges(notion: dict[str, object] | None) -> bool:
+    """Whether the seed's pages or rows are the scenario's documents, which must then be seeded."""
+    return '"document"' in json.dumps(notion if notion is not None else NOTION)
 
 
 def scenario(notion: dict[str, object] | None = None, documents: list[SeededDocument] | None = None) -> Scenario:
@@ -167,7 +185,7 @@ def scenario(notion: dict[str, object] | None = None, documents: list[SeededDocu
         owner="mara",
         starts_at=START,
         people=[MARA, DOV],
-        documents=documents or [],
+        documents=[*(BRIDGED if _bridges(notion) else []), *(documents or [])],
         provider_seeds=[ProviderSeed(provider="notion", body=json.dumps(notion if notion is not None else NOTION))],
     )
 

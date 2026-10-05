@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -10,9 +11,19 @@ import pytest
 from pydantic import ValidationError
 
 from minutehand.adapters.providers.notion.seed import NotionSeed
-from minutehand.domain.scenario import SeededDocument
+from minutehand.domain.scenario import (
+    Commented,
+    DocumentAction,
+    DocumentHappening,
+    Edited,
+    FieldSet,
+    Renamed,
+    SeededDocument,
+    Trashed,
+)
 from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, Operation, RecordSnapshot
 from tests.providers.notion.notion_world import (
+    NOTION,
     START,
     World,
     answer,
@@ -119,12 +130,16 @@ def later(world: World, hours: int) -> None:
     world.clock.jump(START + timedelta(hours=hours))
 
 
+def does(world: World, person: str, document: str, action: DocumentAction) -> None:
+    """The person does `action` to the seeded document now, through the port a run lands it with."""
+    happening = DocumentHappening(person=person, document=document, after=timedelta(minutes=1), action=action)
+    world.provider.change(happening, scenario(), world.store, world.clock)
+
+
 async def test_a_person_edits_a_page_and_the_agent_reads_it_with_who_and_when(world: World) -> None:
     later(world, 5)
     before = world.store.head()
-    world.provider.person_edits(
-        ids("handbook"), "Updated by Dov.", by="dov@example.com", world=world.store, clock=world.clock
-    )
+    does(world, "dov", "Team Handbook", Edited(append="Updated by Dov."))
     [event] = world.store.events(since=before)
     assert (event.actor, event.operation, event.entity.external_id) == (Actor.PERSON, Operation.UPDATE, ids("handbook"))
     assert event.sim_time == START + timedelta(hours=5)
@@ -140,9 +155,7 @@ async def test_a_person_edits_a_page_and_the_agent_reads_it_with_who_and_when(wo
 
 async def test_a_person_sets_a_rows_status_and_the_agent_finds_it_by_filter(world: World) -> None:
     later(world, 26)
-    world.provider.person_sets_property(
-        ids("launch"), "Status", "Done", by="mara@example.com", world=world.store, clock=world.clock
-    )
+    does(world, "mara", "Launch site", FieldSet(field="Status", value="Done"))
     event = world.store.events()[-1]
     assert (
         event.actor is Actor.PERSON and isinstance(event.after, RecordSnapshot) and "Status: Done" in event.after.text
@@ -159,18 +172,14 @@ async def test_a_person_sets_a_rows_status_and_the_agent_finds_it_by_filter(worl
 
 
 async def test_a_person_sets_people_by_email(world: World) -> None:
-    world.provider.person_sets_property(
-        ids("launch"), "Owner", ["dov@example.com"], by="mara@example.com", world=world.store, clock=world.clock
-    )
+    does(world, "mara", "Launch site", FieldSet(field="Owner", value="dov"))
     async with direct(world) as api:
         row = answer(await api.get(f"/v1/pages/{ids('launch')}"))
         assert [p["person"]["email"] for p in row["properties"]["Owner"]["people"]] == ["dov@example.com"]
 
 
 async def test_a_person_comments_and_the_agent_lists_it(world: World) -> None:
-    world.provider.person_comments(
-        ids("handbook"), "Please review.", by="dov@example.com", world=world.store, clock=world.clock
-    )
+    does(world, "dov", "Team Handbook", Commented(text="Please review."))
     assert world.store.events()[-1].entity.kind is EntityKind.COMMENT
     async with direct(world) as api:
         listed = answer(await api.get("/v1/comments", params={"block_id": ids("handbook")}))
@@ -178,7 +187,7 @@ async def test_a_person_comments_and_the_agent_lists_it(world: World) -> None:
 
 
 async def test_a_person_archives_a_page_and_the_agent_no_longer_finds_it(world: World) -> None:
-    world.provider.person_archives(ids("onboarding"), by="mara@example.com", world=world.store, clock=world.clock)
+    does(world, "mara", "Onboarding", Trashed())
     async with direct(world) as api:
         found = answer(await api.post("/v1/search", json={"query": "Onboarding"}))
         assert found["results"] == []
@@ -187,11 +196,30 @@ async def test_a_person_archives_a_page_and_the_agent_no_longer_finds_it(world: 
         assert answer(await api.get(f"/v1/pages/{ids('onboarding')}"))["archived"] is True
 
 
-def test_someone_outside_the_workspace_cannot_act(world: World) -> None:
+async def test_a_person_renames_a_page_and_a_row(world: World) -> None:
+    does(world, "dov", "Team Handbook", Renamed(to="Handbook 2026"))
+    does(world, "dov", "Launch site", Renamed(to="Launch the site"))
+    async with direct(world) as api:
+        page = answer(await api.get(f"/v1/pages/{ids('handbook')}"))
+        row = answer(await api.get(f"/v1/pages/{ids('launch')}"))
+    assert page["properties"]["title"]["title"][0]["plain_text"] == "Handbook 2026"
+    assert row["properties"]["Name"]["title"][0]["plain_text"] == "Launch the site"
+
+
+def test_a_field_set_on_a_page_that_is_no_row_is_refused(world: World) -> None:
+    with pytest.raises(ValueError, match="is a page, not a row"):
+        does(world, "dov", "Team Handbook", FieldSet(field="Status", value="Done"))
+
+
+def test_someone_outside_the_workspace_cannot_act(tmp_path: Path) -> None:
+    notion = json.loads(json.dumps(NOTION))
+    notion["workspaces"][0]["members"] = ["mara"]
+    notion["workspaces"][0]["databases"] = []
+    notion["workspaces"][0]["integrations"] = notion["workspaces"][0]["integrations"][:3]
+    world = seeded(tmp_path, scenario(notion))
+    happening = DocumentHappening(person="dov", document="Team Handbook", after=timedelta(hours=1), action=Trashed())
     with pytest.raises(ValueError, match="not a member"):
-        world.provider.person_edits(
-            ids("handbook"), "x", by="stranger@example.com", world=world.store, clock=world.clock
-        )
+        world.provider.change(happening, scenario(notion), world.store, world.clock)
 
 
 # --------------------------------------------------------------------------- the log

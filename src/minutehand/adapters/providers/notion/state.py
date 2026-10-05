@@ -13,12 +13,18 @@
 | token, code             | RECORD       | sha256 of the secret  | `TOKENS`                         |
 | the seed's faults       | RECORD       | `SCHEDULE`            | None                             |
 | a fault's firings       | RECORD       | `fault-<n>`           | `SCHEDULE`                       |
+| webhook subscription    | RECORD       | its id                | `WEBHOOKS`                       |
+| an event owed to one    | RECORD       | its id                | `owed:<subscription id>`         |
 
 A page's blocks are stored inside the page's own entity (`wire.StoredPage.blocks`), so
 every block-level edit is one new version of one page: one event per API call, with the
 page as the entity, and its snapshot is the page's whole text after the edit. A child
 page's or child database's block in its parent is a stub whose title is read live from
 the page or database it stands for.
+
+A change to a page or a comment that a webhook subscription is owed (`owed_for`) is written as an owed event
+just before the change itself, so the change is still the last event of the call; `webhooks.deliver` sends and
+deletes them.
 
 Every body carries a `kind` literal (`wire.Stored`), so what is read back is told apart by
 its type. Nothing is held between calls.
@@ -27,7 +33,7 @@ its type. Nothing is held between calls.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 
 from minutehand.adapters.providers.notion import wire
 from minutehand.adapters.providers.notion.manifest import MANIFEST
@@ -47,6 +53,7 @@ from minutehand.ports.store import Store
 WORKSPACES = "workspaces"
 TOKENS = "tokens"
 SCHEDULE = "schedule"
+WEBHOOKS = "webhooks"
 _SCAN = 1000
 
 
@@ -85,6 +92,33 @@ def _integrations_of(workspace: str) -> str:
 def _integration_key(bot: str) -> str:
     """An integration's entity: its bot user holds the bot's own id."""
     return wire.minted_id("integration", bot)
+
+
+def _owed_of(subscription: str) -> str:
+    return f"owed:{subscription}"
+
+
+def _changes(
+    before: wire.StoredPage | None, after: wire.StoredPage
+) -> list[tuple[wire.WebhookEvent, list[str], list[str]]]:
+    """What a webhook calls this change: created, deleted or undeleted, or properties and content updated, with
+    the blocks and properties that changed."""
+    if before is None:
+        return [(wire.WebhookEvent.PAGE_CREATED, [], [])]
+    if after.archived != before.archived:
+        return [(wire.WebhookEvent.PAGE_DELETED if after.archived else wire.WebhookEvent.PAGE_UNDELETED, [], [])]
+    found: list[tuple[wire.WebhookEvent, list[str], list[str]]] = []
+    properties = sorted(
+        str(value["id"]) if "id" in value else name
+        for name, value in after.properties.items()
+        if name not in before.properties or before.properties[name] != value
+    )
+    if properties:
+        found.append((wire.WebhookEvent.PAGE_PROPERTIES_UPDATED, [], properties))
+    blocks = [b for b, block in after.blocks.items() if b not in before.blocks or before.blocks[b] != block]
+    if blocks or after.children != before.children:
+        found.append((wire.WebhookEvent.PAGE_CONTENT_UPDATED, blocks, []))
+    return found
 
 
 def title_of(page: wire.StoredPage) -> str:
@@ -188,8 +222,21 @@ class NotionWorld:
             found += self.rows(database.id)
         return found
 
+    def _written_order(self, kind: EntityKind, parent: str) -> list[wire.Stored]:
+        """Every entity under `parent`, oldest write first: an id is a hash and says nothing of order."""
+        found: list[tuple[int, wire.Stored]] = []
+        after: str | None = None
+        while True:
+            batch = self._store.children(MANIFEST.key, kind, parent, after=after, limit=_SCAN)
+            found += [(stored.seq, wire.parse(stored.body)) for stored in batch]
+            if len(batch) < _SCAN:
+                break
+            after = batch[-1].entity.external_id
+        return [body for _, body in sorted(found, key=lambda pair: pair[0])]
+
     def comments(self, page_id: str) -> list[wire.StoredComment]:
-        return [c for c in self._list(EntityKind.COMMENT, page_id) if isinstance(c, wire.StoredComment)]
+        """Oldest first."""
+        return [c for c in self._written_order(EntityKind.COMMENT, page_id) if isinstance(c, wire.StoredComment)]
 
     def holding(self, workspace: str, block_id: str) -> wire.StoredPage | None:
         """The page whose tree holds this block."""
@@ -267,6 +314,9 @@ class NotionWorld:
     # ------------------------------------------------------------------ writes
 
     def write_page(self, page: wire.StoredPage, *, operation: Operation, actor: Actor, at: datetime) -> WorldEvent:
+        before = None if operation is Operation.CREATE else self.page(page.id)
+        for kind, blocks, properties in _changes(before, page):
+            self._owe(page, kind, at, actor, blocks=blocks, properties=properties)
         return self._store.apply(
             Change(
                 entity=page_ref(page),
@@ -291,7 +341,10 @@ class NotionWorld:
             )
         )
 
-    def write_comment(self, comment: wire.StoredComment, *, actor: Actor) -> WorldEvent:
+    def write_comment(self, comment: wire.StoredComment, *, actor: Actor, at: datetime) -> WorldEvent:
+        page = self.page(comment.page)
+        if page is not None:
+            self._owe(page, wire.WebhookEvent.COMMENT_CREATED, at, actor, comment=comment)
         return self._store.apply(
             Change(
                 entity=_ref(EntityKind.COMMENT, comment.id),
@@ -350,6 +403,107 @@ class NotionWorld:
                 after=RecordSnapshot(resource="fault", text=f"fault {fault} fired {count} time(s)"),
             )
         )
+
+    # ------------------------------------------------------------------ webhooks
+
+    def write_webhook(self, webhook: wire.StoredWebhook, *, operation: Operation) -> WorldEvent:
+        return self._setup(webhook.id, webhook, WEBHOOKS, operation)
+
+    def webhooks(self) -> list[wire.StoredWebhook]:
+        return [w for w in self._list(EntityKind.RECORD, WEBHOOKS) if isinstance(w, wire.StoredWebhook)]
+
+    def owed(self, subscription: str) -> list[wire.StoredOwedEvent]:
+        found = self._written_order(EntityKind.RECORD, _owed_of(subscription))
+        return [o for o in found if isinstance(o, wire.StoredOwedEvent)]
+
+    def sent(self, owed: wire.StoredOwedEvent) -> WorldEvent:
+        """The event has been sent (whatever the subscriber answered): it is owed no longer."""
+        return self._store.apply(
+            Change(
+                entity=record_ref(owed.id),
+                operation=Operation.DELETE,
+                actor=Actor.SCENARIO,
+                parent=_owed_of(owed.subscription),
+            )
+        )
+
+    def ancestry(self, object_id: str, workspace: str) -> list[str] | None:
+        """The object and the pages and databases above it, nearest first; None when it is not in the workspace."""
+        chain: list[str] = []
+        current: str | None = object_id
+        while current is not None and current not in chain:
+            page = self.page(current)
+            database = None if page is not None else self.database(current)
+            if page is not None:
+                if page.workspace != workspace:
+                    return None
+                chain.append(current)
+                current = page.parent.id
+                continue
+            if database is not None:
+                if database.workspace != workspace:
+                    return None
+                chain.append(current)
+                current = database.parent.id
+                continue
+            holder = self.holding(workspace, current)
+            if holder is None:
+                return chain or None
+            current = holder.id
+        return chain
+
+    def _owe(
+        self,
+        page: wire.StoredPage,
+        kind: wire.WebhookEvent,
+        at: datetime,
+        actor: Actor,
+        *,
+        blocks: list[str] | None = None,
+        properties: list[str] | None = None,
+        comment: wire.StoredComment | None = None,
+    ) -> None:
+        """Owe `kind` to every subscription in the page's workspace that asked for it and whose integration can see
+        the page, authored by whoever last edited it (or wrote the comment)."""
+        hooks = [w for w in self.webhooks() if w.workspace == page.workspace and kind in w.events]
+        if not hooks:
+            return
+        above = self.ancestry(page.parent.id, page.workspace) if page.parent.id is not None else None
+        chain = [page.id, *(above or [])]
+        author = comment.created_by if comment is not None else page.stamps.last_edited_by
+        user = self.user(author)
+        when = at.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        for hook in hooks:
+            integration = self.integration(hook.integration)
+            if integration is None or not any(c in integration.shared for c in chain):
+                continue
+            owed_id = self.mint("owed", hook.id, kind.value)
+            self._store.apply(
+                Change(
+                    entity=record_ref(owed_id),
+                    operation=Operation.CREATE,
+                    actor=actor,
+                    body=wire.dump(
+                        wire.StoredOwedEvent(
+                            id=owed_id,
+                            subscription=hook.id,
+                            type=kind,
+                            timestamp=when,
+                            entity_id=comment.id if comment is not None else page.id,
+                            entity_type="comment" if comment is not None else "page",
+                            author=author,
+                            author_type=user.type if user is not None else wire.UserType.PERSON,
+                            parent=page.parent
+                            if comment is None
+                            else wire.Parent(type=wire.ParentType.PAGE_ID, id=page.id),
+                            page_id=page.id if comment is not None else None,
+                            updated_blocks=blocks or [],
+                            updated_properties=properties or [],
+                        )
+                    ),
+                    parent=_owed_of(hook.id),
+                )
+            )
 
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
