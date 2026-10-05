@@ -227,3 +227,6 @@ __marimo__/
 
 # A run kept by `minutehand run` from the folder it was started in
 .minutehand/
+
+# Throwaway files of a working session, never committed
+.scratch/
