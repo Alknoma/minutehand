@@ -288,17 +288,18 @@ class ProxyAddon:
         request, response = flow.request, flow.response
         assert response is not None
         if streamed is None:
-            body = (response.get_content(strict=False) or b"").decode("utf-8", errors="replace")
+            body = response.get_content(strict=False) or b""
         else:
             raw = b"".join(streamed)
             coding = _first_header(response, "content-encoding")
             decoded = encoding.decode(raw, coding) if coding else raw
-            body = decoded.decode("utf-8", errors="replace") if isinstance(decoded, bytes) else decoded
+            body = decoded if isinstance(decoded, bytes) else decoded.encode("utf-8")
         exchanged = Exchanged(
             host=request.pretty_host,
             path=request.path,
             status=response.status_code,
-            request_body=(request.get_content(strict=False) or b"").decode("utf-8", errors="replace"),
+            request_body=request.get_content(strict=False) or b"",
+            request_type=_first_header(request, "content-type") or "",
             response_body=body,
             response_type=_first_header(response, "content-type") or "",
             traceparent=_first_header(request, TRACEPARENT),

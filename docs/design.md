@@ -778,7 +778,7 @@ Built and tested (`tests/proxy/`). `Routing.policy(host)` decides by host alone:
 | `ANSWER` | A provider claims the host | Its app answers with the manifest's `path_prefix` stripped; the call is recorded. A provider that fails to load answers 500; the call never reaches the real host. |
 | `TUNNEL` | A model host (`DEFAULT_MODEL_HOSTS`: `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`) with no edit for this run | Bytes pass through, never decrypted, never recorded |
 | `EDIT` | A model host the run edits | Decrypted, edited, sent on with the upstream certificate verified; recorded as a span only with `--record-model-calls`. An edit that fails answers 502 rather than sending the request unedited. |
-| `RECORD` | A model host, with no edit, in a run started with `--record-model-calls` | Decrypted, sent on unchanged with the upstream certificate verified, and kept as a span (`adapters/proxy/model_calls.py`); a streamed answer is passed to the agent chunk by chunk as it arrives |
+| `RECORD` | A model host, with no edit, in a run started with `--record-model-calls` | Decrypted, sent on unchanged with the upstream certificate verified, and kept as a span (`adapters/proxy/model_calls.py`) whose `minutehand.request.body` and `minutehand.response.body` hold both bodies byte for byte: UTF-8 text as a string, credentials redacted, anything else as its bytes; a streamed answer is passed to the agent chunk by chunk as it arrives |
 | `REFUSE` | Anything else | Captured when the call's world declares the host outbound (below); else passed through and kept as `discovered` under `--capture-unknown`; else 502 and recorded with no provider, surfacing as an `unmatched_call` finding that says how to declare it |
 
 A host left to `REFUSE` is decided per world, by the declarations of the world the call belongs to (`Mounted.capturing`; `docs/capture.md`):
@@ -1530,7 +1530,6 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; Node's `fetch` is only mentioned.
 - **The handed-out `NO_PROXY` names `localhost`,** which `requests` and `urllib` read as covering every name under it: a real `*.localhost` host is sent direct. `minutehand doctor --agent` reports each such declared host.
 - **httpx cannot reach an IPv6 literal through a proxy** (its CONNECT omits the brackets; mitmproxy answers 400).
-- **A recorded model call's bodies are text.** A model API's body that is not UTF-8 is read with replacement characters in its span; every other call keeps such a body as its bytes.
 - **A fork's page in the viewer does not say what the fork changed,** where it diverges from its parent, or whether its restore was verified; two forks from one checkpoint read the same in the run list.
 - **`serve` has no `--model-host`:** under the standing mode a self-hosted model API must be declared `pass_through`.
 - **A base-URL mode (`http://<minutehand>/_host/<host>/…`) is designed, not built.** It would be a second mitmproxy listener in reverse mode whose request hook rewrites the host from the path before routing; not built in this pass.

@@ -21,7 +21,7 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.telemetry import IntValue, SpanSource, SpanStatus, StoredSpan, StringValue
+from minutehand.domain.telemetry import BytesValue, IntValue, SpanSource, SpanStatus, StoredSpan, StringValue
 from tests.proxy.support import client, exchanges, stored_bytes
 from tests.proxy.upstream import Answer, Authority, make_authority, model_api
 
@@ -252,8 +252,9 @@ def test_an_answer_in_no_known_shape_is_kept_with_what_can_be_read() -> None:
             host="api.openai.com",
             path="/v1/embeddings",
             status=429,
-            request_body='{"model": "embed-1", "input_vectors": [1]}',
-            response_body="rate limited",
+            request_body=b'{"model": "embed-1", "input_vectors": [1]}',
+            request_type="application/json",
+            response_body=b"rate limited",
             response_type="text/plain",
             traceparent="not a traceparent",
             started=moment,
@@ -277,3 +278,75 @@ async def test_a_run_records_model_calls_only_when_its_listen_says_so(
             HostPolicy.RECORD if recording else HostPolicy.TUNNEL
         )
         assert running.receiver is None and running.telemetry_port is None
+
+
+NOT_TEXT_ASKED = b'{"model": "model-luna", "messages": [{"role": "user", "content": "caf\xe9 \xff"}]}'
+NOT_TEXT: dict[str, list[bytes]] = {
+    "whole": [b'{"model": "model-luna-0801", "choices": [{"index": 0, "message": {"content": "r\xe9ponse"}}]}'],
+    "streamed": [
+        b'data: {"model": "model-luna-0801", "choices": [{"index": 0, "delta": {"content": "r\xe9"}}]}\n\n',
+        b'data: {"choices": [{"index": 0, "delta": {"content": "ponse"}, "finish_reason": "stop"}]}\n\n',
+    ],
+}
+REPLACEMENT = "\ufffd"
+
+
+def _bodies(stored: StoredSpan) -> tuple[object, object]:
+    return stored.span.attribute("minutehand.request.body"), stored.span.attribute("minutehand.response.body")
+
+
+@pytest.mark.parametrize("answered", sorted(NOT_TEXT))
+async def test_a_model_call_whose_bodies_are_not_text_is_kept_with_exactly_their_bytes(
+    answered: str,
+    registry: Registry,
+    store: SqliteStore,
+    clock: RunClock,
+    tmp_path: Path,
+    authority: Authority,
+    world_path: Path,
+) -> None:
+    """A request and an answer that are not valid UTF-8, answered whole and as a stream: the span keeps each as
+    the bytes that crossed, and nothing in the record is text with replacement characters."""
+    content_type = "application/json" if answered == "whole" else "text/event-stream"
+    answer = Answer(content_type, NOT_TEXT[answered])
+    async with model_api(authority, answer) as upstream, _proxy(registry, store, clock, tmp_path, authority) as proxy:
+        async with client(proxy, proxy.ca_cert) as http:
+            response = await http.post(
+                f"https://{MODEL_HOST}:{upstream.port}/v1/chat/completions",
+                content=NOT_TEXT_ASKED,
+                headers={"content-type": "application/json"},
+            )
+    assert response.content == b"".join(NOT_TEXT[answered])
+    assert upstream.received[0].body == NOT_TEXT_ASKED
+    [kept] = store.spans()
+    assert _bodies(kept) == (
+        BytesValue(value=NOT_TEXT_ASKED.hex()),
+        BytesValue(value=b"".join(NOT_TEXT[answered]).hex()),
+    )
+    assert REPLACEMENT not in kept.span.model_dump_json()
+    assert REPLACEMENT.encode() not in stored_bytes(world_path)
+
+
+@pytest.mark.parametrize("answered", ["whole", "streamed"])
+async def test_a_model_call_whose_bodies_are_text_is_kept_as_that_text_byte_for_byte(
+    answered: str,
+    registry: Registry,
+    store: SqliteStore,
+    clock: RunClock,
+    tmp_path: Path,
+    authority: Authority,
+) -> None:
+    chunks = [json.dumps(WHOLE["chat"]).encode()] if answered == "whole" else STREAMED["chat"]
+    content_type = "application/json" if answered == "whole" else "text/event-stream"
+    async with (
+        model_api(authority, Answer(content_type, chunks)) as upstream,
+        _proxy(registry, store, clock, tmp_path, authority) as proxy,
+    ):
+        url, body, headers = _sent("chat", upstream.port)
+        async with client(proxy, proxy.ca_cert) as http:
+            assert (await http.post(url, content=body, headers=headers)).status_code == 200
+    [kept] = store.spans()
+    _check_span(kept, wake=0)
+    request, response = _bodies(kept)
+    assert isinstance(request, StringValue) and request.value.encode() == body
+    assert isinstance(response, StringValue) and response.value.encode() == b"".join(chunks)
