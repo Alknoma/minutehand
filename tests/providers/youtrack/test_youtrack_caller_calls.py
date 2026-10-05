@@ -20,8 +20,8 @@ SEARCH_FIELDS = (
 )
 USER_FIELDS = "id,login,email,fullName,avatarUrl,banned"
 PROJECT_FIELDS = "id,shortName,name,description,leader(id,login,fullName),customFields(field(id,name),bundle(values(id,name,ordinal)))"
-LAUNCH, OPS = "0-0", "0-1"
-AGENT, IRIS, TOMAS, NOOR, VENDOR = "1-0", "1-1", "1-2", "1-3", "1-4"
+LAUNCH, OPS = "0-1000", "0-1001"
+AGENT, IRIS, TOMAS, NOOR, VENDOR = "1-0", "1-1", "1-2", "1-3", "1-10000"
 
 
 async def field_id(yt: httpx.AsyncClient, issue: str, name: str) -> str:
@@ -359,7 +359,7 @@ async def test_create_project_from_the_default_template(yt: httpx.AsyncClient) -
     team = entity(await yt.get(f"/api/admin/projects/{made['id']}/team", params={"fields": "users(login)"}))
     states = entity(await yt.get("/api/admin/projects/SUMMIT", params={"fields": PROJECT_FIELDS}))
 
-    assert made == {"id": "0-2", "shortName": "SUMMIT", "name": "Partner Summit", "$type": "Project"}
+    assert made == {"id": "0-1002", "shortName": "SUMMIT", "name": "Partner Summit", "$type": "Project"}
     assert [f["field"]["name"] for f in fields] == ["Priority", "Type", "State", "Assignee"]  # type: ignore[index]
     assert team["users"] == [{"login": "agent-bot", "$type": "User"}]
     assert [v["name"] for v in named(states["customFields"], "State")["bundle"]["values"]][:2] == ["Submitted", "Open"]  # type: ignore[index]

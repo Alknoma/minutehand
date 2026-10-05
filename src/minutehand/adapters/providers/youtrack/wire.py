@@ -277,6 +277,9 @@ class StoredComment(Wire):
     author: str
     created: int
     updated: int | None = None
+    seededFrom: int | None = Field(
+        default=None, description="Its position among its seeded ticket's comments, for a seeded comment"
+    )
 
 
 class StoredAlias(Wire):
@@ -289,6 +292,9 @@ class StoredTag(Wire):
     id: str
     name: str
     owner: str = Field(description="User id")
+    seededFrom: int | None = Field(
+        default=None, description="Its position among the seeded tickets' labels, first use first, for a seeded tag"
+    )
 
 
 class StoredLinkType(Wire):

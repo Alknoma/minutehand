@@ -86,10 +86,10 @@ STANDARD_VALUES: dict[str, list[Value]] = {"State": SEEDED_STATES, "Priority": P
 
 class Ids:
     """Fresh database ids for what lives inside a project's body: its fields, their bundles and bundle values.
-    Each prefix counts on from the highest number already used anywhere in the instance."""
+    Each prefix counts on from the highest number already used anywhere in the instance, or from `start`."""
 
-    def __init__(self, projects: list[wire.StoredProject]) -> None:
-        self._next: dict[str, int] = {"92": 0, "60": 0, "62": 0}
+    def __init__(self, projects: list[wire.StoredProject], *, start: int = 0) -> None:
+        self._next: dict[str, int] = {"92": start, "60": start, "62": start}
         for project in projects:
             for field in project.fields:
                 self._see(field.id)

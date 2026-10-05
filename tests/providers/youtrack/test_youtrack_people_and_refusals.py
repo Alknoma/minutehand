@@ -234,7 +234,7 @@ async def test_without_create_project_a_project_is_refused_403_and_a_grant_lets_
 
 async def test_hub_refuses_a_team_change_without_update_project_403(tmp_path: Path) -> None:
     team = granted(tmp_path, [{"login": "agent-bot", "permission": "jetbrains.jetpass.project-update", "held": False}])
-    launch = team.youtrack.project("0-0")
+    launch = team.youtrack.project("0-1000")
     vendor = team.youtrack.user_by_login("vendor")
     assert launch is not None and vendor is not None
     async with proxied(team, tmp_path / "ca") as http:
@@ -256,14 +256,14 @@ async def test_a_required_field_with_no_default_refuses_a_create_without_it_400(
     team = seeded(tmp_path, scenario_with(projects=projects, issues=[]))
     async with proxied(team, tmp_path / "ca") as http:
         refused = refusal(
-            await http.post("/api/issues", json={"project": {"id": "0-1"}, "summary": "Crate the stands"}), 400
+            await http.post("/api/issues", json={"project": {"id": "0-1001"}, "summary": "Crate the stands"}), 400
         )
         made = entity(
             await http.post(
                 "/api/issues",
                 params={"fields": "customFields(name,value(name))"},
                 json={
-                    "project": {"id": "0-1"},
+                    "project": {"id": "0-1001"},
                     "summary": "Crate the stands",
                     "customFields": [
                         {"name": "Type", "$type": "SingleEnumIssueCustomField", "value": {"name": "Shipping"}}

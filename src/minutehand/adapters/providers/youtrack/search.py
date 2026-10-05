@@ -48,7 +48,7 @@ class Matcher:
         issues = [i for p in scope for i in self._world.issues(p.id)]
         tests = [self._conjunction(c, scope) for c in search.alternatives]
         matched = [i for i in issues if any(all(t(i) for t in test) for test in tests)]
-        matched.sort(key=lambda i: (i.created, state.ordinal(i.id)))
+        matched.sort(key=lambda i: (i.created, state.seeded_order(i.seededFrom, i.id)))
         for key in reversed(search.sort):
             matched = self._sorted(matched, key)
         return matched
@@ -310,7 +310,7 @@ class Matcher:
         if key.keyword is Keyword.SUMMARY:
             return lambda i: i.summary.lower()
         if key.keyword is Keyword.ISSUE_ID:
-            return lambda i: float(state.ordinal(i.id)[1])
+            return lambda i: state.issue_rank(i)
         if key.keyword is not None:
             raise wire.unparsed_query(self._text, f"cannot sort by {key.attribute}")
         definition = self._definitions[key.attribute]
