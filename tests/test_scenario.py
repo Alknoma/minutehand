@@ -90,3 +90,50 @@ def test_a_scenario_file_with_a_start_keeps_it_whenever_the_run_starts() -> None
 def test_a_played_scenario_without_its_start_is_rejected() -> None:
     with pytest.raises(ValidationError, match="starts_at"):
         Scenario.model_validate({k: v for k, v in BASE.items() if k != "starts_at"})
+
+
+LEGAL = {"key": "legal", "provider": "youtrack", "project": "Launch", "title": "Legal review"}
+
+
+def test_a_happening_on_a_ticket_no_seed_names_is_rejected() -> None:
+    happening = {"ticket": "venue", "by": "owner", "after": "P1D", "change": {"kind": "delete"}}
+    with pytest.raises(ValidationError, match="no seeded ticket has the key: venue"):
+        Scenario.model_validate({**BASE, "tickets": [LEGAL], "ticket_happenings": [happening]})
+
+
+def test_a_happening_by_or_to_nobody_real_is_rejected() -> None:
+    happening = {"ticket": "legal", "by": "owner", "after": "P1D", "change": {"kind": "assignee", "to": "dania"}}
+    with pytest.raises(ValidationError, match="no such person: dania"):
+        Scenario.model_validate({**BASE, "tickets": [LEGAL], "ticket_happenings": [happening]})
+
+
+def test_two_tickets_with_one_key_and_two_seeds_for_one_provider_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="two seeded tickets share a key"):
+        Scenario.model_validate({**BASE, "tickets": [LEGAL, LEGAL]})
+    seed = {"provider": "youtrack", "text": "{}"}
+    with pytest.raises(ValidationError, match="a provider has two seeds"):
+        Scenario.model_validate({**BASE, "provider_seeds": [seed, seed]})
+
+
+def test_a_tell_a_seeded_comment_or_a_commenting_person_holds_is_rejected() -> None:
+    rosa = {
+        "key": "rosa",
+        "name": "Rosa",
+        "email": "rosa@example.com",
+        "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": "Lakeside Hall it is."}]},
+    }
+    people = [{"key": "owner", "name": "Owner", "email": "owner@example.com"}, rosa]
+    relayed = {"kind": "relayed", "said_by": "rosa", "to": "owner", "tell": "lakeside hall"}
+    commented = {**LEGAL, "comments": [{"by": "owner", "text": "Maybe Lakeside Hall?"}]}
+    with pytest.raises(ValidationError, match="a comment on 'Legal review'"):
+        Scenario.model_validate({**BASE, "people": people, "tickets": [commented], "expect": [relayed]})
+    happening = {
+        "ticket": "legal",
+        "by": "owner",
+        "after": "P1D",
+        "change": {"kind": "comment", "text": "Lakeside hall"},
+    }
+    with pytest.raises(ValidationError, match="a comment owner makes on legal"):
+        Scenario.model_validate(
+            {**BASE, "people": people, "tickets": [LEGAL], "ticket_happenings": [happening], "expect": [relayed]}
+        )

@@ -133,13 +133,35 @@ class TicketState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class SeededComment(Model):
+    """A comment already on a seeded ticket when the run starts."""
+
+    by: str = Field(description="Person.key")
+    text: str = Field(min_length=1)
+
+
 class SeededTicket(Model):
+    key: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]*$",
+        description="The scenario's own name for this ticket, which a `TicketHappening` or a provider's seed names",
+    )
     provider: ProviderKey
     project: str
     title: str
     body: str = ""
     assignee: str | None = Field(default=None, description="Person.key")
     state: TicketState = TicketState.OPEN
+    labels: list[str] = Field(default=[], description="Tags or labels the ticket carries")
+    comments: list[SeededComment] = []
+
+
+class ProviderSeed(Model):
+    """What one provider needs beyond the provider-neutral people, tickets and documents: its own JSON, as text,
+    parsed only by that provider when it seeds."""
+
+    provider: ProviderKey
+    text: str = Field(description="The provider's own seed, as JSON")
 
 
 class SeededDocument(Model):
@@ -155,6 +177,37 @@ class TicketFate(Model):
     assignee: str = Field(description="Person.key")
     becomes: TicketState
     after: timedelta
+
+
+class StateChanged(Model):
+    kind: Literal["state"] = "state"
+    to: TicketState
+
+
+class Reassigned(Model):
+    kind: Literal["assignee"] = "assignee"
+    to: str | None = Field(description="Person.key; None unassigns")
+
+
+class Commented(Model):
+    kind: Literal["comment"] = "comment"
+    text: str = Field(min_length=1)
+
+
+class Removed(Model):
+    kind: Literal["delete"] = "delete"
+
+
+TicketChange = Annotated[StateChanged | Reassigned | Commented | Removed, Field(discriminator="kind")]
+
+
+class TicketHappening(Model):
+    """Something a person does to a seeded ticket at a moment of the run, whatever the agent does."""
+
+    ticket: str = Field(description="SeededTicket.key")
+    by: str = Field(description="Person.key of whoever does it")
+    after: timedelta = Field(ge=timedelta(0), description="Offset from the scenario's start")
+    change: TicketChange
 
 
 class Direction(Model):
@@ -249,6 +302,8 @@ class _ScenarioBody(Model):
     tickets: list[SeededTicket] = []
     documents: list[SeededDocument] = []
     ticket_fates: list[TicketFate] = []
+    ticket_happenings: list[TicketHappening] = []
+    provider_seeds: list[ProviderSeed] = []
     directions: list[Direction] = []
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
 
@@ -257,9 +312,21 @@ class _ScenarioBody(Model):
         keys = [p.key for p in self.people]
         if len(keys) != len(set(keys)):
             raise ValueError("two people share a key")
+        ticket_keys = [t.key for t in self.tickets if t.key is not None]
+        if len(ticket_keys) != len(set(ticket_keys)):
+            raise ValueError("two seeded tickets share a key")
+        unknown_tickets = sorted({h.ticket for h in self.ticket_happenings} - set(ticket_keys))
+        if unknown_tickets:
+            raise ValueError(f"no seeded ticket has the key: {', '.join(unknown_tickets)}")
+        seeded_providers = [s.provider for s in self.provider_seeds]
+        if len(seeded_providers) != len(set(seeded_providers)):
+            raise ValueError("a provider has two seeds")
         known = set(keys)
         named = [self.owner]
         named += [t.assignee for t in self.tickets if t.assignee]
+        named += [c.by for t in self.tickets for c in t.comments]
+        named += [h.by for h in self.ticket_happenings]
+        named += [h.change.to for h in self.ticket_happenings if isinstance(h.change, Reassigned) and h.change.to]
         named += [f.assignee for f in self.ticket_fates]
         named += [a.delegate for p in self.people for a in p.absences if a.delegate]
         named += [e.person for e in self.expect if isinstance(e, PersonAsked)]
@@ -280,6 +347,13 @@ class _ScenarioBody(Model):
         elsewhere = [("the goal", self.goal)]
         elsewhere += [(f"direction {i + 1}", d.text) for i, d in enumerate(self.directions)]
         elsewhere += [(f"seeded ticket {t.title!r}", f"{t.title} {t.body}") for t in self.tickets]
+        elsewhere += [(f"a comment on {t.title!r}", c.text) for t in self.tickets for c in t.comments]
+        elsewhere += [
+            (f"a comment {h.by} makes on {h.ticket}", h.change.text)
+            for h in self.ticket_happenings
+            if isinstance(h.change, Commented)
+        ]
+        elsewhere += [(f"the {s.provider} seed", s.text) for s in self.provider_seeds]
         elsewhere += [(f"seeded document {d.title!r}", f"{d.title} {d.text}") for d in self.documents]
         for person in self.people:
             if person.key == relayed.said_by:
