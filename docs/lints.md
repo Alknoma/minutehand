@@ -1,8 +1,8 @@
 # Lints
 
-`wall_clock`, `import_boundaries`, `enum_string_comparisons` and `boundary_dicts` were agreed and are written; `provider_manifest` was not agreed and does not exist. Each section states the five tests.
+`wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` and `provider_state` were agreed and are written; `provider_manifest` was not agreed and does not exist. Each section states the five tests.
 
-A new repo has no debt, so every lint here is fail-closed with an inline marker that requires a reason: `# <name>-lint: exempt <reason>` (`clock`, `import`, `enum`, `dict`). A bare marker exempts nothing. There are no baselines.
+A new repo has no debt, so every lint here is fail-closed with an inline marker that requires a reason: `# <name>-lint: exempt <reason>` (`clock`, `import`, `enum`, `dict`, `state`). A bare marker exempts nothing. There are no baselines.
 
 ## How they run
 
@@ -58,6 +58,20 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 | Why the exception | A provider's request and response bodies are someone else's wire format. They enter as text on `Exchange` and leave `wire.py` as a typed `Snapshot`. |
 | 1. Recurred | 699 signatures in the parent repo's baseline. |
 | Cost | Every provider needs a `wire.py`. |
+
+### 5. `provider_state` — written, fail-closed
+
+| Test | Answer |
+|---|---|
+| The rule | A provider holds nothing between requests: what it knows is in the store, never in a module, a closure or `self`. |
+| What pyright cannot see | A module dict filled by a handler, a counter on the app object: both type-check. Lifetime is not in a type. |
+| What fires | Under `adapters/providers/<p>/`: a module-level name changed by code that runs while serving (subscript or attribute store, `del`, a container method on a container binding; by its own name, a sibling import or `module.NAME`) and any `global`; on a *resident* class (the one `build()` returns, and every class constructed while the app is built, following `build()`, `__init__`, `app`, provider functions and methods called on the instance being built) a `self.X` rebound or changed outside `__init__` and outside a method called only while building; a build-time function's local changed by a closure, or named by `nonlocal`; a container in a plain class body changed through `self.X` or `Cls.X`. |
+| 4. Fires on nothing adjacent | A module-level constant nothing changes while serving, anything changed at import, a routing table built once (`JiraApi.route`, called only from `build_app`), a per-request object (`asana.app.View`, `youtrack.present.Presenter`) changing its own attributes, a local. |
+| Exempt by structure | A provider whose `manifest.py` passes `state_outside_log=` a value (AWS: moto's memory; read from the manifest, not the directory name). A resident attribute `__init__` annotates as a collection of `asyncio.Task`: work running in this process, which no store can hold, counted by `DeliversInBackground.delivering()` (Notion `_sending`, Drive `_background`). |
+| Escape | `# state-lint: exempt <reason>` on the line. Three carry it: `SlackApi.endpoint` and `oauth_v2_access` rebinding `self._world`, the calling team's view of the store, set before each synchronous method runs. |
+| 3. Seen to fail | A module `_cache` and a `self._seen` cache planted in a copy of the GitHub provider; removing the Task, build-only, manifest, closure or class branch each turns a test red. |
+| Cannot see | A change through another name (`x = self._seen; x.add(v)`), through a method of our own class other than the container methods, an inherited method, a memoising decorator on a function of the world. |
+| User stores | Not a separate check. A roster that outlives the request is a changed container above; the per-request memos (`View._users`, `Presenter._users`) read through the store, and a check keyed on the name `users` would fire on them and on nothing real. |
 
 ## Not agreed
 
