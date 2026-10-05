@@ -15,19 +15,20 @@ It is one process: it intercepts the agent's outbound API calls, owns the clock,
 
 ## What exists
 
-Tests are `def test_` functions counted per directory: 606 in all, 739 cases once parametrised (outside `-m packaging`). `uv run pytest -q -n auto` runs every one with sockets disabled except to `127.0.0.1`, `::1` and `localhost`.
+Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto` runs every one that needs neither a package index nor Docker, with sockets disabled except to `127.0.0.1`, `::1` and `localhost`. The rest are marked `packaging` or `firestore`.
 
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
 | Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 9 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
-| World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 3 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
-| Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA) | Built and tested | 37 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are recorded only with `--record-model-calls`, as spans. |
+| World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 3 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
+| Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 37 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
 | Slack provider | 15 Web API methods; message events pushed to the agent, signed with the run's secret or the agent's own | Built and tested | 74 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
 | Asana provider | 20 routes over users, workspaces, projects, sections, tasks and stories | Built and tested | 55 (`tests/providers/asana/`) | Any bearer token is accepted. |
 | YouTrack provider | 14 routes, each at `/api` and `/youtrack/api` | Built and tested | 60 (`tests/providers/youtrack/`) | Any bearer token is accepted. |
 | Google Drive provider | 14 Drive v3 routes, Docs v1 `documents.get`, Google's `/token` | Built and tested | 62 (`tests/providers/google_drive/`) | Sign-in is not verified; any bearer token is accepted. Content is capped at 5 MiB per file. |
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
-| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 47 (`tests/orchestrator/`) | A fork starts only at a checkpoint (the end of a wake). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 71 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step sees only `AgentReport`. An agent with no `Reported` wake source is restored unverified, and says so. Settling sees only calls through the proxy. PostgreSQL is described, not tested. |
 | Checks, ledger, scorecard, patterns: `checks/` | 12 checks, the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP only: a gRPC exporter is not received. Logs and metrics are acknowledged and dropped. A span is stamped with the wake it arrived in, which a batching exporter may make a later one. |
@@ -155,7 +156,10 @@ scorecard
   messages to people: 1
   failed checks: 2
 
-checkpoints to fork from: after wake 0 at seq 14, after wake 1 at seq 18, after wake 1 at seq 19
+checkpoints
+  seq 14, after wake 0: not restorable: the agent declares no state hooks
+  seq 18, after wake 1: not restorable: the agent declares no state hooks
+  seq 19, after wake 1: not restorable: the agent declares no state hooks
 exit 1
 ```
 
@@ -207,9 +211,10 @@ src/minutehand/
     run.py            RunRecord, StopReason
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
   ports/              Store, Clock, Provider, PushesEvents, HoldsTickets, EditsTickets, BooksWakes, Wakes,
-                      AgentDriver, Replier, Telemetry
-  application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, replier_scripted.py,
-                      run_clock.py, state_hooks.py, files.py, refusals.py, model_calls.py (the join)
+                      AgentDriver, Reports, Replier, Telemetry
+  application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (settle, restore,
+                      verify), replier_scripted.py, run_clock.py, state_hooks.py, files.py, refusals.py,
+                      model_calls.py (the join)
   checks/             one module per check; runner.py, ledger.py, effectiveness.py, patterns.py, _waits.py
   adapters/
     proxy/            server.py, addon.py, policy.py, registry.py, hosts.py, edit.py, redact.py, model_calls.py
@@ -388,7 +393,9 @@ Orchestrator.run():
                            -> Replier.decide -> a pending reply
                            an agent ticket assigned to a person with a TicketFate -> a pending fate
       AgentReport.next_wake replaces the agent's previous DUE wake
-      checkpoint: StateHooks.snapshot, then a Checkpoint row in the log
+      checkpoint: with StateHooks, settle (not WORKING, and no call through the proxy for `quiet`), then
+                  StateHooks.snapshot, or NotRestorable with the reason after `settle_limit`;
+                  then a Checkpoint row in the log, carrying the agent's report
       stop on DONE (AGENT_DONE), Scenario.max_wakes (WAKE_LIMIT), AgentFailed (AGENT_FAILED)
   RunRecord -> Scorer (every check) -> Telemetry.found, Telemetry.run_ended
 ```
@@ -424,7 +431,10 @@ What a run leaves behind (`session.py`):
 <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
 <state>/runs/<run_id>/agent.json     `AgentUnderTest`
 <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
-<state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks`
+<state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks` and
+                                     settled in time
+<state>/runs/<run_id>/restore.json   for a fork, or a sample after the first: each restore step with its
+                                     command's output, and whether the restore was verified
 ```
 
 `world.db` holds seven tables: `run` (each run and the seq and call count it was forked at), `event`, `entity_version`, `exchange`, `reply`, `span` (the agent's spans, see "Telemetry") and `forward_failure`.
@@ -665,7 +675,7 @@ CREATE TABLE IF NOT EXISTS entity_version(
 - **The world as of any moment is a query:** the latest version of each entity at or below a sequence number. Rewinding does not restore anything; it moves the point the fakes read from.
 - **A fork is a child run that shares its parent's log up to a sequence number** and writes its own rows after it (`SqliteStore.fork`). No copy is made. It also sees the calls its parent had recorded by then, and none after.
 - **Providers do not know.** They read and write through the store, which applies "as of" for them.
-- **A fork starts only at a checkpoint.** At the end of every wake, and at setup and at the deadline the clock runs on to, the run loop appends a `Checkpoint` (the clock, the decided reply count, scheduled fates, commitments, everything pending) as an entity in the same log (`application/checkpoint.py`). `fork_run` refuses any other `at_seq`; `minutehand findings` lists the ones that exist.
+- **A fork starts only at a checkpoint.** At the end of every wake, and at setup and at the deadline the clock runs on to, the run loop appends a `Checkpoint` (the clock, the decided reply count, scheduled fates, commitments, everything pending, and whether the agent's own state there can be put back) as an entity in the same log (`application/checkpoint.py`). `fork_run` refuses any other `at_seq`; `minutehand run` and `findings` list the ones that exist and say which are restorable.
 
 What a rewind needs beyond the world:
 
@@ -673,9 +683,38 @@ What a rewind needs beyond the world:
 |---|---|---|
 | The clock and everything pending | The `Checkpoint` row at the fork's seq | Built |
 | People's replies already given | The `reply` table; copied up to the fork, decided fresh after it | Built |
-| The agent's own state | Locally: `StateHooks`, a snapshot and a restore command named in the agent file, each given `MINUTEHAND_SNAPSHOT_DIR` | Built |
+| The agent's own state | Locally: `StateHooks`, a procedure Minutehand owns (below) | Built and tested: SQLite in the default suite, a Firestore emulator against a real container (`-m firestore`) |
 | | Hosted: a snapshot of the whole virtual machine the agent runs in, which needs no hooks | Designed, not built |
 | AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. A fork whose checkpoint holds a pending booking is refused, naming the booking (`application/rewind.py`). | Known limit |
+
+#### The agent's own state: settle, restore, verify
+
+The agent supplies commands; Minutehand decides when they run and checks what they did (`application/restore.py`).
+
+```python
+class StateHooks(Model):
+    snapshot: list[str] = Field(min_length=1)
+    restore: list[str] = Field(min_length=1)
+    stop: list[str] | None = Field(default=None, min_length=1, description="Stops the agent's processes")
+    start: list[str] | None = Field(default=None, min_length=1, description="Starts them again after `restore`")
+    quiet: timedelta = Field(default=timedelta(seconds=1), ge=timedelta(0), ...)
+    settle_limit: timedelta = Field(default=timedelta(seconds=60), gt=timedelta(0), ...)
+    answer_limit: timedelta = Field(default=timedelta(seconds=120), gt=timedelta(0), ...)
+    step_limit: timedelta = Field(default=timedelta(minutes=5), gt=timedelta(0), ...)
+```
+
+- **Settle.** A checkpoint is snapshotted only when the agent reports it is not `WORKING` and no outbound call of its has been seen for `quiet`, measured from the later of the moment settling began and its last call. The proxy remembers the latest call it saw (`Proxy.last_call`, `Traffic`): every request it answers, edits or refuses, every `CONNECT`, every new tunnelled connection. An agent with a `Reported` wake source is asked for its report again once quiet (`ports.agent.Reports`); a call made while it is asked starts the quiet again. One that has not settled within `settle_limit` is written as `NotRestorable(reason)`, e.g. "the agent was still making outbound calls when the settle limit (0.5 s) ran out: its last, GET /testchat/inbox, …", and is never snapshotted. A settled one is `Restorable(snapshot_of, wake, report)`: the report is what the restore must bring back. A run with hooks and nothing watching the agent's calls is refused.
+- **Restore** is a sequence, each step's output kept in the child's `restore.json`: `stop` (the agent's command, when Minutehand started it with `--`, then the agent's own `stop`), `restore`, `start` (the agent's own, then Minutehand's command), then `answer`: the report endpoint must answer within `answer_limit`. A step that fails, cannot be started or runs past `step_limit` refuses the fork: "the restore of the agent from the checkpoint at seq 18 failed at step `restore`: … exited 5 after 0.1 s. Its output: …". `minutehand fork` names each step on stderr as it is taken. A sample after the first is restored the same way from the first sample's setup.
+- **Verify.** The report after the restore is compared with the recorded one (`differences`). Equal means: the same `status`; a `next_wake` that is the same instant, or both none; the same commitments as a set keyed by `Commitment.key`, each with the same `status`, where none reported and an empty list are the same. A difference refuses the fork field by field: `next_wake: 2026-08-26T09:00:00+00:00 at the checkpoint, none after` is a restore that silently did nothing; `…, 2026-08-28T09:00:00+00:00 after` is the snapshot of another wake restored.
+- **What the comparison cannot see:** anything the report does not carry (a conversation, a cache, a draft, a commitment's description and dates); a restore that put back another moment whose report reads the same; state in a service the agent uses that was not restored and is not reflected in its report; in-memory state in a process the restore did not stop and start. An agent with no `Reported` source (`Command`, `Polled`, by message only) cannot be asked between wakes: it is restored, and `restore.json` and `minutehand fork` say it was not verified and why.
+- **Refusals leave nothing.** No hooks, no checkpoint at the seq, a checkpoint not restorable, no snapshot directory, a booking pending, a ticket edit that cannot land: each is refused before `Store.fork`. A restore that fails after the child exists discards it (`Store.discard`) and `session.fork` removes its directory. Before, every refusal after `Store.fork` left an empty child run in the world file.
+
+What no fork can rewind, said in the refusals and in `examples/state/README.md`:
+
+- what a real third-party service the run reached keeps: the proxy refuses unclaimed hosts, but a tunnelled host (a model API) is reached for real;
+- what a model provider keeps on its side: a stored conversation or response, a cache, a batch, an uploaded file;
+- the AWS provider's queues and schedules, in moto's memory;
+- background work in the agent that outlives the quiet period, and calls that never pass the proxy (to `localhost`, or on a tunnel already open), which settling cannot see.
 
 Without `StateHooks`, `fork_run` is refused: a world rewound under an agent that remembers the future is not a rerun.
 
@@ -1129,9 +1168,12 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 
 ## Known issues / limitations
 
-- **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample after the first starts from the agent's state at the first sample's start through `StateHooks.restore`; without hooks the samples are not independent.
+- **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample after the first starts from the agent's state at the first sample's start, restored and verified as a fork's is; without hooks the samples are not independent.
 - **One proxy per process.** mitmproxy keeps its master in a module global; `Proxy` refuses a second and is moved from run to run with `mount`.
-- **A fork starts only at a checkpoint,** and only for an agent with `StateHooks`.
+- **A fork starts only at a restorable checkpoint,** and only for an agent with `StateHooks`. A checkpoint at which the agent did not settle within `settle_limit` is not restorable.
+- **A restore is proven by the agent's report alone.** Two moments with the same status, next wake and commitments are indistinguishable to the verify step; an agent with no report endpoint between wakes is restored unverified.
+- **Settling sees only calls through the proxy.** A call to `localhost` or a request on a tunnel already open is invisible, so background work there can outlive the quiet period unseen.
+- **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
 - **Every provider accepts any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana, YouTrack and Drive accept any bearer token; Drive's `/token` verifies nothing.

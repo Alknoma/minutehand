@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.domain.agent import Commitment, WakeReason
+from minutehand.domain.agent import AgentReport, Commitment, WakeReason
 from minutehand.domain.clock import Due
 from minutehand.domain.scenario import Model, ProviderKey, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
@@ -64,6 +64,34 @@ Pending = Annotated[
 ]
 
 
+class Restorable(Model):
+    """The agent settled and its state was snapshotted: a fork from here can put it back."""
+
+    kind: Literal["restorable"] = "restorable"
+    snapshot_of: str = Field(description="The run whose directory holds the snapshot (a fork inherits its parent's)")
+    wake: int = Field(ge=0, description="The wake whose snapshot directory holds it")
+    report: AgentReport | None = Field(
+        description="What the agent reported once settled, which a restore must bring back; None when the agent "
+        "had not reported and cannot be asked"
+    )
+
+
+class NotRestorable(Model):
+    """The agent did not settle in time, so no snapshot was taken: a fork from here is refused, saying why."""
+
+    kind: Literal["not_restorable"] = "not_restorable"
+    reason: str
+
+
+class NoHooks(Model):
+    """The agent declares no `StateHooks`: nothing of its own state was kept."""
+
+    kind: Literal["no_hooks"] = "no_hooks"
+
+
+AgentState = Annotated[Restorable | NotRestorable | NoHooks, Field(discriminator="kind")]
+
+
 class Checkpoint(Model):
     wake: int = Field(ge=0, description="The wake that had just ended; 0 is setup")
     now: AwareDatetime
@@ -71,6 +99,7 @@ class Checkpoint(Model):
     fated: list[EntityRef] = Field(default=[], description="Tickets whose fate is already scheduled or landed")
     commitments: list[Commitment] | None = None
     pending: list[Pending]
+    agent: AgentState = Field(description="Whether the agent's own state at this moment can be put back")
 
 
 def write_checkpoint(store: Store, checkpoint: Checkpoint) -> int:
@@ -85,6 +114,11 @@ def write_checkpoint(store: Store, checkpoint: Checkpoint) -> int:
 def checkpoint_seqs(store: Store) -> list[int]:
     """Every seq a fork can be taken at, in order."""
     return [e.seq for e in store.events() if e.entity == CHECKPOINT]
+
+
+def checkpoints(store: Store) -> dict[int, Checkpoint]:
+    """Every checkpoint this store can see, by the seq it was written at, in order."""
+    return {v.seq: Checkpoint.model_validate_json(v.body) for v in store.versions(CHECKPOINT)}
 
 
 def read_checkpoint(store: Store) -> Checkpoint | None:

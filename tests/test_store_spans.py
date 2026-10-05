@@ -116,6 +116,24 @@ def test_a_failed_forward_is_recorded_with_the_run(world: tuple[SqliteStore, Run
     assert store.fork("what-if", at_seq=0, clock=RunClock(START)).forward_failures() == []
 
 
+def test_a_discarded_fork_takes_its_spans_and_forward_failures_with_it(
+    world: tuple[SqliteStore, RunClock], tmp_path: Path
+) -> None:
+    store, _ = world
+    store.receive([span(TRACE_A, "1" * 16, "the parent's")], source=SpanSource.RECEIVED)
+    fork = store.fork("refused", at_seq=0, clock=RunClock(START))
+    fork.receive([span(TRACE_A, "2" * 16, "the fork's")], source=SpanSource.RECEIVED)
+    fork.forward_failed(Signal.TRACES, "http://collector.example:4318/v1/traces", "connection refused")
+
+    fork.discard()
+
+    [path] = tmp_path.glob("*.db")
+    db = sqlite3.connect(path)
+    for table in ("span", "forward_failure"):
+        assert db.execute(f"SELECT COUNT(*) FROM {table} WHERE run_id='refused'").fetchone()[0] == 0, table
+    assert [s.span.name for s in store.spans()] == ["the parent's"]
+
+
 OLDER_SCHEMA = """
 CREATE TABLE run(run_id TEXT PRIMARY KEY, parent TEXT, forked_at INTEGER, forked_calls INTEGER);
 CREATE TABLE event(run_id TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (run_id, seq));

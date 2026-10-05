@@ -59,6 +59,11 @@ class Store(Protocol):
 
     def replies(self) -> list[PersonReply]: ...
 
+    def versions(self, entity: EntityRef) -> list[Stored]:
+        """Every version of one entity this run can see, oldest first: the history `get` answers the end of.
+        A delete is not a version."""
+        ...
+
     def receive(self, spans: Sequence[ReceivedSpan], *, source: SpanSource) -> list[StoredSpan]:
         """Keep one batch of the agent's spans, each stamped with the wake in progress, the simulated time and
         the head of the log as it arrives."""
@@ -83,4 +88,9 @@ class Store(Protocol):
         The child stamps from `clock`, its own: a fork starts at an earlier moment than its
         parent has reached, and a clock does not run backwards.
         """
+        ...
+
+    def discard(self) -> None:
+        """Remove this run and everything it wrote: a fork refused before it ran leaves nothing behind.
+        Refused for a run that has children, whose logs read through it."""
         ...

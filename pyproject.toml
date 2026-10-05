@@ -56,8 +56,11 @@ asyncio_mode = "auto"
 pythonpath = ["src", "."]
 # A test that reaches a real service is a broken test: only this machine is reachable.
 # A test that hangs fails at 60 seconds. Tests run in a random order every time.
-addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging'"
-markers = ["packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging"]
+addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not firestore'"
+markers = [
+    "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
+    "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
+]
 filterwarnings = [
     # A warning raised against our own code is an error. Third-party internals are left alone.
     "error:::minutehand",

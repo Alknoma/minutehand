@@ -46,7 +46,7 @@ class ReportedDriver:
         longest = source.report_at_most_every.total_seconds()
         while True:
             await asyncio.sleep(max(min(wait, give_up - loop.time()), 0.0))
-            report = await self._report()
+            report = await self.report()
             if report.status is not AgentStatus.WORKING:
                 return report
             if loop.time() >= give_up:
@@ -56,7 +56,7 @@ class ReportedDriver:
                 )
             wait = min(wait * 2, longest)
 
-    async def _report(self) -> AgentReport:
+    async def report(self) -> AgentReport:
         url = self._source.report_url
         async with self._client() as client:
             try:

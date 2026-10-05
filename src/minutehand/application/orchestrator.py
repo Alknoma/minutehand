@@ -15,16 +15,21 @@ from pathlib import Path
 from typing import Protocol
 
 from minutehand.application.checkpoint import (
+    AgentState,
     Checkpoint,
+    NoHooks,
+    NotRestorable,
     Pending,
     PendingBooking,
     PendingDirection,
     PendingFate,
     PendingReply,
     PendingWake,
+    Restorable,
     write_checkpoint,
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
+from minutehand.application.restore import Traffic, settle
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
 from minutehand.checks.runner import RunResult
@@ -44,7 +49,7 @@ from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Person, ProviderKey, Scenario
 from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
-from minutehand.ports.agent import AgentDriver
+from minutehand.ports.agent import AgentDriver, Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
@@ -168,9 +173,15 @@ class Orchestrator:
         parent_run: str | None = None,
         forked_at: int | None = None,
         prior_wakes: Sequence[WakeRecord] = (),
+        traffic: Traffic | None = None,
     ) -> None:
         if agent.state is not None and state_dir is None:
             raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
+        if agent.state is not None and traffic is None:
+            raise RunRefused(
+                f"agent {agent.name} has state hooks, and nothing in the run sees its outbound calls, so no "
+                "checkpoint could be known to be settled"
+            )
         if any(isinstance(w, Booked) for w in agent.wakes) and not services.schedulers:
             raise RunRefused(f"agent {agent.name} declares Booked wakes but no provider in the run books wakes")
         if isinstance(agent.goal, GoalByMessage):
@@ -195,6 +206,10 @@ class Orchestrator:
         self._signing = dict(signing or {})
         self._parent_run = parent_run
         self._forked_at = forked_at
+        self._traffic = traffic
+        self._mounted = False
+        self._agent_state: AgentState = NoHooks()
+        self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._pending: list[Pending] = []
         self._replies: list[PersonReply] = []
@@ -268,16 +283,19 @@ class Orchestrator:
         self._pending = list(checkpoint.pending)
         self._fated = list(checkpoint.fated)
         self._commitments = checkpoint.commitments
+        self._agent_state = checkpoint.agent
+        if isinstance(checkpoint.agent, Restorable):
+            self._last_report = checkpoint.agent.report
         self._seen = self._store.head()
         stop = await self._start() if checkpoint.wake == 0 else None
         if stop is None:
             stop = await self._loop()
         return await self._end(stop, started)
 
-    def _begin(self) -> None:
-        if self._telemetry is not None:
-            self._telemetry.run_started(self._store.run_id, self._scenario)
-        if self._mounts is not None:
+    def mount(self) -> None:
+        """Serve the run's providers to the agent, over this run's world, from now on: before the agent is
+        restored for a fork, so whatever it calls as it starts is recorded in the fork and not its parent."""
+        if self._mounts is not None and not self._mounted:
             self._mounts.mount(
                 self._store,
                 self._clock,
@@ -287,6 +305,12 @@ class Orchestrator:
                 },
                 scenario=self._scenario,
             )
+        self._mounted = True
+
+    def _begin(self) -> None:
+        if self._telemetry is not None:
+            self._telemetry.run_started(self._store.run_id, self._scenario)
+        self.mount()
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))
 
@@ -379,6 +403,7 @@ class Orchestrator:
                 fated=self._fated,
                 commitments=self._commitments,
                 pending=self._pending,
+                agent=self._agent_state,
             ),
         )
         self._record_new()
@@ -520,6 +545,7 @@ class Orchestrator:
             )
         changed = report.commitments != self._commitments
         self._commitments = report.commitments
+        self._last_report = report
         return changed
 
     def _schedule_tick(self) -> None:
@@ -630,9 +656,7 @@ class Orchestrator:
 
     async def _checkpoint(self) -> None:
         wake = self._clock.wake()
-        if self._agent.state is not None:
-            assert self._state_dir is not None
-            await run_hook(self._agent.state.snapshot, wake_dir(self._state_dir, self._store.run_id, wake))
+        self._agent_state = await self._snapshot(wake)
         write_checkpoint(
             self._store,
             Checkpoint(
@@ -642,9 +666,28 @@ class Orchestrator:
                 fated=self._fated,
                 commitments=self._commitments,
                 pending=self._pending,
+                agent=self._agent_state,
             ),
         )
         self._record_new()
+
+    async def _snapshot(self, wake: int) -> AgentState:
+        """The agent's own state at the end of this wake: snapshotted once it has settled, or recorded as not
+        restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
+        hooks = self._agent.state
+        if hooks is None:
+            return NoHooks()
+        assert self._state_dir is not None and self._traffic is not None
+        main = self._reach.main
+        settled = await settle(hooks, self._traffic, main if isinstance(main, Reports) else None, self._last_report)
+        if isinstance(settled, NotRestorable):
+            return settled
+        await run_hook(
+            hooks.snapshot,
+            wake_dir(self._state_dir, self._store.run_id, wake),
+            limit=hooks.step_limit.total_seconds(),
+        )
+        return Restorable(snapshot_of=self._store.run_id, wake=wake, report=settled.report)
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
 
@@ -698,8 +741,10 @@ async def run_scenario(
     scorer: Scorer | None = None,
     state_dir: Path | None = None,
     signing: Mapping[ProviderKey, str] | None = None,
+    traffic: Traffic | None = None,
 ) -> RunRecord:
-    """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with."""
+    """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
+    `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -715,4 +760,5 @@ async def run_scenario(
         scorer=scorer,
         state_dir=state_dir,
         signing=signing,
+        traffic=traffic,
     ).run()

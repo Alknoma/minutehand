@@ -114,7 +114,9 @@ def agent_under_test(
             InboundTarget(provider="slack", url=f"{base}/slack/events", secret=GeneratedSecret(env=SECRET_VARIABLE))
         ],
         state=StateHooks(
-            snapshot=[*program, "snapshot", str(state_file)], restore=[*program, "restore", str(state_file)]
+            snapshot=[*program, "snapshot", str(state_file)],
+            restore=[*program, "restore", str(state_file)],
+            quiet=timedelta(milliseconds=50),
         )
         if hooks
         else None,
