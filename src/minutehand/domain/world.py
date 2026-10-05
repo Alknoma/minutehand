@@ -46,13 +46,15 @@ class CaptureMode(StrEnum):
     PASS_THROUGH = "pass_through"
     REPLAY = "replay"
     DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
+    FORWARD = "forward"  # sent to an external emulator the agent file or world declares (`domain.emulator`)
 
 
 class AnsweredBy(StrEnum):
     DECLARATION = "declaration"  # the declared answer; the call never left the machine
     REAL_HOST = "real_host"  # the real host, reached through the proxy
     RECORDING = "recording"  # an earlier run's recording of the same call
-    REFUSAL = "refusal"  # nobody: a replay that missed, declared to refuse
+    REFUSAL = "refusal"  # nobody: a replay that missed, declared to refuse, or an emulator that was unavailable
+    EMULATOR = "emulator"  # an external emulator, named in `Captured.emulator`
 
 
 class BodyKept(StrEnum):
@@ -70,6 +72,19 @@ class Body(Model):
     size: int = Field(ge=0, description="Bytes, the whole body as it crossed the wire, decoded")
     kept: BodyKept
     sha256: str = Field(description="Of the whole body with credentials and declared fields redacted")
+
+
+class CallOutcome(StrEnum):
+    """What a call's answer was, as distinct from its status: who is at fault when it is not a plain answer.
+
+    Set on every forwarded call (`CaptureMode.FORWARD`); None on a call nothing classified."""
+
+    ANSWERED = "answered"  # the service answered as it would
+    REFUSED = "refused"  # the service refused it, as the real one would: a 4xx, or an error declared faithful
+    NOT_IMPLEMENTED = "not_implemented"  # the fake has no answer for it: a 501, or a declared not-implemented marker
+    INTERNAL_ERROR = "internal_error"  # the fake broke answering it: a 5xx nobody declared a faithful error
+    INJECTED_FAULT = "injected_fault"  # a fault the scenario or the test declared
+    UNAVAILABLE = "unavailable"  # nothing answered: the external emulator was down, unhealthy or did not answer
 
 
 class Recipient(Model):
@@ -94,6 +109,16 @@ class Captured(Model):
     response: Body
     streamed: bool = Field(default=False, description="The answer reached the agent chunk by chunk")
     recipients: list[Recipient] = Field(default=[], description="Read out of a send declared as a message")
+    emulator: str | None = Field(default=None, description="The external emulator it was forwarded to, by name")
+    operation: str | None = Field(
+        default=None,
+        description="What a forwarded call asked for: a GraphQL operation's name, else its method and path",
+    )
+    forwarded_traceparent: str | None = Field(
+        default=None,
+        description="The `traceparent` the forwarded copy carried: the agent's trace (or one begun for it) with "
+        "Minutehand's span of this call as the parent, under which the emulator's own spans sit",
+    )
 
 
 class TunnelRoute(StrEnum):
@@ -150,6 +175,9 @@ class Exchange(Model):
         default=None,
         description="Set for a burst on a tunnel the proxy never opened: `method` is CONNECT, `path` its "
         "host:port, `status` the 200 the proxy answered the CONNECT with, and no body is kept",
+    )
+    outcome: CallOutcome | None = Field(
+        default=None, description="What its answer was; None when nothing classified it (see `CallOutcome`)"
     )
     late_for: str | None = Field(
         default=None,

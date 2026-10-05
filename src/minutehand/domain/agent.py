@@ -12,7 +12,8 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from minutehand.domain.outbound import OutboundHost, refuse_repeats
+from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
+from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityRef
@@ -291,10 +292,14 @@ class AgentUnderTest(Model):
     base_urls: list[BaseUrl] = Field(
         default=[], description="Hosts the agent is handed a base URL for, each in its own variable, beside the proxy"
     )
+    emulators: list[ExternalEmulator] = Field(
+        default=[], description="Fakes outside Minutehand that `forward` hosts are sent to, started or attached to"
+    )
 
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
         refuse_repeats(self.outbound)
+        refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
         named = [b.env for b in self.base_urls]
         if len(named) != len(set(named)):
             raise ValueError(

@@ -19,6 +19,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import WakeReason
 from minutehand.domain.checks import Effectiveness, Finding
+from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import Actor, EntityKind, Operation, RecordedCall, WorldEvent
@@ -42,6 +43,9 @@ class RecordingTelemetry:
 
     def captured(self, call: RecordedCall) -> None:
         raise AssertionError("the proxy hands captured calls to the run loop, which tells telemetry")
+
+    def emulator_changed(self, change: EmulatorChange) -> None:
+        raise AssertionError("the proxy never watches an emulator's health")
 
     def wake_ended(self, wake: int) -> None:
         raise AssertionError("the proxy never ends a wake")

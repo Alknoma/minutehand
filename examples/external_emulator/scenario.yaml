@@ -1,0 +1,7 @@
+name: payments_example
+goal: File Rosa as a customer, and check she is listed.
+owner: owen
+starts_at: 2026-08-24T09:00:00Z
+deadline_after: PT6H
+people:
+  - {key: owen, name: Owen Owner, email: owen@example.com, reply: {kind: silent}}

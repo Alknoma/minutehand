@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from pydantic import JsonValue
@@ -24,10 +25,12 @@ from pydantic import JsonValue
 from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.hosts import HostPattern
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
+from minutehand.domain.emulator import ExternalEmulator
 from minutehand.domain.outbound import (
     MESSAGE_ID,
     Acknowledge,
     Answer,
+    Forward,
     HtmlAt,
     InForks,
     MessageReading,
@@ -39,7 +42,7 @@ from minutehand.domain.outbound import (
 from minutehand.domain.scenario import Person
 from minutehand.domain.world import AnsweredBy, Body, BodyKept, Recipient, RecordedCall
 
-Declaration = Acknowledge | PassThrough | Replay
+Declaration = Acknowledge | PassThrough | Replay | Forward
 
 RECORDINGS = "captured.jsonl"
 """In a run's directory: every call the run captured, one `RecordedCall` a line, redacted as stored. A replay
@@ -538,9 +541,53 @@ class Replaying:
 # -- the declarations of one world -------------------------------------------------------------------------------
 
 
+class Broke(Protocol):
+    """Why the way to an emulator broke off one connection (`adapters.emulator.relay.RelayFailure`)."""
+
+    @property
+    def reason(self) -> str: ...
+
+    @property
+    def timed_out(self) -> bool: ...
+
+
+class EmulatorRoute(Protocol):
+    """Where a forwarded host's calls go: a plain-HTTP relay on this machine in front of the emulator
+    (`adapters.emulator.process.Running`), and whether the emulator can still answer."""
+
+    @property
+    def declaration(self) -> ExternalEmulator: ...
+
+    @property
+    def relay_port(self) -> int: ...
+
+    @property
+    def authority(self) -> str:
+        """The upstream's own host and port, for `HostHeader.UPSTREAM`."""
+        ...
+
+    @property
+    def prefix(self) -> str:
+        """The path of the upstream's URL, put before every forwarded path."""
+        ...
+
+    def unavailable(self) -> str | None:
+        """Why it cannot answer, once it has failed; None while it is in use."""
+        ...
+
+    def failed(self, reason: str) -> None:
+        """A forwarded call found it unavailable."""
+        ...
+
+    def failure_for(self, peer_port: int) -> Broke | None:
+        """Why the relay broke off the connection the proxy opened from `peer_port`, if it did."""
+        ...
+
+
 class Capturing:
-    """What a world captures: its declarations, the recordings its replays read, and the people a send may
-    reach. Empty, it captures nothing and every unclaimed host is refused."""
+    """What a world captures: its declarations, the recordings its replays read, the people a send may reach, and
+    the external emulators its forwarded hosts go to. Empty, it captures nothing and every unclaimed host is
+    refused."""
 
     def __init__(
         self,
@@ -548,6 +595,7 @@ class Capturing:
         *,
         replaying: Mapping[str, Replaying] | None = None,
         people: Sequence[Person] = (),
+        emulators: Mapping[str, EmulatorRoute] | None = None,
     ) -> None:
         self.declared = list(declared)
         self._patterns = [(HostPattern(d.host), d) for d in self.declared]
@@ -557,12 +605,16 @@ class Capturing:
                     raise ProviderConflict(f"outbound hosts {one.host!r} and {other.host!r} overlap")
         self.replaying = dict(replaying or {})
         self.people = list(people)
+        self.emulators: Mapping[str, EmulatorRoute] = emulators if emulators is not None else {}
 
     def find(self, host: str) -> Declaration | None:
         return next((d for pattern, d in self._patterns if pattern.matches(host)), None)
 
     def for_people(self, people: Sequence[Person]) -> Capturing:
-        return Capturing(self.declared, replaying=self.replaying, people=people)
+        return Capturing(self.declared, replaying=self.replaying, people=people, emulators=self.emulators)
+
+    def with_emulators(self, emulators: Mapping[str, EmulatorRoute]) -> Capturing:
+        return Capturing(self.declared, replaying=self.replaying, people=self.people, emulators=emulators)
 
 
 def refuse_claimed(declared: Sequence[Declaration], registry: Registry, model_hosts: Sequence[str]) -> None:

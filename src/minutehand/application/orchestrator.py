@@ -30,7 +30,7 @@ from minutehand.application.checkpoint import (
     Restorable,
     write_checkpoint,
 )
-from minutehand.application.outbound import outbound_uses
+from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
@@ -92,6 +92,13 @@ class Mounts(Protocol):
         """Record every call still in progress as far as it has gone (a burst on a tunnel it relays unopened, kept
         once it falls quiet): the run is about to be summarised."""
         ...
+
+
+class Environment(Protocol):
+    """What the run stands on besides the agent and Minutehand's own fakes: the external emulators it forwards to.
+    Asked after every wake, and when the run ends, whether any has failed under it."""
+
+    def failure(self) -> str | None: ...
 
 
 class Scorer(Protocol):
@@ -199,6 +206,7 @@ class Orchestrator:
         prior_wakes: Sequence[WakeRecord] = (),
         traffic: Traffic | None = None,
         channels: Mapping[ProviderKey, TakesReplies] | None = None,
+        environment: Environment | None = None,
     ) -> None:
         if agent.state is not None and state_dir is None:
             raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
@@ -234,6 +242,7 @@ class Orchestrator:
         self._forked_at = forked_at
         self._traffic = traffic
         self._channels = dict(channels or {})
+        self._environment = environment
         self._mounted = False
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
@@ -357,6 +366,10 @@ class Orchestrator:
     async def _end(self, stop: StopReason, started: float) -> RunRecord:
         if self._mounts is not None:
             self._mounts.flush()
+        failed = self._environment.failure() if self._environment is not None else None
+        if failed is not None:
+            # Whatever the agent did after its emulator failed under it, the run is the environment's failure.
+            stop, self._failure = StopReason.ENVIRONMENT_FAILED, failed
         record = RunRecord(
             run_id=self._store.run_id,
             scenario=self._scenario.name,
@@ -370,6 +383,7 @@ class Orchestrator:
             failure=self._failure,
             providers=list(dict.fromkeys(c.provider for c in self._store.calls() if c.provider is not None)),
             outbound=outbound_uses(self._store.calls()),
+            emulators=emulator_uses(self._store.calls()),
             wakes=self._wakes,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None
@@ -609,9 +623,12 @@ class Orchestrator:
         agent's spans are placed in the wake whose window holds their start, however late they arrive."""
         self._store.wake_began(wake)
         try:
-            return await self._played(wake, reason, fire, requests, settle)
+            stop = await self._played(wake, reason, fire, requests, settle)
         finally:
             self._store.wake_ended(wake)
+        if self._environment is not None and self._environment.failure() is not None:
+            return StopReason.ENVIRONMENT_FAILED
+        return stop
 
     async def _played(
         self,
@@ -999,6 +1016,7 @@ async def run_scenario(
     signing: Mapping[ProviderKey, str] | None = None,
     traffic: Traffic | None = None,
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
+    environment: Environment | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
@@ -1020,4 +1038,5 @@ async def run_scenario(
         signing=signing,
         traffic=traffic,
         channels=channels,
+        environment=environment,
     ).run()

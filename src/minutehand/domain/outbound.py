@@ -14,6 +14,9 @@ and every call to it is captured with the run:
         kind: replay                            # answered from an earlier run's recording
         source: {run: 3f2a9c1e07bb}
         on_miss: pass_through
+      - host: api.tracker.example
+        kind: forward                           # sent to an external emulator (`domain.emulator`)
+        emulator: tracker
 
 A host a provider claims, or a model API, cannot also be declared. A host nobody declares or claims is still
 refused, unless the run captures unknown hosts (`--capture-unknown`).
@@ -247,10 +250,32 @@ class Replay(_Declared):
     ignore_body: list[BodyPath] = []
 
 
-OutboundHost = Annotated[Acknowledge | PassThrough | Replay, Field(discriminator="kind")]
+class HostHeader(StrEnum):
+    """The `Host` a forwarded call reaches its emulator with."""
+
+    PRESERVE = "preserve"  # the host the agent called (`api.tracker.example`): one emulator can serve several
+    UPSTREAM = "upstream"  # the upstream's own host and port, for a server that checks its own name
 
 
-def refuse_repeats(declared: list[Acknowledge | PassThrough | Replay]) -> None:
+class Forward(_Declared):
+    """The call is sent to an external emulator the same file declares (`domain.emulator.ExternalEmulator`), and
+    kept, both sides verbatim, as a passed-through call is: request and answer streamed through untouched but for
+    the headers `domain.emulator.ADDED_HEADERS` lists and `traceparent`, set on the forwarded copy only.
+
+    `strip` is taken off the front of the path and `prefix` put before what is left, so `/graphql` on the agent's
+    side can be `/tracker/graphql` at the emulator."""
+
+    kind: Literal["forward"] = "forward"
+    emulator: ProviderKey = Field(description="The `name` of the emulator that answers this host")
+    strip: str = Field(default="", pattern=r"^(/[^?#]*)?$")
+    prefix: str = Field(default="", pattern=r"^(/[^?#]*)?$")
+    host_header: HostHeader = HostHeader.PRESERVE
+
+
+OutboundHost = Annotated[Acknowledge | PassThrough | Replay | Forward, Field(discriminator="kind")]
+
+
+def refuse_repeats(declared: list[Acknowledge | PassThrough | Replay | Forward]) -> None:
     """Two declarations of one host, or one name, would leave a call's mode to their order."""
     hosts = [d.host for d in declared]
     keys = [d.key for d in declared]

@@ -43,6 +43,8 @@ from pydantic import Field
 
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
+from minutehand.adapters.emulator.fleet import Emulators
+from minutehand.adapters.emulator.process import Running
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
@@ -63,6 +65,8 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
+from minutehand.application.emulators import findings as emulator_findings
+from minutehand.application.emulators import record_health
 from minutehand.application.forks import (
     ForkAccount,
     Outcomes,
@@ -83,6 +87,7 @@ from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, re
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
+from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
@@ -195,11 +200,15 @@ async def play(
     registry = Registry.installed()
     routing = _routing(registry, listen)
     services = _services(scenario, agent, registry)
-    capturing = capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts)
+    routes: dict[str, Running] = {}
+    capturing = capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts).with_emulators(routes)
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
     opened = [first[0]]
-    async with intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy:
+    async with (
+        intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy,
+        emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
+    ):
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0:
@@ -231,6 +240,7 @@ async def play(
                     signing=signing.by_provider,
                     traffic=proxy,
                     channels=replies_for(agent, scenario, signing),
+                    environment=emulators,
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -326,7 +336,12 @@ async def fork(
         return SqliteStore(world, parent_run, clock)
 
     holding = RunClock(scenario.starts_at)
-    async with intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy:
+    routes: dict[str, Running] = {}
+    capturing = capturing.with_emulators(routes)
+    async with (
+        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy,
+        emulating(agent, proxy, listen, run_dir(state, child_id), telemetry, routes) as emulators,
+    ):
         scorer.receiver = proxy.receiver
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
@@ -356,6 +371,7 @@ async def fork(
                     progress=progress,
                     channels=replies_for(agent, changed, signing),
                     manifests=registry.manifests,
+                    environment=emulators,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -759,6 +775,7 @@ class _Judge:
             if self._judging
             else evaluate(view, stop=record.stop)
         )
+        result = result.model_copy(update={"findings": [*result.findings, *emulator_findings(world)]})
         heard = self.receiver.notices if self.receiver is not None else []
         if heard:
             told = [
@@ -1158,6 +1175,35 @@ async def intercepting(
         )
         async with receiver:
             yield Intercepting(proxy, receiver)
+
+
+@asynccontextmanager
+async def emulating(
+    agent: AgentUnderTest,
+    intercepted: Intercepting,
+    listen: Listen,
+    logs: Path,
+    telemetry: Telemetry | None,
+    routes: dict[str, Running],
+) -> AsyncIterator[Emulators]:
+    """The agent file's external emulators, started (or attached to) and ready before the agent starts, each given
+    the OTLP variables the agent is (its spans join the agent's trace through the forwarded `traceparent`), and
+    stopped when the run ends. Each health change is recorded in the world the proxy records into, as it happens,
+    and exported. One that does not come up refuses the run, with the end of its log."""
+    receiver = intercepted.receiver
+    environment = exporter_environment(listen.telemetry_url(receiver.port)) if receiver is not None else {}
+
+    def changed(change: EmulatorChange) -> None:
+        record_health(intercepted.proxy.addon.worlds.lobby.store, change)
+        if telemetry is not None:
+            telemetry.emulator_changed(change)
+
+    emulators = Emulators(logs, environment, changed, running=routes)
+    await emulators.start(agent.emulators)
+    try:
+        yield emulators
+    finally:
+        await emulators.stop()
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:
