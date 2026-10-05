@@ -60,3 +60,11 @@ Pages cited:
   projects. Both describe the stand-in's own storage and admin routes; here every write is in the run's store.
 - One fixed principal that holds every global permission whatever the token. Here an account's permissions come
   from the scenario's seed.
+
+## What the retired emulator tests held
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| `GET` and `POST /rest/api/3/search` answer 410, pointing at `/search/jql`, and write nothing | documented (the removal) / observed (the 410) | `test_the_retired_search_is_refused_410_and_writes_nothing` | https://developer.atlassian.com/changelog/#CHANGE-2046 |
+| An edit refused for one field (an unknown priority beside a valid summary) is a 400 and writes none of its fields | documented (400) / observed (nothing written) | `test_an_edit_refused_for_one_field_writes_none_of_them` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-issueidorkey-put |
+| `/rest/api/3/myself` with no credentials is a 401 | documented | `test_myself_without_credentials_is_refused_401` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-myself/#api-rest-api-3-myself-get |
