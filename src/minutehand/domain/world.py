@@ -60,12 +60,52 @@ class TicketSnapshot(Model):
     state: TicketState = TicketState.OPEN
 
 
+class ControlKind(StrEnum):
+    """What a control on a message does when a reader uses it."""
+
+    BUTTON = "button"
+    USER_SELECT = "user_select"
+    LINK = "link"
+
+
+class MessageAction(Model):
+    """One control a reader can use on a message: a button, a person picker, a link that opens a page.
+
+    `action_id` and `value` are the provider's own, exactly as the agent wrote them; `label` is what the reader sees.
+    """
+
+    action_id: str
+    label: str
+    control: ControlKind = ControlKind.BUTTON
+    value: str | None = None
+
+
 class MessageSnapshot(Model):
     kind: Literal["message"] = "message"
     text: str
     channel: str
     recipient_emails: list[str] = []
     thread_of: str | None = None
+    actions: list[MessageAction] = Field(default=[], description="What a reader can press or pick on it, in order")
+
+
+class InteractionKind(StrEnum):
+    PRESS = "press"
+    SUBMIT = "submit"
+
+
+class InteractionSnapshot(Model):
+    """A person used a control on something the agent showed them: pressed a button on a message, or submitted a
+    form the agent opened for them. The event's actor is PERSON; `person` says which one."""
+
+    kind: Literal["interaction"] = "interaction"
+    interaction: InteractionKind
+    person: str = Field(description="Person.key")
+    on: EntityRef = Field(description="The message pressed on, or the message whose press opened the form")
+    action_id: str = Field(description="The control pressed, or the form's own id when submitted")
+    label: str = Field(description="What the person saw: the button's label, or the form's title")
+    value: str | None = Field(default=None, description="The control's value, or the member picked, as sent")
+    form: list[str] = Field(default=[], description="What the person typed into the form, field by field")
 
 
 class DocumentSnapshot(Model):
@@ -90,7 +130,7 @@ class RecordSnapshot(Model):
 
 
 Snapshot = Annotated[
-    TicketSnapshot | MessageSnapshot | DocumentSnapshot | RecordSnapshot,
+    TicketSnapshot | MessageSnapshot | DocumentSnapshot | RecordSnapshot | InteractionSnapshot,
     Field(discriminator="kind"),
 ]
 

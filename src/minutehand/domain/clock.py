@@ -15,6 +15,7 @@ class DueKind(StrEnum):
     PERSON_REPLY = "person_reply"
     DIRECTION = "direction"
     TICKET_FATE = "ticket_fate"
+    HAPPENING = "happening"
 
 
 class Due(Model):

@@ -59,8 +59,17 @@ class PendingBooking(Model):
     ref: str = Field(description="The scheduler's own reference for the booking")
 
 
+class PendingHappening(Model):
+    """Something the scenario has a person do unprompted (`Scenario.happenings`), not yet done."""
+
+    kind: Literal["happening"] = "happening"
+    due: Due
+    happening: int = Field(ge=0, description="Position in `Scenario.happenings`")
+
+
 Pending = Annotated[
-    PendingReply | PendingFate | PendingWake | PendingDirection | PendingBooking, Field(discriminator="kind")
+    PendingReply | PendingFate | PendingWake | PendingDirection | PendingBooking | PendingHappening,
+    Field(discriminator="kind"),
 ]
 
 

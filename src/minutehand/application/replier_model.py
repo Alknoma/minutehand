@@ -22,13 +22,21 @@ from pydantic import Field, model_validator
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier_scripted import ScriptedReplier, lands_at, refuse_unworkable_hours
 from minutehand.domain.conversation import ModelMessage, Provenance, Speaker
-from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Answers, Helpfulness, Model, Person, Scenario
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, WorldEvent
+from minutehand.domain.people import PersonReply, Press
+from minutehand.domain.scenario import Answers, FormInput, Helpfulness, Model, Person, Scenario
+from minutehand.domain.world import (
+    Actor,
+    ControlKind,
+    EntityKind,
+    MessageAction,
+    MessageSnapshot,
+    Operation,
+    WorldEvent,
+)
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 
-PERSON_PROMPT_VERSION = "person-reply/1"
+PERSON_PROMPT_VERSION = "person-reply/2"
 """Changes whenever PERSON_PROMPT or HELPFULNESS changes a word, so a stored reply names the text that wrote it."""
 
 PERSON_PROMPT = """\
@@ -49,6 +57,9 @@ do not know.
 - You do not offer to find out, promise to come back, or name anyone else, unless what you know says so.
 - {voice}
 - Write only the message itself, as it would appear in the chat. Today is {today}.
+- Their last message may carry controls you can use instead of writing back, listed under it. To use one, set \
+"press" to its label exactly as listed and "text" to null; if it opens a form, "form" is what you type into it, \
+else null. To write back instead, set "press" and "form" to null.
 """
 
 HELPFULNESS: dict[Helpfulness, str] = {
@@ -73,17 +84,29 @@ _NOTHING = "- nothing about this beyond what the messages themselves say"
 
 
 class WrittenReply(Model):
-    """What the model answers for one message to one person."""
+    """What the model answers for one message to one person: words written back, or a control used."""
 
     replies: bool = Field(description="Whether their last message needs an answer from you")
-    text: str | None = Field(description="Your reply, exactly as you would send it; null when replies is false")
+    text: str | None = Field(
+        description="Your reply, exactly as you would send it; null when replies is false or you press a control"
+    )
+    press: str | None = Field(default=None, description="The label of the control you use, exactly as listed; or null")
+    form: str | None = Field(default=None, description="What you type into the form the control opens; or null")
 
     @model_validator(mode="after")
     def _text_when_replying(self) -> WrittenReply:
-        if self.replies and not (self.text and self.text.strip()):
+        if not self.replies:
+            if self.text is not None or self.press is not None:
+                raise ValueError("replies is false, so text and press must be null")
+            return self
+        if self.press is not None:
+            if self.text is not None:
+                raise ValueError("press is set, so text must be null")
+            return self
+        if not (self.text and self.text.strip()):
             raise ValueError("replies is true, so text must be the reply")
-        if not self.replies and self.text is not None:
-            raise ValueError("replies is false, so text must be null")
+        if self.form is not None:
+            raise ValueError("form is what is typed after pressing a control; press is null")
         return self
 
 
@@ -123,6 +146,11 @@ def exchange(person: Person, asked: WorldEvent, history: list[WorldEvent]) -> li
         for e in upto
         if e.operation in (Operation.CREATE, Operation.UPDATE) and isinstance(e.after, MessageSnapshot)
     }
+    controls = {
+        e.entity: e.after.actions
+        for e in upto
+        if e.operation in (Operation.CREATE, Operation.UPDATE) and isinstance(e.after, MessageSnapshot)
+    }
     channels: set[tuple[str, str]] = set()
     said: list[ModelMessage] = []
     for event in upto:
@@ -132,10 +160,20 @@ def exchange(person: Person, asked: WorldEvent, history: list[WorldEvent]) -> li
         where = (event.entity.provider, after.channel)
         if event.actor is Actor.AGENT and person.email in after.recipient_emails:
             channels.add(where)
-            said.append(ModelMessage(speaker=Speaker.ASKER, text=reads[event.entity]))
+            said.append(
+                ModelMessage(speaker=Speaker.ASKER, text=reads[event.entity] + _controls(controls[event.entity]))
+            )
         elif event.actor is Actor.PERSON and where in channels and person.email not in after.recipient_emails:
             said.append(ModelMessage(speaker=Speaker.MODEL, text=reads[event.entity]))
     return said
+
+
+def _controls(actions: list[MessageAction]) -> str:
+    """The controls under a message, as the person sees them; a link is not one they can answer with."""
+    usable = [a for a in actions if a.control is not ControlKind.LINK]
+    if not usable:
+        return ""
+    return "\n\n[Controls: " + ", ".join(f'"{a.label}"' for a in usable) + "]"
 
 
 class ModelReplier:
@@ -161,12 +199,29 @@ class ModelReplier:
             model=behaviour.model,
             temperature=behaviour.temperature,
         )
-        if not written.replies or written.text is None:
+        if not written.replies:
             return None
+        press: Press | None = None
+        if written.press is not None:
+            usable = [a for a in asked.after.actions if a.control is not ControlKind.LINK]
+            control = next((a for a in usable if a.label == written.press), None)
+            if control is None:
+                raise RunRefused(
+                    f"the model had {person.key} press {written.press!r}, which is not a control on the message: "
+                    f"{[a.label for a in usable]}"
+                )
+            press = Press(
+                action_id=control.action_id,
+                label=control.label,
+                value=control.value,
+                form=[FormInput(value=written.form)] if written.form else [],
+            )
+        text = written.form or written.text or (press.label if press is not None else "")
         return PersonReply(
             person=person.key,
             in_reply_to=asked.entity,
-            text=written.text,
+            text=text,
+            press=press,
             at=lands_at(self._scenario, person, asked, history, behaviour.delay),
             written_by=Provenance(model=behaviour.model or self._model.model_id, prompt_version=PERSON_PROMPT_VERSION),
         )
