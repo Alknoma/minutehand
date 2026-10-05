@@ -449,7 +449,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
   function stepWord() { return state.view.run.driven ? "step" : "wake"; }
 
   function messageWords(m) {
-    if (m.words) { return m.words; }
+    if (m.words) { return (m.actor === "agent" ? "→ " : "") + m.words; }
     var to = m.to.length ? m.to.join(", ") : (m.actor === "agent" ? "nobody in the scenario" : "the agent");
     var who = m.actor === "agent" ? "" : (m.actor === "person" ? "a person" : "the scenario");
     if (m.change === "edited") {
@@ -467,7 +467,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
         '<span class="who ' + esc(m.actor) + (m.change !== "sent" ? " " + esc(m.change) : "") + '">' +
         esc(messageWords(m)) + "</span>" + wrote + "</li>";
     }).join("");
-    return '<section><h2>What was said</h2><p class="sub">Every message, and every decision left waiting on a person in the agent's own product and made, in the order the record holds them; a rewrite of one already sent shows both texts.</p><ol class="said">' + items + "</ol></section>";
+    return '<section><h2>What was said</h2><p class="sub">Every message, and every decision left waiting on a person in the agent’s own product and made, in the order the record holds them; a rewrite of one already sent shows both texts.</p><ol class="said">' + items + "</ol></section>";
   }
 
   function tokens(c) {
