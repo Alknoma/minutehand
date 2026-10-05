@@ -31,6 +31,10 @@ def refuse_unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Man
                 f"happening {n} ({happening.person} {happening.action.kind} the seeded document "
                 f"{happening.document!r}) lands on {provider}, which has no way to show that"
             )
+    for space in scenario.spaces:
+        manifest = manifests.get(space.provider)
+        if manifest is not None and not manifest.holds_spaces:
+            raise RunRefused(f"the shared space {space.name!r} is on {space.provider}, which holds no shared spaces")
     for ticket in scenario.tickets:
         manifest = manifests.get(ticket.provider)
         if manifest is None:
