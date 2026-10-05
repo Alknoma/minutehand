@@ -109,6 +109,16 @@ class DeclareFaults(Model):
         return json.dumps(value) if isinstance(value, dict) else value
 
 
+class ModelHost(Model):
+    """A model API this world's services call besides api.openai.com, api.anthropic.com and
+    generativelanguage.googleapis.com (a self-hosted model, a gateway in front of one). A host is decided before
+    its call is opened, so each belongs to one open world: its calls are tunnelled, never decrypted, or, with
+    `record`, opened, sent on unchanged and kept as spans in this world."""
+
+    host: str = Field(description="An exact lower-case host, or `*.` and a domain")
+    record: bool = Field(default=False, description="Open its calls and keep each as a span in this world")
+
+
 class CreateWorld(Model):
     seed: Seed
     claims: Claims
@@ -125,9 +135,19 @@ class CreateWorld(Model):
         "agent file declares them; a call reaches them only once it is this world's, by its claims",
     )
 
+    model_hosts: list[ModelHost] = Field(
+        default=[],
+        description="Model APIs this world declares, each tunnelled or recorded as it says; a host belongs to one "
+        "open world, and one a provider claims or this world captures is refused",
+    )
+
     @model_validator(mode="after")
     def _one_declaration_per_host(self) -> Self:
         refuse_repeats(self.outbound)
+        hosts = [m.host for m in self.model_hosts]
+        repeated = sorted({h for h in hosts if hosts.count(h) > 1})
+        if repeated:
+            raise ValueError(f"a model host is declared once: {', '.join(repeated)}")
         return self
 
 
