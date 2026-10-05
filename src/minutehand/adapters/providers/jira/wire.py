@@ -490,6 +490,10 @@ class StoredIssue(Wire):
     originalEstimateSeconds: int | None = None
     timeSpentSeconds: int | None = None
     history: list[StoredHistory] = []
+    seededFrom: int | None = Field(
+        default=None,
+        description="Minutehand's own: the position in `Scenario.tickets` it was seeded from; never served",
+    )
 
     def value(self, field: str) -> JsonValue:
         return next((v.value for v in self.custom if v.field == field), None)

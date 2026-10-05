@@ -1,10 +1,11 @@
 """The Jira provider: the REST API, the seeded site, and what people do to issues without the agent.
 
-A person's acts are methods here, each by a named person at the run clock's time and recorded as actor PERSON
-with that person as the changelog's author: `moves` (through the workflow to a status that means a state),
-`reassigns`, `comments` and `deletes`. `transition` (`HoldsTickets`) is `moves` by the issue's assignee;
-`edit` (`EditsTickets`) rewrites state and assignee as the scenario, past the workflow. An act on an issue that
-is no longer there (the agent deleted it) writes nothing: the person finds nothing to act on.
+`act` (`ActsOnTickets`) lands a `TicketHappening` on the issue seeded from its ticket, by the happening's person at
+the run clock's time, recorded as actor PERSON with that person as the changelog's or comment's author: `Moves`
+walks the workflow to a status that means the state, `Reassigns`, `Comments` and `Deletes` do what they say.
+`transition` (`HoldsTickets`) is a move by the issue's assignee; `edit` (`EditsTickets`) rewrites state and
+assignee as the scenario, past the workflow. An act on an issue that is no longer there (the agent deleted it)
+writes nothing: the person finds nothing to act on.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.seed import seed
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import Actor, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -74,41 +75,26 @@ class JiraProvider:
 
     # ------------------------------------------------------------------ a person's acts
 
-    def moves(self, ticket: EntityRef, to: TicketState, *, by_email: str, world: Store, clock: Clock) -> None:
-        """The person takes the issue through a transition to a status that means `to`."""
+    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        """The happening's person does its action to the issue seeded from its ticket, as themselves."""
         desk = Desk(world)
-        issue = _located(desk, ticket)
-        if issue is not None:
-            self._move(desk, issue, to, by=_account(desk, by_email), clock=clock)
-
-    def reassigns(self, ticket: EntityRef, to_email: str | None, *, by_email: str, world: Store, clock: Clock) -> None:
-        """The person hands the issue to someone else, or leaves it unassigned."""
-        desk = Desk(world)
-        issue = _located(desk, ticket)
+        seeded = scenario.happening_ticket(happening)
+        position = next(n for n, t in enumerate(scenario.tickets) if t is seeded)
+        issue = next((i for i in desk.world.every_issue() if i.seededFrom == position), None)
         if issue is None:
             return
-        project = _project(desk, issue)
-        value: JsonValue = {"accountId": _account(desk, to_email)} if to_email is not None else None
-        changed = desk.apply_fields(issue, project, {"assignee": value}, creating=False)
-        desk.write(issue, changed, by=_account(desk, by_email), at=clock.now(), actor=Actor.PERSON)
-
-    def comments(self, ticket: EntityRef, text: str, *, by_email: str, world: Store, clock: Clock) -> None:
-        """The person writes a comment, kept as an Atlassian document."""
-        desk = Desk(world)
-        issue = _located(desk, ticket)
-        if issue is not None:
-            desk.comment(
-                issue, wire.adf_from_text(text), by=_account(desk, by_email), at=clock.now(), actor=Actor.PERSON
-            )
-
-    def deletes(self, ticket: EntityRef, *, by_email: str, world: Store, clock: Clock) -> None:
-        """The person deletes the issue, its subtasks and its links."""
-        desk = Desk(world)
-        issue = _located(desk, ticket)
-        if issue is not None:
-            _account(desk, by_email)
+        by = _account(desk, _email(scenario, happening.person))
+        action = happening.action
+        if isinstance(action, Moves):
+            self._move(desk, issue, action.to, by=by, clock=clock)
+        elif isinstance(action, Reassigns):
+            to = None if action.to is None else _account(desk, _email(scenario, action.to))
+            changed = desk.apply_fields(issue, _project(desk, issue), {"assignee": _assignee(to)}, creating=False)
+            desk.write(issue, changed, by=by, at=clock.now(), actor=Actor.PERSON)
+        elif isinstance(action, Comments):
+            desk.comment(issue, wire.adf_from_text(action.text), by=by, at=clock.now(), actor=Actor.PERSON)
+        elif isinstance(action, Deletes):
             desk.delete(issue, actor=Actor.PERSON)
-        del clock
 
     def _move(self, desk: Desk, issue: wire.StoredIssue, to: TicketState, *, by: str, clock: Clock) -> None:
         """Walk the fewest transitions that end in a status meaning `to`, each its own changelog entry, skipping
@@ -162,6 +148,14 @@ def _project(desk: Desk, issue: wire.StoredIssue) -> wire.StoredProject:
     return project
 
 
+def _email(scenario: Scenario, person: str) -> str:
+    return next(p.email for p in scenario.people if p.key == person)
+
+
+def _assignee(account: str | None) -> JsonValue:
+    return {"accountId": account} if account is not None else None
+
+
 def _account(desk: Desk, email: str) -> str:
     user = desk.world.user_by_email(email)
     if user is None:
@@ -170,5 +164,5 @@ def _account(desk: Desk, email: str) -> str:
 
 
 def build() -> JiraProvider:
-    """A `Provider` that also `HoldsTickets` and `EditsTickets`."""
+    """A `Provider` that also `HoldsTickets`, `EditsTickets` and `ActsOnTickets`."""
     return JiraProvider()

@@ -4,8 +4,8 @@ Provider-neutral facts come from the scenario: its people become Atlassian accou
 issues. Everything only Jira has comes from the scenario's Jira seed (`Scenario.provider_seed("jira")`), a
 `JiraSeed` as JSON: the site's name and cloud id, the credentials that sign in and whose account each is,
 projects with their keys, workflows, issue types, screens and members, custom fields, boards and sprints,
-other accounts (an app, a deactivated person, a customer), what each seeded issue carries beyond its title,
-body, assignee and state, and the calls the site answers 429.
+other accounts (an app, a deactivated person, a customer), what each seeded issue (named by its ticket's `key`) carries
+beyond its title, body, assignee, state, labels and comments, and the calls the site answers 429.
 
 Without a Jira seed the site is `minutehand.atlassian.net` and accepts no credential: every call is a 401
 until a seed names one.
@@ -166,27 +166,30 @@ class SeededChange(Model):
 
 class SeededLink(Model):
     type: str = Field(description="Blocks, Duplicate, Relates or Cloners")
-    to: str = Field(description="The title of another seeded Jira ticket")
+    to: str = Field(description="The key (`SeededTicket.key`) of another seeded Jira ticket")
     outward: bool = Field(default=True, description="This issue does the outward act: it blocks `to`")
 
 
 class SeededIssue(Model):
-    """What one seeded Jira ticket carries beyond the scenario's title, body, assignee and state."""
+    """What one seeded Jira ticket carries beyond the scenario's title, body, assignee, state, labels and comments."""
 
-    title: str = Field(description="The title of the scenario's Jira ticket it describes")
+    ticket: str = Field(description="The key (`SeededTicket.key`) of the scenario's Jira ticket it describes")
     issue_type: str = "Task"
     status: str | None = Field(default=None, description="A status name; by default the first that means its state")
     priority: str | None = None
-    labels: list[str] = []
     due: date | None = None
-    parent: str | None = Field(default=None, description="The title of another seeded Jira ticket")
+    parent: str | None = Field(default=None, description="The key of another seeded Jira ticket, seeded before it")
     reporter: str | None = None
     created: timedelta = Field(default=timedelta(0), description="Offset from the scenario's start")
     fields: list[SeededValue] = []
     sprint: str | None = None
     estimate_seconds: int | None = None
     spent_seconds: int | None = None
-    comments: list[SeededComment] = []
+    comments: list[SeededComment] = Field(
+        default=[],
+        description="Comments the shared `SeededTicket.comments` cannot say: by the agent or an account that is no "
+        "person, or at a moment of their own",
+    )
     history: list[SeededChange] = []
     links: list[SeededLink] = []
 
@@ -524,22 +527,31 @@ def seed(scenario: Scenario, world: Store) -> None:
                 )
 
     desk = Desk(world)
-    by_title: dict[str, wire.StoredIssue] = {}
-    for ticket in seeded_tickets:
-        detail = next((i for i in spec.issues if i.title == ticket.title), SeededIssue(title=ticket.title))
-        made = _issue(desk, site, projects[ticket.project], ticket, detail, scenario, who, by_title)
-        by_title[ticket.title] = made
+    keys = {t.key for t in seeded_tickets if t.key is not None}
     for detail in spec.issues:
-        if detail.title not in by_title:
-            raise ValueError(f"the Jira seed describes {detail.title!r}, which is no seeded Jira ticket")
-        issue = by_title[detail.title]
+        if detail.ticket not in keys:
+            raise ValueError(f"the Jira seed describes {detail.ticket!r}, which is the key of no seeded Jira ticket")
+    by_key: dict[str, wire.StoredIssue] = {}
+    for position, ticket in enumerate(scenario.tickets):
+        if ticket.provider != MANIFEST.key:
+            continue
+        found = next((i for i in spec.issues if i.ticket == ticket.key), None) if ticket.key is not None else None
+        detail = found or SeededIssue(ticket=ticket.key or "")
+        made = _issue(desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position)
+        for comment in ticket.comments:
+            desk.comment(made, wire.adf_from_text(comment.text), by=who(comment.by), at=scenario.starts_at,
+                         actor=Actor.SCENARIO)  # fmt: skip
+        if ticket.key is not None:
+            by_key[ticket.key] = made
+    for detail in spec.issues:
+        issue = by_key[detail.ticket]
         for comment in detail.comments:
             desk.comment(issue, wire.adf_from_text(comment.text), by=who(comment.by), at=scenario.starts_at + comment.at,
                          actor=Actor.SCENARIO)  # fmt: skip
         for link in detail.links:
-            other = by_title.get(link.to)
+            other = by_key.get(link.to)
             if other is None:
-                raise ValueError(f"{detail.title!r} links to {link.to!r}, which is no seeded Jira ticket")
+                raise ValueError(f"{detail.ticket!r} links to {link.to!r}, which is the key of no seeded Jira ticket")
             link_type = next((t for t in site.linkTypes if t.name.lower() == link.type.lower()), None)
             if link_type is None:
                 raise ValueError(f"no issue link type is called {link.type!r}")
@@ -559,6 +571,7 @@ def _issue(
     scenario: Scenario,
     who: Callable[[str], str],
     earlier: dict[str, wire.StoredIssue],
+    position: int,
 ) -> wire.StoredIssue:
     jira = desk.world
     issue_type = next((t for t in site.issueTypes if t.name.lower() == detail.issue_type.lower()), None)
@@ -594,7 +607,7 @@ def _issue(
     parent: str | None = None
     if detail.parent is not None:
         if detail.parent not in earlier:
-            raise ValueError(f"{detail.title!r} has parent {detail.parent!r}, which is not seeded before it")
+            raise ValueError(f"{detail.ticket!r} has parent {detail.parent!r}, which is not seeded before it")
         parent = earlier[detail.parent].id
     created = scenario.starts_at + detail.created
     reporter = who(detail.reporter) if detail.reporter is not None else who(scenario.owner)
@@ -627,12 +640,13 @@ def _issue(
         created=created,
         updated=max([created, *(h.created for h in history)]),
         duedate=detail.due,
-        labels=detail.labels,
+        labels=list(dict.fromkeys(ticket.labels)),
         parent=parent,
         custom=custom,
         originalEstimateSeconds=detail.estimate_seconds,
         timeSpentSeconds=detail.spent_seconds,
         history=history,
+        seededFrom=position,
     )
     jira.create_issue(issue, actor=Actor.SCENARIO)
     return issue

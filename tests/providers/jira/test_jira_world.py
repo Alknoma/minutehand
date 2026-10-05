@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from minutehand.adapters.providers.jira import state
+from minutehand.adapters.providers.jira import state, wire
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.provider import build
 from minutehand.adapters.providers.jira.state import JiraWorld
@@ -18,9 +18,18 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
-from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.scenario import (
+    Comments,
+    Deletes,
+    Moves,
+    Reassigns,
+    Scenario,
+    TicketAction,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot
-from minutehand.ports.provider import EditsTickets, HoldsTickets, Provider
+from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
 from tests.providers.jira.jira_site import API, IRIS, NOOR, SCENARIO, START, TOMAS, Site, ok
 
 
@@ -145,12 +154,24 @@ def test_edit_to_an_email_nobody_has_is_refused(site: Site) -> None:
         )
 
 
+def _happening(person: str, after: timedelta, action: TicketAction) -> TicketHappening:
+    return TicketHappening(person=person, ticket="Write the release notes", after=after, action=action)
+
+
+def _act(site: Site, *happenings: TicketHappening) -> None:
+    for happening in happenings:
+        site.provider.act(happening, SCENARIO, site.store, site.clock)
+
+
 async def test_a_person_reassigns_comments_on_and_deletes_an_issue_at_their_moment(site: Site) -> None:
-    ref = _ref(site, "LAUNCH-1")
-    site.clock.jump(START + timedelta(hours=5))
-    site.provider.reassigns(ref, "noor@example.com", by_email="iris@example.com", world=site.store, clock=site.clock)
-    site.provider.comments(ref, "Noor has it now.", by_email="iris@example.com", world=site.store, clock=site.clock)
-    site.provider.moves(ref, TicketState.DONE, by_email="noor@example.com", world=site.store, clock=site.clock)
+    at = timedelta(hours=5)
+    site.clock.jump(START + at)
+    _act(
+        site,
+        _happening("iris", at, Reassigns(to="noor")),
+        _happening("iris", at, Comments(text="Noor has it now.")),
+        _happening("noor", at, Moves(to=TicketState.DONE)),
+    )
 
     read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "assignee,status,comment"}))
     assert read["fields"]["assignee"]["accountId"] == NOOR and read["fields"]["status"]["name"] == "Done"
@@ -166,30 +187,60 @@ async def test_a_person_reassigns_comments_on_and_deletes_an_issue_at_their_mome
         (NOOR, "status"),
     ]
     acts = [e for e in site.store.events() if e.actor is Actor.PERSON]
-    assert {e.sim_time for e in acts} == {START + timedelta(hours=5)}
+    assert {e.sim_time for e in acts} == {START + at}
 
-    site.provider.deletes(ref, by_email="iris@example.com", world=site.store, clock=site.clock)
+    _act(site, _happening("iris", at, Deletes()))
     assert (await site.http.get(f"{API}/issue/LAUNCH-1")).status_code == 404
     assert site.store.events()[-1].actor is Actor.PERSON
     head = site.store.head()
-    site.provider.comments(ref, "Too late.", by_email="iris@example.com", world=site.store, clock=site.clock)
-    site.provider.moves(ref, TicketState.OPEN, by_email="iris@example.com", world=site.store, clock=site.clock)
+    _act(site, _happening("iris", at, Comments(text="Too late.")), _happening("iris", at, Moves(to=TicketState.OPEN)))
     assert site.store.head() == head, "an act on an issue that is gone writes nothing"
 
 
-def test_a_person_the_site_does_not_know_cannot_act(site: Site) -> None:
-    with pytest.raises(LookupError, match=r"stranger@example\.com"):
-        site.provider.comments(_ref(site, "LAUNCH-1"), "Hi", by_email="stranger@example.com", world=site.store,
-                               clock=site.clock)  # fmt: skip
+async def test_a_person_reassigning_to_nobody_leaves_the_issue_unassigned(site: Site) -> None:
+    _act(site, _happening("tomas", timedelta(hours=1), Reassigns(to=None)))
+    read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "assignee"}))
+    assert read["fields"]["assignee"] is None
 
 
-def test_the_provider_meets_its_three_ports() -> None:
+async def test_the_tickets_labels_and_comments_are_the_issues(site: Site, tmp_path: Path) -> None:
+    read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "labels"}))
+    assert read["fields"]["labels"] == ["docs", "beta"]
+    from minutehand.domain.scenario import SeededComment
+
+    notes = SCENARIO.tickets[0].model_copy(update={"comments": [SeededComment(by="noor", text="Venue first.")]})
+    scenario = SCENARIO.model_copy(update={"tickets": [notes, *SCENARIO.tickets[1:]]})
+    clock = RunClock(START)
+    store = SqliteStore(tmp_path / "commented.db", "c", clock)
+    build().seed(scenario, store)
+    jira = JiraWorld(store)
+    issue = jira.find_issue("LAUNCH-1")
+    assert issue is not None
+    comments = [(c.author, wire.adf_text(c.body)) for c in jira.comments(issue.id)]
+    assert (NOOR, "Venue first.") in comments
+
+
+def test_a_jira_seed_naming_a_key_no_ticket_has_is_refused(tmp_path: Path) -> None:
+    import json
+
+    seeded = SCENARIO.provider_seeds[0]
+    body = json.loads(seeded.body)
+    body["issues"] = [{"ticket": "ghost"}]
+    scenario = SCENARIO.model_copy(update={"provider_seeds": [seeded.model_copy(update={"body": json.dumps(body)})]})
+    clock = RunClock(START)
+    with pytest.raises(ValueError, match="'ghost', which is the key of no seeded Jira ticket"):
+        build().seed(scenario, SqliteStore(tmp_path / "w.db", "w", clock))
+
+
+def test_the_provider_meets_its_four_ports() -> None:
     provider = build()
     held: Provider = provider
     holds: HoldsTickets = provider
     edits: EditsTickets = provider
-    assert held.manifest is MANIFEST and holds is edits
+    acts: ActsOnTickets = provider
+    assert held.manifest is MANIFEST and holds is edits is acts
     assert isinstance(provider, HoldsTickets) and isinstance(provider, EditsTickets)
+    assert isinstance(provider, ActsOnTickets)
 
 
 def test_the_manifest_claims_jira_and_imports_nothing_else_of_the_provider() -> None:
