@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from minutehand.adapters.control.wire import ModelHost
+from minutehand.adapters.control.wire import LobbyKind, ModelHost
 from minutehand.adapters.proxy.addon import BURST_QUIET
 from minutehand.domain.world import RecordedCall, TunnelRoute
 from minutehand.serve import ServeOptions
@@ -68,13 +68,21 @@ def _eventually(read: Callable[[], list[RecordedCall]]) -> list[RecordedCall]:
         time.sleep(0.1)
 
 
-async def test_a_model_host_no_world_declares_is_recorded_as_unmatched(tmp_path: Path, authority: Authority) -> None:
+async def test_a_model_host_no_world_declares_is_kept_in_the_lobby_and_is_not_unclaimed(
+    tmp_path: Path, authority: Authority
+) -> None:
+    """The burst is kept (the record stays complete) under `model_host`, counted, and left out of the default view
+    a suite asserts empty."""
     with _served(tmp_path, authority, model_hosts=[MODEL_HOST]) as client:
         world = client.create_world(spec("tunnel-key-one"))
         async with model_api(authority) as upstream:
             await _ask(client, upstream.port, authority.ca_cert)
-        [call] = _eventually(lambda: client.unmatched().calls)
+        [call] = _eventually(lambda: client.unmatched(kinds=[LobbyKind.MODEL_HOST]).calls)
         assert client.calls(world.world_id).calls == []
+        lobby = client.unmatched()
+        assert lobby.calls == [] and lobby.kinds[LobbyKind.MODEL_HOST] >= 1
+        assert client.unmatched(kinds=()).calls == []  # the server's own default, no kind asked
+        client.assert_nothing_unclaimed()
 
     tunnel = call.exchange.tunnelled
     assert tunnel is not None and tunnel.route is TunnelRoute.NONE and tunnel.port == upstream.port

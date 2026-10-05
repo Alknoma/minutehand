@@ -34,8 +34,10 @@ stretch before each reset first, and says in `resets` where each reset falls.
     GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
     GET    /v1/worlds/{id}/checks                      `Checked`
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
-    GET    /v1/unmatched?since=N[&late_for=W]          `Unmatched`: calls no open world claimed, tunnels among them;
-                                                `late_for`: only those that came for world W after it closed
+    GET    /v1/unmatched?since=N[&late_for=W][&kind=K]... `Unmatched`: the lobby; by default only `unclaimed` calls
+                                                (no world claimed them, nothing declared them); `kind` names others
+                                                (`model_host`, `pass_through`); `late_for`: those for world W after
+                                                it closed
 
 A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
 `unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a query
@@ -78,6 +80,7 @@ from minutehand.adapters.control.wire import (
     FiredView,
     FurtherSeed,
     Happen,
+    LobbyKind,
     Minted,
     MintInbound,
     MoveTicket,
@@ -97,6 +100,7 @@ from minutehand.adapters.control.wire import (
     Unmatched,
     WorldList,
     WorldView,
+    lobby_kind,
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.standing import Unsupported
@@ -432,13 +436,23 @@ def create_app(serving: Serving) -> Starlette:
     async def unmatched(request: Request) -> Response:
         since = _count(request, "since")
         late_for = _query(request, "late_for")
+        asked = request.query_params.getlist("kind")
+        wanted: set[LobbyKind] = set()
+        for given in asked:
+            try:
+                wanted.add(LobbyKind(given))
+            except ValueError:
+                raise _BadQuery(f"?kind= is one of {', '.join(k.value for k in LobbyKind)}, not {given!r}") from None
+        wanted = wanted or {LobbyKind.UNCLAIMED}
         recorded = standing.lobby_store.calls()
         kept = [
             c
             for c in recorded[since:]
             if not standing.shared(c.exchange.host) and (late_for is None or c.exchange.late_for == late_for)
         ]
-        return _json(Unmatched(calls=kept, head=len(recorded)))
+        kinds = {k: sum(1 for c in kept if lobby_kind(c) is k) for k in LobbyKind}
+        listed = [c for c in kept if lobby_kind(c) in wanted]
+        return _json(Unmatched(calls=listed, head=len(recorded), kinds=kinds))
 
     def route(path: str, handler: Handler, methods: list[str]) -> Route:
         return Route(f"{API}{path}", _guarded(handler), methods=methods)
