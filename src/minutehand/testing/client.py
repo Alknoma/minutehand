@@ -1,6 +1,6 @@
 """`MinutehandClient` and `AsyncMinutehandClient`: the control API of `minutehand serve`, typed both ways with
 the server's own models (`minutehand.adapters.control.wire`). A refusal raises `Refused` with its status and
-the server's words."""
+the server's words; Minutehand's own failure (500) raises `ServerFailed`, never `Refused`."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from minutehand.adapters.control.wire import (
     EventsPage,
     Fault,
     FurtherSeed,
+    LobbyKind,
     Minted,
     MintInbound,
     Permit,
@@ -86,6 +87,16 @@ class Unsupported(Refused):
     which it has)."""
 
 
+class ServerFailed(Exception):
+    """Not a refusal: Minutehand itself failed while answering (500, `RefusalKind.INTERNAL_ERROR`). The traceback
+    is in the server's log."""
+
+    def __init__(self, status: int, error: str) -> None:
+        super().__init__(f"{status}: {error}")
+        self.status = status
+        self.error = error
+
+
 def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
     if answered.is_success:
         return model.model_validate_json(answered.content)
@@ -95,6 +106,8 @@ def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
         raise Refused(answered.status_code, answered.text) from None
     if refusal.kind is RefusalKind.UNSUPPORTED:
         raise Unsupported(answered.status_code, refusal.error)
+    if refusal.kind is RefusalKind.INTERNAL_ERROR:
+        raise ServerFailed(answered.status_code, refusal.error)
     raise Refused(answered.status_code, refusal.error)
 
 
@@ -132,8 +145,30 @@ def _close_query(quiet: Quiet | bool) -> dict[str, str]:
     return {"quiet_for": str(quiet.quiet_for.total_seconds()), "quiet_at_most": str(quiet.at_most.total_seconds())}
 
 
-def _unmatched_query(since: int, late_for: str | None) -> dict[str, str]:
-    return {"since": str(since)} | ({"late_for": late_for} if late_for is not None else {})
+def _unmatched_query(since: int, late_for: str | None, kinds: Sequence[LobbyKind]) -> httpx.QueryParams:
+    found: list[tuple[str, str | int | float | bool | None]] = [("since", str(since))]
+    found += [("late_for", late_for)] if late_for is not None else []
+    return httpx.QueryParams([*found, *(("kind", k.value) for k in kinds)])
+
+
+def unclaimed_offenders(found: Unmatched) -> str:
+    """The unclaimed calls of a lobby page, one line each, for a failed assertion: what was called, and for a late
+    call, the closed world it came for."""
+    lines = [
+        f"{c.exchange.method} {c.exchange.host}{c.exchange.path} -> {c.exchange.status}"
+        + (f" (late, for closed world {c.exchange.late_for})" if c.exchange.late_for is not None else "")
+        for c in found.calls
+    ]
+    others = ", ".join(f"{n} {k.value}" for k, n in found.kinds.items() if n and k is not LobbyKind.UNCLAIMED)
+    kept = f"\n(also kept, and not unclaimed: {others})" if others else ""
+    return "\n".join(lines) + kept
+
+
+def _assert_unclaimed(found: Unmatched) -> None:
+    if found.calls:
+        raise AssertionError(
+            f"{len(found.calls)} call(s) reached no world and nothing declared them:\n{unclaimed_offenders(found)}"
+        )
 
 
 class MinutehandClient:
@@ -152,7 +187,9 @@ class MinutehandClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def _get[M: Model](self, path: str, model: type[M], params: Mapping[str, str] | None = None) -> M:
+    def _get[M: Model](
+        self, path: str, model: type[M], params: Mapping[str, str] | httpx.QueryParams | None = None
+    ) -> M:
         return _read(self._http.get(path, params=params), model)
 
     def _post[M: Model](self, path: str, body: str, model: type[M]) -> M:
@@ -267,9 +304,18 @@ class MinutehandClient:
     def checks(self, world_id: str) -> Checked:
         return self._get(f"/worlds/{world_id}/checks", Checked)
 
-    def unmatched(self, *, since: int = 0, late_for: str | None = None) -> Unmatched:
-        """Calls no open world claimed; with `late_for`, only those that came for that world after it closed."""
-        return self._get("/unmatched", Unmatched, _unmatched_query(since, late_for))
+    def unmatched(
+        self, *, since: int = 0, late_for: str | None = None, kinds: Sequence[LobbyKind] = (LobbyKind.UNCLAIMED,)
+    ) -> Unmatched:
+        """The lobby: by default only calls no open world claimed and nothing declared (`LobbyKind.UNCLAIMED`);
+        `kinds` names others (tunnelled model calls, passed-through calls), and `Unmatched.kinds` counts them all.
+        With `late_for`, only those that came for that world after it closed."""
+        return self._get("/unmatched", Unmatched, _unmatched_query(since, late_for, kinds))
+
+    def assert_nothing_unclaimed(self, *, since: int = 0) -> None:
+        """Fail, listing each one, when the lobby kept a call since `since` that no world claimed and nothing
+        declared. Tunnelled model calls and declared pass-through traffic are not unclaimed."""
+        _assert_unclaimed(self.unmatched(since=since))
 
 
 class AsyncMinutehandClient:
@@ -288,7 +334,9 @@ class AsyncMinutehandClient:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
-    async def _get[M: Model](self, path: str, model: type[M], params: Mapping[str, str] | None = None) -> M:
+    async def _get[M: Model](
+        self, path: str, model: type[M], params: Mapping[str, str] | httpx.QueryParams | None = None
+    ) -> M:
         return _read(await self._http.get(path, params=params), model)
 
     async def _post[M: Model](self, path: str, body: str, model: type[M]) -> M:
@@ -390,5 +438,10 @@ class AsyncMinutehandClient:
     async def checks(self, world_id: str) -> Checked:
         return await self._get(f"/worlds/{world_id}/checks", Checked)
 
-    async def unmatched(self, *, since: int = 0, late_for: str | None = None) -> Unmatched:
-        return await self._get("/unmatched", Unmatched, _unmatched_query(since, late_for))
+    async def unmatched(
+        self, *, since: int = 0, late_for: str | None = None, kinds: Sequence[LobbyKind] = (LobbyKind.UNCLAIMED,)
+    ) -> Unmatched:
+        return await self._get("/unmatched", Unmatched, _unmatched_query(since, late_for, kinds))
+
+    async def assert_nothing_unclaimed(self, *, since: int = 0) -> None:
+        _assert_unclaimed(await self.unmatched(since=since))

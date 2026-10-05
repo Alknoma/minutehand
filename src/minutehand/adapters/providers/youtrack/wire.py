@@ -22,6 +22,7 @@ from typing import Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 PAGE_DEFAULT = 42
@@ -39,7 +40,11 @@ class Wire(Model):
 # --------------------------------------------------------------------------- errors
 
 
-class Refusal(Exception):
+ERROR_TYPE = "application/json;charset=UTF-8"
+"""The content type YouTrack answers with, refusals included."""
+
+
+class Refusal(ServiceRefusal):
     """YouTrack answered with an error status. `error` and `description` are its own words."""
 
     def __init__(
@@ -60,6 +65,11 @@ class Refusal(Exception):
         self.field = field
         self.retry_after = retry_after
 
+    def render(self, asked: Asked) -> Rendered:
+        """`{"error", "error_description", …}`, with `Retry-After` when it says when to retry."""
+        headers = [("retry-after", str(self.retry_after))] if self.retry_after is not None else []
+        return Rendered(status=self.status, content_type=ERROR_TYPE, body=error_body(self), headers=headers)
+
 
 class ErrorOut(Wire):
     error: str
@@ -76,6 +86,12 @@ def error_body(refusal: Refusal) -> bytes:
         error_field=refusal.field,
     )
     return answer.model_dump_json(exclude_none=True).encode()
+
+
+def error_answer(status: int, code: str, message: str) -> Rendered:
+    """What Minutehand answers in YouTrack's place (501, 500), in YouTrack's `{"error", "error_description"}`."""
+    body = ErrorOut(error=code, error_description=message).model_dump_json(exclude_none=True).encode()
+    return Rendered(status=status, content_type=ERROR_TYPE, body=body)
 
 
 def not_found(what: str) -> Refusal:

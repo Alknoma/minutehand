@@ -9,6 +9,7 @@ from minutehand.adapters.providers.youtrack.app import build_app
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.seed import YouTrackSeed, seed, write_faults
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld, millis, placed
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import PermissionGrant
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
@@ -33,6 +34,9 @@ class YouTrackProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return wire.error_answer(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

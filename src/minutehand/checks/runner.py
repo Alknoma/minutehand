@@ -45,7 +45,7 @@ from minutehand.domain.checks import (
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, PersonAsked, Scenario, Silent
-from minutehand.domain.world import EntityRef, Exchange, WorldEvent
+from minutehand.domain.world import CallOutcome, EntityRef, Exchange, RecordedCall, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
 
@@ -63,8 +63,8 @@ class RunResult(Model):
 
     @property
     def exit_code(self) -> int:
-        """The verdict's: 0 passed, 1 a check failed, 3 no check failed and the agent did not finish. A blocked
-        check does not pass a run; it is listed in `blocked`."""
+        """The verdict's: 0 passed, 1 a check failed, 3 no check failed and the agent did not finish, 4 Minutehand
+        broke while answering a call. A blocked check does not pass a run; it is listed in `blocked`."""
         return self.verdict.exit_code
 
 
@@ -169,8 +169,9 @@ _STOPPED = {
 def verdict(
     view: RunView, card: Effectiveness, stop: StopReason | None, findings: list[Finding], ended: datetime
 ) -> Verdict:
-    """Failed when a check failed. Otherwise passed when the agent reported done with nothing it asked left
-    abandoned, or nothing was left open; unfinished otherwise.
+    """Tool failed when Minutehand broke answering any call: such a run says nothing about the agent, so it is
+    neither passed nor failed. Otherwise failed when a check failed; passed when the agent reported done with
+    nothing it asked left abandoned, or nothing was left open; unfinished otherwise.
 
     Two refinements of "open", both read from the world and neither from the content of any message:
 
@@ -208,6 +209,14 @@ def verdict(
         words = (
             f"Environment failed: {how}, so the agent is not judged on this run"
             f"{f' ({_count(card.failed_checks, "check")} failed after it)' if card.failed_checks else ''}."
+        )
+    elif view.broken_calls:
+        kind = VerdictKind.TOOL_FAILED
+        first = view.broken_calls[0]
+        said = first.failure.message if first.failure is not None else f"{first.status}"
+        words = (
+            f"Not scored: Minutehand itself failed while answering {_count(len(view.broken_calls), 'call')} "
+            f"(first: {first.method} {first.host}{first.path}: {said}); the agent is not judged on this run."
         )
     elif card.failed_checks:
         kind = VerdictKind.FAILED
@@ -347,6 +356,7 @@ def view_of(
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
     model_calls: list[WakeModelCalls] | None = None,
+    broken_calls: list[Exchange] | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -359,7 +369,16 @@ def view_of(
         commitments=commitments,
         unmatched_calls=unmatched_calls,
         model_calls=model_calls,
+        broken_calls=broken_calls or [],
     )
+
+
+def broken(calls: list[RecordedCall]) -> list[Exchange]:
+    """The calls a provider in this process failed to answer: Minutehand's own error, not the agent's. An external
+    emulator's (`captured`) is said by `application.emulators` instead."""
+    return [
+        c.exchange for c in calls if c.exchange.outcome is CallOutcome.INTERNAL_ERROR and c.exchange.captured is None
+    ]
 
 
 def stability(results: list[RunResult]) -> Stability:
@@ -370,9 +389,9 @@ def stability(results: list[RunResult]) -> Stability:
 
 
 def exit_code(results: list[RunResult]) -> int:
-    """Over several samples: 2 when any's environment failed, else 1 when any failed, else 3 when any did not
-    finish, else 0."""
+    """Over several samples: 2 when any's environment failed, else 4 when Minutehand broke in any, else 1 when any
+    failed, else 3 when any did not finish, else 0."""
     kinds = {r.verdict.kind for r in results}
-    order = (VerdictKind.ENVIRONMENT_FAILED, VerdictKind.FAILED, VerdictKind.UNFINISHED)
+    order = (VerdictKind.ENVIRONMENT_FAILED, VerdictKind.TOOL_FAILED, VerdictKind.FAILED, VerdictKind.UNFINISHED)
     worst = next((k for k in order if k in kinds), VerdictKind.PASSED)
     return EXIT_CODES[worst]

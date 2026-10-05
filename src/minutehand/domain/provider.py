@@ -116,6 +116,11 @@ class Manifest(Model):
         "keys and their metadata): under `minutehand serve`, a call to one that no world claims is answered "
         "rather than refused",
     )
+    holds_spaces: bool = Field(
+        default=False,
+        description="Whether it holds `Scenario.spaces` (a shared drive); a seed declaring a space on a provider "
+        "that does not is refused at load, naming the space, since the provider would drop it in silence",
+    )
     people_changes: list[PersonChange] = Field(
         default=[],
         description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "

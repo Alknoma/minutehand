@@ -26,6 +26,7 @@ from starlette.responses import Response
 from starlette.routing import Router
 from starlette.types import Message, Receive, Scope, Send
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.microsoft import tokens, wire
 from minutehand.adapters.providers.microsoft.common import JSON, GraphRefusal, graph_error
 from minutehand.adapters.providers.microsoft.connector import connector_router
@@ -262,6 +263,7 @@ class MicrosoftApp:
                     else f"{method} {path} failed on purpose: {fault.error}",
                 ),
             )
+            answering.injected()
             if fault.without_id:
                 return WITHOUT_ID
             headers = {"Retry-After": str(fault.retry_after)} if fault.retry_after is not None else None

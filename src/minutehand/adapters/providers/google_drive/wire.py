@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from minutehand.adapters.providers.google_drive.docs import DocBody
 from minutehand.adapters.providers.google_drive.slides import Deck
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 FOLDER = "application/vnd.google-apps.folder"
@@ -72,7 +73,11 @@ class GoogleError(Model):
     error: ErrorBody
 
 
-class Refusal(Exception):
+ERROR_TYPE = "application/json; charset=UTF-8"
+"""The content type Google's APIs answer with, errors included."""
+
+
+class Refusal(ServiceRefusal):
     """Google answered with an error. `answer` is the envelope it sent, `code` its HTTP status."""
 
     def __init__(self, answer: GoogleError, headers: dict[str, str] | None = None) -> None:
@@ -83,6 +88,21 @@ class Refusal(Exception):
     @property
     def code(self) -> int:
         return self.answer.error.code
+
+    def render(self, asked: Asked) -> Rendered:
+        """The envelope it carries, as sent."""
+        headers = [(name.lower(), value) for name, value in self.headers.items()]
+        return Rendered(status=self.code, content_type=ERROR_TYPE, body=error_body(self), headers=headers)
+
+
+def error_answer(status: int, code: str, message: str) -> Rendered:
+    """What Minutehand answers in Google's place (501, 500), in the envelope every Google API client reads an error
+    from (`googleapiclient` raises `HttpError` with `message` as its reason): `code` as the `errors` entry's
+    `reason`, and Google's status word for the status."""
+    word = "UNIMPLEMENTED" if status == 501 else "INTERNAL"
+    item = ErrorItem(domain="global", reason=code, message=message)
+    answer = GoogleError(error=ErrorBody(code=status, message=message, errors=[item], status=word))
+    return Rendered(status=status, content_type=ERROR_TYPE, body=answer.model_dump_json(exclude_none=True).encode())
 
 
 def drive_refusal(

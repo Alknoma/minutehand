@@ -21,6 +21,7 @@ from typing import Annotated, Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 API = "https://api.github.com"
@@ -143,7 +144,7 @@ class FieldError(Wire):
     message: str | None = None
 
 
-class Refusal(Exception):
+class Refusal(ServiceRefusal):
     """GitHub answered with an error status. `message` is the answer's own `message`."""
 
     def __init__(
@@ -162,6 +163,12 @@ class Refusal(Exception):
         self.errors = errors
         self.headers = headers or {}
 
+    def render(self, asked: Asked) -> Rendered:
+        """`{"message", "documentation_url", "status"}` and the headers the refusal carries. The app adds the
+        caller's rate-limit headers to a refusal it answers itself; one answered here has no caller to read."""
+        headers = [(name.lower(), value) for name, value in self.headers.items()]
+        return Rendered(status=self.status, content_type=JSON, body=error_body(self), headers=headers)
+
 
 class ErrorOut(Wire):
     message: str
@@ -178,6 +185,13 @@ def error_body(refusal: Refusal) -> bytes:
         status=str(refusal.status),
     )
     return answer.model_dump_json(exclude_none=True).encode()
+
+
+def error_answer(status: int, message: str) -> Rendered:
+    """What Minutehand answers in GitHub's place (501, 500), in GitHub's REST error body: a client reads the
+    `message`. GitHub's REST errors carry no code."""
+    answer = ErrorOut(message=message, documentation_url=DOCS, status=str(status))
+    return Rendered(status=status, content_type=JSON, body=answer.model_dump_json(exclude_none=True).encode())
 
 
 def not_found(section: str = "") -> Refusal:

@@ -30,6 +30,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.jira import jql, search, state, wire
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.domain.world import Actor, Operation
@@ -259,6 +260,7 @@ class JiraApi:
             used = self._world.fault_use(index)
             if used < limit.times:
                 self._world.spend_fault(index, used + 1)
+                answering.injected()
                 raise wire.rate_limited(limit.retry_after)
 
     # ------------------------------------------------------------------ lookups

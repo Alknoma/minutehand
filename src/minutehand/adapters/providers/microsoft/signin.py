@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from urllib.parse import urlencode
 
 from starlette.requests import Request
@@ -35,6 +36,7 @@ from minutehand.adapters.providers.microsoft.state import (
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -61,13 +63,19 @@ APPLICATION_ROLES = [
 ]
 
 
-class SignInRefused(Exception):
+class SignInRefused(ServiceRefusal):
+    """The identity platform refused a sign-in, in its own token error shape."""
+
     def __init__(self, status: int, error: str, code: int, description: str) -> None:
         super().__init__(description)
         self.status = status
         self.error = error
         self.code = code
         self.description = description
+
+    def render(self, asked: Asked) -> Rendered:
+        """What `_refused` answers, stamped from the world's clock as `asked` carries it."""
+        return Rendered(status=self.status, content_type=JSON, body=wire.dump(_token_error(self, asked.now)).encode())
 
 
 def _refuse_disabled(user: UserRecord) -> None:
@@ -76,16 +84,19 @@ def _refuse_disabled(user: UserRecord) -> None:
         raise SignInRefused(400, "invalid_grant", 50057, "The user account is disabled.")
 
 
-def _refused(refusal: SignInRefused, clock: Clock) -> Response:
-    answer = wire.TokenError(
+def _token_error(refusal: SignInRefused, now: datetime) -> wire.TokenError:
+    return wire.TokenError(
         error=refusal.error,
         error_description=f"AADSTS{refusal.code}: {refusal.description}",
         error_codes=[refusal.code],
-        timestamp=clock.now().strftime("%Y-%m-%d %H:%M:%SZ"),
+        timestamp=now.strftime("%Y-%m-%d %H:%M:%SZ"),
         trace_id=tokens.derived_trace(refusal.description),
         correlation_id=tokens.derived_trace(refusal.error),
     )
-    return Response(wire.dump(answer), status_code=refusal.status, media_type=JSON)
+
+
+def _refused(refusal: SignInRefused, clock: Clock) -> Response:
+    return Response(wire.dump(_token_error(refusal, clock.now())), status_code=refusal.status, media_type=JSON)
 
 
 class SignIn:

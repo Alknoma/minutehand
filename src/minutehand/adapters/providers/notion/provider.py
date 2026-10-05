@@ -27,6 +27,7 @@ from minutehand.adapters.providers.notion.seed import (
     value_request,
 )
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
     Commented,
@@ -52,6 +53,9 @@ class NotionProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return wire.error_answer(status, message, wire.request_id(f"{status}:{code}:{message}"))
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

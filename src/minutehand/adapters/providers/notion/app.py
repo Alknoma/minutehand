@@ -35,6 +35,7 @@ from starlette.responses import Response
 from starlette.routing import Match, Route, Router
 from starlette.types import Receive, Scope, Send
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.notion import query as notion_query
 from minutehand.adapters.providers.notion import webhooks, wire
 from minutehand.adapters.providers.notion.edits import Editor
@@ -141,6 +142,7 @@ class NotionApi:
             if fired >= fault.times:
                 continue
             self._world.count_fault(n, fired + 1)
+            answering.injected()
             raise wire.rate_limited(fault.retry_after) if fault.kind is wire.FaultKind.RATE_LIMITED else wire.conflict()
 
     def _editor(self, call: Call) -> Editor:

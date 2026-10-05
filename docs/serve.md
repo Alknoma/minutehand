@@ -82,10 +82,19 @@ Per provider, given only what a client sends:
 ## The control API
 
 Every request and answer is a model in `src/minutehand/adapters/control/wire.py`: frozen, and an unknown field
-is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open, 409 for what a world
-cannot do (with `"kind": "unsupported"` when the provider cannot do it in any world; the client raises
-`Unsupported`), 422 for a body that is not the model or a query parameter that is not what its route takes (a
-`since` that is no number, a `kind` that names no kind), 502 when the service an event was pushed to refused it.
+is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open or a thing it does
+not hold (a ticket, a message a reply names), 409 for what a world cannot do (with `"kind": "unsupported"` when the
+provider cannot do it in any world; the client raises `Unsupported`), 422 for a body that is not the model or a query
+parameter that is not what its route takes (a `since` that is no number, a `kind` that names no kind), 502 when the
+service an event was pushed to refused it.
+
+A 500 is never a refusal: Minutehand itself failed while answering, and the request may have been fine. Its body is
+`{"error": "minutehand internal error while answering the control API POST /v1/...: KeyError: ...", "kind":
+"internal_error", "exception_type": "builtins.KeyError"}`, the traceback is in the server's log at error level, and
+the client raises `ServerFailed`, not `Refused`. Each status comes from one converter (`_guarded` in
+`adapters/control/app.py`), which maps the typed refusals (`NotFound` and `UnknownWorld`, `WorldRefused`,
+`Unsupported`, `RunRefused`, `AgentFailed`, a pydantic `ValidationError`) and nothing else: a bare `ValueError` or
+`LookupError` from a bug used to be answered 409 or 404, as though the caller had asked for something wrong.
 
 | Route | Body → answer | What it does |
 |---|---|---|
@@ -205,6 +214,16 @@ created, or on an open world with `provider-faults`: `{"provider": "slack", "see
 fragment of the provider's seed model setting only its fault fields. The provider validates it (409 naming what
 else it sets or what it names that the world does not hold) and records it as seeding does, its offsets counted
 from the world's now. `OpenWorld.declare_faults(provider, fragment)` sends it.
+
+### How each call was answered
+
+Every call a world records says how it was answered, in `Exchange.outcome` (`CallOutcome`, the field forwarded calls carry too): `answered` by the fake; `refused` as the
+real service refuses (a status of 400 or more, or Slack's `ok: false`, which comes at 200); `injected_fault`, by a
+fault armed through `faults` or declared in a provider's seed, never counted as the service's refusal;
+`not_implemented`, a 501 in the service's error shape for an operation the fake does not have; `internal_error`, a
+500 in the service's error shape for Minutehand's own bug. For the last two, `Exchange.failure` holds what the agent
+was answered, the exception's type and, for an internal error, the traceback. A world with any `internal_error` call
+is not scored as the agent's work: its checks' verdict is `tool_failed`, naming the first such call.
 
 ### Changing a world while it is open
 

@@ -36,6 +36,7 @@ from urllib.parse import quote
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.microsoft import docx, subscriptions, tokens, wire
 from minutehand.adapters.providers.microsoft.common import (
     GRAPH_JSON,
@@ -385,6 +386,7 @@ class Files:
                 and hold.from_time <= now
                 and (hold.until_time is None or now < hold.until_time)
             ):
+                answering.injected()
                 raise GraphRefusal(
                     423, "resourceLocked", f"The resource you are attempting to access is locked by {hold.by}."
                 )

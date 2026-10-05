@@ -34,16 +34,20 @@ stretch before each reset first, and says in `resets` where each reset falls.
     GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
     GET    /v1/worlds/{id}/checks                      `Checked`
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
-    GET    /v1/unmatched?since=N[&late_for=W]          `Unmatched`: calls no open world claimed, tunnels among them;
-                                                `late_for`: only those that came for world W after it closed
+    GET    /v1/unmatched?since=N[&late_for=W][&kind=K]... `Unmatched`: the lobby; by default only `unclaimed` calls
+                                                (no world claimed them, nothing declared them); `kind` names others
+                                                (`model_host`, `pass_through`); `late_for`: those for world W after
+                                                it closed
 
-A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
-`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a query
-parameter that is not what its route takes, 502 when the service an event was pushed to refused it.
+A refusal is `Refusal`: 404 for a world that is not open or a thing it does not hold, 409 for what a world cannot do
+(with `kind` `unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a
+query parameter that is not what its route takes, 502 when the service an event was pushed to refused it. Anything
+else is Minutehand's own failure, never a refusal: 500, `kind` `internal_error`, the traceback in the server's log.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from enum import StrEnum
@@ -56,6 +60,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters.answering import INTERNAL_PREFIX
 from minutehand.adapters.control.wire import (
     API,
     QUIET_AT_MOST,
@@ -78,6 +83,7 @@ from minutehand.adapters.control.wire import (
     FiredView,
     FurtherSeed,
     Happen,
+    LobbyKind,
     Minted,
     MintInbound,
     MoveTicket,
@@ -97,9 +103,10 @@ from minutehand.adapters.control.wire import (
     Unmatched,
     WorldList,
     WorldView,
+    lobby_kind,
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
-from minutehand.application.standing import Unsupported
+from minutehand.application.standing import NotFound, Unsupported
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordedCall, Stored, WorldEvent
 from minutehand.ports.store import Store
@@ -109,6 +116,8 @@ if TYPE_CHECKING:
     from minutehand.serve import Serving, World
 
 Handler = Callable[[Request], Awaitable[Response]]
+
+logger = logging.getLogger(__name__)
 
 
 def _json(model: Model, status: int = 200) -> Response:
@@ -120,6 +129,9 @@ def _refused(status: int, error: str, kind: RefusalKind | None = None) -> Respon
 
 
 def _guarded(handler: Handler) -> Handler:
+    """THE converter of the control API: each typed refusal to its status, and anything else to 500, an internal
+    error, so a bug in Minutehand is never answered as though the caller's request were refused."""
+
     async def guarded(request: Request) -> Response:
         try:
             return await handler(request)
@@ -127,14 +139,20 @@ def _guarded(handler: Handler) -> Handler:
             return _refused(422, str(e))
         except _BadQuery as e:
             return _refused(422, str(e))
-        except LookupError as e:
-            return _refused(404, str(e.args[0]) if e.args else str(e))
+        except NotFound as e:
+            return _refused(404, str(e))
         except AgentFailed as e:
             return _refused(502, str(e))
         except Unsupported as e:
             return _refused(409, str(e), RefusalKind.UNSUPPORTED)
-        except (RunRefused, ValueError) as e:
+        except RunRefused as e:
             return _refused(409, str(e))
+        except Exception as e:
+            where = f"{request.method} {request.url.path}"
+            message = f"{INTERNAL_PREFIX} the control API {where}: {type(e).__name__}: {e}"
+            logger.error("%s", message, exc_info=e)
+            kind = f"{type(e).__module__}.{type(e).__qualname__}"
+            return _json(Refusal(error=message, kind=RefusalKind.INTERNAL_ERROR, exception_type=kind), 500)
 
     return guarded
 
@@ -433,13 +451,23 @@ def create_app(serving: Serving) -> Starlette:
     async def unmatched(request: Request) -> Response:
         since = _count(request, "since")
         late_for = _query(request, "late_for")
+        asked = request.query_params.getlist("kind")
+        wanted: set[LobbyKind] = set()
+        for given in asked:
+            try:
+                wanted.add(LobbyKind(given))
+            except ValueError:
+                raise _BadQuery(f"?kind= is one of {', '.join(k.value for k in LobbyKind)}, not {given!r}") from None
+        wanted = wanted or {LobbyKind.UNCLAIMED}
         recorded = standing.lobby_store.calls()
         kept = [
             c
             for c in recorded[since:]
             if not standing.shared(c.exchange.host) and (late_for is None or c.exchange.late_for == late_for)
         ]
-        return _json(Unmatched(calls=kept, head=len(recorded)))
+        kinds = {k: sum(1 for c in kept if lobby_kind(c) is k) for k in LobbyKind}
+        listed = [c for c in kept if lobby_kind(c) in wanted]
+        return _json(Unmatched(calls=listed, head=len(recorded), kinds=kinds))
 
     def route(path: str, handler: Handler, methods: list[str]) -> Route:
         return Route(f"{API}{path}", _guarded(handler), methods=methods)

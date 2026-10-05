@@ -26,6 +26,7 @@ class VerdictKind(StrEnum):
     UNFINISHED = "unfinished"  # no check failed, but the agent never reported done and work was still open
     FAILED = "failed"  # a check failed
     ENVIRONMENT_FAILED = "environment_failed"  # the run's environment failed under the agent: nothing is judged
+    TOOL_FAILED = "tool_failed"  # Minutehand broke while answering a call; the agent is not scored on this run
 
 
 EXIT_CODES = {
@@ -33,9 +34,10 @@ EXIT_CODES = {
     VerdictKind.FAILED: 1,
     VerdictKind.ENVIRONMENT_FAILED: 2,
     VerdictKind.UNFINISHED: 3,
+    VerdictKind.TOOL_FAILED: 4,
 }
 """What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is also a run that could not be
-performed, which has no verdict: either way, the environment and not the agent."""
+performed, which has no verdict: either way, the environment and not the agent. 4 is Minutehand's own failure."""
 
 
 class Verdict(Model):

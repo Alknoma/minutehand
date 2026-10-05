@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from typing import Protocol, runtime_checkable
 
 from minutehand.domain.clock import Due
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     InboundCredential,
     InboundCredentialAsk,
@@ -47,6 +48,17 @@ class Provider(Protocol):
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """Write the scenario's people, tickets and documents for this service, as actor SCENARIO."""
+        ...
+
+
+@runtime_checkable
+class RendersErrors(Protocol):
+    """A provider whose service has an error shape for what Minutehand answers in its place: an operation the fake
+    does not implement (501) and Minutehand's own error (500), rendered so the agent's client library raises its
+    own error type with `message` intact. A provider without it is answered in a plain JSON body."""
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """The vendor's error answer for `status`, carrying `code` and `message` where its clients read them."""
         ...
 
 

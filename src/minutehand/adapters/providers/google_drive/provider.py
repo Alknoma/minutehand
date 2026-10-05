@@ -8,10 +8,12 @@ notifications do.
 
 from __future__ import annotations
 
+from minutehand.adapters.providers.google_drive import wire
 from minutehand.adapters.providers.google_drive.app import DriveApi, build_app
 from minutehand.adapters.providers.google_drive.manifest import MANIFEST
 from minutehand.adapters.providers.google_drive.seed import DriveSeed, seed, write_faults
 from minutehand.adapters.providers.google_drive.state import DriveWorld
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import DocumentHappening, Scenario
 from minutehand.ports.clock import Clock
@@ -25,6 +27,9 @@ class GoogleDriveProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(DriveApi(world, clock))
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return wire.error_answer(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

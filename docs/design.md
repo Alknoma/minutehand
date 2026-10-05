@@ -215,7 +215,7 @@ src/minutehand/
                       MessagingHappening (PersonPosts, PersonEdits, PersonDeletes, PersonReacts, PersonJoins,
                       PersonAddsAgent, PersonOpensAgent, PersonCommands)), TicketFate, Direction, PersonAsked, TicketCreated, TicketDeleted,
                       TicketInState, Relayed, DocumentCreated, DocumentShared; `{{start+P2D}}` in any text (DATED)
-    world.py          WorldEvent, Change, Stored, Exchange, Captured, Body, RecordedCall, EntityRef,
+    world.py          WorldEvent, Change, Stored, Exchange (CallOutcome, CallFailure), Captured, Body, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, GrantSnapshot,
                       RecordSnapshot, InteractionSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
@@ -231,7 +231,8 @@ src/minutehand/
     checks.py         Finding, CheckReport, Pattern, Obligation, Stability, Effectiveness, PersonBurden,
                       WakeRecord, RunView, Check
     clock.py          Due, Jump, next_jump()
-    run.py            RunRecord, StopReason, EmulatorUse
+    run.py            RunRecord, StopReason, Verdict, VerdictKind, EmulatorUse
+    errors.py         ServiceRefusal, Rendered, Asked: what leaves a provider's app
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
   ports/              Store, Clock, Provider, PushesEvents, PushesInteractions, HoldsTickets, EditsTickets,
                       ActsOnTickets, DeletesTickets, ChangesDocuments, NotifiesChanges, DeclaresFaults,
@@ -242,6 +243,7 @@ src/minutehand/
                       model_calls.py (the join), standing.py and further_seed.py (`minutehand serve`)
   checks/             one module per check; runner.py, ledger.py, effectiveness.py, patterns.py, _waits.py
   adapters/
+    answering.py      the converter: what leaves a provider's app, as the answer the agent gets
     proxy/            server.py, addon.py, policy.py, registry.py, hosts.py, edit.py, redact.py, model_calls.py,
                       capture.py (outbound hosts: answering, keeping, reading a send, replay), worlds.py
     providers/<key>/  manifest.py, provider.py, app.py, wire.py, state.py, seed.py
@@ -467,6 +469,32 @@ That file plays in one run in `tests/providers/test_every_happening_family.py`; 
 ### Deliberate failures
 
 A fault is typed by the provider that can produce it and declared in that provider's own seed (`ProviderSeed.body`); there is no shared `Scenario.faults`, because no one shape holds every provider's failures without carrying knobs the others would ignore: Slack's `SlackSeed.faults` (any Slack error code or `ratelimited` with `Retry-After`, every call or N, `only_rich`), Drive's `DriveSeed.faults` (N calls of a Google operation answered one of seven `wire.FaultKind`s), YouTrack's `YouTrackSeed.faults` (a method and path glob answered any HTTP status over a window), Asana's `AsanaSeed.rate_limits` (throttled stretches), Jira's `JiraSeed.rate_limits` (N calls to a path answered 429), Notion's `NotionSeed.faults` (rate limits and edit conflicts, per integration), Microsoft's `MicrosoftSeed.faults` (a Graph or connector error code, or a rate limit) and `MicrosoftSeed.holds` (a seeded file held open by a person over a window, every write refused 423 `resourceLocked`), and GitHub's `GitHubSeed.faults` (rate limits, secondary limits, server errors) and `GitHubSeed.limits` (a repository's truncated-tree and directory-listing thresholds). Each of those providers is `DeclaresFaults`: the standing mode's `POST /v1/worlds/{id}/provider-faults` hands it a fragment of its own seed model that sets only these fields, and it records them as seeding does, counted from the world's now. The control API also keeps its own `faults` route, whose caller writes the status and body.
+
+### What leaves a provider: three kinds, one converter at each boundary
+
+After LocalStack's `ServiceException` and moto's, a provider's request handler lets out three kinds of exception (`domain/errors.py`), and one converter at the proxy (`adapters/answering.py`, wrapped around the app in `ProxyAddon._answer`) answers each:
+
+| Raised | Answered | Logged | `Exchange.outcome` |
+|---|---|---|---|
+| a `ServiceRefusal` subclass (each provider's own refusal classes: Slack's, Asana's, Graph's, ...) | `render(asked)`: the bytes that provider's app answers it with | debug | `refused` |
+| `NotImplementedError` | 501 in the vendor's error shape (`RendersErrors.error`), "minutehand's <provider> fake does not implement <METHOD> <path>" | info | `not_implemented` |
+| anything else | 500 in the vendor's error shape, "minutehand internal error while answering <provider> <METHOD> <path>: <Type>: <message>"; never raised on into mitmproxy | error, with the traceback | `internal_error` |
+
+```python
+class ServiceRefusal(Exception, ABC):
+    @abstractmethod
+    def render(self, asked: Asked) -> Rendered: ...
+
+
+class RendersErrors(Protocol):  # ports/provider.py; a provider without it is answered {"error", "message"}
+    def error(self, status: int, code: str, message: str) -> Rendered: ...
+```
+
+The guard holds back what the app sends and, when the app raises, sends the converted answer instead: mitmproxy's `asgiapp.serve` would answer a bare 500 "ASGI Error.", and Starlette's `ServerErrorMiddleware` sends its own 500 before it re-raises. A provider that cannot be built is answered the same way, where it used to be "provider failed to load" and re-raised. Most refusals never leave an app (each provider catches its own and answers it, unchanged); a call no exception left is `refused` when its status is 400 or more or the provider noted it (Slack's `ok: false` at 200), `injected_fault` when a fault the scenario, a provider seed or the control API armed answered it (`answering.injected()`), else `answered`. The kind is trunk's one `CallOutcome`, which forwarded calls to an external emulator carry too. `Exchange.failure` (`CallFailure`: kind, message, exception type, traceback) is set for `not_implemented` and `internal_error`, and a run with an `internal_error` call answered by a provider in this process is `TOOL_FAILED`, exit 4; an external emulator's `internal_error` stays the review finding `application/emulators.py` raises, and one unavailable stays `ENVIRONMENT_FAILED`, exit 2.
+
+Port methods the application calls (`seed`, `act`, `change`, `transition`, `deliver`, ...) still refuse with `ValueError` and `LookupError`; the standing world turns each into `WorldRefused` or `NotFound`. The control API's one converter (`_guarded`) maps only typed refusals to their statuses and anything else to 500 `internal_error`; the command line's (`cli.main`) keeps each known refusal's message and exit code, and answers anything else with one line naming it an internal error and the file its traceback was written to, exit 4 (`--debug` prints the traceback too).
+
+What this gets wrong: a refusal a provider answers in its own app is recorded `refused` only when its status says so or the provider notes it, and only Slack notes one; a GraphQL error GitHub answers at 200 is `answered`. A refusal answered by the converter rather than the provider's app lacks what the app adds per call: GitHub's rate-limit headers, and Notion's request id, minted from the call rather than the store's head.
 
 ### A provider's own seed: Asana
 
@@ -1017,6 +1045,7 @@ Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `test
 | `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
 | `PASSED` | No check failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
 | `UNFINISHED` | No check failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
+| `TOOL_FAILED` | Minutehand failed answering any call (`CallOutcome.INTERNAL_ERROR`, below): the run says nothing about the agent, whatever the checks found, and the verdict names the first such call | 4 |
 
 ```
 run 5c1e0a9f2b77: partner_pricing

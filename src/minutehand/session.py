@@ -84,7 +84,7 @@ from minutehand.application.restore import Progress, Restored, SeenCall, restore
 from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
-from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
+from minutehand.checks.runner import RunResult, broken, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
@@ -769,6 +769,7 @@ class _Judge:
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in world.calls() if call.refused],
             model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
+            broken_calls=broken(world.calls()),
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop)

@@ -16,6 +16,7 @@ MANIFEST = Manifest(
         "iamcredentials.googleapis.com",
     ],
     kinds=[EntityKind.DOCUMENT, EntityKind.COMMENT],
+    holds_spaces=True,
     document_changes=[
         DocumentChange.EDITED,
         DocumentChange.RENAMED,
