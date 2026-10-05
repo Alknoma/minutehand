@@ -8,19 +8,27 @@ from datetime import datetime, timedelta
 
 from minutehand.adapters.control.wire import (
     Advanced,
+    ChangePerson,
     Checked,
     DeclareFaults,
+    DeleteTicket,
     EditTicket,
     Fault,
+    FurtherSeed,
     Happen,
+    MintInbound,
     MoveTicket,
+    Permit,
     PressControl,
+    RawState,
     Reply,
     Say,
+    Seeded,
     WorldView,
 )
-from minutehand.domain.people import Press
-from minutehand.domain.scenario import Happening, TicketState
+from minutehand.domain.people import InboundCredential, InboundCredentialAsk, PermissionGrant, Press
+from minutehand.domain.provider import PersonChange
+from minutehand.domain.scenario import Happening, Person, TicketState
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -122,6 +130,57 @@ class OpenWorld:
     def declare_faults(self, provider: str, seed: dict[str, object] | str) -> None:
         """Faults typed by `provider`, as a fragment of its own seed model (`{"faults": [...]}`)."""
         self.client.declare_faults(self.world_id, DeclareFaults.model_validate({"provider": provider, "seed": seed}))
+
+    def delete_ticket(self, ticket: EntityRef) -> WorldEvent:
+        """A person deletes the ticket now: one the agent filed, or one seeded."""
+        return self.client.act(self.world_id, DeleteTicket(ticket=ticket)).event
+
+    # -- changing the world from outside --------------------------------------------------------------------------
+
+    def seed(self, added: FurtherSeed | dict[str, object]) -> Seeded:
+        """More seeded into the open world: people, tickets, documents, spaces, sign-ins, channels, or a fragment of
+        a provider's own seed (`{"provider_seeds": [{"provider": "notion", "body": {...}}]}`)."""
+        further = added if isinstance(added, FurtherSeed) else FurtherSeed.model_validate(added)
+        return self.client.further_seed(self.world_id, further)
+
+    def add_person(self, person: Person | dict[str, object]) -> Seeded:
+        """A person joins every provider the world holds that has people, as seeding would have written them."""
+        joined = person if isinstance(person, Person) else Person.model_validate(person)
+        return self.client.further_seed(self.world_id, FurtherSeed(people=[joined]))
+
+    def remove_person(self, provider: str, person: str) -> WorldEvent:
+        return self._person(provider, person, PersonChange.REMOVED)
+
+    def deactivate_person(self, provider: str, person: str) -> WorldEvent:
+        return self._person(provider, person, PersonChange.DEACTIVATED)
+
+    def reactivate_person(self, provider: str, person: str) -> WorldEvent:
+        return self._person(provider, person, PersonChange.REACTIVATED)
+
+    def _person(self, provider: str, person: str, change: PersonChange) -> WorldEvent:
+        asked = ChangePerson(provider=provider, person=person, change=change)
+        return self.client.change_person(self.world_id, asked).event
+
+    def grant(self, provider: str, person: str, permission: str, *, project: str | None = None) -> WorldEvent:
+        held = PermissionGrant(person=person, permission=permission, project=project, held=True)
+        return self.client.permit(self.world_id, Permit(provider=provider, grant=held)).event
+
+    def withhold(self, provider: str, person: str, permission: str, *, project: str | None = None) -> WorldEvent:
+        held = PermissionGrant(person=person, permission=permission, project=project, held=False)
+        return self.client.permit(self.world_id, Permit(provider=provider, grant=held)).event
+
+    def inbound_credential(self, provider: str, ask: InboundCredentialAsk) -> InboundCredential:
+        """The headers `provider`'s service would send with a request this test builds itself."""
+        return self.client.inbound_credential(self.world_id, MintInbound(provider=provider, ask=ask)).credential
+
+    def reset(self) -> WorldView:
+        """Back to the seed the world was opened with: the same id and claims, nothing that happened since."""
+        self.view = self.client.reset(self.world_id)
+        return self.view
+
+    def raw_state(self, provider: str) -> RawState:
+        """Everything the world holds of `provider`, every version: for reading by a person, not asserting on."""
+        return self.client.raw_state(self.world_id, provider)
 
     def advance(self, by: timedelta | None = None, *, to: datetime | None = None) -> Advanced:
         return self.client.advance(self.world_id, by=by, to=to)
