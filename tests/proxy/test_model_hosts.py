@@ -175,7 +175,10 @@ async def test_model_host_is_tunnelled_without_being_decrypted(
                 await http.post(f"https://{MODEL_HOST}:{upstream.port}/v1/call", content=body)
     assert response.status_code == 200
     assert upstream.received[0].body == body
-    assert exchanges(world_path) == [] and store.head() == 0
+    # each connection is in the record as having happened, and nothing of what it said
+    kept = [exchange for _, _, exchange in exchanges(world_path)]
+    assert len(kept) == 2 and all(e.tunnelled is not None and e.request_body is None for e in kept)
+    assert b"CHAT agent" not in stored_bytes(world_path) and store.head() == 0
 
 
 async def test_an_edited_call_verifies_the_model_api_certificate(

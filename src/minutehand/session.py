@@ -1078,6 +1078,9 @@ class Intercepting:
         """`application.restore.Traffic`: what the agent sent and the proxy has not seen answered."""
         return self.proxy.waiting()
 
+    def flush(self) -> None:
+        self.proxy.flush()
+
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.proxy.mount(world, clock, apps, scenario=scenario)
         if self.receiver is not None:

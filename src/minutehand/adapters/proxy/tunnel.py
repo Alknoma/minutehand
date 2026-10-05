@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+CHANGE_CIPHER_SPEC = 20
+ALERT = 21
 HANDSHAKE = 22
 APPLICATION_DATA = 23
 CONTENT_TYPES = frozenset({20, 21, 22, 23, 24})
@@ -80,16 +82,20 @@ class Tunnel:
     _client: _Records = field(default_factory=_Records)
     _server: _Records = field(default_factory=_Records)
 
-    def moved(self, content: bytes, *, from_client: bool) -> None:
+    def moved(self, content: bytes, *, from_client: bool) -> bool:
         """Bytes went one way: from the agent, a request (or a handshake message) now awaits its answer; from the
-        server, the answer came, unless these are the TLS 1.3 server's session tickets."""
+        server, the answer came, unless these are the TLS 1.3 server's session tickets. True unless the bytes are
+        TLS records that carry neither a request nor an answer: an alert (a `close_notify`) or a cipher change."""
+        records = self._client.feed(content) if from_client else self._server.feed(content)
         if from_client:
-            self._from_client(content)
+            self._from_client(records)
         else:
-            self._from_server(content)
+            self._from_server(records)
+        if self._client.broken or self._server.broken:
+            return True
+        return not set(records) <= {ALERT, CHANGE_CIPHER_SPEC}
 
-    def _from_client(self, content: bytes) -> None:
-        records = self._client.feed(content)
+    def _from_client(self, records: list[int]) -> None:
         if self._client.broken or self._server.broken:
             self.asked = True
             return
@@ -106,8 +112,7 @@ class Tunnel:
         if asking:
             self.asked = True
 
-    def _from_server(self, content: bytes) -> None:
-        records = self._server.feed(content)
+    def _from_server(self, records: list[int]) -> None:
         if self._client.broken or self._server.broken:
             self.asked = False
             return

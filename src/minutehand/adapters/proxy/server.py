@@ -107,6 +107,10 @@ class Proxy:
         provider first called mid-run is seeded with."""
         self.addon.mount(world, clock, apps, scenario=scenario)
 
+    def flush(self) -> None:
+        """`application.orchestrator.Mounts`: every burst in progress on a tunnel it relays, recorded now."""
+        self.addon.flush()
+
     def last_call(self) -> SeenCall | None:
         """`application.restore.Traffic`: the agent's latest outbound call this proxy saw."""
         return self.addon.last_seen

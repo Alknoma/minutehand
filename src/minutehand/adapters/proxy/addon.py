@@ -18,6 +18,7 @@ as it arrives, by the same tee a recorded model call's stream uses.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -39,7 +40,7 @@ from minutehand.adapters.proxy.hosts import loopback_name
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.tunnel import Tunnel
-from minutehand.adapters.proxy.worlds import Mounted, Worlds, one_run
+from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.application.restore import SeenCall
 from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, OnMiss, PassThrough
 from minutehand.domain.provider import Manifest, world_keys
@@ -49,6 +50,7 @@ from minutehand.domain.world import (
     Actor,
     AnsweredBy,
     BodyKept,
+    CallBegan,
     Captured,
     CaptureMode,
     Change,
@@ -58,6 +60,8 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     Recipient,
+    Tunnelled,
+    TunnelRoute,
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp, Message, Scope
@@ -95,6 +99,40 @@ TEE_LIMIT = 64 * 1024 * 1024
 is kept as its length only."""
 
 REPLAYED_HEADER = "x-minutehand-replayed"
+
+
+BURST_QUIET = 0.5
+"""Seconds a tunnel the proxy never opens stays quiet, its last request answered, before what moved on it since
+its previous record is written as one call. A connection reused later starts a new record then."""
+
+
+@dataclass
+class _Burst:
+    """What has moved on a relayed tunnel since its previous record was written."""
+
+    world: Mounted
+    route: TunnelRoute
+    began: CallBegan
+    started: float
+    ended: float
+    sent: int = 0
+    received: int = 0
+    carried: bool = False
+
+
+@dataclass
+class _Relayed:
+    """One tunnel the proxy relays as bytes: what they say of a request awaiting its answer (`Tunnel`), and the
+    burst in progress, written as a recorded call when it falls quiet, when the connection closes, or when the
+    proxy is moved to another run or stopped."""
+
+    tunnel: Tunnel
+    connection: str
+    port: int
+    opened: float
+    written: int = 0
+    burst: _Burst | None = None
+    quiet: asyncio.TimerHandle | None = None
 
 
 @dataclass
@@ -139,7 +177,7 @@ class ProxyAddon:
         # Calls sent on to a real host and not answered yet, by flow id; tunnels by flow id, each with what its
         # bytes tell of whether the agent awaits an answer on it (`tunnel.Tunnel`).
         self._sent_on: dict[str, str] = {}
-        self._tunnels: dict[str, Tunnel] = {}
+        self._tunnels: dict[str, _Relayed] = {}
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
@@ -151,7 +189,9 @@ class ProxyAddon:
         request went from the agent and nothing since reads as its answer (`tunnel.Tunnel`: a TLS 1.3 server's
         session tickets do not)."""
         sent = list(self._sent_on.values())
-        tunnels = [awaiting for tunnel in self._tunnels.values() if (awaiting := tunnel.awaiting()) is not None]
+        tunnels = [
+            awaiting for relayed in self._tunnels.values() if (awaiting := relayed.tunnel.awaiting()) is not None
+        ]
         return sent + tunnels
 
     def forwarded(self, host: str) -> bool:
@@ -200,27 +240,126 @@ class ProxyAddon:
     def tcp_start(self, flow: tcp.TCPFlow) -> None:
         host = str(flow.server_conn.address[0]) if flow.server_conn.address else "?"
         self._seen(f"a new tunnelled connection to {host}")
-        self._tunnels[flow.id] = Tunnel(host)
+        self._tunnels[flow.id] = self._relayed(flow)
+
+    def _relayed(self, flow: tcp.TCPFlow) -> _Relayed:
+        address = flow.server_conn.address
+        return _Relayed(
+            Tunnel(str(address[0]) if address else "?"),
+            connection=flow.id,
+            port=int(address[1]) if address else 0,
+            opened=flow.client_conn.timestamp_start,
+        )
 
     def tcp_message(self, flow: tcp.TCPFlow) -> None:
         message = flow.messages[-1]
-        tunnel = self._tunnels.setdefault(flow.id, Tunnel("?"))
-        tunnel.moved(message.content, from_client=message.from_client)
+        relayed = self._tunnels[flow.id] if flow.id in self._tunnels else self._relayed(flow)
+        self._tunnels[flow.id] = relayed
+        tunnel = relayed.tunnel
+        carried = tunnel.moved(message.content, from_client=message.from_client)
         self._seen(f"bytes {'to' if message.from_client else 'from'} {tunnel.host} on an open tunnel")
+        burst = relayed.burst or self._burst(tunnel.host, message.timestamp)
+        relayed.burst = burst
+        burst.ended = message.timestamp
+        burst.carried = burst.carried or carried
+        if message.from_client:
+            burst.sent += len(message.content)
+        else:
+            burst.received += len(message.content)
+        if relayed.quiet is not None:
+            relayed.quiet.cancel()
+        relayed.quiet = asyncio.get_running_loop().call_later(BURST_QUIET, self._fell_quiet, flow.id)
         del flow.messages[:-1]  # bytes are relayed, not kept: a long-lived tunnel would grow without end
 
+    def _burst(self, host: str, at: float) -> _Burst:
+        """A burst beginning now: kept in the world the host's model calls are kept in, stamped with that world's
+        wake and simulated time now, whenever it is written."""
+        world = self.worlds.keeping(host, None)
+        if isinstance(self.worlds, One):
+            route = TunnelRoute.RUN
+        else:
+            route = TunnelRoute.NONE if world is self.worlds.lobby else TunnelRoute.HOST
+        began = CallBegan(wake=world.clock.wake(), sim_time=world.clock.now())
+        return _Burst(world, route, began, started=at, ended=at)
+
+    def _fell_quiet(self, flow_id: str) -> None:
+        """No bytes for `BURST_QUIET`: the burst is over unless the agent is still awaiting its answer, which the
+        next bytes, the connection's close or a flush end instead."""
+        relayed = self._tunnels[flow_id] if flow_id in self._tunnels else None
+        if relayed is None or relayed.tunnel.asked:
+            return
+        self._write(relayed, closed=None)
+
     def tcp_end(self, flow: tcp.TCPFlow) -> None:
-        self._tunnels.pop(flow.id, None)
+        self._closed(flow)
 
     def tcp_error(self, flow: tcp.TCPFlow) -> None:
-        self._tunnels.pop(flow.id, None)
+        self._closed(flow)
+
+    def _closed(self, flow: tcp.TCPFlow) -> None:
+        relayed = self._tunnels.pop(flow.id, None)
+        if relayed is None:
+            return
+        ends = [t for t in (flow.client_conn.timestamp_end, flow.server_conn.timestamp_end) if t is not None]
+        closed = max(ends) if ends else relayed.burst.ended if relayed.burst is not None else None
+        self._write(relayed, closed=closed)
+
+    def flush(self) -> None:
+        """Write every burst still in progress on a relayed tunnel, as far as it has gone: the run is ending or
+        the proxy is moving to another one. What moves on the tunnel afterwards is a burst of its own."""
+        for relayed in self._tunnels.values():
+            self._write(relayed, closed=None)
+
+    def flush_in(self, world: Mounted) -> None:
+        """`flush`, for the bursts kept in `world` only: it is about to be scored and closed, or reset."""
+        for relayed in self._tunnels.values():
+            if relayed.burst is not None and relayed.burst.world is world:
+                self._write(relayed, closed=None)
+
+    def done(self) -> None:
+        """mitmproxy is stopping: what is in progress is written before the run's store is closed."""
+        self.flush()
+
+    def _write(self, relayed: _Relayed, *, closed: float | None) -> None:
+        """The burst in progress as one recorded call, in the world it began in. A burst of nothing but TLS
+        alerts or cipher changes (a connection's `close_notify`) carried no call and is dropped."""
+        if relayed.quiet is not None:
+            relayed.quiet.cancel()
+            relayed.quiet = None
+        burst, relayed.burst = relayed.burst, None
+        if burst is None or not burst.carried:
+            return
+        relayed.written += 1
+        host = relayed.tunnel.host
+        exchange = Exchange(
+            method="CONNECT",
+            host=host,
+            path=f"{host}:{relayed.port}",
+            status=200,
+            tunnelled=Tunnelled(
+                port=relayed.port,
+                connection=relayed.connection,
+                burst=relayed.written,
+                opened=datetime.fromtimestamp(relayed.opened, UTC),
+                started=datetime.fromtimestamp(burst.started, UTC),
+                ended=datetime.fromtimestamp(burst.ended, UTC),
+                closed=datetime.fromtimestamp(closed, UTC) if closed is not None else None,
+                bytes_sent=burst.sent,
+                bytes_received=burst.received,
+                route=burst.route,
+            ),
+        )
+        head = burst.world.store.head()
+        burst.world.store.attach(exchange, first_seq=head + 1, last_seq=head, began=burst.began)
 
     def mount(
         self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
     ) -> None:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
         its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
-        and seeded then with `scenario`'s people and things, unless `world` already holds anything of it."""
+        and seeded then with `scenario`'s people and things, unless `world` already holds anything of it. A burst
+        in progress on a relayed tunnel is written to the run it began in first."""
+        self.flush()
         self.worlds = one_run(
             world, clock, apps, scenario=scenario, provider=self.routing.registry.provider, capturing=self.capturing
         )

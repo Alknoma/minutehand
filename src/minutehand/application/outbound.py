@@ -3,7 +3,8 @@ each was answered, and, for a host nobody declared, the declaration that would c
 
 A host is summarised under the declaration that matched it (`Captured.declared_as`), else by its own name; a
 call refused because nobody claims or declares its host is counted too, so a run that refused a search says
-so beside the hosts it captured.
+so beside the hosts it captured. A host relayed unopened on tunnels (a model API) is summarised by its bursts,
+their connections and the bytes each way, never as refused.
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 def outbound_uses(calls: Sequence[RecordedCall]) -> list[OutboundUse]:
     """Each host no provider claims that the calls reached, in the order of its first call."""
-    uses: dict[tuple[str, CaptureMode | None], OutboundUse] = {}
+    uses: dict[tuple[str, CaptureMode | None, bool], OutboundUse] = {}
+    connections: dict[tuple[str, CaptureMode | None, bool], set[str]] = {}
     for call in calls:
         if call.provider is not None:
             continue
@@ -33,8 +35,22 @@ def outbound_uses(calls: Sequence[RecordedCall]) -> list[OutboundUse]:
         captured = exchange.captured
         mode = captured.mode if captured is not None else None
         host = exchange.host.lower()
-        key = (host, mode)
+        tunnelled = exchange.tunnelled
+        key = (host, mode, tunnelled is not None)
         found = uses[key] if key in uses else OutboundUse(host=host, mode=mode, calls=0)
+        if tunnelled is not None:
+            connections.setdefault(key, set()).add(tunnelled.connection)
+            uses[key] = found.model_copy(
+                update={
+                    "calls": found.calls + 1,
+                    "tunnelled": found.tunnelled + 1,
+                    "connections": len(connections[key]),
+                    "bytes_sent": found.bytes_sent + tunnelled.bytes_sent,
+                    "bytes_received": found.bytes_received + tunnelled.bytes_received,
+                    "methods": list(dict.fromkeys([*found.methods, exchange.method.upper()])),
+                }
+            )
+            continue
         path = urlsplit(exchange.path).path
         unknown = [r.address for r in captured.recipients if r.person is None] if captured is not None else []
         uses[key] = found.model_copy(
@@ -54,6 +70,12 @@ def outbound_uses(calls: Sequence[RecordedCall]) -> list[OutboundUse]:
 
 def described(use: OutboundUse) -> str:
     """One line for a host: its calls and how they were answered."""
+    if use.tunnelled:
+        return (
+            f"{use.host}: {use.calls} call{'s' if use.calls != 1 else ''} on {use.connections} "
+            f"tunnel{'s' if use.connections != 1 else ''} relayed and never opened, {use.bytes_sent} bytes sent "
+            f"and {use.bytes_received} received"
+        )
     how = {
         None: "refused: nobody declares it",
         CaptureMode.ACKNOWLEDGE: "acknowledged, never sent",
@@ -76,7 +98,7 @@ def suggested(uses: Sequence[OutboundUse]) -> str:
     change something is suggested as `acknowledge`, since a test must not send a real email; anything else as
     `pass_through`, to be turned into `acknowledge` or `replay` by whoever knows what it is. Empty when every
     host was declared."""
-    hosts = list(dict.fromkeys(u.host for u in uses if u.mode in (CaptureMode.DISCOVERED, None)))
+    hosts = list(dict.fromkeys(u.host for u in uses if u.mode in (CaptureMode.DISCOVERED, None) and not u.tunnelled))
     if not hosts:
         return ""
     entries: list[dict[str, str]] = []
