@@ -221,6 +221,7 @@ class Standing:
         """When a call routed to a world was last seen and which are still in progress: the proxy's
         `ProxyAddon.activity_in`, once it routes to these worlds."""
         self._closed: list[_Closed] = []
+        self._handed: set[str] = set()
 
     def shared(self, host: str) -> bool:
         """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
@@ -321,7 +322,7 @@ class Standing:
         )
         if unseeded:
             raise Unsupported(f"{', '.join(unseeded)} has no seed of its own: give it no provider seed")
-        world_id = secrets.token_hex(6)
+        world_id = self._fresh_id()
         self._declare_models(world_id, spec)
         directory = run_dir(self._state, world_id)
         directory.mkdir(parents=True)
@@ -493,8 +494,19 @@ class Standing:
             raise WorldRefused(f"no installed provider is named {key}; installed: {', '.join(sorted(self._manifests))}")
         return key
 
+    def _fresh_id(self) -> str:
+        """An id this server has never handed out and no world under its state directory has: a closed world's id
+        is never a new world's, so a test still holding one reaches nothing rather than another test's world."""
+        while True:
+            found = secrets.token_hex(6)
+            if found not in self._handed and not run_dir(self._state, found).exists():
+                self._handed.add(found)
+                return found
+
     def get(self, world_id: str) -> World:
         if world_id not in self.worlds:
+            if world_id in self._handed:
+                raise LookupError(f"world {world_id} is closed, and a closed world is never open again")
             raise LookupError(f"no open world {world_id}")
         return self.worlds[world_id]
 

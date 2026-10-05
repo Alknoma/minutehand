@@ -58,18 +58,41 @@ def describe(event: WorldEvent) -> str:
     if isinstance(after, MessageSnapshot):
         said = f" in {after.channel}: {after.text!r}"
     elif isinstance(after, TicketSnapshot):
-        said = f": {after.title!r} ({after.state.value}, {after.assignee_email or 'unassigned'})"
+        said = f": {after.title!r} ({after.state.value}, {after.assignee or after.assignee_email or 'unassigned'})"
     return (
         f"#{event.seq} {event.sim_time:%Y-%m-%d %H:%M} {event.actor.value} {event.operation.value} "
         f"{event.entity.provider} {event.entity.kind.value} {event.entity.external_id}{said}"
     )
 
 
+class ClosedWorld(Exception):
+    """A handle used after its world was closed: whatever it was asked would have reached no world, or, had the
+    id been handed out again, another test's."""
+
+
 class OpenWorld:
+    """One open world. Once `close()`d (the plugin closes it after its test), every use of the handle raises
+    `ClosedWorld`, and the server never hands the id out again."""
+
     def __init__(self, client: MinutehandClient, view: WorldView) -> None:
-        self.client = client
+        self._client = client
         self.view = view
         self.world_id = view.world_id
+        self.closed: Checked | None = None
+
+    @property
+    def client(self) -> MinutehandClient:
+        """The client, while the world is open; a closed world's handle reaches nothing through it."""
+        if self.closed is not None:
+            raise ClosedWorld(f"world {self.world_id} was closed; open a new world rather than reuse this one")
+        return self._client
+
+    def close(self, *, quiet: Quiet | bool = True) -> Checked:
+        """Close the world (once it is quiet, unless `quiet` is False): its checks as it stood. A second close
+        raises `ClosedWorld`."""
+        found = self.client.close_world(self.world_id, quiet=quiet)
+        self.closed = found
+        return found
 
     # -- reading ------------------------------------------------------------------------------------------------
 
@@ -117,8 +140,20 @@ class OpenWorld:
         return self.client.spans(self.world_id, since_reset=since_reset).spans
 
     def late_calls(self) -> list[RecordedCall]:
-        """Calls that came for this world after it was closed, refused into the lobby (`Exchange.late_for`)."""
-        return self.client.unmatched(late_for=self.world_id).calls
+        """Calls that came for this world after it was closed, refused into the lobby (`Exchange.late_for`): the
+        one read a closed world's handle still answers."""
+        return self._client.unmatched(late_for=self.world_id).calls
+
+    def assert_nothing_unclaimed(self) -> None:
+        """Fail, listing each one, when a call of this world went to a host no provider claims and nothing the
+        world declares captures (refused 502). Calls to model hosts and declared outbound hosts are not that."""
+        found = self.unmatched_calls()
+        if found:
+            lines = [f"{c.exchange.method} {c.exchange.host}{c.exchange.path} -> {c.exchange.status}" for c in found]
+            raise AssertionError(
+                f"{len(found)} call(s) of world {self.world_id} reached no provider and no declaration:\n"
+                + "\n".join(lines)
+            )
 
     def quiet(self, *, quiet_for: timedelta = QUIET_FOR, at_most: timedelta = QUIET_AT_MOST) -> Quieted:
         """Return once no call has reached this world for `quiet_for` and nothing Minutehand pushed to the service
@@ -243,9 +278,16 @@ class OpenWorld:
         return found
 
     def assert_message(
-        self, *, containing: str, by: Actor = Actor.AGENT, to: str | None = None, at_least: int = 1
+        self,
+        *,
+        containing: str,
+        by: Actor = Actor.AGENT,
+        to: str | None = None,
+        to_person: str | None = None,
+        at_least: int = 1,
     ) -> list[WorldEvent]:
-        """A message written by `by` holding `containing` (any case), sent to the person with email `to`."""
+        """A message written by `by` holding `containing` (any case), sent to the person with email `to`, or to the
+        person keyed `to_person` (who may have no email)."""
 
         def where(e: WorldEvent) -> bool:
             after = e.after
@@ -255,17 +297,26 @@ class OpenWorld:
                 and isinstance(after, MessageSnapshot)
                 and containing.casefold() in after.text.casefold()
                 and (to is None or to in after.recipient_emails)
+                and (to_person is None or to_person in after.recipients)
             )
 
         recipient = f" to {to}" if to is not None else ""
+        recipient += f" to person {to_person}" if to_person is not None else ""
         return self.assert_events(
             where, at_least=at_least, what=f"{by.value} messages{recipient} holding {containing!r}"
         )
 
     def assert_ticket(
-        self, *, titled: str, state: TicketState | None = None, assignee: str | None = None, at_least: int = 1
+        self,
+        *,
+        titled: str,
+        state: TicketState | None = None,
+        assignee: str | None = None,
+        assigned_to: str | None = None,
+        at_least: int = 1,
     ) -> list[WorldEvent]:
-        """A ticket whose title holds `titled` (any case) was written with this state and assignee email."""
+        """A ticket whose title holds `titled` (any case) was written with this state, and assignee email
+        `assignee`, or assigned to the person keyed `assigned_to` (who may have no email)."""
 
         def where(e: WorldEvent) -> bool:
             after = e.after
@@ -274,6 +325,7 @@ class OpenWorld:
                 and titled.casefold() in after.title.casefold()
                 and (state is None or after.state is state)
                 and (assignee is None or after.assignee_email == assignee)
+                and (assigned_to is None or after.assignee == assigned_to)
             )
 
         return self.assert_events(where, at_least=at_least, what=f"ticket writes titled {titled!r}")
