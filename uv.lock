@@ -1197,11 +1197,14 @@ dependencies = [
     { name = "mitmproxy" },
     { name = "moto", extra = ["server"] },
     { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-proto" },
     { name = "opentelemetry-sdk" },
+    { name = "protobuf" },
     { name = "pydantic", version = "2.11.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "pydantic", version = "2.13.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "pyyaml" },
     { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -1233,10 +1236,13 @@ requires-dist = [
     { name = "mitmproxy", specifier = ">=12,<13" },
     { name = "moto", extras = ["server"], specifier = ">=5.2" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
+    { name = "opentelemetry-proto", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
+    { name = "protobuf", specifier = ">=5" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "starlette", specifier = ">=0.40" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [package.metadata.requires-dev]
