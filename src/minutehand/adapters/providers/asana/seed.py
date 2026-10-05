@@ -1,7 +1,11 @@
 """The workspace a scenario starts in, written as actor SCENARIO and stamped at the scenario's start.
 
 From the shared scenario: a user per person and one for the agent, a project per
-project the scenario's Asana tickets name, and those tickets as tasks.
+project the scenario's Asana tickets name, and those tickets as tasks: a ticket's
+`labels` are its tags (a tag is made for a label the seed does not define), and its
+`comments` are stories by their people, written as the scenario starts. A ticket's
+`key` has no meaning in Asana, and a scenario that sets one is refused at load
+(`Manifest.ticket_fields`).
 
 From the scenario's Asana seed (`AsanaSeed`, the scenario's `ProviderSeed` for
 `asana`), everything only Asana has: the workspace's plan and whether it is an
@@ -250,8 +254,7 @@ class _Seeding:
         for ticket in self.tickets:
             self._task(ticket, details[ticket.title] if ticket.title in details else None)
         for ticket in self.tickets:
-            if ticket.title in details:
-                self._comments(ticket, details[ticket.title])
+            self._comments(ticket, details.get(ticket.title))
 
     def _workspace(self) -> None:
         start = self.scenario.starts_at
@@ -368,7 +371,7 @@ class _Seeding:
             )
 
     def _tags(self) -> None:
-        for name in dict.fromkeys(self.seed.tags):
+        for name in dict.fromkeys([*self.seed.tags, *(label for t in self.tickets for label in t.labels)]):
             self.asana.put_record(
                 wire.AsanaTag(gid=state.tag_gid(name), name=name, workspace=WORKSPACE_GID, created_at=self.at),
                 parent=state.TAGS,
@@ -451,6 +454,9 @@ class _Seeding:
         task = self.asana.moved(task, ticket.state, now=self.scenario.starts_at)
         if detail is not None:
             task = self._detailed(task, ticket, detail)
+        if ticket.labels:
+            labelled = [*task.tags, *(state.tag_gid(label) for label in ticket.labels)]
+            task = task.model_copy(update={"tags": list(dict.fromkeys(labelled))})
         self.asana.put_task(task, operation=Operation.CREATE, actor=Actor.SCENARIO)
 
     def _detailed(self, task: wire.AsanaTask, ticket: SeededTicket, detail: SeedTask) -> wire.AsanaTask:
@@ -512,9 +518,11 @@ class _Seeding:
             case "people":
                 return value.model_copy(update={"people": [self.user(k) for k in sent.people]})
 
-    def _comments(self, ticket: SeededTicket, detail: SeedTask) -> None:
+    def _comments(self, ticket: SeededTicket, detail: SeedTask | None) -> None:
+        """The seed's own comments, oldest first, then the ticket's shared comments, each a story by its person
+        written as the scenario starts."""
         task = self.gid_of(ticket)
-        for comment in sorted(detail.comments, key=lambda c: -c.ago):
+        for comment in sorted(detail.comments if detail is not None else [], key=lambda c: -c.ago):
             written: datetime = self.scenario.starts_at - comment.ago
             self.asana.put_story(
                 wire.AsanaStory(
@@ -523,6 +531,17 @@ class _Seeding:
                     task=task,
                     created_by=self.user(comment.person),
                     created_at=wire.stamp(written),
+                ),
+                actor=Actor.SCENARIO,
+            )
+        for shared in ticket.comments:
+            self.asana.put_story(
+                wire.AsanaStory(
+                    gid=self.asana.next_gid(),
+                    text=shared.text,
+                    task=task,
+                    created_by=self.user(shared.by),
+                    created_at=self.at,
                 ),
                 actor=Actor.SCENARIO,
             )
