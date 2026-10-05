@@ -13,6 +13,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
+from minutehand.application.steps import StepEdge
 from minutehand.checks.runner import RunResult
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -146,6 +147,12 @@ class CreateWorld(Model):
         description="External emulators this world's `forward` hosts go to: one per server shared by every world "
         "that declares it the same, unless it says `per_world`",
     )
+    case: str | None = Field(
+        default=None,
+        min_length=1,
+        description="A case label: worlds opened under one label while any of them is open are one case, read, "
+        "stepped and scored as one run (one timeline, one set of people, one verdict). None: a world of its own",
+    )
 
     @model_validator(mode="after")
     def _one_declaration_per_host(self) -> Self:
@@ -172,6 +179,9 @@ class WorldView(Model):
     head: int = Field(description="The latest WorldEvent.seq")
     owed: list[OwedView] = Field(default=[], description="What falls due as the clock moves")
     resets: int = Field(default=0, ge=0, description="How many times it was reset; its record from before each is kept")
+    case_id: str | None = Field(default=None, description="The case it belongs to; also that case's run id")
+    case: str | None = Field(default=None, description="The case label it was opened under")
+    step: int = Field(default=1, ge=1, description="The step (wake) its events are written in now")
 
 
 class WorldList(Model):
@@ -371,6 +381,41 @@ class Quieted(Model):
         default=[], description="When not quiet: each call still in progress and each delivery still awaited"
     )
     last_call: str | None = Field(default=None, description="The latest call routed to the world, for a person")
+
+
+class MarkStep(Model):
+    """Where one go of the agent begins or ends, for a harness that drives the agent itself. `began`: a step begins
+    at `at` (simulated; the latest moment reached when None), ending the one in progress, and `reason` says why;
+    `ended`: the step in progress ends. Setting the clock stays a separate act."""
+
+    edge: StepEdge
+    at: AwareDatetime | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _only_a_beginning_has_a_moment(self) -> Self:
+        if self.edge is StepEdge.ENDED and (self.at is not None or self.reason is not None):
+            raise ValueError("a step ends where it is: `at` and `reason` belong to its beginning")
+        return self
+
+
+class StepView(Model):
+    step: int = Field(ge=1, description="The step in progress, or the last one")
+    open: bool = Field(description="A step is in progress")
+    by_hand: bool = Field(description="Steps are marked by whoever drives; False: inferred from forward clock moves")
+    at: AwareDatetime = Field(description="The latest moment the steps have reached, simulated")
+
+
+class CaseView(Model):
+    case_id: str = Field(description="Also its run id: `minutehand findings`, `view` and the MCP tools read it")
+    name: str = Field(description="The label its worlds were opened under")
+    worlds: list[str] = Field(description="Every world of the case, in the order they opened")
+    open_worlds: list[str]
+    steps: StepView
+
+
+class CaseList(Model):
+    cases: list[CaseView]
 
 
 class Checked(Model):
