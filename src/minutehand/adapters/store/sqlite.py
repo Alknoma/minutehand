@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Concatenate
@@ -19,6 +19,7 @@ from pydantic import TypeAdapter
 
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
+from minutehand.domain.telemetry import ForwardFailure, ReceivedSpan, Signal, SpanSource, StoredSpan
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -47,7 +48,7 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at."""
 
 _SCHEMA = """
@@ -70,6 +71,13 @@ CREATE TABLE IF NOT EXISTS exchange(
   provider TEXT, wake INTEGER NOT NULL, sim_time TEXT NOT NULL, exchange TEXT NOT NULL,
   PRIMARY KEY (run_id, position));
 CREATE TABLE IF NOT EXISTS reply(run_id TEXT NOT NULL, position INTEGER NOT NULL, reply TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS span(
+  run_id TEXT NOT NULL, position INTEGER NOT NULL, after_seq INTEGER NOT NULL, wake INTEGER NOT NULL,
+  sim_time TEXT NOT NULL, source TEXT NOT NULL, trace_id TEXT NOT NULL, span TEXT NOT NULL,
+  PRIMARY KEY (run_id, position));
+CREATE INDEX IF NOT EXISTS span_trace ON span(trace_id);
+CREATE TABLE IF NOT EXISTS forward_failure(
+  run_id TEXT NOT NULL, position INTEGER NOT NULL, failure TEXT NOT NULL, PRIMARY KEY (run_id, position));
 """
 
 
@@ -308,6 +316,77 @@ class SqliteStore:
     def replies(self) -> list[PersonReply]:
         rows = self._db.execute("SELECT reply FROM reply WHERE run_id=? ORDER BY position", (self.run_id,)).fetchall()
         return [PersonReply.model_validate_json(r[0]) for r in rows]
+
+    @_locked
+    def receive(self, spans: Sequence[ReceivedSpan], *, source: SpanSource) -> list[StoredSpan]:
+        position = self._db.execute("SELECT COUNT(*) FROM span WHERE run_id=?", (self.run_id,)).fetchone()[0]
+        head, wake, sim = self.head(), self._clock.wake(), self._clock.now()
+        stored = [
+            StoredSpan(span=span, run_id=self.run_id, source=source, wake=wake, sim_time=sim, after_seq=head)
+            for span in spans
+        ]
+        self._db.executemany(
+            "INSERT INTO span VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (
+                    self.run_id,
+                    position + i,
+                    head,
+                    wake,
+                    sim.isoformat(),
+                    source.value,
+                    one.span.trace_id,
+                    one.span.model_dump_json(),
+                )
+                for i, one in enumerate(stored)
+            ],
+        )
+        self._db.commit()
+        return stored
+
+    @_locked
+    def spans(self, *, trace_id: str | None = None, wake: int | None = None) -> list[StoredSpan]:
+        where, args = self._visible(column="after_seq")
+        query = f"SELECT run_id, after_seq, wake, sim_time, source, span, position FROM span WHERE {where}"
+        if trace_id is not None:
+            query += " AND trace_id=?"
+            args.append(trace_id)
+        if wake is not None:
+            query += " AND wake=?"
+            args.append(wake)
+        depth = {run: d for d, (run, _, _) in enumerate(self._lineage)}
+        # Oldest ancestor first, and in each run the order they arrived.
+        rows = sorted(self._db.execute(query, args).fetchall(), key=lambda r: (-depth[r[0]], r[6]))
+        return [
+            StoredSpan(
+                span=ReceivedSpan.model_validate_json(r[5]),
+                run_id=r[0],
+                source=SpanSource(r[4]),
+                wake=r[2],
+                sim_time=datetime.fromisoformat(r[3]),
+                after_seq=r[1],
+            )
+            for r in rows
+        ]
+
+    @_locked
+    def forward_failed(self, signal: Signal, endpoint: str, reason: str) -> ForwardFailure:
+        position = self._db.execute("SELECT COUNT(*) FROM forward_failure WHERE run_id=?", (self.run_id,)).fetchone()[0]
+        failure = ForwardFailure(
+            signal=signal, endpoint=endpoint, reason=reason, wake=self._clock.wake(), sim_time=self._clock.now()
+        )
+        self._db.execute(
+            "INSERT INTO forward_failure VALUES(?,?,?)", (self.run_id, position, failure.model_dump_json())
+        )
+        self._db.commit()
+        return failure
+
+    @_locked
+    def forward_failures(self) -> list[ForwardFailure]:
+        rows = self._db.execute(
+            "SELECT failure FROM forward_failure WHERE run_id=? ORDER BY position", (self.run_id,)
+        ).fetchall()
+        return [ForwardFailure.model_validate_json(r[0]) for r in rows]
 
     @_locked
     def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> SqliteStore:
