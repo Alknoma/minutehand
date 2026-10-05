@@ -38,14 +38,15 @@ stretch before each reset first, and says in `resets` where each reset falls.
                                                 `late_for`: only those that came for world W after it closed
 
 A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
-`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model, 502 when the
-service an event was pushed to refused it.
+`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a query
+parameter that is not what its route takes, 502 when the service an event was pushed to refused it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -170,6 +171,27 @@ def _flag(request: Request, name: str, *, default: bool) -> bool:
     return given == "true"
 
 
+def _count(request: Request, name: str) -> int:
+    """A query parameter that is a whole number at least 0; 0 when it is not given."""
+    given = _query(request, name)
+    if given is None:
+        return 0
+    if not given.isdigit():
+        raise _BadQuery(f"?{name}= is a whole number at least 0, not {given!r}")
+    return int(given)
+
+
+def _member[E: StrEnum](request: Request, name: str, kind: type[E]) -> E | None:
+    """A query parameter that names a member of `kind`, or None when it is not given."""
+    given = _query(request, name)
+    if given is None:
+        return None
+    try:
+        return kind(given)
+    except ValueError:
+        raise _BadQuery(f"?{name}= is one of {', '.join(m.value for m in kind)}, not {given!r}") from None
+
+
 def _seconds(request: Request, name: str, default: timedelta) -> timedelta:
     """A query parameter in seconds, a number at least 0."""
     given = _query(request, name)
@@ -255,12 +277,11 @@ def create_app(serving: Serving) -> Starlette:
 
     async def events(request: Request) -> Response:
         found = world_of(request)
-        since = int(_query(request, "since") or 0)
-        provider, kind = provider_of(request, found), _query(request, "kind")
-        actor, operation = _query(request, "actor"), _query(request, "operation")
-        wanted_kind = EntityKind(kind) if kind is not None else None
-        wanted_actor = Actor(actor) if actor is not None else None
-        wanted_operation = Operation(operation) if operation is not None else None
+        since = _count(request, "since")
+        provider = provider_of(request, found)
+        wanted_kind = _member(request, "kind", EntityKind)
+        wanted_actor = _member(request, "actor", Actor)
+        wanted_operation = _member(request, "operation", Operation)
 
         def keep(e: WorldEvent) -> bool:
             return (
@@ -278,8 +299,8 @@ def create_app(serving: Serving) -> Starlette:
 
     async def entities(request: Request) -> Response:
         found = world_of(request)
-        provider, kind = provider_of(request, found), _query(request, "kind")
-        wanted_kind = EntityKind(kind) if kind is not None else None
+        provider = provider_of(request, found)
+        wanted_kind = _member(request, "kind", EntityKind)
         refs: dict[EntityRef, None] = {}
         for event in found.store.events():
             ref = event.entity
@@ -409,7 +430,7 @@ def create_app(serving: Serving) -> Starlette:
         return _json(Checked(result=await world_of(request).standing.checks(stop=None)))
 
     async def unmatched(request: Request) -> Response:
-        since = int(_query(request, "since") or 0)
+        since = _count(request, "since")
         late_for = _query(request, "late_for")
         recorded = standing.lobby_store.calls()
         kept = [

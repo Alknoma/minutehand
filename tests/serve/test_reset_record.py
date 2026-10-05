@@ -57,3 +57,18 @@ def test_a_since_reset_that_is_not_true_or_false_is_refused(served: Served) -> N
             served.client.calls("no-such-world", since_reset=False)
     finally:
         served.client.close_world(world.world_id)
+
+
+def test_a_query_parameter_that_is_not_what_its_route_takes_is_refused_422_not_409(served: Served) -> None:
+    """docs/serve.md: 409 is what a world cannot do, 422 a request that is not the model; a `since` of `abc` or a
+    `kind` that names no kind was answered 409, as if the world had refused."""
+    world = OpenWorld(served.client, served.client.create_world(spec("xoxb-bad-query")))
+    try:
+        base = f"{served.url}/v1/worlds/{world.world_id}"
+        for path in ("/events?since=abc", "/events?kind=nonsense", "/events?actor=robot", "/entities?kind=x"):
+            answered = httpx.get(base + path, timeout=10)
+            assert answered.status_code == 422, (path, answered.text)
+        assert httpx.get(f"{served.url}/v1/unmatched?since=-1", timeout=10).status_code == 422
+        assert httpx.get(base + "/events?since=0&kind=message", timeout=10).status_code == 200
+    finally:
+        served.client.close_world(world.world_id)
