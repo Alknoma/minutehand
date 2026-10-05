@@ -4,6 +4,10 @@ Nothing here reads what the agent says about itself. An ask is a message the
 agent sent; an answer is a reply the people stored; a hand-off is a ticket the
 agent filed or reassigned; its end is a later event by the person who holds it.
 
+A message sent where nobody can answer it (`MessageSnapshot.answerable` False: an email through a captured
+host, since people reply only through providers that push events) opens no wait: it tells, it does not ask,
+whoever it went to. It still counts as a touch on a wait already open with that person, which it can see.
+
 Whether a message asked anything is the replier's decision, never the ledger's:
 a message opens a wait when the person has a reply decided to it, or when the
 person is `Silent`, whose every message is a question left unanswered. A reply
@@ -148,6 +152,8 @@ def build(
                 if earlier is not None:
                     opened[opened.index(earlier)] = _joined(earlier, event.entity, settled)
                     continue
+                if not after.answerable:
+                    continue  # told, not asked: nobody can answer where it went
                 if (_ref(event.entity), person.key) not in asked and not isinstance(person.reply, Silent):
                     continue
                 opened.append(

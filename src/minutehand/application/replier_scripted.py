@@ -81,7 +81,8 @@ def lands_at(
 
 
 def _asks_of(person: Person, history: list[WorldEvent]) -> list[WorldEvent]:
-    """Every message the agent created to this person, in order."""
+    """Every message the agent created to this person where they could answer it, in order: a captured send
+    (an email through a declared host) is not one of their asks, so it does not move their script on."""
     return [
         e
         for e in history
@@ -89,6 +90,7 @@ def _asks_of(person: Person, history: list[WorldEvent]) -> list[WorldEvent]:
         and e.operation is Operation.CREATE
         and e.entity.kind is EntityKind.MESSAGE
         and isinstance(e.after, MessageSnapshot)
+        and e.after.answerable
         and person.email in e.after.recipient_emails
     ]
 
