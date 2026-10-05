@@ -19,6 +19,7 @@ from tests.serve.support import spec
 READY_WITHIN = 10.0
 WORLDS = 300
 GROWTH_MB = 40
+FILES = 20
 
 
 @pytest.fixture
@@ -76,8 +77,9 @@ def test_memory_holds_steady_while_worlds_are_opened_and_closed(
             client.close_world(world.world_id)
 
     cycle(50, 0)
-    warm = process.memory_info().rss
+    warm, files = process.memory_info().rss, process.num_fds()
     cycle(WORLDS, 50)
     grown = (process.memory_info().rss - warm) / 2**20
     assert grown < GROWTH_MB, f"{grown:.0f} MB more after {WORLDS} worlds"
+    assert process.num_fds() - files < FILES, "a closed world's file is still open"
     assert client.worlds() == []
