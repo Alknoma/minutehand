@@ -164,3 +164,29 @@ async def test_a_person_acts_on_a_seeded_ticket_at_its_moment_without_waking_the
         (T0 + timedelta(days=5), Operation.DELETE),
     ]
     assert isinstance(acted[0].after, TicketSnapshot) and acted[0].after.state is TicketState.DONE
+
+
+async def test_a_messaging_happening_on_a_provider_that_pushes_nothing_is_refused_before_the_run(rig: Rig) -> None:
+    scn = scenario(
+        ticket_fates=[],
+        happenings=[{"kind": "posts", "provider": "testsched", "person": "tom", "text": "Done", "after": "P1D"}],
+    )
+    with pytest.raises(RunRefused, match=r"happening 1 \(tom posts\) lands on testsched, which pushes no events"):
+        await rig.run(scn, rig.agent("ask_silent"))
+    assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"
+
+
+async def test_a_document_happening_on_a_provider_that_changes_no_documents_is_refused_before_the_run(
+    rig: Rig,
+) -> None:
+    scn = scenario(
+        ticket_fates=[],
+        documents=[{"provider": "testchat", "title": "Plan", "text": "draft"}],
+        happenings=[
+            {"kind": "document", "person": "tom", "document": "Plan", "after": "P1D", "action": {"kind": "trashed"}}
+        ],
+    )
+    refusal = r"happening 1 \(tom trashed the seeded document 'Plan'\) lands on testchat, which has no documents"
+    with pytest.raises(RunRefused, match=refusal):
+        await rig.run(scn, rig.agent("ask_silent"))
+    assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"

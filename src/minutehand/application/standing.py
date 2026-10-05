@@ -2,8 +2,9 @@
 
 `minutehand serve` holds many of these at once, one per test. Nothing in one happens by itself: its clock
 stands still until whoever opened it moves it (`advance`), and only then do the things the world owes fall
-due, in order: a scripted person's reply to a message the agent sent them, a ticket's fate, the owner's
-directions. With `scripted` off, nobody answers but the test, which speaks for people itself (`say`,
+due, in order: what people do by themselves (the scenario's happenings, of every family, whether or not
+scripted people speak), a scripted person's reply to a message the agent sent them, a ticket's fate, the
+owner's directions. With `scripted` off, nobody answers but the test, which speaks for people itself (`say`,
 `reply`, `move_ticket`, `edit_ticket`).
 
 A world is read the way a finished run is: its log, its calls, and the same checks over it as of now.
@@ -25,7 +26,16 @@ from minutehand.checks.runner import RunResult, evaluate, view_of
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import Answers, Person, ProviderKey, Scenario, TicketState
+from minutehand.domain.scenario import (
+    Answers,
+    DocumentHappening,
+    Happening,
+    Person,
+    ProviderKey,
+    Scenario,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import (
     Actor,
     EntityRef,
@@ -34,7 +44,16 @@ from minutehand.domain.world import (
     TicketSnapshot,
     WorldEvent,
 )
-from minutehand.ports.provider import ASGIApp, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ActsOnTickets,
+    ASGIApp,
+    ChangesDocuments,
+    EditsTickets,
+    HoldsTickets,
+    NotifiesChanges,
+    Provider,
+    PushesEvents,
+)
 from minutehand.ports.store import Store
 
 STANDING_WAKE = 1
@@ -61,6 +80,7 @@ class _Owed:
     reply: PersonReply | None = None
     fate: tuple[EntityRef, TicketState] | None = None
     direction: str | None = None
+    happening: Happening | None = None
 
 
 class StandingWorld:
@@ -111,6 +131,12 @@ class StandingWorld:
         """Seed every provider in `named`, then begin the one wake everything after the seed happens in."""
         for key in named:
             self.provider(key)
+        for n, happening in enumerate(self.scenario.happenings, start=1):
+            self._lands(happening, n)
+            at = self.scenario.starts_at + happening.after
+            self._owed.append(
+                _Owed(at=at, what=f"happening {n}: {happening.person} {_doing(happening)}", happening=happening)
+            )
         if self.scripted:
             for direction in self.scenario.directions:
                 at = self.scenario.starts_at + direction.after
@@ -211,7 +237,9 @@ class StandingWorld:
         )
 
     async def _fire(self, owed: _Owed) -> None:
-        if owed.reply is not None:
+        if owed.happening is not None:
+            await self._happen(owed.happening)
+        elif owed.reply is not None:
             provider = owed.reply.in_reply_to.provider
             await self._pushes(provider).deliver(
                 owed.reply, self._target(provider), self.store, self.clock, secret=self._signing[provider]
@@ -221,6 +249,38 @@ class StandingWorld:
             self._holds(ticket.provider).transition(ticket, becomes, self.store, self.clock)
         elif owed.direction is not None:
             await self.say(self.scenario.owner, owed.direction, provider=self._only_inbound())
+
+    def _lands(self, happening: Happening, n: int) -> None:
+        """Refuse, before the world opens, a happening whose provider lacks the port its family lands through."""
+        provider = self.scenario.happening_provider(happening)
+        found = self.provider(provider)
+        if isinstance(happening, TicketHappening):
+            port, ok = "ActsOnTickets", isinstance(found, ActsOnTickets)
+        elif isinstance(happening, DocumentHappening):
+            port, ok = "ChangesDocuments", isinstance(found, ChangesDocuments)
+        else:
+            port, ok = "PushesEvents", isinstance(found, PushesEvents) and provider in self._inbound
+        if not ok:
+            raise WorldRefused(
+                f"happening {n} ({happening.person} {_doing(happening)}) lands on {provider}, which has no "
+                f"{port}" + ("" if port != "PushesEvents" else " or no inbound target in this world")
+            )
+
+    async def _happen(self, happening: Happening) -> None:
+        provider = self.scenario.happening_provider(happening)
+        found = self.provider(provider)
+        if isinstance(happening, TicketHappening):
+            assert isinstance(found, ActsOnTickets)
+            found.act(happening, self.scenario, self.store, self.clock)
+        elif isinstance(happening, DocumentHappening):
+            assert isinstance(found, ChangesDocuments)
+            found.change(happening, self.scenario, self.store, self.clock)
+            if isinstance(found, NotifiesChanges) and found.watched(self.store, self.clock):
+                await found.notify(self.store, self.clock)
+        else:
+            await self._pushes(provider).happen(
+                happening, self._target(provider), self.store, self.clock, secret=self._signing[provider]
+            )
 
     # -- a person acting ----------------------------------------------------------------------------------------
 
@@ -315,3 +375,12 @@ class StandingWorld:
         if not isinstance(found, HoldsTickets):
             raise WorldRefused(f"{provider} holds no tickets a person can move")
         return found
+
+
+def _doing(happening: Happening) -> str:
+    """What the happening has its person do, in a few words, for a refusal or the list of what is owed."""
+    if isinstance(happening, TicketHappening):
+        return f"{happening.action.kind} the seeded ticket {happening.ticket!r}"
+    if isinstance(happening, DocumentHappening):
+        return f"{happening.action.kind} the seeded document {happening.document!r}"
+    return happening.kind
