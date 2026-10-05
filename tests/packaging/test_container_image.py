@@ -50,7 +50,8 @@ def test_the_image_runs_minutehand_as_a_user_other_than_root(image: str) -> None
 def test_the_image_passes_the_example_and_fails_the_forgetful_agent(image: str) -> None:
     passed = _in_container(image, "scenario.yaml", "diligent")
     assert passed.returncode == 0, f"{passed.stdout}\n{passed.stderr}"
-    assert "because the agent reported it was done" in passed.stdout and "no findings" in passed.stdout
+    assert "\n  Passed: no check failed, and the agent reported it was done.\n" in passed.stdout, passed.stdout
+    assert "\nfail (" not in passed.stdout, passed.stdout
 
     failed = _in_container(image, "scenario_silent.yaml", "forgetful")
     assert failed.returncode == 1, f"{failed.stdout}\n{failed.stderr}"
