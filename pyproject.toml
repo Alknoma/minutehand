@@ -16,7 +16,7 @@ dependencies = [
     "moto[server]>=5.2",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
-    "mcp>=1.2",
+    "mcp>=1.2,<2",
 ]
 
 [project.scripts]
