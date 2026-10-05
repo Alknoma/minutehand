@@ -2,9 +2,11 @@
 never a provider's own format. `minutehand serve` routes a call to the world that claims one of them.
 
 What a call carries (RFC 6750, RFC 6749, RFC 7523):
-  - `Authorization: Bearer <token>`; the password of `Authorization: Basic`
-  - `access_token` in the query string or a form body
-  - a token request's `refresh_token`, and its JWT `assertion`'s `iss` and `sub` (a service account's email)
+  - `Authorization: Bearer <token>`; the user and password of `Authorization: Basic` (a client's id and secret)
+  - `access_token` in the query string or a form body, and a form body's `token` (Slack's legacy argument)
+  - a token request's `refresh_token` and `code`, its `client_id` and `client_secret` (RFC 6749 §2.3.1), its JWT
+    `assertion`'s or `client_assertion`'s `iss` and `sub` (a service account's email, an app's client id), in a
+    form body or, as Atlassian's and Notion's token endpoints take them, a JSON object
 
 What an answer hands out (RFC 6749 §5.1): `access_token` and `refresh_token` in a JSON body.
 """
@@ -28,6 +30,23 @@ class _TokenAnswer(BaseModel):
 
     access_token: str
     refresh_token: str | None = None
+
+
+class _TokenRequest(BaseModel):
+    """The fields of a token request sent as JSON that say whose it is; the rest is the provider's."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    refresh_token: str | None = None
+    code: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    client_assertion: str | None = None
+    assertion: str | None = None
+
+
+FORM_FIELDS = ("access_token", "token", "refresh_token", "code", "client_id", "client_secret")
+"""The form fields that carry a credential, the strongest first."""
 
 
 class _Assertion(BaseModel):
@@ -75,12 +94,28 @@ def presented(*, authorization: str | None, path: str, content_type: str, body: 
             found += [c for c in (password, user) if c]
     query = parse_qs(urlsplit(path).query)
     found += _single(query, "access_token")
-    if _media(content_type) == FORM and body:
+    media = _media(content_type)
+    if media == FORM and body:
         form = parse_qs(body.decode("utf-8", errors="replace"))
-        found += _single(form, "access_token") + _single(form, "refresh_token")
-        for assertion in _single(form, "assertion"):
+        for name in FORM_FIELDS:
+            found += _single(form, name)
+        for assertion in _single(form, "assertion") + _single(form, "client_assertion"):
             found += _claims(assertion)
+    elif media == JSON and body:
+        found += _json_request(body)
     return list(dict.fromkeys(found))
+
+
+def _json_request(body: bytes) -> list[str]:
+    try:
+        asked = _TokenRequest.model_validate_json(body)
+    except ValidationError:
+        return []
+    found = [v for v in (asked.refresh_token, asked.code, asked.client_id, asked.client_secret) if v]
+    for assertion in (asked.assertion, asked.client_assertion):
+        if assertion:
+            found += _claims(assertion)
+    return found
 
 
 def minted(*, content_type: str, body: bytes) -> list[str]:

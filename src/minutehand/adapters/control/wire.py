@@ -6,15 +6,16 @@ and an unknown field is refused, so a client that misspells a field is told, nev
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from minutehand.checks.runner import RunResult
 from minutehand.domain.outbound import OutboundHost, refuse_repeats
-from minutehand.domain.people import InboundTarget
-from minutehand.domain.scenario import Model, ProviderKey, Seed, TicketState
+from minutehand.domain.people import InboundTarget, Press
+from minutehand.domain.scenario import Happening, Model, ProviderKey, Seed, TicketState
 from minutehand.domain.telemetry import StoredSpan
 from minutehand.domain.world import EntityRef, RecordedCall, Stored, WorldEvent
 
@@ -28,17 +29,23 @@ class Claims(Model):
     `acme.youtrack.cloud`), or carries one of `tokens`: a bearer token, a Basic password, an OAuth
     `access_token` or `refresh_token`, or a signed JWT assertion's issuer or subject (a service account).
     An access token a token endpoint mints for a call of this world is claimed by it from then on.
+    A call is also this world's when its URL names one of `keys` where its provider's manifest says a URL names
+    a world (`Manifest.world_keys`): a Microsoft tenant id or domain in a sign-in path, the label of a SharePoint,
+    Atlassian or YouTrack host, an Atlassian cloud id in `/ex/jira/{cloudId}/`. Those calls carry no credential
+    (OpenID metadata, key sets, `authorize`, a pre-authenticated download), and without a key a second tenant's
+    would reach the first's world.
     `default` makes this world the one every call no world claims goes to; at most one open world is the
     default, and while it is, it shares the stack with no isolation for those calls."""
 
     tokens: list[str] = []
     hosts: list[str] = []
+    keys: list[str] = []
     default: bool = False
 
     @model_validator(mode="after")
     def _claims_something(self) -> Self:
-        if not self.tokens and not self.hosts and not self.default:
-            raise ValueError("a world claims no call: give tokens, hosts, or default: true")
+        if not self.tokens and not self.hosts and not self.keys and not self.default:
+            raise ValueError("a world claims no call: give tokens, hosts, keys, or default: true")
         return self
 
 
@@ -68,6 +75,20 @@ class Fault(Model):
     content_type: str = "application/json"
     retry_after: int | None = Field(default=None, ge=0, description="Seconds, sent as Retry-After")
     times: int = Field(default=1, ge=1)
+
+
+class DeclareFaults(Model):
+    """Faults typed by one provider, given as a fragment of that provider's own seed model that sets only the
+    fields declaring them (Slack's `faults`, Asana's `rate_limits`, Microsoft's `faults` and `holds`, ...): the
+    provider validates it and records each as seeding does, its offsets counted from the world's now."""
+
+    provider: ProviderKey
+    seed: str = Field(description="The fragment, as JSON text; written as structure, it is kept as its text")
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _as_text(cls, value: object) -> object:
+        return json.dumps(value) if isinstance(value, dict) else value
 
 
 class CreateWorld(Model):
@@ -171,7 +192,24 @@ class EditTicket(Model):
     assignee: str | None = Field(default=None, description="Person.key")
 
 
-Act = Annotated[Say | Reply | MoveTicket | EditTicket, Field(discriminator="kind")]
+class Happen(Model):
+    """A person does something by themselves now: any happening a scenario can schedule (a ticket's, a document's,
+    or a messaging one), landed the way the world lands one when its clock passes it. Its `after` is not read."""
+
+    kind: Literal["happen"] = "happen"
+    happening: Happening
+
+
+class PressControl(Model):
+    """A person uses a control on a message now: presses a button, picks someone, fills and submits a form."""
+
+    kind: Literal["press"] = "press"
+    person: str
+    on: EntityRef = Field(description="The message the control is on")
+    press: Press
+
+
+Act = Annotated[Say | Reply | MoveTicket | EditTicket | Happen | PressControl, Field(discriminator="kind")]
 
 
 class ActRequest(Model):

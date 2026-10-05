@@ -281,7 +281,7 @@ class View:
             resource_subtype=field.subtype,
             type=field.subtype,
             enum_options=[_option_out(o) for o in field.enum_options] if takes else None,
-            precision=field.precision if field.subtype == "number" else None,
+            precision=field.precision if field.subtype == "number" else None,  # enum-lint: exempt Asana subtype
         )
 
     def setting_out(self, project: wire.AsanaProject, field: wire.AsanaCustomField) -> wire.CustomFieldSettingOut:
@@ -342,7 +342,7 @@ class View:
             case "text":
                 text = value.text if value is not None else None
                 return out.model_copy(update={"text_value": text, "display_value": text})
-            case "number":
+            case "number":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
                 number = value.number if value is not None else None
                 return out.model_copy(
                     update={
@@ -360,7 +360,7 @@ class View:
                         "display_value": at or on,
                     }
                 )
-            case "people":
+            case "people":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
                 people = [self.user_of(g) for g in value.people] if value is not None else []
                 return out.model_copy(
                     update={"people_value": people, "display_value": ", ".join(p.name for p in people) or None}

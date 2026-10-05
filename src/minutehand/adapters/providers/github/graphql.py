@@ -587,7 +587,7 @@ class _Run:
             return repository.description
         if name == "homepageUrl":
             return repository.homepage
-        if name == "url":
+        if name == "url":  # enum-lint: exempt a GraphQL field name
             return f"{wire.WEB}/{repository.full_name}"
         if name == "isPrivate":
             return repository.private

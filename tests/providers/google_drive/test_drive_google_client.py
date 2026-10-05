@@ -217,11 +217,10 @@ async def test_a_service_account_signs_in_writes_a_doc_finds_it_exports_it_and_r
     runs = [e["paragraph"]["elements"][0]["textRun"]["content"] for e in document["body"]["content"][1:]]
     assert document["title"] == "Freight Plan" and runs == ["Rates rise in October.\n", "Book early.\n"]
     write = next(e for e in drive.store.events() if e.entity == state.file_ref(made["id"]))
-    assert (write.actor, write.operation, write.after) == (
-        Actor.AGENT,
-        Operation.CREATE,
-        DocumentSnapshot(title="Freight Plan", mime_type=DOC),
-    )
+    assert (write.actor, write.operation) == (Actor.AGENT, Operation.CREATE)
+    assert isinstance(write.after, DocumentSnapshot)
+    assert (write.after.title, write.after.mime_type) == ("Freight Plan", DOC)
+    assert write.after.text == "Rates rise in October.\nBook early." and write.after.last_edited_at is not None
 
 
 async def test_the_client_follows_page_tokens_to_the_end(google: Google) -> None:

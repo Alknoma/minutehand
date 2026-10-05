@@ -22,7 +22,7 @@ from minutehand.domain.scenario import (
     SeededFile,
     SeededPost,
 )
-from minutehand.domain.world import Actor, DocumentSnapshot, MessageSnapshot, Operation
+from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, MessageSnapshot, Operation
 from minutehand.ports.store import Store
 
 
@@ -132,7 +132,13 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     for channel in (c for c in scenario.channels if c.provider == MANIFEST.key):
         _channel(slack, channel, scenario, created)
-    for position, fault in enumerate(slack_seed(scenario).faults):
+    write_faults(slack, slack_seed(scenario).faults, scenario.starts_at)
+
+
+def write_faults(slack: SlackWorld, faults: list[FaultSeed], start: datetime) -> None:
+    """Record each fault after those already recorded, from `start` plus its own offset."""
+    first = len(slack.bodies(EntityKind.RECORD, state.FAULTS, wire.SlackFault))
+    for position, fault in enumerate(faults, start=first):
         answer = fault.answer
         limited = answer if isinstance(answer, RateLimited) else None
         slack.write(
@@ -143,7 +149,7 @@ def seed(scenario: Scenario, world: Store) -> None:
                 error="ratelimited" if isinstance(answer, RateLimited) else answer.error,
                 retry_after=max(1, int(limited.retry_after.total_seconds())) if limited is not None else None,
                 remaining=fault.times,
-                from_time=int((scenario.starts_at + fault.after).timestamp()),
+                from_time=int((start + fault.after).timestamp()),
                 only_rich=fault.only_rich,
             ),
             operation=Operation.CREATE,

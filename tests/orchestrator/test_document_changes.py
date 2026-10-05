@@ -83,7 +83,16 @@ async def test_a_change_nobody_watches_lands_at_its_moment_and_wakes_no_one(rig:
     record, changed = await played(rig, GoogleDriveProvider())
 
     assert [(e.sim_time, e.after) for e in changed] == [
-        (RENAMED_AT, DocumentSnapshot(title="Pricing Notes (final)", mime_type="application/vnd.google-apps.document"))
+        (
+            RENAMED_AT,
+            DocumentSnapshot(
+                title="Pricing Notes (final)",
+                mime_type="application/vnd.google-apps.document",
+                text="40k?",
+                last_edited_by="sofia@example.com",
+                last_edited_at=RENAMED_AT,
+            ),
+        )
     ]
     assert len(record.wakes) == 1, "a change nobody asked to hear of is found on the next read, as a fate is"
 

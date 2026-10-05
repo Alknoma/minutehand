@@ -56,6 +56,17 @@ def test_a_tell_the_agent_wrote_before_the_person_said_it_relays_nothing() -> No
     )
 
 
+def test_a_tell_the_agent_wrote_into_a_documents_text_first_relays_nothing() -> None:
+    log = Log()
+    log.document("Offsite plan", "Venue: the Lakeside Hall, probably.", 0.2)
+    ask = log.message([ROSA], 1, text="Which venue is booked for the offsite?")
+    log.message([], 30, text=ANSWER, actor=Actor.PERSON)
+    log.message([OWEN], 31, text="The lakeside hall it is.")
+    answer = PersonReply(person="rosa", in_reply_to=ask.entity, text=ANSWER, at=at(30))
+    [failed] = Expectations().run(view(scenario(OWEN, ROSA, expect=[TOLD]), log, [answer])).findings
+    assert failed.message.endswith(": the agent wrote it (seq 1) before rosa said it, so nothing relayed it")
+
+
 def test_a_tell_nobody_said_relays_nothing() -> None:
     world, log, _ = _world(relay="Rosa says: the lakeside hall.")
     [failed] = Expectations().run(view(world, log, [])).findings

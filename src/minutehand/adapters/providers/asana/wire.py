@@ -697,13 +697,13 @@ def custom_field_value(definition: AsanaCustomField, sent: JsonValue, users: Map
             if not isinstance(sent, str):
                 raise bad(f"{where}: Not a string")
             return value.model_copy(update={"text": sent})
-        case "number":
+        case "number":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             if isinstance(sent, bool) or not isinstance(sent, int | float):
                 raise bad(f"{where}: Not a number")
             return value.model_copy(update={"number": float(sent)})
         case "date":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             return _date_value(value, sent, where)
-        case "people":
+        case "people":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             if not isinstance(sent, list):
                 raise bad(f"{where}: Not an array")
             people: list[str] = []
