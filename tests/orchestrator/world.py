@@ -53,6 +53,10 @@ class MessageIn(Model):
     text: str
 
 
+class MessageEdit(Model):
+    text: str
+
+
 class TicketIn(Model):
     title: str
     assignee: str
@@ -98,6 +102,25 @@ class Chat:
             )
             return JSONResponse({"id": ref.external_id})
 
+        async def edit_message(request: Request) -> Response:
+            ref = EntityRef(provider=CHAT, kind=EntityKind.MESSAGE, external_id=request.path_params["id"])
+            stored = world.get(ref)
+            if stored is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            to = MessageIn.model_validate_json(stored.body).to
+            text = MessageEdit.model_validate_json(await request.body()).text
+            world.apply(
+                Change(
+                    entity=ref,
+                    operation=Operation.UPDATE,
+                    actor=Actor.AGENT,
+                    parent=stored.parent,
+                    body=json.dumps({"to": to, "text": text}),
+                    after=MessageSnapshot(text=text, channel=f"dm:{to}", recipient_emails=[to]),
+                )
+            )
+            return JSONResponse({"id": ref.external_id})
+
         async def inbox(request: Request) -> Response:
             return Response(
                 "[" + ",".join(s.body for s in world.children(CHAT, EntityKind.MESSAGE, INBOX)) + "]",
@@ -136,6 +159,7 @@ class Chat:
         return Starlette(
             routes=[
                 Route("/messages", post_message, methods=["POST"]),
+                Route("/messages/{id}", edit_message, methods=["PUT"]),
                 Route("/inbox", inbox, methods=["GET"]),
                 Route("/tickets", post_ticket, methods=["POST"]),
                 Route("/tickets/{id}", get_ticket, methods=["GET"]),

@@ -527,18 +527,24 @@ class Orchestrator:
         return new
 
     async def _schedule(self, new: list[WorldEvent]) -> None:
-        """What the world owes back for what the agent just did: replies to its messages, fates of its tickets."""
+        """What the world owes back for what the agent just did: replies to its messages, fates of its tickets.
+
+        A person answers a message as it reads when the wake ends: an agent that posts a placeholder and edits
+        it into its question in the same wake is answered about the question, once, and never about the
+        placeholder. An edit in a later wake that changes the text is put to the person again unless they
+        have already answered that message: a reply still on its way to the edited message is withdrawn and
+        decided afresh on the new text."""
         history: list[WorldEvent] | None = None
+        shown: dict[EntityRef, WorldEvent] = {}
         for event in new:
             if event.actor is not Actor.AGENT:
                 continue
             after = event.after
-            if event.operation is Operation.CREATE and isinstance(after, MessageSnapshot):
+            if event.operation in (Operation.CREATE, Operation.UPDATE) and isinstance(after, MessageSnapshot):
                 if history is None:
                     history = self._store.events()
-                for email in after.recipient_emails:
-                    if email in self._people:
-                        await self._ask(self._people[email], event, [h for h in history if h.seq <= event.seq])
+                if event.operation is Operation.CREATE or _text_changed(event, history):
+                    shown[event.entity] = event
             if (
                 event.operation in (Operation.CREATE, Operation.UPDATE)
                 and isinstance(after, TicketSnapshot)
@@ -546,6 +552,25 @@ class Orchestrator:
                 and event.entity not in self._fated
             ):
                 self._fate(self._people[after.assignee_email], event)
+        for event in sorted(shown.values(), key=lambda e: e.seq):
+            assert history is not None and isinstance(event.after, MessageSnapshot)
+            for email in event.after.recipient_emails:
+                if email not in self._people:
+                    continue
+                person = self._people[email]
+                if event.operation is Operation.UPDATE and not self._withdraw(event.entity, person):
+                    continue
+                await self._ask(person, event, [h for h in history if h.seq <= event.seq])
+
+    def _withdraw(self, message: EntityRef, person: Person) -> bool:
+        """Before an edited message is put to `person` again: withdraw their reply to it that has not landed yet.
+        False when they have already answered it, and the edit is not put to them."""
+        mine = [i for i, r in enumerate(self._replies) if r.in_reply_to == message and r.person == person.key]
+        waiting = {p.reply for p in self._pending if isinstance(p, PendingReply)}
+        if any(i not in waiting for i in mine):
+            return False
+        self._pending = [p for p in self._pending if not (isinstance(p, PendingReply) and p.reply in mine)]
+        return True
 
     async def _say(self, provider: ProviderKey, text: str) -> None:
         """The scenario's owner messages the agent: its goal, or a direction."""
@@ -629,6 +654,20 @@ class Orchestrator:
         if provider not in self._services.tickets:
             raise RunRefused(f"a ticket fate is due on {provider}, which holds no tickets a person can move")
         return self._services.tickets[provider]
+
+
+def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:
+    """Whether an edit changed what the message says, against its version before the edit."""
+    assert isinstance(edit.after, MessageSnapshot)
+    before = next(
+        (
+            e.after.text
+            for e in reversed(history)
+            if e.seq < edit.seq and e.entity == edit.entity and isinstance(e.after, MessageSnapshot)
+        ),
+        None,
+    )
+    return before != edit.after.text
 
 
 async def run_scenario(
