@@ -1472,6 +1472,11 @@ dependencies = [
     { name = "uvicorn" },
 ]
 
+[package.optional-dependencies]
+grpc = [
+    { name = "grpcio" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "aiohttp" },
@@ -1499,6 +1504,7 @@ requires-dist = [
     { name = "asgiref", specifier = ">=3.8" },
     { name = "certifi", specifier = ">=2024.2.2" },
     { name = "flask", specifier = ">=3" },
+    { name = "grpcio", marker = "extra == 'grpc'", specifier = ">=1.60" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.2,<2" },
     { name = "mitmproxy", specifier = ">=12,<13" },
@@ -1512,6 +1518,7 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.40" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
+provides-extras = ["grpc"]
 
 [package.metadata.requires-dev]
 dev = [

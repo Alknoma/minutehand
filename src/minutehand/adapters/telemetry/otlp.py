@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 import zlib
 from collections.abc import Iterable
@@ -227,3 +228,58 @@ def spans(request: Message) -> list[ReceivedSpan]:
                 except ValidationError as e:
                     raise NotOtlp(f"span {span.name!r} is not a valid span: {e}") from e
     return found
+
+
+GENAI_EVENT = "gen_ai."
+EVENT_NAME = "event.name"
+BODY = "gen_ai.event.body"
+"""The attribute a GenAI log event's body is kept under, as JSON, on the span it is kept as."""
+
+
+def genai_events(request: Message) -> list[ReceivedSpan]:
+    """The log records of a decoded logs export request that carry GenAI content, each as a span of no length: a
+    child of the span the record names, named for its event (`gen_ai.user.message`, `gen_ai.choice`, …), with its
+    attributes and its body under `gen_ai.event.body`. A record outside any span, or that is not a GenAI event
+    (by its event name, or a `gen_ai.*` attribute), is not kept."""
+    assert isinstance(request, ExportLogsServiceRequest)
+    found: list[ReceivedSpan] = []
+    for resource_logs in request.resource_logs:
+        named = resource_logs.resource.attributes
+        service = next((a.value.string_value for a in named if a.key == SERVICE_NAME), None) or None
+        for scope_logs in resource_logs.scope_logs:
+            for position, record in enumerate(scope_logs.log_records):
+                attributes = _attributes(record.attributes)
+                event = record.event_name or next(
+                    (a.value.value for a in attributes if a.key == EVENT_NAME and isinstance(a.value, StringValue)),
+                    "",
+                )
+                genai = event.startswith(GENAI_EVENT) or any(a.key.startswith(GENAI_EVENT) for a in attributes)
+                if not genai or len(record.trace_id) != 16 or len(record.span_id) != 8:
+                    continue
+                body = _value(record.body)
+                if body is not None:
+                    attributes.append(Attribute(key=BODY, value=StringValue(value=_json(body))))
+                moment = _moment(record.time_unix_nano or record.observed_time_unix_nano)
+                made = hashlib.sha256(record.SerializeToString() + position.to_bytes(4, "big")).hexdigest()[:16]
+                found.append(
+                    ReceivedSpan(
+                        trace_id=record.trace_id.hex(),
+                        span_id=made,
+                        parent_span_id=record.span_id.hex(),
+                        name=event or "gen_ai.event",
+                        start=moment,
+                        end=moment,
+                        attributes=attributes,
+                        service_name=service,
+                    )
+                )
+    return found
+
+
+def _json(value: AttributeValue) -> str:
+    """An OTLP value as the plain JSON a GenAI event body is written as."""
+    if isinstance(value, StringValue | BoolValue | IntValue | DoubleValue | BytesValue):
+        return json.dumps(value.value)
+    if isinstance(value, ArrayValue):
+        return "[" + ",".join(_json(v) for v in value.values) + "]"
+    return "{" + ",".join(f"{json.dumps(a.key)}:{_json(a.value) if a.value else 'null'}" for a in value.values) + "}"

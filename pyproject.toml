@@ -23,6 +23,10 @@ dependencies = [
     "mcp>=1.2,<2",
 ]
 
+[project.optional-dependencies]
+# Receiving an agent's OTLP over gRPC, on the same port as OTLP/HTTP.
+grpc = ["grpcio>=1.60"]
+
 [project.scripts]
 minutehand = "minutehand.cli:main"
 

@@ -70,7 +70,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import wake_dir
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
-from minutehand.domain.checks import WakeRecord
+from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.experiment import Fork
 from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
@@ -92,6 +92,8 @@ from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 RUNS = "runs"
+TELEMETRY = "telemetry"
+"""The check name a notice about the agent's telemetry is reported under."""
 WORLD = "world.db"
 RECORD = "record.json"
 RESULT = "result.json"
@@ -181,6 +183,7 @@ async def play(
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
+            scorer.receiver = proxy.receiver
             signing = signing_for(agent)
             env = agent_environment(
                 listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
@@ -291,6 +294,7 @@ async def fork(
 
     holding = RunClock(scenario.starts_at)
     async with intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy:
+        scorer.receiver = proxy.receiver
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
         )
@@ -518,6 +522,8 @@ class _Judge:
         self._model = model
         self._judging = judging
         self.results: dict[str, RunResult] = {}
+        self.receiver: Receiver | None = None
+        """Whose notices about telemetry it could not receive end the run's findings."""
 
     async def score(self, record: RunRecord, world: Store) -> RunResult:
         last = read_checkpoint(world)
@@ -536,6 +542,13 @@ class _Judge:
             if self._judging
             else evaluate(view, stop=record.stop)
         )
+        heard = self.receiver.notices if self.receiver is not None else []
+        if heard:
+            told = [
+                Finding(check=TELEMETRY, severity=Severity.WARNING, kind=FindingKind.REVIEW, message=notice)
+                for notice in heard
+            ]
+            result = result.model_copy(update={"findings": [*result.findings, *told]})
         self.results[record.run_id] = result
         return result
 
