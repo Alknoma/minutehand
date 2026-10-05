@@ -70,7 +70,7 @@ def minutehand(outside: object, tmp_path_factory: pytest.TempPathFactory) -> Ite
     )
     try:
         with MinutehandClient(f"http://127.0.0.1:{control}") as client:
-            give_up = time.monotonic() + 30
+            give_up = time.monotonic() + 90
             while True:
                 try:
                     if client.health():
@@ -97,7 +97,7 @@ def _drive(env: dict[str, str], port: int, reports: dict[int, dict[str, object]]
         reports[port] = settled(port)
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(600)
 def test_two_copies_of_the_agent_each_land_in_their_own_world_at_once(
     minutehand: MinutehandClient, minutehand_world: OpenWorld, outside: object, tmp_path: Path
 ) -> None:
@@ -130,7 +130,7 @@ def test_two_copies_of_the_agent_each_land_in_their_own_world_at_once(
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=90)
+            thread.join(timeout=300)
 
         assert all(r["status"] == "idle" for r in reports.values()), reports
         for world_id in (minutehand_world.world_id, second.world_id):

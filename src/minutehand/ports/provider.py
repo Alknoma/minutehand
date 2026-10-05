@@ -182,7 +182,8 @@ class NotifiesChanges(Protocol):
 
 @runtime_checkable
 class ConfirmsDelivery(Protocol):
-    """A scheduler that can tell whether the agent has taken what a booking delivered (an SQS message received, a
-    queued job claimed): the run waits for that before it moves past the booking's wake."""
+    """A scheduler that can tell whether the agent has taken what a booking delivered (an SQS message deleted, a
+    queued job acknowledged), which an agent does after acting on it: the run waits for that before it moves past
+    the booking's wake. A delivery merely received is not taken; the agent may still be acting on it."""
 
     def taken(self, ref: str, world: Store) -> bool: ...

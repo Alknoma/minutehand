@@ -334,16 +334,20 @@ class Scheduler:
             return JSONResponse({"ok": True})
 
         async def deliveries(request: Request) -> Response:
-            """The agent's poll of its queue: every delivery not taken yet, taken now, as SQS's receive is."""
-            waiting = [ref for ref in self.delivered if ref not in self.taken_refs]
-            self.taken_refs.extend(waiting)
-            return JSONResponse({"deliveries": waiting})
+            """The agent's poll of its queue: every delivery it has not yet acknowledged. Receiving is not taking:
+            as with SQS, a delivery is taken when the agent deletes it, after acting on it."""
+            return JSONResponse({"deliveries": [ref for ref in self.delivered if ref not in self.taken_refs]})
+
+        async def acknowledge(request: Request) -> Response:
+            self.taken_refs.append(request.path_params["ref"])
+            return JSONResponse({"ok": True})
 
         return Starlette(
             routes=[
                 Route("/schedules", book, methods=["POST"]),
                 Route("/schedules/{ref}", cancel, methods=["DELETE"]),
                 Route("/deliveries", deliveries, methods=["GET"]),
+                Route("/deliveries/{ref}", acknowledge, methods=["DELETE"]),
             ]
         )
 

@@ -560,7 +560,11 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       if (o.expected_by) {
         var e = x(ms(o.expected_by));
         detail += " Expected by " + when(o.expected_by) + ".";
-        el("line", { x1: e, y1: y + 10, x2: e, y2: y + 25, stroke: "var(--ink)", "stroke-width": 1.5 }, g);
+        // Drawn only on the wait's own bar: a date the wait never reached (it settled, or the run ended, first)
+        // would stand alone on the timeline attached to nothing.
+        if (ms(o.expected_by) <= endT) {
+          el("line", { class: "due", x1: e, y1: y + 10, x2: e, y2: y + 25, stroke: "var(--ink)", "stroke-width": 1.5 }, g);
+        }
       }
       // Overdue is drawn only where the scorecard counts a wait as due: the server reads both from the ledger.
       w.fell_due.forEach(function (d) {

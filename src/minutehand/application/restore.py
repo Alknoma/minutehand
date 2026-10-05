@@ -149,7 +149,20 @@ async def settle(
         else:
             asked = await run_command(RestoreStep.BUSY, hooks.busy, directory, hooks.step_limit.total_seconds())
             if asked.exit_code == 1:
-                return Settled(report=report)
+                if reports is None:
+                    return Settled(report=report)
+                # The report was read before the busy command ran, and the work may have ended in between, changing
+                # it (a DONE): what is kept is what the agent says now that it is idle.
+                try:
+                    after_idle = await reports.report()
+                except AgentFailed as e:
+                    return NotRestorable(reason=f"the agent's report endpoint did not answer while it settled: {e}")
+                if after_idle.status is not AgentStatus.WORKING:
+                    return Settled(report=after_idle)
+                working = True
+                await asyncio.sleep(WORKING_EVERY)
+                calm_from = time.monotonic()
+                continue
             if asked.exit_code != 0:
                 return NotRestorable(
                     reason=f"the agent's busy command could not tell whether it was idle: {shlex.join(asked.command)} "

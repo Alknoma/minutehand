@@ -26,6 +26,8 @@ Behaviours (`REFERENCE_BEHAVIOUR`): `diligent`, `forgetful` (never follows up), 
 
 ## Running it
 
+Every HTTP server in the example skips `http.server`'s reverse DNS lookup of this machine's name, which takes over 30 seconds on some Macs; copy that `server_bind` if you build on the standard library.
+
 ```bash
 cd examples/reference_agent
 python outside.py --dir .outside &                       # prints the model and search addresses

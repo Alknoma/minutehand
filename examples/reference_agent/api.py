@@ -25,6 +25,7 @@ import hmac
 import json
 import os
 import signal
+import socketserver
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -166,10 +167,19 @@ def handler(api: Api) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+class Server(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind looks this machine's name up by reverse DNS, which takes over 30 seconds on some
+        # Macs (GitHub's among them). The name is never used: bind and listen at once.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
 def main() -> None:
     telemetry.setup("venue-agent-api")
     api = Api(open_store())
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), handler(api))
+    server = Server(("127.0.0.1", PORT), handler(api))
+    print(f"api listening on 127.0.0.1:{PORT}", flush=True)
 
     def stop(*_: object) -> None:
         telemetry.shutdown()

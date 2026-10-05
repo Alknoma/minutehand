@@ -24,6 +24,7 @@ import ipaddress
 import json
 import os
 import re
+import socketserver
 import ssl
 import sys
 import threading
@@ -266,6 +267,13 @@ class _Server(ThreadingHTTPServer):
         self.socket = context.wrap_socket(self.socket, server_side=True)
         self.log: list[str] = []
         self.calls = 0
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind looks this machine's name up by reverse DNS, which takes over 30 seconds on some
+        # Macs. The name is never used: bind and listen at once.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = str(host), int(port)
 
     def handle_error(self, request: object, client_address: object) -> None:
         """A client that hangs up mid-answer is not this server's error."""

@@ -152,8 +152,9 @@ def poll(every: float, seconds: float) -> None:
         try:
             found = call("GET", "/testsched/deliveries")
             assert isinstance(found, dict)
-            for _ in found["deliveries"]:
+            for ref in found["deliveries"]:
                 call("POST", "/testchat/messages", {"to": "sofia@example.com", "text": "Following up as booked."})
+                call("DELETE", f"/testsched/deliveries/{ref}")  # acknowledged once acted on, as SQS's delete
         except OSError:
             return
         time.sleep(every)

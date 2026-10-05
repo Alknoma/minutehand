@@ -96,8 +96,9 @@ def agent_file(
         "snapshot": [PY, HOOKS, "snapshot"],
         "restore": [PY, HOOKS, "restore"],
         "quiet": "PT0.5S",
-        "settle_limit": "PT30S",
-        "answer_limit": "PT30S",
+        "settle_limit": "PT2M",  # a shared runner can be slow: the limits are generous, never measured against
+        "answer_limit": "PT2M",
+        "step_limit": "PT5M",
     }
     hooks.update(state or {})
     mail = {**MAIL, "replies": replies(port, secret)} if answered else dict(MAIL)
@@ -109,6 +110,7 @@ def agent_file(
                 "kind": "reported",
                 "wake_url": f"http://127.0.0.1:{port}/wake",
                 "report_url": f"http://127.0.0.1:{port}/report",
+                "wake_timeout": "PT2M",
                 **(wakes or {}),
             }
         ],
@@ -223,22 +225,26 @@ def started(env: Mapping[str, str], port: int) -> Iterator[subprocess.Popen[byte
     """The agent's own `run.py`, until it answers /healthz; stopped after."""
     process = subprocess.Popen(RUN, env=dict(env), cwd=AGENT_DIR)
     try:
-        give_up = time.monotonic() + 30
+        give_up = time.monotonic() + 90
         while True:
             try:
                 get(f"http://127.0.0.1:{port}/healthz")
                 break
             except OSError:
                 assert process.poll() is None, "the agent exited before it answered"
-                assert time.monotonic() < give_up, "the agent did not answer within 30 s"
+                assert time.monotonic() < give_up, "the agent did not answer within 90 s"
                 time.sleep(0.05)
         yield process
     finally:
         process.terminate()
-        process.wait(timeout=15)
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
 
-def settled(port: int, *, within: float = 30) -> dict[str, object]:
+def settled(port: int, *, within: float = 90) -> dict[str, object]:
     give_up = time.monotonic() + within
     while True:
         report = get(f"http://127.0.0.1:{port}/report")

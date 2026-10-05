@@ -427,3 +427,21 @@ async def test_a_call_still_awaiting_its_answer_at_the_limit_is_not_restorable_n
     )
     assert isinstance(settled, NotRestorable)
     assert "a request on the open tunnel to model.example" in settled.reason
+
+
+async def test_the_report_kept_is_the_one_after_the_busy_command_says_idle(tmp_path: Path) -> None:
+    """The report says IDLE while a job still runs; the job ends and changes it to DONE before the busy command
+    reports idle. Before, the stale IDLE was kept, and a run whose agent had finished was woken again a day later."""
+    done = AgentReport(status=AgentStatus.DONE)
+    flag = tmp_path / "busy"
+    flag.write_text("1")
+    answers = Answers(IDLE, IDLE, done)
+    busy = [
+        sys.executable,
+        "-c",
+        f"import pathlib, sys; f = pathlib.Path({str(flag)!r}); e = f.exists(); f.unlink(missing_ok=True); sys.exit(0 if e else 1)",
+    ]
+
+    settled = await settle(hooks(quiet=timedelta(0), busy=busy), Calls(), answers, None, directory=tmp_path)
+
+    assert settled == Settled(report=done)

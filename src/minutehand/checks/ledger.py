@@ -127,6 +127,7 @@ def build(
     away = absences(scenario, events)
     asked = {(_ref(r.in_reply_to), r.person) for r in replies}
     answered = {(_ref(r.in_reply_to), r.person): r for i, r in enumerate(replies) if i not in withdrawn}
+    decided = {(_ref(r.in_reply_to), r.person): r for r in replies}
     opened: list[_Open] = []
     holder: dict[tuple[str, EntityKind, str], str | None] = {}
 
@@ -164,8 +165,8 @@ def build(
                         entities=[event.entity, channel],
                         opened_at=event.sim_time,
                         opened_by=event.seq,
-                        expected_by=event.sim_time + _longest(person).longest,
-                        patience=_longest(person).longest,
+                        expected_by=event.sim_time + _patience(person, decided.get((_ref(event.entity), person.key))),
+                        patience=_patience(person, decided.get((_ref(event.entity), person.key))),
                         settled_at=settled,
                         primary=event.entity,
                         conversation=conversation,
@@ -212,6 +213,14 @@ def build(
             )
         )
     return ledger
+
+
+def _patience(person: Person, reply: PersonReply | None) -> timedelta:
+    """How long the person may take: the delay their reply was decided under, when it says (a fork may have changed
+    them since), else their delay in the scenario."""
+    if reply is not None and reply.patience is not None:
+        return reply.patience
+    return _longest(person).longest
 
 
 def _joined(wait: _Open, message: EntityRef, answered: datetime | None) -> _Open:

@@ -9,7 +9,7 @@ import pytest
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.runner import RunResult, discover, evaluate, evaluate_run, stability
 from minutehand.domain.checks import FindingKind, PersonBurden
-from minutehand.domain.run import StopReason
+from minutehand.domain.run import StopReason, VerdictKind
 from minutehand.domain.scenario import Silent, TicketCreated
 from tests.checks.world import Log, at, person, reply, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
@@ -158,3 +158,31 @@ def test_follow_ups_before_each_due_moment_are_counted_and_past_what_the_person_
     )
     patient = view(scenario(sofia.model_copy(update={"early_follow_ups": 5})), log)
     assert [f for f in evaluate(patient, stop=None).findings if f.check == "nagged"] == []
+
+
+def test_a_run_whose_scorecard_counts_a_missed_follow_up_is_never_passed_without_a_finding() -> None:
+    """Sofia's wait falls due two hours in; nothing follows, and her answer lands at thirty. The scorecard counts the
+    late follow-up and the time lost; before, no check said so and the verdict, with the agent reporting done, was
+    Passed beside it."""
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([SOFIA], 30.5, text="Thanks.")
+    result = evaluate(view(scenario(SOFIA), log, [reply(SOFIA, ask, 30)]), stop=StopReason.AGENT_DONE)
+
+    assert result.effectiveness.follow_ups_late == 1
+    assert result.verdict.kind is not VerdictKind.PASSED
+    assert [f.check for f in result.findings if f.kind is FindingKind.FAIL] == ["no_follow_up"]
+
+
+def test_a_reply_decided_under_a_slower_delay_is_measured_by_that_delay() -> None:
+    """A fork made Sofia quick after her answer had been decided under a slower delay: the wait is measured by the
+    delay it was decided under, and costs the agent nothing."""
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([SOFIA], 30.5, text="Thanks.")
+    slow = reply(SOFIA, ask, 30).model_copy(update={"patience": timedelta(hours=48)})
+
+    result = evaluate(view(scenario(SOFIA), log, [slow]), stop=StopReason.AGENT_DONE)
+
+    assert result.effectiveness.follow_ups_late == 0 and result.effectiveness.time_lost == timedelta(0)
+    assert result.verdict.kind is VerdictKind.PASSED

@@ -19,3 +19,11 @@ def outside(tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
 @pytest.fixture
 def rig(outside: object, tmp_path: Path) -> Rig:
     return Rig(tmp_path, outside.model, outside.search, str(outside.ca))  # type: ignore[attr-defined]
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Every test here starts real processes and the installed command, several times: on a loaded shared runner
+    that takes far longer than the suite's 60 seconds a test, so the limit here is ten minutes."""
+    for item in items:
+        if "tests/architecture/" in str(item.path) and item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(600))
