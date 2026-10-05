@@ -25,6 +25,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -107,8 +108,15 @@ CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY, text TEXT, at TEXT);
 class SqliteStore:
     def __init__(self, path: Path) -> None:
         self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=30)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.executescript(SCHEMA)
+        for attempt in range(50):  # the API and the worker open the file at the same moment as they start
+            try:
+                self._db.execute("PRAGMA journal_mode=WAL")
+                self._db.executescript(SCHEMA)
+                break
+            except sqlite3.OperationalError:
+                if attempt == 49:
+                    raise
+                time.sleep(0.1)
         self._lock = threading.Lock()
 
     def _rows(self, sql: str, *args: object) -> list[dict[str, object]]:
