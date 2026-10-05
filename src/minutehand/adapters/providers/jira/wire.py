@@ -17,6 +17,7 @@ Every timestamp is written the way Jira Cloud writes one: `2026-08-24T10:50:03.0
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -662,6 +663,22 @@ TEMPLATE_TYPES: dict[str, str] = {
 (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post)."""
 
 PROJECT_TYPES = frozenset(TEMPLATE_TYPES.values())
+
+PROJECT_KEY_MOST = 10
+"""The longest project key Jira takes: an uppercase letter, then one or more uppercase letters or digits
+(https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post)."""
+_PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9]+")
+
+
+def project_key_problem(key: str) -> str | None:
+    """What is wrong with `key` as a new project's key, in the words of a create's `errors.projectKey`."""
+    if not key:
+        return "A project needs a key."
+    if len(key) > PROJECT_KEY_MOST:
+        return f"A project key is at most {PROJECT_KEY_MOST} characters long."
+    if not _PROJECT_KEY.fullmatch(key):
+        return "A project key is a capital letter followed by capitals and digits."
+    return None
 
 
 class ProjectIn(Wire):

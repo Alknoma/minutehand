@@ -50,6 +50,8 @@ _PROJECT_EDITS = ["CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES", "DELETE_I
                   "ASSIGN_ISSUES", "ASSIGNABLE_USER", "RESOLVE_ISSUES", "CLOSE_ISSUES", "LINK_ISSUES",
                   "SCHEDULE_ISSUES"]  # fmt: skip
 _PROJECT = ["BROWSE_PROJECTS", "ADMINISTER_PROJECTS", *_PROJECT_EDITS]
+_PERMISSION_IDS = {key: str(n) for n, key in enumerate(_GLOBAL)} | {key: str(100 + n) for n, key in enumerate(_PROJECT)}
+"""Every key `mypermissions` answers, with its id; a key not here is not a permission."""
 
 
 @dataclass(frozen=True)
@@ -559,14 +561,15 @@ class JiraApi:
         if not asked:
             raise wire.bad("The 'permissions' query parameter is required.")
         keys = [k.strip() for k in asked.split(",") if k.strip()]
-        unknown = [k for k in keys if k not in _GLOBAL and k not in _PROJECT]
+        known = [k for k in keys if k in _PERMISSION_IDS]
+        unknown = [k for k in keys if k not in _PERMISSION_IDS]
         if unknown:
             raise wire.bad(f"These permission keys are not valid: {', '.join(unknown)}.")
         me = self._me(call)
         reference = _param(call.request, "projectKey") or _param(call.request, "projectId")
         projects = [self._project(call, reference)] if reference else self._world.projects()
         answers: wire.Json = {}
-        for key in keys:
+        for key in known:
             if key in _GLOBAL:
                 held = (me.siteAdmin and key != "SYSTEM_ADMIN") or key == "USER_PICKER"
                 kind = "GLOBAL"
@@ -580,7 +583,7 @@ class JiraApi:
                 held = any(self._desk.can_edit(p, me.accountId) for p in projects)
                 kind = "PROJECT"
             answers[key] = {
-                "id": str(_GLOBAL.index(key) if key in _GLOBAL else 100 + _PROJECT.index(key)),
+                "id": _PERMISSION_IDS[key],
                 "key": key,
                 "name": key.replace("_", " ").title(),
                 "type": kind,
@@ -670,12 +673,8 @@ class JiraApi:
         projects = self._world.projects()
         errors: dict[str, str] = {}
         key = body.key or ""
-        if not key:
-            errors["projectKey"] = "A project needs a key."
-        elif len(key) > 10:
-            errors["projectKey"] = "A project key is at most 10 characters long."
-        elif not re.fullmatch(r"[A-Z][A-Z0-9]+", key):
-            errors["projectKey"] = "A project key is a capital letter followed by capitals and digits."
+        if problem := wire.project_key_problem(key):
+            errors["projectKey"] = problem
         else:
             holder = next((p for p in projects if p.key == key), None)
             if holder is not None:
