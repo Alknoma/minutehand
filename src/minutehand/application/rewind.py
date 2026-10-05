@@ -9,7 +9,7 @@ is refused, because a world rewound under an agent that remembers the future is 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -28,7 +28,7 @@ from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
 from minutehand.domain.run import RunRecord
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -78,8 +78,7 @@ async def fork_run(
     telemetry: Telemetry | None = None,
     mounts: Mounts | None = None,
     scorer: Scorer | None = None,
-    poll_interval: float = 0.05,
-    max_polls: int = 1200,
+    signing: Mapping[ProviderKey, str] | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -154,8 +153,7 @@ async def fork_run(
                 mounts=mounts,
                 scorer=scorer,
                 state_dir=state_dir,
-                poll_interval=poll_interval,
-                max_polls=max_polls,
+                signing=signing,
                 parent_run=parent.run_id,
                 forked_at=fork.at_seq,
                 prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],

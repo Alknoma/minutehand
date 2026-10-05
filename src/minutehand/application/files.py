@@ -17,7 +17,7 @@ from pydantic import BaseModel, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import WrittenScenario
 
 _M = TypeVar("_M", bound=BaseModel)
 
@@ -53,8 +53,9 @@ class FileRefused(ValueError):
     """A scenario or agent file that could not be read or does not describe a valid model."""
 
 
-def load_scenario(path: Path) -> Scenario:
-    return _load(path, Scenario)
+def load_scenario(path: Path) -> WrittenScenario:
+    """A scenario file; one without `starts_at` starts when the run does."""
+    return _load(path, WrittenScenario, called="Scenario")
 
 
 def load_agent(path: Path) -> AgentUnderTest:
@@ -73,11 +74,12 @@ def load_fork(path: Path, *, parent_run: str, at_seq: int) -> Fork:
     return _validate(path, {**raw, "parent_run": parent_run, "at_seq": at_seq}, Fork)
 
 
-def _load(path: Path, model: type[_M]) -> _M:
-    return _validate(path, _read(path, model), model)
+def _load(path: Path, model: type[_M], *, called: str | None = None) -> _M:
+    """`called` is what the file is to its reader, when the model's own name is not that."""
+    return _validate(path, _read(path, model, called=called), model, called=called)
 
 
-def _read(path: Path, model: type[BaseModel]) -> object:
+def _read(path: Path, model: type[BaseModel], *, called: str | None = None) -> object:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -89,14 +91,16 @@ def _read(path: Path, model: type[BaseModel]) -> object:
         elif suffix == ".json":
             raw = json.loads(text)
         else:
-            raise FileRefused(f"{path}: a {model.__name__} file is .yaml, .yml or .json, not {suffix or 'no suffix'}")
+            raise FileRefused(
+                f"{path}: a {called or model.__name__} file is .yaml, .yml or .json, not {suffix or 'no suffix'}"
+            )
     except (yaml.YAMLError, json.JSONDecodeError) as e:
         raise FileRefused(f"{path}: not valid {suffix.lstrip('.').upper()}: {e}") from e
     return raw
 
 
-def _validate(path: Path, raw: object, model: type[_M]) -> _M:
+def _validate(path: Path, raw: object, model: type[_M], *, called: str | None = None) -> _M:
     try:
         return model.model_validate(raw)
     except ValidationError as e:
-        raise FileRefused(f"{path}: not a valid {model.__name__}:\n{e}") from e
+        raise FileRefused(f"{path}: not a valid {called or model.__name__}:\n{e}") from e

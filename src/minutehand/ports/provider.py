@@ -39,13 +39,18 @@ class Provider(Protocol):
 class PushesEvents(Protocol):
     """A provider whose real service calls the agent: Slack events, Teams activities, webhooks."""
 
-    async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None:
-        """Record the reply in the world and push it to the agent the way the real service would."""
+    async def deliver(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        """Record the reply in the world and push it to the agent the way the real service would, signed with
+        `secret`: the value `target.secret` resolved to for this run."""
         ...
 
-    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None:
+    async def say(
+        self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
         """The person messages the agent directly (in Slack, a DM to its bot), recorded as actor PERSON and
-        pushed like any event. How a goal or a direction sent by message reaches the agent."""
+        pushed like any event, signed with `secret`. How a goal or a direction sent by message reaches the agent."""
         ...
 
 

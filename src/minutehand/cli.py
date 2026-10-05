@@ -1,11 +1,18 @@
 """`minutehand`: run a scenario against an agent, read a run's findings, fork a run, list the runs.
 
-    minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--judge] [--json] [-- <command...>]
+    minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--judge] [--json] [PROXY] [-- <command...>]
     minutehand findings <run_id> [--state DIR] [--json]
-    minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--judge] [--json] [-- <command...>]
+    minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--judge] [--json] [PROXY] [-- <command...>]
+    minutehand env --agent <agent.yaml> --proxy-port N [PROXY] [--format shell|compose] [--service NAME...]
+                                                 the environment an agent Minutehand does not start needs
     minutehand runs [--state DIR]
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
+
+PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
+an agent in containers), --proxy-port (default: any free port), --agent-proxy-host (the host the agent uses
+for it, e.g. host.docker.internal; default the bind host) and --no-proxy HOST, repeated, for hosts the agent
+reaches directly.
 
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
@@ -19,14 +26,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shlex
 import sys
 from collections.abc import Sequence
 from datetime import timedelta
+from enum import StrEnum
 from pathlib import Path
+
+import yaml
 
 from minutehand import session
 from minutehand.adapters.mcp import server as mcp_server
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.adapters.web import app as viewer
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
@@ -40,6 +52,8 @@ from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
 
 DEFAULT_STATE = Path(".minutehand")
+COMPOSE_CA_PATH = "/etc/minutehand/ca-bundle.pem"
+DOCKER_HOST = "host.docker.internal"
 VIEW_PORT = 8081
 STATE_VARIABLE = "MINUTEHAND_STATE"
 
@@ -51,6 +65,11 @@ _STOPPED = {
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
 }
 _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
+
+
+class EnvFormat(StrEnum):
+    SHELL = "shell"
+    COMPOSE = "compose"
 
 
 class Played(Model):
@@ -72,12 +91,23 @@ def _parser() -> argparse.ArgumentParser:
             help=f"where runs are kept (default ${STATE_VARIABLE} or {DEFAULT_STATE})",
         )
 
+    def proxy(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument("--proxy-host", default="127.0.0.1", help="the address the proxy listens on")
+        sub.add_argument("--proxy-port", type=int, default=0, help="the port it listens on (default: any free one)")
+        sub.add_argument(
+            "--agent-proxy-host", default=None, help="the host the agent reaches the proxy at (default the bind host)"
+        )
+        sub.add_argument(
+            "--no-proxy", action="append", default=[], metavar="HOST", help="a host the agent reaches directly"
+        )
+
     run = commands.add_parser("run", help="run a scenario against an agent")
     run.add_argument("scenario", type=Path)
     run.add_argument("--agent", type=Path, required=True)
     run.add_argument("--samples", type=int, default=1)
     run.add_argument("--judge", action="store_true", help="also run the checks a model judges")
     run.add_argument("--json", action="store_true")
+    proxy(run)
     state(run)
 
     findings = commands.add_parser("findings", help="what the checks said about a finished run")
@@ -91,7 +121,28 @@ def _parser() -> argparse.ArgumentParser:
     fork.add_argument("--changes", type=Path, required=True)
     fork.add_argument("--judge", action="store_true", help="also run the checks a model judges")
     fork.add_argument("--json", action="store_true")
+    proxy(fork)
     state(fork)
+
+    env = commands.add_parser(
+        "env", help="print the environment an agent needs when Minutehand does not start it, then run without --"
+    )
+    env.add_argument("--agent", type=Path, required=True)
+    env.add_argument("--format", choices=[f.value for f in EnvFormat], default=EnvFormat.SHELL.value)
+    env.add_argument(
+        "--service",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="a Compose service the agent runs in (--format compose); repeat for each",
+    )
+    env.add_argument(
+        "--ca-path",
+        default=COMPOSE_CA_PATH,
+        help=f"where the CA bundle is mounted in each service (--format compose; default {COMPOSE_CA_PATH})",
+    )
+    proxy(env)
+    state(env)
 
     listing = commands.add_parser("runs", help="every finished run")
     state(listing)
@@ -126,6 +177,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _fork(args, state, command)
         if args.command == "findings":
             return _findings(args, state)
+        if args.command == "env":
+            return _env(args, state)
         if args.command == "mcp":
             return _mcp(state)
         if args.command == "view":
@@ -139,6 +192,47 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _telemetry() -> OtelTelemetry | None:
     """OTLP export when its endpoint is set; otherwise none, rather than spans with nowhere to go."""
     return from_environment() if os.environ.get(ENDPOINT_VARIABLE) else None
+
+
+def _listen(args: argparse.Namespace) -> session.Listen:
+    return session.Listen(
+        host=args.proxy_host, port=args.proxy_port, agent_host=args.agent_proxy_host, no_proxy=args.no_proxy
+    )
+
+
+def _env(args: argparse.Namespace, state: Path) -> int:
+    agent = load_agent(args.agent)
+    listen = _listen(args)
+    if EnvFormat(args.format) is EnvFormat.SHELL:
+        if args.service:
+            print("minutehand env: --service is for --format compose", file=sys.stderr)
+            return 2
+        variables = session.environment(agent, state=state, listen=listen)
+        print("\n".join(f"export {name}={shlex.quote(value)}" for name, value in variables.items()))
+        return 0
+    if not args.service:
+        print("minutehand env: --format compose needs --service for each service the agent runs in", file=sys.stderr)
+        return 2
+    services = [*args.service, *listen.no_proxy]
+    in_container = listen.model_copy(update={"no_proxy": services})
+    variables = session.environment(agent, state=state, listen=in_container, ca_bundle=args.ca_path)
+    bundle = (state / "ca" / BUNDLE).resolve()
+    print(
+        yaml.safe_dump(_compose(args.service, variables, bundle, args.ca_path, in_container), sort_keys=False), end=""
+    )
+    return 0
+
+
+def _compose(
+    services: list[str], variables: dict[str, str], bundle: Path, ca_path: str, listen: session.Listen
+) -> dict[str, object]:
+    """A Compose override file: every named service gets the variables and the CA bundle mounted read-only.
+    A service reaching the host as host.docker.internal is given that name on Linux too, where Docker does not
+    define it by itself."""
+    service: dict[str, object] = {"environment": variables, "volumes": [f"{bundle}:{ca_path}:ro"]}
+    if listen.agent_host == DOCKER_HOST:
+        service["extra_hosts"] = [f"{DOCKER_HOST}:host-gateway"]
+    return {"services": {name: service for name in services}}
 
 
 def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
@@ -156,6 +250,7 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
                 telemetry=telemetry,
                 model=model_from_environment(),
                 judge=args.judge,
+                listen=_listen(args),
             )
         )
     finally:
@@ -177,6 +272,7 @@ def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> i
                 telemetry=telemetry,
                 model=model_from_environment(),
                 judge=args.judge,
+                listen=_listen(args),
             )
         )
     finally:
@@ -237,6 +333,9 @@ def _describe(outcome: Outcome, points: list[ForkPoint]) -> str:
     if record.parent_run is not None:
         lines.append(f"  forked from {record.parent_run} at seq {record.forked_at}")
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
+    if record.failure is not None:
+        lines.append(f"  {record.failure}")
+    lines.append(f"  providers the agent called: {', '.join(record.providers) or 'none'}")
     for kind in _KIND_ORDER:
         found = [f for f in result.findings if f.kind is kind]
         if found:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.conversation import Provenance
@@ -29,11 +31,36 @@ class PersonMessage(Model):
     at: AwareDatetime = Field(description="Simulated time the message is sent")
 
 
+VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+
+
+class GeneratedSecret(Model):
+    """A fresh secret made for every run and handed to the agent's command in the variable `env`.
+
+    Only a command Minutehand starts receives it; an agent already running has a secret of its own."""
+
+    kind: Literal["generated"] = "generated"
+    env: VariableName = Field(description="The variable the agent reads its signing secret from")
+
+
+class SecretFromEnvironment(Model):
+    """The agent's own secret, configured where it already runs: Minutehand reads the same value from its own
+    variable `env` when the run starts, and refuses the run when it is not set."""
+
+    kind: Literal["from_env"] = "from_env"
+    env: VariableName = Field(description="The variable in Minutehand's own environment that holds the secret")
+
+
+SigningSecret = Annotated[GeneratedSecret | SecretFromEnvironment, Field(discriminator="kind")]
+
+
 class InboundTarget(Model):
     """Where a provider pushes events to the agent, the way the real service would."""
 
     provider: ProviderKey
     url: str
-    secret_env: str | None = Field(
-        default=None, description="Name of the variable the agent reads its signing secret from"
+    secret: SigningSecret | None = Field(
+        default=None,
+        description="Where the secret that signs pushed events comes from; None signs with one made per run "
+        "and given to no one, for an agent that does not verify",
     )

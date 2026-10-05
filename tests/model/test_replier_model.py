@@ -182,6 +182,27 @@ async def test_the_earlier_exchange_with_that_person_and_no_one_else_is_given_in
     ]
 
 
+async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(tmp_path: Path) -> None:
+    who = sofia()
+    store, clock = world(tmp_path)
+    say(store, Actor.AGENT, "Thinking...", [who.email], "m1")
+    asked = store.apply(
+        Change(
+            entity=EntityRef(provider="testchat", kind=EntityKind.MESSAGE, external_id="m1"),
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            body="{}",
+            after=MessageSnapshot(text=QUESTION, channel="dm-sofia", recipient_emails=[who.email]),
+        )
+    )
+    async with fake_completions(answering) as fake:
+        reply = await ModelReplier(
+            scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
+        ).decide(who, asked, store.events(), clock)
+    assert fake.received[0].said[1:] == [("user", QUESTION)]
+    assert reply is not None and reply.text == "It is 40k a year."
+
+
 async def test_a_person_may_name_their_own_model(tmp_path: Path) -> None:
     who = sofia(model="people-large")
     store, clock = world(tmp_path)

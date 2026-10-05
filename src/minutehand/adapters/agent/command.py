@@ -48,7 +48,7 @@ class CommandDriver:
         except ValidationError as e:
             raise AgentFailed(f"{self._argv[0]} did not print an AgentReport: {e}") from e
 
-    async def report(self) -> AgentReport:
+    async def settled(self) -> AgentReport:
         if self._last is None:
             raise AgentFailed(f"{self._argv[0]} was asked for a report before a wake finished")
         return self._last

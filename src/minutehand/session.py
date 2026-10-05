@@ -16,9 +16,9 @@ directory under the state directory, written by the models, so a later process c
 One proxy per process: mitmproxy keeps its master in a module global, so `play` and `fork` each start one
 and move it from sample to sample with `Proxy.mount`, and never two at once.
 
-The Slack provider signs pushed events with the secret in the variable its `InboundTarget.secret_env`
-names, read from this process's environment. Each run generates its secrets, sets them here for as long
-as the run lasts, and hands the same values to the agent's process.
+A provider signs the events it pushes with the secret its `InboundTarget.secret` resolves to for the run:
+one generated per run and handed to the agent's command, or the agent's own, read from a variable of this
+process. The secret is given to the provider with each push; it is never set in this process's environment.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ import sqlite3
 import threading
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -41,6 +42,7 @@ from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_U
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
+from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
 from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
 from minutehand.application.orchestrator import Services, run_scenario
@@ -53,8 +55,9 @@ from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.experiment import Fork
+from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment
 from minutehand.domain.run import RunRecord
-from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario
+from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
@@ -77,7 +80,6 @@ LISTEN_TIMEOUT = 30.0
 """Seconds the agent's process has to accept connections on its wake or inbound URL."""
 
 STOP_TIMEOUT = 5.0
-POLL_INTERVAL = 0.01
 
 
 class AgentExited(RunRefused):
@@ -106,7 +108,7 @@ def run_dir(state: Path, run_id: str) -> Path:
 
 
 async def play(
-    scenario: Scenario,
+    written: Scenario | WrittenScenario,
     agent: AgentUnderTest,
     *,
     state: Path,
@@ -115,6 +117,7 @@ async def play(
     telemetry: Telemetry | None = None,
     model: LanguageModel | None = None,
     judge: bool = False,
+    listen: Listen | None = None,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
 
@@ -128,16 +131,21 @@ async def play(
     Each sample after the first starts from the agent's own state as the first found it, restored through
     its `StateHooks`. Without hooks the agent carries what it remembers from one sample into the next, and
     the samples are not independent.
+
+    A scenario with no `starts_at` starts now: the instant is taken once, here, and every sample plays and
+    records it, so a fork of any of them starts from the same moment.
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
+    scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
     registry = Registry.installed()
     routing = Routing(registry)
     services = _services(scenario, agent, registry)
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
-    async with Proxy(routing, first[0], first[1], confdir=state / "ca") as proxy:
+    listen = listen or Listen()
+    async with _proxy(routing, first[0], first[1], state, listen) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0 and agent.state is not None:
@@ -145,24 +153,23 @@ async def play(
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
-            run_secrets = _secrets(agent)
-            env = _agent_env(proxy, run_secrets)
-            with _in_this_process(run_secrets):
-                async with _agent_process(command, env, agent, directory / AGENT_LOG):
-                    record = await run_scenario(
-                        scenario=scenario,
-                        agent=agent,
-                        reach=reach_for(agent, env=env),
-                        store=store,
-                        clock=clock,
-                        services=services,
-                        replier=PeopleReplier(scenario, model),
-                        telemetry=telemetry,
-                        mounts=proxy,
-                        scorer=scorer,
-                        state_dir=state / RUNS,
-                        poll_interval=POLL_INTERVAL,
-                    )
+            signing = signing_for(agent)
+            env = agent_environment(listen, proxy.port, proxy.ca_bundle, signing.for_agent)
+            async with _agent_process(command, env, agent, directory / AGENT_LOG):
+                record = await run_scenario(
+                    scenario=scenario,
+                    agent=agent,
+                    reach=reach_for(agent, env=env),
+                    store=store,
+                    clock=clock,
+                    services=services,
+                    replier=PeopleReplier(scenario, model),
+                    telemetry=telemetry,
+                    mounts=proxy,
+                    scorer=scorer,
+                    state_dir=state / RUNS,
+                    signing=signing.by_provider,
+                )
             outcomes.append(_keep(directory, record, scorer))
     return outcomes
 
@@ -176,6 +183,7 @@ async def fork(
     telemetry: Telemetry | None = None,
     model: LanguageModel | None = None,
     judge: bool = False,
+    listen: Listen | None = None,
 ) -> list[Outcome]:
     """Rerun a finished run from one of its checkpoints with `changes` applied, once per `Fork.samples`.
 
@@ -196,36 +204,36 @@ async def fork(
     services = _services(changed, agent, registry)
     child_id = _new_run_id()
     scorer = _Judge(changed, model if judge else None, judging=judge)
-    run_secrets = _secrets(agent)
+    signing = signing_for(agent)
 
     def open_parent(clock: Clock) -> Store:
         return SqliteStore(world, parent_run, clock)
 
     holding = RunClock(scenario.starts_at)
-    async with Proxy(routing, open_parent(holding), holding, confdir=state / "ca") as proxy:
-        env = _agent_env(proxy, run_secrets)
+    listen = listen or Listen()
+    async with _proxy(routing, open_parent(holding), holding, state, listen) as proxy:
+        env = agent_environment(listen, proxy.port, proxy.ca_bundle, signing.for_agent)
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with _in_this_process(run_secrets):
-                async with _agent_process(command, env, agent, log):
-                    records = await fork_run(
-                        fork=changes,
-                        parent=parent.record,
-                        open_parent=open_parent,
-                        run_id=child_id,
-                        scenario=scenario,
-                        agent=agent,
-                        reach=reach_for(agent, env=env),
-                        services=services,
-                        replier_for=lambda s: PeopleReplier(s, model),
-                        state_dir=state / RUNS,
-                        wire=routing,
-                        telemetry=telemetry,
-                        mounts=proxy,
-                        scorer=scorer,
-                        poll_interval=POLL_INTERVAL,
-                    )
+            async with _agent_process(command, env, agent, log):
+                records = await fork_run(
+                    fork=changes,
+                    parent=parent.record,
+                    open_parent=open_parent,
+                    run_id=child_id,
+                    scenario=scenario,
+                    agent=agent,
+                    reach=reach_for(agent, env=env),
+                    services=services,
+                    replier_for=lambda s: PeopleReplier(s, model),
+                    state_dir=state / RUNS,
+                    wire=routing,
+                    telemetry=telemetry,
+                    mounts=proxy,
+                    scorer=scorer,
+                    signing=signing.by_provider,
+                )
         finally:
             routing.apply(child_id, [])
     outcomes: list[Outcome] = []
@@ -429,6 +437,11 @@ def _refuse_unwritten(scenario: Scenario, model: LanguageModel | None) -> None:
         )
 
 
+def _now() -> datetime:
+    """The moment a run starts, to the second, for a scenario that starts when its run does."""
+    return datetime.now(UTC).replace(microsecond=0)  # clock-lint: exempt the real start of a run, read once
+
+
 def _new_run_id() -> str:
     return secrets.token_hex(6)
 
@@ -500,36 +513,106 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     return Services(providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers)
 
 
-def _secrets(agent: AgentUnderTest) -> dict[str, str]:
-    """A fresh signing secret for every variable the agent's inbound targets name."""
-    return {t.secret_env: secrets.token_hex(16) for t in agent.inbound if t.secret_env is not None}
+@dataclass(frozen=True)
+class Signing:
+    """The secrets a run signs pushed events with: one per provider, and the ones the agent's command is given."""
+
+    by_provider: dict[ProviderKey, str]
+    for_agent: dict[str, str]
 
 
-def _agent_env(proxy: Proxy, run_secrets: Mapping[str, str]) -> dict[str, str]:
-    """What the agent's process needs to reach the fakes and trust them, and nothing else."""
-    ca = str(proxy.ca_cert)
+def signing_for(agent: AgentUnderTest) -> Signing:
+    """Each inbound target's secret for this run: generated and handed to the agent's command, read from this
+    process's own variable (the secret an agent already running was configured with), or, when the target
+    names none, generated and given to no one. A variable named and not set refuses the run."""
+    by_provider: dict[ProviderKey, str] = {}
+    for_agent: dict[str, str] = {}
+    for target in agent.inbound:
+        source = target.secret
+        if isinstance(source, SecretFromEnvironment):
+            if source.env not in os.environ:
+                raise RunRefused(
+                    f"the agent's {target.provider} signing secret is read from {source.env}, which is not set "
+                    "in Minutehand's environment; set it to the secret the agent was configured with"
+                )
+            value = os.environ[source.env]
+        else:
+            value = secrets.token_hex(16)
+            if isinstance(source, GeneratedSecret):
+                for_agent[source.env] = value
+        by_provider.setdefault(target.provider, value)
+    return Signing(by_provider=by_provider, for_agent=for_agent)
+
+
+class Listen(Model):
+    """Where the proxy listens, and how the agent reaches it.
+
+    The defaults suit an agent Minutehand starts on this machine: loopback, a port the system picks. An agent in
+    containers, or one already running, needs a fixed `port`, a `host` it can reach (`0.0.0.0`), and
+    `agent_host`, the name the AGENT uses for this machine, which is not the bind address
+    (`host.docker.internal`)."""
+
+    host: str = "127.0.0.1"
+    port: int = Field(default=0, ge=0, le=65535, description="0 lets the system pick one for each run")
+    agent_host: str | None = Field(
+        default=None, description="The host in the proxy URL the agent is given; None is the bind host"
+    )
+    no_proxy: list[str] = Field(default=[], description="More hosts the agent reaches directly, not through the proxy")
+
+    def proxy_url(self, port: int) -> str:
+        """The proxy as the agent reaches it. Binding every interface is not an address: it is reached on loopback."""
+        host = self.agent_host or ("127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host)
+        return f"http://{host}:{port}"
+
+
+DIRECT = ("localhost", "127.0.0.1")
+"""Hosts every agent reaches directly: itself, and Minutehand's own calls to it never go through the proxy."""
+
+
+def agent_environment(listen: Listen, port: int, ca_bundle: str | Path, secrets: Mapping[str, str]) -> dict[str, str]:
+    """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
+    spellings libraries read, the hosts it reaches directly, the one CA file in each library's variable
+    (`ca_bundle`, as the agent sees the path), and the signing secrets it is handed."""
+    proxy = listen.proxy_url(port)
+    direct = ",".join(dict.fromkeys([*DIRECT, *listen.no_proxy]))
     return {
-        "HTTPS_PROXY": proxy.url,
-        "HTTP_PROXY": proxy.url,
-        "NO_PROXY": "localhost,127.0.0.1",
-        **{name: ca for name in CA_VARIABLES},
-        **run_secrets,
+        "HTTPS_PROXY": proxy,
+        "HTTP_PROXY": proxy,
+        "NO_PROXY": direct,
+        "https_proxy": proxy,
+        "http_proxy": proxy,
+        "no_proxy": direct,
+        **{name: str(ca_bundle) for name in CA_VARIABLES},
+        **secrets,
     }
 
 
-@contextmanager
-def _in_this_process(variables: Mapping[str, str]) -> Iterator[None]:
-    """Set the run's secrets in this process's environment, where the providers read them, for the run."""
-    before = {name: os.environ[name] if name in os.environ else None for name in variables}
-    os.environ.update(variables)
-    try:
-        yield
-    finally:
-        for name, value in before.items():
-            if value is None:
-                del os.environ[name]
-            else:
-                os.environ[name] = value
+def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle: str | None = None) -> dict[str, str]:
+    """The environment an agent Minutehand does not start needs for every run under `state` and `listen`, so it
+    can be configured once and be running before `minutehand run` begins.
+
+    The proxy's CA is made under `state` now if it is not there yet, and the bundle written; `ca_bundle` is
+    where the agent will find that file when it is mounted elsewhere (in a container). Refused when the port is
+    left to the system, which the agent could not know in advance, and when a signing secret is generated per
+    run, which only reaches a command Minutehand starts."""
+    if listen.port == 0:
+        raise RunRefused("an agent configured before the run needs the proxy on a fixed port: give --proxy-port")
+    generated = [t for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
+    if generated:
+        names = ", ".join(f"{t.provider} ({t.secret.env})" for t in generated if t.secret is not None)
+        raise RunRefused(
+            f"agent {agent.name} has its signing secret generated per run for {names}, and a generated secret "
+            "reaches only a command Minutehand starts; an agent started on its own says "
+            "`secret: {kind: from_env, env: <variable>}` with the secret it was configured with"
+        )
+    bundle = write_bundle(state / "ca")
+    return agent_environment(listen, listen.port, ca_bundle or str(bundle.resolve()), {})
+
+
+@asynccontextmanager
+async def _proxy(routing: Routing, store: Store, clock: Clock, state: Path, listen: Listen) -> AsyncIterator[Proxy]:
+    async with Proxy(routing, store, clock, confdir=state / "ca", host=listen.host, port=listen.port) as proxy:
+        yield proxy
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:

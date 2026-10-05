@@ -11,6 +11,7 @@ from minutehand import session
 from minutehand.checks.runner import stability
 from minutehand.domain.checks import FindingKind, Stability
 from minutehand.domain.run import StopReason
+from minutehand.domain.scenario import Silent
 from minutehand.domain.world import Actor
 from tests.e2e.support import (
     ANSWER,
@@ -18,6 +19,7 @@ from tests.e2e.support import (
     NEVER_EXPECTED_TO_ANSWER,
     OWNER,
     QUESTION,
+    SECRET_VARIABLE,
     SOFIA,
     T0,
     THANKS,
@@ -126,3 +128,23 @@ async def test_two_samples_are_two_runs_through_one_proxy_each_from_the_agents_f
         assert texts(messages(events, Actor.AGENT, to=SOFIA)) == [QUESTION, THANKS]
         assert len(store.calls()) == len([c for c in store.calls() if c.provider == "slack"]) > 0
     assert stability([o.result for o in outcomes]) == Stability(samples=2, passed=2)
+
+
+async def test_a_provider_neither_file_names_is_seeded_on_its_first_call_and_listed_as_called(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
+    monkeypatch.setenv(SECRET_VARIABLE, "unused: nothing is pushed to this agent")
+    agent = launched.agent.model_copy(update={"inbound": []})
+
+    [outcome] = await session.play(scenario(Silent()), agent, state=tmp_path / "state", command=launched.command)
+
+    record = outcome.record
+    assert record.stop is StopReason.NOTHING_PENDING, record.failure
+    assert record.providers == ["slack"]
+    store = world(tmp_path / "state", record.run_id)
+    assert texts(messages(store.events(), Actor.AGENT, to=SOFIA)) == [QUESTION]
+    seeded = [e for e in store.events() if e.actor is Actor.SCENARIO and e.entity.provider == "slack"]
+    assert seeded and all(e.wake == 1 for e in seeded), "seeded during the first wake, when the agent first called"
+    # The seed is the scenario's, not the call's: no call is tied to a scenario event.
+    assert all(e.exchange is None for e in seeded)

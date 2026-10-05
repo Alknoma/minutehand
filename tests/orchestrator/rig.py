@@ -16,7 +16,8 @@ from minutehand.domain.people import InboundTarget
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import DelayRange, Person, ReplyBehaviour, Scenario, Scripted, ScriptedReply, Silent
 from minutehand.ports.clock import Clock
-from tests.orchestrator.world import CHAT, Chat, RecordingClock, Scheduler, Switchboard, serving
+from minutehand.ports.people import Replier
+from tests.orchestrator.world import CHAT, SECRET, Chat, RecordingClock, Scheduler, Switchboard, serving
 
 AGENTS = Path(__file__).parent / "agents"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
@@ -98,6 +99,7 @@ class Rig:
         *,
         run_id: str = "root",
         env: dict[str, str] | None = None,
+        replier: Replier | None = None,
     ) -> tuple[RunRecord, SqliteStore, RecordingClock]:
         clock = RecordingClock(scn.starts_at)
         store = self.open(run_id, clock)
@@ -108,10 +110,10 @@ class Rig:
             store=store,
             clock=clock,
             services=self.services(),
-            replier=ScriptedReplier(scn),
+            replier=replier or ScriptedReplier(scn),
             mounts=self.board,
             state_dir=self.tmp / "state",
-            poll_interval=0.001,
+            signing={CHAT: SECRET},
         )
         return record, store, clock
 

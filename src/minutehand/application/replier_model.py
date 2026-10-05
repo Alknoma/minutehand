@@ -113,22 +113,28 @@ def person_prompt(person: Person, behaviour: Answers, today: datetime) -> str:
 def exchange(person: Person, asked: WorldEvent, history: list[WorldEvent]) -> list[ModelMessage]:
     """The agent's messages to this person, and theirs back, up to and including `asked`.
 
-    A person's own message is one recorded as actor PERSON in a conversation the agent wrote to them in and
-    not addressed to them: whoever wrote a message is the one participant it is not sent to.
+    Each message is where it was posted, reading as its last edit up to `asked` says: `asked` may itself be an
+    edit. A person's own message is one recorded as actor PERSON in a conversation the agent wrote to them in
+    and not addressed to them: whoever wrote a message is the one participant it is not sent to.
     """
-    before = [e for e in history if e.seq < asked.seq]
+    upto = [e for e in history if e.seq < asked.seq] + [asked]
+    reads = {
+        e.entity: e.after.text
+        for e in upto
+        if e.operation in (Operation.CREATE, Operation.UPDATE) and isinstance(e.after, MessageSnapshot)
+    }
     channels: set[tuple[str, str]] = set()
     said: list[ModelMessage] = []
-    for event in [*before, asked]:
+    for event in upto:
         after = event.after
         if not (event.operation is Operation.CREATE and isinstance(after, MessageSnapshot)):
             continue
         where = (event.entity.provider, after.channel)
         if event.actor is Actor.AGENT and person.email in after.recipient_emails:
             channels.add(where)
-            said.append(ModelMessage(speaker=Speaker.ASKER, text=after.text))
+            said.append(ModelMessage(speaker=Speaker.ASKER, text=reads[event.entity]))
         elif event.actor is Actor.PERSON and where in channels and person.email not in after.recipient_emails:
-            said.append(ModelMessage(speaker=Speaker.MODEL, text=after.text))
+            said.append(ModelMessage(speaker=Speaker.MODEL, text=reads[event.entity]))
     return said
 
 

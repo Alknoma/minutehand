@@ -13,8 +13,12 @@ wakes:
     report_url: http://127.0.0.1:8700/report
 
 # Messages people send the agent in Slack are pushed here, signed with a secret Minutehand
-# makes for each run and hands to the agent in this environment variable.
+# makes for each run and hands to the agent in this environment variable. An agent already
+# running with a secret of its own says `kind: from_env` instead, and Minutehand reads that
+# secret from the variable it names in Minutehand's own environment.
 inbound:
   - provider: slack
     url: http://127.0.0.1:8700/slack/events
-    secret_env: AGENT_SLACK_SIGNING_SECRET
+    secret:
+      kind: generated
+      env: AGENT_SLACK_SIGNING_SECRET

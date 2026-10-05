@@ -1,7 +1,7 @@
 """Start and stop the proxy inside the running event loop.
 
     async with Proxy(routing, store, clock, confdir=state / "ca") as proxy:
-        env = {"HTTPS_PROXY": proxy.url, "SSL_CERT_FILE": str(proxy.ca_cert)}
+        env = {"HTTPS_PROXY": proxy.url, "SSL_CERT_FILE": str(proxy.ca_bundle)}
 
 One proxy runs in a process at a time. mitmproxy keeps its running master in a module global
 (`mitmproxy.ctx.master`), and a second master started beside the first served certificates its own CA
@@ -27,13 +27,12 @@ from mitmproxy.master import Master
 
 from minutehand.adapters.proxy.addon import ProxyAddon
 from minutehand.adapters.proxy.policy import Routing
-from minutehand.domain.scenario import ProviderKey
+from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
+from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
-
-CA_CERT = "mitmproxy-ca-cert.pem"
 
 
 class ProxyRunning(RuntimeError):
@@ -54,13 +53,16 @@ class Proxy:
         host: str = "127.0.0.1",
         port: int = 0,
         upstream_ca: Path | None = None,
+        public_roots: str | None = None,
         telemetry: Telemetry | None = None,
     ) -> None:
-        """`upstream_ca` replaces the system trust store when verifying the hosts an edited call is sent on to."""
+        """`upstream_ca` replaces the system trust store when verifying the hosts an edited call is sent on to.
+        `public_roots` replaces certifi's roots in the bundle the agent is handed (`ca_bundle`)."""
         self.addon = ProxyAddon(routing, store, clock, telemetry)
         self._confdir = confdir
         self._listen = (host, port)
         self._upstream_ca = upstream_ca
+        self._public_roots = public_roots
         self._master: Master | None = None
         self.host = host
         self.port = port
@@ -71,12 +73,21 @@ class Proxy:
 
     @property
     def ca_cert(self) -> Path:
-        """The CA a client must trust; created in `confdir` on first start and reused after."""
+        """The proxy's own CA; created in `confdir` on first start and reused after."""
         return self._confdir / CA_CERT
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
-        """`application.orchestrator.Mounts`: the run the proxy now answers and records for."""
-        self.addon.mount(world, clock, apps)
+    @property
+    def ca_bundle(self) -> Path:
+        """The file an agent trusts: the public roots and the proxy's CA, so a call the proxy answers and a call
+        it tunnels to a real host both verify. Written when the proxy starts."""
+        return self._confdir / BUNDLE
+
+    def mount(
+        self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
+    ) -> None:
+        """`application.orchestrator.Mounts`: the run the proxy now answers and records for, and the scenario a
+        provider first called mid-run is seeded with."""
+        self.addon.mount(world, clock, apps, scenario=scenario)
 
     async def __aenter__(self) -> Proxy:
         if _running:
@@ -84,7 +95,7 @@ class Proxy:
                 f"a proxy is already running in this process on {_running[0].url}; "
                 "mitmproxy allows one, so move it to the next run with mount()"
             )
-        self._confdir.mkdir(parents=True, exist_ok=True)
+        write_bundle(self._confdir, public_roots=self._public_roots)
         master = Master(
             options.Options(listen_host=self._listen[0], listen_port=self._listen[1], confdir=str(self._confdir))
         )

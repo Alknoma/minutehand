@@ -47,6 +47,7 @@ class SlackApi:
             "conversations.history": self.conversations_history,
             "conversations.replies": self.conversations_replies,
             "chat.postMessage": self.chat_post_message,
+            "chat.postEphemeral": self.chat_post_ephemeral,
             "chat.update": self.chat_update,
             "chat.delete": self.chat_delete,
             "reactions.add": self.reactions_add,
@@ -349,6 +350,51 @@ class SlackApi:
             after=self._snapshot(channel.id, message),
         )
         return wire.Posted(channel=channel.id, ts=message.ts, message=message)
+
+    def chat_post_ephemeral(self, presented: wire.Presented) -> wire.Ok:
+        """A message shown to one member of a conversation, once. It is in no history and cannot be found again;
+        it is recorded as a message to that member alone, so it asks nothing of anyone else in the channel."""
+        args = wire.read_args(wire.PostEphemeralArgs, presented)
+        channel = self._joined(args.channel)
+        user = self._user(args.user)
+        if not self._world.is_member(channel.id, user.id):
+            raise wire.Refusal("user_not_in_channel")
+        if channel.is_archived:
+            raise wire.Refusal("is_archived")
+        if not args.text and not args.blocks and not args.attachments:
+            raise wire.Refusal("no_text")
+        wire.check_message(args.text, args.blocks)
+        thread_ts: str | None = None
+        if args.thread_ts:
+            parent = self._world.message(channel.id, args.thread_ts)
+            thread_ts = (parent.thread_ts or parent.ts) if parent is not None else args.thread_ts
+        message = wire.SlackMessage(
+            ts=self._world.next_ts(self._clock),
+            user=BOT_USER_ID,
+            text=args.text,
+            team=state.TEAM_ID,
+            bot_id=BOT_ID,
+            app_id=state.APP_ID,
+            thread_ts=thread_ts,
+            blocks=args.blocks,
+            attachments=args.attachments,
+            ephemeral_to=user.id,
+        )
+        seen_by = [user.profile.email] if not user.is_bot and user.profile.email is not None else []
+        self._world.write(
+            state.message_ref(message.ts),
+            message,
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            parent=channel.id,
+            after=MessageSnapshot(
+                text=wire.visible_text(message.text, message.blocks),
+                channel=channel.id,
+                recipient_emails=seen_by,
+                thread_of=thread_ts,
+            ),
+        )
+        return wire.PostedEphemeral(message_ts=message.ts)
 
     def _destination(self, channel: str) -> wire.SlackChannel:
         """A channel id, or a member id, which Slack answers with that member's IM with the app."""

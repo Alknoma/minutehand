@@ -7,7 +7,6 @@ from the world and schedule what the world owes back: people's replies and ticke
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -60,9 +59,10 @@ _PRIORITY = [WakeReason.PERSON_REPLIED, WakeReason.DIRECTION, WakeReason.DUE, Wa
 
 class Mounts(Protocol):
     """Whoever serves the providers' APIs to the agent (the proxy). Told once per run, since a fork is a new world:
-    from then on the calls it answers are recorded in `world`, and each provider in `apps` answers its hosts."""
+    from then on the calls it answers are recorded in `world`, and each provider in `apps` answers its hosts. A
+    provider the agent calls that is not in `apps` is seeded with `scenario` on its first call."""
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None: ...
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None: ...
 
 
 class Scorer(Protocol):
@@ -164,8 +164,7 @@ class Orchestrator:
         mounts: Mounts | None = None,
         scorer: Scorer | None = None,
         state_dir: Path | None = None,
-        poll_interval: float = 0.05,
-        max_polls: int = 1200,
+        signing: Mapping[ProviderKey, str] | None = None,
         parent_run: str | None = None,
         forked_at: int | None = None,
         prior_wakes: Sequence[WakeRecord] = (),
@@ -193,8 +192,7 @@ class Orchestrator:
         self._mounts = mounts
         self._scorer = scorer
         self._state_dir = state_dir
-        self._poll_interval = poll_interval
-        self._max_polls = max_polls
+        self._signing = dict(signing or {})
         self._parent_run = parent_run
         self._forked_at = forked_at
         self._wakes: list[WakeRecord] = list(prior_wakes)
@@ -202,6 +200,7 @@ class Orchestrator:
         self._replies: list[PersonReply] = []
         self._fated: list[EntityRef] = []
         self._commitments: list[Commitment] | None = None
+        self._failure: str | None = None
         self._seen = 0
         self._people = {p.email: p for p in scenario.people}
 
@@ -244,7 +243,8 @@ class Orchestrator:
         self._record_new()
         try:
             await self._checkpoint()
-        except AgentFailed:
+        except AgentFailed as e:
+            self._failure = str(e)
             return await self._end(StopReason.AGENT_FAILED, started)
         stop = await self._start()
         if stop is None:
@@ -285,6 +285,7 @@ class Orchestrator:
                     provider.manifest.key: provider.app(self._store, self._clock)
                     for provider in self._services.providers
                 },
+                scenario=self._scenario,
             )
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))
@@ -300,6 +301,8 @@ class Orchestrator:
             ended_at=self._clock.now(),
             wall_seconds=time.monotonic() - started,
             stop=stop,
+            failure=self._failure,
+            providers=list(dict.fromkeys(c.provider for c in self._store.calls() if c.provider is not None)),
             wakes=self._wakes,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None
@@ -390,7 +393,9 @@ class Orchestrator:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
-                await self._pushes(provider).deliver(reply, self._inbound(provider), self._store, self._clock)
+                await self._pushes(provider).deliver(
+                    reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
+                )
         by_message = self._by_message
         for item in fired:
             if isinstance(item, PendingDirection) and by_message is not None:
@@ -468,12 +473,13 @@ class Orchestrator:
             for driver, request in requests:
                 await driver.wake(request)
             for driver in settle:
-                report = await self._settle(driver)
+                report = await driver.settled()
                 done = done or report.status is AgentStatus.DONE
                 if driver is self._reach.main:
                     commitments_changed = self._adopt(report)
-        except AgentFailed:
+        except AgentFailed as e:
             failed = True
+            self._failure = str(e)
         new = self._record_new()
         if not failed:
             await self._schedule(new)
@@ -493,21 +499,14 @@ class Orchestrator:
             return StopReason.AGENT_FAILED
         try:
             await self._checkpoint()
-        except AgentFailed:
+        except AgentFailed as e:
+            self._failure = str(e)
             return StopReason.AGENT_FAILED
         if done:
             return StopReason.AGENT_DONE
         if len(self._wakes) >= self._scenario.max_wakes:
             return StopReason.WAKE_LIMIT
         return None
-
-    async def _settle(self, driver: AgentDriver) -> AgentReport:
-        for _ in range(self._max_polls):
-            report = await driver.report()
-            if report.status is not AgentStatus.WORKING:
-                return report
-            await asyncio.sleep(self._poll_interval)
-        raise AgentFailed(f"agent {self._agent.name} was still working after {self._max_polls} polls")
 
     def _adopt(self, report: AgentReport) -> bool:
         """Take the agent's next wake, replacing the one it named before. Answers whether its commitments changed."""
@@ -542,18 +541,24 @@ class Orchestrator:
         return new
 
     async def _schedule(self, new: list[WorldEvent]) -> None:
-        """What the world owes back for what the agent just did: replies to its messages, fates of its tickets."""
+        """What the world owes back for what the agent just did: replies to its messages, fates of its tickets.
+
+        A person answers a message as it reads when the wake ends: an agent that posts a placeholder and edits
+        it into its question in the same wake is answered about the question, once, and never about the
+        placeholder. An edit in a later wake that changes the text is put to the person again unless they
+        have already answered that message: a reply still on its way to the edited message is withdrawn and
+        decided afresh on the new text."""
         history: list[WorldEvent] | None = None
+        shown: dict[EntityRef, WorldEvent] = {}
         for event in new:
             if event.actor is not Actor.AGENT:
                 continue
             after = event.after
-            if event.operation is Operation.CREATE and isinstance(after, MessageSnapshot):
+            if event.operation in (Operation.CREATE, Operation.UPDATE) and isinstance(after, MessageSnapshot):
                 if history is None:
                     history = self._store.events()
-                for email in after.recipient_emails:
-                    if email in self._people:
-                        await self._ask(self._people[email], event, [h for h in history if h.seq <= event.seq])
+                if event.operation is Operation.CREATE or _text_changed(event, history):
+                    shown[event.entity] = event
             if (
                 event.operation in (Operation.CREATE, Operation.UPDATE)
                 and isinstance(after, TicketSnapshot)
@@ -561,11 +566,32 @@ class Orchestrator:
                 and event.entity not in self._fated
             ):
                 self._fate(self._people[after.assignee_email], event)
+        for event in sorted(shown.values(), key=lambda e: e.seq):
+            assert history is not None and isinstance(event.after, MessageSnapshot)
+            for email in event.after.recipient_emails:
+                if email not in self._people:
+                    continue
+                person = self._people[email]
+                if event.operation is Operation.UPDATE and not self._withdraw(event.entity, person):
+                    continue
+                await self._ask(person, event, [h for h in history if h.seq <= event.seq])
+
+    def _withdraw(self, message: EntityRef, person: Person) -> bool:
+        """Before an edited message is put to `person` again: withdraw their reply to it that has not landed yet.
+        False when they have already answered it, and the edit is not put to them."""
+        mine = [i for i, r in enumerate(self._replies) if r.in_reply_to == message and r.person == person.key]
+        waiting = {p.reply for p in self._pending if isinstance(p, PendingReply)}
+        if any(i not in waiting for i in mine):
+            return False
+        self._pending = [p for p in self._pending if not (isinstance(p, PendingReply) and p.reply in mine)]
+        return True
 
     async def _say(self, provider: ProviderKey, text: str) -> None:
         """The scenario's owner messages the agent: its goal, or a direction."""
         message = PersonMessage(person=self._scenario.owner, text=text, at=self._clock.now())
-        await self._pushes(provider).say(message, self._inbound(provider), self._store, self._clock)
+        await self._pushes(provider).say(
+            message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
+        )
 
     async def _ask(self, person: Person, asked: WorldEvent, history: list[WorldEvent]) -> None:
         reply = await self._replier.decide(person, asked, history, self._clock)
@@ -633,10 +659,29 @@ class Orchestrator:
             raise RunRefused(f"agent {self._agent.name} declares no inbound target for {provider}")
         return target
 
+    def _secret(self, provider: ProviderKey) -> str:
+        if provider not in self._signing:
+            raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
+        return self._signing[provider]
+
     def _tickets(self, provider: ProviderKey) -> HoldsTickets:
         if provider not in self._services.tickets:
             raise RunRefused(f"a ticket fate is due on {provider}, which holds no tickets a person can move")
         return self._services.tickets[provider]
+
+
+def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:
+    """Whether an edit changed what the message says, against its version before the edit."""
+    assert isinstance(edit.after, MessageSnapshot)
+    before = next(
+        (
+            e.after.text
+            for e in reversed(history)
+            if e.seq < edit.seq and e.entity == edit.entity and isinstance(e.after, MessageSnapshot)
+        ),
+        None,
+    )
+    return before != edit.after.text
 
 
 async def run_scenario(
@@ -652,10 +697,9 @@ async def run_scenario(
     mounts: Mounts | None = None,
     scorer: Scorer | None = None,
     state_dir: Path | None = None,
-    poll_interval: float = 0.05,
-    max_polls: int = 1200,
+    signing: Mapping[ProviderKey, str] | None = None,
 ) -> RunRecord:
-    """Run one scenario from its start."""
+    """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -670,6 +714,5 @@ async def run_scenario(
         mounts=mounts,
         scorer=scorer,
         state_dir=state_dir,
-        poll_interval=poll_interval,
-        max_polls=max_polls,
+        signing=signing,
     ).run()

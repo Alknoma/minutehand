@@ -66,6 +66,44 @@ def ask_and_file(reason: str, now: datetime, state: dict[str, object]) -> None:
     report("idle", datetime.fromisoformat(str(state["check_at"])))
 
 
+PLACEHOLDER = "Thinking..."
+QUESTION = "Can you confirm the pricing?"
+
+
+def placeholder(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: post a placeholder to sofia and edit it into the question before the wake ends. A reply: done."""
+    if reason == "start":
+        posted = call("POST", "/testchat/messages", {"to": "sofia@example.com", "text": PLACEHOLDER})
+        assert isinstance(posted, dict)
+        call("PUT", f"/testchat/messages/{posted['id']}", {"text": QUESTION})
+        save(state)
+        report("idle")
+        return
+    save(state)
+    report("done")
+
+
+def placeholder_later(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: post a placeholder to sofia and wake in an hour. DUE: edit it into the question, and once more
+    to the same text. A reply: edit it to say it was answered, and done."""
+    if reason == "start":
+        posted = call("POST", "/testchat/messages", {"to": "sofia@example.com", "text": PLACEHOLDER})
+        assert isinstance(posted, dict)
+        state["message"] = posted["id"]
+        save(state)
+        report("idle", now + timedelta(hours=1))
+        return
+    if reason == "due":
+        call("PUT", f"/testchat/messages/{state['message']}", {"text": QUESTION})
+        call("PUT", f"/testchat/messages/{state['message']}", {"text": QUESTION})
+        save(state)
+        report("idle")
+        return
+    call("PUT", f"/testchat/messages/{state['message']}", {"text": "Answered, thank you."})
+    save(state)
+    report("done")
+
+
 def ask_silent(reason: str, now: datetime, state: dict[str, object]) -> None:
     if reason == "start":
         call("POST", "/testchat/messages", {"to": "dania@example.com", "text": "Could you review the contract?"})
@@ -93,7 +131,9 @@ def fail(reason: str, now: datetime, state: dict[str, object]) -> None:
     sys.exit(3)
 
 
-BEHAVIOURS = {f.__name__: f for f in (ask_and_file, ask_silent, keep_waking, book, fail)}
+BEHAVIOURS = {
+    f.__name__: f for f in (ask_and_file, placeholder, placeholder_later, ask_silent, keep_waking, book, fail)
+}
 
 
 def main() -> None:

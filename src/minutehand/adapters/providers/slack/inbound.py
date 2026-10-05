@@ -61,8 +61,11 @@ async def deliver(reply: PersonReply, target: InboundTarget, world: Store, clock
     author = state.user_id(reply.person)
     if channel is None or not slack.is_member(channel_id, author):
         raise LookupError(f"{reply.person} is not in the conversation {channel_id} they are answering")
-    # In an IM a reply is a new message; anywhere else it goes in the thread of what it answers.
-    thread_ts = asked.thread_ts if asked.thread_ts is not None or channel.is_im else asked.ts
+    # In an IM a reply is a new message; anywhere else it goes in the thread of what it answers. An ephemeral
+    # message has no thread of its own: the answer is posted where it was shown.
+    thread_ts = (
+        asked.thread_ts if asked.thread_ts is not None or channel.is_im or asked.ephemeral_to is not None else asked.ts
+    )
     await _write_and_push(slack, channel, author, reply.text, thread_ts, target, clock, secret)
 
 
