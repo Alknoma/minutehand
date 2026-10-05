@@ -11,10 +11,18 @@ from pathlib import Path
 import httpx
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from minutehand import session
 from minutehand.adapters.mcp.results import Evidence, FindingList
 from minutehand.adapters.mcp.server import build
+from minutehand.adapters.telemetry.otel import OtelTelemetry
 from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import ModelCallsResponse, TraceResponse
 from minutehand.application.model_calls import JoinedBy
@@ -141,3 +149,27 @@ async def test_the_agents_telemetry_is_passed_on_and_a_dead_destination_does_not
     assert len(kept.spans()) == 3
     [failure] = kept.forward_failures()
     assert (failure.signal, failure.endpoint) == (Signal.TRACES, f"{dead}/v1/traces")
+
+
+async def test_minutehands_own_telemetry_carries_none_of_what_the_agent_exported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", tracing=True)
+    spans, logs = InMemorySpanExporter(), InMemoryLogRecordExporter()
+    tracer_provider, logger_provider = TracerProvider(), LoggerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(spans))
+    logger_provider.add_log_record_processor(SimpleLogRecordProcessor(logs))
+    telemetry = OtelTelemetry(tracer_provider, logger_provider, MeterProvider(metric_readers=[InMemoryMetricReader()]))
+
+    [outcome] = await session.play(
+        scenario(Silent()), launched.agent, state=tmp_path / "state", command=launched.command, telemetry=telemetry
+    )
+
+    assert world(tmp_path / "state", outcome.record.run_id).spans()
+    exported = [s.attributes for s in spans.get_finished_spans()] + [
+        r.log_record.attributes for r in logs.get_finished_logs()
+    ]
+    names = {s.name for s in spans.get_finished_spans()}
+    assert "chat model-test" not in names and "send_dm" not in names
+    words = " ".join(str(v) for attributes in exported if attributes is not None for v in attributes.values())
+    assert "be told?" not in words and "gen_ai" not in " ".join(k for a in exported if a for k in a)
