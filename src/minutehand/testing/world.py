@@ -68,8 +68,12 @@ class OpenWorld:
         return self.client.calls(self.world_id).calls
 
     def unmatched_calls(self) -> list[RecordedCall]:
-        """This world's calls to hosts no provider claims, refused with 502."""
+        """This world's calls to hosts no provider claims and no declaration captures, refused with 502."""
         return self.client.calls(self.world_id, unmatched=True).calls
+
+    def captured_calls(self) -> list[RecordedCall]:
+        """This world's calls to hosts declared as outbound (`CreateWorld.outbound`), captured and not refused."""
+        return self.client.calls(self.world_id, captured=True).calls
 
     def now(self) -> datetime:
         return self.client.world(self.world_id).now
