@@ -3,15 +3,21 @@
 Nothing is updated in place. A change is an event with a sequence number; an
 entity's current state is its latest version at or below the head. A fork shares
 its parent's log up to a sequence number and writes its own rows after it.
+
+How bodies are kept (inline, or once per distinct content) is the store's own business: every read returns
+exactly the text that was written. The agent's snapshots are kept by the same store, beside the log they belong
+to, as a manifest of files each stored once.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Protocol
 
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
+from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
 from minutehand.domain.telemetry import ForwardFailure, ReceivedSpan, Signal, SpanSource, StoredSpan
 from minutehand.domain.world import Change, EntityKind, EntityRef, Exchange, RecordedCall, Stored, WorldEvent
 from minutehand.ports.clock import Clock
@@ -100,6 +106,44 @@ class Store(Protocol):
         ...
 
     def discard(self) -> None:
-        """Remove this run and everything it wrote: a fork refused before it ran leaves nothing behind.
-        Refused for a run that has children, whose logs read through it."""
+        """Remove this run and everything it wrote, and every stored body and snapshot file nothing else refers
+        to: a fork refused before it ran leaves nothing behind. Refused for a run that has children, whose logs
+        read through it."""
+        ...
+
+    def keep_snapshot(self, wake: int, directory: Path) -> AgentSnapshot:
+        """Keep what the snapshot command wrote into `directory` as this run's snapshot at the end of `wake`: each
+        file stored once, whatever other snapshot in the file already holds it. `directory` is left as it was;
+        the caller removes it. Raises for anything in it that is neither a regular file nor a directory."""
+        ...
+
+    def snapshot(self, run_id: str, wake: int) -> AgentSnapshot | None:
+        """One snapshot, kept or pruned; None when none was ever kept for that run and wake."""
+        ...
+
+    def snapshots(self) -> list[AgentSnapshot]:
+        """Every snapshot this run can restore from, kept or pruned: its own and its ancestors' up to the wake
+        it was forked after, oldest first."""
+        ...
+
+    def materialise(self, run_id: str, wake: int, into: Path) -> None:
+        """Write one snapshot out as the plain directory the snapshot command filled: the same paths, bytes and
+        modes. `into` must not exist. Raises `LookupError` for a snapshot never kept or pruned."""
+        ...
+
+    def pin(self, run_id: str, wake: int, *, pinned: bool) -> AgentSnapshot:
+        """Pin a snapshot so pruning keeps it, or unpin it. Refused for one already pruned."""
+        ...
+
+    def prune(self, keep: int) -> list[AgentSnapshot]:
+        """Let go of this run's snapshots beyond the newest `keep`, except a pinned one, the one at the run's
+        start, and one a fork was taken from; their files go once nothing refers to them. Answers those pruned."""
+        ...
+
+    def sweep(self) -> Freed:
+        """Remove every stored body and snapshot file no row in any run of the file refers to."""
+        ...
+
+    def usage(self) -> RunUsage:
+        """What this run costs on disk."""
         ...

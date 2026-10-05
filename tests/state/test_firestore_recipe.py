@@ -27,7 +27,6 @@ from minutehand import session
 from minutehand.application.checkpoint import Restorable
 from minutehand.application.files import load_agent, load_scenario
 from minutehand.application.restore import RestoreFailed, RestoreStep
-from minutehand.application.state_hooks import wake_dir
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
 from tests.e2e.support import free_port
@@ -170,7 +169,9 @@ async def test_the_firestore_emulator_is_rewound_by_restarting_it_with_an_import
     assert child.record.parent_run == parent.record.run_id
 
     # A restore that puts back another moment: the snapshot after wake 2, for a fork from the end of wake 1.
-    other = wake_dir(state / session.RUNS, parent.record.run_id, 2)
+    other = tmp_path / "after-wake-2"
+    with session.reading(state, parent.record.run_id) as kept:
+        kept.materialise(parent.record.run_id, 2, other)
     wrong = recipe_agent(
         emulator.agent_port,
         restore=["env", f"MINUTEHAND_SNAPSHOT_DIR={other}", *HOOKS, "restore"],

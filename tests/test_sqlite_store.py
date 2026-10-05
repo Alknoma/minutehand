@@ -239,13 +239,14 @@ def test_a_file_from_another_schema_version_is_refused(tmp_path: Path) -> None:
         SqliteStore(path, "root", RunClock(START))
 
 
-def test_a_version_4_file_is_refused_since_its_calls_carry_no_capture(tmp_path: Path) -> None:
-    """Version 5 lets an exchange carry `captured` and a message `answerable`; an older file is not guessed at."""
-    path = tmp_path / "v4.db"
-    SqliteStore(path, "root", RunClock(START))
+def test_a_version_5_file_is_refused_since_its_bodies_are_inline(tmp_path: Path) -> None:
+    """Version 6 keeps a long body once, under its hash, and snapshots as manifests; a version 5 file holds every
+    body in its row and is not guessed at."""
+    path = tmp_path / "v5.db"
     with sqlite3.connect(path) as db:
-        db.execute("PRAGMA user_version=4")
-    with pytest.raises(RuntimeError, match="written with store schema 4; this version reads schema 5"):
+        db.execute("CREATE TABLE entity_version(run_id TEXT, seq INTEGER, body TEXT)")
+        db.execute("PRAGMA user_version=5")
+    with pytest.raises(RuntimeError, match="written with store schema 5; this version reads schema 6"):
         SqliteStore(path, "root", RunClock(START))
 
 

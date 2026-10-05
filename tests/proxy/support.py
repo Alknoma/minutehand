@@ -10,7 +10,10 @@ from pathlib import Path
 import httpx
 
 from minutehand.adapters.proxy.server import Proxy
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.run_clock import RunClock
 from minutehand.domain.world import Exchange
+from tests.support.stored import everything
 
 PROVIDERS = "tests.proxy.providers"
 START = datetime(2026, 8, 24, 10, 50, tzinfo=UTC)
@@ -22,12 +25,18 @@ def client(proxy: Proxy, trust: Path) -> httpx.AsyncClient:
 
 
 def exchanges(world_path: Path) -> list[tuple[int, int, Exchange]]:
-    """Every attached exchange, including those that produced no event and so no `Store.events` row."""
+    """Every attached exchange of the file's root run, including those that produced no event and so no
+    `Store.events` row, read back through the store as any reader of the record would."""
     with sqlite3.connect(world_path) as db:
-        rows = db.execute("SELECT first_seq, last_seq, exchange FROM exchange ORDER BY position").fetchall()
-    return [(r[0], r[1], Exchange.model_validate_json(r[2])) for r in rows]
+        [root] = db.execute("SELECT run_id FROM run WHERE parent IS NULL").fetchone()
+    store = SqliteStore(world_path, root, RunClock(START))
+    try:
+        return [(call.first_seq, call.last_seq, call.exchange) for call in store.calls()]
+    finally:
+        store.close()
 
 
 def stored_bytes(world_path: Path) -> bytes:
-    """Everything SQLite holds for the run, the write-ahead log included."""
-    return b"".join(p.read_bytes() for p in world_path.parent.glob(world_path.name + "*"))
+    """Everything the store keeps for the run beside `world_path`: the file, its write-ahead log, and every stored
+    body and snapshot file decompressed."""
+    return everything(world_path.parent)
