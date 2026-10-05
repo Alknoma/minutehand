@@ -11,8 +11,8 @@ from minutehand.checks.idle_wake import IdleWake
 from minutehand.checks.near_miss_name import NearMissName
 from minutehand.checks.repeated_message import RepeatedMessage
 from minutehand.checks.unmatched_call import UnmatchedCall
-from minutehand.domain.checks import FindingKind, WakeRecord
-from minutehand.domain.scenario import TicketInState
+from minutehand.domain.checks import FindingKind, WakeModelCalls, WakeRecord
+from minutehand.domain.scenario import Expectation, PersonAsked, TicketInState
 from minutehand.domain.world import Actor, Exchange, Operation, TicketState
 from tests.checks.world import Log, at, person, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
@@ -28,6 +28,27 @@ def test_a_wake_that_changed_nothing_is_flagged_for_review() -> None:
     wakes = [_wake(1, 2), _wake(2, 0), _wake(3, 0, commitments=True)]
     [finding] = IdleWake().run(view(scenario(OWNER), Log(), wakes=wakes)).findings
     assert (finding.wake, finding.kind, finding.pattern) == (2, FindingKind.REVIEW, "check_world_before_model")
+    assert finding.message == (
+        "wake 2 changed nothing in the world and nothing the agent was waiting on; no telemetry of the agent's "
+        "model calls was received, so how many it made is not known"
+    )
+
+
+def test_an_idle_wake_states_the_model_calls_received_during_it_and_no_advice() -> None:
+    wakes = [_wake(1, 2), _wake(2, 0), _wake(3, 0)]
+    calls = [WakeModelCalls(wake=1, calls=3), WakeModelCalls(wake=2, calls=2), WakeModelCalls(wake=3, calls=0)]
+    report = IdleWake().run(view(scenario(OWNER), Log(), wakes=wakes).model_copy(update={"model_calls": calls}))
+
+    # Wake 3 changed nothing and made no model call: that cost nothing, and it is noted, not raised.
+    [finding] = report.findings
+    assert finding.wake == 2 and finding.message == (
+        "wake 2 changed nothing in the world and nothing the agent was waiting on; 2 model calls were received or "
+        "recorded during it"
+    )
+    assert report.notes == [
+        "wake 3 changed nothing in the world and nothing the agent was waiting on, and made no model call: "
+        "not wasted effort"
+    ]
 
 
 def test_wakes_that_each_changed_something_are_not_idle() -> None:
@@ -146,7 +167,8 @@ def test_a_ticket_written_twice_in_the_expected_state_is_one_ticket() -> None:
     log.ticket("Review the contract", SOFIA, 5, operation=Operation.UPDATE, state=TicketState.DONE, external_id="T1")
     log.ticket("Review the contract", SOFIA, 6, operation=Operation.UPDATE, state=TicketState.DONE, external_id="T1")
     one = TicketInState(assignee="sofia", state=TicketState.DONE, at_most=1)
-    assert Expectations().run(view(scenario(OWNER, SOFIA, expect=[one]), log)).findings == []
+    [met] = Expectations().run(view(scenario(OWNER, SOFIA, expect=[one]), log)).findings
+    assert met.kind is FindingKind.INFORMATIONAL
     log.ticket("Review the budget", SOFIA, 7, state=TicketState.DONE, external_id="T2")
     [finding] = Expectations().run(view(scenario(OWNER, SOFIA, expect=[one]), log)).findings
     assert finding.message == "ticket for sofia in state done: wanted at most 1, found 2"
@@ -158,3 +180,29 @@ def test_a_protected_name_misspelled_in_a_record_is_found() -> None:
     world = view(scenario(OWNER).model_copy(update={"protected_names": ["Ayven"]}), log)
     [finding] = NearMissName().run(world).findings
     assert finding.message == 'wrote "Aiven" where the scenario says "Ayven"' and finding.evidence == [1]
+
+
+def test_a_met_expectation_quotes_what_met_it_so_a_hollow_pass_shows() -> None:
+    """Two passes seen on a real run: the owner told "confirmed" by a restatement of the question, with none of
+    Sofia's answer in it; and "hello" asked for, met by a paragraph that contains the word."""
+    log = Log()
+    restated = log.message([OWNER], 1, text="Asked Sofia: has the venue been confirmed?")
+    paragraph = "Hello all! " + "Here is a long update on the offsite, the budget and the agenda. " * 4
+    greeting = log.message([SOFIA], 2, text=paragraph)
+    expect: list[Expectation] = [
+        PersonAsked(person="owner", mentions=["confirmed"]),
+        PersonAsked(person="sofia", mentions=["hello"]),
+    ]
+
+    told, greeted = Expectations().run(view(scenario(OWNER, SOFIA, expect=expect), log)).findings
+
+    assert (told.kind, told.pattern, told.evidence) == (FindingKind.INFORMATIONAL, None, [restated.seq])
+    assert told.message == (
+        "owner asked mentioning ['confirmed']: met by the message to Owner (seq 1): "
+        "“Asked Sofia: has the venue been confirmed?”"
+    )
+    assert greeted.evidence == [greeting.seq]
+    assert greeted.message.startswith(
+        "sofia asked mentioning ['hello']: met by the message to Sofia (seq 2): “Hello all! Here"
+    )
+    assert greeted.message.endswith("…”") and len(greeted.message) < len(paragraph)

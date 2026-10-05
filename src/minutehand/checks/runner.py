@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime
 from types import ModuleType
 from typing import Protocol
@@ -29,7 +29,7 @@ from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
 from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.ledger import build
-from minutehand.domain.agent import Commitment
+from minutehand.domain.agent import Commitment, CommitmentStatus
 from minutehand.domain.checks import (
     Check,
     CheckReport,
@@ -38,9 +38,11 @@ from minutehand.domain.checks import (
     FindingKind,
     RunView,
     Stability,
+    WakeModelCalls,
     WakeRecord,
 )
 from minutehand.domain.people import PersonReply
+from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, PersonAsked, Scenario
 from minutehand.domain.world import EntityRef, Exchange, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
@@ -56,11 +58,13 @@ class RunResult(Model):
     blocked: list[str]
     notes: list[str]
     effectiveness: Effectiveness
+    verdict: Verdict
 
     @property
     def exit_code(self) -> int:
-        """1 when any finding is a failure. A blocked check does not pass a run; it is listed in `blocked`."""
-        return 1 if any(f.kind is FindingKind.FAIL for f in self.findings) else 0
+        """The verdict's: 0 passed, 1 a check failed, 3 no check failed and the agent did not finish. A blocked
+        check does not pass a run; it is listed in `blocked`."""
+        return self.verdict.exit_code
 
 
 def _is_check(candidate: object) -> bool:
@@ -138,10 +142,62 @@ class _Tally:
         self.blocked += report.blocked
         self.notes += [f"{check_id}: {n}" for n in report.notes]
 
-    def result(self, view: RunView, ended: datetime | None) -> RunResult:
+    def result(self, view: RunView, ended: datetime | None, stop: StopReason | None) -> RunResult:
         met = self.met - self.unjudged
         card = measure(view, self.findings, met=met, ended_at=ended or ended_at(view))
-        return RunResult(findings=self.findings, blocked=self.blocked, notes=self.notes, effectiveness=card)
+        return RunResult(
+            findings=self.findings,
+            blocked=self.blocked,
+            notes=self.notes,
+            effectiveness=card,
+            verdict=verdict(view, card, stop),
+        )
+
+
+_STOPPED = {
+    StopReason.AGENT_DONE: "the agent reported it was done",
+    StopReason.WAKE_LIMIT: "the run stopped at the scenario's wake limit",
+    StopReason.DEADLINE_PASSED: "the run stopped at the scenario's deadline",
+    StopReason.NOTHING_PENDING: "the run stopped because nothing more was due and the agent asked for no wake",
+    StopReason.AGENT_FAILED: "the run stopped because the agent could not be reached or answered with an error",
+}
+
+
+def verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Verdict:
+    """Failed when a check failed. Otherwise passed when the agent reported done, or nothing was left open;
+    unfinished when the run stopped any other way with a wait or a commitment still open."""
+    commitments = (
+        None if view.commitments is None else sum(1 for c in view.commitments if c.status is CommitmentStatus.OPEN)
+    )
+    open_work = card.waits_open_at_end + (commitments or 0)
+    how = _STOPPED[stop] if stop is not None else "how the run stopped was not recorded"
+    if card.failed_checks:
+        kind = VerdictKind.FAILED
+        words = f"Failed: {_count(card.failed_checks, 'check')} failed; {how}."
+    elif stop is StopReason.AGENT_DONE or open_work == 0:
+        kind = VerdictKind.PASSED
+        left = "" if stop is StopReason.AGENT_DONE else ", with nothing left open"
+        words = f"Passed: no check failed, and {how}{left}."
+    else:
+        kind = VerdictKind.UNFINISHED
+        still = [_count(card.waits_open_at_end, "wait")] if card.waits_open_at_end else []
+        still += [_count(commitments, "commitment")] if commitments else []
+        words = (
+            f"Not finished: no check failed, but the agent never reported it was done; {how}, "
+            f"with {' and '.join(still)} still open."
+        )
+    return Verdict(
+        kind=kind,
+        stop=stop,
+        failed_checks=card.failed_checks,
+        open_waits=card.waits_open_at_end,
+        open_commitments=commitments,
+        words=words,
+    )
+
+
+def _count(n: int, thing: str) -> str:
+    return f"{n} {thing}{'' if n == 1 else 's'}"
 
 
 def _deterministic(view: RunView) -> _Tally:
@@ -150,7 +206,7 @@ def _deterministic(view: RunView) -> _Tally:
         report: CheckReport = check.run(view)
         tally.add(check.id, report)
         if isinstance(check, Expectations):
-            tally.met -= len(report.findings)
+            tally.met -= Expectations.failed(report)
     return tally
 
 
@@ -160,13 +216,16 @@ def failed_entities(view: RunView, findings: list[Finding]) -> frozenset[EntityR
     return frozenset(e.entity for e in view.events if e.seq in seqs)
 
 
-def evaluate(view: RunView, *, ended: datetime | None = None) -> RunResult:
+def evaluate(view: RunView, *, stop: StopReason | None, ended: datetime | None = None) -> RunResult:
     """Every deterministic check over a view that is already built. Judged checks are not run, and an `about`
-    expectation, which only `asked_about` can settle, is not counted as met."""
-    return _deterministic(view).result(view, ended)
+    expectation, which only `asked_about` can settle, is not counted as met. `stop` is how the run ended, None
+    for a run captured elsewhere that does not say."""
+    return _deterministic(view).result(view, ended, stop)
 
 
-async def evaluate_judged(view: RunView, model: LanguageModel | None, *, ended: datetime | None = None) -> RunResult:
+async def evaluate_judged(
+    view: RunView, model: LanguageModel | None, *, stop: StopReason | None, ended: datetime | None = None
+) -> RunResult:
     """Every deterministic check, then every judged check on what they did not fail. With no model, each judged
     check is blocked; a model that fails partway blocks the check it failed in."""
     tally = _deterministic(view)
@@ -184,7 +243,7 @@ async def evaluate_judged(view: RunView, model: LanguageModel | None, *, ended: 
         if isinstance(check, AskedAbout):
             tally.unjudged = 0
             tally.met -= len(report.findings)
-    return tally.result(view, ended)
+    return tally.result(view, ended, stop)
 
 
 def evaluate_run(
@@ -193,13 +252,23 @@ def evaluate_run(
     wakes: list[WakeRecord],
     replies: list[PersonReply],
     *,
+    stop: StopReason | None,
+    withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
     ended: datetime | None = None,
 ) -> RunResult:
     """Build the obligations ledger from the world and the replies, then run every deterministic check."""
-    view = view_of(scenario, events, wakes, replies, commitments=commitments, unmatched_calls=unmatched_calls)
-    return evaluate(view, ended=ended)
+    view = view_of(
+        scenario,
+        events,
+        wakes,
+        replies,
+        withdrawn=withdrawn,
+        commitments=commitments,
+        unmatched_calls=unmatched_calls,
+    )
+    return evaluate(view, stop=stop, ended=ended)
 
 
 def view_of(
@@ -208,22 +277,34 @@ def view_of(
     wakes: list[WakeRecord],
     replies: list[PersonReply],
     *,
+    withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
+    model_calls: list[WakeModelCalls] | None = None,
 ) -> RunView:
-    """What every check reads: the world, the wakes, and the obligations ledger built from the replies."""
+    """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
+    which `withdrawn` (positions) were withdrawn before they landed."""
     return RunView(
         scenario=scenario,
         events=events,
         wakes=wakes,
-        obligations=build(scenario, events, replies),
+        obligations=build(scenario, events, replies, withdrawn=withdrawn),
+        replies=[r for i, r in enumerate(replies) if i not in withdrawn],
         commitments=commitments,
         unmatched_calls=unmatched_calls,
+        model_calls=model_calls,
     )
 
 
 def stability(results: list[RunResult]) -> Stability:
-    """Several samples of one scenario: how many passed."""
+    """Several samples of one scenario: how many passed. A sample that did not finish did not pass."""
     if not results:
         raise ValueError("stability needs at least one sample")
-    return Stability(samples=len(results), passed=sum(1 for r in results if r.exit_code == 0))
+    return Stability(samples=len(results), passed=sum(1 for r in results if r.verdict.kind is VerdictKind.PASSED))
+
+
+def exit_code(results: list[RunResult]) -> int:
+    """Over several samples: 1 when any failed, else 3 when any did not finish, else 0."""
+    kinds = {r.verdict.kind for r in results}
+    worst = next((k for k in (VerdictKind.FAILED, VerdictKind.UNFINISHED) if k in kinds), VerdictKind.PASSED)
+    return EXIT_CODES[worst]

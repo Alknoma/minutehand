@@ -272,7 +272,7 @@ async def _ask_again(
     """
     events = child.events()
     replies = child.replies()
-    answered = {(r.in_reply_to, r.person) for r in replies}
+    answered = {(r.in_reply_to, r.person) for i, r in enumerate(replies) if i not in checkpoint.withdrawn}
     changed = {p.email: p for p in scenario.people if p.key in people}
     pending = list(checkpoint.pending)
     count = len(replies)

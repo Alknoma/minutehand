@@ -6,7 +6,9 @@ agent filed or reassigned; its end is a later event by the person who holds it.
 
 Whether a message asked anything is the replier's decision, never the ledger's:
 a message opens a wait when the person has a reply decided to it, or when the
-person is `Silent`, whose every message is a question left unanswered. A message
+person is `Silent`, whose every message is a question left unanswered. A reply
+withdrawn before it landed (the agent edited the message it answered) still says
+the message asked something, and settles nothing: it never reached anyone. A message
 a person would not answer (a thank-you, a report) asked them nothing, whether or
 not they are away when it arrives.
 
@@ -20,6 +22,7 @@ and treats a reminder sent in another channel as a new ask.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime
@@ -104,14 +107,22 @@ class _Open(Model):
         return self.settled_at is None or moment < self.settled_at
 
 
-def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonReply]) -> list[Obligation]:
-    """Every obligation the run opened, in the order it opened; the scenario deadline last."""
+def build(
+    scenario: Scenario,
+    events: list[WorldEvent],
+    replies: list[PersonReply],
+    *,
+    withdrawn: Collection[int] = (),
+) -> list[Obligation]:
+    """Every obligation the run opened, in the order it opened; the scenario deadline last. `withdrawn` are the
+    positions in `replies` of replies withdrawn before they landed."""
     events = sorted(events, key=lambda e: e.seq)
     head = events[-1].sim_time if events else scenario.starts_at
     by_key = {p.key: p for p in scenario.people}
     by_email = {p.email: p for p in scenario.people}
     away = absences(scenario, events)
-    answered = {(_ref(r.in_reply_to), r.person): r for r in replies}
+    asked = {(_ref(r.in_reply_to), r.person) for r in replies}
+    answered = {(_ref(r.in_reply_to), r.person): r for i, r in enumerate(replies) if i not in withdrawn}
     opened: list[_Open] = []
     holder: dict[tuple[str, EntityKind, str], str | None] = {}
 
@@ -137,7 +148,7 @@ def build(scenario: Scenario, events: list[WorldEvent], replies: list[PersonRepl
                 if earlier is not None:
                     opened[opened.index(earlier)] = _joined(earlier, event.entity, settled)
                     continue
-                if reply is None and not isinstance(person.reply, Silent):
+                if (_ref(event.entity), person.key) not in asked and not isinstance(person.reply, Silent):
                     continue
                 opened.append(
                     _Open(

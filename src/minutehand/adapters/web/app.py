@@ -8,7 +8,7 @@
     GET /api/runs/{run_id}/wakes
     GET /api/runs/{run_id}/events           the world's log, without the run loop's own checkpoints
     GET /api/runs/{run_id}/calls            every HTTP call the proxy recorded
-    GET /api/runs/{run_id}/obligations      what the world was waiting on (`checks.ledger`)
+    GET /api/runs/{run_id}/obligations      what the world was waiting on (`checks.ledger`), and when each fell due
     GET /api/runs/{run_id}/findings         each with its pattern, once the run is checked
     GET /api/runs/{run_id}/scorecard
     GET /api/runs/{run_id}/model-calls      for each event a finding cites: the agent's spans and model call
@@ -32,7 +32,9 @@ from starlette.routing import Route
 from minutehand import session
 from minutehand.adapters.web.responses import (
     CallsResponse,
+    DrawnWait,
     EventsResponse,
+    FellDue,
     FindingsResponse,
     ModelCallsResponse,
     ObligationsResponse,
@@ -45,10 +47,11 @@ from minutehand.adapters.web.responses import (
     WakesResponse,
     explained,
 )
-from minutehand.application.checkpoint import CHECKPOINT
+from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
 from minutehand.application.model_calls import trace_of
 from minutehand.application.refusals import RunRefused
-from minutehand.checks.ledger import build
+from minutehand.checks._waits import chases, ended_at
+from minutehand.checks.runner import view_of
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.scenario import Model
 from minutehand.session import Logged
@@ -115,15 +118,47 @@ def create_app(state: Path) -> Starlette:
     def obligations(run_id: str) -> Response:
         scenario = session.scenario_of(state, run_id)
         with session.reading(state, run_id) as world:
-            ledger = build(scenario, world.events(), world.replies())
-        return _json(ObligationsResponse(obligations=ledger))
+            last = read_checkpoint(world)
+            view = view_of(
+                scenario,
+                world.events(),
+                session.wakes_of(state, run_id, world),
+                world.replies(),
+                withdrawn=last.withdrawn if last is not None else [],
+            )
+        due = {c.obligation.key: c.expiries for c in chases(view, ended_at(view))}
+        return _json(
+            ObligationsResponse(
+                obligations=[
+                    DrawnWait(
+                        obligation=o,
+                        fell_due=[
+                            FellDue(
+                                at=e.expired,
+                                until=e.touched_at or e.closes,
+                                followed_up=e.touch is not None,
+                                late=e.late,
+                            )
+                            for e in due.get(o.key, [])
+                        ],
+                    )
+                    for o in view.obligations
+                ]
+            )
+        )
 
     def findings(run_id: str) -> Response:
         if not session.find(state, run_id).finished:
-            return _json(FindingsResponse(finished=False, findings=[], blocked=[], notes=[]))
+            return _json(FindingsResponse(finished=False, verdict=None, findings=[], blocked=[], notes=[]))
         result = session.load(state, run_id).result
         return _json(
-            FindingsResponse(finished=True, findings=explained(result), blocked=result.blocked, notes=result.notes)
+            FindingsResponse(
+                finished=True,
+                verdict=result.verdict,
+                findings=explained(result),
+                blocked=result.blocked,
+                notes=result.notes,
+            )
         )
 
     def scorecard(run_id: str) -> Response:
@@ -199,6 +234,7 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
         goal=scenario.goal,
         finished=entry.finished,
         stop=outcome.record.stop if outcome is not None else None,
+        verdict=outcome.result.verdict.kind if outcome is not None else None,
         failed=kinds.count(FindingKind.FAIL),
         to_review=kinds.count(FindingKind.REVIEW),
         parent_run=entry.parent_run,

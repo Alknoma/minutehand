@@ -214,7 +214,25 @@ class TicketInState(Bound):
     state: TicketState
 
 
-Expectation = Annotated[PersonAsked | TicketCreated | TicketDeleted | TicketInState, Field(discriminator="kind")]
+class Relayed(Bound):
+    """The agent passed on what a person said: a message from the agent to `to` carries the `tell`, a phrase the
+    scenario's author picks from what `said_by` will say, matched in any case.
+
+    The tell is what makes this mechanical rather than a guess at meaning. A scenario is refused when its goal, a
+    direction, a seeded ticket or document, or anyone else's scripted reply or facts holds the tell, and when
+    `said_by` could never say it: silent, or none of their scripted replies (or, written by a model, none of their
+    facts) holds it. In a run, the first thing in the world to hold the tell must be `said_by`'s own reply; an
+    agent message that held it before means the agent did not hear it from them, and no message counts."""
+
+    kind: Literal["relayed"] = "relayed"
+    said_by: str = Field(description="Person.key of whoever says the tell")
+    to: str = Field(description="Person.key the agent must pass it on to")
+    tell: str = Field(min_length=1, description="A phrase only `said_by`'s answer holds")
+
+
+Expectation = Annotated[
+    PersonAsked | TicketCreated | TicketDeleted | TicketInState | Relayed, Field(discriminator="kind")
+]
 
 
 class _ScenarioBody(Model):
@@ -246,10 +264,42 @@ class _ScenarioBody(Model):
         named += [a.delegate for p in self.people for a in p.absences if a.delegate]
         named += [e.person for e in self.expect if isinstance(e, PersonAsked)]
         named += [e.assignee for e in self.expect if isinstance(e, (TicketCreated, TicketInState)) and e.assignee]
+        named += [k for e in self.expect if isinstance(e, Relayed) for k in (e.said_by, e.to)]
         missing = sorted(set(named) - known)
         if missing:
             raise ValueError(f"no such person: {', '.join(missing)}")
+        for relayed in (e for e in self.expect if isinstance(e, Relayed)):
+            self._refuse_tell(relayed)
         return self
+
+    def _refuse_tell(self, relayed: Relayed) -> None:
+        """A tell the agent could write without hearing it from `said_by`, or that `said_by` can never say."""
+        tell = relayed.tell.casefold()
+        if relayed.said_by == relayed.to:
+            raise ValueError(f"a relayed tell goes from one person to another; {relayed.said_by} is both")
+        elsewhere = [("the goal", self.goal)]
+        elsewhere += [(f"direction {i + 1}", d.text) for i, d in enumerate(self.directions)]
+        elsewhere += [(f"seeded ticket {t.title!r}", f"{t.title} {t.body}") for t in self.tickets]
+        elsewhere += [(f"seeded document {d.title!r}", f"{d.title} {d.text}") for d in self.documents]
+        for person in self.people:
+            if person.key == relayed.said_by:
+                continue
+            said = [r.text for r in person.reply.replies] if isinstance(person.reply, Scripted) else []
+            elsewhere += [(f"what {person.key} says or knows", text) for text in [*said, *person.facts]]
+        for where, text in elsewhere:
+            if tell in text.casefold():
+                raise ValueError(
+                    f"the tell {relayed.tell!r} appears in {where}, so the agent could write it without hearing "
+                    f"it from {relayed.said_by}"
+                )
+        speaker = next(p for p in self.people if p.key == relayed.said_by)
+        reply = speaker.reply
+        if isinstance(reply, Silent):
+            raise ValueError(f"{relayed.said_by} is silent and can never say the tell {relayed.tell!r}")
+        own = [r.text for r in reply.replies] if isinstance(reply, Scripted) else speaker.facts
+        if not any(tell in text.casefold() for text in own):
+            source = "scripted reply" if isinstance(reply, Scripted) else "fact"
+            raise ValueError(f"no {source} of {relayed.said_by} holds the tell {relayed.tell!r}")
 
 
 class WrittenScenario(_ScenarioBody):

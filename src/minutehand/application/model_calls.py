@@ -19,6 +19,7 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.domain.checks import WakeModelCalls
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import AttributeValue, IntValue, SpanSource, StoredSpan, StringValue
 from minutehand.domain.world import WorldEvent
@@ -90,6 +91,15 @@ def is_model_call(stored: StoredSpan) -> bool:
     if operation is not None:
         return operation in MODEL_OPERATIONS
     return _first(stored, "gen_ai.request.model", "gen_ai.response.model") is not None
+
+
+def per_wake(spans: list[StoredSpan], wakes: list[int]) -> list[WakeModelCalls] | None:
+    """How many model calls each wake made, by the wake each span is placed in; None when no span is a model
+    call at all, since then nobody can tell a wake that made none from an agent that reports none."""
+    calls = [s.wake for s in spans if is_model_call(s)]
+    if not calls:
+        return None
+    return [WakeModelCalls(wake=w, calls=calls.count(w)) for w in wakes]
 
 
 def model_call(stored: StoredSpan) -> ModelCall:

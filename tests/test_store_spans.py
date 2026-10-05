@@ -16,6 +16,7 @@ from minutehand.domain.telemetry import (
     Attribute,
     IntValue,
     MapValue,
+    Placement,
     ReceivedSpan,
     Signal,
     SpanSource,
@@ -29,14 +30,16 @@ TRACE_A = "a" * 32
 TRACE_B = "b" * 32
 
 
-def span(trace_id: str, span_id: str, name: str = "work", parent: str | None = None) -> ReceivedSpan:
+def span(
+    trace_id: str, span_id: str, name: str = "work", parent: str | None = None, *, start: datetime = REAL
+) -> ReceivedSpan:
     return ReceivedSpan(
         trace_id=trace_id,
         span_id=span_id,
         parent_span_id=parent,
         name=name,
-        start=REAL,
-        end=REAL + timedelta(milliseconds=30),
+        start=start,
+        end=start + timedelta(milliseconds=30),
         attributes=[
             Attribute(key="gen_ai.request.model", value=StringValue(value="model-luna")),
             Attribute(key="gen_ai.usage.input_tokens", value=IntValue(value=12)),
@@ -91,20 +94,59 @@ def test_spans_are_read_by_trace_and_by_wake_in_the_order_they_arrived(world: tu
     assert store.spans(trace_id="c" * 32) == []
 
 
-def test_a_fork_sees_its_parents_spans_up_to_the_fork_and_not_after(world: tuple[SqliteStore, RunClock]) -> None:
-    store, _ = world
-    store.receive([span(TRACE_A, "1" * 16, "before any event")], source=SpanSource.RECEIVED)
-    store.apply(change(1))
-    store.receive([span(TRACE_A, "2" * 16, "at the fork")], source=SpanSource.RECEIVED)
-    store.apply(change(2))
-    store.receive([span(TRACE_A, "3" * 16, "after the fork")], source=SpanSource.RECEIVED)
+def _wake(store: SqliteStore, clock: RunClock) -> int:
+    wake = clock.begin_wake()
+    store.wake_began(wake)
+    return wake
 
-    fork = store.fork("what-if", at_seq=1, clock=RunClock(START))
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def test_a_span_is_placed_in_the_wake_whose_real_window_holds_its_start_however_late_it_arrives(
+    world: tuple[SqliteStore, RunClock],
+) -> None:
+    store, clock = world
+    before = span(TRACE_A, "1" * 16, "before any wake", start=_now() - timedelta(hours=1))
+    _wake(store, clock)
+    during_first = _now()
+    store.receive([span(TRACE_A, "2" * 16, "on time", start=_now())], source=SpanSource.RECEIVED)
+    store.wake_ended(1)
+    _wake(store, clock)
+    late = store.receive(
+        [span(TRACE_A, "3" * 16, "flushed late", start=during_first), before], source=SpanSource.RECEIVED
+    )
+
+    assert [(s.wake, s.arrived_in_wake, s.placed_by) for s in late] == [
+        (1, 2, Placement.WINDOW),
+        (2, 2, Placement.ARRIVAL),
+    ]
+    assert [s.span.name for s in store.spans(wake=1)] == ["on time", "flushed late"]
+    assert [s.span.name for s in store.spans(wake=2)] == ["before any wake"]
+
+
+def test_a_fork_sees_its_parents_spans_of_the_wakes_up_to_the_fork_however_late_they_arrived(
+    world: tuple[SqliteStore, RunClock],
+) -> None:
+    store, clock = world
+    store.receive([span(TRACE_A, "1" * 16, "at setup")], source=SpanSource.RECEIVED)
+    _wake(store, clock)
+    during_first = _now()
+    forked_at = store.apply(change(1)).seq
+    store.wake_ended(1)
+    _wake(store, clock)
+    store.apply(change(2))
+    # A batching exporter flushes wake 1's span during wake 2, after the seq the fork is taken at.
+    store.receive([span(TRACE_A, "2" * 16, "of wake 1, flushed late", start=during_first)], source=SpanSource.RECEIVED)
+    store.receive([span(TRACE_A, "3" * 16, "of wake 2", start=_now())], source=SpanSource.RECEIVED)
+
+    fork = store.fork("what-if", at_seq=forked_at, clock=RunClock(START))
     fork.receive([span(TRACE_A, "4" * 16, "in the fork")], source=SpanSource.RECEIVED)
 
-    assert [s.span.name for s in fork.spans(trace_id=TRACE_A)] == ["before any event", "at the fork", "in the fork"]
+    assert [s.span.name for s in fork.spans(trace_id=TRACE_A)] == ["at setup", "of wake 1, flushed late", "in the fork"]
     assert [s.run_id for s in fork.spans()] == ["root", "root", "what-if"]
-    assert [s.span.name for s in store.spans()] == ["before any event", "at the fork", "after the fork"]
+    assert [s.span.name for s in store.spans()] == ["at setup", "of wake 1, flushed late", "of wake 2"]
 
 
 def test_a_failed_forward_is_recorded_with_the_run(world: tuple[SqliteStore, RunClock]) -> None:

@@ -173,3 +173,24 @@ async def test_minutehands_own_telemetry_carries_none_of_what_the_agent_exported
     assert "chat model-test" not in names and "send_dm" not in names
     words = " ".join(str(v) for attributes in exported if attributes is not None for v in attributes.values())
     assert "be told?" not in words and "gen_ai" not in " ".join(k for a in exported if a for k in a)
+
+
+async def test_an_idle_wake_with_no_model_call_in_the_agents_telemetry_is_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The diligent agent asks, follows up two days later, and two days after that wakes, sends nothing and asks
+    for no further wake. Traced, its telemetry shows a model call in each wake that wrote and none in the last:
+    that wake is not raised. Untraced, the same wake is raised, saying the count is not known."""
+    traced = agent_under_test(tmp_path / "traced", monkeypatch, "diligent", tracing=True)
+    [seen] = await session.play(scenario(Silent()), traced.agent, state=tmp_path / "a", command=traced.command)
+    untraced = agent_under_test(tmp_path / "untraced", monkeypatch, "diligent")
+    [blind] = await session.play(scenario(Silent()), untraced.agent, state=tmp_path / "b", command=untraced.command)
+
+    assert [(w.index, w.world_changes) for w in seen.record.wakes] == [(1, 1), (2, 1), (3, 0)]
+    assert [f for f in seen.result.findings if f.check == "idle_wake"] == []
+    assert (
+        "idle_wake: wake 3 changed nothing in the world and nothing the agent was waiting on, and made no model call: not wasted effort"
+        in seen.result.notes
+    )
+    [raised] = [f for f in blind.result.findings if f.check == "idle_wake"]
+    assert raised.wake == 3 and raised.message.endswith("so how many it made is not known")

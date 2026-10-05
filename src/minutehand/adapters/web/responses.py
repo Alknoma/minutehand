@@ -8,7 +8,7 @@ from minutehand.application.model_calls import EventTrace
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.checks import Effectiveness, Finding, Obligation, Pattern, WakeRecord
-from minutehand.domain.run import RunRecord, StopReason
+from minutehand.domain.run import RunRecord, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.telemetry import ForwardFailure, StoredSpan
 from minutehand.domain.world import RecordedCall, WorldEvent
@@ -21,6 +21,7 @@ class RunRow(Model):
     goal: str
     finished: bool = Field(description="False while another process is still writing the run")
     stop: StopReason | None
+    verdict: VerdictKind | None = Field(description="None until the run finishes")
     failed: int = Field(description="Findings of kind fail; 0 until the run finishes")
     to_review: int
     parent_run: str | None
@@ -54,8 +55,29 @@ class CallsResponse(Model):
     calls: list[RecordedCall]
 
 
+class FellDue(Model):
+    """One moment a wait fell due while it was still open, exactly as the scorecard counts it."""
+
+    at: AwareDatetime
+    until: AwareDatetime = Field(
+        description="The follow-up at or after it; with none, when the wait settled or the run ended"
+    )
+    followed_up: bool
+    late: bool = Field(description="Followed up more than the grace after, or never")
+
+
+class DrawnWait(Model):
+    obligation: Obligation
+    fell_due: list[FellDue] = Field(
+        description="Empty for a wait that never fell due while open, and for the scenario's deadline"
+    )
+
+
 class ObligationsResponse(Model):
-    obligations: list[Obligation]
+    obligations: list[DrawnWait] = Field(
+        description="What the world was waiting on (`checks.ledger`), each with the moments it fell due as "
+        "`checks._waits.chases` reads them for the scorecard: the viewer draws nothing as overdue on its own"
+    )
 
 
 class ExplainedFinding(Model):
@@ -66,6 +88,7 @@ class ExplainedFinding(Model):
 
 class FindingsResponse(Model):
     finished: bool
+    verdict: Verdict | None = Field(description="None until the run finishes")
     findings: list[ExplainedFinding] = Field(description="Empty until the run finishes and is checked")
     blocked: list[str]
     notes: list[str]

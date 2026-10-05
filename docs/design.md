@@ -20,7 +20,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
 | Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 9 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
-| World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 3 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
+| World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 4 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 37 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
 | Slack provider | 15 Web API methods; message events pushed to the agent, signed with the run's secret or the agent's own | Built and tested | 74 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
 | Asana provider | 20 routes over users, workspaces, projects, sections, tasks and stories | Built and tested | 55 (`tests/providers/asana/`) | Any bearer token is accepted. |
@@ -31,7 +31,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step sees only `AgentReport`. An agent with no `Reported` wake source is restored unverified, and says so. Settling sees only calls through the proxy. PostgreSQL is described, not tested. |
 | Checks, ledger, scorecard, patterns: `checks/` | 12 checks, the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
-| Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP only: a gRPC exporter is not received. Logs and metrics are acknowledged and dropped. A span is stamped with the wake it arrived in, which a batching exporter may make a later one. |
+| Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP only: a gRPC exporter is not received. Logs and metrics are acknowledged and dropped. A span is placed in a wake by comparing its SDK's clock with this machine's. |
 | Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers is untested. Samples without `StateHooks` are not independent. |
 | Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
 | MCP tools, control API and viewer, container image, model-written people, judged checks, generated providers, human actions, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
@@ -139,6 +139,7 @@ The e2e test agent (`tests/e2e/agents/slack_agent.py`, behaviour `forgetful`: as
 ```
 $ minutehand run scenario.yaml --agent agent.yaml --state state -- python slack_agent.py serve --port 8765 --state agent.json
 run d799b57b7ad2: partner_pricing
+  Failed: 2 checks failed; the run stopped because nothing more was due and the agent asked for no wake.
   stopped at 2026-09-07 10:00 UTC (simulated) because nothing more was due and the agent asked for no wake
 
 fail (2)
@@ -146,6 +147,9 @@ fail (2)
     pattern honest_closure: Honest closure. Closing is decided from the state of the world, not from the agent's last message.
   no_follow_up: wait on sofia expired 11 days 6 hours before the run ended and the agent never came back to it
     pattern expiry_on_every_wait: An expiry on every wait. Every wait carries an expected-by date and the agent wakes on it.
+
+informational (1)
+  expectations: sofia asked: met by the message to Sofia Romano (seq 17): "Could you confirm the partner pricing, please?"
 
 scorecard
   expectations met: 1 of 2
@@ -180,7 +184,7 @@ The agent stopped after one wake; the clock ran on to the deadline (seq 19 is th
 Built, on the command line:
 
 ```
-minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, findings, scorecard, checkpoints; exit 1 on any FAIL
+minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1 or 3 by the verdict
 minutehand findings <run_id>                                   -> the same report, read back from the state directory
 minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
 minutehand runs
@@ -197,7 +201,7 @@ src/minutehand/
   domain/             pure: no I/O, no clock reads
     scenario.py       Model, Scenario, Person, Answers, Scripted, Silent, DelayRange, WorkingHours, Absence,
                       SeededTicket, SeededDocument, TicketFate, Direction, PersonAsked, TicketCreated,
-                      TicketDeleted, TicketInState
+                      TicketDeleted, TicketInState, Relayed
     world.py          WorldEvent, Change, Stored, Exchange, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot, DocumentSnapshot, RecordSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
@@ -400,7 +404,7 @@ Orchestrator.run():
   RunRecord -> Scorer (every check) -> Telemetry.found, Telemetry.run_ended
 ```
 
-- A person answers a message as it reads when the wake ends. A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. An edit in a later wake that changes the text is put to the person again unless they have already answered that message, and a reply to the old text still on its way is withdrawn. The withdrawn reply stays in the `reply` table: the ledger reads the latest reply to a message, so it is outvoted when the edit gets an answer, and is read as the answer when the edit gets none.
+- A person answers a message as it reads when the wake ends. A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. An edit in a later wake that changes the text is put to the person again unless they have already answered that message, and a reply to the old text still on its way is withdrawn. The withdrawn reply stays in the `reply` table and its position is kept in every later `Checkpoint.withdrawn`: the ledger reads it as the replier's decision that the message asked something, and never as an answer, so a wait whose only reply was withdrawn stays open (`test_a_reply_withdrawn_by_an_edit_that_gets_no_answer_settles_no_wait`). Before, the ledger read the latest reply to a message, and an edit that got no answer was settled by the withdrawn one, and then `slow_to_react` failed the agent for never acting on an answer that never arrived.
 - A `Reported` wake is asked for its report after `report_first_after`, then at doubling intervals up to `report_at_most_every`; one still WORKING after `working_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says which limit it hit.
 - When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
 - A wake made only of bookings sends no `WakeRequest`: the scheduler's delivery is the wake. The loop still polls the agent's main driver (if it has one) until it is not `WORKING`, adopts its report and counts what it wrote in that wake. It cannot see whether the agent's own poll of its queue has picked the delivery up yet: an agent that answers `IDLE` before it has is moved on past it.
@@ -437,15 +441,15 @@ What a run leaves behind (`session.py`):
                                      command's output, and whether the restore was verified
 ```
 
-`world.db` holds seven tables: `run` (each run and the seq and call count it was forked at), `event`, `entity_version`, `exchange`, `reply`, `span` (the agent's spans, see "Telemetry") and `forward_failure`.
+`world.db` holds eight tables: `run` (each run and the seq, call count and wake it was forked at), `event`, `entity_version`, `exchange`, `reply`, `span` (the agent's spans, see "Telemetry"), `wake_edge` (the real moment each wake began and ended) and `forward_failure`.
 
 - `entity_version` is the world: append-only, one row per change, read "as of" a sequence number. Providers page through it with `Store.children`; nothing is held in process memory between requests.
 - `event` and `exchange` are append-only too. A call that produced no event is recorded with `first_seq > last_seq`.
 - `reply` stores every person's reply the first time it is decided. A fork copies the parent's replies up to its checkpoint, so a rerun asks no one again.
 - One file per root run isolates parallel runs. A fork lives in its root's file.
 - One `sqlite3` connection per store, shared across threads behind one lock: a provider served from a worker thread writes through it.
-- `span` is append-only and keyed like `exchange`: each row carries `after_seq`, the head of the log when the span arrived, and a fork sees its parent's rows with `after_seq` at or below the seq it was forked at, as it sees the parent's events.
-- `SCHEMA_VERSION = 3` is stamped into `user_version`; a file with tables and another version (a version 2 file, written before spans were kept) is refused, not guessed at.
+- `span` is append-only and keyed like `exchange`: each row carries the wake it is placed in, the wake it arrived in and `after_seq`, the head of the log when it arrived. A fork sees its parent's rows placed in wakes up to the one whose checkpoint it was forked at (`run.forked_wake`), however late they arrived.
+- `SCHEMA_VERSION = 4` is stamped into `user_version`; a file with tables and another version (a version 3 file, whose spans were stamped by arrival) is refused, not guessed at.
 
 ### One container
 
@@ -537,7 +541,28 @@ expect:
   - {kind: ticket_in_state, assignee: sofia, state: done}
 ```
 
-`mentions` is a case-insensitive substring match on the message text or the ticket's title and body. "Was Sofia asked about pricing" in the sense of meaning, not words, is a judged check and is designed, not built.
+`mentions` is a case-insensitive substring match on the message text or the ticket's title and body. "Was Sofia asked about pricing" in the sense of meaning, not words, is the judged check `asked_about`.
+
+A substring match can pass hollow, and both were seen on a real run: the owner was "told" the answer by a message that restated the question and carried none of the answer, and an agent told to send exactly "hello" passed by sending a paragraph that contained the word. No match is made smarter to catch it. Every met expectation is reported as an `INFORMATIONAL` finding that quotes what met it, trimmed to 160 characters, with who it went to and its seq, up to three matches and a count of the rest:
+
+```
+informational (1)
+  expectations: owner asked mentioning ['confirmed']: met by the message to Owner (seq 1): "Asked Sofia: has the venue been confirmed?"
+```
+
+A met expectation carries no pattern: there is nothing to fix. Only `FAIL` findings count against `expectations_met`.
+
+"The owner was told what Sofia answered" is `Relayed`, defined from the log alone, with no judgement and no word list:
+
+```yaml
+  - {kind: relayed, said_by: rosa, to: owen, tell: lakeside hall}
+```
+
+- **The tell is the author's.** A phrase only `said_by`'s answer holds. The scenario is refused when its goal, a direction, a seeded ticket or document, or anyone else's scripted reply or facts holds it, when `said_by` is `Silent`, and when none of their scripted replies (or, for a model-written person, none of their facts) holds it.
+- **The person must say it first.** The first event in the world whose text holds the tell must be a message from a person that is `said_by`'s own reply, not withdrawn, landing at that moment (`RunView.replies`). An agent message that held it earlier means the agent did not hear it from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
+- **A match** is an agent message to `to`, after that reply, holding the tell, in any case.
+
+What it gets wrong: the tell is a substring, so a relay that paraphrases ("the hall by the lake") is not counted, and one that quotes the tell inside a sentence that contradicts it is. A model-written person may phrase the fact without the tell, and the expectation then fails though the content was passed on.
 
 ### A person acting in the agent's own product
 
@@ -616,6 +641,8 @@ What a follow-up is (`checks/_waits.chase`):
 - **A wait falls due at its `expected_by`, and again its `patience` after each follow-up.** For an answer the patience is the person's longest delay: a reminder gives them their usual time again. For work there is none: the ticket's fate has its own pace, and the first follow-up after the date answers it.
 - **A wait is followed up for a due moment when a follow-up comes at or after it.** One that came more than `GRACE` after is late (`late_follow_up`). A wait still open whose last due moment passed with nothing after it was abandoned (`no_follow_up`), and the finding says what came before: "the agent followed up once, the last 2 days after the ask, then nothing; due again 4 days 18 hours after the ask, it sat 9 days 6 hours until the run ended".
 
+One reading serves every surface: `checks/_waits.chases` reads each wait of the ledger for these moments, the scorecard counts them, and the viewer's `/obligations` answers them per wait (`fell_due`), so the page draws a wait overdue only where the scorecard counts it due. The page once drew "overdue" from a wait's first `expected_by` by itself, and a silent owner the agent kept reporting to showed overdue while the scorecard said no wait fell due (`tests/web/test_viewer_waits.py`).
+
 What this gets wrong: the patience is the person's longest delay whatever the follow-up said, so a reminder that only adds a detail gives the same allowance as one that re-asks; and a follow-up sent a minute before a due moment moves it on a whole delay, so an agent can keep a wait "followed up" by pinging just before each date. `burden` is where that shows.
 
 The reference run, scored by `tests/test_checks_on_reference_run.py` from the run's own turn files (`timeline.json`):
@@ -630,13 +657,38 @@ wakes                  20          3 changed nothing
 
 These waits are read from the captured agent's own records, which predate the ledger and name no person or entity, so no reaction is timed on this run.
 
+#### The verdict
+
+Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). Whether the checks held and whether the agent finished are two questions, and a run answers both. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is.
+
+| `VerdictKind` | When | Exit |
+|---|---|---|
+| `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
+| `PASSED` | No check failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
+| `UNFINISHED` | No check failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
+
+```
+run 5c1e0a9f2b77: partner_pricing
+  Not finished: no check failed, but the agent never reported it was done; the run stopped at the scenario's wake limit, with 1 wait still open.
+```
+
+Exit 3 is not a failure: a scenario whose point is that nobody answers ends at its deadline with the agent's question open, and is `UNFINISHED` rather than `FAILED`. A CI job that wants such a scenario green accepts 3 for it; one that wants every agent to close its work accepts only 0. 2 stays "could not be performed", which has no verdict.
+
+What the rule gets wrong:
+
+- **It trusts `DONE`.** An agent that reports done with its work open passes, unless an expectation or a check says otherwise; that is `honest_closure`'s job, through the scenario's expectations, not the verdict's.
+- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question. An agent that finished its goal, told a silent owner so, and never said `DONE` is `UNFINISHED`.
+- **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
+- **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
+
 | Layer | Answers | State |
 |---|---|---|
 | Scorecard (`Effectiveness`, `checks/effectiveness.py`) | How well, in numbers that compare across runs, prompts and models | Built and tested; ends every run |
 | Expectations (`checks/expectations.py`) | Did the world end up right | Built and tested |
 | Checks | Which known failure, where, with evidence | 12 built and tested (below) |
 | Patterns (`checks/patterns.py`) | What design fixes it | 9, each with a page in `docs/patterns/` |
-| Stability (`Stability`) | How often, over several samples | Built: `--samples N` reports "passed k of N" |
+| Verdict (`Verdict`) | Did the checks hold, and did the agent finish | Built and tested; ends every run and sets the exit code |
+| Stability (`Stability`) | How often, over several samples | Built: `--samples N` reports "passed k of N"; a sample that did not finish did not pass |
 
 The checks, discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, `needs` and `run`; no registration):
 
@@ -646,7 +698,7 @@ The checks, discovered by `checks/runner.py` (any class in a module of `checks/`
 | `chased_absent_person` | `FAIL`: messaged someone away while a delegate covered | `absence_aware` |
 | `duplicate_ticket` | `FAIL`: the same normalised title filed twice in one project while the first was open | `one_open_ask_per_person` |
 | `expectations` | `FAIL` per unmet expectation | `honest_closure` |
-| `idle_wake` | `REVIEW`: a wake that changed nothing in the world and nothing the agent was waiting on | `check_world_before_model` |
+| `idle_wake` | `REVIEW`: a wake that changed nothing in the world and nothing the agent was waiting on, with the model calls received during it, or that none could be counted; not raised when the agent's telemetry shows it made none | `check_world_before_model` |
 | `kept_chasing_after_done` | `REVIEW`: a message threaded under an answered ask, or naming a finished ticket | `one_open_ask_per_person` |
 | `late_follow_up` | `FAIL`: a follow-up more than `GRACE` after the wait fell due | `expiry_on_every_wait` |
 | `near_miss_name` | `FAIL`: a protected name written one letter off | `confirm_names` |
@@ -654,6 +706,8 @@ The checks, discovered by `checks/runner.py` (any class in a module of `checks/`
 | `repeated_message` | `REVIEW`: two messages to one channel within five minutes of simulated time, no reply between, sharing rare wording | `one_open_ask_per_person` |
 | `slow_to_react` | `FAIL`: an answer landed or work was finished and the agent came back late or never | `expiry_on_every_wait` |
 | `unmatched_call` | `REVIEW`: a call to a host no provider claims | none |
+
+`idle_wake` states what it saw and gives no reason: "wake 3 changed nothing in the world and nothing the agent was waiting on; 2 model calls were received or recorded during it", or, with no span of a model call in the run, that the count is not known. Why a wake was idle (asked the model to look, woke too early, dropped a reply) is not observed, so the advice for each cause is on the pattern's page, not in the finding. A wake that changed nothing and made no model call, by telemetry that reports model calls, cost nothing worth fixing and is only noted. What this gets wrong: an agent that traces some of its model calls and not others has an untraced, costly wake read as free; and "changed nothing" counts only writes to the world and changes to reported commitments, so a wake that learned something it kept in its own memory reads as idle.
 
 Not built:
 
@@ -812,7 +866,7 @@ class Obligation(Model):
 
 | `ObligationKind` | Opens when | `expected_by` | Settles when |
 |---|---|---|---|
-| `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's `DelayRange.longest`; `patience` is that delay | The first reply to any message on the wait, if the run reached it |
+| `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's `DelayRange.longest`; `patience` is that delay | The first reply to any message on the wait, if the run reached it and it was not withdrawn |
 | `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus that person's `TicketFate.after`; none without a fate | The person moves it to `DONE` or `CANCELLED` |
 | `DATE` | The scenario has a deadline | The deadline | The run reaches it |
 
@@ -890,14 +944,19 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 
   class StoredSpan(Model):
       span: ReceivedSpan
-      run_id: str = Field(description="The run it arrived in; a fork lists its parent's spans up to the fork")
+      run_id: str = Field(description="The run it arrived in; a fork lists its parent's spans of wakes up to the fork")
       source: SpanSource
-      wake: int = Field(ge=0, description="The wake in progress when it arrived; 0 is setup")
+      wake: int = Field(
+          ge=0,
+          description="The wake it belongs to: the one whose real-time window holds its start, else the one it arrived in; 0 is setup",
+      )
+      placed_by: Placement
+      arrived_in_wake: int = Field(ge=0, description="The wake in progress when it arrived")
       sim_time: AwareDatetime = Field(description="Simulated time when it arrived")
       after_seq: int = Field(ge=0, description="The head of the world's log when it arrived")
   ```
 
-  An attribute's value keeps OTLP's kinds (string, bool, int, double, bytes, array, key/value list) as a union discriminated on `kind`. `Store.receive(spans, source=)` stamps each with the wake, simulated time and head of the log at ARRIVAL; its own start and end stay the real times its SDK gave it. `Store.spans(trace_id=, wake=)` reads them back.
+  An attribute's value keeps OTLP's kinds (string, bool, int, double, bytes, array, key/value list) as a union discriminated on `kind`. The run loop records the real moment each wake begins and, after its checkpoint, ends (`Store.wake_began`, `wake_ended`). `Store.receive(spans, source=)` places each span in the wake whose window holds the span's own start (`Placement.WINDOW`), or, when none does (setup, or between wakes), in the wake it arrived in (`Placement.ARRIVAL`); the arrival wake, simulated time and head of the log are kept too. Its own start and end stay the real times its SDK gave it. `Store.spans(trace_id=, wake=)` reads them back by placement, and a fork's view of its parent's spans uses the same placement.
 - **Passing it on.** When the environment Minutehand was started from already names an OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or a signal's own `…_TRACES_ENDPOINT`), every payload the receiver takes, traces, logs and metrics, read or not, is sent on to it unchanged with `OTEL_EXPORTER_OTLP_HEADERS`, in the background (`forward.py`). A failure is recorded in the run (`Store.forward_failed`, the `forward_failure` table) and never fails it. A destination that is the receiver itself is dropped rather than looped.
 - **The wire as the fallback trace.** For an agent with no tracing, `--record-model-calls` puts model hosts under `HostPolicy.RECORD`: each call is decrypted, sent on unchanged, and kept as a span of `SpanSource.WIRE` in the same stored shape, with GenAI-convention attributes (`gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`). The three request shapes `edit.py` knows are read, answered as JSON or as server-sent events. A stream reaches the agent as a stream: the addon sets mitmproxy's `response.stream` to a function that passes each chunk on as it arrives and keeps a copy, and reads the copy when the stream ends (`test_a_streamed_answer_reaches_the_agent_as_a_stream_and_is_kept_whole` holds the model API's second chunk back until the client has the first). A call that carried a `traceparent` is put in that trace under that span. Nothing from the request's headers or query string is stored; a test searches the store file's bytes for the key. Off by default: without the flag a model host stays `TUNNEL`.
 - **The join.** `application/model_calls.trace_of(event, world)`: from the `traceparent` the intercepted call carried, the agent's calling span, its ancestors to the root, every span of that trace with a `gen_ai.*` attribute, and the model call that led to the event: of the spans whose `gen_ai.operation.name` is `chat`, `text_completion` or `generate_content` (or that name no operation and carry a model), the last to END before the calling span started. With no `traceparent`, or no model call in the trace, it takes the last model call of the same wake that ended before the event, a wire-recorded one only if it was kept before the event's seq, and says so (`JoinedBy.WAKE`: the nearest call, not a proven cause).
@@ -908,8 +967,8 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 
 | Pillar | What the agent's telemetry adds | Built |
 |---|---|---|
-| Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is stamped with its wake, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. No check reads spans yet, and no scorecard number counts tokens. |
-| Comparing a fork with its parent | A fork sees its parent's spans up to the fork exactly as it sees its events, and keeps its own after it; the same event in parent and child can be read with the model call behind each, so a `PromptPatch` can be judged by what the model was then asked and answered, not only by what the world did. | The fork's view of spans. No side-by-side of a parent's and a child's model calls. |
+| Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is placed in the wake its start fell in, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. `idle_wake` reads each wake's model calls (`RunView.model_calls`). No scorecard number counts tokens. |
+| Comparing a fork with its parent | A fork sees its parent's spans of the wakes up to the fork, and keeps its own after it; the same event in parent and child can be read with the model call behind each, so a `PromptPatch` can be judged by what the model was then asked and answered, not only by what the world did. | The fork's view of spans. No side-by-side of a parent's and a child's model calls. |
 
 ### What a coding agent calls
 
@@ -935,7 +994,7 @@ minutehand env --agent <agent.yaml> --proxy-port N [--format shell|compose] [--s
 
 `run`, `fork` and `env` take `--proxy-host`, `--proxy-port`, `--agent-proxy-host`, `--no-proxy HOST` (repeated), `--telemetry-port`, `--no-receive-telemetry` and `--record-model-calls`. `env` prints the environment an agent Minutehand does not start needs, for every run on that port under that state directory: `export` lines, or a Compose override. It makes the proxy's CA if there is none yet, and refuses a port left to the system and a signing secret generated per run.
 
-Exit 0 when no finding is `FindingKind.FAIL`, 1 when any is (with samples, when any sample failed), 2 when the run could not be performed. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
+`run`, `fork` and `findings` exit by the verdict (see "The verdict"): 0 passed, 1 failed, 3 not finished, and 2 when the run could not be performed. With samples: 1 when any sample failed, else 3 when any did not finish, else 0. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
 
 ### Distribution: a tool beside the codebase, never a dependency of it
 
@@ -1013,7 +1072,7 @@ Nine, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/patter
 | `Pattern.key` | Failure | Design | Found by | Reference mechanism |
 |---|---|---|---|---|
 | `expiry_on_every_wait` | Waits on something forever | Every wait carries an expected-by date and the agent wakes on it | `late_follow_up`, `no_follow_up`, `slow_to_react` | An expected-by date on every blocker and one "next stale check" time derived from them, which the scheduler books |
-| `check_world_before_model` | Spends a model call to learn nothing changed | On waking, look at the world with plain code first; involve the model only when judgement is needed | `idle_wake` | A filter to the waits actually stale, and a cheap preflight that ends the wake when none is |
+| `check_world_before_model` | Spends a wake, and the model calls in it, to learn nothing changed | Spend a wake's model calls only on what changed since the last look; the page lists why a wake can change nothing and what each cause needs | `idle_wake` | A filter to the waits actually stale, and a cheap preflight that ends the wake when none is |
 | `absence_aware` | Chases someone who is away | Know who is away and until when; extend the wait or go to their delegate | `chased_absent_person` | An absence filter over every follow-up before it is sent, rerouting to the named cover |
 | `budgeted_follow_up` | Follows up too often, or too late | Space reminders across the time left before the deadline | `acted_after_deadline` | The next reminder computed from the time remaining and the number already sent |
 | `bounded_asking` | Asks for input indefinitely | After a fixed number of attempts, stop asking and deliver the best available version | none | A count of attempts per unmet need and a pivot to best-effort delivery past a threshold |
@@ -1184,7 +1243,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **The enum-comparison lint judges a field by its name, not its type** (`docs/lints.md`).
 - **The store's file carries a schema version and refuses other versions;** there is no migration.
 - **The agent's telemetry is received over OTLP/HTTP only.** An exporter fixed to gRPC (the `…-proto-grpc` exporters, or an SDK whose own code picks gRPC whatever `OTEL_EXPORTER_OTLP_PROTOCOL` says) sends HTTP/2 to the receiver, which answers in HTTP/1.1 (404, then 400) and closes the connection; the exporter logs export failures in the agent's own output; nothing is received and the run says "No telemetry was received". An SDK that ignores the `OTEL_EXPORTER_OTLP_*` variables, or a vendor SDK that does not speak OTLP at all, is not received either; `--record-model-calls` is the fallback for both.
-- **A span is stamped with the wake it ARRIVED in.** A batching exporter that flushes late puts a wake's spans in a later wake, and in a fork's parent beyond the fork point. The join reads trace ids and real times, not the arrival wake, unless it falls back to `JoinedBy.WAKE`.
+- **A span is placed by comparing two clocks.** Its start comes from the agent's SDK, a wake's window from this machine's clock. On one machine they agree; an agent in a container or on another host whose clock is off by more than the gap between wakes has spans placed in the wrong wake, or by arrival when its start falls outside every window. A span started between two wakes (the agent working after it reported it was idle) is placed by arrival.
 - **Logs and metrics the agent exports are dropped.** An instrumentation that carries prompts only as log events (older GenAI event conventions) gives a model call with no messages.
 - **Out of scope:** browser OAuth flows, certificate-pinned clients, Slack Socket Mode, reading back from real providers in production, the hosted service.
 

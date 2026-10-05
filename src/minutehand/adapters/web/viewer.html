@@ -44,7 +44,7 @@ nav button[aria-current="true"]{background:var(--surface);box-shadow:inset 0 0 0
 nav b{display:block;font-weight:500;overflow-wrap:anywhere}
 nav small{display:block;color:var(--ink-2);font-size:13px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
-.dot.fail{background:var(--fail)} .dot.ok{background:var(--ok)} .dot.run{background:var(--agent);animation:pulse 1.4s infinite}
+.dot.fail{background:var(--fail)} .dot.ok{background:var(--ok)} .dot.review{background:var(--review)} .dot.run{background:var(--agent);animation:pulse 1.4s infinite}
 @keyframes pulse{50%{opacity:.3}}
 @media (prefers-reduced-motion:reduce){.dot.run{animation:none}}
 main{display:flex;flex-direction:column;gap:26px;min-width:0}
@@ -121,13 +121,6 @@ svg text.jump{fill:var(--ink-2)}
   };
   var NS = document.getElementById("ns").namespaceURI;
   var RUNNING_REFRESH = 2000, LIST_REFRESH = 5000;
-  var STOPPED = {
-    agent_done: "The agent said it was done.",
-    wake_limit: "It stopped at the scenario's limit on wakes.",
-    deadline_passed: "The clock reached the deadline.",
-    nothing_pending: "Nothing more was due, and the agent asked for no further wake.",
-    agent_failed: "The agent could not be reached or answered with an error."
-  };
   var KIND_LABEL = { fail: "Fail", review: "To review", informational: "Note" };
   var KIND_ORDER = { fail: 0, review: 1, informational: 2 };
   var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -199,7 +192,8 @@ svg text.jump{fill:var(--ink-2)}
   }
   function runStatus(row) {
     if (!row.finished) { return ["run", "Running…"]; }
-    if (row.failed > 0) { return ["fail", "Failed: " + plural(row.failed, "problem", "problems")]; }
+    if (row.verdict === "failed") { return ["fail", "Failed: " + plural(row.failed, "problem", "problems")]; }
+    if (row.verdict === "unfinished") { return ["review", "Not finished"]; }
     if (row.to_review > 0) { return ["ok", "Passed, " + row.to_review + " to look at"]; }
     return ["ok", "Passed"];
   }
@@ -267,8 +261,9 @@ svg text.jump{fill:var(--ink-2)}
     if (!run.finished) {
       return ['review', "Still running", "Reached " + when(run.reached) + " on the simulated clock. This page follows it."];
     }
-    var why = STOPPED[run.record.stop] || "";
-    if (fails) { return ["fail", "Failed: " + plural(fails, "problem", "problems") + " found", why]; }
+    var v = view.findings.verdict, why = v.words;
+    if (v.kind === "failed") { return ["fail", "Failed: " + plural(fails, "problem", "problems") + " found", why]; }
+    if (v.kind === "unfinished") { return ["review", "Not finished", why]; }
     if (reviews) { return ["ok", "Passed, with " + reviews + " to look at", why]; }
     return ["ok", "Passed", why];
   }
@@ -426,7 +421,7 @@ svg text.jump{fill:var(--ink-2)}
     var t0 = ms(view.run.scenario.starts_at), reached = ms(view.run.reached), t1 = reached;
     view.wakes.forEach(function (w) { t1 = Math.max(t1, ms(w.sim_time)); });
     changes.forEach(function (e) { t1 = Math.max(t1, ms(e.sim_time)); });
-    view.obligations.forEach(function (o) { if (o.expected_by) { t1 = Math.max(t1, ms(o.expected_by)); } });
+    view.obligations.forEach(function (w) { if (w.obligation.expected_by) { t1 = Math.max(t1, ms(w.obligation.expected_by)); } });
     if (t1 <= t0) { t1 = t0 + 3600e3; }
     var W = Math.max(scroll.clientWidth || 720, 720, view.wakes.length * 56), X0 = 18, X1 = W - 28;
     function x(t) { return X0 + (t - t0) / (t1 - t0) * (X1 - X0); }
@@ -496,8 +491,8 @@ svg text.jump{fill:var(--ink-2)}
     // lane 2: what the world was waiting on
     el("text", { x: X0, y: L2 + 12, class: "lane" }, svg, "What the agent was waiting on");
     if (!view.obligations.length) { el("text", { x: X0, y: L2 + 38, class: "lbl" }, svg, "Nothing yet."); }
-    view.obligations.forEach(function (o, k) {
-      var y = L2 + 22 + k * OB, a = x(ms(o.opened_at)), open = !o.settled_at;
+    view.obligations.forEach(function (w, k) {
+      var o = w.obligation, y = L2 + 22 + k * OB, a = x(ms(o.opened_at)), open = !o.settled_at;
       var endT = open ? reached : ms(o.settled_at), b = Math.max(x(endT), a + 3), g = el("g", {}, svg);
       el("rect", { x: a - 4, y: y, width: b - a + 20, height: OB - 2, fill: "transparent" }, g);
       var label = obligationLabel(o, who);
@@ -507,14 +502,14 @@ svg text.jump{fill:var(--ink-2)}
       var detail = "Opened " + when(o.opened_at) + ".";
       if (o.expected_by) {
         var e = x(ms(o.expected_by));
-        if (ms(o.expected_by) < endT) {
-          el("line", { x1: Math.max(e, a), y1: y + 23, x2: b, y2: y + 23, stroke: "var(--fail)", "stroke-width": 2 }, g);
-          detail += " Overdue from " + when(o.expected_by) + ".";
-        } else {
-          detail += " Expected by " + when(o.expected_by) + ".";
-        }
+        detail += " Expected by " + when(o.expected_by) + ".";
         el("line", { x1: e, y1: y + 10, x2: e, y2: y + 25, stroke: "var(--ink)", "stroke-width": 1.5 }, g);
       }
+      // Overdue is drawn only where the scorecard counts a wait as due: the server reads both from the ledger.
+      w.fell_due.forEach(function (d) {
+        el("line", { x1: Math.max(x(ms(d.at)), a), y1: y + 23, x2: Math.max(x(ms(d.until)), a + 1), y2: y + 23, stroke: "var(--fail)", "stroke-width": 2 }, g);
+        detail += " Due " + when(d.at) + (d.followed_up ? ", followed up " + when(d.until) + (d.late ? ", late." : ".") : ", never followed up.");
+      });
       detail += open ? " Still open." : " Settled " + when(o.settled_at) + ".";
       if (o.agent_touches.length) { detail += " The agent came back to it " + plural(o.agent_touches.length, "time", "times") + " while it was open."; }
       var seqs = [o.opened_by].concat(o.agent_touches);

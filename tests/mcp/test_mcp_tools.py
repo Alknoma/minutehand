@@ -22,7 +22,7 @@ from minutehand.adapters.mcp.server import build
 from minutehand.checks.patterns import pattern
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.experiment import PersonChange
-from minutehand.domain.run import StopReason
+from minutehand.domain.run import StopReason, VerdictKind
 from minutehand.domain.scenario import Silent
 from minutehand.domain.world import Actor, MessageSnapshot
 from tests.e2e.support import QUESTION, SOFIA, Launched, agent_under_test, answers, scenario
@@ -103,7 +103,7 @@ async def test_run_scenario_reports_the_stop_the_counts_the_scorecard_and_the_ch
         listed = await call(client, "list_runs", RunListing)
 
     [run] = played.runs
-    assert run.stop is StopReason.NOTHING_PENDING and not run.passed
+    assert run.stop is StopReason.NOTHING_PENDING and run.verdict.kind is VerdictKind.FAILED
     assert run.findings.fail >= 1
     assert (run.scorecard.expectations_met, run.scorecard.expectations_total) == (1, 2)
     assert [p.wake for p in run.checkpoints][:2] == [0, 1]

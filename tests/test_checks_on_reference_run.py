@@ -61,7 +61,9 @@ def test_only_the_real_repeat_is_flagged_for_review_not_the_template_alike_pairs
 
 def test_the_missing_legal_review_ticket_is_the_one_unmet_expectation() -> None:
     findings = Expectations().run(WORLD).findings
-    assert [f.message for f in findings] == ["ticket created for dania: wanted at least 1, found 0"]
+    assert [f.message for f in findings if f.kind is FindingKind.FAIL] == [
+        "ticket created for dania: wanted at least 1, found 0"
+    ]
 
 
 def test_the_scorecard_counts_only_the_time_the_agent_itself_lost() -> None:

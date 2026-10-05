@@ -213,6 +213,7 @@ class Orchestrator:
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._pending: list[Pending] = []
         self._replies: list[PersonReply] = []
+        self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
         self._commitments: list[Commitment] | None = None
         self._failure: str | None = None
@@ -276,6 +277,7 @@ class Orchestrator:
             )
         self._begin()
         self._replies = self._store.replies()
+        self._withdrawn = list(checkpoint.withdrawn)
         if len(self._replies) < checkpoint.replies:
             raise RunRefused(
                 f"the checkpoint counts {checkpoint.replies} replies; the store holds {len(self._replies)}"
@@ -400,6 +402,7 @@ class Orchestrator:
                 wake=self._clock.wake(),
                 now=self._clock.now(),
                 replies=len(self._replies),
+                withdrawn=self._withdrawn,
                 fated=self._fated,
                 commitments=self._commitments,
                 pending=self._pending,
@@ -487,7 +490,22 @@ class Orchestrator:
     ) -> StopReason | None:
         """Change the world for what is due, send the wake, wait until each driver in `settle` stops working, read
         what the agent did, and checkpoint. An agent that refuses a pushed event fails the wake as one that refuses
-        the wake does."""
+        the wake does. The store keeps the real moments the wake began and, after its checkpoint, ended: the
+        agent's spans are placed in the wake whose window holds their start, however late they arrive."""
+        self._store.wake_began(wake)
+        try:
+            return await self._played(wake, reason, fire, requests, settle)
+        finally:
+            self._store.wake_ended(wake)
+
+    async def _played(
+        self,
+        wake: int,
+        reason: WakeReason,
+        fire: Callable[[], Awaitable[None]],
+        requests: list[tuple[AgentDriver, WakeRequest]],
+        settle: list[AgentDriver],
+    ) -> StopReason | None:
         if self._telemetry is not None:
             self._telemetry.wake_started(wake, reason, self._clock.now())
         failed = False
@@ -603,13 +621,19 @@ class Orchestrator:
                 await self._ask(person, event, [h for h in history if h.seq <= event.seq])
 
     def _withdraw(self, message: EntityRef, person: Person) -> bool:
-        """Before an edited message is put to `person` again: withdraw their reply to it that has not landed yet.
-        False when they have already answered it, and the edit is not put to them."""
-        mine = [i for i, r in enumerate(self._replies) if r.in_reply_to == message and r.person == person.key]
+        """Before an edited message is put to `person` again: withdraw their reply to it that has not landed yet,
+        and record it as withdrawn, so it settles nothing. False when they have already answered it, and the edit
+        is not put to them."""
+        mine = [
+            i
+            for i, r in enumerate(self._replies)
+            if r.in_reply_to == message and r.person == person.key and i not in self._withdrawn
+        ]
         waiting = {p.reply for p in self._pending if isinstance(p, PendingReply)}
         if any(i not in waiting for i in mine):
             return False
         self._pending = [p for p in self._pending if not (isinstance(p, PendingReply) and p.reply in mine)]
+        self._withdrawn += mine
         return True
 
     async def _say(self, provider: ProviderKey, text: str) -> None:
@@ -663,6 +687,7 @@ class Orchestrator:
                 wake=wake,
                 now=self._clock.now(),
                 replies=len(self._replies),
+                withdrawn=self._withdrawn,
                 fated=self._fated,
                 commitments=self._commitments,
                 pending=self._pending,

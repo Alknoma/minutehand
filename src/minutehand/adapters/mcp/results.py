@@ -6,10 +6,16 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.application.model_calls import JoinedBy, ModelCall
 from minutehand.domain.checks import Effectiveness, FindingKind, Pattern, Severity, Stability, WakeRecord
-from minutehand.domain.run import StopReason
+from minutehand.domain.run import StopReason, Verdict
 from minutehand.domain.scenario import Expectation, Model, Person
 from minutehand.domain.world import Actor, EntityRef, Operation, Snapshot
 from minutehand.session import ForkPoint
+
+_VERDICT = (
+    "passed: no check failed and the agent finished (it reported done, or nothing was left open). failed: a "
+    "check failed. unfinished: no check failed, but the run stopped without the agent reporting done while a "
+    "wait or a commitment was still open; `words` says how it stopped and what was open"
+)
 
 
 class ScenarioFile(Model):
@@ -50,7 +56,7 @@ class PlayedRun(Model):
         )
     )
     stopped_at: AwareDatetime = Field(description="Simulated time the run ended")
-    passed: bool = Field(description="True when no finding is a failure")
+    verdict: Verdict = Field(description=_VERDICT)
     findings: FindingCounts
     blocked: list[str] = Field(description="Checks that could not read their input and did not run")
     scorecard: Effectiveness
@@ -79,6 +85,7 @@ class NumberedFinding(Model):
 
 class FindingList(Model):
     run_id: str
+    verdict: Verdict = Field(description=_VERDICT)
     findings: list[NumberedFinding]
     blocked: list[str]
 
@@ -134,7 +141,7 @@ class ListedRun(Model):
     scenario: str
     stop: StopReason
     stopped_at: AwareDatetime
-    passed: bool
+    verdict: Verdict = Field(description=_VERDICT)
     findings: FindingCounts
     parent_run: str | None
     forked_at: int | None

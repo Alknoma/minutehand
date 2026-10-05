@@ -30,16 +30,25 @@ reports that it is done.
 
 ```
 run 30d6c0aa7b98: offsite_venue
+  Passed: no check failed, and the agent reported it was done.
   stopped at 2026-08-25 21:00 UTC (simulated) because the agent reported it was done
+  providers the agent called: slack
 
-no findings
+informational (3)
+  expectations: rosa asked: met by the message to Rosa Lind (seq 17): “Hi Rosa, could you confirm the venue for the team offsite, please?”; the message to Rosa Lind (seq 21): “Thank you!”
+  expectations: owen asked mentioning ['confirmed']: met by the message to Owen Hart (seq 24): “The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
+  expectations: owen told what rosa said ('lakeside hall'): met by the message to Owen Hart (seq 24): “The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
 
 scorecard
-  expectations met: 2 of 2
+  expectations met: 3 of 3
   ...
 ```
 
-The command exits 0: nothing failed. The scorecard counts one wait, Rosa's answer, and none open at the end:
+Each expectation that held quotes what met it, so a pass that rests on the wrong message shows: "Rosa asked"
+is met by the question and also by the thank-you. The third expectation, `relayed`, holds only because the
+note to Owen carries "lakeside hall", a phrase that only Rosa's answer holds.
+
+The command exits 0: nothing failed, and the agent said it was done. The scorecard counts one wait, Rosa's answer, and none open at the end:
 the thank-you to Rosa and the note to Owen asked nothing, because nobody would answer them.
 
 ## 2. Rosa never answers, and the agent forgets
@@ -53,6 +62,7 @@ to her, and the job sits waiting until the scenario's two weeks run out.
 
 ```
 run bf46bbfef5fe: offsite_venue_silent
+  Failed: 1 check failed; the run stopped because nothing more was due and the agent asked for no wake.
   stopped at 2026-09-07 09:00 UTC (simulated) because nothing more was due and the agent asked for no wake
 
 fail (1)

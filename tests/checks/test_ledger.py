@@ -174,6 +174,6 @@ def test_the_ledger_reads_a_real_store_and_its_stored_replies(tmp_path: Path) ->
     clock.jump(at(9))
     clock.begin_wake()
     store.apply(Change(entity=message, operation=Operation.READ, actor=Actor.AGENT))
-    result = evaluate_run(scenario(SOFIA), store.events(), [], store.replies())
+    result = evaluate_run(scenario(SOFIA), store.events(), [], store.replies(), stop=None)
     assert result.effectiveness.waits_opened == 1 and result.effectiveness.reactions_slow == 1
     assert [f.check for f in result.findings] == ["slow_to_react"] and result.findings[0].evidence[0] == ask.seq
