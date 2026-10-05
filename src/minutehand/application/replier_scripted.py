@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from minutehand.application.refusals import RunRefused
-from minutehand.domain.people import PersonReply, Press
+from minutehand.domain.people import Decides, PersonReply, Press
 from minutehand.domain.scenario import (
     Absence,
     AbsenceTrigger,
@@ -28,7 +28,7 @@ from minutehand.domain.scenario import (
     Silent,
     WorkingHours,
 )
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, WorldEvent
+from minutehand.domain.world import Actor, EntityKind, InboxItemSnapshot, MessageSnapshot, Operation, WorldEvent
 from minutehand.ports.clock import Clock
 
 _MAX_PUSHES = 1000
@@ -49,6 +49,8 @@ class ScriptedReplier:
         if isinstance(behaviour, Answers):
             raise RunRefused(f"{person.key}'s replies are written by a model; the scripted replier cannot write them")
         assert isinstance(behaviour, Scripted)
+        if isinstance(asked.after, InboxItemSnapshot):
+            return self._decides(person, behaviour, asked, history)
         asks = _asks_of(person, [e for e in history if e.seq <= asked.seq])
         scripted = next((r for r in behaviour.replies if r.to_ask == len(asks)), None)
         if scripted is None and behaviour.presses_every is not None:
@@ -72,6 +74,51 @@ class ScriptedReplier:
             press=press,
             patience=behaviour.delay.longest,
         )
+
+    def _decides(
+        self, person: Person, behaviour: Scripted, asked: WorldEvent, history: list[WorldEvent]
+    ) -> PersonReply | None:
+        """The decision this person's script makes on the item: the one naming this item by its place among those
+        waiting on them (in its inbox, when the script names one), else one for every item. None when the script
+        has none, or names a decision the item does not allow: they cannot make what is not offered."""
+        item = asked.after
+        assert isinstance(item, InboxItemSnapshot)
+        mine = [
+            e
+            for e in history
+            if e.seq <= asked.seq
+            and e.actor is Actor.AGENT
+            and e.operation is Operation.CREATE
+            and isinstance(e.after, InboxItemSnapshot)
+            and e.after.person == person.key
+        ]
+        everywhere = len(mine)
+        here = sum(1 for e in mine if isinstance(e.after, InboxItemSnapshot) and e.after.inbox == item.inbox)
+        applies = [d for d in behaviour.decisions or [] if d.inbox is None or d.inbox == item.inbox]
+        scripted = next(
+            (
+                d
+                for d in applies
+                if d.to_item is not None and d.to_item == (here if d.inbox is not None else everywhere)
+            ),
+            None,
+        ) or next((d for d in applies if d.to_item is None), None)
+        if scripted is None or scripted.decision not in item.decisions:
+            return None
+        return PersonReply(
+            person=person.key,
+            in_reply_to=asked.entity,
+            text=decision_text(scripted.decision, scripted.inputs),
+            at=lands_at(self._scenario, person, asked, history, behaviour.delay),
+            decides=Decides(decision=scripted.decision, inputs=scripted.inputs),
+            patience=behaviour.delay.longest,
+        )
+
+
+def decision_text(decision: str, inputs: dict[str, str]) -> str:
+    """A decision as the reply table keeps its text: the decision, then what was given with it."""
+    given = "; ".join(f"{name}: {value}" for name, value in inputs.items())
+    return f"{decision} ({given})" if given else decision
 
 
 def pressed(scripted: ScriptedPress, asked: WorldEvent) -> Press | None:

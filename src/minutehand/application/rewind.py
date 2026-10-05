@@ -35,6 +35,7 @@ from minutehand.application.checkpoint import (
     Restorable,
     checkpoints,
 )
+from minutehand.application.inboxes import Inboxes, items_in
 from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, Reach, Scorer, Services
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, Traffic, restore_agent
@@ -46,7 +47,7 @@ from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonC
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
-from minutehand.domain.world import Actor, MessageSnapshot, Operation, RecordedCall
+from minutehand.domain.world import Actor, InboxItemSnapshot, ItemStatus, MessageSnapshot, Operation, RecordedCall
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -123,6 +124,7 @@ async def fork_run(
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
     manifests: Sequence[Manifest] = (),
     environment: Environment | None = None,
+    inboxes: Inboxes | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -190,6 +192,7 @@ async def fork_run(
                 traffic=traffic,
                 channels=channels,
                 environment=environment,
+                inboxes=Inboxes(changed, list(inboxes.reaches.values())) if inboxes is not None else None,
             )
             orchestrator.mount()
             with materialised(
@@ -363,8 +366,8 @@ async def _ask_again(
     replier: Replier,
     clock: Clock,
 ) -> Checkpoint:
-    """Put every message to a changed person that they have not answered by the fork again, under their new
-    behaviour.
+    """Put every message to a changed person that they have not answered by the fork again, and every item still
+    waiting on them in the agent's own product, under their new behaviour.
 
     A reply that landed before the fork stays as it was: a `PersonChange` does not withdraw what was already said.
     A reply decided before the fork that had not landed by it was never said: it is withdrawn, as an edited
@@ -383,16 +386,23 @@ async def _ask_again(
     changed = {p.email: p for p in scenario.people if p.key in people}
     pending = [p for p in checkpoint.pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
     count = len(replies)
+    held = items_in(events)
     for event in events:
         after = event.after
-        if not (
+        if event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot):
+            emails = [p.email for p in scenario.people if p.key == after.person]
+            if held[event.entity].status is not ItemStatus.PENDING:
+                continue  # decided or withdrawn by the fork: nothing is left to decide
+        elif (
             event.actor is Actor.AGENT
             and event.operation is Operation.CREATE
             and isinstance(after, MessageSnapshot)
             and after.answerable
         ):
+            emails = after.recipient_emails
+        else:
             continue
-        for email in after.recipient_emails:
+        for email in emails:
             if email not in changed or (event.entity, changed[email].key) in answered:
                 continue
             reply = await replier.decide(changed[email], event, [e for e in events if e.seq <= event.seq], clock)

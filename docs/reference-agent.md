@@ -24,6 +24,13 @@ Behaviours (`REFERENCE_BEHAVIOUR`): `diligent`, `forgetful` (never follows up), 
 `liar` (reports DONE right after asking), `slow` (`REFERENCE_SLOW_SECONDS` of work per job).
 `REFERENCE_REAL_CLOCK=1` computes the follow-up from the machine's clock instead of the wake's `now`.
 
+`REFERENCE_APPROVER=<email>` makes telling the owner wait on that person's approval in the agent's own web app
+(`GET /approvals`, `POST /approvals/<id>/decision`, signed in with `REFERENCE_APPROVER_TOKEN`): it thanks the venue,
+raises the approval, reminds the approver every `REFERENCE_APPROVAL_FOLLOW_UP_HOURS` (24), and sends the tell only once
+approved; `heedless` sends it whichever way it was decided. `agent.yaml` declares the inbox (`docs/inboxes.md`);
+`scenario_approved.yaml`, `scenario_rejected.yaml`, `scenario_approver_silent.yaml` and `scenario_approver_away.yaml`
+play it.
+
 ## Running it
 
 Every HTTP server in the example skips `http.server`'s reverse DNS lookup of this machine's name, which takes over 30 seconds on some Macs; copy that `server_bind` if you build on the standard library.

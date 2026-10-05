@@ -19,7 +19,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
-| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
+| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | No check declares `Needs.COMMITMENTS`. Only the agent file carries a `version`. |
 | World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; every body of 512 bytes or more and every snapshot file kept once, by SHA-256; forks share it; a refused fork is discarded with the bytes only it held; `minutehand runs`, `checkpoints`, `pin`, `gc` | Built and tested | 48 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`, `tests/test_store_bodies.py`, `tests/test_store_snapshots.py`, `tests/test_housekeeping.py`) | The file carries schema version 6 in `user_version` and refuses any other. Bytes are shared within one world file (a root run and its forks), not across root runs. No catalog of runs. |
 | External emulators: `domain/emulator.py`, `adapters/emulator/`, `application/emulators.py` | A host declared `forward` is sent to a fake outside Minutehand (any language, a process or a container), through a loopback relay to its TCP port, Unix socket or HTTPS server; started or attached to, waited on (HTTP, TCP or log readiness) and health-checked; its answers told apart (`Exchange.outcome`); its failure answered 502/504 naming it and stopping the run `ENVIRONMENT_FAILED`, exit 2; its health changes in the log and the export; its OTLP received and joined by the forwarded `traceparent`; one per `serve` shared by worlds. See `docs/external-emulators.md` | Built and tested | 14 functions, 20 cases (`tests/emulators/` 12, `tests/serve/test_emulator_worlds.py` 2), and 1 marked `docker` (stripe-mock) | Its state is neither scored nor rewound: a fork after its first use is refused. Never restarted. Not seeded from the scenario, and people cannot act on it. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, captures declared outbound hosts, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 38 (`tests/proxy/`) | One proxy per process. A client that ignores proxy settings is given a base URL instead (`/_host/<host>`, below). Model API calls are recorded only with `--record-model-calls`, as spans. A tunnel is relayed as bytes, never decrypted: a request on it is seen and held until bytes come back that are not a TLS 1.3 server's session tickets (`adapters/proxy/tunnel.py`). |
@@ -34,7 +34,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
 | Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. Only `Scripted` and `Silent` people: `Answers` is refused. |
 | Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step compares the report and, when the hooks declare `fingerprint`, a digest of the agent's state; what the fingerprint command does not cover it cannot see. An agent with neither a `Reported` source nor a fingerprint is restored unverified, and says so. Without a `busy` command, settling sees only the report and the proxy, and each checkpoint says it is unconfirmed. PostgreSQL is described, not tested. |
-| Checks, ledger, scorecard, patterns: `checks/` | 13 checks (`nagged` added), the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
+| Checks, ledger, scorecard, patterns: `checks/` | 15 checks (`acted_without_approval`, `agent_contract_changed` added), the obligations ledger, `Effectiveness`, 10 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP and, with `minutehand[grpc]`, gRPC on the same port. Metrics are dropped; a log record is kept only when it carries GenAI content. A span is placed in a wake by comparing its SDK's clock with this machine's. |
 | Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers is untested. Samples without `StateHooks` are not independent. |
@@ -42,7 +42,9 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Reference agent: `examples/reference_agent/` | Two processes (an API on `requests`, a worker on `httpx`) over a job queue in SQLite or a Firestore emulator, email by a captured channel with replies, a pass-through search, a model API on a local HTTPS server, OpenTelemetry over HTTP or gRPC, five behaviours; `docs/reference-agent.md` | Built and tested | 9 (`tests/architecture/`) | Firestore variant measured by hand, not in a marked test |
 | Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers is untested. Samples without `StateHooks` are not independent. |
 | Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
-| MCP tools, control API and viewer, container image, model-written people, judged checks, generated providers, human actions, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
+| Inboxes in the agent's own product: `domain/inboxes.py`, `application/inboxes.py`, `adapters/agent/inboxes.py`, `adapters/agent/openapi.py` | What waits on a person in the agent's own product (an approval, a question on its page), read and decided as that person; an item is an ask, a decision its answer; templates or OpenAPI operations; `docs/inboxes.md` | Built and tested | 41 (`tests/inboxes/` 33, `tests/architecture/test_approvals.py` 7, `tests/web/test_viewer_decisions.py` 1), and 2 driven in `tests/architecture/test_driven_approvals.py` | HTTP only; MCP is a designed second `kind`. An item raised and withdrawn between two readings is missed. |
+| The agent contract: `agent_api.py`, `schemas/`, `minutehand schema`, `minutehand validate` | One page of every touch point (`docs/agent-contract.md`), JSON Schemas of the files, an OpenAPI document of what an agent may implement, a file validated without a run | Built and tested | 5 functions, 7 cases (`tests/test_schemas.py`) | The older placeholders and dotted paths are listed as debt, not changed. |
+| MCP tools, control API and viewer, container image, model-written people, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
 No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
 
@@ -292,8 +294,7 @@ class AgentUnderTest(Model):
     goal: GoalSource = GoalByWake()
     wakes: list[WakeSource] = []
     inbound: list[InboundTarget] = []
-    human_actions: list[HumanAction] = []
-    inbox: Inbox | None = None
+    inboxes: list[HttpInbox] = []
     state: StateHooks | None = None
 ```
 
@@ -954,29 +955,21 @@ What it gets wrong: the tell is a substring, so a relay that paraphrases ("the h
 
 ### A person acting in the agent's own product
 
-Designed, not built: `HumanAction` and `Inbox` are models in `domain/agent.py` and nothing reads them.
+Built and tested; the whole of it is in `docs/inboxes.md`. Some of what a person does never touches a SaaS: approving
+an operation in the agent's own web app, answering a question on its own page. The agent file declares each such
+place as an inbox (`AgentUnderTest.inboxes`, `domain.inboxes.HttpInbox`): how Minutehand signs in as a person
+(`as_person`, from `Person.credential`), how to list what waits on them (`pending`) and the decisions they can make
+(`decisions`), each a template or an operation of an OpenAPI document.
 
-Some of what a person does never touches a SaaS: approving an operation in the agent's own web app, answering a question on its own page. No fake can stand in for those: they are the agent's own endpoints.
-
-```python
-class HumanAction(Model):
-    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    description: str = Field(description="When a person would do this; the persona reads it")
-    method: Literal["POST", "PUT", "PATCH", "DELETE"] = "POST"
-    url: str = Field(description="May hold {argument} placeholders")
-    body: str | None = Field(default=None, description="JSON text with {argument} placeholders")
-    arguments: list[ActionArgument] = []
-
-
-class Inbox(Model):
-    url: str = Field(description="Lists what is pending; may hold {person_email}")
-    id_field: str
-    summary_field: str
-```
-
-- **Two ways to supply them.** Listed in the agent file, which changes nothing in the codebase. Or marked in the agent's own API description: any operation carrying `x-minutehand: human_action` is learned when the run starts. The mark is data on the route, not an import.
-- **Each one becomes a tool the simulated person holds,** beside replying in chat and pressing a button in a message. A model-written person chooses among them; a scripted person names one.
-- **Every call is recorded** as a `WorldEvent` with `actor=PERSON`, so "the owner approved on day three" sits on the same timeline as the tickets.
+- **Seeing the ask.** At the end of every wake and before the clock moves, every inbox is read as every person
+  Minutehand can act as. A new item is the agent asking that person (`InboxItemSnapshot`, actor AGENT); one gone
+  undecided is withdrawn. The reads are Minutehand's own calls (`Exchange.inbox_call`), never the agent's.
+- **The person decides, never by default.** The replier seam decides as for a reply (`PersonReply.decides`): a
+  script's decision for the nth or every item, a model's pick, or nothing from a `Silent` person. A person who can
+  receive items and whose script says nothing of them refuses the run. When due, the declared call is made as them;
+  the product taking it is their change (`DECIDED`); its refusal is recorded and the wait stays open.
+- **Scored by reuse.** An item is an `ANSWER_FROM_PERSON` wait in the ledger; every follow-up check reads it.
+  `acted_without_approval` fails an operation the item `gates` going ahead while pending, rejected or withdrawn.
 
 ### Pillar one: proactive effectiveness
 
@@ -1273,6 +1266,7 @@ class Obligation(Model):
 |---|---|---|---|
 | `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's `DelayRange.longest`; `patience` is that delay | The first reply to any message on the wait, if the run reached it and it was not withdrawn |
 | `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus that person's `TicketFate.after`; none without a fate | The person moves it to `DONE` or `CANCELLED` |
+| `ANSWER_FROM_PERSON` (an item) | An item waiting on a person in the agent's own product is first seen (`docs/inboxes.md`) | First seen plus the person's longest delay | The person decides it and the product takes the decision, or the agent withdraws it |
 | `DATE` | The scenario has a deadline | The deadline | The run reaches it |
 
 Whether a message asked anything is the replier's decision, never the ledger's. A person with a reply decided to the message was asked; a `Silent` person is asked by every message, since that is what `Silent` means; anyone else was told something that needs no answer (a thank-you, a report), away or not. A person who is only ever told things is `Scripted` with no replies, not `Silent`: the passing example's owner is one.

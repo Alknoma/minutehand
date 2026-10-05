@@ -147,7 +147,8 @@ the request that endpoint expects, with no provider code:
         timestamp_header: null                                  # a header carrying {timestamp} alone, if any
 ```
 
-The body is structure, and each string in it may name `{reply_id}`, `{from}`, `{from_name}`, `{to}`,
+Without `body`, the reply is sent in the default shape, every field under its own name (`DeliveredReply`,
+`deliverReply` in `schemas/agent-api.openapi.json`). The body is structure, and each string in it may name `{reply_id}`, `{from}`, `{from_name}`, `{to}`,
 `{subject}` (`Re: ` and the send's), `{text}`, `{in_reply_to}` and `{sent_at}`; any other name is refused when
 the file is read. `{message_id}` in an acknowledged answer is replaced by `<name>-<seq>`, so each send has the id a
 real email API would hand back, and `thread` reads it back from the answer as stored. A secret `generated` is

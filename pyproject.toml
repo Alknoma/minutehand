@@ -22,6 +22,7 @@ dependencies = [
     "uvicorn>=0.30",
     "mcp>=1.2,<2",
     "zstandard>=0.23",
+    "jsonschema>=4.20",
 ]
 
 [project.optional-dependencies]

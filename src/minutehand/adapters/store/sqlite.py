@@ -111,6 +111,10 @@ the pool beside the file; a version 5 file holds every body inline and its snaps
 7: an exchange's body that is not UTF-8 text is kept as its bytes in `content` (`request_binary`,
 `response_binary`); a version 6 file has no such columns, and its calls with such a body were never recorded."""
 
+_UNKEPT_IN_ROW = {"request_body", "response_body", "request_bytes", "response_bytes"}
+"""Kept in columns of their own, not in an exchange's JSON. `inbox_call` is left out of it too when None, so a row
+of a run with no inbox reads as it did before inboxes existed."""
+
 INLINE_LIMIT = 512
 """Bytes of UTF-8 below which a body stays in its own row. Measured on a chatty Slack run (docs/design.md, "Storage"):
 a body under 512 bytes compresses to about its own size and a stored body costs about 110 bytes in hashes and
@@ -507,7 +511,9 @@ class SqliteStore:
                 provider,
                 began.wake if began is not None else self._clock.wake(),
                 (began.sim_time if began is not None else self._clock.now()).isoformat(),
-                exchange.model_dump_json(exclude={"request_body", "response_body", "request_bytes", "response_bytes"}),
+                exchange.model_dump_json(
+                    exclude=_UNKEPT_IN_ROW | ({"inbox_call"} if exchange.inbox_call is None else set())
+                ),
                 request,
                 request_ref,
                 response,

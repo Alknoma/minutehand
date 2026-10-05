@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import json
 import os
 import shlex
 import sys
@@ -66,14 +67,16 @@ from pathlib import Path
 
 import yaml
 
+from minutehand import agent_api, session
 from minutehand import serve as standing
-from minutehand import session
+from minutehand.adapters.agent.inboxes import HttpInboxReach
+from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
-from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
+from minutehand.application.files import FileKind, FileRefused, load_agent, load_fork, load_scenario, problems, schema
 from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
 from minutehand.application.outbound import described, emulator_described, suggested
@@ -81,6 +84,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import exit_code, stability
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
 from minutehand.domain.scenario import Model
@@ -298,6 +302,17 @@ def _parser() -> argparse.ArgumentParser:
         "--no-proxy", action="append", default=[], metavar="HOST", help="a host the run will send direct, as given it"
     )
     doctor.add_argument("--json", action="store_true")
+    schema_of = commands.add_parser(
+        "schema", help="print the JSON Schema of an agent, scenario or seed file, or the agent API's OpenAPI document"
+    )
+    schema_of.add_argument("kind", choices=[*(k.value for k in FileKind), AGENT_API])
+    checking = commands.add_parser(
+        "validate", help="load agent, scenario and seed files with every load-time check, naming each problem"
+    )
+    checking.add_argument("files", type=Path, nargs="+")
+    checking.add_argument(
+        "--kind", choices=[k.value for k in FileKind], default=None, help="default: from what it holds"
+    )
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
     state(view)
@@ -355,6 +370,10 @@ def _main(args_in: list[str]) -> int:
         except (FileRefused, RuntimeError, OSError) as e:
             print(f"minutehand doctor: {e}", file=sys.stderr)
             return 2
+    if args.command == "schema":
+        return _schema(args.kind)
+    if args.command == "validate":
+        return _validate(args.files, FileKind(args.kind) if args.kind else None)
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
     if command is not None and args.command not in ("run", "fork"):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
@@ -384,6 +403,36 @@ def _main(args_in: list[str]) -> int:
     except (RunRefused, FileRefused, ModelFailed, OSError) as e:
         print(f"minutehand: the run could not be performed: {e}", file=sys.stderr)
         return 2
+
+
+AGENT_API = "agent-api"
+
+
+def _schema(kind: str) -> int:
+    """The JSON Schema of one kind of file, or the OpenAPI document of what an agent may implement, on stdout."""
+    found = agent_api.document() if kind == AGENT_API else schema(FileKind(kind))
+    print(json.dumps(found, indent=2, sort_keys=True))
+    return 0
+
+
+def _validate(paths: Sequence[Path], kind: FileKind | None) -> int:
+    """Each file loaded as a run would load it, and each inbox operation found in its OpenAPI document: every
+    problem on its own line naming the file and the place in it; exit 1 when there is any."""
+    found: list[str] = []
+    for path in paths:
+        read_as, model, said = problems(path, kind)
+        if isinstance(model, AgentUnderTest):
+            for n, declared in enumerate(model.inboxes):
+                try:
+                    HttpInboxReach(declared, {})
+                except OperationUnresolved as e:
+                    said.append(f"{path}: inboxes[{n}]: {e}")
+        found += said
+        if not said and read_as is not None:
+            print(f"{path}: a valid {read_as.value} file")
+    for line in found:
+        print(line, file=sys.stderr)
+    return 1 if found else 0
 
 
 def _telemetry() -> OtelTelemetry | None:

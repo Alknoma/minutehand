@@ -29,8 +29,8 @@ def outbound_uses(calls: Sequence[RecordedCall]) -> list[OutboundUse]:
     uses: dict[tuple[str, CaptureMode | None, bool], OutboundUse] = {}
     connections: dict[tuple[str, CaptureMode | None, bool], set[str]] = {}
     for call in calls:
-        if call.provider is not None:
-            continue
+        if call.provider is not None or call.exchange.inbox_call is not None:
+            continue  # a provider's, or Minutehand's own as a person in the agent's product: neither went outbound
         exchange = call.exchange
         captured = exchange.captured
         mode = captured.mode if captured is not None else None

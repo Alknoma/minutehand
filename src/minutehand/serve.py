@@ -51,6 +51,8 @@ import uvicorn
 from pydantic import Field
 from starlette.applications import Starlette
 
+from minutehand.adapters.agent.inboxes import HttpInboxReach
+from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.emulator.fleet import Emulators
@@ -66,6 +68,7 @@ from minutehand.adapters.telemetry.receiver import Receiver, exporter_environmen
 from minutehand.application.cases import CASE, CaseKept, CaseStore, merged
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
+from minutehand.application.inboxes import Inboxes
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
@@ -84,9 +87,9 @@ from minutehand.checks.runner import RunResult
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import Model, ProviderKey, Scenario
+from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scenario
 from minutehand.domain.telemetry import ReceivedSpan
-from minutehand.domain.world import CallOutcome, Exchange
+from minutehand.domain.world import CallOutcome, Exchange, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import (
     ASGIApp,
@@ -514,6 +517,7 @@ class Standing:
                 inbound=[i.to_target() for i in spec.inbound],
                 signing=signing,
                 scripted=spec.scripted_people,
+                inboxes=_inboxes(spec, scenario),
             )
             named = sorted(
                 {t.provider for t in scenario.tickets}
@@ -615,7 +619,7 @@ class Standing:
     async def case_checks(self, case: Case, *, stop: StopReason | None) -> RunResult:
         """Every check and the scorecard over the case as one run, as it stands."""
         for member in case.members.values():
-            await member.observe()
+            await member.look()
         scenario = merged(case.name, self._scenarios(case))
         with self._reading_case(case) as world:
             return score(scenario, world, stop=stop, ended=self._case_now(case))
@@ -629,6 +633,13 @@ class Standing:
         if world.case is not None:
             return await self.case_checks(world.case, stop=None)
         return await world.standing.checks(stop=None)
+
+    async def perform_due(self, world_id: str) -> list[WorldEvent]:
+        """The decisions a world's people owe by its clock, its case's, or the moment its latest step began, whichever
+        is latest: a harness that keeps its own clock marks its steps at its own moments and never moves the world's."""
+        world = self.get(world_id)
+        now = self._case_now(world.case) if world.case is not None else world.standing.clock.now()
+        return await world.standing.perform_due(max(now, world.steps.at))
 
     async def advance(self, world_id: str, to: datetime) -> list[Fired]:
         """Move a world's clock: a step is inferred first when the move goes forward and nobody marks steps
@@ -950,6 +961,37 @@ class Standing:
             await send(body)
 
         return answer
+
+
+def _inboxes(spec: CreateWorld, scenario: Scenario) -> Inboxes | None:
+    """The inboxes a world declares, reached as its people. A person's credential is the one given with the world
+    (`CreateWorld.credentials`: a key the service minted for this run), else read from this server's own
+    environment: a credential generated per run reaches only a command Minutehand starts, and a standing world
+    starts none."""
+    if not spec.inboxes:
+        return None
+    known = {person.key for person in scenario.people}
+    unknown = sorted(set(spec.credentials) - known)
+    if unknown:
+        raise WorldRefused(f"credentials are given for {', '.join(unknown)}, who are not people of this world")
+    credentials: dict[str, str] = dict(spec.credentials)
+    for person in scenario.people:
+        source = person.credential
+        if source is None or person.key in credentials:
+            continue
+        if isinstance(source, GeneratedSecret):
+            raise WorldRefused(
+                f"{person.key}'s credential is generated per run ({source.env}), and a standing world starts no "
+                "command to hand it to: say `credential: {kind: from_env, env: <variable>}` with the one the service "
+                "was configured with"
+            )
+        if source.env not in os.environ:
+            raise WorldRefused(f"{person.key}'s credential is read from {source.env}, which the server does not have")
+        credentials[person.key] = os.environ[source.env]
+    try:
+        return Inboxes(scenario, [HttpInboxReach(declared, credentials) for declared in spec.inboxes])
+    except OperationUnresolved as e:
+        raise WorldRefused(f"this world's inboxes: {e}") from e
 
 
 @contextmanager

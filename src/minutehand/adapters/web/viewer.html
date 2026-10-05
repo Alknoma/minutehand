@@ -379,6 +379,10 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
       (card.messages_edited || card.messages_deleted
         ? "; " + plural(card.messages_edited, "rewrite", "rewrites") + " of a message already sent, " + card.messages_deleted + " deleted."
         : "; none was rewritten or deleted after it was sent."));
+    if (card.decisions_asked) {
+      lines.push("It left " + plural(card.decisions_asked, "decision", "decisions") + " waiting on people in its own product: " +
+        card.decisions_made + " decided, " + card.decisions_pending + " still pending at the end.");
+    }
     return lines;
   }
 
@@ -445,6 +449,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
   function stepWord() { return state.view.run.driven ? "step" : "wake"; }
 
   function messageWords(m) {
+    if (m.words) { return (m.actor === "agent" ? "→ " : "") + m.words; }
     var to = m.to.length ? m.to.join(", ") : (m.actor === "agent" ? "nobody in the scenario" : "the agent");
     var who = m.actor === "agent" ? "" : (m.actor === "person" ? "a person" : "the scenario");
     if (m.change === "edited") {
@@ -462,7 +467,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
         '<span class="who ' + esc(m.actor) + (m.change !== "sent" ? " " + esc(m.change) : "") + '">' +
         esc(messageWords(m)) + "</span>" + wrote + "</li>";
     }).join("");
-    return '<section><h2>What was said</h2><p class="sub">Every message, in the order the record holds them; a rewrite of one already sent shows both texts.</p><ol class="said">' + items + "</ol></section>";
+    return '<section><h2>What was said</h2><p class="sub">Every message, and every decision left waiting on a person in the agent’s own product and made, in the order the record holds them; a rewrite of one already sent shows both texts.</p><ol class="said">' + items + "</ol></section>";
   }
 
   function tokens(c) {
@@ -667,6 +672,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
     var a = ev.after, actor = ev.actor === "agent" ? "The agent" : ev.actor === "person" ? "Someone" : "The scenario";
     var verb = { create: "created", update: "changed", "delete": "deleted" }[ev.operation] || ev.operation;
     var line = state.view.messages.filter(function (m) { return m.seq === ev.seq; })[0];
+    if (line && line.words) { return [(line.actor === "agent" ? "The agent " : "") + line.words.split(": ")[0], line.text, false]; }
     if (line && line.change !== "sent") {
       var whom = line.to.length ? line.to.join(", ") : "a channel";
       return [actor + (line.change === "edited" ? " rewrote the message to " : " deleted the message to ") + whom,
@@ -720,7 +726,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
     var W = Math.max(scroll.clientWidth || 720, 720, view.wakes.length * 56), X0 = 18, X1 = W - 28;
     function x(t) { return X0 + (t - t0) / (t1 - t0) * (X1 - X0); }
 
-    var rows = [["message", "Messages"], ["ticket", "Tickets"], ["document", "Documents"], ["other", "Other records"]];
+    var rows = [["message", "Messages"], ["inbox_item", "Decisions in the agent's product"], ["ticket", "Tickets"], ["document", "Documents"], ["other", "Other records"]];
     var present = rows.filter(function (r) {
       return changes.some(function (e) { return rowOf(e) === r[0]; });
     });
@@ -931,7 +937,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
 
   function rowOf(ev) {
     var k = ev.after ? ev.after.kind : ev.entity.kind;
-    return k === "message" || k === "ticket" || k === "document" ? k : "other";
+    return k === "message" || k === "ticket" || k === "document" || k === "inbox_item" ? k : "other";
   }
 
   function legend(fork, theirs) {

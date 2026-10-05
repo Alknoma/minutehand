@@ -31,10 +31,9 @@ import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, model_validator
 
-from minutehand.domain.people import SigningSecret
-from minutehand.domain.scenario import Model, ProviderKey
+from minutehand.domain.scenario import Model, ProviderKey, SigningSecret
 
 BODY_LIMIT = 1024 * 1024
 """Bytes of a text or JSON body kept by default. A longer body is kept up to this and marked truncated."""
@@ -104,6 +103,26 @@ email and name), who it goes to (the address the agent sent from, else the first
 text, the id of the message it answers (`thread`), and the simulated moment it is sent (ISO 8601)."""
 
 
+DEFAULT_REPLY_BODY: dict[str, JsonValue] = {name: "{" + name + "}" for name in REPLY_FIELDS}
+"""The body a reply is delivered with when its declaration writes none: every reply field under its own name, the
+shape `DeliveredReply` describes (`deliverReply` in `schemas/agent-api.openapi.json`)."""
+
+
+class DeliveredReply(Model):
+    """The default shape of a person's answer delivered to the agent's inbound webhook (`ReplyDelivery.body` None)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    reply_id: str = Field(description="The reply's own id in the run")
+    sender: str = Field(alias="from", description="The email of the person who answers")
+    from_name: str = Field(description="Their name")
+    to: str = Field(description="The address the agent sent from, else the first it wrote to")
+    subject: str = Field(description="'Re: ' and the send's subject; empty when it had none")
+    text: str = Field(description="What they wrote")
+    in_reply_to: str = Field(description="The id of the send it answers (`ReplyDelivery.thread`)")
+    sent_at: str = Field(description="The simulated moment it is sent, ISO 8601")
+
+
 class ReplySigning(Model):
     """An HMAC-SHA256 over the delivered body, in a header: `format` holds `{hex}` or `{base64}` for the digest,
     and may hold `{timestamp}` (the simulated moment, in Unix seconds), which then also leads what is signed as
@@ -128,33 +147,43 @@ class ReplyDelivery(Model):
     url: str = Field(min_length=1)
     method: Literal["POST", "PUT"] = "POST"
     headers: dict[str, str] = {}
-    body: JsonValue = Field(description="The body, as structure, with `{name}` placeholders in its strings")
+    body: JsonValue = Field(
+        default=None,
+        description="The body, as structure, with `{name}` placeholders in its strings; None: the default shape "
+        "(`DeliveredReply`), every reply field under its own name",
+    )
     form: bool = Field(default=False, description="Sent as application/x-www-form-urlencoded: `body` is flat")
     thread: BodyPath | None = None
     signing: ReplySigning | None = None
 
     @model_validator(mode="after")
     def _names_known_fields(self) -> Self:
-        named = set(_placeholders(self.body))
+        named = set(placeholders(self.body))
         unknown = sorted(named - set(REPLY_FIELDS))
         if unknown:
             raise ValueError(f"a reply's body names {', '.join(unknown)}; it may name {', '.join(REPLY_FIELDS)}")
-        if self.form and not (isinstance(self.body, dict) and all(isinstance(v, str) for v in self.body.values())):
+        if (
+            self.form
+            and self.body is not None
+            and not (isinstance(self.body, dict) and all(isinstance(v, str) for v in self.body.values()))
+        ):
             raise ValueError("a reply sent as a form has a flat body of strings")
         return self
 
 
-def _placeholders(value: JsonValue) -> list[str]:
+def placeholders(value: JsonValue) -> list[str]:
+    """Every `{name}` inside the strings of a template, in order: what it asks to be filled with."""
     if isinstance(value, str):
-        return [m.group(1) for m in _PLACEHOLDER.finditer(value)]
+        return [m.group(1) for m in PLACEHOLDER.finditer(value)]
     if isinstance(value, list):
-        return [n for v in value for n in _placeholders(v)]
+        return [n for v in value for n in placeholders(v)]
     if isinstance(value, dict):
-        return [n for v in value.values() for n in _placeholders(v)]
+        return [n for v in value.values() for n in placeholders(v)]
     return []
 
 
-_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+"""A name to be filled inside a template's string: `{reply_id}`, `{item_id}`."""
 
 
 class _Declared(Model):

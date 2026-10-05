@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.conversation import Provenance
-from minutehand.domain.scenario import FormInput, Model, ProviderKey
+from minutehand.domain.scenario import FormInput, Model, ProviderKey, SigningSecret
 from minutehand.domain.world import EntityRef
 
 
@@ -23,6 +22,13 @@ class Press(Model):
     form: list[FormInput] = []
 
 
+class Decides(Model):
+    """A decision a person makes on an item waiting on them in the agent's own product, and what they give with it."""
+
+    decision: str = Field(description="The name of one of the inbox's decisions")
+    inputs: dict[str, str] = Field(default={}, description="Each input the decision takes, by its name")
+
+
 class PersonReply(Model):
     """One reply from one person, decided once and stored with the run: text written back, or a control used."""
 
@@ -34,6 +40,10 @@ class PersonReply(Model):
         default=None, description="The model and prompt that wrote it; None is scripted"
     )
     press: Press | None = Field(default=None, description="Set when the reply is a control used, not a message")
+    decides: Decides | None = Field(
+        default=None,
+        description="Set when the reply is a decision on an item in the agent's own product (`in_reply_to` the item)",
+    )
     patience: timedelta | None = Field(
         default=None,
         description="The longest delay the person had when this reply was decided: how long the agent's wait on it "
@@ -47,29 +57,6 @@ class PersonMessage(Model):
     person: str = Field(description="Person.key")
     text: str
     at: AwareDatetime = Field(description="Simulated time the message is sent")
-
-
-VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
-
-
-class GeneratedSecret(Model):
-    """A fresh secret made for every run and handed to the agent's command in the variable `env`.
-
-    Only a command Minutehand starts receives it; an agent already running has a secret of its own."""
-
-    kind: Literal["generated"] = "generated"
-    env: VariableName = Field(description="The variable the agent reads its signing secret from")
-
-
-class SecretFromEnvironment(Model):
-    """The agent's own secret, configured where it already runs: Minutehand reads the same value from its own
-    variable `env` when the run starts, and refuses the run when it is not set."""
-
-    kind: Literal["from_env"] = "from_env"
-    env: VariableName = Field(description="The variable in Minutehand's own environment that holds the secret")
-
-
-SigningSecret = Annotated[GeneratedSecret | SecretFromEnvironment, Field(discriminator="kind")]
 
 
 class InboundTarget(Model):

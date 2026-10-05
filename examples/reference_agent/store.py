@@ -4,7 +4,7 @@
     REFERENCE_FIRESTORE=127.0.0.1:8085             a Firestore emulator, through its REST API
     REFERENCE_FIRESTORE_PROJECT=demo-minutehand    its project
 
-Both hold the same five things:
+Both hold the same six things:
 
     facts     what the job is and where it stands: the goal, the owner, the venue, whether it is done, the next
               moment it wants to be woken, and the job queue's counter
@@ -12,6 +12,7 @@ Both hold the same five things:
     sent      every email the agent sent, with the message id the email API gave it
     replies   every email answer that reached the inbound webhook
     notes     what the owner said along the way
+    approvals what waits on a person's approval in the agent's own web app before the agent may go ahead
 
 `digest()` is a stable digest of all of it, the same whatever order rows were written in, leaving out the
 columns that say when something happened on the machine's clock (VOLATILE): two databases holding the same
@@ -70,6 +71,12 @@ class Store(Protocol):
 
     def add_note(self, row: dict[str, str]) -> None: ...
 
+    def add_approval(self, row: dict[str, str]) -> None: ...
+
+    def approvals(self) -> list[dict[str, str]]: ...
+
+    def decide_approval(self, approval_id: str, state: str, reason: str) -> bool: ...
+
     def digest(self) -> str: ...
 
 
@@ -102,6 +109,8 @@ CREATE TABLE IF NOT EXISTS sent(id TEXT PRIMARY KEY, kind TEXT, to_addr TEXT, su
   at TEXT, message_id TEXT);
 CREATE TABLE IF NOT EXISTS replies(id TEXT PRIMARY KEY, from_addr TEXT, text TEXT, in_reply_to TEXT, read INTEGER);
 CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY, text TEXT, at TEXT);
+CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, approver TEXT, summary TEXT, operation TEXT, state TEXT,
+  reason TEXT);
 """
 
 
@@ -209,8 +218,33 @@ class SqliteStore:
     def add_note(self, row: dict[str, str]) -> None:
         self._do("INSERT OR IGNORE INTO notes(id, text, at) VALUES (?, ?, ?)", row["id"], row["text"], row["at"])
 
+    def add_approval(self, row: dict[str, str]) -> None:
+        self._do(
+            "INSERT OR IGNORE INTO approvals(id, approver, summary, operation, state, reason) VALUES (?, ?, ?, ?, ?, '')",
+            row["id"],
+            row["approver"],
+            row["summary"],
+            row["operation"],
+            "pending",
+        )
+
+    def approvals(self) -> list[dict[str, str]]:
+        return [{k: str(v) for k, v in r.items()} for r in self._rows("SELECT * FROM approvals ORDER BY id")]
+
+    def decide_approval(self, approval_id: str, state: str, reason: str) -> bool:
+        return (
+            self._do(
+                "UPDATE approvals SET state = ?, reason = ? WHERE id = ? AND state = 'pending'",
+                state,
+                reason,
+                approval_id,
+            )
+            == 1
+        )
+
     def digest(self) -> str:
-        return _digest({t: self._rows(f"SELECT * FROM {t}") for t in ("facts", "jobs", "sent", "replies", "notes")})
+        tables = ("facts", "jobs", "sent", "replies", "notes", "approvals")
+        return _digest({t: self._rows(f"SELECT * FROM {t}") for t in tables})
 
 
 # -- Firestore, over the emulator's REST API --------------------------------------------------------------------------
@@ -356,8 +390,23 @@ class FirestoreStore:
     def add_note(self, row: dict[str, str]) -> None:
         self._put("notes", row["id"], dict(row))
 
+    def add_approval(self, row: dict[str, str]) -> None:
+        if self._call("GET", f"approvals/{row['id']}") is None:
+            self._put("approvals", row["id"], {**row, "state": "pending", "reason": ""})
+
+    def approvals(self) -> list[dict[str, str]]:
+        rows = [{k: str(v) for k, v in r.items() if k != "_id"} for r in self._all("approvals")]
+        return sorted(rows, key=lambda r: r["id"])
+
+    def decide_approval(self, approval_id: str, state: str, reason: str) -> bool:
+        found = next((r for r in self.approvals() if r["id"] == approval_id), None)
+        if found is None or found["state"] != "pending":
+            return False
+        self._put("approvals", approval_id, {**found, "state": state, "reason": reason})
+        return True
+
     def digest(self) -> str:
         tables = {}
-        for collection in ("facts", "jobs", "sent", "replies", "notes"):
+        for collection in ("facts", "jobs", "sent", "replies", "notes", "approvals"):
             tables[collection] = self._all(collection)
         return _digest(tables)

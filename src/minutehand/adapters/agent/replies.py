@@ -20,7 +20,7 @@ import httpx
 
 from minutehand.adapters.proxy.capture import fill, structured, values_at
 from minutehand.application.refusals import AgentFailed
-from minutehand.domain.outbound import Acknowledge, ReplyDelivery
+from minutehand.domain.outbound import DEFAULT_REPLY_BODY, Acknowledge, ReplyDelivery
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Person
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
@@ -87,7 +87,8 @@ class CapturedReplies:
             "{in_reply_to}": self._thread(asked.entity.external_id, written.seq, world),
             "{sent_at}": clock.now().isoformat(),
         }
-        await self._send(fill(self._delivery.body, values), clock)
+        body = self._delivery.body if self._delivery.body is not None else DEFAULT_REPLY_BODY
+        await self._send(fill(body, values), clock)
 
     def _thread(self, message: str, before: int, world: Store) -> str:
         """The id the email API answered the send with, read at `thread` from its own answer; else the message's

@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 
-from tests.architecture.support import Rig, outside_module
+from minutehand.testing.client import MinutehandClient
+from tests.architecture.support import (
+    APPROVER_TOKEN,
+    APPROVER_TOKEN_VARIABLE,
+    MINUTEHAND,
+    Rig,
+    free_port,
+    outside_module,
+)
 
 
 @pytest.fixture(scope="session")
@@ -14,6 +26,45 @@ def outside(tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     module = outside_module()
     with module.serving(Path(tmp_path_factory.mktemp("outside"))) as served:
         yield served
+
+
+@pytest.fixture(scope="module")
+def minutehand(outside: object, tmp_path_factory: pytest.TempPathFactory) -> Iterator[MinutehandClient]:
+    """`minutehand serve` as the installed command, trusting the outside world's CA for what it passes through."""
+    state = tmp_path_factory.mktemp("serve")
+    control, proxy, telemetry = free_port(), free_port(), free_port()
+    server = subprocess.Popen(
+        [
+            str(MINUTEHAND),
+            "serve",
+            "--state",
+            str(state),
+            "--proxy-port",
+            str(proxy),
+            "--control-port",
+            str(control),
+            "--telemetry-port",
+            str(telemetry),
+            "--upstream-ca",
+            str(outside.ca),  # type: ignore[attr-defined]
+        ],
+        env={**os.environ, APPROVER_TOKEN_VARIABLE: APPROVER_TOKEN},
+    )
+    try:
+        with MinutehandClient(f"http://127.0.0.1:{control}") as client:
+            give_up = time.monotonic() + 90
+            while True:
+                try:
+                    if client.health():
+                        break
+                except httpx.TransportError:
+                    pass
+                assert time.monotonic() < give_up, "minutehand serve did not answer"
+                time.sleep(0.1)
+            yield client
+    finally:
+        server.terminate()
+        server.wait(timeout=15)
 
 
 @pytest.fixture

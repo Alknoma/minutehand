@@ -81,8 +81,12 @@ from minutehand.adapters.control.wire import (
     ChangePerson,
     Checked,
     CreateWorld,
+    DecideNow,
+    DecisionsDone,
+    DecisionView,
     DeclareFaults,
     DeleteTicket,
+    DueDecisionView,
     EditTicket,
     EntitiesPage,
     Environment,
@@ -91,12 +95,14 @@ from minutehand.adapters.control.wire import (
     FiredView,
     FurtherSeed,
     Happen,
+    InboxesView,
     LobbyKind,
     MarkStep,
     Minted,
     MintInbound,
     MoveTicket,
     OwedView,
+    PendingItemView,
     Permit,
     PressControl,
     ProvidersView,
@@ -116,10 +122,21 @@ from minutehand.adapters.control.wire import (
     lobby_kind,
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
-from minutehand.application.standing import NotFound, Unsupported
+from minutehand.application.standing import NotFound, StandingWorld, Unsupported
 from minutehand.application.steps import STEP, StepEdge, Stepping
+from minutehand.domain.people import Decides
 from minutehand.domain.scenario import Model
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordedCall, Stored, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityKind,
+    EntityRef,
+    InboxItemSnapshot,
+    ItemStatus,
+    Operation,
+    RecordedCall,
+    Stored,
+    WorldEvent,
+)
 from minutehand.ports.store import Store
 from minutehand.session import reading_file
 
@@ -262,6 +279,12 @@ def _across[T](stretches: Sequence[Path], world: World, read: Callable[[Store], 
             found += read(before)
         resets.append(len(found))
     return found + read(world.store), resets
+
+
+def _decision(event: WorldEvent) -> DecisionView:
+    item = event.after
+    assert isinstance(item, InboxItemSnapshot)
+    return DecisionView(event=event, accepted=item.status is ItemStatus.DECIDED, refused=item.refused)
 
 
 def create_app(serving: Serving) -> Starlette:
@@ -478,16 +501,63 @@ def create_app(serving: Serving) -> Starlette:
     async def checks(request: Request) -> Response:
         return _json(Checked(result=await standing.checks(world_of(request).world_id)))
 
-    async def mark(stepping: Stepping, request: Request) -> Response:
+    async def mark(stepping: Stepping, members: Sequence[StandingWorld], request: Request) -> Response:
         asked = MarkStep.model_validate_json(await request.body())
         if asked.edge is StepEdge.BEGAN:
             stepping.begin(asked.at, asked.reason)
         else:
+            if stepping.open:
+                for member in members:
+                    await member.look()  # what the step left waiting on people is asked in that step
             stepping.end()
         return _json(_steps(stepping))
 
     async def world_steps(request: Request) -> Response:
-        return await mark(world_of(request).steps, request)
+        found = world_of(request)
+        members = list(found.case.members.values()) if found.case is not None else [found.standing]
+        return await mark(found.steps, members, request)
+
+    async def read_inboxes(request: Request) -> Response:
+        live = world_of(request).standing
+        looked = await live.look()
+        names = {r.declared.name for r in live.inboxes.reaches.values()} if live.inboxes is not None else set()
+        pending = [
+            PendingItemView(
+                inbox=item.inbox,
+                item=ref,
+                person=item.person,
+                summary=item.summary,
+                decisions=item.decisions,
+                gates=item.gates,
+                seen_at=seen,
+            )
+            for ref, item, seen in live.pending_items()
+            if item.inbox in names
+        ]
+        due = [
+            DueDecisionView(
+                at=at,
+                inbox=reply.in_reply_to.provider,
+                item=reply.in_reply_to,
+                person=reply.person,
+                decision=reply.decides.decision,
+                inputs=reply.decides.inputs,
+            )
+            for at, reply in live.due_decisions()
+            if reply.decides is not None
+        ]
+        return _json(InboxesView(pending=pending, due=due, unread=looked.unread))
+
+    async def perform_due(request: Request) -> Response:
+        done = await standing.perform_due(world_of(request).world_id)
+        return _json(DecisionsDone(decisions=[_decision(e) for e in done]))
+
+    async def decide(request: Request) -> Response:
+        asked = DecideNow.model_validate_json(await request.body())
+        made = await world_of(request).standing.decide_now(
+            asked.person, asked.item, Decides(decision=asked.decision, inputs=asked.inputs)
+        )
+        return _json(_decision(made))
 
     async def cases(_: Request) -> Response:
         return _json(CaseList(cases=[_case(c) for c in standing.cases.values()]))
@@ -496,7 +566,8 @@ def create_app(serving: Serving) -> Starlette:
         return _json(_case(standing.case(request.path_params["case_id"])))
 
     async def case_steps(request: Request) -> Response:
-        return await mark(standing.case(request.path_params["case_id"]).stepping, request)
+        found = standing.case(request.path_params["case_id"])
+        return await mark(found.stepping, list(found.members.values()), request)
 
     async def case_checks(request: Request) -> Response:
         found = standing.case(request.path_params["case_id"])
@@ -553,6 +624,9 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/state", state, ["GET"]),
             route("/worlds/{world_id}/checks", checks, ["GET"]),
             route("/worlds/{world_id}/steps", world_steps, ["POST"]),
+            route("/worlds/{world_id}/inboxes/read", read_inboxes, ["POST"]),
+            route("/worlds/{world_id}/inboxes/due", perform_due, ["POST"]),
+            route("/worlds/{world_id}/inboxes/decide", decide, ["POST"]),
             route("/cases", cases, ["GET"]),
             route("/cases/{case_id}", case, ["GET"]),
             route("/cases/{case_id}/steps", case_steps, ["POST"]),

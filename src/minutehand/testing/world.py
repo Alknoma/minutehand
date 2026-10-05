@@ -3,7 +3,7 @@ says what the world last did, so the failure explains itself."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
@@ -14,12 +14,15 @@ from minutehand.adapters.control.wire import (
     ChangePerson,
     Checked,
     CreateWorld,
+    DecideNow,
+    DecisionView,
     DeclareFaults,
     DeleteTicket,
     EditTicket,
     Fault,
     FurtherSeed,
     Happen,
+    InboxesView,
     MintInbound,
     MoveTicket,
     Permit,
@@ -169,6 +172,23 @@ class OpenWorld:
     def checks(self) -> Checked:
         """The world's checks as it stands; for a world of a case, the case's."""
         return self.client.checks(self.world_id)
+
+    # -- what waits on people in the service's own product ------------------------------------------------------
+
+    def inboxes(self) -> InboxesView:
+        """Read the inboxes now: what waits on people, and the decisions they owe with when each falls due."""
+        return self.client.read_inboxes(self.world_id)
+
+    def perform_due(self) -> list[DecisionView]:
+        """Make every decision due at the world's clock, as its person."""
+        return self.client.perform_due_decisions(self.world_id).decisions
+
+    def decide(
+        self, person: str, item: EntityRef, decision: str, inputs: Mapping[str, str] | None = None
+    ) -> DecisionView:
+        """`person` decides `item` now, as the product's page would send it."""
+        asked = DecideNow(person=person, item=item, decision=decision, inputs=dict(inputs or {}))
+        return self.client.decide(self.world_id, asked)
 
     @property
     def case_id(self) -> str | None:
@@ -383,6 +403,29 @@ class OpenCase:
             to = max(w.client.world(w.world_id).now for w in self.worlds) + by
         for world in self.worlds:
             world.advance(to=to)
+
+    def inboxes(self) -> InboxesView:
+        """Every world's inboxes read now, as one view: what waits on people, and the decisions owed, earliest
+        first."""
+        read = [w.inboxes() for w in self.worlds if w.closed is None]
+        return InboxesView(
+            pending=[p for r in read for p in r.pending],
+            due=sorted((d for r in read for d in r.due), key=lambda d: d.at),
+            unread=[u for r in read for u in r.unread],
+        )
+
+    def perform_due(self) -> list[DecisionView]:
+        """Make every decision due at each world's clock, as its person."""
+        return [d for w in self.worlds if w.closed is None for d in w.perform_due()]
+
+    def decide(
+        self, person: str, item: EntityRef, decision: str, inputs: Mapping[str, str] | None = None
+    ) -> DecisionView:
+        """`person` decides `item` now, in the world whose inbox it was seen in."""
+        for world in self.worlds:
+            if world.closed is None and any(p.item == item for p in world.inboxes().pending):
+                return world.decide(person, item, decision, inputs)
+        raise AssertionError(f"no open world of case {self.case_id} holds {item.external_id} pending")
 
     def checks(self) -> Checked:
         """The case scored as one run, as it stands."""

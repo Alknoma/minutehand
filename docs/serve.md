@@ -123,6 +123,9 @@ the client raises `ServerFailed`, not `Refused`. Each status comes from one conv
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now; for a world of a case, the case's |
 | `POST /v1/worlds/{id}/steps` | `MarkStep` → `StepView` | A step begins (`edge: began`, `at`, `reason`) or ends (`edge: ended`); a world of a case steps its case |
+| `POST /v1/worlds/{id}/inboxes/read` | → `InboxesView` | Read the world's inboxes as each person now: what waits on people, and the decisions owed with when each falls due |
+| `POST /v1/worlds/{id}/inboxes/due` | → `DecisionsDone` | Make every decision due by the world's clock, its case's, or its latest step's moment, as its person |
+| `POST /v1/worlds/{id}/inboxes/decide` | `DecideNow` → `DecisionView` | A person decides an item now, with a decision and its inputs |
 | `GET /v1/cases` | → `CaseList` | Every open case |
 | `GET /v1/cases/{case_id}` | → `CaseView` | Its label, its worlds, its step |
 | `POST /v1/cases/{case_id}/steps` | `MarkStep` → `StepView` | A step of every world of the case |
@@ -206,6 +209,17 @@ The clock of a world stands still. Nothing fires on its own.
   plugin's `minutehand_world`, send them.
 - **Booked wakes** (a scheduler provider such as AWS) are recorded in the log and never fired: a booking
   becomes a wake only in the run loop.
+
+### Inboxes in the service's own product
+
+`CreateWorld.inboxes` declares where work waits on a person in the service's own product (an approval, a question on
+its own page), as an agent file does (`docs/inboxes.md`); a person's `credential` is read from the server's own
+environment. The inboxes are read as each person at a step's end, on `advance` and on `checks`: a new item is the
+agent asking that person, recorded in the world. With scripted people on, each person's scripted decision is owed
+like a reply and made when the clock passes it. A harness that keeps its own clock asks `inboxes/read` for the
+earliest decision due, marks its next step there, and has it made with `inboxes/due`; one that keeps its own timing
+has a person decide now with `inboxes/decide`. `OpenWorld.inboxes()`, `.perform_due()`, `.decide()` (and the same on
+`OpenCase`) send them.
 
 ### Faults
 
@@ -378,7 +392,7 @@ def test_the_reminder_reaches_sofia(minutehand_world, gateway):
 |---|---|---|
 | `minutehand` | session | `MinutehandClient` to `$MINUTEHAND_URL`, or to a server started in this process |
 | `minutehand_spec` | test | The suite defines it; the default fails with how to |
-| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `spans()` (each since the last reset, or `since_reset=False`), `late_calls()`, `raw_state()`; `quiet()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
+| `minutehand_world` | test | `OpenWorld`: `inboxes()`, `perform_due()`, `decide()`; `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `spans()` (each since the last reset, or `since_reset=False`), `late_calls()`, `raw_state()`; `quiet()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
 
 A failed `assert_*` prints the world's latest changes. `AsyncMinutehandClient` is the same client for an async
 suite.
