@@ -70,9 +70,9 @@ that test instead.
   download guide says a Workspace document is read by `files.export`, and this fake refuses the download with a 403
   `fileNotDownloadable`. A client that downloaded Docs with `alt=media` was relying on a behaviour Drive does not
   have.
-- **`fieldNotWritable` as a 400.** The older stand-in refused `parents` in an update body with a 400. This fake
-  answers a 403 with the same reason, as an earlier test here already held; no public page states the status, so
-  the 403 stands and the 400 is not carried.
+- **`fieldNotWritable` as a 400 — observed by the old emulator, not adopted.** The older stand-in refused `parents`
+  in an update body with a 400. No public page states the status, so this fake keeps its 403 with the same reason
+  (`test_parents_in_an_update_body_is_refused_403_field_not_writable`).
 - **Placeholder ids derived from the slide's id** (`<slide>_title`, `<slide>_body`, `<slide>_notes_body`). Slides
   mints placeholder ids unless the caller maps them; a client reads them from `presentations.get`.
 - **File text in the JSON body of `files.create`** (`content`, `_media_content`). Drive takes a file's bytes through

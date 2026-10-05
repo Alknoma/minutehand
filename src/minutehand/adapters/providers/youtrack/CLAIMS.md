@@ -86,17 +86,20 @@ real instance answer, not stated in the documentation). Tests are under `tests/p
   These tested the older stand-in's admin control plane and its files; permissions here are the seed's `grants`.
 - **"A search survives an issue with no Priority."** It guarded a crash in the older stand-in.
 
-## Left open
+## Observed by the old emulator, not adopted
+
+Where YouTrack's documentation is silent or contradicts itself, this provider keeps its own behaviour and the older
+stand-in's reading is recorded here rather than carried.
 
 - **`id` beside the attributes asked for.** YouTrack's samples
   ([fields syntax](https://www.jetbrains.com/help/youtrack/devportal/api-fields-syntax.html),
   [issues](https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues.html)) show `id` in answers whose
-  `fields` did not name it; the page's own rule says an attribute comes back only when named. This provider follows
-  the rule, and many of its tests assert answers without an unasked `id`.
+  `fields` did not name it, and the older stand-in always added it. Not adopted: the same page states the rule that
+  an attribute comes back only when named, and a stated rule outranks a sample.
 - **Hub and a project made through the API.** The older stand-in gave such a project a Hub project and team group,
-  hidden only until the token could read it, and let a member be added there once Update Project was granted. This
-  provider gives it no Hub project at all (`test_a_project_made_through_the_api_has_no_hub_project`). Both read
-  the same live observation, a `total: 0` for such a project.
-- **Defaults on a new issue.** The older stand-in said a created issue holds no Priority or Type; this provider
-  gives it the project's defaults (`test_create_issue_takes_the_project_database_id_and_fills_defaults`). The
-  entity pages for project fields say nothing either way.
+  hidden until the token could read it, and let a member be added there once Update Project was granted. Not
+  adopted: no page documents either reading, and both rest on the same live `total: 0`, so this provider keeps no
+  Hub project for it (`test_a_project_made_through_the_api_has_no_hub_project`).
+- **Defaults on a new issue.** The older stand-in said a created issue holds no Priority or Type. Not adopted: the
+  project-field pages say nothing either way, so this provider keeps the project's defaults
+  (`test_create_issue_takes_the_project_database_id_and_fills_defaults`).
