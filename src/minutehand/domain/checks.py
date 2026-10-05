@@ -205,6 +205,11 @@ class RunView(Model):
         default=None,
         description="Calls to hosts no provider claims, which produced no event; None when nobody could say",
     )
+    broken_calls: list[Exchange] = Field(
+        default=[],
+        description="Calls Minutehand failed to answer (`CallOutcome.INTERNAL_ERROR`): the run says nothing about the "
+        "agent while any is here",
+    )
 
 
 class Check(Protocol):

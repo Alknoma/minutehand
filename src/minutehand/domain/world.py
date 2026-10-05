@@ -77,7 +77,8 @@ class Body(Model):
 class CallOutcome(StrEnum):
     """What a call's answer was, as distinct from its status: who is at fault when it is not a plain answer.
 
-    Set on every forwarded call (`CaptureMode.FORWARD`); None on a call nothing classified."""
+    Set on every forwarded call (`CaptureMode.FORWARD`) and on every call a provider in this process answered
+    (`adapters.answering`); None on a call nothing classified."""
 
     ANSWERED = "answered"  # the service answered as it would
     REFUSED = "refused"  # the service refused it, as the real one would: a 4xx, or an error declared faithful
@@ -152,6 +153,16 @@ class Tunnelled(Model):
     route: TunnelRoute
 
 
+class CallFailure(Model):
+    """Why Minutehand answered a call in the provider's place: an operation the fake does not implement, or its own
+    error, with the exception's type and, for an internal error, its traceback."""
+
+    kind: CallOutcome = Field(description="`NOT_IMPLEMENTED` or `INTERNAL_ERROR`")
+    message: str = Field(description="What the agent was answered, as its client reads it")
+    exception_type: str = Field(description="The exception's qualified class name")
+    traceback: str | None = Field(default=None, description="Set for an internal error")
+
+
 class Exchange(Model):
     """One HTTP call as it crossed the wire. Bodies are the provider's own format.
 
@@ -183,6 +194,9 @@ class Exchange(Model):
         default=None,
         description="Set for a call refused into the lobby of `minutehand serve` that carried a claim of a world "
         "already closed: the id of the world it would have belonged to, had it come before that world closed",
+    )
+    failure: CallFailure | None = Field(
+        default=None, description="Set when Minutehand answered in the fake's place: not implemented, or its own error"
     )
 
 
