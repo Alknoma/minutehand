@@ -11,11 +11,12 @@ fork and rerun of that run starts at the same instant.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, time, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Model(BaseModel):
@@ -149,6 +150,26 @@ class SeededDocument(Model):
     folder: str | None = None
 
 
+class ProviderSeed(Model):
+    """What one provider seeds beyond the shared people, tickets and documents, in that provider's own shape.
+
+    The shared model cannot name a provider's types (`domain` imports no adapter), so the shape crosses as
+    the provider's own JSON text, as a stored entity's body does, and only that provider parses it: it
+    validates `body` against its own seed model when it seeds, and refuses what it cannot read. A scenario
+    file writes the shape as YAML or JSON structure; it is kept as its JSON text.
+    """
+
+    provider: ProviderKey
+    body: str = Field(description="The provider's own seed model, as JSON text")
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _as_text(cls, value: object) -> object:
+        if isinstance(value, dict | list):
+            return json.dumps(value)
+        return value
+
+
 class TicketFate(Model):
     """What happens to a ticket the agent hands to a person."""
 
@@ -250,6 +271,9 @@ class _ScenarioBody(Model):
     documents: list[SeededDocument] = []
     ticket_fates: list[TicketFate] = []
     directions: list[Direction] = []
+    provider_seeds: list[ProviderSeed] = Field(
+        default=[], description="Each provider's own seed beyond people, tickets and documents; one per provider"
+    )
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
 
     @model_validator(mode="after")
@@ -268,9 +292,17 @@ class _ScenarioBody(Model):
         missing = sorted(set(named) - known)
         if missing:
             raise ValueError(f"no such person: {', '.join(missing)}")
+        seeded = [s.provider for s in self.provider_seeds]
+        twice = sorted({p for p in seeded if seeded.count(p) > 1})
+        if twice:
+            raise ValueError(f"more than one provider seed for {', '.join(twice)}")
         for relayed in (e for e in self.expect if isinstance(e, Relayed)):
             self._refuse_tell(relayed)
         return self
+
+    def provider_seed(self, provider: str) -> ProviderSeed | None:
+        """The provider's own seed, when the scenario gives it one."""
+        return next((s for s in self.provider_seeds if s.provider == provider), None)
 
     def _refuse_tell(self, relayed: Relayed) -> None:
         """A tell the agent could write without hearing it from `said_by`, or that `said_by` can never say."""
