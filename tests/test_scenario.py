@@ -324,3 +324,38 @@ def test_state_hooks_that_keep_no_snapshot_are_refused() -> None:
     assert StateHooks(snapshot=["s"], restore=["r"], keep=3).keep == 3
     with pytest.raises(ValidationError, match="greater than or equal to 1"):
         StateHooks(snapshot=["s"], restore=["r"], keep=0)
+
+
+def test_a_moment_counted_from_the_start_is_written_into_the_text_when_the_run_starts() -> None:
+    from minutehand.domain.scenario import WrittenScenario
+
+    written = WrittenScenario.model_validate(
+        {
+            "name": "dated",
+            "goal": "Signed by {{start+P2D}} ({{start+P2D:iso}}); review {{start+P1DT5H:time}}; filed {{start-P1D}}.",
+            "owner": "owen",
+            "people": [{"key": "owen", "name": "Owen", "email": "owen@example.com"}],
+            "directions": [{"text": "Now it is due {{start+P3D:iso}}.", "after": "PT1H"}],
+        }
+    )
+    played = written.starting(datetime(2026, 9, 1, 9, tzinfo=UTC))
+    assert played.goal == (
+        "Signed by Thursday 3 September 2026 (2026-09-03); review Wednesday 2 September 2026, 14:00 UTC; "
+        "filed Monday 31 August 2026."
+    )
+    assert played.directions[0].text == "Now it is due 2026-09-04."
+    assert played.starting(datetime(2030, 1, 1, tzinfo=UTC)).goal == played.goal
+
+
+def test_a_moment_that_names_no_duration_is_rejected_at_load() -> None:
+    from minutehand.domain.scenario import WrittenScenario
+
+    with pytest.raises(ValidationError):
+        WrittenScenario.model_validate(
+            {
+                "name": "x",
+                "goal": "By {{start+Pnever}}",
+                "owner": "o",
+                "people": [{"key": "o", "name": "O", "email": "o@x"}],
+            }
+        )
