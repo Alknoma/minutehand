@@ -167,7 +167,7 @@ class Subscriptions:
                 )
         record = SubscriptionRecord(
             subscription=wire.Subscription(
-                id=tokens.derived_trace(f"subscription {self._world.next_seq()} {self._world.store.run_id}"),
+                id=tokens.derived_trace(f"subscription {self._world.next_seq()}"),
                 resource=asked.resource,
                 applicationId=claims.appid,
                 changeType=asked.changeType,

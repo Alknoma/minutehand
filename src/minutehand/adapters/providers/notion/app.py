@@ -79,7 +79,7 @@ class NotionApi:
     # ------------------------------------------------------------------ the gate
 
     def request_id(self, request: Request) -> str:
-        return wire.request_id(f"{self._store.run_id}:{self._store.head()}:{request.method}:{request.url.path}")
+        return wire.request_id(f"{self._store.head()}:{request.method}:{request.url.path}")
 
     def refused(self, request: Request, refusal: wire.Refusal) -> Response:
         return Response(
@@ -126,7 +126,7 @@ class NotionApi:
 
     def _faults(self, request: Request, call: Call) -> None:
         path = request.url.path
-        for n, fault in enumerate(self._world.schedule().faults):
+        for n, fault in self._world.armed():
             if fault.integration is not None and fault.integration != call.bot:
                 continue
             if fault.kind is wire.FaultKind.CONFLICT:

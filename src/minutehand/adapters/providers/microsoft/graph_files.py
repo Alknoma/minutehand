@@ -828,7 +828,7 @@ class Files:
             assert found_parent is not None
             parent, name = found_parent, existing.item.name
         expires = graph_time(self._clock.now() + timedelta(days=1))
-        session = tokens.derived_trace(f"upload {self._world.next_seq()} {self._world.store.run_id}")
+        session = tokens.derived_trace(f"upload {self._world.next_seq()}")
         record = wire.StoredUploadSession(
             session=session,
             drive=address.drive.drive.id,

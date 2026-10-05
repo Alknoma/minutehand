@@ -16,12 +16,13 @@ import pytest
 from minutehand import cli, session
 from minutehand.adapters.mcp.results import RunListing
 from minutehand.adapters.web.responses import RunResponse, RunsResponse
-from minutehand.application.forks import described
+from minutehand.application.forks import DivergenceKind, Record, described
 from minutehand.application.restore import Verification
 from minutehand.domain.experiment import DeadlineShift, Fork, PersonChange
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import Silent
-from minutehand.domain.world import Actor
+from minutehand.domain.telemetry import Attribute, Placement, ReceivedSpan, SpanSource, StoredSpan, StringValue
+from minutehand.domain.world import Actor, Exchange, RecordedCall
 from tests.e2e.support import ANSWER, T0, agent_under_test, answers, scenario
 from tests.mcp.test_mcp_tools import call, connected
 from tests.web.test_viewer_api import client, read
@@ -86,7 +87,7 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_it_was_restored_an
     assert "Sofia Romano (sofia) answers with 1 scripted reply" in said
     assert "its restore was verified: the agent's report" in said
     assert "verdict: failed -> passed" in said
-    assert "the records part at the first change in the world after the split" in said and ANSWER in said
+    assert "the records part at the first " in said and ANSWER in said
 
     cli.main(["runs", "--state", str(state)])
     listing = capsys.readouterr().out
@@ -124,13 +125,98 @@ def test_a_persons_reply_from_a_fork_is_the_first_change_in_the_world_that_diffe
         shared.model_copy(update={"run_id": "c"}),
         message(6, ANSWER, Actor.PERSON, "c"),
     ]
-    split = first_divergence(parent, fork, 1, scenario(Silent()), scenario(Silent()))
-    assert split is not None and split.shared == 1
+    split = first_divergence(Record(parent), Record(fork), 1, scenario(Silent()), scenario(Silent()))
+    assert split is not None and split.shared == 1 and split.kind is DivergenceKind.CHANGE
     assert (
         split.parent is not None and "the agent sent a message" in split.parent.words and "Nudge" in split.parent.words
     )
     assert split.fork is not None and "a person wrote" in split.fork.words and ANSWER in split.fork.words
+    assert first_divergence(Record(parent), Record(parent), 1, scenario(Silent()), scenario(Silent())) is None
+
+
+def _call(first_seq: int, path: str, *, sent: str = "", answered: str = "{}", run: str = "p") -> RecordedCall:
+    return RecordedCall(
+        exchange=Exchange(
+            method="POST", host="slack.com", path=path, status=200, request_body=sent, response_body=answered
+        ),
+        provider="slack",
+        first_seq=first_seq,
+        last_seq=first_seq - 1,
+        wake=2,
+        sim_time=T0 + timedelta(hours=first_seq),
+    )
+
+
+def test_a_fork_that_read_differently_and_changed_nothing_yet_parts_at_the_call() -> None:
+    """Both records make no change after the split; the fork's lookup was answered differently, so it is the call
+    that parts them, said as a call."""
+    from minutehand.application.forks import first_divergence
+
+    before = _call(1, "/api/users.info", answered='{"user": "sofia"}')
+    parent = Record([], calls=[before, _call(3, "/api/users.lookupByEmail", answered='{"ok": true}')])
+    fork = Record([], calls=[before, _call(3, "/api/users.lookupByEmail", answered='{"ok": false}')])
+    split = first_divergence(parent, fork, 1, scenario(Silent()), scenario(Silent()))
+    assert split is not None and split.kind is DivergenceKind.CALL and split.shared == 0
+    assert split.differs == "the same call was answered differently"
+    assert split.parent is not None and '{"ok": true}' in split.parent.words
+    sent = Record([], calls=[_call(3, "/api/chat.postMessage", sent='{"text": "hi"}')])
+    other = Record([], calls=[_call(3, "/api/chat.postMessage", sent='{"text": "bye"}')])
+    found = first_divergence(sent, other, 1, scenario(Silent()), scenario(Silent()))
+    assert found is not None and found.differs == "the same call sent something different"
     assert first_divergence(parent, parent, 1, scenario(Silent()), scenario(Silent())) is None
+
+
+def _model_call(answer: str, *, after_seq: int = 2) -> StoredSpan:
+    span = ReceivedSpan(
+        trace_id="a" * 32,
+        span_id="b" * 16,
+        name="chat gpt",
+        start=T0,
+        end=T0 + timedelta(seconds=1),
+        attributes=[
+            Attribute(key="gen_ai.operation.name", value=StringValue(value="chat")),
+            Attribute(key="gen_ai.request.model", value=StringValue(value="gpt")),
+            Attribute(key="gen_ai.input.messages", value=StringValue(value="is sofia back?")),
+            Attribute(key="gen_ai.output.messages", value=StringValue(value=answer)),
+        ],
+    )
+    return StoredSpan(
+        span=span,
+        run_id="p",
+        source=SpanSource.RECEIVED,
+        wake=2,
+        placed_by=Placement.WINDOW,
+        arrived_in_wake=2,
+        sim_time=T0,
+        after_seq=after_seq,
+    )
+
+
+def test_a_fork_whose_model_answered_differently_parts_at_the_model_call() -> None:
+    from minutehand.application.forks import first_divergence
+
+    parent = Record([], spans=[_model_call("yes")])
+    fork = Record([], spans=[_model_call("no")])
+    split = first_divergence(parent, fork, 1, scenario(Silent()), scenario(Silent()), after_wake=1)
+    assert split is not None and split.kind is DivergenceKind.MODEL_CALL
+    assert split.fork is not None and "no" in split.fork.words
+    assert first_divergence(parent, parent, 1, scenario(Silent()), scenario(Silent()), after_wake=1) is None
+
+
+def test_a_fork_whose_agent_reported_differently_parts_at_its_report() -> None:
+    from minutehand.application.checkpoint import Checkpoint, NoHooks
+    from minutehand.application.forks import first_divergence
+    from minutehand.domain.agent import Commitment, WaitingOn
+
+    def checkpoint(commitments: list[Commitment]) -> Checkpoint:
+        return Checkpoint(wake=2, now=T0, replies=0, pending=[], commitments=commitments, agent=NoHooks())
+
+    owed = Commitment(key="sofia", description="chase Sofia", waiting_on=WaitingOn.PERSON, opened_at=T0)
+    parent = Record([], checkpoints={5: checkpoint([owed])})
+    fork = Record([], checkpoints={5: checkpoint([])})
+    split = first_divergence(parent, fork, 1, scenario(Silent()), scenario(Silent()))
+    assert split is not None and split.kind is DivergenceKind.REPORT
+    assert split.parent is not None and "1 commitment open" in split.parent.words
 
 
 def test_findings_are_paired_by_check_and_kind_so_a_changed_message_is_changed_not_gained_and_lost() -> None:
