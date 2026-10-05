@@ -58,6 +58,9 @@ WireOverride = PromptPatch | ModelSwap
 RESTORE_RECORD = "restore.json"
 """`Restored`, in the directory of the run the restore started."""
 
+FORK_RECORD = "fork.json"
+"""`Fork`, in the directory of each run it started: what the child changed, as it was asked for."""
+
 CANNOT_REWIND = (
     "A fork rewinds the fakes' world and the agent's own state; it cannot rewind what a real third-party service "
     "the run reached keeps, what a model provider keeps on its side, the AWS provider's queues and schedules, "
@@ -208,7 +211,7 @@ async def fork_run(
         except RunRefused:
             child.discard()
             raise
-        _keep(state_dir / child_id, restored)
+        _keep(state_dir / child_id, restored, fork)
         if wire is not None and on_wire:
             wire.apply(child_id, on_wire)
         records.append(await orchestrator.resume(checkpoint))
@@ -276,9 +279,10 @@ def _edit_tickets(fork: Fork, services: Services, scenario: Scenario, child: Sto
             )
 
 
-def _keep(directory: Path, restored: Restored) -> None:
+def _keep(directory: Path, restored: Restored, fork: Fork) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / RESTORE_RECORD).write_text(restored.model_dump_json(indent=2), encoding="utf-8")
+    (directory / FORK_RECORD).write_text(fork.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _refuse_pending_bookings(checkpoint: Checkpoint, parent: str, at_seq: int) -> None:
