@@ -48,6 +48,7 @@ include = [
     "/src/minutehand/**/*.html",
     "/src/minutehand/**/*.css",
     "/src/minutehand/**/*.js",
+    "/src/minutehand/**/*.md",
 ]
 sources = ["src"]
 
