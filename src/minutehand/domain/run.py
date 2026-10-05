@@ -27,6 +27,7 @@ class VerdictKind(StrEnum):
     FAILED = "failed"  # a check failed
     ENVIRONMENT_FAILED = "environment_failed"  # the run's environment failed under the agent: nothing is judged
     TOOL_FAILED = "tool_failed"  # Minutehand broke while answering a call; the agent is not scored on this run
+    NOT_JUDGED = "not_judged"  # no check failed, and checks could not run or there was nothing to judge
 
 
 EXIT_CODES = {
@@ -35,6 +36,7 @@ EXIT_CODES = {
     VerdictKind.ENVIRONMENT_FAILED: 2,
     VerdictKind.UNFINISHED: 3,
     VerdictKind.TOOL_FAILED: 4,
+    VerdictKind.NOT_JUDGED: 5,
 }
 """What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is also a run that could not be
 performed, which has no verdict: either way, the environment and not the agent. 4 is Minutehand's own failure."""
@@ -56,6 +58,11 @@ class Verdict(Model):
         ge=0, description="Commitments the agent's last report held open; None when it reported none at all"
     )
     words: str = Field(description="The verdict in one sentence, as every surface states it")
+    unjudged: list[str] = Field(
+        default=[],
+        description="NOT_JUDGED: why, one reason each: a check that could not run and what it needed, or that "
+        "nothing was there to judge",
+    )
 
     @property
     def exit_code(self) -> int:
@@ -124,3 +131,8 @@ class RunRecord(Model):
     )
     emulators: list[EmulatorUse] = Field(default=[], description="Every external emulator the agent's calls reached")
     wakes: list[WakeRecord]
+    worlds: list[str] = Field(
+        default=[],
+        description="A case (`minutehand serve`, worlds opened under one case label): the worlds it is made of, in "
+        "the order they opened; empty for any other run",
+    )

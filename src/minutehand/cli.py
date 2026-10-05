@@ -106,7 +106,7 @@ _STOPPED = {
     StopReason.DEADLINE_PASSED: "the clock reached the scenario's deadline",
     StopReason.NOTHING_PENDING: "nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
-    StopReason.CLOSED: "the standing world was closed by whoever opened it",
+    StopReason.CLOSED: "the standing world, or the last world of its case, was closed by whoever opened it",
     StopReason.ENVIRONMENT_FAILED: "an external emulator the run used was unavailable",
 }
 _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
@@ -574,7 +574,7 @@ def _findings(args: argparse.Namespace, state: Path) -> int:
 
 
 def _runs(state: Path) -> int:
-    found = session.runs(state)
+    found = session.listed(state)
     if not found:
         print(f"no runs under {state}")
         return 0
@@ -582,6 +582,8 @@ def _runs(state: Path) -> int:
         record = outcome.record
         failed = sum(1 for f in outcome.result.findings if f.kind is FindingKind.FAIL)
         print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed")
+        if record.worlds:
+            print(f"  a case of {len(record.worlds)} worlds, scored as one run: {', '.join(record.worlds)}")
         account = session.fork_account(state, record.run_id)
         if account is not None:
             print(

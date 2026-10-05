@@ -380,8 +380,14 @@ class MicrosoftWorld:
             Change(entity=entity, operation=operation, actor=actor, body=wire.dump(body), parent=parent, after=after)
         )
 
-    def remove(self, entity: EntityRef, *, actor: Actor, parent: str | None) -> WorldEvent:
-        return self.store.apply(Change(entity=entity, operation=Operation.DELETE, actor=actor, parent=parent))
+    def remove(
+        self, entity: EntityRef, *, actor: Actor, parent: str | None, before: Snapshot | None = None
+    ) -> WorldEvent:
+        """`before`: what the removed thing was, as the checks read it (a message's text, who it reached, its
+        thread), so its removal reads as what was removed."""
+        return self.store.apply(
+            Change(entity=entity, operation=Operation.DELETE, actor=actor, parent=parent, after=before)
+        )
 
     def saw(self, entity: EntityRef, operation: Operation, actor: Actor = Actor.AGENT) -> WorldEvent:
         return self.store.apply(Change(entity=entity, operation=operation, actor=actor))

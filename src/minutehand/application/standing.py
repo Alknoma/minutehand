@@ -27,6 +27,7 @@ from minutehand.application.model_calls import per_wake
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
+from minutehand.application.steps import STEP, steps
 from minutehand.checks.runner import RunResult, broken, evaluate, view_of
 from minutehand.domain.people import (
     InboundCredential,
@@ -83,8 +84,9 @@ from minutehand.ports.provider import (
 )
 from minutehand.ports.store import Store
 
-STANDING_WAKE = 1
-"""Everything after the seed happens in this one wake: the seed is wake 0, as in a run."""
+FIRST_WAKE = 1
+"""What happens after the seed and before any step is in this wake: the seed is wake 0, as in a run. A step marked
+before anything else adopts it; each later step is a wake of its own (`application.steps`)."""
 
 
 class WorldRefused(RunRefused):
@@ -101,6 +103,10 @@ class NotFound(WorldRefused):
 
 class UnknownWorld(NotFound):
     """No open world has the id asked for."""
+
+
+class UnknownCase(NotFound):
+    """No open case has the id asked for."""
 
 
 @contextmanager
@@ -181,11 +187,13 @@ class StandingWorld:
         self._seen = 0
         self._acted: list[Happening] = []
         self._pushing: dict[int, str] = {}
+        self._ended: set[int] = set()
 
     # -- the world as the proxy answers it --------------------------------------------------------------------
 
-    def open(self, named: Sequence[ProviderKey]) -> None:
-        """Seed every provider in `named`, then begin the one wake everything after the seed happens in."""
+    def open(self, named: Sequence[ProviderKey], *, wake: int = FIRST_WAKE) -> None:
+        """Seed every provider in `named`, then begin the wake everything after the seed happens in until the next
+        step: the first, or, for a world joining a case, the case's step in progress."""
         for key in named:
             self.provider(key)
         for n, happening in enumerate(self.scenario.happenings, start=1):
@@ -198,12 +206,25 @@ class StandingWorld:
             for direction in self.scenario.directions:
                 at = self.scenario.starts_at + direction.after
                 self._owed.append(_Owed(at=at, what="the owner's direction", direction=direction.text))
-        self.clock.begin_wake()
-        self.store.wake_began(STANDING_WAKE)
+        self.clock.enter(wake)
+        self.store.wake_began(wake)
         self._seen = self.store.head()
 
     def close(self) -> None:
-        self.store.wake_ended(STANDING_WAKE)
+        self.end_wake()
+
+    def enter_wake(self, wake: int) -> None:
+        """A step begins: the wake in progress ends and `wake`'s window opens."""
+        self.end_wake()
+        self.clock.enter(wake)
+        self.store.wake_began(wake)
+
+    def end_wake(self) -> None:
+        """The wake in progress ends, once: what happens after it and before the next step still carries its number,
+        as between two wakes of a run."""
+        if self.clock.wake() not in self._ended:
+            self._ended.add(self.clock.wake())
+            self.store.wake_ended(self.clock.wake())
 
     def delivering(self) -> list[str]:
         """Each delivery to the agent's service still awaiting its answer: an event, reply, press or happening this
@@ -586,16 +607,7 @@ class StandingWorld:
     async def checks(self, *, stop: StopReason | None) -> RunResult:
         """Every deterministic check and the scorecard over the world as it stands now."""
         await self.observe()
-        view = view_of(
-            self.scenario,
-            self.store.events(),
-            [],
-            self.store.replies(),
-            unmatched_calls=[c.exchange for c in self.store.calls() if c.refused],
-            model_calls=per_wake(self.store.spans(), [STANDING_WAKE]),
-            broken_calls=broken(self.store.calls()),
-        )
-        return evaluate(view, stop=stop, ended=self.clock.now())
+        return score(self.scenario, self.store, stop=stop, ended=self.clock.now())
 
     # -- lookups that refuse loudly -----------------------------------------------------------------------------
 
@@ -644,6 +656,23 @@ class StandingWorld:
         if not isinstance(found, HoldsTickets):
             raise WorldRefused(f"{provider} holds no tickets a person can move")
         return found
+
+
+def score(scenario: Scenario, world: Store, *, stop: StopReason | None, ended: datetime) -> RunResult:
+    """Every deterministic check and the scorecard over a standing world's record, or a case's merged one, as it
+    stands: its steps are its wakes."""
+    wakes = steps(world)
+    calls = world.calls()
+    view = view_of(
+        scenario,
+        [e for e in world.events() if e.entity != STEP],
+        wakes,
+        world.replies(),
+        unmatched_calls=[c.exchange for c in calls if c.refused],
+        model_calls=per_wake(world.spans(), [w.index for w in wakes]),
+        broken_calls=broken(calls),
+    )
+    return evaluate(view, stop=stop, ended=ended)
 
 
 def _doing(happening: Happening) -> str:

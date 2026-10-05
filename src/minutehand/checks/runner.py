@@ -36,6 +36,7 @@ from minutehand.domain.checks import (
     Effectiveness,
     Finding,
     FindingKind,
+    Needs,
     ObligationKind,
     RunView,
     Stability,
@@ -161,7 +162,7 @@ _STOPPED = {
     StopReason.DEADLINE_PASSED: "the run stopped at the scenario's deadline",
     StopReason.NOTHING_PENDING: "the run stopped because nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the run stopped because the agent could not be reached or answered with an error",
-    StopReason.CLOSED: "the standing world was closed by whoever opened it",
+    StopReason.CLOSED: "the standing world, or the last world of its case, was closed by whoever opened it",
     StopReason.ENVIRONMENT_FAILED: "the run stopped because an external emulator it used was unavailable",
 }
 
@@ -221,6 +222,12 @@ def verdict(
     elif card.failed_checks:
         kind = VerdictKind.FAILED
         words = f"Failed: {_count(card.failed_checks, 'check')} failed; {how}."
+    elif reasons := unjudged(view):
+        kind = VerdictKind.NOT_JUDGED
+        words = (
+            f"Not judged: no check failed, but {_count(len(reasons), 'thing')} kept this run from being judged; "
+            f"{how}: " + "; ".join(reasons) + "."
+        )
     elif stop is StopReason.AGENT_DONE and abandoned:
         kind = VerdictKind.UNFINISHED
         people = sorted({c.obligation.person or "someone" for c in abandoned})
@@ -255,7 +262,35 @@ def verdict(
         open_waits=open_waits,
         open_commitments=commitments,
         words=words,
+        unjudged=unjudged(view) if kind is VerdictKind.NOT_JUDGED else [],
     )
+
+
+def unjudged(view: RunView) -> list[str]:
+    """Why a run with no failed check cannot be called passed or unfinished, one reason each; empty when it can.
+
+    A check that could not read its input did not run, and a run whose checks did not run is not one they passed:
+    each check that needs the agent's wakes, in a run that recorded none (a standing world nobody marked a step in
+    and whose clock never moved). And a run in which nothing was there to judge (no expectation declared, and no wait opened: nobody was asked
+    anything the world saw answered, and nothing was handed to anyone) passed nothing. A check blocked because the
+    ledger found nothing to wait on is not a reason by itself: an agent that asked nobody anything and met every
+    expectation was judged, on its expectations."""
+    reasons: list[str] = []
+    for check in discover():
+        needed: list[str] = []
+        if Needs.WAKES in check.needs and not view.wakes:
+            needed.append(
+                "the agent's wakes, and no step was recorded (mark each step, or move the world's clock forward)"
+            )
+        if needed:
+            reasons.append(f"{check.id} could not run, it needs {' and '.join(needed)}")
+    waits = [o for o in view.obligations if o.kind is not ObligationKind.DATE]
+    if not view.scenario.expect and not waits and not view.wakes:
+        reasons.append(
+            "nothing was there to judge: no expectation is declared and no wait was opened (nobody was asked "
+            "anything the world saw answered, and no work was handed to anyone)"
+        )
+    return reasons
 
 
 def _all_met_at(view: RunView, card: Effectiveness, findings: list[Finding]) -> int | None:
@@ -390,8 +425,14 @@ def stability(results: list[RunResult]) -> Stability:
 
 def exit_code(results: list[RunResult]) -> int:
     """Over several samples: 2 when any's environment failed, else 4 when Minutehand broke in any, else 1 when any
-    failed, else 3 when any did not finish, else 0."""
+    failed, else 5 when any could not be judged, else 3 when any did not finish, else 0."""
     kinds = {r.verdict.kind for r in results}
-    order = (VerdictKind.ENVIRONMENT_FAILED, VerdictKind.TOOL_FAILED, VerdictKind.FAILED, VerdictKind.UNFINISHED)
+    order = (
+        VerdictKind.ENVIRONMENT_FAILED,
+        VerdictKind.TOOL_FAILED,
+        VerdictKind.FAILED,
+        VerdictKind.NOT_JUDGED,
+        VerdictKind.UNFINISHED,
+    )
     worst = next((k for k in order if k in kinds), VerdictKind.PASSED)
     return EXIT_CODES[worst]

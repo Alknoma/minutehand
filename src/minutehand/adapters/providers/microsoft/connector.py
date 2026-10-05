@@ -260,7 +260,12 @@ class Connector:
             raise ConnectorRefusal(404, "ActivityNotFoundInConversation", "Conversation not found.")
         if found[1].sender.id != bot_mri(app.app_id):
             raise ConnectorRefusal(403, "NotEnoughPermissions", "A bot can delete only the activities it sent.")
-        self._world.remove(message_ref(found[1].id), actor=Actor.AGENT, parent=conversation.id)
+        self._world.remove(
+            message_ref(found[1].id),
+            actor=Actor.AGENT,
+            parent=conversation.id,
+            before=snapshot(self._world, conversation, found[1], None),
+        )
         return Response(status_code=200)
 
     # ------------------------------------------------------------------ create conversation

@@ -162,6 +162,12 @@ class Effectiveness(Model):
     )
     slowest_reaction: timedelta | None = None
     messages_to_people: int = Field(default=0, ge=0)
+    messages_edited: int = Field(
+        default=0,
+        ge=0,
+        description="Agent messages to people rewritten in place after they were sent, each rewrite once",
+    )
+    messages_deleted: int = Field(default=0, ge=0, description="Agent messages to people deleted after they were sent")
     burden: list[PersonBurden] = Field(default=[], description="Messages per person, in Scenario.people order")
     messages_per_outcome: float | None = Field(
         default=None, description="messages_to_people per expectation met; None when none was met"
@@ -172,10 +178,18 @@ class Effectiveness(Model):
 
 
 class WakeRecord(Model):
+    """One wake of the agent; in a standing world, one step whoever drives the agent marked (or the server inferred
+    from the clock): the stretch the checks read as one go of the agent's."""
+
     index: int = Field(ge=1)
     sim_time: AwareDatetime
     world_changes: int = Field(ge=0)
     commitments_changed: bool
+    inferred: bool = Field(
+        default=False,
+        description="A standing world's step nobody marked: the stretch between two forward moves of its clock",
+    )
+    reason: str | None = Field(default=None, description="Why the step began, as whoever marked it said")
 
 
 class WakeModelCalls(Model):

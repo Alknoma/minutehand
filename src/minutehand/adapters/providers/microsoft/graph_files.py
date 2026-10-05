@@ -366,7 +366,7 @@ class Files:
                 "cTag": f'"c:{{{made}}},{version}"' if "size" in fields else stored.item.cTag,
                 "lastModifiedDateTime": stamp,
                 "lastModifiedBy": by,
-                **{k: v for k, v in fields.items() if k != "content"},
+                **{k: v for k, v in fields.items() if k != "content"},  # enum-lint: exempt a Graph item field's name
             }
         )
         content = fields["content"] if "content" in fields else None

@@ -17,6 +17,8 @@ from minutehand.adapters.control.wire import (
     Advance,
     Advanced,
     CallsPage,
+    CaseList,
+    CaseView,
     ChangePerson,
     Checked,
     CreateWorld,
@@ -27,6 +29,7 @@ from minutehand.adapters.control.wire import (
     Fault,
     FurtherSeed,
     LobbyKind,
+    MarkStep,
     Minted,
     MintInbound,
     Permit,
@@ -39,10 +42,12 @@ from minutehand.adapters.control.wire import (
     RefusalKind,
     Seeded,
     SpansPage,
+    StepView,
     Unmatched,
     WorldList,
     WorldView,
 )
+from minutehand.application.steps import StepEdge
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, EntityKind, Operation
 
@@ -143,6 +148,13 @@ def _close_query(quiet: Quiet | bool) -> dict[str, str]:
     if quiet is True:
         return {}
     return {"quiet_for": str(quiet.quiet_for.total_seconds()), "quiet_at_most": str(quiet.at_most.total_seconds())}
+
+
+def _began(at: datetime | None, reason: str | None) -> str:
+    return MarkStep(edge=StepEdge.BEGAN, at=at, reason=reason).model_dump_json(exclude_none=True)
+
+
+_ENDED = MarkStep(edge=StepEdge.ENDED).model_dump_json(exclude_none=True)
 
 
 def _unmatched_query(since: int, late_for: str | None, kinds: Sequence[LobbyKind]) -> httpx.QueryParams:
@@ -302,7 +314,33 @@ class MinutehandClient:
         return self._get("/providers", ProvidersView).providers
 
     def checks(self, world_id: str) -> Checked:
+        """The world's checks as it stands; for a world of a case, the case's."""
         return self._get(f"/worlds/{world_id}/checks", Checked)
+
+    def begin_step(self, world_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins in the world (in every world of its case, for a world of one), at `at`
+        (simulated; the latest moment reached when None), ending the one in progress. The clock is not moved."""
+        return self._post(f"/worlds/{world_id}/steps", _began(at, reason), StepView)
+
+    def end_step(self, world_id: str) -> StepView:
+        return self._post(f"/worlds/{world_id}/steps", _ENDED, StepView)
+
+    def cases(self) -> list[CaseView]:
+        return self._get("/cases", CaseList).cases
+
+    def case(self, case_id: str) -> CaseView:
+        return self._get(f"/cases/{case_id}", CaseView)
+
+    def begin_case_step(self, case_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins in every world of the case."""
+        return self._post(f"/cases/{case_id}/steps", _began(at, reason), StepView)
+
+    def end_case_step(self, case_id: str) -> StepView:
+        return self._post(f"/cases/{case_id}/steps", _ENDED, StepView)
+
+    def case_checks(self, case_id: str) -> Checked:
+        """The case scored as one run, as it stands."""
+        return self._get(f"/cases/{case_id}/checks", Checked)
 
     def unmatched(
         self, *, since: int = 0, late_for: str | None = None, kinds: Sequence[LobbyKind] = (LobbyKind.UNCLAIMED,)
@@ -437,6 +475,27 @@ class AsyncMinutehandClient:
 
     async def checks(self, world_id: str) -> Checked:
         return await self._get(f"/worlds/{world_id}/checks", Checked)
+
+    async def begin_step(self, world_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        return await self._post(f"/worlds/{world_id}/steps", _began(at, reason), StepView)
+
+    async def end_step(self, world_id: str) -> StepView:
+        return await self._post(f"/worlds/{world_id}/steps", _ENDED, StepView)
+
+    async def cases(self) -> list[CaseView]:
+        return (await self._get("/cases", CaseList)).cases
+
+    async def case(self, case_id: str) -> CaseView:
+        return await self._get(f"/cases/{case_id}", CaseView)
+
+    async def begin_case_step(self, case_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        return await self._post(f"/cases/{case_id}/steps", _began(at, reason), StepView)
+
+    async def end_case_step(self, case_id: str) -> StepView:
+        return await self._post(f"/cases/{case_id}/steps", _ENDED, StepView)
+
+    async def case_checks(self, case_id: str) -> Checked:
+        return await self._get(f"/cases/{case_id}/checks", Checked)
 
     async def unmatched(
         self, *, since: int = 0, late_for: str | None = None, kinds: Sequence[LobbyKind] = (LobbyKind.UNCLAIMED,)

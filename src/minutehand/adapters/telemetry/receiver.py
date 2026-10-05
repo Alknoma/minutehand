@@ -98,7 +98,7 @@ class Receiver:
         self._socket: socket.socket | None = None
         self._client: httpx.AsyncClient | None = None
         self._forwards: set[asyncio.Task[None]] = set()
-        self._by_trace: Callable[[str], Store | None] | None = None
+        self._by_span: Callable[[ReceivedSpan], Store | None] | None = None
         self._grpc = grpc_installed() if grpc is None else grpc
         self._notices: list[str] = []
         self._front: asyncio.Server | None = None
@@ -117,10 +117,10 @@ class Receiver:
         self.store = world
         self.clock = clock
 
-    def route(self, by_trace: Callable[[str], Store | None]) -> None:
-        """`minutehand serve`: a span is kept in the world `by_trace` names for its trace id, and in `store` when
-        it names none."""
-        self._by_trace = by_trace
+    def route(self, by_span: Callable[[ReceivedSpan], Store | None]) -> None:
+        """`minutehand serve`: a span is kept where `by_span` says (the world whose calls carried its trace, or the
+        case open while it ran), and in `store` when it names none."""
+        self._by_span = by_span
 
     @property
     def forwarding(self) -> Forwarding:
@@ -162,7 +162,7 @@ class Receiver:
             return
         by_store: dict[int, tuple[Store, list[ReceivedSpan]]] = {}
         for span in received:
-            found = self._by_trace(span.trace_id) if self._by_trace is not None else None
+            found = self._by_span(span) if self._by_span is not None else None
             store = found or self.store
             by_store.setdefault(id(store), (store, []))[1].append(span)
         for store, spans in by_store.values():

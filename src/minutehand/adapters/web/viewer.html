@@ -116,6 +116,19 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
 .chip.gained{background:var(--fail-wash);color:var(--fail)}
 .chip.lost{background:var(--ok-wash);color:var(--ok)}
 .chip.changed{background:var(--wash);color:var(--ink-2)}
+ol.said{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:14px}
+ol.said li{display:grid;grid-template-columns:110px minmax(0,1fr);gap:2px 12px;padding:6px 10px;background:var(--surface);border:1px solid var(--grid);border-radius:6px;min-width:0}
+ol.said time{font-family:var(--mono);font-size:12px;color:var(--muted);padding-top:2px}
+ol.said .who{overflow-wrap:anywhere}
+ol.said .who.agent{color:var(--ink)} ol.said .who.person{color:var(--person)} ol.said .who.scenario{color:var(--ink-2)}
+ol.said .who.edited{font-style:italic} ol.said .who.deleted{text-decoration:line-through}
+ol.said .note{grid-column:2}
+ol.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px}
+ol.steps details{border:1px solid var(--grid);border-radius:8px;padding:8px 10px;background:var(--surface)}
+ol.steps summary{cursor:pointer}
+ol.steps ul{margin:6px 0 0;padding-left:18px;color:var(--ink-2)}
+ol.steps .wrote{color:var(--ink)}
+ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
 .toggle{font-size:13px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center;cursor:pointer}
 .m.shared{opacity:.45}
 @media (max-width:560px){h1{font-size:20px}.fork dl,.fork .part{grid-template-columns:minmax(0,1fr)}}
@@ -145,7 +158,9 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     findings: "/api/runs/{run}/findings",
     scorecard: "/api/runs/{run}/scorecard",
     modelCalls: "/api/runs/{run}/model-calls",
-    calls: "/api/runs/{run}/calls"
+    calls: "/api/runs/{run}/calls",
+    messages: "/api/runs/{run}/messages",
+    modelTraffic: "/api/runs/{run}/model-traffic"
   };
   var CAPTURED_AS = {
     acknowledge: "acknowledged here, never sent",
@@ -230,6 +245,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   }
 
   function runLabel(row) {
+    if (row.case !== null && row.case !== undefined) { return row.case; }
     var roots = state.list.filter(function (r) { return r.parent_run === null && r.scenario === row.scenario; });
     var name = words(row.scenario);
     if (row.parent_run !== null) { return row.changed || "Rerun"; }
@@ -243,6 +259,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     if (row.verdict === "tool_failed") { return ["fail", "Not scored: Minutehand broke"]; }
     if (row.verdict === "failed") { return ["fail", "Failed: " + plural(row.failed, "problem", "problems")]; }
     if (row.verdict === "unfinished") { return ["review", "Not finished"]; }
+    if (row.verdict === "not_judged") { return ["review", "Not judged"]; }
     if (row.to_review > 0) { return ["ok", "Passed, " + row.to_review + " to look at"]; }
     return ["ok", "Passed"];
   }
@@ -281,13 +298,18 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     clearTimeout(state.timer);
     Promise.all([
       get(API.run, run), get(API.wakes, run), get(API.events, run), get(API.obligations, run),
-      get(API.findings, run), get(API.scorecard, run), get(API.modelCalls, run), get(API.calls, run)
+      get(API.findings, run), get(API.scorecard, run), get(API.modelCalls, run), get(API.calls, run),
+      get(API.messages, run), get(API.modelTraffic, run)
     ]).then(function (parts) {
       if (state.selected !== run) { return; }
       state.view = {
         run: parts[0], wakes: parts[1].wakes, events: parts[2].events, obligations: parts[3].obligations,
         findings: parts[4], scorecard: parts[5].scorecard, modelCalls: parts[6],
-        outbound: parts[7].calls.filter(function (c) { return c.exchange.captured !== null || c.provider === null; })
+        // a model host's tunnels are summarised under "Model calls", one line per host, never listed call by call
+        outbound: parts[7].calls.filter(function (c) {
+          return (c.exchange.captured !== null || c.provider === null) && !c.exchange.tunnelled;
+        }),
+        messages: parts[8].messages, traffic: parts[9]
       };
       var view = state.view, fork = view.run.fork;
       var parent = fork
@@ -324,6 +346,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     if (v.kind === "tool_failed") { return ["fail", "Not scored: Minutehand broke", why]; }
     if (v.kind === "failed") { return ["fail", "Failed: " + plural(fails, "problem", "problems") + " found", why]; }
     if (v.kind === "unfinished") { return ["review", "Not finished", why]; }
+    if (v.kind === "not_judged") { return ["review", "Not judged", "No check failed, but this run could not be judged:"]; }
     if (reviews) { return ["ok", "Passed, with " + reviews + " to look at", why]; }
     return ["ok", "Passed", why];
   }
@@ -343,8 +366,19 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     lines.push(lost ? "The agent itself added " + span(lost) + " of delay." : "The agent added no delay of its own.");
     if (card.slowest_follow_up) { lines.push("Its slowest follow-up came " + span(seconds(card.slowest_follow_up)) + " after the wait expired."); }
     if (card.reactions_slow) { lines.push("It was slow to act on " + plural(card.reactions_slow, "answer", "answers") + "."); }
-    lines.push("It woke " + plural(card.wakes, "time", "times") + (card.idle_wakes ? "; " + card.idle_wakes + " of those changed nothing." : ", and every wake changed something."));
-    lines.push("It sent " + plural(card.messages_to_people, "message", "messages") + " to people.");
+    if (state.view.run.driven) {
+      var inferred = state.view.wakes.filter(function (w) { return w.inferred; }).length;
+      lines.push(card.wakes
+        ? "It took " + plural(card.wakes, "step", "steps") + (inferred ? " (inferred from the clock's moves)" : "") +
+          (card.idle_wakes ? "; " + card.idle_wakes + " of those changed nothing." : ", and every step changed something.")
+        : "No step was recorded: nobody marked one and the clock never moved forward.");
+    } else {
+      lines.push("It woke " + plural(card.wakes, "time", "times") + (card.idle_wakes ? "; " + card.idle_wakes + " of those changed nothing." : ", and every wake changed something."));
+    }
+    lines.push("It sent " + plural(card.messages_to_people, "message", "messages") + " to people" +
+      (card.messages_edited || card.messages_deleted
+        ? "; " + plural(card.messages_edited, "rewrite", "rewrites") + " of a message already sent, " + card.messages_deleted + " deleted."
+        : "; none was rewritten or deleted after it was sent."));
     return lines;
   }
 
@@ -352,14 +386,16 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     var view = state.view, run = view.run, sc = run.scenario;
     var v = verdict(view);
     var parent = state.list.filter(function (r) { return r.run_id === run.run_id; })[0];
-    var eyebrow = words(sc.name) + " · started " + when(sc.starts_at) + " simulated" +
+    var eyebrow = (parent && parent.case ? "case " + parent.case + " · " + plural(parent.worlds.length, "world", "worlds") : words(sc.name)) + " · started " + when(sc.starts_at) + " simulated" +
       (parent && parent.parent_run !== null ? " · a fork" : "");
     var findings = view.findings.findings.slice().sort(function (a, b) {
       return KIND_ORDER[a.finding.kind] - KIND_ORDER[b.finding.kind] || a.number - b.number;
     });
     var html = '<header class="head"><div class="eyebrow">' + esc(eyebrow) + "</div><h1>" + esc(sc.goal) + "</h1></header>";
     if (run.fork) { html += forkPanel(run.fork); }
-    html += '<div class="verdict"><div><span>Verdict</span><strong class="' + v[0] + '">' + esc(v[1]) + "</strong><span>" + esc(v[2]) + "</span></div>";
+    var unjudged = view.findings.verdict && view.findings.verdict.kind === "not_judged" ? view.findings.verdict.unjudged : [];
+    html += '<div class="verdict"><div><span>Verdict</span><strong class="' + v[0] + '">' + esc(v[1]) + "</strong><span>" + esc(v[2]) + "</span>" +
+      (unjudged.length ? '<ul class="why">' + unjudged.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>" : "") + "</div>";
     html += '<div class="card"><span>Scorecard</span>' + (view.scorecard
       ? "<ul>" + scoreLines(view.scorecard).map(function (l) { return "<li>" + esc(l) + "</li>"; }).join("") + "</ul>"
       : "<span>Written when the run finishes.</span>") + "</div></div>";
@@ -382,6 +418,8 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       (run.fork ? '<label class="toggle"><input type="checkbox" id="compare"' + (state.compare ? " checked" : "") + "> Show what the parent did after the split, in a lane of its own</label>" : "") +
       '<div class="chart" id="chart"><div class="scroll" id="scroll"><svg id="timeline" role="img" aria-label="Timeline of the agent\'s wakes, what it waited on, and changes in the world"></svg></div>' +
       '<div class="legend" id="legend"></div><div id="tip" hidden></div></div></section>';
+    html += messageList(view);
+    html += modelTraffic(view);
     if (view.outbound.length) {
       html += '<section><h2>Outbound calls</h2><p class="sub">Calls to hosts no fake answers: an email API, a search, a page. ' +
         "Open one to read what was sent and answered, with credentials and declared fields redacted.</p>" +
@@ -398,7 +436,70 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     if (state.pinned !== null) { highlight(state.pinned); }
   }
 
-  var VERDICT_LABEL = { passed: ["ok", "Passed"], failed: ["fail", "Failed"], unfinished: ["review", "Not finished"], tool_failed: ["fail", "Not scored"] };
+  var VERDICT_LABEL = { passed: ["ok", "Passed"], failed: ["fail", "Failed"], unfinished: ["review", "Not finished"], tool_failed: ["fail", "Not scored"], not_judged: ["review", "Not judged"] };
+
+  /* ---------- what was said, and the model calls behind it ---------- */
+
+  var JOINED = { trace: "joined by its trace", content: "joined by content: the model answered this text verbatim", wake: "the nearest model call in the same step, not proven" };
+
+  function stepWord() { return state.view.run.driven ? "step" : "wake"; }
+
+  function messageWords(m) {
+    var to = m.to.length ? m.to.join(", ") : (m.actor === "agent" ? "nobody in the scenario" : "the agent");
+    var who = m.actor === "agent" ? "" : (m.actor === "person" ? "a person" : "the scenario");
+    if (m.change === "edited") {
+      return (who ? who + " rewrote" : "rewrote") + " the message to " + to + " from “" + m.before + "” to “" + m.text + "”";
+    }
+    if (m.change === "deleted") { return (who ? who + " deleted" : "deleted") + " the message to " + to + ": “" + m.text + "”"; }
+    return (who ? who + " → " : "→ ") + to + (m.thread ? " (in a thread)" : "") + ": " + m.text;
+  }
+
+  function messageList(view) {
+    if (!view.messages.length) { return ""; }
+    var items = view.messages.map(function (m) {
+      var wrote = m.written_by ? '<span class="note"> Written by ' + esc(m.written_by.model || "a model call") + ", " + esc(JOINED[m.written_by.joined_by]) + ".</span>" : "";
+      return '<li data-seq="' + m.seq + '"><time>' + esc(when(m.at)) + "</time>" +
+        '<span class="who ' + esc(m.actor) + (m.change !== "sent" ? " " + esc(m.change) : "") + '">' +
+        esc(messageWords(m)) + "</span>" + wrote + "</li>";
+    }).join("");
+    return '<section><h2>What was said</h2><p class="sub">Every message, in the order the record holds them; a rewrite of one already sent shows both texts.</p><ol class="said">' + items + "</ol></section>";
+  }
+
+  function tokens(c) {
+    if (c.input_tokens === null && c.output_tokens === null) { return ""; }
+    return (c.input_tokens === null ? "?" : c.input_tokens) + " in, " + (c.output_tokens === null ? "?" : c.output_tokens) + " out";
+  }
+
+  function modelTraffic(view) {
+    var t = view.traffic;
+    if (!t.calls.length && !t.hosts.length) { return ""; }
+    var bySeq = {};
+    view.messages.forEach(function (m) { bySeq[m.seq] = m; });
+    var html = '<section><h2>Model calls</h2>';
+    t.hosts.forEach(function (h) {
+      html += '<p class="sub">' + esc(h.host) + ": " + plural(h.calls, "call", "calls") + " on " + plural(h.connections, "connection", "connections") +
+        ", relayed and never opened (" + h.bytes_sent + " bytes sent, " + h.bytes_received + " received). What was asked and answered is not kept; the spans below are what the agent's own telemetry sent.</p>";
+    });
+    if (!t.calls.length) { return html + '<p class="note">No span of a model call was received, so the calls cannot be listed one by one.</p></section>'; }
+    var steps = [], byStep = {};
+    t.calls.forEach(function (c) { if (!byStep[c.step]) { byStep[c.step] = []; steps.push(c.step); } byStep[c.step].push(c); });
+    html += '<p class="sub">' + plural(t.calls.length, "model call", "model calls") + ", by the " + stepWord() + " each is placed in.</p><ol class=\"steps\">";
+    steps.forEach(function (n) {
+      var calls = byStep[n], wrote = calls.filter(function (c) { return c.wrote.length; }).length;
+      var stepped = !view.run.driven || view.wakes.some(function (w) { return w.index === n; });
+      var title = !n ? "Setup" : stepped ? stepWord().charAt(0).toUpperCase() + stepWord().slice(1) + " " + n : "Outside any step";
+      html += "<li><details" + (wrote ? " open" : "") + "><summary>" + esc(title + ": " + plural(calls.length, "call", "calls") + (wrote ? ", " + wrote + " of them wrote a message" : "")) + "</summary><ul>" +
+        calls.map(function (c) {
+          var msgs = c.wrote.map(function (seq) {
+            var m = bySeq[seq];
+            return m ? "“" + m.text.slice(0, 120) + "” (" + JOINED[m.written_by ? m.written_by.joined_by : c.joined_by] + ")" : "#" + seq;
+          }).join("; ");
+          return "<li>" + esc(when(c.started).slice(-5) + " real · " + (c.model || "model not named") + (tokens(c) ? " · " + tokens(c) : "")) +
+            (msgs ? '<span class="wrote"> wrote ' + esc(msgs) + "</span>" : "") + "</li>";
+        }).join("") + "</ul></details></li>";
+    });
+    return html + "</ol></section>";
+  }
 
   function forkPanel(f) {
     var parentRow = state.list.filter(function (r) { return r.run_id === f.parent_run; })[0];
@@ -492,7 +593,10 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     var title = p ? p.title : words(f.check);
     var place = [];
     if (f.at) { place.push(when(f.at)); }
-    if (f.wake !== null) { place.push("wake " + f.wake); }
+    if (f.wake !== null) {
+      var inStep = !state.view.run.driven || state.view.wakes.some(function (w) { return w.index === f.wake; });
+      place.push(inStep ? stepWord() + " " + f.wake : "outside any step");
+    }
     return '<li class="finding" tabindex="0" data-number="' + x.number + '">' +
       '<h3><span class="chip ' + f.kind + '">' + KIND_LABEL[f.kind] + "</span>" + esc(title) + "</h3>" +
       "<p>" + esc(f.message) + (place.length ? " (" + esc(place.join(", ")) + ")" : "") + "</p>" +
@@ -539,7 +643,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       if (c.input_tokens !== null || c.output_tokens !== null) {
         about.push((c.input_tokens === null ? "?" : c.input_tokens) + " tokens in, " + (c.output_tokens === null ? "?" : c.output_tokens) + " out");
       }
-      if (t.joined_by === "wake") { about.push("the nearest model call in the same wake, not joined by a trace"); }
+      if (t.joined_by !== "trace") { about.push(JOINED[t.joined_by]); }
       return '<div class="asked"><b>What the model was asked and answered</b>' +
         (about.length ? "<span>" + esc(about.join(" · ")) + "</span>" : "") +
         (c.system_instructions ? "<details><summary>System prompt</summary><pre>" + esc(messages(c.system_instructions)) + "</pre></details>" : "") +
@@ -562,6 +666,12 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   function describe(ev, who) {
     var a = ev.after, actor = ev.actor === "agent" ? "The agent" : ev.actor === "person" ? "Someone" : "The scenario";
     var verb = { create: "created", update: "changed", "delete": "deleted" }[ev.operation] || ev.operation;
+    var line = state.view.messages.filter(function (m) { return m.seq === ev.seq; })[0];
+    if (line && line.change !== "sent") {
+      var whom = line.to.length ? line.to.join(", ") : "a channel";
+      return [actor + (line.change === "edited" ? " rewrote the message to " : " deleted the message to ") + whom,
+        line.change === "edited" ? "from “" + line.before.slice(0, 160) + "” to “" + line.text.slice(0, 160) + "”" : "“" + line.text.slice(0, 220) + "”", true];
+    }
     if (a && a.kind === "message") {
       var to = a.recipient_emails.map(who.email).join(", ");
       if (ev.actor === "agent") { return ["Message to " + (to || "a channel"), a.text]; }
@@ -602,8 +712,11 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     }
     view.wakes.forEach(function (w) { t1 = Math.max(t1, ms(w.sim_time)); });
     changes.forEach(function (e) { t1 = Math.max(t1, ms(e.sim_time)); });
-    view.obligations.forEach(function (w) { if (w.obligation.expected_by) { t1 = Math.max(t1, ms(w.obligation.expected_by)); } });
-    if (t1 <= t0) { t1 = t0 + 3600e3; }
+    // a wait still open stretches the axis to when it was due; a settled one's date, never reached, does not
+    view.obligations.forEach(function (w) {
+      if (w.obligation.expected_by && !w.obligation.settled_at) { t1 = Math.max(t1, ms(w.obligation.expected_by)); }
+    });
+    if (t1 - t0 < 600e3) { t1 = t0 + 600e3; }  // under ten minutes, or one instant: ten minutes wide
     var W = Math.max(scroll.clientWidth || 720, 720, view.wakes.length * 56), X0 = 18, X1 = W - 28;
     function x(t) { return X0 + (t - t0) / (t1 - t0) * (X1 - X0); }
 
@@ -625,10 +738,14 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     }
 
     // the axis
-    var stepH = [1, 3, 6, 12, 24, 48, 168].filter(function (h) { return (t1 - t0) / (h * 3600e3) <= W / 90; })[0] || 336;
+    // ticks from a minute up to a fortnight apart, so a run that spans minutes, or one simulated instant, still has
+    // an axis; its start is always labelled
+    var stepH = [1 / 60, 5 / 60, 10 / 60, 15 / 60, 0.5, 1, 3, 6, 12, 24, 48, 168].filter(function (h) { return (t1 - t0) / (h * 3600e3) <= W / 90; })[0] || 336;
     var first = Math.ceil(t0 / (stepH * 3600e3)) * stepH * 3600e3;
+    if (x(first) - X0 > 70) { el("text", { x: X0 + 3, y: 18 }, svg, when(new Date(t0).toISOString())); }
     for (var t = first; t <= t1; t += stepH * 3600e3) {
       var gx = x(t);
+      if (gx > X1 - 40) { break; }
       el("line", { x1: gx, y1: 24, x2: gx, y2: H - 6, stroke: "var(--grid)" }, svg);
       el("text", { x: gx + 3, y: 18 }, svg, stepH >= 24 ? when(new Date(t).toISOString()).replace(/ 00:00$/, "") : when(new Date(t).toISOString()));
     }
@@ -667,7 +784,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     }
 
     // lane 1: the agent's wakes, and the clock's jumps between them
-    el("text", { x: X0, y: L1 + 12, class: "lane" }, svg, "The agent's wakes");
+    el("text", { x: X0, y: L1 + 12, class: "lane" }, svg, view.run.driven ? "The agent's steps" : "The agent's wakes");
     var WY = L1 + 72;
     var stops = view.wakes.map(function (w) { return ms(w.sim_time); });
     if (view.run.finished && stops.length && reached > stops[stops.length - 1]) { stops.push(reached); }
@@ -684,11 +801,16 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       el("text", { x: wx, y: WY + 22, "text-anchor": "middle" }, g, String(w.index));
       var jumped = j > 0 ? " The clock jumped " + gap((ms(w.sim_time) - ms(view.wakes[j - 1].sim_time)) / 1000).slice(1) + " to get here." : "";
       var sharedWake = fork && w.index <= fork.after_wake;
-      mark(g, "Wake " + w.index, (idle ? "Changed nothing in the world." : "Changed " + plural(w.world_changes, "thing", "things") + " in the world.") + jumped +
+      var named = view.run.driven ? "Step " + w.index + (w.inferred ? ", inferred from the clock moving" : "") + (w.reason ? ": " + w.reason : "") : "Wake " + w.index;
+      mark(g, named, (idle ? "Changed nothing in the world." : "Changed " + plural(w.world_changes, "thing", "things") + " in the world.") + jumped +
         (sharedWake ? " The parent's wake, which this fork shares." : ""), when(w.sim_time), [], w.index);
       if (sharedWake) { g.setAttribute("class", "m shared"); }
     });
-    if (!view.wakes.length) { el("text", { x: X0, y: WY + 4, class: "lbl" }, svg, "No wake has finished yet."); }
+    if (!view.wakes.length) {
+      el("text", { x: X0, y: WY + 4, class: "lbl" }, svg, view.run.driven
+        ? "No step was recorded: nobody marked one, and the clock never moved forward."
+        : "No wake has finished yet.");
+    }
 
     // lane 2: what the world was waiting on
     el("text", { x: X0, y: L2 + 12, class: "lane" }, svg, "What the agent was waiting on");
@@ -747,7 +869,8 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       var call = ev.exchange ? " " + ev.exchange.method + " " + ev.exchange.host + ev.exchange.path.split("?")[0] + ", answered " + ev.exchange.status + "." : "";
       var by = ev.actor === "agent" ? "By the agent" : ev.actor === "person" ? "By a person" : "By the scenario";
       var sharedEvent = fork && ev.seq <= fork.at_seq;
-      mark(g, d[0], (d[1] ? "“" + d[1].slice(0, 220) + "”" : "") + " " + by + (ev.wake ? ", in wake " + ev.wake : ", at setup") + "." + call +
+      var quoted = d[1] ? (d[2] ? d[1] : "“" + d[1].slice(0, 220) + "”") : "";
+      mark(g, d[0], quoted + " " + by + (ev.wake ? ", in " + stepWord() + " " + ev.wake : ", at setup") + "." + call +
         (sharedEvent ? " In the parent's record, which this fork shares." : ""), when(ev.sim_time), [ev.seq], null);
       if (sharedEvent) { g.setAttribute("class", "m shared"); }
     });
@@ -816,8 +939,8 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       return '<svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.6"/></svg>';
     }
     document.getElementById("legend").innerHTML = [
-      "<span>" + swatch("var(--agent)", "var(--agent)") + "A wake that changed something</span>",
-      "<span>" + swatch("var(--surface)", "var(--agent)") + "A wake that changed nothing</span>",
+      "<span>" + swatch("var(--agent)", "var(--agent)") + "A " + stepWord() + " that changed something</span>",
+      "<span>" + swatch("var(--surface)", "var(--agent)") + "A " + stepWord() + " that changed nothing</span>",
       '<span><svg width="22" height="12" aria-hidden="true"><rect x="0" y="3" width="22" height="6" rx="2" fill="var(--wait)"/></svg>Waiting, from asked to settled</span>',
       '<span><svg width="22" height="12" aria-hidden="true"><line x1="11" y1="0" x2="11" y2="12" stroke="var(--ink)" stroke-width="1.5"/></svg>When it was due</span>',
       '<span><svg width="22" height="12" aria-hidden="true"><line x1="0" y1="6" x2="22" y2="6" stroke="var(--fail)" stroke-width="2"/></svg>Overdue</span>',

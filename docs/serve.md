@@ -121,7 +121,12 @@ the client raises `ServerFailed`, not `Refused`. Each status comes from one conv
 | `POST /v1/worlds/{id}/inbound-credential` | `MintInbound` → `Minted` | The headers a provider's service would send with a request the test builds itself |
 | `POST /v1/worlds/{id}/reset` | → `WorldView` | Back to the seed it was opened with, in place: the same id, claims, inbound targets and secrets; its record kept |
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
-| `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
+| `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now; for a world of a case, the case's |
+| `POST /v1/worlds/{id}/steps` | `MarkStep` → `StepView` | A step begins (`edge: began`, `at`, `reason`) or ends (`edge: ended`); a world of a case steps its case |
+| `GET /v1/cases` | → `CaseList` | Every open case |
+| `GET /v1/cases/{case_id}` | → `CaseView` | Its label, its worlds, its step |
+| `POST /v1/cases/{case_id}/steps` | `MarkStep` → `StepView` | A step of every world of the case |
+| `GET /v1/cases/{case_id}/checks` | → `Checked` | The case scored as one run |
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
 | `GET /v1/unmatched?since=N[&late_for=W]` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
 
@@ -154,7 +159,7 @@ decrypted, or, under `serve --record-model-calls`, opened, sent on unchanged and
 Each is tunnelled, or recorded when `record` says so, and belongs to that world until it closes: a second open
 world that declares an overlapping host is refused with 409, as is a host a provider claims or the world
 captures under `outbound`. A recorded call is kept in the world that declared its host, else in the world whose
-calls carried its trace (`traceparent`), else in the lobby; `GET /v1/worlds/{id}/spans` reads it.
+calls carried its trace (`traceparent`), else in the lobby (a world of a case keeps neither: its case does); `GET /v1/worlds/{id}/spans` reads it.
 
 ### A seed
 
@@ -283,6 +288,47 @@ credential the platform would send with it (`POST /inbound-credential`, `MintInb
 the Bot Framework, `Authorization: Bearer <JWT>` for the `service_url` and `audience` given, signed with the key
 the fake publishes. A world with no Slack inbound target has no signing secret, and the request is refused. The
 supported path is still the acts above, which build, sign and push the request themselves.
+
+## Scoring a run you drive yourself
+
+A harness that drives its own agent and its own simulated time, and uses this server only for the fakes and the
+record, adds three things and nothing else:
+
+```python
+from minutehand.testing.world import open_case
+
+case = open_case(client, "timed_dm", [messaging_spec, documents_spec, tracker_spec])  # 1. one case label
+for cycle in cycles:
+    case.advance(to=cycle.now)  # the clock, as before: a separate act
+    with case.step(at=cycle.now, reason=cycle.why):  # 2. where one go of the agent begins and ends
+        run_the_agent_once()
+result = case.close().result  # 3. the case's checks, once, when its last world closes
+```
+
+Over the wire: `CreateWorld.case` on each world, `POST /v1/cases/{case_id}/steps` with `{"edge": "began", "at":
+…, "reason": …}` and `{"edge": "ended"}`, and the `Checked` that closing the last world answers
+(`GET /v1/cases/{case_id}/checks` at any time before).
+
+- **A case.** Worlds opened under one label while any of them is open are one run: one timeline (every world's
+  events by simulated time, then the real moment each was written), one set of people (a person is the same in
+  every world whose seed gives their email, whatever key), one set of steps, one verdict. `checks` on any of its
+  worlds answers the case's. Its run id is `WorldView.case_id`, read by `findings`, `view` and the MCP tools like
+  any run's; its worlds are not listed alone. Once its last world closes, the label opens a new case. Its own
+  store holds its steps, the model traffic its worlds made (a model host one of them declared, tunnelled or
+  recorded, is kept with the case and not in that world's calls), and every span that reached the receiver with
+  no trace link to a recorded call while the case was open (its real-time window, opened to closed). Two cases
+  open at once both holding such a span is ambiguous, and it stays in the lobby. A world opened under no label
+  behaves as before.
+- **Steps.** A step begun is recorded as the run loop records a wake: the clock's wake moves on, so every event,
+  call and span in it carries its number, its real edges place spans, and the checks, the scorecard ("took 4
+  steps, 1 of which changed nothing") and the viewer read it as a wake. A harness that never marks a step and only
+  moves the clock gets steps inferred, each marked `inferred`: the stretch from opening to the first forward move is
+  the first, each forward move begins the next; a move to the moment the clock already shows begins nothing. The
+  first step marked by hand stops inference, and the inferred steps before it are no longer counted.
+- **Not judged.** A run whose checks could not run (no step, so `idle_wake` has nothing to read) or that held
+  nothing to judge (no expectation, no wait, no step) is `not_judged`, exit 5, never `passed`; its verdict lists
+  each reason. A world that held asks and messages is judged on them with no expectation declared.
+- **Probes.** A standing world no call reached is not listed by `minutehand runs`, `list_runs` or the viewer.
 
 ## Each world is a run
 
