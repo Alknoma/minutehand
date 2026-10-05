@@ -259,3 +259,23 @@ def test_the_log_is_cut_to_nothing_when_the_store_closes(tmp_path: Path) -> None
     store.close()
     assert (tmp_path / "world.db-wal").stat().st_size == 0
     reader.close()
+
+
+def test_a_text_body_that_did_not_decode_is_refused_as_it_was_before(
+    world: tuple[SqliteStore, RunClock], tmp_path: Path
+) -> None:
+    """mitmproxy reads a JSON body that is not UTF-8 with lone surrogates in it. Such text cannot be encoded, so
+    the call is not recorded, as before schema 6, when serialising the exchange raised instead; nothing is
+    written."""
+    store, _ = world
+    undecodable = '{"a": "\udcff\udcfe"}'
+    long = "q" * 4000
+    with pytest.raises(UnicodeEncodeError):
+        store.attach(
+            Exchange(method="POST", host="h", path="/", status=200, request_body=long, response_body=undecodable),
+            first_seq=1,
+            last_seq=0,
+        )
+    store.attach(Exchange(method="GET", host="h", path="/", status=200), first_seq=1, last_seq=0)
+    assert [c.exchange.method for c in store.calls()] == ["GET"]
+    assert content_rows(tmp_path / "world.db") == 0, "the half-written call left no stored body behind"

@@ -24,6 +24,7 @@ import sqlite3
 import stat
 import threading
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -84,12 +85,18 @@ class _Entry(StrEnum):
 
 
 def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callable[Concatenate[SqliteStore, P], R]:
-    """Run a store method under the store's lock, so it is safe from any thread."""
+    """Run a store method under the store's lock, so it is safe from any thread; one that raises part way through
+    a write leaves nothing of it, and no transaction open to be committed by the next write."""
 
     @functools.wraps(method)
     def inner(self: SqliteStore, *args: P.args, **kwargs: P.kwargs) -> R:
         with self._lock:
-            return method(self, *args, **kwargs)
+            try:
+                return method(self, *args, **kwargs)
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.rollback()
+                raise
 
     return inner
 
@@ -115,6 +122,7 @@ POOL_SUFFIX = ".pool"
 """The directory beside the world file that holds snapshot files: `world.db` keeps them in `world.pool/`."""
 
 _CHUNK = 1024 * 1024
+_HASHERS = 8
 _BUSY_SECONDS = 60.0
 """How long a connection waits for another's write lock. Keeping a large snapshot holds it while files are pooled."""
 
@@ -746,8 +754,15 @@ class SqliteStore:
     @_locked
     def keep_snapshot(self, wake: int, directory: Path) -> AgentSnapshot:
         entries = list(_walk(directory))
-        # The write lock is held while files are pooled, so a sweep in another connection can never remove a file
-        # between the moment it is found already pooled and the moment the manifest naming it is committed.
+        # Hashing reads every byte and is the cost of a snapshot; it needs no lock, and threads overlap the reads.
+        with ThreadPoolExecutor(max_workers=_HASHERS) as hashers:
+            hashed = list(
+                hashers.map(
+                    lambda found: _hash(directory / found[0]) if found[1] is _Entry.FILE else (None, 0), entries
+                )
+            )
+        # The write lock is held while missing files are pooled, so a sweep in another connection can never remove
+        # a file between the moment it is found already pooled and the moment the manifest naming it is committed.
         self._db.execute("BEGIN IMMEDIATE")
         try:
             self._db.execute(
@@ -755,10 +770,9 @@ class SqliteStore:
                 (self.run_id, wake),
             )
             self._db.execute("DELETE FROM snapshot_file WHERE run_id=? AND wake=?", (self.run_id, wake))
-            for relative, entry, mode in entries:
-                digest, size = None, 0
-                if entry is _Entry.FILE:
-                    digest, size = self._pool_file(directory / relative)
+            for (relative, entry, mode), (digest, size) in zip(entries, hashed, strict=True):
+                if digest is not None:
+                    self._pool_file(directory / relative, digest)
                 self._db.execute(
                     "INSERT INTO snapshot_file VALUES(?,?,?,?,?,?,?)",
                     (self.run_id, wake, relative, entry.value, digest, mode, size),
@@ -771,23 +785,15 @@ class SqliteStore:
         assert found is not None
         return found
 
-    def _pool_file(self, source: Path) -> tuple[bytes, int]:
-        """Store one file in the pool, unless the pool holds its bytes already; answers its hash and size."""
-        digest = hashlib.sha256()
-        size = 0
-        with source.open("rb") as read:
-            while chunk := read.read(_CHUNK):
-                digest.update(chunk)
-                size += len(chunk)
-        found = digest.digest()
-        target = self._pooled(found)
+    def _pool_file(self, source: Path, digest: bytes) -> None:
+        """Store one file in the pool under `digest`, unless the pool holds those bytes already."""
+        target = self._pooled(digest)
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             partial = target.with_name(f"{target.name}.{secrets.token_hex(4)}.partial")
             with source.open("rb") as read, partial.open("wb") as write:
                 self._pack.copy_stream(read, write)
             os.replace(partial, target)
-        return found, size
 
     @_locked
     def snapshot(self, run_id: str, wake: int) -> AgentSnapshot | None:
@@ -960,6 +966,17 @@ class SqliteStore:
             bodies=bodies,
             snapshots=sum(_size_of(self._pooled(r[0])) for r in alone),
         )
+
+
+def _hash(path: Path) -> tuple[bytes, int]:
+    """The SHA-256 of a file's bytes, and how many there are."""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as read:
+        while chunk := read.read(_CHUNK):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.digest(), size
 
 
 def _size_of(path: Path) -> int:
