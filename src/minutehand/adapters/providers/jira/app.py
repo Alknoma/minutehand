@@ -684,20 +684,25 @@ class JiraApi:
             errors["projectName"] = "A project needs a name."
         elif any(p.name.lower() == body.name.lower() for p in projects):
             errors["projectName"] = "Another project already has this name."
-        if not body.projectTypeKey:
-            errors["projectTypeKey"] = "A project needs a type."
-        elif body.projectTypeKey not in ("software", "business", "service_desk"):
-            errors["projectTypeKey"] = f"'{body.projectTypeKey}' is not a project type."
+        # The type may be left out when a template is named: the template builds exactly one type.
+        template = body.projectTemplateKey
+        project_type = body.projectTypeKey
+        if template is not None and template not in wire.TEMPLATE_TYPES:
+            errors["projectTemplateKey"] = "There is no project template with that key on this site."
+        elif template is not None:
+            builds = wire.TEMPLATE_TYPES[template]
+            if not project_type:
+                project_type = builds
+            elif project_type != builds:
+                errors["projectTemplateKey"] = f"This template makes a {builds} project, not a {project_type} one."
+        if not project_type:
+            errors["projectTypeKey"] = "A project needs a type, or a template that implies one."
+        elif project_type not in wire.PROJECT_TYPES:
+            errors["projectTypeKey"] = f"'{project_type}' is not a project type."
         lead = self._world.user(body.leadAccountId) if body.leadAccountId else None
         if lead is None:
             errors["leadAccountId"] = "The project lead must be an existing account, named by accountId."
-        templates = ("com.pyxis.greenhopper.jira:gh-simplified-agility-kanban",
-                     "com.pyxis.greenhopper.jira:gh-simplified-agility-scrum",
-                     "com.pyxis.greenhopper.jira:gh-simplified-kanban-classic",
-                     "com.pyxis.greenhopper.jira:gh-simplified-scrum-classic")  # fmt: skip
-        if body.projectTemplateKey is not None and body.projectTemplateKey not in templates:
-            errors["projectTemplateKey"] = "There is no project template with that key on this site."
-        if errors or lead is None or body.name is None:
+        if errors or lead is None or body.name is None or project_type is None:
             raise wire.Refusal(400, [], errors)
         site = self._world.site()
         made = default_project(
@@ -710,7 +715,7 @@ class JiraApi:
             administrators=list(dict.fromkeys([lead.accountId, me.accountId])),
             description=body.description or "",
             type_names=["Epic", "Task", "Subtask"],
-        ).model_copy(update={"projectTypeKey": body.projectTypeKey, "simplified": True})
+        ).model_copy(update={"projectTypeKey": project_type, "simplified": True})
         self._world.write_project(made, actor=Actor.AGENT)
         board_id = len(self._world.boards()) + 1
         kanban = body.projectTemplateKey is None or "kanban" in body.projectTemplateKey
