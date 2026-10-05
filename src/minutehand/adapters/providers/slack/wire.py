@@ -26,7 +26,12 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, f
 
 from minutehand.domain.scenario import Model
 
-MAX_TEXT_CHARS = 40_000
+TRUNCATED_AT = 40_000
+"""`chat.postMessage` keeps this many characters of `text` and drops the rest; it never refuses a long one."""
+MAX_UPDATE_CHARS = 4_000
+"""`chat.update` refuses `text` past this with `msg_too_long`."""
+MAX_EPHEMERAL_CHARS = 40_000
+"""`chat.postEphemeral` lists `msg_too_long` without naming a figure; the post's own ceiling stands in for one."""
 MAX_BLOCKS = 50
 PAGE_DEFAULT = 100
 PAGE_MAX = 1000
@@ -598,9 +603,10 @@ def timestamp(value: str, error: str) -> Decimal:
         raise Refusal(error) from failure
 
 
-def check_message(text: str, blocks: list[JsonValue] | None) -> None:
-    """Refuse what Slack refuses about a message's body, with Slack's own code."""
-    if len(text) > MAX_TEXT_CHARS:
+def check_message(text: str, blocks: list[JsonValue] | None, *, refused_past: int | None) -> None:
+    """Refuse what Slack refuses about a message's body, with Slack's own code. `refused_past` is the method's
+    `msg_too_long` ceiling; None for a method that truncates instead of refusing."""
+    if refused_past is not None and len(text) > refused_past:
         raise Refusal("msg_too_long")
     if blocks is None:
         return

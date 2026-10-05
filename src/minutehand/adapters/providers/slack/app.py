@@ -392,14 +392,15 @@ class SlackApi:
             raise wire.Refusal("is_archived")
         if not args.text and not args.blocks and not args.attachments:
             raise wire.Refusal("no_text")
-        wire.check_message(args.text, args.blocks)
+        wire.check_message(args.text, args.blocks, refused_past=None)
         thread_ts: str | None = None
         if args.thread_ts:
             parent = self._world.message(channel.id, args.thread_ts)
             if parent is None:
                 raise wire.Refusal("thread_not_found")
             thread_ts = parent.thread_ts or parent.ts
-        message = self._from_bot(args.text, args.blocks, args.attachments, thread_ts)
+        text = args.text[: wire.TRUNCATED_AT]
+        message = self._from_bot(text, args.blocks, args.attachments, thread_ts)
         self._world.write(
             state.message_ref(message.ts),
             message,
@@ -422,7 +423,7 @@ class SlackApi:
             raise wire.Refusal("is_archived")
         if not args.text and not args.blocks and not args.attachments:
             raise wire.Refusal("no_text")
-        wire.check_message(args.text, args.blocks)
+        wire.check_message(args.text, args.blocks, refused_past=wire.MAX_EPHEMERAL_CHARS)
         thread_ts: str | None = None
         if args.thread_ts:
             parent = self._world.message(channel.id, args.thread_ts)
@@ -495,7 +496,7 @@ class SlackApi:
         else:
             # Slack keeps the old blocks only when neither blocks nor text is given; new text alone replaces them.
             blocks = message.blocks if args.text is None else None
-        wire.check_message(text, blocks)
+        wire.check_message(text, blocks, refused_past=wire.MAX_UPDATE_CHARS if args.text is not None else None)
         updated = message.model_copy(
             update={
                 "text": text,
