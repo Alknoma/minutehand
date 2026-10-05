@@ -150,13 +150,6 @@ async def test_fifty_blocks_sent_as_a_form_are_accepted(client: httpx.AsyncClien
     assert answer["ok"] is True
 
 
-async def test_text_past_forty_thousand_chars_is_refused_msg_too_long(client: httpx.AsyncClient) -> None:
-    assert await body(client, "chat.postMessage", channel=GENERAL, text="x" * 40_001) == {
-        "ok": False,
-        "error": "msg_too_long",
-    }
-
-
 async def test_a_message_with_no_text_is_refused_no_text(client: httpx.AsyncClient) -> None:
     assert await body(client, "chat.postMessage", channel=GENERAL, text="") == {"ok": False, "error": "no_text"}
 

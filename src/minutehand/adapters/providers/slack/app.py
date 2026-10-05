@@ -139,11 +139,14 @@ class SlackApi:
 
     def _authenticate(self, presented: wire.Presented) -> SlackWorld:
         """The workspace the token is for. A workspace that declares its bot tokens takes those and what its install
-        minted; one that declares none takes any bot or user token of Slack's shape."""
+        minted; one that declares none takes any bot or user token of Slack's shape, unless the scenario declares a
+        Slack sign-in, when only the tokens it names are let in."""
         if presented.token is None:
             raise wire.Refusal("not_authed")
         found = SlackWorld(self._store).for_token(presented.token)
         if found is None or found.user(found.bot) is None:
+            raise wire.Refusal("invalid_auth")
+        if not found.knows_token(presented.token):
             raise wire.Refusal("invalid_auth")
         return found
 
@@ -447,14 +450,15 @@ class SlackApi:
             raise wire.Refusal("is_archived")
         if not args.text and not args.blocks and not args.attachments:
             raise wire.Refusal("no_text")
-        wire.check_message(args.text, args.blocks)
+        wire.check_message(args.text, args.blocks, refused_past=None)
         thread_ts: str | None = None
         if args.thread_ts:
             parent = self._world.message(channel.id, args.thread_ts)
             if parent is None:
                 raise wire.Refusal("thread_not_found")
             thread_ts = parent.thread_ts or parent.ts
-        message = self._from_bot(args.text, args.blocks, args.attachments, thread_ts)
+        text = args.text[: wire.TRUNCATED_AT]
+        message = self._from_bot(text, args.blocks, args.attachments, thread_ts)
         self._world.write(
             state.message_ref(message.ts),
             message,
@@ -477,7 +481,7 @@ class SlackApi:
             raise wire.Refusal("is_archived")
         if not args.text and not args.blocks and not args.attachments:
             raise wire.Refusal("no_text")
-        wire.check_message(args.text, args.blocks)
+        wire.check_message(args.text, args.blocks, refused_past=wire.MAX_EPHEMERAL_CHARS)
         thread_ts: str | None = None
         if args.thread_ts:
             parent = self._world.message(channel.id, args.thread_ts)
@@ -562,8 +566,12 @@ class SlackApi:
         if args.text is None and args.blocks is None and args.attachments is None:
             raise wire.Refusal("no_text")
         text = message.text if args.text is None else args.text
-        blocks = message.blocks if args.blocks is None else wire.with_ids(args.blocks, message.ts)
-        wire.check_message(text, blocks)
+        if args.blocks is not None:
+            blocks = wire.with_ids(args.blocks, message.ts)
+        else:
+            # Slack keeps the old blocks only when neither blocks nor text is given; new text alone replaces them.
+            blocks = message.blocks if args.text is None else None
+        wire.check_message(text, blocks, refused_past=wire.MAX_UPDATE_CHARS if args.text is not None else None)
         updated = message.model_copy(
             update={
                 "text": text,

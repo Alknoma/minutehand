@@ -340,8 +340,11 @@ class TeamDetails(Model):
 
 
 class ChannelSummary(Model):
+    """One channel in a team's list. The General channel's `name` is sent as null, not left out: Teams localises it
+    on the client."""
+
     id: str
-    name: str | None = None
+    name: str | None
 
 
 class ConversationList(Model):

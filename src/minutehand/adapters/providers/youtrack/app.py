@@ -39,6 +39,9 @@ JSON = "application/json;charset=UTF-8"
 _ENTITY_ID = re.compile(r"\d+-\d+")
 """YouTrack's database id. A short name or a readable id in an `{"id": …}` slot is refused before any lookup."""
 _SHORT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_STOCK_TEMPLATES = ("scrum", "kanban")
+"""What `POST /admin/projects?template=` takes: YouTrack's own templates, none of which carries a Due Date, so a
+project made from one carries the default template's fields here."""
 
 
 def param(request: Request, name: str) -> str | None:
@@ -212,6 +215,11 @@ class YouTrackApi:
 
     def project_create(self, call: Call) -> Answered:
         self.access.require(call.caller, wire.Permission.CREATE_PROJECT, None)
+        template = call.param("template")
+        if template is not None and template not in _STOCK_TEMPLATES:
+            raise wire.bad_request(
+                f"Unknown project template: {template}. Possible values: {', '.join(_STOCK_TEMPLATES)}"
+            )
         body = wire.read_body(wire.ProjectCreateIn, call.raw)
         name = (body.name or "").strip()
         key = (body.shortName or "").strip()

@@ -141,3 +141,29 @@ def _qualify(query: CodeQuery, key: str, value: str) -> None:
         if not scopes or not scopes <= SCOPES:
             raise _refused(f"The in qualifier takes file, path or both, not {value}.")
         query.scopes = scopes
+
+
+@dataclass(frozen=True)
+class TermAt:
+    text: str
+    start: int
+    end: int
+
+
+def text_match(query: CodeQuery, text: str) -> tuple[str, list[TermAt]]:
+    """The fragment a text match shows: the first line holding one of the query's terms, and where each term sits
+    in it. A file that matched on its path alone shows its first line and no terms."""
+    lines = text.splitlines()
+    for line in lines:
+        spans = [(m.group(0).lower(), m.start(), m.end()) for m in _TOKEN.finditer(line)]
+        seen = [token for token, _, _ in spans]
+        found: list[TermAt] = []
+        for term in query.terms:
+            width = len(term)
+            for i in range(len(seen) - width + 1):
+                if seen[i : i + width] == term:
+                    start, end = spans[i][1], spans[i + width - 1][2]
+                    found.append(TermAt(text=line[start:end], start=start, end=end))
+        if found:
+            return line, sorted(found, key=lambda at: at.start)
+    return (lines[0] if lines else ""), []

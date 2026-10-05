@@ -41,8 +41,11 @@ from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
-MAX_ACTIVITY_BYTES = 28 * 1024
+# Teams' documented limits: a message of about 100 KB counted as UTF-16, and member pages of 50 to 500, 200 by default
+# (bots/build-conversational-capability, bots/how-to/get-teams-context on learn.microsoft.com).
+MAX_ACTIVITY_UTF16_BYTES = 100 * 1024
 PAGE_DEFAULT = 200
+PAGE_MIN = 50
 PAGE_MAX = 500
 DENIED = '{"message":"Authorization has been denied for this request."}'
 
@@ -141,7 +144,7 @@ class Connector:
         return all(u is not None and u.user.accountEnabled is not False for u in users)
 
     def _activity_body(self, request_body: bytes) -> wire.SentActivity:
-        if len(request_body) > MAX_ACTIVITY_BYTES:
+        if len(request_body.decode("utf-8", errors="replace").encode("utf-16-le")) > MAX_ACTIVITY_UTF16_BYTES:
             raise ConnectorRefusal(413, "MessageSizeTooBig", "Message size too large.")
         try:
             return wire.read(wire.SentActivity, request_body)
@@ -173,7 +176,7 @@ class Connector:
         if reply_to is not None:
             found = self._world.message(reply_to)
             if found is None or found[0] != conversation.id:
-                raise ConnectorRefusal(404, "ActivityNotFound", "The activity to reply to was not found.")
+                raise ConnectorRefusal(404, "ActivityNotFoundInConversation", "Conversation not found.")
             parent = found[1]
             thread = parent.replyToId or parent.id if conversation.type is wire.ConversationType.CHANNEL else parent.id
         activity = wire.Activity(
@@ -216,10 +219,10 @@ class Connector:
         sent = self._activity_body(await request.body())
         found = self._world.message(request.path_params["activity"])
         if found is None or found[0] != conversation.id:
-            raise ConnectorRefusal(404, "ActivityNotFound", "The activity was not found.")
+            raise ConnectorRefusal(404, "ActivityNotFoundInConversation", "Conversation not found.")
         current = found[1]
         if current.sender.id != bot_mri(app.app_id):
-            raise ConnectorRefusal(403, "Forbidden", "A bot can update only the activities it sent.")
+            raise ConnectorRefusal(403, "NotEnoughPermissions", "A bot can update only the activities it sent.")
         if sent.text and sent.attachments:
             raise ConnectorRefusal(400, "BadSyntax", "Activity resulted into multiple skype activities")
         updated = current.model_copy(
@@ -247,9 +250,9 @@ class Connector:
         conversation = self._conversation(base, app)
         found = self._world.message(request.path_params["activity"])
         if found is None or found[0] != conversation.id:
-            raise ConnectorRefusal(404, "ActivityNotFound", "The activity was not found.")
+            raise ConnectorRefusal(404, "ActivityNotFoundInConversation", "Conversation not found.")
         if found[1].sender.id != bot_mri(app.app_id):
-            raise ConnectorRefusal(403, "Forbidden", "A bot can delete only the activities it sent.")
+            raise ConnectorRefusal(403, "NotEnoughPermissions", "A bot can delete only the activities it sent.")
         self._world.remove(message_ref(found[1].id), actor=Actor.AGENT, parent=conversation.id)
         return Response(status_code=200)
 
@@ -282,7 +285,7 @@ class Connector:
             raise ConnectorRefusal(403, "BotNotInConversationRoster", "The bot is not part of the conversation roster.")
         if conversation is None or not conversation.bot_installed:
             raise ConnectorRefusal(
-                403, "Forbidden", "The bot is not installed in the user's personal scope; it cannot message them."
+                403, "ForbiddenOperationException", "The bot is not installed in the user's personal scope."
             )
         self._world.saw(conversation_ref(conversation.id), Operation.READ)
         activity_id: str | None = None
@@ -314,9 +317,7 @@ class Connector:
         app = self._bot(request)
         conversation = self._conversation(split_conversation(request.path_params["conversation"])[0], app)
         size_text = query(request, "pageSize")
-        size = (
-            min(int(size_text), PAGE_MAX) if size_text and size_text.isdigit() and int(size_text) > 0 else PAGE_DEFAULT
-        )
+        size = min(max(int(size_text), PAGE_MIN), PAGE_MAX) if size_text and size_text.isdigit() else PAGE_DEFAULT
         token = query(request, "continuationToken")
         everyone = self._members(conversation)
         start = 0
@@ -378,7 +379,8 @@ class Connector:
                 wire.ChannelSummary(id=c.id, name=None if c.id == general.id else c.display_name) for c in channels
             ]
         )
-        return Response(wire.dump(answer), media_type=JSON)
+        # Written with its nulls: General's `name` is null on the wire, which `wire.dump` would drop.
+        return Response(answer.model_dump_json(by_alias=True), media_type=JSON)
 
     # ------------------------------------------------------------------ answering
 

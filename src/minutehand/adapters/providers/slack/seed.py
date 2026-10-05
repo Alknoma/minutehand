@@ -208,6 +208,15 @@ def _workspace(
         parent=state.APP,
     )
 
+    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
+        slack.write(
+            state.sign_in_ref(sign_in.credential),
+            wire.SlackSignIn(user=None if sign_in.person is None else state.user_id(sign_in.person)),
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=state.SIGN_INS,
+        )
+
     general = wire.SlackChannel(
         id=state.named_channel_id(state.GENERAL, team),
         name=state.GENERAL,

@@ -90,6 +90,45 @@ LIMITS: dict[Resource, int] = {
     Resource.CODE_SEARCH: 10,
     Resource.GRAPHQL: 5000,
 }
+ANONYMOUS_LIMITS: dict[Resource, int] = {
+    Resource.CORE: 60,
+    Resource.SEARCH: 10,
+    Resource.CODE_SEARCH: 10,
+    Resource.GRAPHQL: 0,
+}
+"""A call with no credential spends the address's budget: 60 an hour for the REST core, and nothing on GraphQL."""
+
+
+def limit_for(resource: Resource, *, authenticated: bool) -> int:
+    return (LIMITS if authenticated else ANONYMOUS_LIMITS)[resource]
+
+
+class StoredBudget(Wire):
+    """One user's (or the address's) primary budget for one resource, in its current window: spent calls and the
+    epoch second the window ends. A window that has ended is a whole budget again."""
+
+    limit: int = Field(ge=0)
+    used: int = Field(ge=0)
+    reset: int = Field(description="UTC epoch seconds, as `X-RateLimit-Reset` carries them")
+
+    @property
+    def remaining(self) -> int:
+        return max(self.limit - self.used, 0)
+
+
+class BudgetOut(Wire):
+    """One resource in `GET /rate_limit`."""
+
+    limit: int
+    remaining: int
+    used: int
+    reset: int
+    resource: Resource
+
+
+class RateLimitOut(Wire):
+    resources: dict[Resource, BudgetOut]
+    rate: BudgetOut
 
 
 # --------------------------------------------------------------------------- errors
@@ -277,7 +316,9 @@ class StoredFault(Wire):
     answered: int = 0
 
 
-StoredModel = TypeVar("StoredModel", StoredAccount, StoredToken, StoredRepository, StoredFile, StoredFault)
+StoredModel = TypeVar(
+    "StoredModel", StoredAccount, StoredToken, StoredRepository, StoredFile, StoredFault, StoredBudget
+)
 
 
 def parse(model: type[StoredModel], body: str) -> StoredModel:
@@ -510,10 +551,43 @@ class CodeItemOut(Wire):
     score: float
 
 
+class TermMatchOut(Wire):
+    """Where one search term sits in a text match's fragment: its text and its start and end offsets."""
+
+    text: str
+    indices: list[int]
+
+
+class TextMatchOut(Wire):
+    """One `text_matches` entry, sent only under the `application/vnd.github.text-match+json` media type."""
+
+    object_url: str
+    object_type: str
+    property: str
+    fragment: str
+    matches: list[TermMatchOut]
+
+
+class MatchedCodeItemOut(CodeItemOut):
+    text_matches: list[TextMatchOut]
+
+
 class CodeSearchOut(Wire):
     total_count: int
     incomplete_results: bool
     items: list[CodeItemOut]
+
+
+class MatchedCodeSearchOut(Wire):
+    total_count: int
+    incomplete_results: bool
+    items: list[MatchedCodeItemOut]
+
+
+class BranchOut(Wire):
+    name: str
+    commit: ShaRefOut
+    protected: bool
 
 
 class GraphErrorLocation(Wire):

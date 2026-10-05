@@ -2,7 +2,7 @@
 
 `GitHubSeed` is this provider's own seed model: accounts (users, each optionally a scenario person),
 organizations and their members, personal access tokens, repositories with their files, history, collaborators
-and branches, and the faults armed against the agent. The shared scenario has no place for it yet, so it is handed to
+and branches, the faults armed against the agent, and primary rate-limit budgets that start part spent. The shared scenario has no place for it yet, so it is handed to
 `seed()` beside the scenario (`GitHubProvider.seed_with`); a world seeded from the scenario alone has an empty
 GitHub, in which every token is unknown.
 
@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import math
 from datetime import datetime, timedelta
 from itertools import pairwise
 from typing import Self
@@ -155,6 +156,22 @@ class SeedLimits(wire.Wire):
     directory_entry_limit: int | None = Field(default=None, ge=1, description="None leaves it as it is")
 
 
+class SeedBudget(wire.Wire):
+    """Where a primary rate-limit budget starts: what remains of it at the scenario's start, in a window that ends
+    a full window later. A budget not named starts whole."""
+
+    login: str | None = Field(description="Login of a seeded user; None is the address calls with no credential")
+    resource: wire.Resource
+    remaining: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _within_the_limit(self) -> Self:
+        limit = wire.limit_for(self.resource, authenticated=self.login is not None)
+        if self.remaining > limit:
+            raise ValueError(f"{self.resource.value}: {self.remaining} remaining is more than the limit of {limit}")
+        return self
+
+
 class GitHubSeed(wire.Wire):
     users: list[SeedUser] = []
     organizations: list[SeedOrganization] = []
@@ -164,6 +181,7 @@ class GitHubSeed(wire.Wire):
     limits: list[SeedLimits] = Field(
         default=[], description="Each repository's reading limits, over what its own seed says; applied in order"
     )
+    budgets: list[SeedBudget] = Field(default=[], description="Primary budgets that start part spent")
 
     @model_validator(mode="after")
     def _names_resolve(self) -> Self:
@@ -176,6 +194,7 @@ class GitHubSeed(wire.Wire):
         named_users += [t.login for t in self.tokens]
         named_users += [c.login for r in self.repositories for c in r.collaborators]
         named_users += [c.author for r in self.repositories for c in r.commits]
+        named_users += [b.login for b in self.budgets if b.login is not None]
         missing = sorted({n for n in named_users if n.lower() not in users})
         if missing:
             raise ValueError(f"no such user: {', '.join(missing)}")
@@ -195,6 +214,9 @@ class GitHubSeed(wire.Wire):
         tokens = [t.token for t in self.tokens]
         if len(tokens) != len(set(tokens)):
             raise ValueError("two tokens are the same token")
+        budgets = [((b.login or "").lower(), b.resource) for b in self.budgets]
+        if len(budgets) != len(set(budgets)):
+            raise ValueError("a budget is started twice")
         return self
 
 
@@ -321,6 +343,13 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
 
     write_faults(github, given.faults)
     write_limits(github, given.limits)
+    for budget in given.budgets:
+        limit = wire.limit_for(budget.resource, authenticated=budget.login is not None)
+        login = None if budget.login is None else accounts[budget.login.lower()].login
+        reset = math.ceil(scenario.starts_at.timestamp()) + wire.WINDOW_SECONDS[budget.resource]
+        github.write_budget(
+            login, budget.resource, wire.StoredBudget(limit=limit, used=limit - budget.remaining, reset=reset)
+        )
 
 
 def github_seed(scenario: Scenario) -> GitHubSeed:

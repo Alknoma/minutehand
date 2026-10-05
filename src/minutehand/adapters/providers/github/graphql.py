@@ -4,7 +4,7 @@ A query is parsed (operations, variables with defaults, aliases, arguments, inli
 the schema below before anything runs, as GitHub validates it, and then executed. A field the schema does not
 hold is refused the way GitHub refuses one, with `undefinedField`, and no `data`.
 
-The schema answered, from `Query.repository(owner:, name:)`:
+The schema answered, from `Query.viewer` (the token's user: `login`, `name`) and `Query.repository(owner:, name:)`:
 
     Repository   id name nameWithOwner description homepageUrl url isPrivate stargazerCount forkCount
                  primaryLanguage languages(first|last) repositoryTopics(first|last) defaultBranchRef licenseInfo
@@ -323,7 +323,11 @@ _CONNECTION = ("first", "last", "after", "before")
 _GIT_OBJECT = {"oid": _f(), "abbreviatedOid": _f()}
 
 SCHEMA: dict[str, dict[str, FieldType]] = {
-    "Query": {"repository": _f("Repository", "followRenames", required=("owner", "name"))},
+    "Query": {
+        "repository": _f("Repository", "followRenames", required=("owner", "name")),
+        "viewer": _f("User"),
+    },
+    "User": {"login": _f(), "name": _f()},
     "Repository": {
         "id": _f(),
         "name": _f(),
@@ -494,6 +498,7 @@ GitObject = _Blob | _Tree | wire.StoredCommit
 class _Run:
     variables: dict[str, JsonValue]
     find: Finder
+    viewer: wire.StoredAccount
     errors: list[wire.GraphError] = field(default_factory=list)
     seen: list[wire.StoredRepository] = field(default_factory=list)
 
@@ -557,6 +562,9 @@ class _Run:
         return self.select(selections, "Query", self._query_field)
 
     def _query_field(self, at: Field) -> JsonValue:
+        if at.name == "viewer":
+            assert at.selections is not None
+            return self.select(at.selections, "User", self._viewer)
         owner, name = self.argument(at, "owner"), self.argument(at, "name")
         found = self.find(owner, name) if isinstance(owner, str) and isinstance(name, str) else None
         if found is None:
@@ -572,6 +580,11 @@ class _Run:
         self.seen.append(found.repository)
         assert at.selections is not None
         return self.select(at.selections, "Repository", lambda f: self._repository(found, f, [at.key]))
+
+    def _viewer(self, at: Field) -> JsonValue:
+        if at.name == "login":
+            return self.viewer.login
+        return self.viewer.name
 
     def _repository(self, visible: Visible, at: Field, path: list[str]) -> JsonValue:
         repository = visible.repository
@@ -762,7 +775,7 @@ def _errors_only(errors: list[wire.GraphError]) -> bytes:
     return wire.GraphErrorsOut(errors=errors).model_dump_json(exclude_none=True).encode()
 
 
-def execute(request: wire.GraphQLIn, find: Finder) -> Answer:
+def execute(request: wire.GraphQLIn, find: Finder, viewer: wire.StoredAccount) -> Answer:
     """GitHub's answer to one query: `errors` alone when it does not parse or validate; else `data`, with
     `errors` beside it for what could not be resolved."""
     try:
@@ -794,7 +807,7 @@ def execute(request: wire.GraphQLIn, find: Finder) -> Answer:
         if name in given and given[name] is not None:
             variables[name] = given[name]
         elif declaration.has_default:
-            variables[name] = _Run({}, find)._value(declaration.default)
+            variables[name] = _Run({}, find, viewer)._value(declaration.default)
         elif declaration.required:
             errors.append(
                 wire.GraphError(
@@ -805,7 +818,7 @@ def execute(request: wire.GraphQLIn, find: Finder) -> Answer:
     if errors:
         return Answer(_errors_only(errors), [])
 
-    run = _Run(variables, find)
+    run = _Run(variables, find, viewer)
     data = run.query(operation.selections)
     answer: dict[str, JsonValue] = {"data": data}
     if run.errors:

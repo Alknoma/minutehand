@@ -7,6 +7,7 @@
 | repository | RECORD | `repo/<owner>/<name>`, lower case | `repositories` |
 | file | RECORD | `file/<owner>/<name>/<path>` | the repository's external id |
 | armed fault | RECORD | `fault/<n>` | `faults` |
+| primary rate-limit budget | RECORD | `budget/<login, lower case, or - for the address>/<resource>` | `budgets` |
 
 GitHub matches logins and repository names in any case, so their ids are lower-cased; a path is not. A token is
 kept under a digest of itself, so the log never holds the credential. Nothing here is held between calls: every
@@ -28,6 +29,7 @@ ACCOUNTS = "accounts"
 TOKENS = "tokens"
 REPOSITORIES = "repositories"
 FAULTS = "faults"
+BUDGETS = "budgets"
 
 _SCAN = 1000
 
@@ -58,6 +60,14 @@ def file_ref(repository: wire.StoredRepository, path: str) -> EntityRef:
 
 def fault_ref(number: int) -> EntityRef:
     return _ref(f"fault/{number:06d}")
+
+
+ANONYMOUS = "-"
+"""Whose budget a call with no credential spends: the address's. No login is a lone hyphen."""
+
+
+def budget_ref(login: str | None, resource: wire.Resource) -> EntityRef:
+    return _ref(f"budget/{(login or ANONYMOUS).lower()}/{resource.value}")
 
 
 class GitHubWorld:
@@ -110,6 +120,10 @@ class GitHubWorld:
         """Every armed fault, in the order it was armed."""
         return [(s.entity, wire.parse(wire.StoredFault, s.body)) for s in self._all(FAULTS)]
 
+    def budget(self, login: str | None, resource: wire.Resource) -> wire.StoredBudget | None:
+        stored = self._store.get(budget_ref(login, resource))
+        return None if stored is None else wire.parse(wire.StoredBudget, stored.body)
+
     # ------------------------------------------------------------------ writes
 
     def _write(self, ref: EntityRef, body: wire.Wire, parent: str, operation: Operation, actor: Actor) -> WorldEvent:
@@ -142,6 +156,13 @@ class GitHubWorld:
         """The fault answered one more call. The world, not the agent, did it."""
         spent = fault.model_copy(update={"answered": fault.answered + 1})
         return self._write(ref, spent, FAULTS, Operation.UPDATE, Actor.SCENARIO)
+
+    def write_budget(self, login: str | None, resource: wire.Resource, budget: wire.StoredBudget) -> WorldEvent:
+        """The budget as it stands after a call spent from it, or as the scenario starts it. The world's
+        bookkeeping, not the agent's act, as a spent fault is."""
+        ref = budget_ref(login, resource)
+        operation = Operation.CREATE if self._store.get(ref) is None else Operation.UPDATE
+        return self._write(ref, budget, BUDGETS, operation, Actor.SCENARIO)
 
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
