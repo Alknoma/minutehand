@@ -23,6 +23,7 @@ from minutehand.application.checkpoint import (
     PendingBooking,
     PendingDirection,
     PendingFate,
+    PendingHappening,
     PendingReply,
     PendingWake,
     Restorable,
@@ -52,7 +53,15 @@ from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation
 from minutehand.ports.agent import AgentDriver, Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
-from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ASGIApp,
+    BooksWakes,
+    EditsTickets,
+    HoldsTickets,
+    Provider,
+    PushesEvents,
+    PushesInteractions,
+)
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -254,6 +263,17 @@ class Orchestrator:
                     text=direction.text,
                 )
             )
+        for i, happening in enumerate(self._scenario.happenings):
+            self._pushes(happening.provider)
+            self._inbound(happening.provider)
+            self._pending.append(
+                PendingHappening(
+                    due=Due(
+                        at=self._scenario.starts_at + happening.after, kind=DueKind.HAPPENING, ref=f"happening:{i}"
+                    ),
+                    happening=i,
+                )
+            )
         if self._reach.every is not None:
             self._schedule_tick()
         self._record_new()
@@ -412,8 +432,8 @@ class Orchestrator:
         self._record_new()
 
     async def _fire(self, fired: list[Pending]) -> None:
-        """Change the world for what is due, in a fixed order: tickets, then replies, then directions sent by
-        message, then bookings."""
+        """Change the world for what is due, in a fixed order: tickets, then replies (a message written back, or a
+        control used), then what people do unprompted, then directions sent by message, then bookings."""
         for item in fired:
             if isinstance(item, PendingFate):
                 self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
@@ -421,8 +441,23 @@ class Orchestrator:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
-                await self._pushes(provider).deliver(
-                    reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
+                if reply.press is not None:
+                    await self._interactions(provider).press(
+                        reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
+                    )
+                else:
+                    await self._pushes(provider).deliver(
+                        reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
+                    )
+        for item in fired:
+            if isinstance(item, PendingHappening):
+                happening = self._scenario.happenings[item.happening]
+                await self._pushes(happening.provider).happen(
+                    happening,
+                    self._inbound(happening.provider),
+                    self._store,
+                    self._clock,
+                    secret=self._secret(happening.provider),
                 )
         by_message = self._by_message
         for item in fired:
@@ -450,7 +485,7 @@ class Orchestrator:
         reasons: set[WakeReason] = set()
         directions: list[str] = []
         for item in fired:
-            if isinstance(item, PendingReply):
+            if isinstance(item, PendingReply | PendingHappening):
                 reasons.add(WakeReason.PERSON_REPLIED)
             elif isinstance(item, PendingDirection):
                 reasons.add(WakeReason.DIRECTION)
@@ -648,6 +683,8 @@ class Orchestrator:
         if reply is None:
             return
         self._pushes(reply.in_reply_to.provider)
+        if reply.press is not None:
+            self._interactions(reply.in_reply_to.provider)
         self._inbound(reply.in_reply_to.provider)
         self._store.remember(reply)
         position = len(self._replies)
@@ -721,6 +758,12 @@ class Orchestrator:
             raise RunRefused(f"a person owes a reply on {provider}, which pushes no events to the agent")
         return self._services.pushes[provider]
 
+    def _interactions(self, provider: ProviderKey) -> PushesInteractions:
+        pushes = self._pushes(provider)
+        if not isinstance(pushes, PushesInteractions):
+            raise RunRefused(f"a person uses a control on a {provider} message, and {provider} carries no controls")
+        return pushes
+
     def _inbound(self, provider: ProviderKey) -> InboundTarget:
         target = next((t for t in self._agent.inbound if t.provider == provider), None)
         if target is None:
@@ -739,17 +782,18 @@ class Orchestrator:
 
 
 def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:
-    """Whether an edit changed what the message says, against its version before the edit."""
+    """Whether an edit changed what the message says or what a reader can press on it, against its version before
+    the edit: a card whose buttons appear in an edit asks something new."""
     assert isinstance(edit.after, MessageSnapshot)
     before = next(
         (
-            e.after.text
+            (e.after.text, e.after.actions)
             for e in reversed(history)
             if e.seq < edit.seq and e.entity == edit.entity and isinstance(e.after, MessageSnapshot)
         ),
         None,
     )
-    return before != edit.after.text
+    return before != (edit.after.text, edit.after.actions)
 
 
 async def run_scenario(

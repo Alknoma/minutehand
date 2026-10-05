@@ -6,6 +6,19 @@
 | channel, IM | CHANNEL  | channel id                  | the team |
 | membership  | RECORD   | `<channel>.<user>`          | the channel |
 | message     | MESSAGE  | its `ts`, unique in the run | the channel |
+| file        | DOCUMENT | file id                     | the team |
+| file content | RECORD  | `content.<file>`            | `files` |
+| a scenario post's key | RECORD | `post.<key>`        | `posts` |
+| view (modal, Home tab) | RECORD | `view.<id>`         | `views` |
+| trigger_id  | RECORD   | `trigger.<id>`              | `triggers` |
+| response_url | RECORD  | `hook.<id>`                 | `hooks` |
+| a person's press or submission | RECORD | `interaction.<trigger_id>` | `interactions` |
+| a slash command | RECORD | `command.<trigger_id>`    | `commands` |
+| the app's install | RECORD | `install`               | `app` |
+| a fault     | RECORD   | `fault.<position>`          | `faults` |
+
+Only users are RECORDs under the team and only memberships RECORDs under a channel: everything else Minutehand
+keeps is listed under a parent of its own, so no listing of users or members ever meets it.
 
 Nothing here is held between calls: every read is a query of the store, so a new
 app over the same store sees the same workspace, and a fork sees it as of the fork.
@@ -15,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
+from typing import TypeVar
 
 from minutehand.adapters.providers.slack import wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
@@ -24,11 +38,16 @@ from minutehand.ports.store import Store
 
 TEAM_ID = "T0WORKSPACE"
 TEAM_NAME = "Simulated Workspace"
+TEAM_DOMAIN = "simulated"
+FILES_HOST = "files.slack.com"
+HOOKS_HOST = "hooks.slack.com"
 BOT_USER_ID = "U0AGENTBOT"
 BOT_ID = "B0AGENTBOT"
 APP_ID = "A0AGENTAPP"
 BOT_NAME = "agent"
 GENERAL = "general"
+
+StoredBody = TypeVar("StoredBody", bound=wire.Model)
 
 _SCAN = 1000
 _MAX_SEQ_IN_TS = 999_999
@@ -41,6 +60,17 @@ def _derived(prefix: str, *parts: str) -> str:
 def user_id(person_key: str) -> str:
     """A person's member id: the same for the same `Person.key` in every run."""
     return _derived("U", "person", person_key)
+
+
+def other_bot_id(person_key: str) -> str:
+    """The bot id of another app's bot user the scenario seeds."""
+    return _derived("B", "bot", person_key)
+
+
+def client_msg_id(ts: str) -> str:
+    """The id a person's Slack client gives a message it sends, in UUID shape, fixed by the message's ts."""
+    digest = hashlib.sha256(f"client|{ts}".encode()).hexdigest()
+    return f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
 
 
 def named_channel_id(name: str) -> str:
@@ -76,6 +106,105 @@ def membership_ref(channel: str, user: str) -> EntityRef:
 
 def message_ref(ts: str) -> EntityRef:
     return _ref(EntityKind.MESSAGE, ts)
+
+
+def file_ref(file: str) -> EntityRef:
+    return _ref(EntityKind.DOCUMENT, file)
+
+
+def content_ref(file: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"content.{file}")
+
+
+def post_ref(key: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"post.{key}")
+
+
+def view_ref(view: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"view.{view}")
+
+
+def trigger_ref(trigger: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"trigger.{trigger}")
+
+
+def hook_ref(hook: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"hook.{hook}")
+
+
+def interaction_ref(trigger: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"interaction.{trigger}")
+
+
+def command_ref(trigger: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"command.{trigger}")
+
+
+def install_ref() -> EntityRef:
+    return _ref(EntityKind.RECORD, "install")
+
+
+def fault_ref(position: int) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"fault.{position}")
+
+
+FILES = "files"
+POSTS = "posts"
+VIEWS = "views"
+TRIGGERS = "triggers"
+HOOKS = "hooks"
+INTERACTIONS = "interactions"
+COMMANDS = "commands"
+APP = "app"
+FAULTS = "faults"
+
+
+def file_id(seed: str) -> str:
+    return _derived("F", "file", seed)
+
+
+def url_private(file: str, name: str) -> str:
+    return f"https://{FILES_HOST}/files-pri/{TEAM_ID}-{file}/{name}"
+
+
+def url_private_download(file: str, name: str) -> str:
+    return f"https://{FILES_HOST}/files-pri/{TEAM_ID}-{file}/download/{name}"
+
+
+def response_url(hook: str, secret: str, *, command: bool) -> str:
+    return f"https://{HOOKS_HOST}/{'commands' if command else 'actions'}/{TEAM_ID}/{hook}/{secret}"
+
+
+def bot_profile(updated: int) -> wire.BotProfile:
+    """The `bot_profile` Slack attaches to every message the app posts."""
+    icon = "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png"
+    return wire.BotProfile(
+        id=BOT_ID,
+        app_id=APP_ID,
+        name=BOT_NAME,
+        icons=wire.BotIcons(image_36=icon, image_48=icon.replace("36", "48"), image_72=icon.replace("36", "72")),
+        updated=updated,
+        team_id=TEAM_ID,
+    )
+
+
+def view_id(seq: int) -> str:
+    return _derived("V", "view", str(seq))
+
+
+def home_view_id(user: str) -> str:
+    return _derived("V", "home", user)
+
+
+def view_hash(view: str, version: int) -> str:
+    """A view's `hash`: changes with every update, so a stale one is refused."""
+    return f"{version}.{hashlib.sha256(f'{view}|{version}'.encode()).hexdigest()[:8]}"
+
+
+def minted(kind: str, seq: int, at: int) -> str:
+    """An id of the shape Slack gives a trigger or a view, unique in the run because `seq` is."""
+    tail = hashlib.sha256(f"{kind}|{seq}|{at}".encode()).hexdigest()[:20]
+    return f"{seq}.{at}.{tail}"
 
 
 class SlackWorld:
@@ -164,17 +293,38 @@ class SlackWorld:
         Two messages in one simulated instant still get distinct, ordered stamps,
         because no two events share a sequence number.
         """
-        seq = self._store.head() + 1
+        return self.ts_at(int(clock.now().timestamp()))
+
+    def ts_at(self, second: int) -> str:
+        """A `ts` at `second` (a seeded message's past moment), unique by the next event's sequence."""
+        seq = self.next_seq()
         if seq > _MAX_SEQ_IN_TS:
             raise OverflowError(f"event {seq} no longer fits the six digits of a Slack ts")
-        return f"{int(clock.now().timestamp())}.{seq:06d}"
+        return f"{second}.{seq:06d}"
+
+    def next_seq(self) -> int:
+        return self._store.head() + 1
+
+    def body(self, ref: EntityRef, model: type[StoredBody]) -> StoredBody | None:
+        stored = self._store.get(ref)
+        return None if stored is None else wire.parse(model, stored.body)
+
+    def bodies(self, kind: EntityKind, parent: str, model: type[StoredBody]) -> list[StoredBody]:
+        return [wire.parse(model, s.body) for s in self._pages(kind, parent)]
+
+    def post(self, key: str) -> wire.SlackPostKey | None:
+        return self.body(post_ref(key), wire.SlackPostKey)
+
+    def file(self, file: str) -> wire.SlackFile | None:
+        stored = self._store.get(file_ref(file))
+        return None if stored is None or stored.parent != TEAM_ID else wire.parse(wire.SlackFile, stored.body)
 
     # ------------------------------------------------------------------ writes
 
     def write(
         self,
         ref: EntityRef,
-        body: wire.SlackUser | wire.SlackChannel | wire.SlackMembership | wire.SlackMessage,
+        body: wire.Model,
         *,
         operation: Operation,
         actor: Actor,
