@@ -46,12 +46,17 @@ class Worlds(Protocol):
 
     @property
     def lobby(self) -> Mounted:
-        """Where a call no world claims is recorded, and where the agent's model calls are kept."""
+        """Where a call no world claims is recorded."""
         ...
 
     def answered(self, world: Mounted, exchange: Exchange, minted: Sequence[str]) -> None:
         """A call was answered in `world`; `minted` are credentials its answer handed out (an OAuth access
         token), which later calls will carry."""
+        ...
+
+    def keeping(self, host: str, trace_id: str | None) -> Mounted:
+        """Where a model call to `host` recorded on the wire is kept as a span: the world that declared the host a
+        model host, else the world whose calls carried `trace_id`, else `lobby`."""
         ...
 
 
@@ -70,6 +75,9 @@ class One:
 
     def answered(self, world: Mounted, exchange: Exchange, minted: Sequence[str]) -> None:
         """One world needs to learn nothing about which calls are its own."""
+
+    def keeping(self, host: str, trace_id: str | None) -> Mounted:
+        return self._world
 
 
 def one_run(

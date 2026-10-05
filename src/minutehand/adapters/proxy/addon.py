@@ -213,13 +213,20 @@ class ProxyAddon:
     def policy(self, host: str) -> HostPolicy:
         """The routing's policy for `host`, with a model API this proxy records opened rather than tunnelled."""
         policy = self.routing.policy(host)
-        return HostPolicy.RECORD if policy is HostPolicy.TUNNEL and self.record_model_calls else policy
+        return HostPolicy.RECORD if policy is HostPolicy.TUNNEL and self._records(host) else policy
+
+    def _records(self, host: str) -> bool:
+        """Whether a model call to `host` is kept as a span: every one, under `record_model_calls`, or one to a
+        model host a world declared with `record`."""
+        return self.record_model_calls or self.routing.records(host)
 
     async def request(self, flow: http.HTTPFlow) -> None:
+        if flow.response is not None:
+            return  # answered as its headers arrived: a base-URL request that names no host (`base_url`)
         host = flow.request.pretty_host
         self._seen(f"{flow.request.method} {host}{redact.path(flow.request.path)}")
         policy = self.policy(host)
-        if self.record_model_calls and policy in (HostPolicy.EDIT, HostPolicy.RECORD):
+        if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._records(host):
             self._recorded.add(flow.id)
         if policy is HostPolicy.EDIT:
             self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
@@ -308,7 +315,9 @@ class ProxyAddon:
             started=datetime.fromtimestamp(request.timestamp_start, UTC),
             ended=datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC),
         )
-        self.worlds.lobby.store.receive([span_of(exchanged)], source=SpanSource.WIRE)
+        span = span_of(exchanged)
+        kept_in = self.worlds.keeping(exchanged.host, span.trace_id if span.parent_span_id is not None else None)
+        kept_in.store.receive([span], source=SpanSource.WIRE)
 
     async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> None:
         async with world.lock:

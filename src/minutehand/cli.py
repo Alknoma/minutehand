@@ -18,6 +18,7 @@
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
                      [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
+                     [--model-host HOST]... [--record-model-calls]
                                                  a standing proxy with a control API, for test suites (docs/serve.md)
 
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
@@ -144,6 +145,10 @@ def _parser() -> argparse.ArgumentParser:
             action="store_true",
             help="serve no OTLP receiver and leave the agent's OTLP exporter where it points",
         )
+        models(sub)
+        capture(sub)
+
+    def models(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
             "--record-model-calls",
             action="store_true",
@@ -157,7 +162,6 @@ def _parser() -> argparse.ArgumentParser:
             help="a host that is a model API, besides api.openai.com, api.anthropic.com and "
             "generativelanguage.googleapis.com: tunnelled, edited by a fork, or recorded with --record-model-calls",
         )
-        capture(sub)
 
     def capture(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
@@ -262,6 +266,7 @@ def _parser() -> argparse.ArgumentParser:
     served.add_argument(
         "--keep", type=int, default=standing.DEFAULT_KEEP, help="closed worlds kept; older ones are removed"
     )
+    models(served)
     capture(served)
     state(served)
 
@@ -615,6 +620,8 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
         keep=args.keep,
         capture_unknown=args.capture_unknown,
         upstream_ca=args.upstream_ca,
+        model_hosts=args.model_host,
+        record_model_calls=args.record_model_calls,
     )
     try:
         asyncio.run(standing.serve_forever(state, options))

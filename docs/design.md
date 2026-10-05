@@ -1531,7 +1531,6 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **The handed-out `NO_PROXY` names `localhost`,** which `requests` and `urllib` read as covering every name under it: a real `*.localhost` host is sent direct. `minutehand doctor --agent` reports each such declared host.
 - **httpx cannot reach an IPv6 literal through a proxy** (its CONNECT omits the brackets; mitmproxy answers 400).
 - **A fork's page in the viewer does not say what the fork changed,** where it diverges from its parent, or whether its restore was verified; two forks from one checkpoint read the same in the run list.
-- **`serve` has no `--model-host`:** under the standing mode a self-hosted model API must be declared `pass_through`.
 - **A base-URL mode (`http://<minutehand>/_host/<host>/…`) is designed, not built.** It would be a second mitmproxy listener in reverse mode whose request hook rewrites the host from the path before routing; not built in this pass.
 - **Out of scope:** browser OAuth flows, certificate-pinned clients, Slack Socket Mode, reading back from real providers in production, the hosted service.
 

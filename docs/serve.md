@@ -124,6 +124,23 @@ its own world's declaration; another world may declare the same host differently
 nothing refuses it. A declared host a provider claims is refused with 409, naming both. `serve
 --capture-unknown` passes every undeclared call through instead, kept in its world or the lobby.
 
+### Model hosts
+
+A model API is decided by its host before its call is opened, so it cannot be told apart by world from the
+credentials it carries. `api.openai.com`, `api.anthropic.com` and `generativelanguage.googleapis.com`, and each
+`serve --model-host HOST` (a self-hosted model, a gateway), are model hosts for every world: tunnelled, never
+decrypted, or, under `serve --record-model-calls`, opened, sent on unchanged and kept as a span
+(`docs/design.md`, Hosts the proxy does not own). A world may declare more:
+
+```json
+{"model_hosts": [{"host": "llm.internal", "record": true}]}
+```
+
+Each is tunnelled, or recorded when `record` says so, and belongs to that world until it closes: a second open
+world that declares an overlapping host is refused with 409, as is a host a provider claims or the world
+captures under `outbound`. A recorded call is kept in the world that declared its host, else in the world whose
+calls carried its trace (`traceparent`), else in the lobby; `GET /v1/worlds/{id}/spans` reads it.
+
 ### A seed
 
 `Seed` (`domain/scenario.py`) is a scenario file with nothing to achieve: the goal and expectations may be left
@@ -343,8 +360,6 @@ script over the same code:
 - **A channel archived** by a person: no act.
 - **Retries of a pushed event or webhook.** Slack's retries are sent; Notion's and Graph's deliveries are sent
   once.
-- **A binary response is not recorded.** The call is answered, but a body the proxy cannot keep as text (a
-  `.docx` download) leaves the call out of the world's `calls` (`docs/design.md`, Known issues).
 - **Fixed ids the emulators used** (`U001`, `C001GENERAL`, a fixed Asana gid): ids here derive from names and
   positions, so a test reads them back from the world (`entities`) or the vendor API after the world opens.
 - **AWS per world by credential.** A SigV4 request carries its access key id in a scheme the OAuth standards do
