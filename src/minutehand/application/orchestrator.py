@@ -30,6 +30,7 @@ from minutehand.application.checkpoint import (
     Restorable,
     write_checkpoint,
 )
+from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_undecided
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
@@ -51,7 +52,15 @@ from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
-from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityRef,
+    InboxItemSnapshot,
+    MessageSnapshot,
+    Operation,
+    TicketSnapshot,
+    WorldEvent,
+)
 from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -207,7 +216,12 @@ class Orchestrator:
         traffic: Traffic | None = None,
         channels: Mapping[ProviderKey, TakesReplies] | None = None,
         environment: Environment | None = None,
+        inboxes: Inboxes | None = None,
     ) -> None:
+        if inboxes is not None:
+            reaches = list(inboxes.reaches.values())
+            refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
+            refuse_undecided(scenario, reaches)
         if agent.state is not None and state_dir is None:
             raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
         if agent.state is not None and traffic is None:
@@ -243,6 +257,7 @@ class Orchestrator:
         self._traffic = traffic
         self._channels = dict(channels or {})
         self._environment = environment
+        self._inboxes = inboxes
         self._mounted = False
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
@@ -420,6 +435,8 @@ class Orchestrator:
     async def _loop(self) -> StopReason:
         deadline = self._scenario.deadline
         while True:
+            await self._look()  # what waits on people now, before the clock moves past what they owe
+            await self._schedule(self._record_new())
             jump = next_jump(self._clock.now(), [p.due for p in self._pending])
             if jump is None:
                 self._run_on_to(deadline)
@@ -494,7 +511,10 @@ class Orchestrator:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
-                if provider in self._channels:
+                if reply.decides is not None:
+                    assert self._inboxes is not None
+                    await self._inboxes.decide(reply, self._store, self._clock)
+                elif provider in self._channels:
                     await self._channels[provider].deliver(reply, self._store, self._clock)
                 elif reply.press is not None:
                     await self._interactions(provider).press(
@@ -661,6 +681,8 @@ class Orchestrator:
             # its driver first answered, and what it wrote meanwhile belongs to this wake.
             commitments_changed = self._adopt(settled.report) or commitments_changed
             done = done or settled.report.status is AgentStatus.DONE
+        if not failed:
+            await self._look()
         new = self._record_new()
         if not failed:
             await self._schedule(new)
@@ -746,6 +768,13 @@ class Orchestrator:
                     history = self._store.events()
                 if event.operation is Operation.CREATE or _text_changed(event, history):
                     shown[event.entity] = event
+            if event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot) and after.person:
+                if history is None:
+                    history = self._store.events()
+                asked = next((p for p in self._scenario.people if p.key == after.person), None)
+                if asked is not None:
+                    await self._ask(asked, event, [h for h in history if h.seq <= event.seq])
+                continue
             if (
                 event.operation in (Operation.CREATE, Operation.UPDATE)
                 and isinstance(after, TicketSnapshot)
@@ -764,6 +793,20 @@ class Orchestrator:
                 if event.operation is Operation.UPDATE and not self._withdraw(event.entity, person):
                     continue
                 await self._ask(person, event, [h for h in history if h.seq <= event.seq])
+
+    async def _look(self) -> None:
+        """Read every inbox in the agent's own product as each person: an item seen first is the agent asking them,
+        written now and decided when the new events are scheduled; one gone undecided withdraws whatever its person
+        had decided to it and not yet done, which never reaches anyone."""
+        if self._inboxes is None:
+            return
+        looked = await self._inboxes.look(self._store, self._clock)
+        for item in looked.withdrawn:
+            mine = [i for i, r in enumerate(self._replies) if r.in_reply_to == item and i not in self._withdrawn]
+            waiting = {p.reply for p in self._pending if isinstance(p, PendingReply)}
+            unsaid = [i for i in mine if i in waiting]
+            self._pending = [p for p in self._pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
+            self._withdrawn += unsaid
 
     def _withdraw(self, message: EntityRef, person: Person) -> bool:
         """Before an edited message is put to `person` again: withdraw their reply to it that has not landed yet,
@@ -792,7 +835,10 @@ class Orchestrator:
         reply = await self._replier.decide(person, asked, history, self._clock)
         if reply is None:
             return
-        if reply.in_reply_to.provider not in self._channels:
+        if reply.decides is not None:
+            if self._inboxes is None or not self._inboxes.holds(reply.in_reply_to):
+                raise RunRefused(f"{person.key} decided on {reply.in_reply_to.provider}, which is no inbox of the run")
+        elif reply.in_reply_to.provider not in self._channels:
             self._pushes(reply.in_reply_to.provider)
             if reply.press is not None:
                 self._interactions(reply.in_reply_to.provider)
@@ -1017,6 +1063,7 @@ async def run_scenario(
     traffic: Traffic | None = None,
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
     environment: Environment | None = None,
+    inboxes: Inboxes | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
@@ -1039,4 +1086,5 @@ async def run_scenario(
         traffic=traffic,
         channels=channels,
         environment=environment,
+        inboxes=inboxes,
     ).run()

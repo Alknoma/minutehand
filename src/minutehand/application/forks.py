@@ -30,6 +30,7 @@ from minutehand.domain.experiment import (
     PromptPatch,
     TicketEdit,
 )
+from minutehand.domain.inboxes import item_words
 from minutehand.domain.run import Verdict
 from minutehand.domain.scenario import (
     Answers,
@@ -46,6 +47,7 @@ from minutehand.domain.world import (
     Actor,
     DocumentSnapshot,
     GrantSnapshot,
+    InboxItemSnapshot,
     InteractionSnapshot,
     MessageSnapshot,
     Operation,
@@ -343,7 +345,13 @@ def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
         ScoreLine(label="wakes", value=f"{card.wakes}, of which changed nothing: {card.idle_wakes}"),
         ScoreLine(
             label="messages to people",
-            value=f"{card.messages_to_people}, edited in place: {card.messages_edited}, deleted: {card.messages_deleted}",
+            value=f"{card.messages_to_people}, edited in place: {card.messages_edited}, deleted: {card.messages_deleted}"
+            + (
+                f"; decisions asked of people: {card.decisions_asked}, decided: {card.decisions_made}, "
+                f"left pending: {card.decisions_pending}"
+                if card.decisions_asked
+                else ""
+            ),
         ),
         ScoreLine(label="failed checks", value=str(card.failed_checks)),
     ]
@@ -402,6 +410,10 @@ def event_words(event: WorldEvent, scenario: Scenario) -> str:
         what = f"{who} gave {after.to} {after.role.value} access to {_quoted(after.document, 80)}"
     elif isinstance(after, RecordSnapshot):
         what = f"{who} {verb} a {after.resource} record: {_quoted(after.text)}"
+    elif isinstance(after, InboxItemSnapshot):
+        named = names.get(after.person, after.person) if after.person is not None else after.waits_on
+        said = item_words(after, event.actor, named)
+        what = said if event.actor is Actor.PERSON else f"{who} {said}"
     elif isinstance(after, InteractionSnapshot):
         what = f"{names.get(after.person, after.person)} pressed {_quoted(after.label, 60)}"
     else:

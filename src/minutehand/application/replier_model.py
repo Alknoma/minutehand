@@ -15,19 +15,22 @@ replays what was remembered, so a rerun asks the model nothing about a message a
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
 from pydantic import Field, model_validator
 
 from minutehand.application.refusals import RunRefused
-from minutehand.application.replier_scripted import ScriptedReplier, lands_at, refuse_unworkable_hours
+from minutehand.application.replier_scripted import ScriptedReplier, decision_text, lands_at, refuse_unworkable_hours
 from minutehand.domain.conversation import ModelMessage, Provenance, Speaker
-from minutehand.domain.people import PersonReply, Press
+from minutehand.domain.inboxes import HttpInbox
+from minutehand.domain.people import Decides, PersonReply, Press
 from minutehand.domain.scenario import Answers, FormInput, Helpfulness, Model, Person, Scenario
 from minutehand.domain.world import (
     Actor,
     ControlKind,
     EntityKind,
+    InboxItemSnapshot,
     MessageAction,
     MessageSnapshot,
     Operation,
@@ -176,13 +179,76 @@ def _controls(actions: list[MessageAction]) -> str:
     return "\n\n[Controls: " + ", ".join(f'"{a.label}"' for a in usable) + "]"
 
 
+DECISION_PROMPT_VERSION = "person-decision/1"
+"""Changes whenever DECISION_PROMPT changes a word, so a stored decision names the text that made it."""
+
+DECISION_PROMPT = """\
+You are {who}. You are at work. A tool your team uses is waiting for you to decide something in it. You are given \
+what it asks of you, the decisions you can make, and what each one takes.
+
+What you know:
+{known}
+{believed}
+Rules:
+- Pick exactly one of the decisions offered, by its name exactly as listed, in "decision".
+- Fill "inputs" with one entry per input the decision takes, each by its name exactly as listed; an input it \
+does not take is never given. Write each value as you would type it, from what you know.
+- You decide only from what you know{or_believe}. {helpfulness}
+- Today is {today}.
+"""
+
+
+class WrittenInput(Model):
+    name: str = Field(description="The input's name, exactly as listed")
+    value: str = Field(description="What you type into it")
+
+
+class WrittenDecision(Model):
+    """What the model answers for one item waiting on one person: the decision made, and what is given with it."""
+
+    decision: str = Field(description="The name of the decision you make, exactly as listed")
+    inputs: list[WrittenInput] = Field(default=[], description="One per input the decision takes")
+
+
+def decision_prompt(person: Person, behaviour: Answers, today: datetime) -> str:
+    mistaken = behaviour.helpfulness is Helpfulness.MISTAKEN
+    believed = (
+        f"\nWhat you believe, and hold to be true:\n{_bullets(person.stale_facts)}\n"
+        if mistaken and person.stale_facts
+        else ""
+    )
+    return DECISION_PROMPT.format(
+        who=f"{person.name}, {person.title}" if person.title else person.name,
+        known=_bullets(person.facts),
+        believed=believed,
+        or_believe=" or in what you believe" if believed else "",
+        helpfulness=f"With what is asked: {HELPFULNESS[behaviour.helpfulness]}",
+        today=today.strftime("%A %d %B %Y"),
+    )
+
+
+def asked_to_decide(item: InboxItemSnapshot, declared: HttpInbox) -> str:
+    """The item as the person is shown it: what it asks, and each decision with what it takes."""
+    lines = [f"What it asks of you: {item.summary}", "", "The decisions you can make:"]
+    for name in item.decisions:
+        decision = declared.decision(name)
+        if decision is None:
+            continue
+        lines.append(f'- "{name}"' + (f": {decision.description}" if decision.description else ""))
+        for given in decision.inputs:
+            needed = "required" if given.required else "optional"
+            lines.append(f'    input "{given.name}" ({needed}): {given.description}')
+    return "\n".join(lines)
+
+
 class ModelReplier:
     """`ports.people.Replier` for `Answers` people."""
 
-    def __init__(self, scenario: Scenario, model: LanguageModel) -> None:
+    def __init__(self, scenario: Scenario, model: LanguageModel, inboxes: Sequence[HttpInbox] = ()) -> None:
         refuse_unworkable_hours(scenario)
         self._scenario = scenario
         self._model = model
+        self._inboxes = {i.name: i for i in inboxes}
 
     async def decide(
         self, person: Person, asked: WorldEvent, history: list[WorldEvent], clock: Clock
@@ -190,6 +256,8 @@ class ModelReplier:
         behaviour = person.reply
         if not isinstance(behaviour, Answers):
             raise RunRefused(f"{person.key}'s replies are not written by a model; the model replier cannot write them")
+        if isinstance(asked.after, InboxItemSnapshot):
+            return await self._decides(person, behaviour, asked, history)
         if asked.entity.kind is not EntityKind.MESSAGE or not isinstance(asked.after, MessageSnapshot):
             raise RunRefused(f"{person.key} was asked to answer {asked.entity.kind.value}, which is not a message")
         written = await self._model.answer(
@@ -227,6 +295,44 @@ class ModelReplier:
             written_by=Provenance(model=behaviour.model or self._model.model_id, prompt_version=PERSON_PROMPT_VERSION),
         )
 
+    async def _decides(
+        self, person: Person, behaviour: Answers, asked: WorldEvent, history: list[WorldEvent]
+    ) -> PersonReply:
+        item = asked.after
+        assert isinstance(item, InboxItemSnapshot)
+        if item.inbox not in self._inboxes:
+            raise RunRefused(f"{person.key} was asked to decide in inbox {item.inbox}, which the run does not declare")
+        declared = self._inboxes[item.inbox]
+        written = await self._model.answer(
+            decision_prompt(person, behaviour, asked.sim_time),
+            [ModelMessage(speaker=Speaker.ASKER, text=asked_to_decide(item, declared))],
+            WrittenDecision,
+            model=behaviour.model,
+            temperature=behaviour.temperature,
+        )
+        decision = declared.decision(written.decision) if written.decision in item.decisions else None
+        if decision is None:
+            raise RunRefused(
+                f"the model had {person.key} decide {written.decision!r}, which is not offered on the item: "
+                f"{item.decisions}"
+            )
+        inputs = {i.name: i.value for i in written.inputs}
+        try:
+            decision.refuse_inputs(inputs, f"the model, as {person.key},")
+        except ValueError as e:
+            raise RunRefused(str(e)) from e
+        return PersonReply(
+            person=person.key,
+            in_reply_to=asked.entity,
+            text=decision_text(decision.name, inputs),
+            decides=Decides(decision=decision.name, inputs=inputs),
+            at=lands_at(self._scenario, person, asked, history, behaviour.delay),
+            patience=behaviour.delay.longest,
+            written_by=Provenance(
+                model=behaviour.model or self._model.model_id, prompt_version=DECISION_PROMPT_VERSION
+            ),
+        )
+
 
 class PeopleReplier:
     """The run's replier: each person to the scripted or the model replier by their `reply` kind.
@@ -234,14 +340,14 @@ class PeopleReplier:
     A scenario with an `Answers` person and no model is refused here, naming them, before anything runs.
     """
 
-    def __init__(self, scenario: Scenario, model: LanguageModel | None) -> None:
+    def __init__(self, scenario: Scenario, model: LanguageModel | None, inboxes: Sequence[HttpInbox] = ()) -> None:
         written = [p.key for p in scenario.people if isinstance(p.reply, Answers)]
         if written and model is None:
             raise RunRefused(
                 f"a model writes the replies of {', '.join(written)} (reply kind 'answers'), and no model is configured"
             )
         self._scripted = ScriptedReplier(scenario)
-        self._written = ModelReplier(scenario, model) if model is not None else None
+        self._written = ModelReplier(scenario, model, inboxes) if model is not None else None
 
     async def decide(
         self, person: Person, asked: WorldEvent, history: list[WorldEvent], clock: Clock

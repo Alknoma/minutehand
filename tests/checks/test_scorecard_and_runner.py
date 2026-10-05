@@ -18,6 +18,7 @@ OWNER, SOFIA = person("owner"), person("sofia")
 
 CHECKS = {
     "acted_after_deadline",
+    "acted_without_approval",
     "chased_absent_person",
     "duplicate_ticket",
     "expectations",

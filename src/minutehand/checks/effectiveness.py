@@ -7,7 +7,15 @@ from datetime import datetime, timedelta
 from minutehand.checks._waits import chases, reaction
 from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
-from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityRef,
+    InboxItemSnapshot,
+    ItemStatus,
+    MessageSnapshot,
+    Operation,
+    WorldEvent,
+)
 
 
 def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime) -> Effectiveness:
@@ -35,6 +43,7 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
     burden = _burden(view)
     sent = sum(b.messages for b in burden)
     edited, deleted = rewrites(view)
+    asked, decided, pending = decisions(view)
     return Effectiveness(
         expectations_met=met,
         expectations_total=len(view.scenario.expect),
@@ -52,6 +61,9 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
         messages_to_people=sent,
         messages_edited=len(edited),
         messages_deleted=len(deleted),
+        decisions_asked=asked,
+        decisions_made=decided,
+        decisions_pending=pending,
         burden=burden,
         messages_per_outcome=sent / met if met else None,
         wakes=len(view.wakes),
@@ -104,3 +116,22 @@ def rewrites(view: RunView) -> tuple[list[WorldEvent], list[WorldEvent]]:
         elif event.operation is Operation.UPDATE and event.entity in to_people and before != after.text:
             edited.append(event)
     return edited, deleted
+
+
+def decisions(view: RunView) -> tuple[int, int, int]:
+    """Items the agent left waiting on a person in its own product, those the person decided, and those still
+    waiting when the run ended; one taken back by the agent is none of the last two."""
+    asked: set[EntityRef] = set()
+    decided: set[EntityRef] = set()
+    last: dict[EntityRef, ItemStatus] = {}
+    for event in view.events:
+        after = event.after
+        if not isinstance(after, InboxItemSnapshot) or after.person is None:
+            continue
+        if event.actor is Actor.AGENT and event.operation is Operation.CREATE:
+            asked.add(event.entity)
+        if event.actor is Actor.PERSON and after.status is ItemStatus.DECIDED:
+            decided.add(event.entity)
+        last[event.entity] = after.status
+    pending = sum(1 for ref in asked if last[ref] is ItemStatus.PENDING)
+    return len(asked), len(decided & asked), pending

@@ -23,10 +23,11 @@ DESIGN_KEYS = {
     "no_double_tick",
     "honest_closure",
     "confirm_names",
+    "act_on_the_decision",
 }
 
 
-def test_the_nine_patterns_of_the_design_are_the_data() -> None:
+def test_the_ten_patterns_of_the_design_are_the_data() -> None:
     assert [p.key for p in PATTERNS] == list(dict.fromkeys(p.key for p in PATTERNS))
     assert {p.key for p in PATTERNS} == DESIGN_KEYS
 
