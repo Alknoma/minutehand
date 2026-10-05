@@ -146,6 +146,12 @@ class Effectiveness(Model):
     follow_ups_late: int = Field(
         ge=0, description="Of the moments due, those followed up more than the grace after, or never"
     )
+    follow_ups_early: int = Field(
+        default=0,
+        ge=0,
+        description="Follow-ups sent before the wait they chased had fallen due: each gives the person their whole "
+        "delay again, so many of them keep a wait current while asking the same person again and again",
+    )
     time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
     slowest_follow_up: timedelta | None = None
     reactions_due: int = Field(
