@@ -84,7 +84,9 @@ ORDER_KEYS_NOT_BUILT = frozenset(
 )
 CHANNEL_DEFAULT = timedelta(hours=1)
 CHANNEL_LONGEST = timedelta(days=7)
-"""A `changes.watch` channel lives an hour unless it asks for longer, and a week at most."""
+"""A `changes.watch` channel lives an hour unless it asks for longer, and a week at most. An expiration already
+past on the run's clock (an agent that reads the machine's clock in a run set earlier or later) is taken as
+none asked for, and a later one is cut to the week."""
 
 
 class Api(StrEnum):
@@ -1125,7 +1127,9 @@ class DriveApi:
             if asked.expiration is not None
             else now + CHANNEL_DEFAULT
         )
-        expires = min(max(wanted, now), now + CHANNEL_LONGEST)
+        if wanted <= now:
+            wanted = now + CHANNEL_DEFAULT
+        expires = min(wanted, now + CHANNEL_LONGEST)
         resource_id = hashlib.sha256(f"resource\x1f{asked.id}\x1f{token}".encode()).hexdigest()[:27]
         uri = f"https://{DRIVE_HOST}/drive/v3/changes?alt=json&pageToken={token}"
         if call.driveId is not None:
