@@ -294,6 +294,8 @@ class Scheduler:
 
     def __init__(self) -> None:
         self.fired: list[tuple[str, datetime]] = []
+        self.delivered: list[str] = []
+        self.taken_refs: list[str] = []
         self._wakes: Wakes | None = None
 
     def bind(self, wakes: Wakes) -> None:
@@ -331,18 +333,30 @@ class Scheduler:
             self._bound().cancel(ref)
             return JSONResponse({"ok": True})
 
+        async def deliveries(request: Request) -> Response:
+            """The agent's poll of its queue: every delivery not taken yet, taken now, as SQS's receive is."""
+            waiting = [ref for ref in self.delivered if ref not in self.taken_refs]
+            self.taken_refs.extend(waiting)
+            return JSONResponse({"deliveries": waiting})
+
         return Starlette(
             routes=[
                 Route("/schedules", book, methods=["POST"]),
                 Route("/schedules/{ref}", cancel, methods=["DELETE"]),
+                Route("/deliveries", deliveries, methods=["GET"]),
             ]
         )
+
+    def taken(self, ref: str, world: Store) -> bool:
+        """`ConfirmsDelivery`: the agent's poll has picked this booking's delivery up."""
+        return ref in self.taken_refs
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scheduler starts with no bookings: a scenario has nothing to seed here."""
 
     async def fire(self, ref: str, world: Store, clock: Clock) -> None:
         self.fired.append((ref, clock.now()))
+        self.delivered.append(ref)
         world.apply(
             Change(
                 entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=ref),

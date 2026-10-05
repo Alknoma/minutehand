@@ -7,6 +7,7 @@ from the world and schedule what the world owes back: people's replies and ticke
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ from minutehand.ports.provider import (
     ASGIApp,
     BooksWakes,
     ChangesDocuments,
+    ConfirmsDelivery,
     EditsTickets,
     HoldsTickets,
     NotifiesChanges,
@@ -70,6 +72,9 @@ from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 _NOT_CHANGES = frozenset({Operation.READ, Operation.SEARCH})
+
+TAKEN_EVERY = 0.05
+"""Seconds between two asks whether the agent has taken a booking's delivery."""
 
 _PRIORITY = [WakeReason.PERSON_REPLIED, WakeReason.DIRECTION, WakeReason.DUE, WakeReason.TICK]
 """When one jump fires several things, the wake carries the reason that matters most to the agent."""
@@ -425,6 +430,7 @@ class Orchestrator:
             async def fire(due: list[Pending] = fired) -> None:
                 await self._fire(due)
                 await self._notify(self._watched(due))
+                await self._taken(due)
 
             stop = await self._wake(wake, reason, fire, requests, settle)
             if stop is not None:
@@ -505,6 +511,22 @@ class Orchestrator:
             self._clock,
             secret=self._secret(happening.provider),
         )
+
+    async def _taken(self, fired: list[Pending]) -> None:
+        """Wait until the agent has taken each booking just delivered from its own queue, when the scheduler can
+        tell, or `Booked.take_limit` passes: an agent that reports IDLE before its poll has run would otherwise be
+        moved past the wake its booking was for."""
+        bookings = [p for p in fired if isinstance(p, PendingBooking)]
+        limit = next((w.take_limit for w in self._agent.wakes if isinstance(w, Booked)), None)
+        if not bookings or limit is None:
+            return
+        give_up = time.monotonic() + limit.total_seconds()
+        for booking in bookings:
+            scheduler = self._services.schedulers[booking.provider]
+            if not isinstance(scheduler, ConfirmsDelivery):
+                continue
+            while not scheduler.taken(booking.ref, self._store) and time.monotonic() < give_up:
+                await asyncio.sleep(TAKEN_EVERY)
 
     def _unheard(self, pending: Pending) -> bool:
         """A pending happening the agent is not told of as it lands: one on a ticket or a document, which the agent

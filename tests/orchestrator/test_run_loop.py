@@ -10,7 +10,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import Booked
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import TicketState
-from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
+from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot
 from tests.orchestrator.rig import T0, Rig, scenario
 from tests.orchestrator.world import SECRET, RecordingClock
 
@@ -69,7 +69,9 @@ async def test_max_wakes_stops_an_agent_that_always_asks_to_wake_again(rig: Rig)
 
 
 async def test_a_booking_fires_at_its_time_and_a_cancelled_one_does_not(rig: Rig) -> None:
-    record, store, clock = await rig.run(scenario(ticket_fates=[]), rig.agent("book", extra=[Booked()]))
+    # this agent never reads its queue: the run waits a tenth of a second for it to take the delivery
+    booked = Booked(take_limit=timedelta(seconds=0.1))
+    record, store, clock = await rig.run(scenario(ticket_fates=[]), rig.agent("book", extra=[booked]))
 
     assert rig.sched.fired == [("kept", T0 + timedelta(hours=5))]
     assert clock.jumps == [T0 + timedelta(hours=5), T0 + timedelta(days=14)]
@@ -190,3 +192,19 @@ async def test_a_document_happening_on_a_provider_that_changes_no_documents_is_r
     with pytest.raises(RunRefused, match=refusal):
         await rig.run(scn, rig.agent("ask_silent"))
     assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"
+
+
+async def test_a_booked_wake_waits_until_the_agent_has_taken_its_delivery(rig: Rig) -> None:
+    """The agent's poller reads its queue every 0.4 s and acts on what it finds; its report says idle at once. The
+    run waits until the delivery is taken, so the follow-up it causes is in the booking's wake at the booking's
+    moment. Before, the wake ended at once and the follow-up landed at the deadline the clock ran on to."""
+    record, store, _ = await rig.run(
+        scenario(ticket_fates=[]),
+        rig.agent("book_and_poll", extra=[Booked()]),
+        env=rig.env(POLL_SECONDS="0.4", BACKGROUND_SECONDS="20"),
+    )
+
+    assert rig.sched.taken_refs == ["kept"]
+    [follow_up] = [e for e in store.events() if isinstance(e.after, MessageSnapshot) and e.actor is Actor.AGENT]
+    assert follow_up.wake == 2 and follow_up.sim_time == T0 + timedelta(hours=5)
+    assert [w.world_changes for w in record.wakes][:2] == [1, 1]
