@@ -6,14 +6,22 @@ OpenTelemetry's GenAI conventions mark as generative AI (an attribute under `gen
 call that led to the event is the last one to END before the calling span started (or, when that span never
 arrived, before the event was written): a model answers, then the agent acts on the answer.
 
-An event whose call carried no traceparent, or whose trace holds no model call, is joined by WAKE instead: the
-last model call of the same wake that ended before the event, a call recorded on the wire counting only when it
-was kept before the event's seq. That is the nearest preceding call, not a proven cause, and `JoinedBy.WAKE`
-says so.
+An event whose call carried no traceparent, or whose trace holds no model call, is joined BY CONTENT when it can
+be (`by_content`): a message whose text, trimmed of whitespace at both ends and at least `CONTENT_LEAST`
+characters long, appears verbatim in what a model call of the same wake answered (its output messages, or any
+string inside them once they are read as JSON, however deep), the call having ended before the event was written,
+real time; of several such, the last to end. Nothing is normalised beyond that trim and no likeness is scored: a
+text the model wrote and the agent sent unchanged is matched, a text the agent changed by one character is not.
+`JoinedBy.CONTENT` says so.
+
+Otherwise it is joined by WAKE: the last model call of the same wake that ended before the event, a call recorded
+on the wire counting only when it was kept before the event's seq. That is the nearest preceding call, not a
+proven cause, and `JoinedBy.WAKE` says so.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import StrEnum
 
@@ -22,7 +30,7 @@ from pydantic import AwareDatetime, Field
 from minutehand.domain.checks import WakeModelCalls
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import AttributeValue, IntValue, SpanSource, StoredSpan, StringValue
-from minutehand.domain.world import WorldEvent
+from minutehand.domain.world import MessageSnapshot, WorldEvent
 from minutehand.ports.store import Store
 
 GENAI = "gen_ai."
@@ -32,7 +40,12 @@ MODEL_OPERATIONS = frozenset({"chat", "text_completion", "generate_content"})
 
 class JoinedBy(StrEnum):
     TRACE = "trace"  # the event's call carried a traceparent, and the model call is in that trace
+    CONTENT = "content"  # no trace link: a model call of the same wake answered the message's text verbatim
     WAKE = "wake"  # the last model call in the same wake before the event: nearest, not proven
+
+
+CONTENT_LEAST = 20
+"""The shortest message text joined by content: shorter ones ("ok", "Thanks!") a model may answer anywhere."""
 
 
 class ModelCall(Model):
@@ -190,8 +203,12 @@ def trace_of(event: WorldEvent, world: Store) -> EventTrace:
             for s in world.spans(wake=event.wake)
             if is_model_call(s) and (s.source is SpanSource.RECEIVED or s.after_seq < event.seq)
         ]
-        found = _last_before(in_wake, event.wall_time)
-        joined = JoinedBy.WAKE if found is not None else None
+        found = by_content(event, in_wake, world)
+        if found is not None:
+            joined = JoinedBy.CONTENT
+        else:
+            found = _last_before(in_wake, event.wall_time)
+            joined = JoinedBy.WAKE if found is not None else None
     return EventTrace(
         seq=event.seq,
         trace_id=caller_ids[0] if caller_ids is not None else None,
@@ -201,3 +218,48 @@ def trace_of(event: WorldEvent, world: Store) -> EventTrace:
         model_call=model_call(found, world.spans(trace_id=found.span.trace_id)) if found is not None else None,
         joined_by=joined,
     )
+
+
+def by_content(event: WorldEvent, candidates: list[StoredSpan], world: Store) -> StoredSpan | None:
+    """The model call that wrote the message `event` sent, by its text alone (see the module's rule); None when the
+    event is no message, its text is shorter than `CONTENT_LEAST`, or no call answered it verbatim."""
+    if not isinstance(event.after, MessageSnapshot):
+        return None
+    said = event.after.text.strip()
+    if len(said) < CONTENT_LEAST:
+        return None
+    wrote = [
+        s
+        for s in candidates
+        if s.span.end <= event.wall_time and said in _answered(model_call(s, world.spans(trace_id=s.span.trace_id)))
+    ]
+    return max(wrote, key=lambda s: s.span.end) if wrote else None
+
+
+def _answered(call: ModelCall) -> str:
+    """Everything the call answered, as one text: its output messages as the span carries them, then every string
+    inside them read as JSON (a tool call's arguments are JSON inside JSON), each on its own line."""
+    if call.output_messages is None:
+        return ""
+    return "\n".join([call.output_messages, *_strings(call.output_messages)])
+
+
+def _strings(text: str, depth: int = 0) -> list[str]:
+    if depth > 4:
+        return []
+    try:
+        parsed: object = json.loads(text)
+    except ValueError:
+        return []
+    found: list[str] = []
+    stack: list[object] = [parsed]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            found.append(item)
+            found += _strings(item, depth + 1)
+        elif isinstance(item, list):
+            stack.extend(item)  # pyright: ignore[reportUnknownArgumentType]
+        elif isinstance(item, dict):
+            stack.extend(item.values())  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+    return found
