@@ -74,6 +74,7 @@ markers = [
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
     "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
     "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
+    "acceptance: a promise tested from outside, through the command, the control API, the client and the viewer; runs in the default run (docs/acceptance.md)",
 ]
 filterwarnings = [
     # A warning raised against our own code is an error. Third-party internals are left alone.
