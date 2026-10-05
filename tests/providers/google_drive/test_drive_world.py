@@ -74,7 +74,7 @@ def test_seeding_writes_my_drive_people_access_and_documents_as_the_scenario(dri
 
     world = drive.world
     root = world.file(ROOT_ID)
-    assert root is not None and root.file.owners[0].emailAddress == "mara@example.com"
+    assert root is not None and [o.emailAddress for o in root.file.owners or []] == ["mara@example.com"]
     dov_root = world.file(state.root_id("dov@example.com"))
     assert dov_root is not None and dov_root.file.name == "My Drive", "everyone has a My Drive of their own"
     files = {stored.file.name: stored for stored, _ in world.walk(ROOT_ID)}
@@ -84,7 +84,7 @@ def test_seeding_writes_my_drive_people_access_and_documents_as_the_scenario(dri
     assert shortlist.file.parents == [files["Procurement"].file.id] and shortlist.file.mimeType == DOC
     assert state.readable_text(shortlist) == "Three suppliers remain.\nPrices due Friday."
     assert shortlist.file.createdTime == "2026-09-14T08:30:00.000Z"
-    assert [o.emailAddress for o in shortlist.file.owners] == ["mara@example.com"]
+    assert [o.emailAddress for o in shortlist.file.owners or []] == ["mara@example.com"]
     assert world.grants(ROOT_ID) == [], "nobody is granted the owner's My Drive unless the scenario says so"
     assert world.role("dov@example.com", shortlist) is None and world.role(OWNER, shortlist) == "owner"
     assert world.user("dov@example.com") is not None and world.user("mara@example.com") is not None
