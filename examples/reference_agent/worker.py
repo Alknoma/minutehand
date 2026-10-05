@@ -65,6 +65,7 @@ SYSTEM = (
     "You book venues for a small team. Answer with one JSON object and nothing else. "
     "Be brief and polite in every email you draft."
 )
+ATTEMPTS = 3
 BEHAVIOURS = ("diligent", "forgetful", "nagging", "liar", "slow")
 
 
@@ -255,10 +256,13 @@ def main() -> None:
         if job is None:
             time.sleep(POLL)
             continue
-        try:
-            worker.run(job)
-        except Exception as e:  # a failed job is reported in the log and does not stop the queue
-            print(f"job {job.id} failed: {e!r}", file=sys.stderr, flush=True)
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                worker.run(job)
+                break
+            except Exception as e:  # a failed job is retried, then reported in the log; it never stops the queue
+                print(f"job {job.id} failed (attempt {attempt} of {ATTEMPTS}): {e!r}", file=sys.stderr, flush=True)
+                time.sleep(0.2)
         worker.store.finish(job, time.time())
     telemetry.shutdown()
 
