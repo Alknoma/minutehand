@@ -377,11 +377,18 @@ class UploadSession(Model):
 
     metadata: str = Field(description="The JSON body of the first request")
     media_type: str
-    total: int | None
+    total: int | None = Field(
+        default=None,
+        description="The bytes it carries: from X-Upload-Content-Length, which is optional, or else the first "
+        "Content-Range that names a total; None until one does",
+    )
     received: str = Field(default="", description="base64")
     file_id: str | None = Field(default=None, description="Set when the upload replaces a file's content")
     email: str
     query: str = Field(description="The first request's query string, which says what to answer")
+    done: str | None = Field(
+        default=None, description="The file the upload made or replaced, once its last byte arrived"
+    )
 
 
 Stored = TypeVar(

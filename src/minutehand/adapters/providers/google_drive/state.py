@@ -489,11 +489,6 @@ class DriveWorld:
     ) -> WorldEvent:
         return self._keep(upload, UPLOADS, session, operation=operation, actor=actor)
 
-    def end_upload(self, upload: str) -> WorldEvent:
-        return self._store.apply(
-            Change(entity=record_ref(upload), operation=Operation.DELETE, actor=Actor.AGENT, parent=UPLOADS)
-        )
-
     # ------------------------------------------------------------------ the scenario's own names
 
     def keep_seeded(self, title: str, file: str) -> WorldEvent:

@@ -40,6 +40,11 @@ that test instead.
 | A plain-text export opens with a byte-order mark and ends lines CRLF | observed | `test_drive_api.py::test_a_created_doc_exports_as_text_with_a_bom_and_crlf` | |
 | A Doc created with no text is a section break and one newline ending at 2, without its name in it | observed | `test_a_doc_created_with_no_text_is_its_final_newline_and_nothing_else` | |
 | A CSV uploaded with the Sheets type exports its rows as text/csv | documented | `test_a_csv_uploaded_as_a_sheet_exports_its_rows_as_csv` | https://developers.google.com/workspace/drive/api/guides/manage-uploads |
+| A resumable upload may begin without `X-Upload-Content-Length`; the client library leaves it out when it cannot measure the stream | documented | `test_drive_google_client.py::test_a_resumable_upload_of_unknown_length_arrives_whole` | https://developers.google.com/workspace/drive/api/guides/manage-uploads#resumable |
+| A chunk of an unknown total is `bytes a-b/*`, answered 308 with `Range: bytes=0-b`; the chunk naming the total completes the upload, 200 with the file | documented | `test_drive_resumable_upload.py::test_chunks_of_an_unknown_total_are_answered_308_until_the_last_names_it` | https://developers.google.com/workspace/drive/api/guides/manage-uploads#uploading |
+| An empty `PUT` with `Content-Range: */*` (or `*/total`) asks how much arrived: 308 with no `Range` before any byte | documented | `test_drive_resumable_upload.py::test_a_status_query_before_any_byte_is_answered_308_with_no_range` | https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload |
+| An interrupted upload resumes from the byte after the `Range` its status query answered; once complete, a status query answers 200 with the file | documented | `test_drive_resumable_upload.py::test_an_interrupted_upload_asks_where_it_stands_and_resumes_from_the_range` | https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload |
+| A chunk that does not start where the received bytes end, or names a total other than the one declared, is a 400 `badContent` | observed | `test_drive_resumable_upload.py::test_a_chunk_that_skips_bytes_is_refused_400` | |
 
 ## Docs v1
 
