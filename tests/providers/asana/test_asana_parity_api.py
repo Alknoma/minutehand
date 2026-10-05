@@ -294,11 +294,15 @@ async def test_an_update_writes_one_field_over_the_others(agent: httpx.AsyncClie
     ]
 
 
-async def test_a_bare_field_name_answers_a_reference_and_a_nested_path_answers_the_value(
+async def test_a_bare_field_name_answers_a_reference_but_bare_custom_fields_answer_their_values(
     agent: httpx.AsyncClient,
 ) -> None:
-    bare = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "custom_fields"}))
-    assert bare["custom_fields"][0] == {"gid": STATUS_FIELD, "resource_type": "custom_field"}
+    referenced = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "assignee,custom_fields"}))
+    assert set(referenced["assignee"]) == {"gid", "resource_type"}
+    status = referenced["custom_fields"][0]
+    assert (status["gid"], status["name"], status["resource_type"]) == (STATUS_FIELD, "Status", "custom_field")
+    assert status["enum_value"]["name"] == "In Progress"
+    assert status["enum_value"]["gid"] == option("Status", "In Progress")
     named = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "custom_fields.enum_value.name"}))
     assert named["custom_fields"][0] == {
         "gid": STATUS_FIELD,

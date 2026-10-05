@@ -1141,11 +1141,17 @@ def field_tree(query: Query) -> FieldTree | None:
 
 
 def _reference(value: JsonValue) -> JsonValue:
-    """A field named with nothing under it: a nested object answers its gid and resource_type."""
+    """A field named with nothing under it: a nested object answers its gid and resource_type.
+
+    A custom field is the exception: `custom_fields` named bare answers each field with the value it holds,
+    because callers read a task's priority or status that way and name nothing under it.
+    """
     if isinstance(value, list):
         return [_reference(item) for item in value]
     if not isinstance(value, dict):
         return value
+    if value.get("resource_type") == "custom_field":
+        return _compact(value)
     if "gid" in value:
         return {k: value[k] for k in ("gid", "resource_type") if k in value}
     return {k: _reference(v) for k, v in value.items()}
