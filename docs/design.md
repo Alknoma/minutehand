@@ -148,6 +148,9 @@ fail (2)
   no_follow_up: wait on sofia expired 11 days 6 hours before the run ended and the agent never came back to it
     pattern expiry_on_every_wait: An expiry on every wait. Every wait carries an expected-by date and the agent wakes on it.
 
+informational (1)
+  expectations: sofia asked: met by the message to Sofia Romano (seq 17): "Could you confirm the partner pricing, please?"
+
 scorecard
   expectations met: 1 of 2
   waits opened: 1, still open at the end: 1
