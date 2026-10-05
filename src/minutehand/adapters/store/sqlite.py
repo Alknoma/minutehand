@@ -733,11 +733,14 @@ class SqliteStore:
     def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> SqliteStore:
         if not 0 <= at_seq <= self.head():
             raise ValueError(f"cannot fork at {at_seq}: this run's head is {self.head()}")
-        recorded = self._db.execute(
-            "SELECT COUNT(*) FROM exchange WHERE run_id=? AND first_seq-1<=?", (self.run_id, at_seq)
-        ).fetchone()[0]
         where, args = self._visible()
         at_wake = self._db.execute(f"SELECT wake FROM event WHERE {where} AND seq=?", [*args, at_seq]).fetchone()
+        # A call whose first event would be at_seq + 1 was made at the fork's moment, or is the next wake's first:
+        # only its wake tells them apart.
+        recorded = self._db.execute(
+            "SELECT COUNT(*) FROM exchange WHERE run_id=? AND first_seq-1<=? AND wake<=?",
+            (self.run_id, at_seq, at_wake[0] if at_wake is not None else 0),
+        ).fetchone()[0]
         self._db.execute(
             "INSERT INTO run(run_id, parent, forked_at, forked_calls, forked_wake) VALUES(?,?,?,?,?)",
             (run_id, self.run_id, at_seq, recorded, at_wake[0] if at_wake is not None else 0),

@@ -267,3 +267,24 @@ def test_a_fork_stamps_from_its_own_clock_not_its_parents(world: tuple[SqliteSto
     fork = store.fork("what-if", at_seq=1, clock=RunClock(START + timedelta(days=1)))
     assert fork.apply(ticket("forked")).sim_time == START + timedelta(days=1)
     assert store.apply(ticket("parent")).sim_time == START + timedelta(days=9)
+
+
+def test_a_fork_at_the_end_of_a_wake_does_not_see_the_first_call_of_the_next(
+    world: tuple[SqliteStore, RunClock],
+) -> None:
+    """The checkpoint is the last event of wake 0; the next wake's first call writes the event right after it. Its
+    first seq is the fork's seq plus one, which a call made at the checkpoint with no event of its own also has:
+    only its wake tells them apart. Before, a fork taken at setup listed the next wake's first call as its own."""
+    store, clock = world
+    checkpoint = store.apply(ticket("checkpoint", Operation.CREATE))
+    quiet = Exchange(method="GET", host="api.example", path="/a", status=200)
+    store.attach(quiet, first_seq=checkpoint.seq + 1, last_seq=checkpoint.seq)  # at the checkpoint, no event
+    clock.begin_wake()
+    first = store.apply(ticket("written in wake 1"))
+    store.attach(
+        Exchange(method="POST", host="api.example", path="/b", status=200), first_seq=first.seq, last_seq=first.seq
+    )
+
+    child = store.fork("child", at_seq=checkpoint.seq, clock=clock)
+
+    assert [c.exchange.path for c in child.calls()] == ["/a"]
