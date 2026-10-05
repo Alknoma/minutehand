@@ -179,7 +179,7 @@ async def test_a_field_the_project_has_not_got_is_refused_404(client: httpx.Asyn
             "/api/issues/LAUNCH-1",
             json={
                 "customFields": [
-                    {"name": "Priority", "value": {"name": "Critical"}},
+                    {"name": "Severity", "value": {"name": "Critical"}},
                 ]
             },
         ),
@@ -204,7 +204,7 @@ async def test_a_query_naming_a_value_nothing_has_is_refused_400_not_answered_em
     assert f"isn't used for the {field} field" in str(answer["error_description"])
 
 
-@pytest.mark.parametrize("query", ["", "Priority Critical", "close it", "State"])
+@pytest.mark.parametrize("query", ["", "Severity Critical", "close it", "State"])
 async def test_a_command_that_is_not_one_is_refused_400(client: httpx.AsyncClient, query: str) -> None:
     refusal(await client.post("/api/commands", json={"query": query, "issues": [{"idReadable": "LAUNCH-1"}]}), 400)
 

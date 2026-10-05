@@ -134,13 +134,28 @@ class TicketState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class SeededComment(Model):
+    """A comment already on a seeded ticket when the run starts."""
+
+    by: str = Field(description="Person.key")
+    text: str = Field(min_length=1)
+
+
 class SeededTicket(Model):
+    key: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]*$",
+        description="The scenario's own name for this ticket, by which a provider's seed names it; only a provider "
+        "whose manifest holds ticket keys accepts one",
+    )
     provider: ProviderKey
     project: str
     title: str
     body: str = ""
     assignee: str | None = Field(default=None, description="Person.key")
     state: TicketState = TicketState.OPEN
+    labels: list[str] = Field(default=[], description="Tags or labels the ticket carries")
+    comments: list[SeededComment] = []
 
 
 class SeededDocument(Model):
@@ -327,9 +342,13 @@ class _ScenarioBody(Model):
         keys = [p.key for p in self.people]
         if len(keys) != len(set(keys)):
             raise ValueError("two people share a key")
+        ticket_keys = [t.key for t in self.tickets if t.key is not None]
+        if len(ticket_keys) != len(set(ticket_keys)):
+            raise ValueError("two seeded tickets share a key")
         known = set(keys)
         named = [self.owner]
         named += [t.assignee for t in self.tickets if t.assignee]
+        named += [c.by for t in self.tickets for c in t.comments]
         named += [f.assignee for f in self.ticket_fates]
         named += [a.delegate for p in self.people for a in p.absences if a.delegate]
         named += [e.person for e in self.expect if isinstance(e, PersonAsked)]
@@ -372,6 +391,8 @@ class _ScenarioBody(Model):
         elsewhere = [("the goal", self.goal)]
         elsewhere += [(f"direction {i + 1}", d.text) for i, d in enumerate(self.directions)]
         elsewhere += [(f"seeded ticket {t.title!r}", f"{t.title} {t.body}") for t in self.tickets]
+        elsewhere += [(f"a comment on {t.title!r}", c.text) for t in self.tickets for c in t.comments]
+        elsewhere += [(f"the {s.provider} seed", s.body) for s in self.provider_seeds]
         elsewhere += [(f"seeded document {d.title!r}", f"{d.title} {d.text}") for d in self.documents]
         elsewhere += [
             (f"{h.person}'s comment on {h.ticket!r}", h.action.text)

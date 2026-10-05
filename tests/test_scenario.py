@@ -149,3 +149,35 @@ def test_a_happening_that_reassigns_to_nobody_real_is_rejected() -> None:
     }
     with pytest.raises(ValidationError, match="no such person: mira"):
         Scenario.model_validate({**BASE, "tickets": [ticket], "happenings": [happening]})
+
+
+LEGAL = {"key": "legal", "provider": "youtrack", "project": "Launch", "title": "Legal review"}
+
+
+def test_two_tickets_with_one_key_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="two seeded tickets share a key"):
+        Scenario.model_validate({**BASE, "tickets": [LEGAL, LEGAL]})
+
+
+def test_a_tell_a_seeded_comment_or_a_commenting_person_holds_is_rejected() -> None:
+    rosa = {
+        "key": "rosa",
+        "name": "Rosa",
+        "email": "rosa@example.com",
+        "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": "Lakeside Hall it is."}]},
+    }
+    people = [{"key": "owner", "name": "Owner", "email": "owner@example.com"}, rosa]
+    relayed = {"kind": "relayed", "said_by": "rosa", "to": "owner", "tell": "lakeside hall"}
+    commented = {**LEGAL, "comments": [{"by": "owner", "text": "Maybe Lakeside Hall?"}]}
+    with pytest.raises(ValidationError, match="a comment on 'Legal review'"):
+        Scenario.model_validate({**BASE, "people": people, "tickets": [commented], "expect": [relayed]})
+    happening = {
+        "ticket": "Legal review",
+        "person": "owner",
+        "after": "P1D",
+        "action": {"kind": "comments", "text": "Lakeside hall"},
+    }
+    with pytest.raises(ValidationError, match="owner's comment on 'Legal review'"):
+        Scenario.model_validate(
+            {**BASE, "people": people, "tickets": [LEGAL], "happenings": [happening], "expect": [relayed]}
+        )

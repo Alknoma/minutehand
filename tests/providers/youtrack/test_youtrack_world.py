@@ -19,7 +19,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
-from minutehand.ports.provider import EditsTickets, HoldsTickets, Provider
+from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
 from tests.providers.youtrack.youtrack_instance import (
     FIELD_OPS,
     IRIS,
@@ -34,6 +34,7 @@ from tests.providers.youtrack.youtrack_instance import (
     entities,
     entity,
     millis_now,
+    named,
     readable_ids,
 )
 
@@ -90,7 +91,9 @@ def test_seeding_writes_people_the_agent_projects_and_issues_as_the_scenario(ins
         (LAUNCH, "LAUNCH", "Launch"),
         (FIELD_OPS, "FIELDOPS", "Field Ops"),
     ]
-    assert all([s.name for s in p.states] == ["Open", "In Progress", "Fixed", "Won't fix"] for p in projects)
+    for project in projects:
+        states = youtrack.state_field(project)
+        assert states is not None and [s.name for s in states.values] == ["Open", "In Progress", "Fixed", "Won't fix"]
     assert all(p.team == ["1-0", IRIS, TOMAS, NOOR] for p in projects)
 
     tickets = [e for e in events if e.entity.kind is EntityKind.TICKET]
@@ -161,8 +164,7 @@ async def test_transition_moves_the_issue_as_its_assignee(
     assert read["updater"] == {"login": "tomas", "$type": "User"}
     found = entities(await client.get("/api/issues", params={"query": "#Resolved", "fields": "idReadable"}))
     assert "LAUNCH-1" in readable_ids(found)
-    custom = read["customFields"]
-    assert isinstance(custom, list) and custom[0] == {
+    assert named(read["customFields"], "State") == {
         "name": "State",
         "value": {"name": value, "$type": "StateBundleElement"},
         "$type": "StateIssueCustomField",
@@ -237,12 +239,14 @@ def test_edit_to_an_email_nobody_has_is_refused(instance: Instance) -> None:
         )
 
 
-def test_the_provider_meets_its_three_ports() -> None:
+def test_the_provider_meets_its_four_ports() -> None:
     provider = build()
     held: Provider = provider
     holds: HoldsTickets = provider
     edits: EditsTickets = provider
-    assert held.manifest is MANIFEST and holds is edits
+    acts: ActsOnTickets = provider
+    assert held.manifest is MANIFEST and holds is edits is acts
+    assert isinstance(provider, ActsOnTickets)
 
 
 def test_the_manifest_claims_youtrack_and_imports_nothing_else_of_the_provider() -> None:
