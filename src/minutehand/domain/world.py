@@ -77,8 +77,11 @@ class DocumentSnapshot(Model):
 class RecordSnapshot(Model):
     """Any resource of a provider nobody has mapped to a ticket, message or document.
 
-    A generated provider emits these. Checks that only need the written text
-    (near-miss names, duplicates, writes after the deadline) still run on them.
+    A generated provider emits these. Two checks read them: `near_miss_name`, which
+    needs only the written text, and `acted_after_deadline`, which needs only that a
+    write happened. `duplicate_ticket` and `repeated_message` do not: a duplicate is
+    a title filed twice in one project, and a repeat is two messages to one channel,
+    and a record carries neither a title, a project nor a channel.
     """
 
     kind: Literal["record"] = "record"

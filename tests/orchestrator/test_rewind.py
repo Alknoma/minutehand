@@ -12,7 +12,7 @@ from minutehand.application.checkpoint import checkpoint_seqs
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.rewind import changed_scenario, fork_run
-from minutehand.domain.agent import AgentUnderTest
+from minutehand.domain.agent import AgentUnderTest, Booked
 from minutehand.domain.experiment import DeadlineShift, Fork, PersonChange, PromptPatch, TicketEdit
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Scenario, TicketState
@@ -135,6 +135,26 @@ async def test_a_prompt_patch_with_nothing_on_the_wire_is_refused(rig: Rig) -> N
             agent,
             Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0], overrides=[PromptPatch(text="Be brief.")]),
         )
+
+
+async def test_a_fork_with_a_booking_pending_is_refused(rig: Rig) -> None:
+    # Until this was refused, the fork shared the parent's schedule record and, on the AWS provider, raised
+    # LookupError when it fired: the schedule's queue was in the parent's account, in the parent process's memory.
+    agent = rig.agent("book", extra=[Booked()], hooks=True)
+    scn = scenario(ticket_fates=[])
+    parent, store, _ = await rig.run(scn, agent)
+    after_start = checkpoint_seqs(store)[1]
+    with pytest.raises(RunRefused, match=r"1 booked wake\(s\) pending at seq \d+ \(testsched kept\)"):
+        await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=after_start))
+
+
+async def test_a_fork_after_the_booking_fired_is_not_refused(rig: Rig) -> None:
+    agent = rig.agent("book", extra=[Booked()], hooks=True)
+    scn = scenario(ticket_fates=[])
+    parent, store, _ = await rig.run(scn, agent)
+    last = checkpoint_seqs(store)[-1]
+    [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=last))
+    assert child.forked_at == last
 
 
 def test_a_deadline_shift_moves_the_childs_deadline() -> None:

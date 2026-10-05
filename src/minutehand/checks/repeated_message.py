@@ -1,7 +1,8 @@
 """The same person asked about the same thing twice within a short window.
 
 Two messages count as the same ask when they go to the same channel inside the
-window, one was sent while the other was still unanswered, and they share the
+window, measured on the simulated clock (a simulated fortnight plays in seconds of
+real time, so the machine's clock would put every message of a run inside it), one was sent while the other was still unanswered, and they share the
 words that make an ask particular. An agent writes much of every message from the
 same template ("could you approve, decline, or reply to …", the same footer link),
 so each three-word run is weighted by how rare it is among everything the agent
@@ -64,11 +65,11 @@ class RepeatedMessage:
                 continue
             earlier = last_by_channel.get(channel)
             last_by_channel[channel] = index
-            if earlier is None or event.wall_time - sent[earlier].wall_time > WINDOW:
+            if earlier is None or event.sim_time - sent[earlier].sim_time > WINDOW:
                 continue
             if _similarity(runs[sent[earlier].seq], runs[event.seq], weight) < SAME_ASK:
                 continue
-            gap = int((event.wall_time - sent[earlier].wall_time).total_seconds())
+            gap = int((event.sim_time - sent[earlier].sim_time).total_seconds())
             findings.append(
                 Finding(
                     check=self.id,

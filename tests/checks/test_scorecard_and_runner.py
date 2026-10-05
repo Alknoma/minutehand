@@ -114,3 +114,13 @@ def test_stability_counts_the_samples_that_passed() -> None:
 def test_stability_of_no_samples_is_refused() -> None:
     with pytest.raises(ValueError, match="at least one sample"):
         stability([])
+
+
+def test_the_scenario_deadline_is_not_counted_as_a_wait() -> None:
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([SOFIA], 2, text="Thanks.")
+    world = view(scenario(SOFIA, deadline_after=timedelta(days=14)), log, [reply(SOFIA, ask, 1.5)])
+    assert len(world.obligations) == 2  # the ask and the deadline, which the ledger keeps for its own checks
+    card = evaluate(world).effectiveness
+    assert (card.waits_opened, card.waits_open_at_end) == (1, 0)

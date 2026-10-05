@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from minutehand.checks.late_follow_up import LateFollowUp
 from minutehand.checks.no_follow_up import NoFollowUp
+from minutehand.checks.runner import evaluate
 from minutehand.checks.slow_to_react import SlowToReact
 from minutehand.domain.checks import FindingKind
-from minutehand.domain.scenario import Silent
+from minutehand.domain.scenario import Absence, Silent
 from tests.checks.world import Log, at, person, reply, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
@@ -96,3 +99,62 @@ def test_a_wait_naming_nobody_cannot_be_timed_and_says_so() -> None:
     report = SlowToReact().run(TIMELINE)
     assert report.findings == []
     assert report.notes == ["7 settled obligation(s) name no person or entity; no reaction can be timed"]
+
+
+def _reminded_once(remind_at: float, ends_at: float) -> Log:
+    """The diligent example on a silent person: ask, one reminder, then nothing until the run ends."""
+    log = Log()
+    log.message([DANIA], 0)
+    log.message([DANIA], remind_at, text="Following up: could you review the contract?")
+    log.message([OWNER], ends_at, text="status")
+    return log
+
+
+def test_an_early_reminder_counts_and_the_wait_left_after_it_says_what_happened() -> None:
+    # Until a follow-up before the expected date counted: a reminder 48 hours into a 66-hour wait was
+    # ignored, the scorecard said "made: 0" and the finding said the agent never came back.
+    log = _reminded_once(48, 336)
+    [finding] = NoFollowUp().run(view(scenario(OWNER, DANIA), log)).findings
+    assert finding.message == (
+        "wait on dania: the agent followed up once, the last 2 days after the ask, then nothing; "
+        "due again 4 days 18 hours after the ask, it sat 9 days 6 hours until the run ended"
+    )
+    assert finding.at == at(114) and finding.evidence == [1, 2]
+    card = evaluate(view(scenario(OWNER, DANIA), log)).effectiveness
+    assert (card.waits_opened, card.waits_open_at_end) == (1, 1)
+    assert (card.follow_ups_due, card.follow_ups_made, card.follow_ups_late) == (1, 1, 1)
+    assert card.time_lost == timedelta(hours=336 - 114)
+
+
+def test_a_follow_up_gives_the_person_their_whole_delay_again() -> None:
+    log = Log()
+    log.message([DANIA], 0)
+    log.message([DANIA], 48, text="Following up: could you review the contract?")
+    log.message([DANIA], 114.5, text="Following up again on the contract.")
+    log.message([OWNER], 170, text="status")
+    world = view(scenario(OWNER, DANIA), log)
+    assert NoFollowUp().run(world).findings == [] and LateFollowUp().run(world).findings == []
+    card = evaluate(world).effectiveness
+    assert (card.follow_ups_due, card.follow_ups_made, card.follow_ups_late) == (1, 2, 0)
+
+
+def test_a_read_of_the_channel_is_not_a_follow_up() -> None:
+    log = Log()
+    ask = log.message([DANIA], 0)
+    log.read(ask.entity, 70)
+    log.message([OWNER], 100, text="status")
+    [finding] = NoFollowUp().run(view(scenario(OWNER, DANIA), log)).findings
+    assert "never came back to it" in finding.message
+
+
+def test_a_thank_you_to_someone_who_answered_is_not_an_open_wait_or_a_slow_reaction() -> None:
+    away_after = person("sofia", absences=[Absence(starts_after=timedelta(hours=1.2), lasts=timedelta(days=9))])
+    log = Log()
+    ask = log.message([away_after], 0)
+    log.message([away_after], 1.5, text="Thank you!")
+    log.message([OWNER], 30, text="The contract is signed.")
+    world = view(scenario(OWNER, away_after), log, [reply(away_after, ask, 1)])
+    result = evaluate(world)
+    assert [f.check for f in result.findings] == []
+    assert (result.effectiveness.waits_opened, result.effectiveness.waits_open_at_end) == (1, 0)
+    assert (result.effectiveness.reactions_due, result.effectiveness.reactions_slow) == (1, 0)

@@ -7,7 +7,7 @@ every branch answers False in silence. Here that means a failed run exits 0.
 Two detections, because a vocabulary alone cannot see the typo:
 
 1. VALUE — the literal is the value of a StrEnum in the tree (`== "fail"` while
-   `FindingKind.FAIL = "fail"` exists). Ported from alknoma-cloud: the vocabulary
+   `FindingKind.FAIL = "fail"` exists). Ported from the parent repository: the vocabulary
    is derived from every `class X(StrEnum)` / `class X(str, Enum)` under the root,
    and the finding names the member to use. A file that defines an enum may
    compare against its own values (validators, `_missing_`). Narrowed from the

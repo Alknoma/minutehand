@@ -13,7 +13,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from minutehand.application.checkpoint import Checkpoint, PendingReply, checkpoint_seqs, read_checkpoint
+from minutehand.application.checkpoint import (
+    Checkpoint,
+    PendingBooking,
+    PendingReply,
+    checkpoint_seqs,
+    read_checkpoint,
+)
 from minutehand.application.orchestrator import Mounts, Orchestrator, Reach, Scorer, Services
 from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
@@ -108,6 +114,7 @@ async def fork_run(
         child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         checkpoint = read_checkpoint(child)
         assert checkpoint is not None
+        _refuse_pending_bookings(checkpoint, parent.run_id, fork.at_seq)
         clock.jump(checkpoint.now)
         while clock.wake() < checkpoint.wake:
             clock.begin_wake()
@@ -155,6 +162,20 @@ async def fork_run(
             ).resume(checkpoint)
         )
     return records
+
+
+def _refuse_pending_bookings(checkpoint: Checkpoint, parent: str, at_seq: int) -> None:
+    """A booking pending at the fork could not be delivered by the child: a scheduler keeps the schedule's target
+    (AWS: the SQS queue, in moto's memory of the process that played the parent, under the parent's account) out
+    of the run's log, so the child has nowhere to deliver it. Refused before the agent is restored or woken."""
+    pending = [p for p in checkpoint.pending if isinstance(p, PendingBooking)]
+    if pending:
+        named = ", ".join(f"{p.provider} {p.ref}" for p in pending)
+        raise RunRefused(
+            f"run {parent} has {len(pending)} booked wake(s) pending at seq {at_seq} ({named}); a scheduler keeps "
+            "what a booking delivers to outside the run's log, so a fork could not deliver it. Fork from a "
+            "checkpoint with no booking pending"
+        )
 
 
 async def _ask_again(
