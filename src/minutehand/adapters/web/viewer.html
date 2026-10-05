@@ -96,7 +96,29 @@ ol.outbound details{border:1px solid var(--grid);border-radius:8px;padding:8px 1
 ol.outbound summary{cursor:pointer;overflow-wrap:anywhere}
 ol.outbound .replayed{font-weight:700;color:var(--fail)}
 ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
-@media (max-width:560px){h1{font-size:20px}}
+.fork{background:var(--surface);border:1px solid var(--grid);border-left:3px solid var(--agent);border-radius:8px;padding:14px 16px;gap:14px}
+.fork h3{margin:0;font-size:14px;font-weight:600}
+.fork dl{margin:0;display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px 16px;font-size:14px}
+.fork dt{color:var(--muted)}
+.fork dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.fork dd ul{margin:0;padding-left:18px}
+.fork a{color:var(--agent)}
+.fork table{border-collapse:collapse;font-size:14px;width:100%}
+.fork th{text-align:left;font-weight:500;color:var(--muted);padding:4px 10px 4px 0;border-bottom:1px solid var(--grid)}
+.fork td{padding:4px 10px 4px 0;border-bottom:1px solid var(--grid);vertical-align:top;overflow-wrap:anywhere}
+.fork .moved{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:14px}
+.fork ul.found{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.fork ul.found li{display:flex;gap:8px;align-items:baseline;min-width:0}
+.fork ul.found li span:last-child{min-width:0;overflow-wrap:anywhere;color:var(--ink-2)}
+.fork .part{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;font-size:14px}
+.fork .part b{font-weight:500;color:var(--muted)}
+.chip.ok{background:var(--ok-wash);color:var(--ok)}
+.chip.gained{background:var(--fail-wash);color:var(--fail)}
+.chip.lost{background:var(--ok-wash);color:var(--ok)}
+.chip.changed{background:var(--wash);color:var(--ink-2)}
+.toggle{font-size:13px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+.m.shared{opacity:.45}
+@media (max-width:560px){h1{font-size:20px}.fork dl,.fork .part{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -142,7 +164,8 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   var KIND_LABEL = { fail: "Fail", review: "To review", informational: "Note" };
   var KIND_ORDER = { fail: 0, review: 1, informational: 2 };
   var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  var state = { list: [], selected: null, view: null, pinned: null, timer: null };
+  var state = { list: [], selected: null, view: null, pinned: null, timer: null, compare: true };
+  var OPEN_ALL = /(^|[?&])open(=|&|$)/.test(location.search.slice(1));
 
   function apiPath(path, run) { return path.replace("{run}", encodeURIComponent(run)); }
   function get(path, run) {
@@ -172,7 +195,13 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     if (secs < 90) { return Math.round(secs) + " seconds"; }
     if (secs < 5400) { return Math.round(secs / 60) + " minutes"; }
     if (secs < 172800) { var h = Math.round(secs / 3600); return h + (h === 1 ? " hour" : " hours"); }
-    return (secs / 86400).toFixed(1) + " days";
+    return tenths(secs / 86400) + " days";
+  }
+  // one decimal, a tie to the even digit, as the server's text rounds it, so the scorecard and a fork's
+  // comparison of it never disagree on the same page
+  function tenths(v) {
+    var t = v * 10, f = Math.floor(t), n = t - f === 0.5 ? (f % 2 === 0 ? f : f + 1) : Math.round(t);
+    return (n / 10).toFixed(1);
   }
   function gap(secs) {
     var d = Math.floor(secs / 86400), h = Math.floor((secs % 86400) / 3600), m = Math.round((secs % 3600) / 60);
@@ -203,10 +232,11 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   function runLabel(row) {
     var roots = state.list.filter(function (r) { return r.parent_run === null && r.scenario === row.scenario; });
     var name = words(row.scenario);
-    if (row.parent_run !== null) {
-      return row.forked_after_wake !== null ? "Rerun from after wake " + row.forked_after_wake : "Rerun";
-    }
+    if (row.parent_run !== null) { return row.changed || "Rerun"; }
     return roots.length > 1 ? name + ", run " + (roots.indexOf(row) + 1) : name;
+  }
+  function splitLabel(row) {
+    return row.forked_after_wake === null ? "" : (row.forked_after_wake === 0 ? "from setup · " : "after wake " + row.forked_after_wake + " · ");
   }
   function runStatus(row) {
     if (!row.finished) { return ["run", "Running…"]; }
@@ -224,7 +254,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
         var s = runStatus(r);
         var kids = byParent[r.run_id] ? "<ul>" + items(r.run_id) + "</ul>" : "";
         return '<li><button type="button" data-run="' + esc(r.run_id) + '" aria-current="' + (r.run_id === state.selected) + '">' +
-          "<b>" + esc(runLabel(r)) + "</b><small><span class=\"dot " + s[0] + "\"></span>" + esc(s[1]) + "</small></button>" + kids + "</li>";
+          "<b>" + esc(runLabel(r)) + "</b><small><span class=\"dot " + s[0] + "\"></span>" + esc(splitLabel(r) + s[1]) + "</small></button>" + kids + "</li>";
       }).join("");
     }
     var html = items("");
@@ -258,10 +288,19 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
         findings: parts[4], scorecard: parts[5].scorecard, modelCalls: parts[6],
         outbound: parts[7].calls.filter(function (c) { return c.exchange.captured !== null || c.provider === null; })
       };
-      drawRun(fresh);
-      if (!state.view.run.finished) {
-        state.timer = setTimeout(function () { loadRun(run, false); }, RUNNING_REFRESH);
-      }
+      var view = state.view, fork = view.run.fork;
+      var parent = fork
+        ? Promise.all([get(API.wakes, fork.parent_run), get(API.events, fork.parent_run)]).then(function (more) {
+          view.parent = { wakes: more[0].wakes, events: more[1].events };
+        })
+        : Promise.resolve();
+      return parent.then(function () {
+        if (state.selected !== run) { return; }
+        drawRun(fresh);
+        if (!view.run.finished) {
+          state.timer = setTimeout(function () { loadRun(run, false); }, RUNNING_REFRESH);
+        }
+      });
     }).catch(function (e) {
       document.getElementById("main").innerHTML = '<div class="empty">Could not read this run: ' + esc(e.message) + "</div>";
     });
@@ -312,11 +351,12 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     var v = verdict(view);
     var parent = state.list.filter(function (r) { return r.run_id === run.run_id; })[0];
     var eyebrow = words(sc.name) + " · started " + when(sc.starts_at) + " simulated" +
-      (parent && parent.parent_run !== null ? " · " + esc(runLabel(parent)).toLowerCase() : "");
+      (parent && parent.parent_run !== null ? " · a fork" : "");
     var findings = view.findings.findings.slice().sort(function (a, b) {
       return KIND_ORDER[a.finding.kind] - KIND_ORDER[b.finding.kind] || a.number - b.number;
     });
     var html = '<header class="head"><div class="eyebrow">' + esc(eyebrow) + "</div><h1>" + esc(sc.goal) + "</h1></header>";
+    if (run.fork) { html += forkPanel(run.fork); }
     html += '<div class="verdict"><div><span>Verdict</span><strong class="' + v[0] + '">' + esc(v[1]) + "</strong><span>" + esc(v[2]) + "</span></div>";
     html += '<div class="card"><span>Scorecard</span>' + (view.scorecard
       ? "<ul>" + scoreLines(view.scorecard).map(function (l) { return "<li>" + esc(l) + "</li>"; }).join("") + "</ul>"
@@ -335,7 +375,9 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     }
     html += "</section>";
     html += '<section><h2>The run on the simulated clock</h2><p class="sub">Every mark sits at its simulated time. ' +
-      "Dashed arcs are the clock jumping ahead to the next moment something was due.</p>" +
+      "Dashed arcs are the clock jumping ahead to the next moment something was due." +
+      (run.fork ? " The shaded part, left of the split, is the parent's record, which this fork shares; faded marks are the parent's." : "") + "</p>" +
+      (run.fork ? '<label class="toggle"><input type="checkbox" id="compare"' + (state.compare ? " checked" : "") + "> Show what the parent did after the split, in a lane of its own</label>" : "") +
       '<div class="chart" id="chart"><div class="scroll" id="scroll"><svg id="timeline" role="img" aria-label="Timeline of the agent\'s wakes, what it waited on, and changes in the world"></svg></div>' +
       '<div class="legend" id="legend"></div><div id="tip" hidden></div></div></section>';
     if (view.outbound.length) {
@@ -347,8 +389,60 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     document.getElementById("main").innerHTML = html;
     timeline(view);
     document.getElementById("scroll").scrollLeft = scrollLeft;
+    var compare = document.getElementById("compare");
+    if (compare) { compare.addEventListener("change", function () { state.compare = compare.checked; drawRun(false); }); }
+    if (OPEN_ALL) { document.querySelectorAll("main details").forEach(function (d) { d.open = true; }); }
     wireFindings();
     if (state.pinned !== null) { highlight(state.pinned); }
+  }
+
+  var VERDICT_LABEL = { passed: ["ok", "Passed"], failed: ["fail", "Failed"], unfinished: ["review", "Not finished"] };
+
+  function forkPanel(f) {
+    var parentRow = state.list.filter(function (r) { return r.run_id === f.parent_run; })[0];
+    var parentName = parentRow ? runLabel(parentRow) : f.parent_run;
+    var where = f.after_wake === 0 ? "at setup, before the first wake" : "at the end of wake " + f.after_wake;
+    var html = '<section class="fork" aria-label="What this fork is"><h2>What this fork is</h2><dl>';
+    html += "<dt>Split from</dt><dd><a href=\"#" + esc(encodeURIComponent(f.parent_run)) + "\">" + esc(parentName) + "</a> " +
+      esc(where) + ", " + esc(when(f.at)) + " simulated (checkpoint seq " + f.at_seq + ")</dd>";
+    html += "<dt>What it changed</dt><dd>" + (f.changes.length
+      ? "<ul>" + f.changes.map(function (c) { return "<li>" + esc(c) + "</li>"; }).join("") + "</ul>"
+      : "Nothing: a rerun from the same moment, to see how much the agent varies.") + "</dd>";
+    html += "<dt>Agent restored</dt><dd>" + (f.restore
+      ? '<span class="chip ' + (f.restore.verified ? "ok" : "review") + '">' + (f.restore.verified ? "Verified" : "Not verified") + "</span> " +
+        esc(f.restore.words.replace(/^(not )?verified: /, ""))
+      : "No restore was recorded with this fork.") + "</dd></dl>";
+    var o = f.outcome;
+    html += "<h3>Against its parent, from the split on</h3>";
+    if (!o) { return html + '<p class="note">Compared once both runs have finished.</p></section>'; }
+    var a = VERDICT_LABEL[o.parent_verdict.kind], b = VERDICT_LABEL[o.fork_verdict.kind];
+    html += '<div class="moved"><span>Verdict:</span><span class="chip ' + a[0] + '">' + a[1] + "</span>" +
+      (o.verdict_changed ? '<span aria-hidden="true">→</span><span class="chip ' + b[0] + '">' + b[1] + "</span>" : "<span>in both</span>") + "</div>";
+    if (o.scorecard.length) {
+      html += "<table><thead><tr><th>Scorecard</th><th>Parent</th><th>This fork</th></tr></thead><tbody>" +
+        o.scorecard.map(function (d) { return "<tr><td>" + esc(d.label) + "</td><td>" + esc(d.parent) + "</td><td>" + esc(d.fork) + "</td></tr>"; }).join("") +
+        "</tbody></table>";
+    } else {
+      html += '<p class="note">Every line of the scorecard is the same.</p>';
+    }
+    var found = [];
+    o.findings_gained.forEach(function (x) { found.push(["gained", "Gained", words(x.check) + ": " + x.message]); });
+    o.findings_lost.forEach(function (x) { found.push(["lost", "Gone", words(x.check) + ": " + x.message]); });
+    o.findings_changed.forEach(function (x) { found.push(["changed", "Changed", words(x.fork.check) + ": " + x.parent.message + " → " + x.fork.message]); });
+    html += found.length
+      ? '<ul class="found">' + found.map(function (x) { return '<li><span class="chip ' + x[0] + '">' + x[1] + "</span><span>" + esc(x[2]) + "</span></li>"; }).join("") + "</ul>"
+      : '<p class="note">The same findings in both.</p>';
+    var split = o.first_divergence;
+    if (!split) {
+      html += '<p class="note">From the split on, both records made the same changes in the world at the same moments.</p>';
+    } else {
+      html += '<div class="part"><b>First difference</b><span>' + (split.shared
+        ? "after " + plural(split.shared, "change", "changes") + " in the world both made alike"
+        : "at the very first change in the world after the split") + "</span>" +
+        "<b>The parent</b><span>" + esc(split.parent ? split.parent.words : "made no further change") + "</span>" +
+        "<b>This fork</b><span>" + esc(split.fork ? split.fork.words : "made no further change") + "</span></div>";
+    }
+    return html + "</section>";
   }
 
   function outboundHow(call) {
@@ -395,17 +489,24 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
 
   /* ---------- the agent's side: the model call behind the evidence ---------- */
 
+  // a part that is itself JSON (a structured prompt, a JSON answer) is laid out on lines, so it can be read
+  function pretty(content) {
+    var s = String(content), t = s.trim();
+    if (t.charAt(0) !== "{" && t.charAt(0) !== "[") { return s; }
+    try { return JSON.stringify(JSON.parse(t), null, 2); } catch (e) { return s; }
+  }
   function messages(text) {
     var parsed;
     try { parsed = JSON.parse(text); } catch (e) { return text; }
-    if (!Array.isArray(parsed)) { return text; }
+    if (!Array.isArray(parsed)) { return pretty(text); }
     return parsed.map(function (m) {
+      if (m.type === "text" && m.content !== undefined) { return pretty(m.content); }
       var parts = (m.parts || []).map(function (part) {
-        if (part.type === "text") { return part.content; }
+        if (part.type === "text") { return pretty(part.content); }
         if (part.type === "tool_call") { return "[calls " + part.name + "]"; }
         return "[" + part.type + "]";
       });
-      return (m.role ? m.role + ": " : "") + parts.join(" ");
+      return (m.role ? m.role + ":\n" : "") + parts.join("\n");
     }).join("\n\n");
   }
 
@@ -428,6 +529,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       if (t.joined_by === "wake") { about.push("the nearest model call in the same wake, not joined by a trace"); }
       return '<div class="asked"><b>What the model was asked and answered</b>' +
         (about.length ? "<span>" + esc(about.join(" · ")) + "</span>" : "") +
+        (c.system_instructions ? "<details><summary>System prompt</summary><pre>" + esc(messages(c.system_instructions)) + "</pre></details>" : "") +
         (c.input_messages ? "<details><summary>Asked</summary><pre>" + esc(messages(c.input_messages)) + "</pre></details>" : "<span>The span does not carry what it was asked.</span>") +
         (c.output_messages ? "<details><summary>Answered</summary><pre>" + esc(messages(c.output_messages)) + "</pre></details>" : "<span>The span does not carry what it answered.</span>") +
         "</div>";
@@ -473,8 +575,18 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   function timeline(view) {
     var svg = document.getElementById("timeline"), scroll = document.getElementById("scroll");
     var who = people(view.run.scenario);
-    var changes = view.events.filter(function (e) { return e.operation !== "read" && e.operation !== "search"; });
+    function changed(e) { return e.operation !== "read" && e.operation !== "search"; }
+    var changes = view.events.filter(changed);
+    var fork = view.run.fork, splitT = fork ? ms(fork.at) : null;
+    var theirs = fork && state.compare && view.parent ? {
+      wakes: view.parent.wakes.filter(function (w) { return w.index > fork.after_wake; }),
+      events: view.parent.events.filter(function (e) { return e.seq > fork.at_seq && changed(e); })
+    } : null;
     var t0 = ms(view.run.scenario.starts_at), reached = ms(view.run.reached), t1 = reached;
+    if (theirs) {
+      theirs.wakes.forEach(function (w) { t1 = Math.max(t1, ms(w.sim_time)); });
+      theirs.events.forEach(function (e) { t1 = Math.max(t1, ms(e.sim_time)); });
+    }
     view.wakes.forEach(function (w) { t1 = Math.max(t1, ms(w.sim_time)); });
     changes.forEach(function (e) { t1 = Math.max(t1, ms(e.sim_time)); });
     view.obligations.forEach(function (w) { if (w.obligation.expected_by) { t1 = Math.max(t1, ms(w.obligation.expected_by)); } });
@@ -487,11 +599,17 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       return changes.some(function (e) { return rowOf(e) === r[0]; });
     });
     if (!present.length) { present = [rows[0]]; }
-    var L1 = 40, L2 = 140, OB = 28, L3 = L2 + 22 + Math.max(1, view.obligations.length) * OB + 18, ROW = 48;
+    var L1 = 70, L2 = 170, OB = 28, L3 = L2 + 22 + Math.max(1, view.obligations.length) * OB + 18, ROW = 48;
     var L4 = L3 + 24 + present.length * ROW + 10;
-    var H = view.outbound.length ? L4 + 24 + ROW : L4;
+    var L5 = view.outbound.length ? L4 + 24 + ROW : L4;
+    var H = theirs ? L5 + 24 + 2 * ROW + 10 : L5;
     svg.setAttribute("width", W); svg.setAttribute("height", H);
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+    // a fork: the parent's record it shares, up to the split, shaded behind every lane
+    if (fork && x(splitT) > X0) {
+      el("rect", { x: X0, y: 24, width: x(splitT) - X0, height: H - 30, fill: "var(--wash)" }, svg);
+    }
 
     // the axis
     var stepH = [1, 3, 6, 12, 24, 48, 168].filter(function (h) { return (t1 - t0) / (h * 3600e3) <= W / 90; })[0] || 336;
@@ -502,17 +620,29 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       el("text", { x: gx + 3, y: 18 }, svg, stepH >= 24 ? when(new Date(t).toISOString()).replace(/ 00:00$/, "") : when(new Date(t).toISOString()));
     }
     el("line", { x1: X0, y1: 24, x2: X1, y2: 24, stroke: "var(--axis)" }, svg);
+    // the labels of the vertical lines, each in the first of three rows where it overlaps no other
+    var flags = [];
+    function flag(text, at, anchor) {
+      var w = text.length * 6.4 + 6, a = anchor === "end" ? at - w : at, b = anchor === "end" ? at : at + w, row = 0;
+      while (row < 2 && flags.some(function (f) { return f[0] === row && a < f[2] && f[1] < b; })) { row++; }
+      flags.push([row, a, b]);
+      el("text", { x: at, y: 36 + row * 13, "text-anchor": anchor, class: "lbl" }, svg, text);
+    }
+    if (fork) {
+      el("line", { x1: x(splitT), y1: 24, x2: x(splitT), y2: H - 6, stroke: "var(--agent)", "stroke-width": 1.5, "stroke-dasharray": "6 3" }, svg);
+      var late = x(splitT) > X1 - 260;
+      flag("Split from the parent after wake " + fork.after_wake, x(splitT) + (late ? -4 : 4), late ? "end" : "start");
+    }
     if (view.run.scenario.deadline_after) {
       var dl = t0 + seconds(view.run.scenario.deadline_after) * 1000;
       if (dl <= t1) {
         el("line", { x1: x(dl), y1: 24, x2: x(dl), y2: H - 6, stroke: "var(--fail)", "stroke-dasharray": "5 3" }, svg);
-        el("text", { x: x(dl) - 4, y: 36, "text-anchor": "end", class: "lbl" }, svg, "Deadline");
+        flag("Deadline", x(dl) - 4, "end");
       }
     }
     el("line", { x1: x(reached), y1: 24, x2: x(reached), y2: H - 6, stroke: "var(--ink)" }, svg);
     var early = x(reached) < X0 + 90;
-    el("text", { x: x(reached) + (early ? 4 : -4), y: 50, class: "lbl", "text-anchor": early ? "start" : "end" }, svg,
-      view.run.finished ? "Run ended" : "Now");
+    flag(view.run.finished ? "Run ended" : "Now", x(reached) + (early ? 4 : -4), early ? "start" : "end");
 
     var marks = [];
     function mark(g, title, body, whenText, seqs, wake) {
@@ -540,8 +670,10 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       el("circle", { class: "ring", cx: wx, cy: WY, r: 6, fill: idle ? "var(--surface)" : "var(--agent)", stroke: "var(--agent)", "stroke-width": 1.6 }, g);
       el("text", { x: wx, y: WY + 22, "text-anchor": "middle" }, g, String(w.index));
       var jumped = j > 0 ? " The clock jumped " + gap((ms(w.sim_time) - ms(view.wakes[j - 1].sim_time)) / 1000).slice(1) + " to get here." : "";
-      mark(g, "Wake " + w.index, (idle ? "Changed nothing in the world." : "Changed " + plural(w.world_changes, "thing", "things") + " in the world.") + jumped,
-        when(w.sim_time), [], w.index);
+      var sharedWake = fork && w.index <= fork.after_wake;
+      mark(g, "Wake " + w.index, (idle ? "Changed nothing in the world." : "Changed " + plural(w.world_changes, "thing", "things") + " in the world.") + jumped +
+        (sharedWake ? " The parent's wake, which this fork shares." : ""), when(w.sim_time), [], w.index);
+      if (sharedWake) { g.setAttribute("class", "m shared"); }
     });
     if (!view.wakes.length) { el("text", { x: X0, y: WY + 4, class: "lbl" }, svg, "No wake has finished yet."); }
 
@@ -601,8 +733,10 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       }
       var call = ev.exchange ? " " + ev.exchange.method + " " + ev.exchange.host + ev.exchange.path.split("?")[0] + ", answered " + ev.exchange.status + "." : "";
       var by = ev.actor === "agent" ? "By the agent" : ev.actor === "person" ? "By a person" : "By the scenario";
-      mark(g, d[0], (d[1] ? "“" + d[1].slice(0, 220) + "”" : "") + " " + by + (ev.wake ? ", in wake " + ev.wake : ", at setup") + "." + call,
-        when(ev.sim_time), [ev.seq], null);
+      var sharedEvent = fork && ev.seq <= fork.at_seq;
+      mark(g, d[0], (d[1] ? "“" + d[1].slice(0, 220) + "”" : "") + " " + by + (ev.wake ? ", in wake " + ev.wake : ", at setup") + "." + call +
+        (sharedEvent ? " In the parent's record, which this fork shares." : ""), when(ev.sim_time), [ev.seq], null);
+      if (sharedEvent) { g.setAttribute("class", "m shared"); }
     });
 
     // lane 4: calls to hosts no fake answers, each at its simulated time; a replayed one hollow, a refused one red
@@ -624,7 +758,37 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       });
     }
 
-    legend();
+    // lane 5: what the parent did after the split, to compare with this fork's own lanes above
+    if (theirs) {
+      el("line", { x1: X0, y1: L5 + 4, x2: X1, y2: L5 + 4, stroke: "var(--axis)" }, svg);
+      el("text", { x: X0, y: L5 + 20, class: "lane" }, svg, "The parent, after the split");
+      var py = L5 + 24, rowW = py + 30, rowC = py + ROW + 30;
+      el("text", { x: X0, y: py + 10, class: "lbl" }, svg, "Its wakes");
+      el("text", { x: X0, y: py + ROW + 10, class: "lbl" }, svg, "Its changes in the world");
+      el("line", { x1: X0, y1: rowC + 6, x2: X1, y2: rowC + 6, stroke: "var(--grid)" }, svg);
+      if (!theirs.wakes.length) { el("text", { x: x(splitT) + 8, y: rowW + 4, class: "lbl" }, svg, "No further wake."); }
+      theirs.wakes.forEach(function (w) {
+        var g = el("g", {}, svg), wx = x(ms(w.sim_time));
+        el("circle", { cx: wx, cy: rowW, r: 12, fill: "transparent" }, g);
+        el("circle", { class: "ring", cx: wx, cy: rowW, r: 6, fill: "var(--surface)", stroke: "var(--muted)", "stroke-width": 1.6, "stroke-dasharray": "2 2" }, g);
+        el("text", { x: wx, y: rowW + 22, "text-anchor": "middle" }, g, String(w.index));
+        mark(g, "The parent's wake " + w.index, "Changed " + plural(w.world_changes, "thing", "things") + " in the parent's world.", when(w.sim_time), [], null);
+      });
+      if (!theirs.events.length) { el("text", { x: x(splitT) + 8, y: rowC, class: "lbl" }, svg, "No further change."); }
+      var usedP = [];
+      theirs.events.forEach(function (ev) {
+        var cx = x(ms(ev.sim_time)), level = 0;
+        while (usedP.some(function (u) { return u[1] === level && Math.abs(u[0] - cx) < 10; }) && level < 2) { level++; }
+        usedP.push([cx, level]);
+        var cy = rowC - level * 11, g = el("g", {}, svg), d = describe(ev, who);
+        var colour = ev.actor === "agent" ? "var(--agent)" : ev.actor === "person" ? "var(--person)" : "var(--scenario)";
+        el("circle", { cx: cx, cy: cy, r: 10, fill: "transparent" }, g);
+        el("circle", { class: "ring", cx: cx, cy: cy, r: 4.5, fill: "var(--surface)", stroke: colour, "stroke-width": 1.6, "stroke-dasharray": "2 1.5" }, g);
+        mark(g, "In the parent: " + d[0], d[1] ? "“" + d[1].slice(0, 220) + "”" : "", when(ev.sim_time), [], null);
+      });
+    }
+
+    legend(fork, theirs);
     tips(marks);
     state.marks = marks;
   }
@@ -634,7 +798,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     return k === "message" || k === "ticket" || k === "document" ? k : "other";
   }
 
-  function legend() {
+  function legend(fork, theirs) {
     function swatch(fill, stroke) {
       return '<svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.6"/></svg>';
     }
@@ -648,7 +812,12 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       "<span>" + swatch("var(--person)", "var(--person)") + "Made by a person</span>",
       "<span>" + swatch("var(--scenario)", "var(--scenario)") + "Set by the scenario</span>",
       "<span>" + swatch("var(--surface)", "var(--muted)") + "A change to something that existed</span>"
-    ].join("");
+    ].concat(fork ? [
+      '<span><svg width="22" height="12" aria-hidden="true"><rect x="0" y="0" width="22" height="12" fill="var(--wash)" stroke="var(--axis)"/></svg>Shared with the parent, before the split</span>',
+      '<span><svg width="22" height="12" aria-hidden="true"><line x1="11" y1="0" x2="11" y2="12" stroke="var(--agent)" stroke-width="1.5" stroke-dasharray="4 2"/></svg>The split</span>'
+    ] : []).concat(theirs ? [
+      '<span><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="var(--surface)" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="2 1.5"/></svg>What the parent did instead</span>'
+    ] : []).join("");
   }
 
   function tips(marks) {
