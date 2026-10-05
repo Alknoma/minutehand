@@ -21,6 +21,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 |---|---|---|---|---|
 | Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
 | World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; every body of 512 bytes or more and every snapshot file kept once, by SHA-256; forks share it; a refused fork is discarded with the bytes only it held; `minutehand runs`, `checkpoints`, `pin`, `gc` | Built and tested | 48 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`, `tests/test_store_bodies.py`, `tests/test_store_snapshots.py`, `tests/test_housekeeping.py`) | The file carries schema version 6 in `user_version` and refuses any other. Bytes are shared within one world file (a root run and its forks), not across root runs. No catalog of runs. |
+| External emulators: `domain/emulator.py`, `adapters/emulator/`, `application/emulators.py` | A host declared `forward` is sent to a fake outside Minutehand (any language, a process or a container), through a loopback relay to its TCP port, Unix socket or HTTPS server; started or attached to, waited on (HTTP, TCP or log readiness) and health-checked; its answers told apart (`Exchange.outcome`); its failure answered 502/504 naming it and stopping the run `ENVIRONMENT_FAILED`, exit 2; its health changes in the log and the export; its OTLP received and joined by the forwarded `traceparent`; one per `serve` shared by worlds. See `docs/external-emulators.md` | Built and tested | 22 (`tests/emulators/` 20, `tests/serve/test_emulator_worlds.py` 2) and 1 marked `docker` (stripe-mock) | Its state is neither scored nor rewound: a fork after its first use is refused. Never restarted. Not seeded from the scenario, and people cannot act on it. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, captures declared outbound hosts, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 38 (`tests/proxy/`) | One proxy per process. A client that ignores proxy settings is given a base URL instead (`/_host/<host>`, below). Model API calls are recorded only with `--record-model-calls`, as spans. A tunnel is relayed as bytes, never decrypted: a request on it is seen and held until bytes come back that are not a TLS 1.3 server's session tickets (`adapters/proxy/tunnel.py`). |
 | Outbound capture: `domain/outbound.py`, `adapters/proxy/capture.py`, `application/outbound.py` | Hosts that are not places the agent keeps state, declared per agent or per standing world: `acknowledge` (answered here, never sent), `pass_through` (sent on, both sides kept), `replay` (answered from a run's recording); `--capture-unknown` for a first run; a send read as a message to a person. See `docs/capture.md` | Built and tested | 41 (`tests/capture/` 28, `tests/checks/test_captured_messages.py` 5, `tests/e2e/test_capture_run.py` 3, `tests/e2e/test_example_capture.py` 1, `tests/serve/test_capture_worlds.py` 3, `tests/model/` 1) | People answer a captured send only when its declaration says how (`replies`); the standing mode's `act` cannot answer through one. Replay matches a body by its hash, so an unlisted timestamp or nonce misses. Discovery mode sends for real. |
 | Slack provider | 19 Web API methods, `response_url`, `url_private`; every Events API shape its production caller handles, plus edits, deletes, reactions and joins; buttons, person pickers, modals and slash commands pushed as interactivity payloads and the agent's answers applied; seeded channels, history, threads, files, guests, bots and deactivated accounts; scenario-declared faults including `ratelimited` with `Retry-After` | Built and tested | 115 (`tests/providers/slack/`), most through the real proxy with stock `slack_sdk` | Workspaces are per world (`SlackSeed.workspaces`, see its `README.md`); with none declared, one workspace in which any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. See "Slack, against its production caller". |
@@ -191,7 +192,7 @@ The agent stopped after one wake; the clock ran on to the deadline (seq 19 is th
 Built, on the command line:
 
 ```
-minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1 or 3 by the verdict
+minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1, 2 or 3 by the verdict
 minutehand findings <run_id>                                   -> the same report, read back from the state directory
 minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
 minutehand runs
@@ -219,7 +220,9 @@ src/minutehand/
                       RecordSnapshot, InteractionSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
                       GoalByWake, GoalByMessage, HumanAction, Inbox, StateHooks
-    outbound.py       Acknowledge, PassThrough, Replay, Answer, Route, MessageReading, InForks, OnMiss
+    outbound.py       Acknowledge, PassThrough, Replay, Forward, HostHeader, Answer, Route, MessageReading, InForks, OnMiss
+    emulator.py       ExternalEmulator, Upstream, ReadyHttp, ReadyTcp, ReadyLog, Health, ErrorMarker, EmulatorHealth,
+                      EmulatorChange, ADDED_HEADERS
     people.py         PersonReply, Press, PersonMessage, InboundTarget, PermissionGrant, InboundCredentialAsk,
                       InboundCredential
     provider.py       Manifest, Tier, TicketField, DocumentChange, PersonChange, WorldKey, world_keys(),
@@ -228,7 +231,7 @@ src/minutehand/
     checks.py         Finding, CheckReport, Pattern, Obligation, Stability, Effectiveness, PersonBurden,
                       WakeRecord, RunView, Check
     clock.py          Due, Jump, next_jump()
-    run.py            RunRecord, StopReason
+    run.py            RunRecord, StopReason, EmulatorUse
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
   ports/              Store, Clock, Provider, PushesEvents, PushesInteractions, HoldsTickets, EditsTickets,
                       ActsOnTickets, DeletesTickets, ChangesDocuments, NotifiesChanges, DeclaresFaults,
@@ -1010,6 +1013,7 @@ Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `test
 
 | `VerdictKind` | When | Exit |
 |---|---|---|
+| `ENVIRONMENT_FAILED` | The run stopped `ENVIRONMENT_FAILED`: an external emulator it forwarded to was unavailable (`docs/external-emulators.md`). Not the agent's failure; the checks still run and are listed | 2 |
 | `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
 | `PASSED` | No check failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
 | `UNFINISHED` | No check failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
@@ -1019,7 +1023,7 @@ run 5c1e0a9f2b77: partner_pricing
   Not finished: no check failed, but the agent never reported it was done; the run stopped at the scenario's wake limit, with 1 wait still open.
 ```
 
-Exit 3 is not a failure: a scenario whose point is that nobody answers ends at its deadline with the agent's question open, and is `UNFINISHED` rather than `FAILED`. A CI job that wants such a scenario green accepts 3 for it; one that wants every agent to close its work accepts only 0. 2 stays "could not be performed", which has no verdict.
+Exit 3 is not a failure: a scenario whose point is that nobody answers ends at its deadline with the agent's question open, and is `UNFINISHED` rather than `FAILED`. A CI job that wants such a scenario green accepts 3 for it; one that wants every agent to close its work accepts only 0. 2 is also "could not be performed", which has no verdict: both are the environment's, never the agent's.
 
 What the rule gets wrong:
 

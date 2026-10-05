@@ -67,6 +67,7 @@ async def test_an_emulator_killed_mid_run_fails_the_environment_not_the_agent(
 
     record, result = outcome.record, outcome.result
     assert record.stop is StopReason.ENVIRONMENT_FAILED
+    assert record.failure is not None and record.failure.startswith("emulator tracker ")
     assert result.verdict.kind is VerdictKind.ENVIRONMENT_FAILED and result.exit_code == 2
     assert result.verdict.words.startswith("Environment failed:")
     [said] = [f for f in result.findings if f.check == CHECK]

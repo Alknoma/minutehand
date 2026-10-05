@@ -1,0 +1,17 @@
+# The agent file: the payments API's real host is forwarded to stripe-mock, a ready-made open-source emulator,
+# run in a container Minutehand starts on a free port and stops with the run.
+name: payments_example
+wakes:
+  - {kind: command, argv: [python, agent.py]}
+outbound:
+  - host: api.stripe.com
+    kind: forward
+    emulator: stripe
+emulators:
+  - name: stripe
+    upstream: {url: "http://127.0.0.1:{port}"}
+    command: [docker, run, --rm, --name, minutehand-ext-stripe, -p, "{port}:12111", "stripe/stripe-mock:latest"]
+    ready: {kind: http, path: /v1/charges, status: 401}   # answers 401 to a call with no key once it is up
+    ready_within: PT60S
+    health: {every: PT1S, fails: 2}
+    faithful: [{status: 402}]                            # a declined card is Stripe's own answer
