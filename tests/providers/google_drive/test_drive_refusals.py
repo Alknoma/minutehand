@@ -229,13 +229,6 @@ async def test_an_upload_over_the_size_limit_is_refused_413(api: httpx.AsyncClie
     assert reason_of(response, 413) == "uploadTooLarge"
 
 
-async def test_a_resumable_upload_is_refused_501(api: httpx.AsyncClient) -> None:
-    response = await api.post(
-        "/upload/drive/v3/files", params={"uploadType": "resumable"}, json={"name": "x"}, headers=AUTH
-    )
-    assert reason_of(response, 501) == "notImplemented"
-
-
 async def test_converting_html_into_a_doc_is_refused_501(api: httpx.AsyncClient) -> None:
     response = await api.post(
         "/upload/drive/v3/files",

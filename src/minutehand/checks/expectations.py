@@ -35,6 +35,7 @@ from minutehand.domain.world import (
     DocumentSnapshot,
     EntityKind,
     EntityRef,
+    InteractionSnapshot,
     MessageSnapshot,
     Operation,
     RecordSnapshot,
@@ -213,7 +214,8 @@ _FIRST = {
 
 
 def _held(event: WorldEvent) -> str | None:
-    """The text an event put into the world, for finding a tell in: a message, a ticket, a record, a document."""
+    """The text an event put into the world, for finding a tell in: a message, a ticket, a record, a document, what a
+    person typed into a form."""
     after = event.after
     if isinstance(after, MessageSnapshot):
         return after.text
@@ -223,6 +225,8 @@ def _held(event: WorldEvent) -> str | None:
         return after.text
     if isinstance(after, DocumentSnapshot):
         return after.title
+    if isinstance(after, InteractionSnapshot) and after.form:
+        return "\n".join(after.form)
     return None
 
 
@@ -235,7 +239,10 @@ def _heard(expected: Relayed, view: RunView) -> tuple[WorldEvent | None, str | N
     spoken = (
         first.actor is Actor.PERSON
         and first.operation is Operation.CREATE
-        and isinstance(first.after, MessageSnapshot)
+        and (
+            isinstance(first.after, MessageSnapshot)
+            or (isinstance(first.after, InteractionSnapshot) and first.after.person == expected.said_by)
+        )
         and any(
             r.person == expected.said_by and r.at == first.sim_time and has_words(r.text, [expected.tell])
             for r in view.replies

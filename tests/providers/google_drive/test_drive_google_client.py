@@ -35,7 +35,7 @@ from googleapiclient.http import MediaInMemoryUpload
 
 from minutehand.adapters.providers.google_drive import state
 from minutehand.domain.world import Actor, DocumentSnapshot, Operation
-from tests.providers.google_drive.drive_world import DOC, LATER, Drive
+from tests.providers.google_drive.drive_world import DOC, LATER, OWNER, Drive
 
 T = TypeVar("T")
 SCOPE = "https://www.googleapis.com/auth/drive"
@@ -265,7 +265,7 @@ async def test_refresh_token_credentials_sign_in_too(google: Google) -> None:
         scopes=[SCOPE],
     )
     about = await off_loop(lambda: google.drive(credentials).about().get(fields="user").execute())
-    assert about["user"]["emailAddress"] == state.AGENT_EMAIL and credentials.token is not None
+    assert about["user"]["emailAddress"] == OWNER and credentials.token is not None
 
 
 async def test_each_refusal_is_raised_as_an_http_error_with_drives_reason(google: Google) -> None:

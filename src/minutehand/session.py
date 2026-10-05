@@ -61,7 +61,7 @@ from minutehand.application.checkpoint import (
 )
 from minutehand.application.model_calls import per_wake
 from minutehand.application.orchestrator import Services, run_scenario
-from minutehand.application.refusals import RunRefused
+from minutehand.application.refusals import RunRefused, refuse_unheld_ticket_fields
 from minutehand.application.replier_model import PeopleReplier
 from minutehand.application.restore import Progress, Restored, SeenCall, restore_agent
 from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
@@ -78,7 +78,14 @@ from minutehand.domain.world import Actor, Operation
 from minutehand.ports.agent import Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ASGIApp,
+    BooksWakes,
+    EditsTickets,
+    HoldsTickets,
+    Provider,
+    PushesEvents,
+)
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -594,6 +601,8 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     call, but it is not seeded and no ticket fate or reply can land on it.
     """
     named: set[ProviderKey] = {t.provider for t in scenario.tickets} | {d.provider for d in scenario.documents}
+    named |= {s.provider for s in scenario.spaces} | {s.provider for s in scenario.provider_seeds}
+    named |= {c.provider for c in scenario.channels}
     named |= {t.provider for t in agent.inbound}
     if isinstance(agent.goal, GoalByMessage):
         named.add(agent.goal.provider)
@@ -605,6 +614,7 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
         raise RunRefused(
             f"no installed provider is named {', '.join(unknown)}; installed: {', '.join(sorted(manifests))}"
         )
+    refuse_unheld_ticket_fields(scenario.tickets, manifests)
     providers: list[Provider] = [registry.provider(manifests[key]) for key in sorted(named)]
     pushes: dict[ProviderKey, PushesEvents] = {}
     tickets: dict[ProviderKey, HoldsTickets] = {}

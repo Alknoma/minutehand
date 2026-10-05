@@ -8,6 +8,12 @@ from minutehand.domain.world import EntityKind
 MANIFEST = Manifest(
     key="google_drive",
     tier=Tier.FINISHED,
-    hosts=["www.googleapis.com", "oauth2.googleapis.com", "docs.googleapis.com"],
+    hosts=[
+        "www.googleapis.com",
+        "oauth2.googleapis.com",
+        "docs.googleapis.com",
+        "slides.googleapis.com",
+        "iamcredentials.googleapis.com",
+    ],
     kinds=[EntityKind.DOCUMENT, EntityKind.COMMENT],
 )

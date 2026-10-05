@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from datetime import timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -13,13 +14,17 @@ import pytest
 from minutehand.adapters.providers.asana import state
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.provider import build
+from minutehand.adapters.providers.asana.seed import seeded_gid
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
+from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
 from minutehand.domain.provider import Tier
-from minutehand.domain.scenario import TicketState
+from minutehand.domain.scenario import SeededComment, SeededTicket, TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
-from minutehand.ports.provider import EditsTickets, HoldsTickets, Provider
+from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
+from minutehand.session import _services  # pyright: ignore[reportPrivateUsage]
 from tests.providers.asana.asana_workspace import (
     CATERING,
     SCENARIO,
@@ -62,6 +67,7 @@ import asyncio, json, sys
 from pathlib import Path
 import httpx
 from minutehand.adapters.providers.asana.provider import build
+from minutehand.adapters.providers.asana.seed import seeded_gid
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from tests.providers.asana.asana_workspace import AUTH, START
@@ -164,9 +170,7 @@ async def test_a_person_cancels_a_task(workspace: Workspace, client: httpx.Async
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.CANCELLED
     read = data(await client.get(f"/tasks/{made['gid']}", params={"opt_fields": "completed,memberships.section.name"}))
     assert read["completed"] is True
-    assert read["memberships"] == [
-        {"section": {"gid": state.section_gid(VENUE, state.wire.SectionRole.CANCELLED), "name": "Cancelled"}}
-    ]
+    assert read["memberships"] == [{"section": {"gid": state.section_gid(VENUE, 2), "name": "Cancelled"}}]
 
 
 async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, client: httpx.AsyncClient) -> None:
@@ -207,8 +211,9 @@ def test_moving_a_task_that_is_not_there_is_refused(workspace: Workspace) -> Non
 
 def test_the_provider_holds_every_port_it_claims() -> None:
     provider = build()
-    held: tuple[Provider, HoldsTickets, EditsTickets] = (provider, provider, provider)
+    held: tuple[Provider, HoldsTickets, EditsTickets, ActsOnTickets] = (provider, provider, provider, provider)
     assert all(p is provider for p in held)
+    assert isinstance(provider, ActsOnTickets), "the run finds the port by isinstance, so it must be checkable"
 
 
 def test_the_manifest_claims_asana_and_imports_nothing_else_of_the_provider() -> None:
@@ -238,3 +243,45 @@ def test_the_registry_finds_the_provider_by_its_host() -> None:
     claimed = registry.claimant("app.asana.com")
     assert claimed is not None and claimed == MANIFEST
     assert registry.provider(claimed).manifest == MANIFEST
+
+
+async def test_a_seeded_tickets_labels_are_its_tags_and_its_comments_are_stories_by_their_people(
+    tmp_path: Path,
+) -> None:
+    labelled = SeededTicket(
+        provider="asana",
+        project="Catering",
+        title="Order the cake",
+        labels=["urgent", "sweet"],
+        comments=[SeededComment(by="noor", text="Lemon, not chocolate.")],
+    )
+    scenario = SCENARIO.model_copy(update={"tickets": [*SCENARIO.tickets, labelled]})
+    clock = RunClock(START)
+    store = SqliteStore(tmp_path / "w.db", "root", clock)
+    build().seed(scenario, store)
+    gid = seeded_gid(scenario, labelled)
+    async with client_for(build(), store, clock) as client:
+        task = data(await client.get(f"/tasks/{gid}", params={"opt_fields": "tags.name"}))
+        stories = items(await client.get(f"/tasks/{gid}/stories", params={"opt_fields": "text,created_by.email"}))
+        tags = items(await client.get("/tags", params={"workspace": WS, "opt_fields": "name"}))
+
+    assert [t["name"] for t in task["tags"]] == ["urgent", "sweet"]  # type: ignore[index,union-attr]
+    assert [(s["text"], s["created_by"]["email"]) for s in stories] == [  # type: ignore[index]
+        ("Lemon, not chocolate.", "noor@example.com")
+    ]
+    assert {"urgent", "sweet"} <= {t["name"] for t in tags}
+
+
+def test_a_ticket_key_on_an_asana_ticket_is_refused_at_load_naming_the_ticket() -> None:
+    keyed = SeededTicket(key="cake", provider="asana", project="Catering", title="Order the cake")
+    scenario = SCENARIO.model_copy(update={"tickets": [keyed]})
+    agent = AgentUnderTest(
+        name="a", goal=GoalByWake(), wakes=[Reported(wake_url="http://w.test/w", report_url="http://w.test/r")]
+    )
+    with pytest.raises(
+        RunRefused, match="the seeded ticket 'Order the cake' sets key, which asana tickets cannot hold"
+    ):
+        _services(scenario, agent, Registry.installed())
+    labelled = keyed.model_copy(update={"key": None, "labels": ["urgent"]})
+    on_youtrack = keyed.model_copy(update={"provider": "youtrack"})
+    _services(SCENARIO.model_copy(update={"tickets": [labelled, on_youtrack]}), agent, Registry.installed())

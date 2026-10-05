@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
+from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import Booked
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from tests.orchestrator.rig import T0, Rig, scenario
-from tests.orchestrator.world import SECRET
+from tests.orchestrator.world import SECRET, RecordingClock
 
 
 async def test_a_36_hour_reply_and_a_3_day_ticket_fate_move_the_clock_exactly_there(rig: Rig) -> None:
@@ -81,3 +84,109 @@ async def test_an_agent_that_exits_non_zero_ends_the_run_agent_failed(rig: Rig) 
 
     assert record.stop is StopReason.AGENT_FAILED
     assert len(record.wakes) == 1
+
+
+async def test_a_happening_lands_at_its_moment_as_the_persons_change_and_wakes_nobody(rig: Rig) -> None:
+    scn = scenario(
+        ticket_fates=[],
+        tickets=[{"provider": "testchat", "project": "P", "title": "Sign the lease", "assignee": "tom"}],
+        happenings=[
+            {
+                "kind": "ticket",
+                "person": "tom",
+                "ticket": "Sign the lease",
+                "after": timedelta(days=2),
+                "action": {"kind": "moves", "to": "done"},
+            }
+        ],
+    )
+    record, store, clock = await rig.run(scn, rig.agent("ask_silent"))
+
+    moved = [e for e in store.events() if e.actor is Actor.PERSON and e.entity.kind is EntityKind.TICKET]
+    assert len(moved) == 1 and moved[0].sim_time == T0 + timedelta(days=2)
+    assert isinstance(moved[0].after, TicketSnapshot) and moved[0].after.state is TicketState.DONE
+    assert clock.jumps == [T0 + timedelta(days=2), T0 + timedelta(days=14)]
+    assert [w.sim_time for w in record.wakes] == [T0], "a happening wakes nobody, as a ticket fate does not"
+
+
+async def test_a_happening_on_a_provider_that_cannot_act_is_refused_before_the_run(rig: Rig) -> None:
+    scn = scenario(
+        ticket_fates=[],
+        tickets=[{"provider": "testsched", "project": "P", "title": "Nobody holds this"}],
+        happenings=[
+            {
+                "kind": "ticket",
+                "person": "tom",
+                "ticket": "Nobody holds this",
+                "after": timedelta(days=1),
+                "action": {"kind": "deletes"},
+            }
+        ],
+    )
+    refusal = (
+        r"happening 1 \(tom deletes the seeded ticket 'Nobody holds this'\) lands on testsched, which has no tickets"
+    )
+    with pytest.raises(RunRefused, match=refusal):
+        await rig.run(scn, rig.agent("ask_silent"))
+    assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"
+
+
+LEGAL = {"provider": "testchat", "project": "P", "title": "Legal review", "assignee": "tom"}
+HAPPENINGS = {
+    "tickets": [LEGAL],
+    "happenings": [
+        {
+            "kind": "ticket",
+            "ticket": "Legal review",
+            "person": "tom",
+            "after": timedelta(days=2),
+            "action": {"kind": "moves", "to": "done"},
+        },
+        {
+            "kind": "ticket",
+            "ticket": "Legal review",
+            "person": "dania",
+            "after": timedelta(days=5),
+            "action": {"kind": "deletes"},
+        },
+    ],
+}
+
+
+async def test_a_person_acts_on_a_seeded_ticket_at_its_moment_without_waking_the_agent(rig: Rig) -> None:
+    record, store, clock = await rig.run(scenario(ticket_fates=[], **HAPPENINGS), rig.agent("ask_silent"))
+
+    assert clock.jumps == [T0 + timedelta(days=2), T0 + timedelta(days=5), T0 + timedelta(days=14)]
+    assert [w.sim_time for w in record.wakes] == [T0]
+    acted = [e for e in store.events() if e.actor is Actor.PERSON and e.entity.kind is EntityKind.TICKET]
+    assert [(e.sim_time, e.operation) for e in acted] == [
+        (T0 + timedelta(days=2), Operation.UPDATE),
+        (T0 + timedelta(days=5), Operation.DELETE),
+    ]
+    assert isinstance(acted[0].after, TicketSnapshot) and acted[0].after.state is TicketState.DONE
+
+
+async def test_a_messaging_happening_on_a_provider_that_pushes_nothing_is_refused_before_the_run(rig: Rig) -> None:
+    scn = scenario(
+        ticket_fates=[],
+        happenings=[{"kind": "posts", "provider": "testsched", "person": "tom", "text": "Done", "after": "P1D"}],
+    )
+    with pytest.raises(RunRefused, match=r"happening 1 \(tom posts\) lands on testsched, which pushes no events"):
+        await rig.run(scn, rig.agent("ask_silent"))
+    assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"
+
+
+async def test_a_document_happening_on_a_provider_that_changes_no_documents_is_refused_before_the_run(
+    rig: Rig,
+) -> None:
+    scn = scenario(
+        ticket_fates=[],
+        documents=[{"provider": "testchat", "title": "Plan", "text": "draft"}],
+        happenings=[
+            {"kind": "document", "person": "tom", "document": "Plan", "after": "P1D", "action": {"kind": "trashed"}}
+        ],
+    )
+    refusal = r"happening 1 \(tom trashed the seeded document 'Plan'\) lands on testchat, which has no documents"
+    with pytest.raises(RunRefused, match=refusal):
+        await rig.run(scn, rig.agent("ask_silent"))
+    assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"

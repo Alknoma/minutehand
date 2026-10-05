@@ -27,7 +27,17 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
-from minutehand.domain.scenario import Model, ProviderKey, Scenario, TicketState
+from minutehand.domain.scenario import (
+    Deletes,
+    MessagingHappening,
+    Model,
+    Moves,
+    PersonPosts,
+    ProviderKey,
+    Scenario,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -224,6 +234,15 @@ class Chat:
         async with httpx.AsyncClient() as client:
             (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
 
+    async def happen(
+        self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        """This chat has only messages: a post is said like any message; anything else is refused."""
+        if not isinstance(happening, PersonPosts):
+            raise ValueError(f"the test chat has nothing a person {happening.kind}")
+        message = PersonMessage(person=happening.person, text=happening.text, at=clock.now())
+        await self.say(message, target, world, clock, secret=secret)
+
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         self._rewrite(ticket, Actor.PERSON, state=to, assignee_email=None, world=world)
 
@@ -231,6 +250,20 @@ class Chat:
         self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
     ) -> None:
         self._rewrite(ticket, Actor.SCENARIO, state=state, assignee_email=assignee_email, world=world)
+
+    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        seeded = scenario.happening_ticket(happening)
+        n = [t for t in scenario.tickets if t.provider == CHAT].index(seeded)
+        ticket = EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id=f"seed{n}")
+        if world.get(ticket) is None:
+            return
+        action = happening.action
+        if isinstance(action, Moves):
+            self._rewrite(ticket, Actor.PERSON, state=action.to, assignee_email=None, world=world)
+        elif isinstance(action, Deletes):
+            world.apply(Change(entity=ticket, operation=Operation.DELETE, actor=Actor.PERSON, parent="P"))
+        else:
+            raise NotImplementedError(f"the test chat cannot {action.kind} a ticket")
 
     def _rewrite(
         self, ticket: EntityRef, actor: Actor, *, state: TicketState | None, assignee_email: str | None, world: Store

@@ -19,16 +19,16 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
-| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 9 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
+| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
 | World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 22 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 5 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, captures declared outbound hosts, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 38 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
 | Outbound capture: `domain/outbound.py`, `adapters/proxy/capture.py`, `application/outbound.py` | Hosts that are not places the agent keeps state, declared per agent or per standing world: `acknowledge` (answered here, never sent), `pass_through` (sent on, both sides kept), `replay` (answered from a run's recording); `--capture-unknown` for a first run; a send read as a message to a person. See `docs/capture.md` | Built and tested | 41 (`tests/capture/` 28, `tests/checks/test_captured_messages.py` 5, `tests/e2e/test_capture_run.py` 3, `tests/e2e/test_example_capture.py` 1, `tests/serve/test_capture_worlds.py` 3, `tests/model/` 1) | People never reply through a captured channel, and a captured send opens no wait. Replay matches a body by its hash, so an unlisted timestamp or nonce misses. Discovery mode sends for real. |
-| Slack provider | 15 Web API methods; message events pushed to the agent, signed with the run's secret or the agent's own | Built and tested | 74 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
-| Asana provider | 20 routes over users, workspaces, projects, sections, tasks and stories | Built and tested | 55 (`tests/providers/asana/`) | Any bearer token is accepted. |
-| YouTrack provider | 14 routes, each at `/api` and `/youtrack/api` | Built and tested | 60 (`tests/providers/youtrack/`) | Any bearer token is accepted. |
-| Google Drive provider | 14 Drive v3 routes, Docs v1 `documents.get`, Google's `/token` | Built and tested | 62 (`tests/providers/google_drive/`) | Sign-in is not verified; any bearer token is accepted. Content is capped at 5 MiB per file. |
+| Slack provider | 19 Web API methods, `response_url`, `url_private`; every Events API shape its production caller handles, plus edits, deletes, reactions and joins; buttons, person pickers, modals and slash commands pushed as interactivity payloads and the agent's answers applied; seeded channels, history, threads, files, guests, bots and deactivated accounts; scenario-declared faults including `ratelimited` with `Retry-After` | Built and tested | 115 (`tests/providers/slack/`), most through the real proxy with stock `slack_sdk` | One workspace. Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. See "Slack, against its production caller". |
+| Asana provider | 54 routes over users, teams, workspaces, projects and their members, sections, custom fields and their settings, tags, tasks, subtasks and stories, and `/-/oauth_token`; a scenario's Asana seed; a declared status source; people acting on seeded tasks | Built and tested | 102 (`tests/providers/asana/`) | With no seeded token, any bearer token acts as the agent. A bare `custom_fields` in `opt_fields` answers each field's gid and resource type, as every bare nested field does. Webhooks answer 501. No system stories (assigned, moved, completed) are written. |
+| YouTrack provider | 45 REST routes, each at `/api` and `/youtrack/api`, and 9 Hub routes at `/hub/api/rest`: issues, custom fields of every single-valued type with per-project bundles, defaults and required flags, comments, tags, links, activities read from the log, projects and their fields, the instance's fields and bundles, users, commands, `issuesGetter/count`, Hub projects, groups, permissions and OAuth tokens; the query language every shape a production client builds; people acting on seeded issues (`ActsOnTickets`) | Built and tested | 119 (`tests/providers/youtrack/`, 221 cases with parameters; most through the proxy) | Only a seeded `*.youtrack.cloud` or `*.myjetbrains.com` host is reached: a self-hosted instance's own host cannot be declared. Multi-valued fields (`enum[*]`, `user[*]`, `version[*]`), text fields, work items, attachments, saved searches, agile boards and sprints as boards are not served. Wording of 403, 429 and several 400s, the activity item `$type`s for tags, links and summary, and the default issue order are not verified against the real service. |
+| Google Drive provider | Drive v3 (files incl. multipart, media and resumable uploads, export, copy, permissions, comments, about, drives, changes, channels), Docs v1 `documents.get|create|batchUpdate`, Slides v1 `presentations.get|create|batchUpdate`, Google's `/token` and `/revoke`, OAuth2 v2 `userinfo`, the `iamcredentials` boundary lookup; per-user My Drives and shared drives; a person's change to a document at its moment, pushed to a `changes.watch` address; declared faults | Built and tested | 124 (`tests/providers/google_drive/`; 10 run Google's own clients in a process of their own through the proxy) | A credential is matched by name, never by signature. `httplib2` reaches the proxy only when PySocks is installed beside it. No Sheets API (a Sheet is exported as CSV). The agent is not notified of its own changes. Docs has no headers, footers, footnotes or suggestions, and images are never fetched. Content is capped at 5 MiB per file. |
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
-| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 71 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
 | Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step sees only `AgentReport`. An agent with no `Reported` wake source is restored unverified, and says so. Settling sees only calls through the proxy. PostgreSQL is described, not tested. |
 | Checks, ledger, scorecard, patterns: `checks/` | 12 checks, the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
@@ -201,15 +201,21 @@ Designed, not built: the same loop as MCP tools (see "What a coding agent calls"
 ```
 src/minutehand/
   domain/             pure: no I/O, no clock reads
-    scenario.py       Model, Scenario, Person, Answers, Scripted, Silent, DelayRange, WorkingHours, Absence,
-                      SeededTicket, SeededDocument, TicketFate, Direction, PersonAsked, TicketCreated,
-                      TicketDeleted, TicketInState, Relayed
+    scenario.py       Model, Scenario, Person, Account, Answers, Scripted, ScriptedReply, ScriptedPress, FormInput,
+                      Silent, DelayRange, WorkingHours, Absence, SeededTicket, SeededComment, SeededDocument,
+                      DocumentKind, Access, SharedSpace, SignIn, SeededChannel, SeededPost, SeededFile,
+                      ProviderSeed, Happening (TicketHappening (Moves, Reassigns, Comments, Deletes) |
+                      DocumentHappening (Edited, Renamed, Moved, Shared, Trashed) | MessagingHappening
+                      (PersonPosts, PersonEdits, PersonDeletes, PersonReacts, PersonJoins, PersonOpensAgent,
+                      PersonCommands)), TicketFate, Direction, PersonAsked, TicketCreated, TicketDeleted,
+                      TicketInState, Relayed
     world.py          WorldEvent, Change, Stored, Exchange, Captured, Body, RecordedCall, EntityRef,
-                      TicketSnapshot, MessageSnapshot, DocumentSnapshot, RecordSnapshot
+                      TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, RecordSnapshot,
+                      InteractionSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
                       GoalByWake, GoalByMessage, HumanAction, Inbox, StateHooks
     outbound.py       Acknowledge, PassThrough, Replay, Answer, Route, MessageReading, InForks, OnMiss
-    people.py         PersonReply, PersonMessage, InboundTarget
+    people.py         PersonReply, Press, PersonMessage, InboundTarget
     provider.py       Manifest, Tier
     experiment.py     Fork, CallMatch, PromptPatch, ModelSwap, PersonChange, TicketEdit, DeadlineShift
     checks.py         Finding, CheckReport, Pattern, Obligation, Stability, Effectiveness, PersonBurden,
@@ -217,7 +223,8 @@ src/minutehand/
     clock.py          Due, Jump, next_jump()
     run.py            RunRecord, StopReason
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
-  ports/              Store, Clock, Provider, PushesEvents, HoldsTickets, EditsTickets, BooksWakes, Wakes,
+  ports/              Store, Clock, Provider, PushesEvents, PushesInteractions, HoldsTickets, EditsTickets,
+                      ActsOnTickets, ChangesDocuments, NotifiesChanges, BooksWakes, Wakes,
                       AgentDriver, Reports, Replier, Telemetry
   application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (settle, restore,
                       verify), replier_scripted.py, run_clock.py, state_hooks.py, files.py, refusals.py,
@@ -323,7 +330,7 @@ class CheckReport(Model):
 
 ### The provider port
 
-Six protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
+Seven protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
 
 ```python
 class Provider(Protocol):
@@ -344,6 +351,17 @@ class PushesEvents(Protocol):
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None: ...
 
+    async def happen(
+        self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None: ...
+
+
+@runtime_checkable
+class PushesInteractions(Protocol):
+    async def press(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None: ...
+
 
 @runtime_checkable
 class HoldsTickets(Protocol):
@@ -355,6 +373,23 @@ class EditsTickets(Protocol):
     def edit(
         self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
     ) -> None: ...
+
+
+@runtime_checkable
+class ActsOnTickets(Protocol):
+    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None: ...
+
+
+@runtime_checkable
+class ChangesDocuments(Protocol):
+    def change(self, happening: DocumentHappening, scenario: Scenario, world: Store, clock: Clock) -> None: ...
+
+
+@runtime_checkable
+class NotifiesChanges(Protocol):
+    def watched(self, world: Store, clock: Clock) -> bool: ...
+
+    async def notify(self, world: Store, clock: Clock) -> None: ...
 
 
 class Wakes(Protocol):
@@ -372,20 +407,134 @@ class BooksWakes(Protocol):
 
 | Provider | `Manifest.key` | Hosts (`path_prefix`) | Ports beyond `Provider` |
 |---|---|---|---|
-| Slack | `slack` | `slack.com`, `*.slack.com` | `PushesEvents` |
-| Asana | `asana` | `app.asana.com` (`/api/1.0`) | `HoldsTickets`, `EditsTickets` |
-| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api` and `/youtrack/api`) | `HoldsTickets`, `EditsTickets` |
-| Google Drive | `google_drive` | `www.googleapis.com`, `oauth2.googleapis.com`, `docs.googleapis.com` | none |
+| Slack | `slack` | `slack.com`, `*.slack.com` (`files.slack.com` and `hooks.slack.com` included) | `PushesEvents`, `PushesInteractions` |
+| Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets` |
+| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets` |
+| Google Drive | `google_drive` | `www.googleapis.com`, `oauth2.googleapis.com`, `docs.googleapis.com`, `slides.googleapis.com`, `iamcredentials.googleapis.com` | `ChangesDocuments`, `NotifiesChanges` |
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 | GitHub | `github` | `api.github.com` (REST and `/graphql`; no prefix) | none: repository reads only, see its `README.md` |
 
-All five are `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
+Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack holds all three; Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`.
+
+### Things people do by themselves
+
+`Scenario.happenings` is one list of one discriminated union, `Happening`, on `kind`. Each member is something a person does at an offset with no agent involved, and each family lands through the port its provider implements:
+
+| Family | Members (`kind`) | Names its target | Lands through | Wakes the agent |
+|---|---|---|---|---|
+| Ticket | `TicketHappening` (`ticket`): `action` is `Moves(to)`, `Reassigns(to: person or None)`, `Comments(text)` or `Deletes()` | the seeded ticket's `title`, exactly one | `ActsOnTickets.act` (Asana, YouTrack) | never: it is found on the next read |
+| Document | `DocumentHappening` (`document`): `action` is `Edited(append)`, `Renamed(to)`, `Moved(folder)`, `Shared(access)` or `Trashed()` | the seeded document's `title`, exactly one | `ChangesDocuments.change` (Drive) | only when the agent watches (`NotifiesChanges`, Drive's `changes.watch`); that wake carries no `WakeRequest`, and inside it `notify` POSTs Drive's channel headers |
+| Messaging | `MessagingHappening`: `PersonPosts` (`posts`), `PersonEdits` (`edits`), `PersonDeletes` (`deletes`), `PersonReacts` (`reacts`), `PersonJoins` (`joins`), `PersonOpensAgent` (`opens_agent`), `PersonCommands` (`commands`) | its own `provider`, channel and post keys | `PushesEvents.happen` (Slack) | yes, `PERSON_REPLIED`, as a pushed reply does |
+
+The run schedules every happening when it seeds, as one `PendingHappening` under `DueKind.HAPPENING`, and fires it from one place (`Orchestrator._happen`), as actor `PERSON` on the run's clock. A run whose happening lands on a provider without its family's port, or a messaging one on a provider with no inbound target, is refused in the `Orchestrator` constructor before anything is seeded, naming the happening and the provider (`happening 1 (tom deletes the seeded ticket 'Lease') lands on testsched, which has no tickets a person can act on`). A ticket or document already deleted when its happening falls due is left alone. A standing world (`minutehand serve`) owes the same happenings and fires each as its clock is advanced past it.
+
+```yaml
+tickets:
+  - {provider: asana, project: Launch, title: Book the venue, assignee: nadia}
+  - {key: notes, provider: youtrack, project: Launch, title: Write the release notes, assignee: nadia,
+     labels: [docs], comments: [{by: owen, text: Due before the partner call}]}
+documents:
+  - {provider: google_drive, title: Launch plan, text: "# Launch plan"}
+happenings:
+  - {kind: ticket, person: nadia, ticket: Book the venue, after: P1D, action: {kind: moves, to: done}}
+  - {kind: ticket, person: nadia, ticket: Write the release notes, after: P2D,
+     action: {kind: comments, text: Draft is in the shared folder}}
+  - {kind: document, person: nadia, document: Launch plan, after: P3D, action: {kind: renamed, to: Launch plan (final)}}
+  - {kind: posts, provider: slack, person: nadia, text: All three are done on my side, after: P4D}
+```
+
+That file plays in one run in `tests/providers/test_every_happening_family.py`.
+
+### Deliberate failures
+
+A fault is typed by the provider that can produce it and declared in that provider's own seed (`ProviderSeed.body`); there is no shared `Scenario.faults`, because no one shape holds every provider's failures without carrying knobs the others would ignore: Slack's `SlackSeed.faults` (any Slack error code or `ratelimited` with `Retry-After`, every call or N, `only_rich`), Drive's `DriveSeed.faults` (N calls of a Google operation answered one of seven `wire.FaultKind`s), YouTrack's `YouTrackSeed.faults` (a method and path glob answered any HTTP status over a window) and Asana's `AsanaSeed.rate_limits` (throttled stretches). The standing mode's control API keeps its own `faults` route, whose caller writes the status and body.
+
+### A provider's own seed: Asana
+
+Built and tested (`tests/providers/asana/`). What only one service has is seeded through `Scenario.provider_seeds`: a `ProviderSeed(provider, body)` whose body is that provider's own seed model as JSON text (a scenario file writes it as structure), parsed only by that provider. Asana's is `AsanaSeed` (`adapters/providers/asana/seed.py`):
+
+```yaml
+tickets:
+  - {provider: asana, project: Backend Services, title: API timeout in production, assignee: bob}
+provider_seeds:
+  - provider: asana
+    body:
+      workspace: {name: Test Workspace, organization: true, premium: true}
+      teams: [{name: Engineering}, {name: Design, members: [alice], agent: false}]
+      custom_fields:
+        - {name: Status, kind: enum, options: [{name: Open}, {name: In Progress}, {name: Done}, {name: Cancelled}]}
+        - {name: Priority, kind: enum, options: [{name: High}, {name: Low}]}
+      tags: [production]
+      projects:
+        - {name: Backend Services, team: Engineering, custom_fields: [Status, Priority],
+           sections: [{name: Open}, {name: In Progress}, {name: Done}, {name: Cancelled}]}
+      tasks:
+        - {ticket: API timeout in production, section: In Progress, tags: [production], due_after: P3D,
+           values: [{field: Priority, option: High}, {field: Status, option: In Progress}],
+           comments: [{person: alice, text: "Seen again at 9am.", ago: PT2H}]}
+      status: {kind: custom_field, field: Status, means: {Open: open, Done: done, Cancelled: cancelled}}
+      tokens: [{token: pat-agent}, {token: pat-alice, person: alice, expires_after: PT1H}]
+      refresh_tokens: [{refresh_token: refresh-agent}]
+      rate_limits: [{after: P2D, lasts: PT90S}]
+```
+
+- **Status is one declared fact.** Asana keeps three independent facts about a task: `completed`, its section, and any status custom field. `status` names which one `TicketSnapshot.state` reads: `completed`, `section` (the default; a section says what it `means`, and an unseeded project has To do, Done and Cancelled), or `custom_field` with each option's meaning. The completed box is the floor under all three: a ticked task is never open. Completing a task through the API moves nothing else, as in Asana; a person's fate or happening moves the task by the declared source and ticks it, and a state the source cannot say (cancelled, with `completed`) raises.
+- **Who calls is the token's user.** With `tokens` or `refresh_tokens` seeded, only those and the access tokens `/-/oauth_token` mints from a refresh token (an hour of run time each) are accepted; `users/me` and `created_by` are that user. With none, any bearer token is the agent.
+- **Refusals on purpose:** 403 on a `private` project, and its tasks, to anyone not in `members`; 402 to search and custom fields when `premium: false`; 429 with `Retry-After` through each `rate_limits` stretch; 404 on a deleted task; 400 on a custom field that does not exist, is not on the task's projects, or an option the field does not have.
+- **Every name must name something.** A person, team, field, option, tag, section or ticket the seed names and does not define is refused before anything is written.
+
+The emulator this replaced answered three things differently from Asana as documented, and a client tested against it needs changing: its factory hard-coded the workspace's and the Status, Priority and Story Points fields' gids, where this provider's gids are derived from names and found through the API; it answered a bare `opt_fields=custom_fields` with each field in full, where every bare nested field here answers its gid and resource type, which is Asana's documented rule for an object named without its fields and is not verified against the live API, so a client must name `custom_fields.enum_value.name` and the like; and it had no project memberships or `addMembers`.
+
+YouTrack's own seed names a seeded ticket by its `key` (`IssueSeed.ticket`, `LinkSeed.ticket`); a happening names it by title, as on every ticket provider.
+
+```yaml
+tickets:
+  - {key: notes, provider: youtrack, project: Launch, title: Write the release notes, assignee: tomas,
+     labels: [docs], comments: [{by: iris, text: Due before the partner call}]}
+happenings:
+  - {kind: ticket, ticket: Write the release notes, person: tomas, after: P2D, action: {kind: moves, to: done}}
+provider_seeds:
+  - provider: youtrack
+    body: '{"tokens": [{"token": "perm:…", "login": "agent-bot"}],
+            "projects": [{"name": "Launch", "fields": [{"name": "State"}, {"name": "Assignee"}, {"name": "Due Date"}]}],
+            "issues": [{"ticket": "notes", "fields": [{"field": "Due Date", "value": "2026-08-26"}]}],
+            "grants": [{"login": "tomas", "permission": "jetbrains.youtrack.updateIssue", "project": "Launch", "held": false}],
+            "faults": [{"method": "POST", "path": "/issues/*/customFields/*", "status": 429, "after": "PT1H", "lasts": "PT30M"}]}'
+```
+
+The YouTrack seed (`adapters/providers/youtrack/seed.py`, `YouTrackSeed`) declares users beyond the people, tokens and Hub services that act as them (once a token is seeded, any other is a 401), instance fields, projects with their own field sets, bundles, resolved flags, defaults, required flags, teams and leaders, any field value on a seeded issue, links between seeded issues, an issue's history before the run, permissions given or taken (403), refusals put in the way of one path for a while (`Retry-After`), and `issuesGetter/count` answering -1. A project made through `POST /admin/projects` carries YouTrack's default template (no Due Date), has no Hub project, and nobody holds Update Project on it, as measured on a live instance. `issuesGetter/count` answers the exact count at once unless the seed says `count_unknown`.
+
+#### Slack, against its production caller
+
+The fake was brought to what a production Slack agent sends and expects, read call by call from its source and driven with stock `slack_sdk` (`WebClient` and `AsyncWebClient`, no base URL) through the real proxy (`tests/providers/slack/test_slack_through_the_proxy.py`, `test_slack_interactions.py`, `test_slack_happenings.py`, `test_slack_whole_run.py`). Every inbound request is checked at the test endpoint by `slack_sdk.signature.SignatureVerifier`.
+
+| Call or shape | Answered | Notes |
+|---|---|---|
+| `auth.test`, `users.list`, `users.info`, `users.lookupByEmail` | Yes | Users carry `is_restricted` (guest), `deleted` (deactivated), `is_bot`, `tz`, `tz_offset`, profile `email` and `title`. No `tz_label`, no profile images. |
+| `conversations.list`, `.info`, `.open`, `.members`, `.history`, `.replies` | Yes | Cursors, `has_more`, `inclusive`, thread summaries. `conversations.open` is idempotent and refuses a deactivated person (`user_disabled`) and a bot (`cannot_dm_bot`). |
+| `chat.postMessage`, `.postEphemeral`, `.update`, `.delete`; `reactions.add` | Yes | Blocks get a `block_id` and interactive elements an `action_id` when the agent leaves them out, as Slack does; an app's message carries `bot_profile`. `blocks=[]` on an update clears them. `unfurl_*` and `mrkdwn` are accepted and change nothing. |
+| `views.open`, `views.update`, `views.publish` | Yes | A modal needs a `trigger_id` from a press or a command, once (`exchanged_trigger_id`), within three simulated seconds (`expired_trigger_id`); `hash` is checked (`hash_conflict`). `views.push` is `unknown_method`. |
+| `oauth.v2.access` | Yes | Client id and secret by HTTP Basic or arguments. Any code is accepted once, since no browser makes one; the installer is the scenario's owner. |
+| `response_url` POST (`hooks.slack.com/actions/…`, `/commands/…`) | Yes | New message (ephemeral by default, or `in_channel`), `replace_original`, `delete_original`; five uses within thirty minutes. Error answers (`used_url`, `expired_url`, `invalid_token`, 404) are not verified against Slack. |
+| `url_private`, `url_private_download` GET | Yes | Served to any bot or user bearer token; without one, a 302 to an HTML sign-in page, as a browser is redirected. |
+| `files.*`, `chat.scheduleMessage`, `search.*`, `team.info`, `reactions.remove` | No | The caller makes none of these. |
+| Events: `message` (channel, group, IM, group DM, thread, `file_share` with `files`), `app_mention`, `message_changed`, `message_deleted`, `reaction_added`, `member_joined_channel`, `app_home_opened` (with the published Home view) | Yes | Sent only from conversations the agent's bot is in. A refused event is sent again three times with `X-Slack-Retry-Num` and `X-Slack-Retry-Reason`. |
+| `url_verification` | Yes, as `inbound.verify_url` | Nothing in a run sends it. |
+| `app_uninstalled`, `tokens_revoked`, `message` subtypes other than `file_share` | No | |
+| `block_actions` (buttons, `users_select`) | Yes | Form-encoded `payload`, with `trigger_id`, `response_url`, `actions[]`, `container`, `channel`, `message`, `user`, `team`; the message is left out for an ephemeral one, as Slack does. Other element types (static selects, overflow, date pickers) are not offered to a person. |
+| `view_submission` | Yes | `view.state.values` for every input block, `private_metadata`, `callback_id`; the answer's `response_action` (`errors`, `update`, `push`, `clear`, or none) is applied to the view. Only `plain_text_input` can be filled. `view_closed` is never sent. |
+| Slash commands | Yes, as `PersonCommands` | Form fields with `response_url` and `trigger_id`; the immediate answer is shown to the person, or the channel with `in_channel`. Sent to the inbound URL, not one per command. |
+| Faults | `SlackSeed.faults`, in Slack's `ProviderSeed` | `RateLimited(retry_after)` answers HTTP 429 with `Retry-After`; `Refused(error)` answers any Slack error code; `only_rich` fails only calls with blocks or attachments, so a plain retry passes; `times` and `after` bound it. Each failure is a `faults` record by actor `SCENARIO`. |
+| Seeding | `Scenario.channels`, `Person.account` | Public and private channels with topic, purpose, members, the agent in or out, history with threads and files; DMs and group DMs with history; guests (not in `#general`), deactivated accounts and other apps' bots. |
+
+Where the parent repository's emulator answered differently from Slack, the fake follows Slack, and a test written against the emulator would change: it listed ephemeral messages in history; minted DM ids as `D` and the joined member ids; never listed IMs; let any author's message be updated or deleted (Slack: `cant_update_message`, `cant_delete_message`); ran a request with no token as the bot (Slack: `not_authed`); gave every user `tz_offset` 3600; answered missing reaction arguments `invalid_arguments`; served no `response_url` (a 404); and answered `missing_scope` from a per-token scope list, which this fake has not, so `missing_scope` is a declared `Refused` fault.
 
 ### Flow of one wake
 
 ```
 Orchestrator.run():
-  every provider seeds the world (actor SCENARIO); directions and the first Polled tick enter `pending`
+  every provider seeds the world (actor SCENARIO); happenings, directions and the first Polled tick
+  enter `pending`
   checkpoint (wake 0)
   START wake: by message, the owner says the goal (PushesEvents.say); otherwise WakeRequest(START, goal)
   loop:
@@ -393,9 +542,14 @@ Orchestrator.run():
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
     clock.jump(jump.now)
-    only ticket fates fired -> HoldsTickets.transition, no wake
+    only ticket fates and ticket or document happenings fired -> HoldsTickets.transition, ActsOnTickets.act,
+                     ChangesDocuments.change; no wake, unless the agent watches a changed provider's documents
+                     (NotifiesChanges.watched), then a DUE wake in which NotifiesChanges.notify tells it
     otherwise, one wake:
-      fire in order: fates (transition), replies (PushesEvents.deliver), directions by message (say),
+      fire in order: fates (transition), replies (PushesEvents.deliver, or PushesInteractions.press for a
+                     reply that uses a control), happenings (ActsOnTickets.act for a ticket,
+                     ChangesDocuments.change for a document, PushesEvents.happen for a message), directions by
+                     message (say),
                      bookings (BooksWakes.fire), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
       read the new events: an agent message to a person, as its text reads when the wake ends
@@ -1058,7 +1212,7 @@ minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 
 | What the run needs | How it gets there with no code change | State |
 |---|---|---|
-| Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=localhost,127.0.0.1` (each in lower case too), and the CA bundle in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE`. An agent Minutehand does not start gets the same from `minutehand env` | Built. A client that pins certificates is out of reach. Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; unverified. The Compose override is tested as text; no container has been run with it. |
+| Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=localhost,127.0.0.1` (each in lower case too), and the CA bundle in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE`. An agent Minutehand does not start gets the same from `minutehand env` | Built. A client that pins certificates is out of reach. `httplib2`, which `googleapiclient` uses, reads `HTTPS_PROXY` only when PySocks is importable and otherwise connects to Google directly, in silence: an agent on `googleapiclient` needs `pysocks` installed (`tests/providers/google_drive/test_drive_through_proxy.py` runs with it; its `offline/` guard is what turns the silent bypass into a failure). Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; unverified. The Compose override is tested as text; no container has been run with it. |
 | The agent is up before the run starts | Minutehand waits up to 30 seconds for its wake URL, or else its first inbound URL, to accept connections, and fails the run if the command exits first; its output goes to `agent.log` | Built |
 | Pushed events reach the agent | The agent's event URL and where its signing secret comes from are in the agent file: generated per run and handed to the command, or the agent's own, read from a variable of Minutehand's | Built |
 | The agent wakes at the right moments | Replies, pushed events and `Booked` wake-ups need nothing. `Polled` needs a URL in the agent file. | Built. `Reported` needs an endpoint or an adapter, which is code, though it can live outside the project. |
@@ -1161,6 +1315,9 @@ What is built for people today (`application/replier_scripted.py`, `ScriptedRepl
 - The delay is drawn from the person's `DelayRange` (default 6 to 66 hours) by hashing the scenario's `seed` with the asked message's identity, so the same seed gives the same delays on every run and every fork.
 - A reply that would land inside an `Absence` (from the start, or from the first ask) or outside `WorkingHours` (in the person's own timezone) moves to the next moment they would answer.
 - A reply is stored the first time it is decided and arrives through the provider as a real inbound event: a threaded reply in a channel, a new message in a DM.
+- A scripted reply may use a control instead of writing back (`ScriptedReply.press`): the control on the asked message whose label reads `ScriptedPress.label`, in any case, a person picked for a person picker, and `form` typed into the modal the agent opens in answer. A message with no such control gets no reply: the person cannot press what is not there. A model-written person is shown the message's controls (a link is not one) and may answer with `press` and `form` instead of `text`. Either way the reply is a `PersonReply` with `press` set, stored and replayed like any other, its `text` what the person typed or else the label, so `Relayed` hears a reason typed into a form. The press lands as `InteractionSnapshot` events by actor `PERSON` naming the person, the control, its value and what was typed: "nadia pressed “Accept”" is one event in the log.
+- An edit that changes a message's controls without changing its text is put to the person again, as a text change is: a "Thinking…" message turned into a card by `chat.update` asks its question then.
+- `Scenario.happenings` are what people do unprompted at set offsets, in three families (see "Things people do by themselves"); a messaging one (post, edit, delete, react, join, open the agent's Home tab, run a slash command) wakes the agent with `PERSON_REPLIED`.
 
 Designed:
 
@@ -1219,7 +1376,7 @@ FSL-1.1-ALv2 for the tool from its first commit; `LICENSE.md` carries it today. 
 
 - `uv run pytest -q -n auto`: every test, hermetic. Sockets are refused except to `127.0.0.1`, `::1` and `localhost`, each test fails at 60 seconds, the order is random every run, and a warning raised against our own code is an error (`pyproject.toml`). `.github/workflows/nightly.yml` repeats the suite five times and runs it against the newest release of every client library.
 - A check is tested on a hand-built world whose obligations come from the real ledger (`tests/checks/world.py`). The checks written for the captured run are tested on it, including that `near_miss_name` goes clean when the defect is removed from the run (`tests/test_checks_on_reference_run.py`).
-- A provider is tested over its ASGI app, against the store as its only state, through its refusals (`test_*_refusals.py`; AWS's are in `test_aws_provider.py`), and through the service's own client library over a real socket (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`; YouTrack over plain HTTP). Response validation against a provider's OpenAPI document is not built.
+- A provider is tested over its ASGI app, against the store as its only state, through its refusals (`test_*_refusals.py`; AWS's are in `test_aws_provider.py`), and through the service's own client library over a real socket (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`; YouTrack, which has no client library, with `httpx` through the run's proxy over TLS, one test per call a production YouTrack client makes and per query shape it builds). Response validation against a provider's OpenAPI document is not built.
 - Whole runs start a real agent process (`tests/e2e/agents/slack_agent.py`) through `session.play`, `session.fork` and the `minutehand` command.
 - `uv run python -m lints` runs every lint in `lints/`. See `docs/lints.md`.
 - Conformance against the real APIs needs real accounts and is a scheduled job, not a lint. Not built.
@@ -1278,7 +1435,10 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
-- **Every provider accepts any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana, YouTrack and Drive accept any bearer token; Drive's `/token` verifies nothing.
+- **Slack is one workspace.** Every id hangs off one team and one bot user; an agent installed in two workspaces cannot be tested.
+- **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called.
+- **A press that means to fill a form waits three real seconds** for the agent to open it with the press's `trigger_id`, as Slack's trigger lives three seconds; an agent slower than that fails the run (`FormNeverOpened`).
+- **Most providers accept any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana and YouTrack accept any bearer token unless their own seeds declare tokens. Drive accepts only tokens its `/token` issued, which expire an hour of simulated time later; `/token` matches a refresh token or a service account by name and verifies no signature.
 - **No fake's wire details have been verified against the real service.**
 - **`PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run.**
 - **A booking's wake is not awaited.** A wake made only of bookings sends no request and polls no report, so the clock may move on before a `Booked` agent acts on the delivery.

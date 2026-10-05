@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from minutehand.application.refusals import RunRefused
-from minutehand.domain.people import PersonReply
+from minutehand.domain.people import PersonReply, Press
 from minutehand.domain.scenario import (
     Absence,
     AbsenceTrigger,
@@ -24,6 +24,7 @@ from minutehand.domain.scenario import (
     Person,
     Scenario,
     Scripted,
+    ScriptedPress,
     Silent,
     WorkingHours,
 )
@@ -49,15 +50,35 @@ class ScriptedReplier:
             raise RunRefused(f"{person.key}'s replies are written by a model; the scripted replier cannot write them")
         assert isinstance(behaviour, Scripted)
         asks = _asks_of(person, [e for e in history if e.seq <= asked.seq])
-        text = next((r.text for r in behaviour.replies if r.to_ask == len(asks)), None)
-        if text is None:
+        scripted = next((r for r in behaviour.replies if r.to_ask == len(asks)), None)
+        if scripted is None:
             return None
+        press: Press | None = None
+        if scripted.press is not None:
+            press = pressed(scripted.press, asked)
+            if press is None:
+                return None
         return PersonReply(
             person=person.key,
             in_reply_to=asked.entity,
-            text=text,
+            text=scripted.said or (press.label if press is not None else ""),
             at=lands_at(self._scenario, person, asked, history, behaviour.delay),
+            press=press,
         )
+
+
+def pressed(scripted: ScriptedPress, asked: WorldEvent) -> Press | None:
+    """The control on the asked message whose label reads as the script says, in any case; None when the message
+    carries no such control, and the person, who cannot press what is not there, does nothing."""
+    if not isinstance(asked.after, MessageSnapshot):
+        return None
+    wanted = scripted.label.casefold()
+    control = next((a for a in asked.after.actions if a.label.casefold() == wanted), None)
+    if control is None:
+        return None
+    return Press(
+        action_id=control.action_id, label=control.label, value=control.value, picks=scripted.picks, form=scripted.form
+    )
 
 
 def refuse_unworkable_hours(scenario: Scenario) -> None:

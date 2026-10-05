@@ -249,17 +249,22 @@ async def test_background_calls_inside_the_settle_limit_delay_the_checkpoint_unt
     agent = agent.model_copy(
         update={
             "state": agent.state.model_copy(
-                update={"quiet": timedelta(seconds=0.2), "settle_limit": timedelta(seconds=10)}
+                update={"quiet": timedelta(seconds=0.5), "settle_limit": timedelta(seconds=10)}
             )
         }
     )
     began = time.monotonic()
     _, store, _ = await rig.run(scenario(ticket_fates=[]), agent, env=rig.env(BACKGROUND_SECONDS="1.0"))
+    finished = time.monotonic()
 
-    assert time.monotonic() - began >= 1.2
     assert all(isinstance(c.agent, Restorable) for c in checkpoints(store).values())
     last = rig.board.last_call()
     assert last is not None and last.what == "GET /testchat/inbox"
+    # Measured against the calls themselves, not a sum of durations: on a loaded machine the background work's
+    # last call lands well before its second is up. It kept calling after the agent went idle, and the run did
+    # not end until the quiet period had passed since its last call.
+    assert last.at - began >= 0.3
+    assert finished - last.at >= 0.5
 
 
 async def test_a_fork_of_an_agent_that_cannot_be_asked_for_its_report_says_it_was_not_verified(rig: Rig) -> None:

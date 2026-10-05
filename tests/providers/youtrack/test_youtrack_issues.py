@@ -22,6 +22,7 @@ from tests.providers.youtrack.youtrack_instance import (
     entities,
     entity,
     millis_now,
+    named,
     readable_ids,
     state_field,
 )
@@ -109,19 +110,29 @@ async def test_fields_select_nested_fields_and_nothing_else(client: httpx.AsyncC
     assert set(answer) == {"idReadable", "reporter", "customFields", "project", "$type"}
     assert answer["reporter"] == {"id": "1-1", "$type": "User"}
     assert answer["customFields"] == [
+        {
+            "name": "Priority",
+            "value": {"name": "Normal", "$type": "EnumBundleElement"},
+            "$type": "SingleEnumIssueCustomField",
+        },
+        {"name": "Type", "value": {"name": "Bug", "$type": "EnumBundleElement"}, "$type": "SingleEnumIssueCustomField"},
         {"name": "State", "value": {"name": "Open", "$type": "StateBundleElement"}, "$type": "StateIssueCustomField"},
         {
             "name": "Assignee",
             "value": {"name": "Tomas Brandt", "login": "tomas", "$type": "User"},
             "$type": "SingleUserIssueCustomField",
         },
+        {"name": "Due Date", "value": None, "$type": "DateIssueCustomField"},
+        {"name": "Estimation", "value": None, "$type": "PeriodIssueCustomField"},
+        {"name": "Spent time", "value": None, "$type": "PeriodIssueCustomField"},
+        {"name": "Story Points", "value": None, "$type": "SimpleIssueCustomField"},
     ]
     project = answer["project"]
     assert isinstance(project, dict)
     assert project["id"] == LAUNCH and set(project) == {"id", "team", "$type"}
     assert project["team"] == {
         "users": [{"login": login, "$type": "User"} for login in ("agent-bot", "iris", "tomas", "noor")],
-        "$type": "UserGroup",
+        "$type": "ProjectTeam",
     }
 
 
@@ -280,18 +291,16 @@ async def test_a_command_moves_state_and_assignee_and_comments(instance: Instanc
     )
 
     assert answer == {"issues": [{"idReadable": "LAUNCH-3", "$type": "Issue"}], "$type": "CommandList"}
-    assert after["customFields"] == [
-        {
-            "name": "State",
-            "value": {"name": "In Progress", "$type": "StateBundleElement"},
-            "$type": "StateIssueCustomField",
-        },
-        {
-            "name": "Assignee",
-            "value": {"name": "Tomas Brandt", "login": "tomas", "$type": "User"},
-            "$type": "SingleUserIssueCustomField",
-        },
-    ]
+    assert named(after["customFields"], "State") == {
+        "name": "State",
+        "value": {"name": "In Progress", "$type": "StateBundleElement"},
+        "$type": "StateIssueCustomField",
+    }
+    assert named(after["customFields"], "Assignee") == {
+        "name": "Assignee",
+        "value": {"name": "Tomas Brandt", "login": "tomas", "$type": "User"},
+        "$type": "SingleUserIssueCustomField",
+    }
     assert after["comments"] == [
         {"text": "Taking this on", "author": {"login": "agent-bot", "$type": "User"}, "$type": "IssueComment"},
     ]
@@ -317,8 +326,9 @@ async def test_each_command_lands_on_the_issue_by_database_id(
     entity(await client.post("/api/commands", json={"query": query, "issues": [{"id": first.id}]}))
 
     moved = instance.youtrack.issue(first.id)
-    assert moved is not None and moved.assignee is not None
-    assert instance.youtrack.user(moved.assignee) == instance.youtrack.user_by_login(login)
+    home = instance.youtrack.project(first.project)
+    assert moved is not None and home is not None
+    assert instance.youtrack.assignee_of(home, moved) == instance.youtrack.user_by_login(login)
     last = instance.store.events()[-1]
     assert isinstance(last.after, TicketSnapshot) and last.after.state is outcome
 
@@ -362,7 +372,15 @@ async def test_the_project_and_issue_custom_fields_describe_state_and_assignee(c
         )
     )
 
-    assert project_fields[0]["bundle"] == {
+    assert [named(project_fields, n)["$type"] for n in ("Priority", "State", "Assignee", "Due Date", "Estimation")] == [
+        "EnumProjectCustomField",
+        "StateProjectCustomField",
+        "UserProjectCustomField",
+        "SimpleProjectCustomField",
+        "PeriodProjectCustomField",
+    ]
+    assert named(project_fields, "Due Date")["bundle"] is None
+    assert named(project_fields, "State")["bundle"] == {
         "values": [
             {"name": "Open", "isResolved": False, "$type": "StateBundleElement"},
             {"name": "In Progress", "isResolved": False, "$type": "StateBundleElement"},
@@ -371,22 +389,20 @@ async def test_the_project_and_issue_custom_fields_describe_state_and_assignee(c
         ],
         "$type": "StateBundle",
     }
-    assert project_fields[1]["bundle"] == {
+    assert named(project_fields, "Assignee")["bundle"] == {
         "aggregatedUsers": [{"login": login, "$type": "User"} for login in ("agent-bot", "iris", "tomas", "noor")],
         "$type": "UserBundle",
     }
-    assert issue_fields == [
-        {
-            "name": "State",
-            "value": {"name": "Fixed", "isResolved": True, "$type": "StateBundleElement"},
-            "$type": "StateIssueCustomField",
-        },
-        {
-            "name": "Assignee",
-            "value": {"name": "Noor Halvorsen", "login": "noor", "$type": "User"},
-            "$type": "SingleUserIssueCustomField",
-        },
-    ]
+    assert named(issue_fields, "State") == {
+        "name": "State",
+        "value": {"name": "Fixed", "isResolved": True, "$type": "StateBundleElement"},
+        "$type": "StateIssueCustomField",
+    }
+    assert named(issue_fields, "Assignee") == {
+        "name": "Assignee",
+        "value": {"name": "Noor Halvorsen", "login": "noor", "$type": "User"},
+        "$type": "SingleUserIssueCustomField",
+    }
 
 
 async def test_users_me_and_the_user_directory(client: httpx.AsyncClient) -> None:

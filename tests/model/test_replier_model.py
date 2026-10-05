@@ -34,7 +34,17 @@ from minutehand.domain.scenario import (
     Silent,
     WorkingHours,
 )
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    Change,
+    ControlKind,
+    EntityKind,
+    EntityRef,
+    MessageAction,
+    MessageSnapshot,
+    Operation,
+    WorldEvent,
+)
 from tests.model.fake_completions import FakeCompletions, Received, fake_completions
 from tests.orchestrator.rig import T0, person, scenario
 
@@ -282,3 +292,63 @@ def test_a_written_person_with_no_model_is_refused_by_name() -> None:
 
 def test_scripted_people_need_no_model() -> None:
     PeopleReplier(scenario(), None)
+
+
+def card(store: SqliteStore, to: list[str]) -> WorldEvent:
+    return store.apply(
+        Change(
+            entity=EntityRef(provider="testchat", kind=EntityKind.MESSAGE, external_id="card"),
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            body="{}",
+            after=MessageSnapshot(
+                text="May I send the contract at 40k?",
+                channel="dm-sofia",
+                recipient_emails=to,
+                actions=[
+                    MessageAction(action_id="approve_op1", label="Accept", value="op1"),
+                    MessageAction(action_id="reject_op1", label="Reject", value="op1"),
+                    MessageAction(action_id="view_op1", label="Details", control=ControlKind.LINK),
+                ],
+            ),
+        )
+    )
+
+
+async def test_the_person_is_shown_the_controls_and_a_press_with_a_reason_comes_back_as_one(tmp_path: Path) -> None:
+    who = sofia()
+    store, clock = world(tmp_path)
+    asked = card(store, [who.email])
+
+    def rejects(received: Received) -> WrittenReply:
+        return WrittenReply(replies=True, text=None, press="Reject", form="The price is 45k now.")
+
+    async with fake_completions(rejects) as fake:
+        reply = await ModelReplier(
+            scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
+        ).decide(who, asked, store.events(), clock)
+
+    assert reply is not None and reply.press is not None
+    assert (reply.press.action_id, reply.press.value, [f.value for f in reply.press.form]) == (
+        "reject_op1",
+        "op1",
+        ["The price is 45k now."],
+    )
+    assert reply.text == "The price is 45k now."
+    [received] = fake.received
+    assert received.last.endswith('[Controls: "Accept", "Reject"]'), "a link is not a control a person answers with"
+
+
+async def test_a_press_the_message_does_not_carry_is_refused(tmp_path: Path) -> None:
+    who = sofia()
+    store, clock = world(tmp_path)
+    asked = card(store, [who.email])
+
+    def invents(received: Received) -> WrittenReply:
+        return WrittenReply(replies=True, text=None, press="Approve all")
+
+    async with fake_completions(invents) as fake:
+        with pytest.raises(RunRefused, match="Approve all"):
+            await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
+                who, asked, store.events(), clock
+            )

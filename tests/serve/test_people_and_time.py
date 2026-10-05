@@ -10,9 +10,9 @@ from slack_sdk.signature import SignatureVerifier
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
 from minutehand.domain.scenario import Seed, TicketState
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation
+from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, MessageSnapshot, Operation
 from minutehand.testing.world import OpenWorld
-from tests.serve.support import SECRET, Served, dm, event_receiver, spec
+from tests.serve.support import SECRET, Served, dm, event_receiver, seed, spec
 
 
 def test_a_person_speaking_reaches_the_services_inbound_endpoint_signed(served: Served) -> None:
@@ -93,3 +93,85 @@ def test_a_person_finishes_a_ticket_without_the_agent(served: Served) -> None:
         world.assert_ticket(titled="legal review", assignee="owen@example.com")
     finally:
         served.client.close_world(world.world_id)
+
+
+def _happening_world(served: Served, token: str, happening: dict[str, object], **seeded: object) -> OpenWorld:
+    written = seed(("owen", "Owen Owner"), ("sofia", "Sofia Romano"))
+    world_seed = Seed.model_validate({**written.model_dump(), **seeded, "happenings": [happening]})
+    spec_ = CreateWorld(seed=world_seed, claims=Claims(tokens=[token]), scripted_people=False)
+    return OpenWorld(served.client, served.client.create_world(spec_))
+
+
+def test_a_ticket_happening_lands_when_the_clock_passes_it(served: Served) -> None:
+    world = _happening_world(
+        served,
+        "pat-happens",
+        {
+            "kind": "ticket",
+            "person": "sofia",
+            "ticket": "Legal review",
+            "after": "PT2H",
+            "action": {"kind": "moves", "to": "done"},
+        },
+        tickets=[{"provider": "asana", "project": "Launch", "title": "Legal review", "assignee": "sofia"}],
+    )
+    try:
+        assert world.advance(timedelta(hours=1)).fired == []
+        late = world.advance(timedelta(hours=2))
+        assert [f.what for f in late.fired] == ["happening 1: sofia moves the seeded ticket 'Legal review'"]
+        world.assert_ticket(titled="legal review", state=TicketState.DONE, assignee="sofia@example.com")
+        assert [e.actor for e in world.events(operation=Operation.UPDATE) if e.entity.kind is EntityKind.TICKET] == [
+            Actor.PERSON
+        ]
+    finally:
+        served.client.close_world(world.world_id)
+
+
+def test_a_document_happening_lands_when_the_clock_passes_it(served: Served) -> None:
+    world = _happening_world(
+        served,
+        "ya29.happens",
+        {
+            "kind": "document",
+            "person": "sofia",
+            "document": "Plan",
+            "after": "PT2H",
+            "action": {"kind": "renamed", "to": "Plan (final)"},
+        },
+        documents=[{"provider": "google_drive", "title": "Plan", "text": "draft", "owner": "sofia"}],
+    )
+    try:
+        assert world.advance(timedelta(hours=1)).fired == []
+        late = world.advance(timedelta(hours=2))
+        assert [f.what for f in late.fired] == ["happening 1: sofia renamed the seeded document 'Plan'"]
+        renamed = [e for e in world.events(actor=Actor.PERSON) if isinstance(e.after, DocumentSnapshot)]
+        assert [e.after.title for e in renamed if isinstance(e.after, DocumentSnapshot)] == ["Plan (final)"]
+    finally:
+        served.client.close_world(world.world_id)
+
+
+def test_a_messaging_happening_is_pushed_when_the_clock_passes_it(served: Served) -> None:
+    with event_receiver() as receiver:
+        written = spec("xoxb-happens", inbound=receiver.url)
+        world_seed = Seed.model_validate(
+            {
+                **written.seed.model_dump(),
+                "happenings": [
+                    {
+                        "kind": "posts",
+                        "provider": "slack",
+                        "person": "sofia",
+                        "text": "Booked it myself.",
+                        "after": "PT2H",
+                    }
+                ],
+            }
+        )
+        world = OpenWorld(served.client, served.client.create_world(written.model_copy(update={"seed": world_seed})))
+        try:
+            assert world.advance(timedelta(hours=1)).fired == [] and receiver.texts() == []
+            late = world.advance(timedelta(hours=2))
+            assert [f.what for f in late.fired] == ["happening 1: sofia posts"]
+            assert receiver.texts() == ["Booked it myself."]
+        finally:
+            served.client.close_world(world.world_id)

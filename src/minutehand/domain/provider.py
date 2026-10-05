@@ -19,6 +19,14 @@ class Tier(StrEnum):
     FINISHED = "finished"  # hand-finished: refusals, pushed events, sign-in, known quirks
 
 
+class TicketField(StrEnum):
+    """A `SeededTicket` field not every ticket provider can hold."""
+
+    KEY = "key"  # the scenario's own name for the ticket, by which the provider's own seed names it
+    LABELS = "labels"
+    COMMENTS = "comments"
+
+
 class Manifest(Model):
     key: ProviderKey
     tier: Tier
@@ -28,4 +36,9 @@ class Manifest(Model):
     pushes_events: bool = False
     books_wakes: bool = Field(
         default=False, description="True for a scheduler: what the agent books here becomes a wake"
+    )
+    ticket_fields: list[TicketField] = Field(
+        default=[],
+        description="The optional `SeededTicket` fields its tickets hold; a scenario that sets any other on one of "
+        "its tickets is refused at load, since the provider would drop it in silence",
     )

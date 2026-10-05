@@ -396,7 +396,8 @@ class GitHubApi:
         else:
             pushed = {r.full_name: (r.commits[0].date if r.commits else r.created_at) for r in mine}
             created = {r.full_name: r.created_at for r in mine}
-            moment = created if sort == "created" else pushed
+            by_creation = sort == "created"  # enum-lint: exempt GitHub's `sort` query value, its wire vocabulary
+            moment = created if by_creation else pushed
             mine.sort(key=lambda r: (moment[r.full_name], r.full_name.lower()), reverse=True)
         start, end, links = self._page(request, len(mine))
         self._world.saw(state.account_ref(account.login), Operation.SEARCH)

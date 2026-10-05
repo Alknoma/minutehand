@@ -583,7 +583,7 @@ class _Run:
             return repository.name
         if name == "nameWithOwner":
             return repository.full_name
-        if name == "description":
+        if name == "description":  # enum-lint: exempt a GitHub GraphQL Repository field name, its wire vocabulary
             return repository.description
         if name == "homepageUrl":
             return repository.homepage

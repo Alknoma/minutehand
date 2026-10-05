@@ -7,20 +7,32 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.conversation import Provenance
-from minutehand.domain.scenario import Model, ProviderKey
+from minutehand.domain.scenario import FormInput, Model, ProviderKey
 from minutehand.domain.world import EntityRef
 
 
+class Press(Model):
+    """A control the person uses on the message they answer, instead of writing back, and the form they fill if
+    the agent opens one for it."""
+
+    action_id: str = Field(description="The control's own id, as the agent wrote it on the message")
+    label: str = Field(description="What the control reads, as the person saw it")
+    value: str | None = Field(default=None, description="The control's own value, as the agent wrote it")
+    picks: str | None = Field(default=None, description="Person.key chosen, when the control picks a person")
+    form: list[FormInput] = []
+
+
 class PersonReply(Model):
-    """One reply from one person, decided once and stored with the run."""
+    """One reply from one person, decided once and stored with the run: text written back, or a control used."""
 
     person: str = Field(description="Person.key")
     in_reply_to: EntityRef
-    text: str
+    text: str = Field(description="What they said: their message, or for a press what the form holds, else the label")
     at: AwareDatetime = Field(description="Simulated time the reply lands")
     written_by: Provenance | None = Field(
         default=None, description="The model and prompt that wrote it; None is scripted"
     )
+    press: Press | None = Field(default=None, description="Set when the reply is a control used, not a message")
 
 
 class PersonMessage(Model):
@@ -59,6 +71,11 @@ class InboundTarget(Model):
 
     provider: ProviderKey
     url: str
+    interactivity_url: str | None = Field(
+        default=None,
+        description="Where a person's use of a control or a form is pushed (Slack's interactivity request URL); "
+        "None: the same as `url`",
+    )
     secret: SigningSecret | None = Field(
         default=None,
         description="Where the secret that signs pushed events comes from; None signs with one made per run "

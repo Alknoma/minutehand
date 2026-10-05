@@ -53,7 +53,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import Receiver
 from minutehand.application.outbound import outbound_uses
-from minutehand.application.refusals import RunRefused
+from minutehand.application.refusals import RunRefused, refuse_unheld_ticket_fields
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import StandingWorld, WorldRefused
 from minutehand.checks.runner import RunResult
@@ -197,6 +197,10 @@ class Standing:
             capturing = Capturing(spec.outbound, replaying=replaying_for(spec.outbound, state=self._state))
         except (ProviderConflict, FileNotFoundError) as e:
             raise WorldRefused(f"this world's outbound hosts: {e}") from e
+        try:
+            refuse_unheld_ticket_fields(spec.seed.tickets, self._manifests)
+        except RunRefused as refused:
+            raise WorldRefused(str(refused)) from refused
         world_id = secrets.token_hex(6)
         scenario = spec.seed.starting(_now())
         directory = run_dir(self._state, world_id)

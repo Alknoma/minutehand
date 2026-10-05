@@ -12,7 +12,7 @@ from typing import Protocol, runtime_checkable
 from minutehand.domain.clock import Due
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.scenario import DocumentHappening, MessagingHappening, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -53,6 +53,29 @@ class PushesEvents(Protocol):
         pushed like any event, signed with `secret`. How a goal or a direction sent by message reaches the agent."""
         ...
 
+    async def happen(
+        self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        """Something a person does unprompted at a moment the scenario sets (posts, edits, deletes, reacts, joins a
+        channel, opens the agent's page, runs one of its commands), recorded as actor PERSON and pushed as the real
+        service pushes it. A happening this provider has no such thing for is refused loudly."""
+        ...
+
+
+@runtime_checkable
+class PushesInteractions(Protocol):
+    """A provider whose messages carry controls a person can use (Slack's buttons, Teams' card actions), and whose
+    real service tells the agent when one is used."""
+
+    async def press(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        """The person uses `reply.press` on the message `reply.in_reply_to`: recorded as actor PERSON, pushed to
+        `target`'s interactivity URL signed with `secret`, and the agent's answer applied as the real service applies
+        it. A form the agent opens in answer is filled with `reply.press.form` and submitted the same way. A
+        reply with no press, or a control the message does not carry, is refused loudly."""
+        ...
+
 
 @runtime_checkable
 class HoldsTickets(Protocol):
@@ -71,6 +94,18 @@ class EditsTickets(Protocol):
         self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
     ) -> None:
         """Change the ticket's state and/or assignee, recorded as actor SCENARIO. None leaves a field as it is."""
+        ...
+
+
+@runtime_checkable
+class ActsOnTickets(Protocol):
+    """A provider whose seeded tickets people act on by themselves: how a `TicketHappening` lands."""
+
+    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        """Do what the happening says to the seeded ticket it names (`Scenario.happening_ticket`), as its person
+        would, recorded as actor PERSON. A ticket no longer there (the agent deleted it) is left alone and
+        nothing is written: the person finds nothing to act on. An action the provider cannot express raises:
+        the scenario asked for something this world cannot show."""
         ...
 
 
@@ -104,4 +139,29 @@ class BooksWakes(Protocol):
         The booking has already left the pending set when this is called, so a recurring
         schedule books its next occurrence under the same `ref` from here.
         """
+        ...
+
+
+@runtime_checkable
+class ChangesDocuments(Protocol):
+    """A provider whose seeded documents people change by themselves: how a `DocumentHappening` lands."""
+
+    def change(self, happening: DocumentHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        """Do what the happening says to the seeded document it names (`Scenario.happening_document`), as its
+        person would, recorded as actor PERSON. A document no longer there (the agent deleted it) is left alone
+        and nothing is written."""
+        ...
+
+
+@runtime_checkable
+class NotifiesChanges(Protocol):
+    """A provider the agent can ask to be told when its documents change (Drive's `changes.watch`): how a
+    `DocumentHappening` becomes a wake."""
+
+    def watched(self, world: Store, clock: Clock) -> bool:
+        """Whether the agent has asked to be told of changes and has not stopped asking."""
+        ...
+
+    async def notify(self, world: Store, clock: Clock) -> None:
+        """Tell the agent, the way the real service would, of every change it has not been told of."""
         ...

@@ -458,6 +458,9 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     }
     if (a && a.kind === "document") { return [actor + " " + verb + " a document", "“" + a.title + "”"]; }
     if (a && a.kind === "record") { return [actor + " " + verb + " a " + a.resource + " record", a.text]; }
+    if (a && a.kind === "interaction") {
+      return [who.key(a.person) + (a.interaction === "press" ? " pressed “" : " submitted “") + a.label + "”", a.form.join("\n")];
+    }
     return [actor + " " + verb + " a " + ev.entity.kind + " in " + ev.entity.provider, ""];
   }
 

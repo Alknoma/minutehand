@@ -36,6 +36,14 @@ class PendingFate(Model):
     becomes: TicketState
 
 
+class PendingHappening(Model):
+    """Something the scenario has a person do by themselves (`Scenario.happenings`), of any family, not yet done."""
+
+    kind: Literal["happening"] = "happening"
+    due: Due
+    happening: int = Field(ge=0, description="Position in the scenario's `happenings`")
+
+
 class PendingWake(Model):
     """A wake the agent asked for (`DUE`, from `AgentReport.next_wake`) or a `Polled` tick (`TICK`)."""
 
@@ -60,7 +68,8 @@ class PendingBooking(Model):
 
 
 Pending = Annotated[
-    PendingReply | PendingFate | PendingWake | PendingDirection | PendingBooking, Field(discriminator="kind")
+    PendingReply | PendingFate | PendingHappening | PendingWake | PendingDirection | PendingBooking,
+    Field(discriminator="kind"),
 ]
 
 
