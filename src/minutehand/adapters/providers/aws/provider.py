@@ -23,9 +23,10 @@ What the world log holds, and what it does not:
   their messages, and moto's copy of each schedule are not in the log, and each
   run's app takes a fresh account (below), so a fork cannot reach them at all: the
   schedule record it shares with its parent names the parent's account, whose
-  queues live only in the memory of the process that played the parent. A fork
-  whose checkpoint holds a pending booking is therefore refused before it starts
-  (`application.rewind`); `fire` raises `LookupError` on a schedule targeting
+  queues live only in the memory of the process that played the parent. The
+  manifest says so (`state_outside_log`), and a fork of a run that used this
+  provider before the fork's seq is therefore refused before it starts, naming
+  it (`application.rewind`); `fire` raises `LookupError` on a schedule targeting
   another account. moto's SQS backend holds a `threading.RLock` and cannot be
   pickled or deep-copied, so there is no per-run snapshot to restore instead.
 - **moto reads the machine clock.** SQS DelaySeconds, VisibilityTimeout,

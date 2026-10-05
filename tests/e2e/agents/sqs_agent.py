@@ -1,6 +1,6 @@
 """An agent that books its own follow-up with EventBridge Scheduler and finds it on its own SQS queue.
 
-Started with `serve --port <n> --state <file> --act <seconds>`. On the START wake it creates a queue and a one-time
+Started with `--port <n> --state <file> --act <seconds>`. On the START wake it creates a queue and a one-time
 schedule five hours after the wake's `now`, targeting that queue, with stock boto3 configured only by the
 environment Minutehand hands it. A poller thread reads the queue on its own timer; for each message it acts for
 `--act` seconds and then deletes it, as a worker on SQS does. Its report says IDLE throughout: the agent cannot
@@ -10,6 +10,8 @@ know a delivery is on its way, so only the scheduler can tell the run the wake i
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import socketserver
 import sys
 import threading
@@ -63,6 +65,7 @@ class Agent:
                 self.sqs.delete_message(QueueUrl=self.queue_url, ReceiptHandle=message["ReceiptHandle"])
                 self.log["deleted"].append(message["Body"])
                 self.save()
+                return  # one follow-up is all it books: with it taken, the agent is quiet
 
 
 def serve(port: int, state: Path, act: float) -> None:
@@ -101,8 +104,18 @@ def serve(port: int, state: Path, act: float) -> None:
     server.serve_forever(poll_interval=0.05)
 
 
+def keep(state: Path, *, restoring: bool) -> None:
+    """`snapshot <state>` and `restore <state>`: the state file, copied to or from Minutehand's snapshot directory."""
+    kept = Path(os.environ["MINUTEHAND_SNAPSHOT_DIR"]) / "state.json"
+    source, target = (kept, state) if restoring else (state, kept)
+    if source.exists():
+        shutil.copyfile(source, target)
+
+
 if __name__ == "__main__":
     args = sys.argv
-    serve(
-        int(args[args.index("--port") + 1]), Path(args[args.index("--state") + 1]), float(args[args.index("--act") + 1])
-    )
+    if args[1] in ("snapshot", "restore"):
+        keep(Path(args[2]), restoring=args[1] == "restore")
+    else:
+        port, state = int(args[args.index("--port") + 1]), Path(args[args.index("--state") + 1])
+        serve(port, state, float(args[args.index("--act") + 1]))

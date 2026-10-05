@@ -1008,7 +1008,7 @@ What a rewind needs beyond the world:
 | People's replies already given | The `reply` table; copied up to the fork, decided fresh after it | Built |
 | The agent's own state | Locally: `StateHooks`, a procedure Minutehand owns (below) | Built and tested: SQLite in the default suite, a Firestore emulator against a real container (`-m firestore`) |
 | | Hosted: a snapshot of the whole virtual machine the agent runs in, which needs no hooks | Designed, not built |
-| AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. A fork whose checkpoint holds a pending booking is refused, naming the booking (`application/rewind.py`). | Known limit |
+| AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. The manifest says so (`Manifest.state_outside_log`), and a fork at any checkpoint after the parent first called AWS, or wrote an AWS record, is refused, naming the provider, its first call and what it keeps (`application/rewind.py`; `tests/e2e/test_booked_on_aws.py`). A fork before the first call runs. | Refused, never silently wrong |
 
 #### The agent's own state: settle, restore, verify
 
@@ -1089,7 +1089,7 @@ The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`
 | Source | What the agent must do | Exact? | Cost of a quiet fortnight | State |
 |---|---|---|---|---|
 | **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider. | Yes | None | Built (Slack) |
-| **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built (AWS); not tested through a whole run |
+| **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built and tested through a whole run on AWS (`tests/e2e/test_booked_on_aws.py`) |
 | **`Reported`**: the agent answers `next_wake` at `report_url` | An endpoint, or an adapter beside its tests | Yes | None | Built and tested |
 | **`Command`**: one process per wake, `WakeRequest` on stdin, `AgentReport` on stdout | A command | Yes | None | Built and tested |
 | **`Polled`**: the agent is invoked every `every` (default 5 minutes) and decides for itself | Declare the rhythm | Yes, at that rhythm | One call per tick: 4,032 calls for 14 days at 5 minutes, each a wake counted against `Scenario.max_wakes` | Built and tested |
@@ -1103,7 +1103,7 @@ Every scheduler is translated into one internal shape (`Due`, booked through `Wa
 
 | Scheduler | How the agent books | How the wake is delivered | State |
 |---|---|---|---|
-| AWS EventBridge Scheduler | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule` with `at(...)`, `rate(...)` or `cron(...)` (no `L`, `W`, `#`), a timezone, start and end dates, state, `ActionAfterCompletion` | Into the target SQS queue (with `MessageGroupId` for FIFO), where the agent's own poll finds it | Built and tested at the provider. Any other target raises when it fires. Each booking and delivery is a `RecordSnapshot` in the log; the queues themselves are in moto's memory. |
+| AWS EventBridge Scheduler | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule` with `at(...)`, `rate(...)` or `cron(...)` (no `L`, `W`, `#`), a timezone, start and end dates, state, `ActionAfterCompletion` | Into the target SQS queue (with `MessageGroupId` for FIFO), where the agent's own poll finds it; taken (`ConfirmsDelivery`) when the agent deletes the message (`DeleteMessage`, `DeleteMessageBatch`, JSON or query protocol), and the run waits for that | Built and tested at the provider and through a whole run. Any other target raises when it fires. Each booking, delivery and the agent's delete of a delivery is in the log; the queues themselves are in moto's memory. |
 | SQS delay | `DelaySeconds` | moto's own, on the machine clock | Not on the run's clock |
 | Google Cloud Tasks | gRPC by default, plus a token fetch from Google's sign-in host; no `moto` equivalent | An HTTP call to the task's URL | Not attempted. gRPC responses need trailers, which the app host does not produce. |
 | A fixed schedule set at deploy time (Cloud Scheduler, a Kubernetes CronJob, Vercel cron) | Not booked at run time at all | `Polled`, with the schedule written in the agent file | Designed |
@@ -1508,7 +1508,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A standing world isolates only by what the call carries.** Services that hold one fixed credential per provider put every test's calls in one world (`docs/serve.md`).
 - **A fork starts only at a restorable checkpoint,** and only for an agent with `StateHooks`. A checkpoint at which the agent did not settle within `settle_limit` is not restorable.
 - **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
-- **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
+- **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork from any checkpoint after the agent first used AWS is refused, naming what it cannot rewind. Re-creating moto's state from the log is not built: queue creation, sends and receives are calls, not log entries, and SQS visibility timeouts run on the machine clock. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
 - **Slack's default workspace accepts any token.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`, in which any `xoxb-` or `xoxp-` token acts as the bot; a world that declares workspaces accepts only their tokens.
 - **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called.
@@ -1526,7 +1526,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A fork's lookups replay its parent's by default** (`in_forks: replay`): a pass-through host is answered from the parent's recording of the same call, falling back to the real host on a miss.
 - **A restore is proven by what the report and the fingerprint cover.** A `fingerprint` that digests only the database misses a process left running with another moment in memory; the reference agent's covers each process's memory digest too (`examples/reference_agent/hooks.py`).
 - **Settling cannot see work the proxy cannot see unless the agent says so.** Writes to a database on this machine, or computation, are seen only through the report's WORKING and the `busy` command; a checkpoint settled without `busy` is marked unconfirmed. On a tunnel, server bytes are read as an answer by their TLS record headers alone: a TLS 1.3 server that sends its session tickets in two writes, or an HTTP/2 server's preface, still reads as answering the first request on a new connection (`adapters/proxy/tunnel.py`).
-- **A booked wake is awaited only where the scheduler can tell.** `ConfirmsDelivery` is implemented by the test scheduler; the AWS provider does not implement it, so a `Booked` agent on SQS can still be moved past its delivery.
+- **A booked delivery is taken only when everything its schedule delivered is deleted.** A recurring schedule whose earlier delivery the agent never deleted holds each later wake until `Booked.take_limit`.
 - **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; Node's `fetch` is only mentioned.
 - **The handed-out `NO_PROXY` names `localhost`,** which `requests` and `urllib` read as covering every name under it: a real `*.localhost` host is sent direct. `minutehand doctor --agent` reports each such declared host.
 - **httpx cannot reach an IPv6 literal through a proxy** (its CONNECT omits the brackets; mitmproxy answers 400).

@@ -14,12 +14,13 @@ refused after it exists (its restore failed) is discarded, so no refusal leaves 
 What no fork can rewind, because it was never in the log or the snapshot: what a real third-party service the
 run reached keeps (the proxy refuses unclaimed hosts, but a model API is reached for real), what a model
 provider keeps on its side (a stored conversation, a cache, a batch), the AWS provider's queues and schedules
-(in moto's memory), and work the agent does in the background that outlives the quiet period.
+(in moto's memory), and work the agent does in the background that outlives the quiet period. A provider that says
+it keeps state outside the log (`Manifest.state_outside_log`, AWS) refuses any fork after the parent first used it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -42,6 +43,7 @@ from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, re
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
+from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
@@ -116,6 +118,7 @@ async def fork_run(
     own: OwnProgram | None = None,
     progress: Progress | None = None,
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
+    manifests: Sequence[Manifest] = (),
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -123,6 +126,9 @@ async def fork_run(
     `fork` makes stamps from that same clock, which this function moves to the checkpoint. `own` is the agent's
     program when Minutehand started it, stopped and started again around the restore; `progress` hears each
     restore step as it is taken. Each child's restore is kept as `restore.json` in its directory.
+
+    `manifests` are those of every installed provider, beside the run's own `services`: a provider the agent called
+    without the scenario or agent file naming it is still one whose state may be outside the log.
     """
     if fork.parent_run != parent.run_id:
         raise RunRefused(f"the fork names parent {fork.parent_run}; the record given is {parent.run_id}")
@@ -151,6 +157,9 @@ async def fork_run(
         restorable = _restorable(checkpoint, agent, parent.run_id, fork.at_seq)
         _refuse_unkept(parent_store, restorable, agent, parent.run_id, fork.at_seq)
         _refuse_pending_bookings(checkpoint, parent.run_id, fork.at_seq)
+        _refuse_state_outside_log(
+            parent_store, [*manifests, *(p.manifest for p in services.providers)], checkpoint, fork.at_seq
+        )
         child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         try:
             clock.jump(checkpoint.now)
@@ -283,6 +292,35 @@ def _refuse_pending_bookings(checkpoint: Checkpoint, parent: str, at_seq: int) -
             f"run {parent} has {len(pending)} booked wake(s) pending at seq {at_seq} ({named}); a scheduler keeps "
             "what a booking delivers to outside the run's log, so a fork could not deliver it. Fork from a "
             "checkpoint with no booking pending"
+        )
+
+
+def _refuse_state_outside_log(store: Store, manifests: Sequence[Manifest], checkpoint: Checkpoint, at_seq: int) -> None:
+    """A provider whose state lives outside the log (`Manifest.state_outside_log`) that the parent used before the
+    fork would answer the child from nothing: a fresh account, its queues gone, while the restored agent holds
+    their names. That is a rerun silently wrong, so it is refused, naming what was used. Used means a call it
+    answered that the child would share, by the rule `Store.fork` applies, or a change it wrote at or before the
+    fork's seq (a call that changed nothing it logs still built state, e.g. a queue created)."""
+    outside = {m.key: m.state_outside_log for m in manifests if m.state_outside_log is not None}
+    used: dict[ProviderKey, list[str]] = {}
+    for call in store.calls():
+        if call.provider in outside and call.first_seq - 1 <= at_seq and call.wake <= checkpoint.wake:
+            used.setdefault(call.provider, []).append(
+                f"{call.exchange.method} {call.exchange.host}{call.exchange.path.split('?')[0]}"
+            )
+    for event in store.events():
+        key = event.entity.provider
+        if key in outside and event.seq <= at_seq:
+            used.setdefault(key, [])
+    if used:
+        named = "; ".join(
+            f"{key} ({f'{len(calls)} call(s) before it, the first {calls[0]}' if calls else 'its changes in the log'})"
+            f", which keeps {outside[key]}"
+            for key, calls in sorted(used.items())
+        )
+        raise RunRefused(
+            f"the fork at seq {at_seq} of run {store.run_id} cannot rewind what the run had built up in {named}: "
+            "the child would be answered from none of it. Fork from a checkpoint before the agent first used it"
         )
 
 

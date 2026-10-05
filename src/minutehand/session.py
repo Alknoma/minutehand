@@ -344,6 +344,7 @@ async def fork(
                     own=own,
                     progress=progress,
                     channels=replies_for(agent, changed, signing),
+                    manifests=registry.manifests,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)

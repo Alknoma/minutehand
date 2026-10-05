@@ -23,4 +23,6 @@ MANIFEST = Manifest(
     hosts=["*.amazonaws.com"],
     kinds=[EntityKind.RECORD],
     books_wakes=True,
+    state_outside_log="its queues, their messages and its copy of each schedule, in moto's memory of the process "
+    "that played the run, under that run's own account",
 )
