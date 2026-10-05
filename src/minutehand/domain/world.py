@@ -146,8 +146,8 @@ class MessageSnapshot(Model):
     actions: list[MessageAction] = Field(default=[], description="What a reader can press or pick on it, in order")
     answerable: bool = Field(
         default=True,
-        description="Whether its recipients can answer where it was sent; False for a captured send (an email "
-        "through a declared host), which nobody answers in this version",
+        description="Whether its recipients can answer where it was sent; False for a captured send whose "
+        "declaration says nothing of replies (`Acknowledge.replies`), which nobody can answer",
     )
 
 
