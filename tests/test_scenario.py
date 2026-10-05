@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from minutehand.domain.agent import AgentUnderTest
+from minutehand.domain.agent import AgentUnderTest, StateHooks
 from minutehand.domain.experiment import Fork
 from minutehand.domain.scenario import Scenario, Seed, WrittenScenario
 
@@ -317,3 +317,10 @@ def test_a_tell_a_person_edits_into_a_document_is_refused() -> None:
                 "expect": [{"kind": "relayed", "said_by": "rosa", "to": "owner", "tell": "lakeside hall"}],
             }
         )
+
+
+def test_state_hooks_that_keep_no_snapshot_are_refused() -> None:
+    assert StateHooks(snapshot=["s"], restore=["r"]).keep is None
+    assert StateHooks(snapshot=["s"], restore=["r"], keep=3).keep == 3
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        StateHooks(snapshot=["s"], restore=["r"], keep=0)

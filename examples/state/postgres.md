@@ -20,7 +20,8 @@ copy is a file-level clone of the template, so it is quick for a database of a f
 - `start`: start the agent's processes.
 
 Cost: one database per restorable checkpoint, held until the run is deleted. Every checkpoint briefly cuts
-the agent's connections.
+the agent's connections. Pruning (`keep:`) lets go of the directory holding a template's name, not of the
+template: dropping it is the agent's own business.
 
 ## Large databases: a base backup and point-in-time recovery
 

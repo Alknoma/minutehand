@@ -11,8 +11,9 @@ directory under the state directory, written by the models, so a later process c
     <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
     <state>/runs/<run_id>/agent.json     `AgentUnderTest`
     <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
-    <state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks` and
-                                         settled in time
+    <state>/runs/<run_id>/world.pool/    the agent's snapshots, each file once, for a root run and its forks
+                                         (`adapters.store.sqlite`); `wake-<n>/` is where the snapshot command
+                                         writes until the store has kept it, `restoring/` where a restore reads
     <state>/runs/<run_id>/restore.json   for a fork, or a sample after the first: every step of the restore that
                                          started it, with each command's output, and whether it was verified
 
@@ -31,7 +32,6 @@ import os
 import secrets
 import shutil
 import sqlite3
-import threading
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -48,7 +48,7 @@ from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
-from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
+from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import Receiver, exporter_environment
 from minutehand.application.checkpoint import (
@@ -56,6 +56,7 @@ from minutehand.application.checkpoint import (
     AgentState,
     NoHooks,
     NotRestorable,
+    Restorable,
     checkpoints,
     read_checkpoint,
 )
@@ -66,7 +67,7 @@ from minutehand.application.replier_model import PeopleReplier
 from minutehand.application.restore import Progress, Restored, SeenCall, restore_agent
 from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import wake_dir
+from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import WakeRecord
@@ -74,6 +75,7 @@ from minutehand.domain.experiment import Fork
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
+from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.agent import Reports
 from minutehand.ports.clock import Clock
@@ -172,10 +174,13 @@ async def play(
     capturing = capturing_for(agent, registry, state=state)
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
+    opened = [first[0]]
     listen = listen or Listen()
     async with intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
+            if sample > 0:
+                opened.append(store)
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
@@ -204,6 +209,8 @@ async def play(
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
+    for store in opened:
+        store.close()  # the run is over: its write-ahead log is cut to nothing
     return outcomes
 
 
@@ -229,15 +236,22 @@ async def _restore_start(
         raise RunRefused(
             f"the next sample cannot start where run {first.run_id} started: its start is not restorable: {why}"
         )
-    restored = await restore_agent(
-        agent.state,
-        wake_dir(state / RUNS, restorable.snapshot_of, restorable.wake),
-        checkpoint_seq=seq,
-        recorded=restorable.report,
-        reports=main if isinstance(main, Reports) else None,
-        own=own,
-        progress=progress,
-    )
+    kept = first.snapshot(restorable.snapshot_of, restorable.wake)
+    if kept is None or kept.pruned:
+        why = SNAPSHOT_PRUNED if kept is not None else "its snapshot was never kept"
+        raise RunRefused(f"the next sample cannot start where run {first.run_id} started: {why}")
+    with materialised(
+        first, restorable.snapshot_of, restorable.wake, restore_dir(state / RUNS, directory.name)
+    ) as snapshot:
+        restored = await restore_agent(
+            agent.state,
+            snapshot,
+            checkpoint_seq=seq,
+            recorded=restorable.report,
+            reports=main if isinstance(main, Reports) else None,
+            own=own,
+            progress=progress,
+        )
     (directory / RESTORE_RECORD).write_text(restored.model_dump_json(indent=2), encoding="utf-8")
 
 
@@ -317,6 +331,7 @@ async def fork(
             raise
         finally:
             routing.apply(child_id, [])
+            truncate_log(world)
     outcomes: list[Outcome] = []
     for record in records:
         child = run_dir(state, record.run_id)
@@ -368,8 +383,16 @@ def fork_points(state: Path, run_id: str) -> list[ForkPoint]:
 
 def points_in(world: Store) -> list[ForkPoint]:
     """The checkpoints a world's log holds, each a point a fork may be taken from, and whether the agent's own
-    state there can be put back."""
-    return [ForkPoint(wake=c.wake, seq=seq, agent=c.agent) for seq, c in checkpoints(world).items()]
+    state there can be put back: a checkpoint recorded as restorable whose snapshot has since been pruned is not."""
+    points: list[ForkPoint] = []
+    for seq, checkpoint in checkpoints(world).items():
+        agent = checkpoint.agent
+        if isinstance(agent, Restorable):
+            kept = world.snapshot(agent.snapshot_of, agent.wake)
+            if kept is not None and kept.pruned:
+                agent = NotRestorable(reason=SNAPSHOT_PRUNED)
+        points.append(ForkPoint(wake=checkpoint.wake, seq=seq, agent=agent))
+    return points
 
 
 def restore_of(state: Path, run_id: str) -> Restored | None:
@@ -377,6 +400,99 @@ def restore_of(state: Path, run_id: str) -> Restored | None:
     started from the beginning."""
     path = run_dir(state, run_id) / RESTORE_RECORD
     return Restored.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+class Checkpointed(Model):
+    """One checkpoint of a run with what keeping the agent's state there costs."""
+
+    point: ForkPoint
+    snapshot: AgentSnapshot | None = Field(description="None when the agent's state there was never snapshotted")
+
+
+def checkpoints_of(state: Path, run_id: str) -> list[Checkpointed]:
+    """Every checkpoint of a run, whether a fork can be taken from it, and its snapshot's size."""
+    with reading(state, run_id) as world:
+        found: list[Checkpointed] = []
+        for point in points_in(world):
+            restorable = checkpoints(world)[point.seq].agent
+            snapshot = (
+                world.snapshot(restorable.snapshot_of, restorable.wake) if isinstance(restorable, Restorable) else None
+            )
+            found.append(Checkpointed(point=point, snapshot=snapshot))
+        return found
+
+
+def pin(state: Path, run_id: str, seq: int, *, pinned: bool) -> AgentSnapshot:
+    """Pin, or unpin, the snapshot of a run's checkpoint at `seq`, so its agent's `StateHooks.keep` never prunes
+    it. Refused for a checkpoint with no snapshot, or one already pruned."""
+    entry = find(state, run_id)
+    with reading(state, run_id) as world:
+        found = checkpoints(world)
+    if seq not in found:
+        raise RunRefused(f"run {run_id} has no checkpoint at seq {seq}; its checkpoints are at {list(found)}")
+    restorable = found[seq].agent
+    if not isinstance(restorable, Restorable):
+        raise RunRefused(f"the checkpoint at seq {seq} of run {run_id} has no snapshot of the agent to pin")
+    store = SqliteStore(run_dir(state, entry.root) / WORLD, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
+    try:
+        return store.pin(restorable.snapshot_of, restorable.wake, pinned=pinned)
+    except (LookupError, ValueError) as e:
+        raise RunRefused(f"the checkpoint at seq {seq} of run {run_id}: {e}") from e
+    finally:
+        store.close()
+
+
+def usage_of(state: Path, run_id: str) -> RunUsage:
+    """What one run costs on disk: its rows, the bodies and the snapshot files it alone holds."""
+    with reading(state, run_id) as world:
+        return world.usage()
+
+
+class Collected(Model):
+    """What one housekeeping pass removed."""
+
+    freed: Freed = Field(description="Stored bodies and snapshot files nothing referred to, across every world file")
+    removed: list[str] = Field(default=[], description="Run directories removed whole, as asked")
+    removed_bytes: int = Field(default=0, ge=0)
+    swept: int = Field(default=0, ge=0, description="World files swept")
+    skipped: list[str] = Field(default=[], description="World files that could not be swept, and why")
+
+
+def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
+    """Remove the run directories named in `remove`, then sweep every world file left under `state` of the stored
+    bodies and snapshot files nothing refers to. `minutehand gc`, and a standing server's retention of closed
+    worlds, are this."""
+    removed_bytes = 0
+    for run_id in remove:
+        directory = run_dir(state, run_id)
+        removed_bytes += sum(p.stat().st_size for p in directory.rglob("*") if p.is_file())
+        shutil.rmtree(directory, ignore_errors=True)
+    totals = Freed(bodies=0, body_bytes=0, files=0, file_bytes=0)
+    swept = 0
+    skipped: list[str] = []
+    base = state / RUNS
+    for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        path = directory / WORLD
+        roots = [run for run, parent, _ in _ReadOnlyStore.runs_in(path) if parent is None] if path.is_file() else []
+        if not roots:
+            continue
+        try:
+            store = SqliteStore(path, roots[0], RunClock(datetime.fromtimestamp(0, UTC)))
+        except (RuntimeError, sqlite3.Error) as e:
+            skipped.append(f"{path}: {e}")
+            continue
+        try:
+            freed = store.sweep()
+        finally:
+            store.close()
+        swept += 1
+        totals = Freed(
+            bodies=totals.bodies + freed.bodies,
+            body_bytes=totals.body_bytes + freed.body_bytes,
+            files=totals.files + freed.files,
+            file_bytes=totals.file_bytes + freed.file_bytes,
+        )
+    return Collected(freed=totals, removed=list(remove), removed_bytes=removed_bytes, swept=swept, skipped=skipped)
 
 
 class Logged(Model):
@@ -469,11 +585,7 @@ class _ReadOnlyStore(SqliteStore):
     and a run still being written in WAL mode is read as of its last commit. Any write raises."""
 
     def __init__(self, path: Path, run_id: str, clock: Clock) -> None:
-        self.run_id = run_id
-        self._path = path
-        self._clock = clock
-        self._lock = threading.RLock()
-        self._db = _read_only(path)
+        self._attach(path, run_id, clock, _read_only(path))
         found = self._db.execute("PRAGMA user_version").fetchone()[0]
         if found != SCHEMA_VERSION:
             self._db.close()
