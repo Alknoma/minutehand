@@ -12,6 +12,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Concatenate
 
@@ -19,7 +20,7 @@ from pydantic import TypeAdapter
 
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
-from minutehand.domain.telemetry import ForwardFailure, ReceivedSpan, Signal, SpanSource, StoredSpan
+from minutehand.domain.telemetry import ForwardFailure, Placement, ReceivedSpan, Signal, SpanSource, StoredSpan
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -37,6 +38,11 @@ from minutehand.ports.clock import Clock
 _SNAPSHOT = TypeAdapter(Snapshot)
 
 
+class _Edge(StrEnum):
+    BEGAN = "began"
+    ENDED = "ended"
+
+
 def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callable[Concatenate[SqliteStore, P], R]:
     """Run a store method under the store's lock, so it is safe from any thread."""
 
@@ -48,12 +54,13 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at."""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS run(
-  run_id TEXT PRIMARY KEY, parent TEXT REFERENCES run(run_id), forked_at INTEGER, forked_calls INTEGER);
+  run_id TEXT PRIMARY KEY, parent TEXT REFERENCES run(run_id), forked_at INTEGER, forked_calls INTEGER,
+  forked_wake INTEGER);
 CREATE TABLE IF NOT EXISTS event(
   run_id TEXT NOT NULL, seq INTEGER NOT NULL, wake INTEGER NOT NULL,
   sim_time TEXT NOT NULL, wall_time TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL,
@@ -74,7 +81,10 @@ CREATE TABLE IF NOT EXISTS reply(run_id TEXT NOT NULL, position INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS span(
   run_id TEXT NOT NULL, position INTEGER NOT NULL, after_seq INTEGER NOT NULL, wake INTEGER NOT NULL,
   sim_time TEXT NOT NULL, source TEXT NOT NULL, trace_id TEXT NOT NULL, span TEXT NOT NULL,
+  arrived_wake INTEGER NOT NULL, placed_by TEXT NOT NULL,
   PRIMARY KEY (run_id, position));
+CREATE TABLE IF NOT EXISTS wake_edge(
+  run_id TEXT NOT NULL, wake INTEGER NOT NULL, edge TEXT NOT NULL, wall_time TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS span_trace ON span(trace_id);
 CREATE TABLE IF NOT EXISTS forward_failure(
   run_id TEXT NOT NULL, position INTEGER NOT NULL, failure TEXT NOT NULL, PRIMARY KEY (run_id, position));
@@ -101,30 +111,42 @@ class SqliteStore:
         self._db.executescript(_SCHEMA)
         self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self._db.execute(
-            "INSERT OR IGNORE INTO run(run_id, parent, forked_at, forked_calls) VALUES(?, NULL, NULL, NULL)", (run_id,)
+            "INSERT OR IGNORE INTO run(run_id, parent, forked_at, forked_calls, forked_wake)"
+            " VALUES(?, NULL, NULL, NULL, NULL)",
+            (run_id,),
         )
         self._db.commit()
         self._lineage = self._load_lineage()
 
-    def _load_lineage(self) -> list[tuple[str, int | None, int | None]]:
-        """This run and its ancestors, each with the highest event seq and the number of recorded
-        calls of it that this run may see (None: all)."""
-        lineage: list[tuple[str, int | None, int | None]] = []
-        run, seq_limit, call_limit = self.run_id, None, None
+    def _load_lineage(self) -> list[tuple[str, int | None, int | None, int | None]]:
+        """This run and its ancestors, each with the highest event seq, the number of recorded calls and the
+        highest wake of its spans that this run may see (None: all)."""
+        lineage: list[tuple[str, int | None, int | None, int | None]] = []
+        run, seq_limit, call_limit, wake_limit = self.run_id, None, None, None
         while run is not None:
-            row = self._db.execute("SELECT parent, forked_at, forked_calls FROM run WHERE run_id=?", (run,)).fetchone()
+            row = self._db.execute(
+                "SELECT parent, forked_at, forked_calls, forked_wake FROM run WHERE run_id=?", (run,)
+            ).fetchone()
             if row is None:
                 raise LookupError(f"no such run: {run}")
-            lineage.append((run, seq_limit, call_limit))
-            run, seq_limit, call_limit = row[0], row[1], row[2]
+            lineage.append((run, seq_limit, call_limit, wake_limit))
+            run, seq_limit, call_limit, wake_limit = row[0], row[1], row[2], row[3]
         return lineage
 
     def _visible(self, alias: str = "", column: str = "seq") -> tuple[str, list[object]]:
         """A WHERE fragment selecting the rows this run can see, optionally for a table alias."""
-        at = f"{alias}." if alias else ""
+        return self._within([(run, limit) for run, limit, _, _ in self._lineage], f"{alias}." if alias else "", column)
+
+    def _spans_visible(self) -> tuple[str, list[object]]:
+        """The spans this run can see: its own, and each ancestor's placed in the wakes up to the one it was forked
+        after, by the same placement `spans(wake=)` reads."""
+        return self._within([(run, wake) for run, _, _, wake in self._lineage], "", "wake")
+
+    @staticmethod
+    def _within(limits: list[tuple[str, int | None]], at: str, column: str) -> tuple[str, list[object]]:
         parts: list[str] = []
         args: list[object] = []
-        for run, limit, _ in self._lineage:
+        for run, limit in limits:
             if limit is None:
                 parts.append(f"({at}run_id=?)")
                 args.append(run)
@@ -283,7 +305,7 @@ class SqliteStore:
         recorded when the fork was taken. `touching_after` keeps only calls with an event above that seq."""
         parts: list[str] = []
         args: list[object] = []
-        for depth, (run, _, call_limit) in enumerate(self._lineage):
+        for depth, (run, _, call_limit, _) in enumerate(self._lineage):
             clause = f"SELECT {depth} AS depth, * FROM exchange WHERE run_id=?"
             args.append(run)
             if call_limit is not None:
@@ -334,30 +356,72 @@ class SqliteStore:
         children = [r[0] for r in self._db.execute("SELECT run_id FROM run WHERE parent=?", (self.run_id,))]
         if children:
             raise ValueError(f"run {self.run_id} has forks ({', '.join(children)}) reading through it")
-        for table in ("event", "entity_version", "exchange", "reply", "span", "forward_failure", "run"):
+        for table in ("event", "entity_version", "exchange", "reply", "span", "wake_edge", "forward_failure", "run"):
             self._db.execute(f"DELETE FROM {table} WHERE run_id=?", (self.run_id,))
         self._db.commit()
 
     @_locked
+    def wake_began(self, wake: int) -> None:
+        self._edge(wake, _Edge.BEGAN)
+
+    @_locked
+    def wake_ended(self, wake: int) -> None:
+        self._edge(wake, _Edge.ENDED)
+
+    def _edge(self, wake: int, edge: _Edge) -> None:
+        wall = datetime.now(UTC)  # clock-lint: exempt wall_time of a wake's edge: the agent's spans are placed by it
+        self._db.execute("INSERT INTO wake_edge VALUES(?,?,?,?)", (self.run_id, wake, edge.value, wall.isoformat()))
+        self._db.commit()
+
+    def _windows(self) -> list[tuple[int, datetime, datetime | None]]:
+        """Each of this run's wakes with the real moment it began and, once it has, ended; the latest to begin
+        first."""
+        began: dict[int, datetime] = {}
+        ended: dict[int, datetime] = {}
+        for wake, edge, wall in self._db.execute(
+            "SELECT wake, edge, wall_time FROM wake_edge WHERE run_id=? ORDER BY rowid", (self.run_id,)
+        ):
+            (began if _Edge(edge) is _Edge.BEGAN else ended).setdefault(wake, datetime.fromisoformat(wall))
+        windows = [(wake, at, ended[wake] if wake in ended else None) for wake, at in began.items()]
+        return sorted(windows, key=lambda window: window[1], reverse=True)
+
+    @_locked
     def receive(self, spans: Sequence[ReceivedSpan], *, source: SpanSource) -> list[StoredSpan]:
         position = self._db.execute("SELECT COUNT(*) FROM span WHERE run_id=?", (self.run_id,)).fetchone()[0]
-        head, wake, sim = self.head(), self._clock.wake(), self._clock.now()
-        stored = [
-            StoredSpan(span=span, run_id=self.run_id, source=source, wake=wake, sim_time=sim, after_seq=head)
-            for span in spans
-        ]
+        head, arrived, sim = self.head(), self._clock.wake(), self._clock.now()
+        windows = self._windows()
+        stored: list[StoredSpan] = []
+        for span in spans:
+            window = next(
+                (w for w, began, ended in windows if began <= span.start and (ended is None or span.start < ended)),
+                None,
+            )
+            stored.append(
+                StoredSpan(
+                    span=span,
+                    run_id=self.run_id,
+                    source=source,
+                    wake=window if window is not None else arrived,
+                    placed_by=Placement.WINDOW if window is not None else Placement.ARRIVAL,
+                    arrived_in_wake=arrived,
+                    sim_time=sim,
+                    after_seq=head,
+                )
+            )
         self._db.executemany(
-            "INSERT INTO span VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO span VALUES(?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     self.run_id,
                     position + i,
                     head,
-                    wake,
+                    one.wake,
                     sim.isoformat(),
                     source.value,
                     one.span.trace_id,
                     one.span.model_dump_json(),
+                    arrived,
+                    one.placed_by.value,
                 )
                 for i, one in enumerate(stored)
             ],
@@ -367,15 +431,18 @@ class SqliteStore:
 
     @_locked
     def spans(self, *, trace_id: str | None = None, wake: int | None = None) -> list[StoredSpan]:
-        where, args = self._visible(column="after_seq")
-        query = f"SELECT run_id, after_seq, wake, sim_time, source, span, position FROM span WHERE {where}"
+        where, args = self._spans_visible()
+        query = (
+            "SELECT run_id, after_seq, wake, sim_time, source, span, position, arrived_wake, placed_by"
+            f" FROM span WHERE {where}"
+        )
         if trace_id is not None:
             query += " AND trace_id=?"
             args.append(trace_id)
         if wake is not None:
             query += " AND wake=?"
             args.append(wake)
-        depth = {run: d for d, (run, _, _) in enumerate(self._lineage)}
+        depth = {run: d for d, (run, _, _, _) in enumerate(self._lineage)}
         # Oldest ancestor first, and in each run the order they arrived.
         rows = sorted(self._db.execute(query, args).fetchall(), key=lambda r: (-depth[r[0]], r[6]))
         return [
@@ -384,6 +451,8 @@ class SqliteStore:
                 run_id=r[0],
                 source=SpanSource(r[4]),
                 wake=r[2],
+                placed_by=Placement(r[8]),
+                arrived_in_wake=r[7],
                 sim_time=datetime.fromisoformat(r[3]),
                 after_seq=r[1],
             )
@@ -416,9 +485,11 @@ class SqliteStore:
         recorded = self._db.execute(
             "SELECT COUNT(*) FROM exchange WHERE run_id=? AND first_seq-1<=?", (self.run_id, at_seq)
         ).fetchone()[0]
+        where, args = self._visible()
+        at_wake = self._db.execute(f"SELECT wake FROM event WHERE {where} AND seq=?", [*args, at_seq]).fetchone()
         self._db.execute(
-            "INSERT INTO run(run_id, parent, forked_at, forked_calls) VALUES(?,?,?,?)",
-            (run_id, self.run_id, at_seq, recorded),
+            "INSERT INTO run(run_id, parent, forked_at, forked_calls, forked_wake) VALUES(?,?,?,?,?)",
+            (run_id, self.run_id, at_seq, recorded, at_wake[0] if at_wake is not None else 0),
         )
         self._db.commit()
         return SqliteStore(self._path, run_id, clock)

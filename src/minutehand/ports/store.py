@@ -64,14 +64,23 @@ class Store(Protocol):
         A delete is not a version."""
         ...
 
+    def wake_began(self, wake: int) -> None:
+        """Record the real moment a wake began, which opens its window for placing the agent's spans."""
+        ...
+
+    def wake_ended(self, wake: int) -> None:
+        """Record the real moment a wake ended, after its checkpoint, which closes its window."""
+        ...
+
     def receive(self, spans: Sequence[ReceivedSpan], *, source: SpanSource) -> list[StoredSpan]:
         """Keep one batch of the agent's spans, each stamped with the wake in progress, the simulated time and
-        the head of the log as it arrives."""
+        the head of the log as it arrives, and placed in the wake whose real-time window holds its start, or,
+        when none does, the wake it arrived in."""
         ...
 
     def spans(self, *, trace_id: str | None = None, wake: int | None = None) -> list[StoredSpan]:
-        """The spans this run can see, in the order they arrived, of one trace and arrived in one wake when
-        either is given. A fork sees its parent's spans that arrived up to the seq it was forked at."""
+        """The spans this run can see, in the order they arrived, of one trace and placed in one wake when
+        either is given. A fork sees its parent's spans placed in the wakes up to the one it was forked after."""
         ...
 
     def forward_failed(self, signal: Signal, endpoint: str, reason: str) -> ForwardFailure:

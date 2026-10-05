@@ -490,7 +490,22 @@ class Orchestrator:
     ) -> StopReason | None:
         """Change the world for what is due, send the wake, wait until each driver in `settle` stops working, read
         what the agent did, and checkpoint. An agent that refuses a pushed event fails the wake as one that refuses
-        the wake does."""
+        the wake does. The store keeps the real moments the wake began and, after its checkpoint, ended: the
+        agent's spans are placed in the wake whose window holds their start, however late they arrive."""
+        self._store.wake_began(wake)
+        try:
+            return await self._played(wake, reason, fire, requests, settle)
+        finally:
+            self._store.wake_ended(wake)
+
+    async def _played(
+        self,
+        wake: int,
+        reason: WakeReason,
+        fire: Callable[[], Awaitable[None]],
+        requests: list[tuple[AgentDriver, WakeRequest]],
+        settle: list[AgentDriver],
+    ) -> StopReason | None:
         if self._telemetry is not None:
             self._telemetry.wake_started(wake, reason, self._clock.now())
         failed = False
