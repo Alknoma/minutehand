@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.application.model_calls import EventTrace
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.checks import Effectiveness, Finding, Obligation, Pattern, WakeRecord
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Model, Scenario
+from minutehand.domain.telemetry import ForwardFailure, StoredSpan
 from minutehand.domain.world import RecordedCall, WorldEvent
 from minutehand.session import ForkPoint
 
@@ -71,6 +73,22 @@ class FindingsResponse(Model):
 
 class ScorecardResponse(Model):
     scorecard: Effectiveness | None = Field(description="None until the run finishes")
+
+
+class TraceResponse(Model):
+    trace_id: str
+    spans: list[StoredSpan] = Field(description="The agent's spans of this trace the run received, as they arrived")
+
+
+class ModelCallsResponse(Model):
+    received: int = Field(description="Spans of the agent's own telemetry the run received; 0 means none")
+    forward_failures: list[ForwardFailure] = Field(
+        description="Payloads that could not be passed on to where the agent's telemetry went before"
+    )
+    events: list[EventTrace] = Field(
+        description="For each event a finding cites, the agent's spans behind it and the model call that led to it; "
+        "empty until the run finishes"
+    )
 
 
 class Refusal(Model):

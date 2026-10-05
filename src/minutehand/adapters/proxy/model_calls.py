@@ -27,9 +27,9 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from string import hexdigits
 from urllib.parse import urlsplit
 
+from minutehand.application.model_calls import caller_of
 from minutehand.domain.telemetry import (
     Attribute,
     AttributeValue,
@@ -281,19 +281,6 @@ class Exchanged:
     ended: datetime
 
 
-def _caller(traceparent: str | None) -> tuple[str, str] | None:
-    """The trace id and span id of a W3C `traceparent`, when it is one."""
-    if traceparent is None:
-        return None
-    parts = traceparent.strip().lower().split("-")
-    if len(parts) < 4 or len(parts[1]) != 32 or len(parts[2]) != 16:
-        return None
-    trace_id, span_id = parts[1], parts[2]
-    if not set(trace_id + span_id) <= set(hexdigits.lower()) or set(trace_id) == {"0"} or set(span_id) == {"0"}:
-        return None
-    return trace_id, span_id
-
-
 def span_of(exchanged: Exchanged) -> ReceivedSpan:
     """The span for one model call: in the caller's trace and under its span when the call carried a
     traceparent, else the root of a trace of its own."""
@@ -336,7 +323,7 @@ def span_of(exchanged: Exchanged) -> ReceivedSpan:
     ):
         if count is not None:
             attributes.append((key, IntValue(value=count)))
-    caller = _caller(exchanged.traceparent)
+    caller = caller_of(exchanged.traceparent)
     failed = exchanged.status >= 400
     return ReceivedSpan(
         trace_id=caller[0] if caller is not None else secrets.token_hex(16),

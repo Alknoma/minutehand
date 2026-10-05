@@ -4,7 +4,7 @@ It talks to Slack with the stock `slack_sdk.WebClient` and its default base URL,
 event with the stock `SignatureVerifier`, and keeps everything it knows in one state file, read and written
 on every request, so a restore of that file is a restore of the agent.
 
-    python slack_agent.py serve --port N --state FILE
+    python slack_agent.py serve --port N --state FILE [--trace]
     python slack_agent.py snapshot FILE      # copies FILE into $MINUTEHAND_SNAPSHOT_DIR
     python slack_agent.py restore FILE       # puts it back, or removes FILE if there was none
 
@@ -17,6 +17,12 @@ Behaviour, from AGENT_BEHAVIOUR:
 
 Other variables: AGENT_SLACK_SIGNING_SECRET (the signing secret), TRACEPARENT (sent on every Slack call when
 set), STRAY_URL (fetched once when the goal arrives).
+
+With --trace it traces itself with the stock OpenTelemetry SDK, exported over OTLP/HTTP to wherever its
+environment's OTEL_* variables point: each message it sends is a span `agent turn`, under which a GenAI span
+`chat model-test` (the model call that chose the message, with its messages and token counts) ends before a
+span `send_dm` whose W3C traceparent rides on every Slack call it makes. Spans are flushed before each request
+the agent answers returns.
 """
 
 from __future__ import annotations
@@ -40,6 +46,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from opentelemetry import propagate
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web import SlackResponse
@@ -49,6 +60,7 @@ FOLLOW_UP_AFTER = timedelta(days=2)
 QUESTION = "Could you confirm the partner pricing, please?"
 FOLLOW_UP = "Following up on the partner pricing: could you confirm it?"
 THANKS = "Thank you!"
+MODEL = "model-test"
 
 
 def env(name: str) -> str:
@@ -64,8 +76,12 @@ def answered(response: SlackResponse) -> dict[str, Any]:
 
 
 class Agent:
-    def __init__(self, state: Path) -> None:
+    def __init__(self, state: Path, *, tracing: bool = False) -> None:
         self.state = state
+        self.traces: TracerProvider | None = None
+        if tracing:
+            self.traces = TracerProvider(resource=Resource.create({"service.name": "slack-agent"}))
+            self.traces.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
         self.behaviour = env("AGENT_BEHAVIOUR")
         self.verifier = SignatureVerifier(env("AGENT_SLACK_SIGNING_SECRET"))
         headers = {"traceparent": os.environ["TRACEPARENT"]} if "TRACEPARENT" in os.environ else {}
@@ -97,8 +113,42 @@ class Agent:
         return str(answered(self.slack.users_lookupByEmail(email=email))["user"]["id"])
 
     def dm(self, email: str, text: str) -> None:
+        if self.traces is None:
+            self._send(email, text)
+            return
+        tracer = self.traces.get_tracer("slack-agent")
+        asked = [{"role": "user", "parts": [{"type": "text", "content": f"What should {email} be told?"}]}]
+        said = [{"role": "assistant", "parts": [{"type": "tool_call", "name": "send_dm", "arguments": {"text": text}}]}]
+        with tracer.start_as_current_span("agent turn"):
+            with tracer.start_as_current_span(
+                f"chat {MODEL}",
+                attributes={
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.system": "openai",
+                    "gen_ai.request.model": MODEL,
+                    "gen_ai.input.messages": json.dumps(asked),
+                    "gen_ai.output.messages": json.dumps(said),
+                    "gen_ai.usage.input_tokens": 120,
+                    "gen_ai.usage.output_tokens": 18,
+                },
+            ):
+                pass
+            with tracer.start_as_current_span("send_dm"):
+                carrier: dict[str, str] = {}
+                propagate.inject(carrier)
+                self.slack.headers["traceparent"] = carrier["traceparent"]
+                try:
+                    self._send(email, text)
+                finally:
+                    del self.slack.headers["traceparent"]
+
+    def _send(self, email: str, text: str) -> None:
         channel = answered(self.slack.conversations_open(users=[self.user_id(email)]))["channel"]["id"]
         self.slack.chat_postMessage(channel=channel, text=text)
+
+    def flush(self) -> None:
+        if self.traces is not None:
+            self.traces.force_flush()
 
     def take_goal(self, state: dict[str, object], goal: str, now: datetime) -> None:
         print(f"goal: {goal}", flush=True)
@@ -169,12 +219,13 @@ class Agent:
         return True
 
 
-def serve(port: int, state: Path) -> None:
-    agent = Agent(state)
+def serve(port: int, state: Path, *, tracing: bool) -> None:
+    agent = Agent(state, tracing=tracing)
     wakes = agent.behaviour != "slack_only"
 
     class Handler(BaseHTTPRequestHandler):
         def _answer(self, status: int, payload: object) -> None:
+            agent.flush()
             body = json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -242,7 +293,7 @@ def main() -> None:
     command = sys.argv[1]
     if command == "serve":
         port = int(sys.argv[sys.argv.index("--port") + 1])
-        serve(port, Path(sys.argv[sys.argv.index("--state") + 1]))
+        serve(port, Path(sys.argv[sys.argv.index("--state") + 1]), tracing="--trace" in sys.argv)
     elif command == "snapshot":
         snapshot(Path(sys.argv[2]))
     elif command == "restore":
