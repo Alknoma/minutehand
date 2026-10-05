@@ -21,6 +21,7 @@ from minutehand.application.checkpoint import (
     NotRestorable,
     Pending,
     PendingBooking,
+    PendingChange,
     PendingDirection,
     PendingFate,
     PendingReply,
@@ -52,7 +53,15 @@ from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation
 from minutehand.ports.agent import AgentDriver, Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
-from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ASGIApp,
+    BooksWakes,
+    ChangesDocuments,
+    EditsTickets,
+    HoldsTickets,
+    Provider,
+    PushesEvents,
+)
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -86,6 +95,7 @@ class Services:
     tickets: Mapping[ProviderKey, HoldsTickets] = field(default_factory=dict)
     editors: Mapping[ProviderKey, EditsTickets] = field(default_factory=dict)
     schedulers: Mapping[ProviderKey, BooksWakes] = field(default_factory=dict)
+    changers: Mapping[ProviderKey, ChangesDocuments] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         keys = [p.manifest.key for p in self.providers]
@@ -97,6 +107,7 @@ class Services:
             ("tickets", self.tickets),
             ("editors", self.editors),
             ("schedulers", self.schedulers),
+            ("changers", self.changers),
         ):
             stray = sorted(set(mapping) - known)
             if stray:
@@ -254,6 +265,15 @@ class Orchestrator:
                     text=direction.text,
                 )
             )
+        for i, change in enumerate(self._scenario.document_changes):
+            self._pending.append(
+                PendingChange(
+                    due=Due(
+                        at=self._scenario.starts_at + change.after, kind=DueKind.DOCUMENT_CHANGE, ref=f"change:{i}"
+                    ),
+                    change=i,
+                )
+            )
         if self._reach.every is not None:
             self._schedule_tick()
         self._record_new()
@@ -375,8 +395,20 @@ class Orchestrator:
             fired = [p for p in self._pending if p.due in jump.firing]
             self._pending = [p for p in self._pending if p.due not in jump.firing]
             self._clock.jump(jump.now)
-            if all(isinstance(p, PendingFate) for p in fired):
+            if all(isinstance(p, (PendingFate, PendingChange)) for p in fired):
                 await self._fire(fired)
+                watched = self._watched(fired)
+                if not watched:
+                    continue
+                stop = await self._wake(
+                    self._clock.begin_wake(),
+                    WakeReason.DUE,
+                    lambda watched=watched: self._notify(watched),
+                    [],
+                    [self._reach.main] if self._reach.main is not None else [],
+                )
+                if stop is not None:
+                    return stop
                 continue
             wake = self._clock.begin_wake()
             requests, reason = self._requests(fired)
@@ -384,6 +416,7 @@ class Orchestrator:
 
             async def fire(due: list[Pending] = fired) -> None:
                 await self._fire(due)
+                await self._notify(self._watched(due))
 
             stop = await self._wake(wake, reason, fire, requests, settle)
             if stop is not None:
@@ -412,11 +445,15 @@ class Orchestrator:
         self._record_new()
 
     async def _fire(self, fired: list[Pending]) -> None:
-        """Change the world for what is due, in a fixed order: tickets, then replies, then directions sent by
-        message, then bookings."""
+        """Change the world for what is due, in a fixed order: tickets, then documents people change, then replies,
+        then directions sent by message, then bookings."""
         for item in fired:
             if isinstance(item, PendingFate):
                 self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
+        for item in fired:
+            if isinstance(item, PendingChange):
+                change = self._scenario.document_changes[item.change]
+                self._changer(change.provider).change(change, self._store, self._clock)
         for item in fired:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
@@ -438,7 +475,9 @@ class Orchestrator:
     def _delivered_to(self, fired: list[Pending]) -> list[AgentDriver]:
         """A wake made only of bookings sends no request, since the scheduler's delivery is the wake, but the agent
         still acts on what was delivered: the loop waits on its main driver until it is no longer working."""
-        if self._reach.main is None or not any(isinstance(p, PendingBooking) for p in fired):
+        if self._reach.main is None:
+            return []
+        if not any(isinstance(p, PendingBooking) for p in fired) and not self._watched(fired):
             return []
         return [self._reach.main]
 
@@ -731,6 +770,22 @@ class Orchestrator:
         if provider not in self._signing:
             raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
         return self._signing[provider]
+
+    def _changer(self, provider: ProviderKey) -> ChangesDocuments:
+        if provider not in self._services.changers:
+            raise RunRefused(f"a document change is due on {provider}, which has no documents a person can change")
+        return self._services.changers[provider]
+
+    def _watched(self, fired: list[Pending]) -> list[ChangesDocuments]:
+        """The providers a change just landed in whose agent asked to be told of changes: telling it is a wake,
+        as a pushed event is. A change nobody watches is found on the agent's next read, as a ticket's fate is."""
+        providers = {self._scenario.document_changes[p.change].provider for p in fired if isinstance(p, PendingChange)}
+        changers = [self._changer(provider) for provider in sorted(providers)]
+        return [changer for changer in changers if changer.watched(self._store, self._clock)]
+
+    async def _notify(self, watched: list[ChangesDocuments]) -> None:
+        for changer in watched:
+            await changer.notify(self._store, self._clock)
 
     def _tickets(self, provider: ProviderKey) -> HoldsTickets:
         if provider not in self._services.tickets:

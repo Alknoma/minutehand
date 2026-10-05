@@ -59,8 +59,17 @@ class PendingBooking(Model):
     ref: str = Field(description="The scheduler's own reference for the booking")
 
 
+class PendingChange(Model):
+    """A `DocumentChange` a person makes when the clock reaches it."""
+
+    kind: Literal["change"] = "change"
+    due: Due
+    change: int = Field(ge=0, description="Position in the scenario's `document_changes`")
+
+
 Pending = Annotated[
-    PendingReply | PendingFate | PendingWake | PendingDirection | PendingBooking, Field(discriminator="kind")
+    PendingReply | PendingFate | PendingWake | PendingDirection | PendingBooking | PendingChange,
+    Field(discriminator="kind"),
 ]
 
 

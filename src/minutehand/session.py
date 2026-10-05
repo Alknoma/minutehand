@@ -77,7 +77,15 @@ from minutehand.domain.world import Actor, Operation
 from minutehand.ports.agent import Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ASGIApp,
+    BooksWakes,
+    ChangesDocuments,
+    EditsTickets,
+    HoldsTickets,
+    Provider,
+    PushesEvents,
+)
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -573,6 +581,7 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     call, but it is not seeded and no ticket fate or reply can land on it.
     """
     named: set[ProviderKey] = {t.provider for t in scenario.tickets} | {d.provider for d in scenario.documents}
+    named |= {c.provider for c in scenario.document_changes} | {s.provider for s in scenario.spaces}
     named |= {t.provider for t in agent.inbound}
     if isinstance(agent.goal, GoalByMessage):
         named.add(agent.goal.provider)
@@ -589,6 +598,7 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     tickets: dict[ProviderKey, HoldsTickets] = {}
     editors: dict[ProviderKey, EditsTickets] = {}
     schedulers: dict[ProviderKey, BooksWakes] = {}
+    changers: dict[ProviderKey, ChangesDocuments] = {}
     for provider in providers:
         key = provider.manifest.key
         if provider.manifest.pushes_events:
@@ -603,7 +613,11 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
             tickets[key] = provider
         if isinstance(provider, EditsTickets):
             editors[key] = provider
-    return Services(providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers)
+        if isinstance(provider, ChangesDocuments):
+            changers[key] = provider
+    return Services(
+        providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers, changers=changers
+    )
 
 
 @dataclass(frozen=True)
