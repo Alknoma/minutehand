@@ -42,6 +42,7 @@ from minutehand.domain.world import (
     DocumentSnapshot,
     EntityKind,
     EntityRef,
+    GrantSnapshot,
     Operation,
     RecordSnapshot,
     Stored,
@@ -141,11 +142,15 @@ def record_ref(external_id: str) -> EntityRef:
     return _ref(EntityKind.RECORD, external_id)
 
 
-def snapshot(stored: wire.StoredFile) -> DocumentSnapshot:
+def snapshot(stored: wire.StoredFile, *, space: str | None = None) -> DocumentSnapshot:
     """The file as every document provider tells it: title, type, its text where Drive holds it as text (a Doc, a
-    deck, a sheet), and who last changed it, by email."""
+    deck, a sheet), who last changed it and who owns it, by email, and `space`, the name of the shared drive it is
+    in (None in its owner's My Drive, where a shared drive owns nothing and a file is owned by a person)."""
     editor = stored.file.lastModifyingUser
+    owners = stored.file.owners or []
     return DocumentSnapshot(
+        owner=owners[0].emailAddress if owners else None,
+        space=space,
         title=stored.file.name,
         mime_type=stored.file.mimeType,
         text=readable_text(stored) or None,
@@ -287,9 +292,13 @@ class DriveWorld:
                 actor=actor,
                 body=wire.dump(stored),
                 parent=parents[0] if parents else None,
-                after=snapshot(stored),
+                after=snapshot(stored, space=self._space(stored)),
             )
         )
+
+    def _space(self, stored: wire.StoredFile) -> str | None:
+        found = self.drive(stored.file.driveId) if stored.file.driveId is not None else None
+        return found.name if found is not None else None
 
     def delete_file(self, stored: wire.StoredFile, *, actor: Actor) -> list[WorldEvent]:
         """Delete a file and, for a folder, everything under it, deepest first."""
@@ -340,6 +349,7 @@ class DriveWorld:
 
     def write_grant(self, file: str, permission: wire.Permission, *, operation: Operation, actor: Actor) -> WorldEvent:
         who = permission.emailAddress or permission.domain or permission.type
+        held = self.file(file)
         return self._store.apply(
             Change(
                 entity=grant_ref(file, permission.id),
@@ -347,7 +357,9 @@ class DriveWorld:
                 actor=actor,
                 body=wire.dump(permission),
                 parent=file,
-                after=RecordSnapshot(resource="permission", text=f"{permission.role} {who}"),
+                after=GrantSnapshot(
+                    document=held.file.name if held is not None else file, to=who, role=GRANTED[permission.role]
+                ),
             )
         )
 
@@ -498,6 +510,16 @@ class DriveWorld:
         """Record that the agent read or searched something. It changes nothing."""
         return self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
 
+
+GRANTED: dict[wire.Role, AccessRole] = {
+    "reader": AccessRole.READER,
+    "commenter": AccessRole.COMMENTER,
+    "writer": AccessRole.WRITER,
+    "fileOrganizer": AccessRole.ORGANIZER,
+    "organizer": AccessRole.ORGANIZER,
+    "owner": AccessRole.ORGANIZER,
+}
+"""What access each Drive role gives, as every document provider says it: an owner organizes, at the least."""
 
 ROLES: dict[AccessRole, wire.Role] = {
     AccessRole.READER: "reader",

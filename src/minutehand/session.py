@@ -103,8 +103,16 @@ SCENARIO = "scenario.json"
 AGENT = "agent.json"
 AGENT_LOG = "agent.log"
 
-CA_VARIABLES = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "HTTPLIB2_CA_CERTS", "AWS_CA_BUNDLE")
-"""Each HTTP library's own name for the file of CAs it trusts."""
+CA_VARIABLES = (
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTPLIB2_CA_CERTS",
+    "AWS_CA_BUNDLE",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+)
+"""Each HTTP library's own name for the file of CAs it trusts. httplib2 reads only its own and ignores
+`SSL_CERT_FILE`; gRPC reads only `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`. stripe reads none: it passes its bundled CA."""
 
 LISTEN_TIMEOUT = 30.0
 """Seconds the agent's process has to accept connections on its wake or inbound URL."""
@@ -899,7 +907,8 @@ def agent_environment(
     listen: Listen, port: int, ca_bundle: str | Path, secrets: Mapping[str, str], *, telemetry_port: int | None
 ) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
-    spellings libraries read, the hosts it reaches directly, the one CA file in each library's variable
+    spellings libraries read, the hosts it reaches directly (also as `no_grpc_proxy`: gRPC applies `http_proxy`
+    even to an insecure channel to an in-stack emulator), the one CA file in each library's variable
     (`ca_bundle`, as the agent sees the path), the signing secrets it is handed, and, unless `telemetry_port`
     is None (receiving is off), its OTLP exporter pointed at the receiver."""
     proxy = listen.proxy_url(port)
@@ -912,6 +921,7 @@ def agent_environment(
         "https_proxy": proxy,
         "http_proxy": proxy,
         "no_proxy": direct,
+        "no_grpc_proxy": direct,
         **{name: str(ca_bundle) for name in CA_VARIABLES},
         **exporter,
         **secrets,

@@ -10,9 +10,24 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Protocol, runtime_checkable
 
 from minutehand.domain.clock import Due
-from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import DocumentHappening, MessagingHappening, Scenario, TicketHappening, TicketState
+from minutehand.domain.people import (
+    InboundCredential,
+    InboundCredentialAsk,
+    InboundTarget,
+    PermissionGrant,
+    PersonMessage,
+    PersonReply,
+)
+from minutehand.domain.provider import Manifest, PersonChange
+from minutehand.domain.scenario import (
+    DocumentHappening,
+    MessagingHappening,
+    Model,
+    Person,
+    Scenario,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -83,6 +98,18 @@ class HoldsTickets(Protocol):
 
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         """Move the ticket to `to` the way its assignee would, recorded as actor PERSON."""
+        ...
+
+
+@runtime_checkable
+class DeletesTickets(Protocol):
+    """A provider whose tickets a person can delete: how a `TicketFate` that deletes lands, and how a person deletes
+    a ticket the agent filed, in a world already open."""
+
+    def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
+        """Delete the ticket the way its assignee would (or, unassigned, the scenario's owner), recorded as actor
+        PERSON; afterwards the service answers for it as for a ticket that never was. A ticket already gone
+        raises `LookupError`."""
         ...
 
 
@@ -187,3 +214,46 @@ class ConfirmsDelivery(Protocol):
     the booking's wake. A delivery merely received is not taken; the agent may still be acting on it."""
 
     def taken(self, ref: str, world: Store) -> bool: ...
+
+
+@runtime_checkable
+class ChangesPeople(Protocol):
+    """A provider whose accounts change while a world is open (`minutehand serve`): a person removed, deactivated or
+    reactivated, each one of `manifest.people_changes`."""
+
+    def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
+        """Do `change` to the account `person` was seeded as, recorded as actor SCENARIO, so the service answers
+        for it as the real one does after an administrator did it. Never asked for a change outside
+        `manifest.people_changes`. An account it holds nothing of, or one already so, raises `ValueError`."""
+        ...
+
+
+@runtime_checkable
+class GrantsPermissions(Protocol):
+    """A provider whose permissions are named and held per person and project, and can change while a world is
+    open: YouTrack's `jetbrains.youtrack.*`."""
+
+    def permit(self, grant: PermissionGrant, person: Person, world: Store, clock: Clock) -> None:
+        """Grant or withhold `grant.permission` for `person` on `grant.project`, recorded as actor SCENARIO, as an
+        administrator would; the next call that needs it is answered accordingly. A permission or project the
+        provider does not know raises `ValueError`."""
+        ...
+
+
+@runtime_checkable
+class MintsInboundCredentials(Protocol):
+    """A provider that pushes requests to the agent, and can sign one a test builds itself the way it signs its
+    own: Slack's request signature, the Bot Framework's bearer token."""
+
+    def credential(self, asked: InboundCredentialAsk, world: Store, clock: Clock, *, secret: str) -> InboundCredential:
+        """The headers the provider's service would send with this request, signed with `secret` where its scheme
+        uses a shared secret. A request missing what the scheme needs raises `ValueError`."""
+        ...
+
+
+@runtime_checkable
+class OwnsSeed(Protocol):
+    """A provider with a seed model of its own, which a scenario gives as its `ProviderSeed` for that provider:
+    what a further seed's fragment for it is validated and merged with."""
+
+    seed_model: type[Model]

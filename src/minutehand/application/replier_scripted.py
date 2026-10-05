@@ -51,6 +51,12 @@ class ScriptedReplier:
         assert isinstance(behaviour, Scripted)
         asks = _asks_of(person, [e for e in history if e.seq <= asked.seq])
         scripted = next((r for r in behaviour.replies if r.to_ask == len(asks)), None)
+        if scripted is None and behaviour.presses_every is not None:
+            every = pressed(behaviour.presses_every, asked)
+            if every is None:
+                return None
+            at = lands_at(self._scenario, person, asked, history, behaviour.delay)
+            return PersonReply(person=person.key, in_reply_to=asked.entity, text=every.label, at=at, press=every)
         if scripted is None:
             return None
         press: Press | None = None

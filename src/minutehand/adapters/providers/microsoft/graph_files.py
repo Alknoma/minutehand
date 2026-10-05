@@ -67,7 +67,8 @@ from minutehand.adapters.providers.microsoft.state import (
     upload_ref,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
-from minutehand.domain.world import Actor, EntityKind, Operation, RecordSnapshot
+from minutehand.domain.scenario import AccessRole
+from minutehand.domain.world import Actor, EntityKind, GrantSnapshot, Operation
 from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 200
@@ -514,7 +515,7 @@ class Files:
             operation=Operation.CREATE,
             actor=actor,
             parent=PERMISSION_PARENT.format(item=stored.item.id),
-            after=RecordSnapshot(resource="permission", text=f"{' '.join(roles)} {email}"),
+            after=GrantSnapshot(document=stored.item.name, to=email, role=_role(roles)),
         )
         return permission
 
@@ -1008,7 +1009,11 @@ class Files:
             operation=Operation.CREATE,
             actor=Actor.AGENT,
             parent=PERMISSION_PARENT.format(item=stored.item.id),
-            after=RecordSnapshot(resource="permission", text=f"{asked.type} link, {scope}"),
+            after=GrantSnapshot(
+                document=stored.item.name,
+                to="anyone" if scope == "anonymous" else scope,  # enum-lint: exempt Graph's link scope
+                role=_role(permission.roles),
+            ),
         )
         response = Response(wire.dump(permission), status_code=201, media_type=GRAPH_JSON)
         return response
@@ -1073,3 +1078,13 @@ class Files:
             body = wire.dump(wire.Page[wire.Drive](context=f"{GRAPH}/$metadata#drives", value=drives))
             return Response(wire.select_page(body, fields), media_type=GRAPH_JSON)
         raise bad_request(f"Unsupported segment '{'/'.join(rest)}'.")
+
+
+GRAPH_ROLES = {"read": AccessRole.READER, "write": AccessRole.WRITER, "owner": AccessRole.ORGANIZER}
+"""What each of Graph's permission roles gives, as every document provider names access."""
+
+
+def _role(roles: list[str]) -> AccessRole:
+    """The most a set of Graph roles gives."""
+    order = list(AccessRole)
+    return max((GRAPH_ROLES[r] for r in roles if r in GRAPH_ROLES), key=order.index, default=AccessRole.READER)

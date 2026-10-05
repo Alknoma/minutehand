@@ -83,7 +83,7 @@ jobs:
       - name: Conditions, expressions and syntax
         run: uvx --from actionlint-py==1.7.12.24 actionlint
       - name: Permissions, pinning and injection
-        run: uvx zizmor==1.30.1 --offline .github/workflows
+        run: uvx zizmor==1.30.1 --offline .github/workflows .github/actions
 
   tests:
     name: Tests (${{ matrix.os }}, ${{ matrix.python }})
@@ -132,6 +132,45 @@ jobs:
       - name: Build the image and run both examples through it
         run: uv run pytest -q -m packaging tests/packaging/test_container_image.py
 
+  # How another repository gets Minutehand (docs/ci.md): the composite action, used by its local path, on a
+  # runner with nothing set up but the checkout. It installs into a plain venv with pip, builds the image,
+  # and then the installed command and the image each run.
+  action:
+    name: Setup action (install, run the example, build the image)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A plain environment of the runner's own Python
+        run: python3 -m venv "$RUNNER_TEMP/venv"
+      - id: minutehand
+        # The checkout's own copy, by path: what this job tests is the action in this commit as files on disk.
+        uses: ./.github/actions/setup-minutehand # zizmor: ignore[self-repository]
+        with:
+          python: ${{ runner.temp }}/venv/bin/python
+          installer: pip
+          image-tag: minutehand:action
+      - name: The outputs name this commit and the installed version
+        env:
+          COMMIT: ${{ steps.minutehand.outputs.commit }}
+          VERSION: ${{ steps.minutehand.outputs.version }}
+        run: |
+          test "$COMMIT" = "$(git rev-parse HEAD)"
+          test -n "$VERSION"
+          "$RUNNER_TEMP/venv/bin/minutehand" --help
+      - name: The example, with the installed command
+        working-directory: examples/follow_up
+        env:
+          AGENT_BEHAVIOUR: diligent
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
+          "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \
+            -- "$RUNNER_TEMP/venv/bin/python" agent.py
+      - name: The image the action built
+        run: docker run --rm minutehand:action --help
+
   # main takes pull requests from integration-main and from nowhere else. A branch rule can
   # only constrain the branch being written to, never the branch a pull request comes from,
   # so this has to be a check. It has no `if`: it runs on every event and says yes on all but
@@ -165,7 +204,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, build, promotion]
+    needs: [types, style, lints, workflows, tests, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

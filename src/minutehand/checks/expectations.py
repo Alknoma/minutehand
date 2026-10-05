@@ -20,8 +20,13 @@ answer: it is left to the judged check `asked_about`, and noted here as left.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 from minutehand.domain.scenario import (
+    AccessRole,
+    DocumentCreated,
+    DocumentShared,
     Expectation,
     PersonAsked,
     Relayed,
@@ -35,6 +40,7 @@ from minutehand.domain.world import (
     DocumentSnapshot,
     EntityKind,
     EntityRef,
+    GrantSnapshot,
     InteractionSnapshot,
     MessageSnapshot,
     Operation,
@@ -89,6 +95,9 @@ class Expectations:
                 matched = [e for e in matched if e.sim_time <= start + expected.by]
             if isinstance(expected, TicketInState):
                 matched = _first_per_ticket(matched)
+            if isinstance(expected, DocumentCreated):
+                last = start + expected.by if expected.by is not None else None
+                matched = [e for e in matched if has_words(_last_text(e.entity, view.events, last), expected.holds)]
             count = len(matched)
             too_few = count < expected.at_least
             too_many = expected.at_most is not None and count > expected.at_most
@@ -153,6 +162,24 @@ class Expectations:
                 and after.assignee_email == email[expected.assignee]
                 and after.state is expected.state
             )
+        if isinstance(expected, DocumentCreated):
+            return (
+                event.actor is Actor.AGENT
+                and event.operation is Operation.CREATE
+                and isinstance(after, DocumentSnapshot)
+                and (expected.provider is None or event.entity.provider == expected.provider)
+                and has_words(after.title, expected.titled)
+                and (expected.space is None or after.space == expected.space)
+                and (expected.owner is None or after.owner == email[expected.owner])
+            )
+        if isinstance(expected, DocumentShared):
+            return (
+                event.actor is Actor.AGENT
+                and isinstance(after, GrantSnapshot)
+                and after.to.casefold() == email[expected.person].casefold()
+                and _ROLES.index(after.role) >= _ROLES.index(expected.role)
+                and has_words(after.document, expected.titled)
+            )
         if isinstance(expected, Relayed):
             return (
                 event.actor is Actor.AGENT
@@ -176,7 +203,34 @@ class Expectations:
             return "ticket deleted"
         if isinstance(expected, Relayed):
             return f"{expected.to} told what {expected.said_by} said ({expected.tell!r})"
+        if isinstance(expected, DocumentCreated):
+            parts = [f" titled with {expected.titled}" if expected.titled else ""]
+            parts.append(f" in {expected.space}" if expected.space is not None else "")
+            parts.append(f" owned by {expected.owner}" if expected.owner is not None else "")
+            parts.append(f" holding {expected.holds}" if expected.holds else "")
+            return "document created" + "".join(parts)
+        if isinstance(expected, DocumentShared):
+            titled = f" titled with {expected.titled}" if expected.titled else ""
+            return f"document{titled} shared with {expected.person} as {expected.role.value} or more"
         return f"ticket for {expected.assignee} in state {expected.state.value}"
+
+
+_ROLES = list(AccessRole)
+"""Access from least to most, as `AccessRole` lists it."""
+
+
+def _last_text(document: EntityRef, events: list[WorldEvent], until: datetime | None) -> str:
+    """The document's title and text as its latest version up to `until` read: what a reader found in it then."""
+    versions = [
+        e.after
+        for e in events
+        if e.entity == document and isinstance(e.after, DocumentSnapshot) and (until is None or e.sim_time <= until)
+    ]
+    if not versions:
+        return ""
+    last = versions[-1]
+    assert isinstance(last, DocumentSnapshot)
+    return f"{last.title}\n{last.text or ''}"
 
 
 def _met_by(matched: list[WorldEvent], scenario: Scenario) -> str:
@@ -198,6 +252,11 @@ def _quoted(event: WorldEvent, names: dict[str, str]) -> str:
         holder = after.assignee_email
         held = f" for {names[holder] if holder in names else holder}" if holder is not None else ""
         return f"the ticket{held} (seq {event.seq}): \u201c{_trimmed(after.title)}\u201d, {after.state.value}"
+    if isinstance(after, DocumentSnapshot):
+        return f"the document (seq {event.seq}): \u201c{_trimmed(after.title)}\u201d"
+    if isinstance(after, GrantSnapshot):
+        to = names[after.to] if after.to in names else after.to
+        return f"{after.document!r} shared with {to} as {after.role.value} (seq {event.seq})"
     return f"{event.operation.value} of {event.entity.kind.value} {event.entity.external_id} (seq {event.seq})"
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import DocumentChange, Manifest, Tier, WorldKey
+from minutehand.domain.provider import DocumentChange, Manifest, PersonChange, Tier, WorldKey
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -17,6 +17,7 @@ MANIFEST = Manifest(
     ],
     kinds=[EntityKind.MESSAGE, EntityKind.CHANNEL, EntityKind.DOCUMENT],
     pushes_events=True,
+    shared_hosts=["login.botframework.com"],
     world_keys=[
         WorldKey(path="/{key}/oauth2/v2.0/"),
         WorldKey(path="/{key}/v2.0/.well-known/"),
@@ -31,4 +32,5 @@ MANIFEST = Manifest(
         DocumentChange.SHARED,
         DocumentChange.TRASHED,
     ],
+    people_changes=[PersonChange.REMOVED, PersonChange.DEACTIVATED, PersonChange.REACTIVATED],
 )

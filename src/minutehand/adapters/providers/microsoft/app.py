@@ -15,6 +15,7 @@ surface it names, in that surface's own error shape, and used up one call at a t
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -23,7 +24,7 @@ from urllib.parse import unquote
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Router
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
 from minutehand.adapters.providers.microsoft import tokens, wire
 from minutehand.adapters.providers.microsoft.common import JSON, GraphRefusal, graph_error
@@ -126,6 +127,8 @@ class GraphApp:
             return await self._teams.teams(request, parts)
         if head == "chats":
             return await self._teams.chats(request, parts)
+        if head == "communications":
+            return await self._teams.communications(request, parts)
         raise GraphRefusal(400, "BadRequest", f"Resource not found for the segment '{head}'.")
 
     async def _subscription(self, request: Request, parts: list[str]) -> Response:
@@ -222,12 +225,15 @@ class MicrosoftApp:
             return
         surface, app = found
         faulted = self._fault(surface, scope)
-        if faulted is not None:
+        if faulted is WITHOUT_ID:
+            await app(scope, receive, _without_id(send))
+            return
+        if isinstance(faulted, Response):
             await faulted(scope, receive, send)
             return
         await app(scope, receive, send)
 
-    def _fault(self, surface: str, scope: Scope) -> Response | None:
+    def _fault(self, surface: str, scope: Scope) -> Response | object | None:
         """The first fault the scenario declares for this call that still has calls to fail, used up by one."""
         if surface == "login":
             return None
@@ -240,7 +246,7 @@ class MicrosoftApp:
                     continue
             if (fault.remaining is not None and fault.remaining < 1) or now < fault.from_time:
                 continue
-            if fault.only_rich and (surface != "connector" or method != "POST"):
+            if (fault.only_rich or fault.without_id) and (surface != "connector" or method != "POST"):
                 continue
             left = None if fault.remaining is None else fault.remaining - 1
             self._world.write(
@@ -249,8 +255,15 @@ class MicrosoftApp:
                 operation=Operation.UPDATE,
                 actor=Actor.SCENARIO,
                 parent=FAULTS,
-                after=RecordSnapshot(resource="faults", text=f"{method} {path} failed on purpose: {fault.error}"),
+                after=RecordSnapshot(
+                    resource="faults",
+                    text=f"{method} {path} answered without its id on purpose"
+                    if fault.without_id
+                    else f"{method} {path} failed on purpose: {fault.error}",
+                ),
             )
+            if fault.without_id:
+                return WITHOUT_ID
             headers = {"Retry-After": str(fault.retry_after)} if fault.retry_after is not None else None
             if surface == "connector":
                 body = wire.ConnectorError(
@@ -262,6 +275,38 @@ class MicrosoftApp:
             )
             return graph_error(refusal, self._clock, Request(scope))
         return None
+
+
+WITHOUT_ID = object()
+"""What `_fault` answers for a send to be carried out and answered without its id."""
+
+_IDS = ("id", "activityId")
+
+
+def _without_id(send: Send) -> Send:
+    """`send`, with the id of what was sent taken out of a successful JSON answer: the connector's `id`, and a new
+    conversation's `activityId`."""
+    started: list[Message] = []
+
+    async def sending(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            started.append(message)
+            return
+        if message["type"] != "http.response.body" or not started:
+            await send(message)
+            return
+        start = started.pop()
+        body: bytes = message["body"] if "body" in message else b""
+        if 200 <= start["status"] < 300 and body:
+            answered = json.loads(body)
+            if isinstance(answered, dict):
+                body = json.dumps({k: v for k, v in answered.items() if k not in _IDS}).encode()
+        headers = [(k, v) for k, v in start["headers"] if k != b"content-length"]
+        headers.append((b"content-length", str(len(body)).encode()))
+        await send({**start, "headers": headers})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    return sending
 
 
 def _decoded_path(scope: Scope) -> str:

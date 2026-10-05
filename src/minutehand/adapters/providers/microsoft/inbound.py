@@ -80,7 +80,8 @@ class DeliveryRefused(AgentFailed):
         self.status = status
 
 
-def activity_token(app: AppRecord) -> str:
+def activity_token(app: AppRecord, *, service_url: str = SERVICE_URL) -> str:
+    """The Bot Framework's bearer token on an activity pushed to `app`, naming the `serviceUrl` it carries."""
     token, _ = tokens.issued(
         use=TokenUse.ACTIVITY,
         issuer=tokens.BOT_FRAMEWORK_ISSUER,
@@ -88,7 +89,7 @@ def activity_token(app: AppRecord) -> str:
         tenant=None,
         app_id=CHANNEL_APP_ID,
         user=None,
-        service_url=SERVICE_URL,
+        service_url=service_url,
         lifetime=3600,
     )
     return token

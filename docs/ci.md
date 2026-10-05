@@ -7,7 +7,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `promotion`, `gate` |
+| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor over workflows and `.github/actions`), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `promotion`, `gate` |
 | `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency), `firestore` (builds `examples/state/firestore_emulator`'s image and runs `pytest -m firestore`: a real rewind through Google's Firestore emulator; not a required check) |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
@@ -44,6 +44,45 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 | A workflow triggered by comments with write access (`agent-summon`) | Safe among colleagues; with outside contributors it runs on text a stranger wrote | None. No `pull_request_target`, no `issue_comment` trigger. `zizmor` fails the build if one appears. |
 | Three branches to promote through | `integration-main` → `staging-main` → `main`, each with its own tier | Two: work lands on `integration-main`, and `main` takes pull requests from `integration-main` only. There is no deployment to stage, so no third. |
 | The promotion check lived in a workflow that never fired for it | `source-branch-guard` sat in a workflow triggered for `integration-main` while acting only on `main`; it never ran, and two pull requests went straight into `main` | `promotion` is a job in the one workflow, has no `if`, runs on every event, and sits behind `gate` |
+
+## Minutehand in another repository's CI
+
+`.github/actions/setup-minutehand` is a composite action that installs Minutehand from the action's own
+files: the runner fetches the action at the commit the caller names, and that copy of this repository is what is
+installed (`$GITHUB_ACTION_PATH/../../..`). No package index, no image registry, no token and no secret.
+
+```yaml
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<sha>                 # the caller's own repository; Minutehand's is never checked out
+      - run: python3 -m venv "$RUNNER_TEMP/venv"
+      - id: minutehand
+        uses: <org>/minutehand/.github/actions/setup-minutehand@<full commit sha>
+        with:
+          python: ${{ runner.temp }}/venv/bin/python  # default: `python` on PATH
+          installer: auto                              # uv when it is on PATH, else pip; or `uv`, `pip`
+          image-tag: minutehand:ci                     # optional: build the image and load it into Docker
+      - run: echo "minutehand ${{ steps.minutehand.outputs.version }} at ${{ steps.minutehand.outputs.commit }}"
+```
+
+| Output | What |
+|---|---|
+| `version` | The installed package's version |
+| `commit` | The commit installed: the SHA the action was pinned at (or, used by a local path, the checkout's `HEAD`); a reference that is not a full SHA is refused |
+
+Pin it by full commit SHA, as every action here is pinned; a tag or branch is refused, since nothing could then
+say which Minutehand a run used. With `image-tag`, the image is built from the same files with `docker build` on
+the runner and is in the job's Docker under that tag (`docker compose` and `docker run` find it); nothing is pushed.
+
+**The one repository setting it relies on.** This repository is internal, and a workflow in another repository
+can use an action from it only when this repository's *Settings → Actions → General → Access* is set to
+"Accessible from repositories in the organization". Nothing here changes it; whoever administers the repository
+sets it once. Without it the caller's run fails at "Set up job" with the action not found.
+
+The `action` job in `ci.yml` uses the action by its local path on a runner with nothing set up but the checkout,
+and runs the installed `minutehand --help`, `examples/follow_up` and the built image.
 
 ## Tiers
 

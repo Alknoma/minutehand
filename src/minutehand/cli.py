@@ -406,7 +406,7 @@ def _standing_compose(args: argparse.Namespace) -> dict[str, object]:
         host="0.0.0.0",
         port=standing.DEFAULT_PROXY_PORT,
         agent_host=name,
-        no_proxy=[*args.service, *args.no_proxy],
+        no_proxy=[*args.service, *args.no_proxy, name],
         telemetry_port=standing.DEFAULT_TELEMETRY_PORT,
         receive_telemetry=not args.no_receive_telemetry,
     )

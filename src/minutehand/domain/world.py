@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 
-from minutehand.domain.scenario import Model, ProviderKey, TicketState
+from minutehand.domain.scenario import AccessRole, Model, ProviderKey, TicketState
 
 
 class EntityKind(StrEnum):
@@ -191,6 +191,23 @@ class DocumentSnapshot(Model):
         default=None, description="Who last changed it: a person's email, or the name of the integration's bot"
     )
     last_edited_at: AwareDatetime | None = Field(default=None, description="Simulated time of that change")
+    owner: str | None = Field(
+        default=None, description="Who owns it: a person's email, or the integration's name; None when unknown"
+    )
+    space: str | None = Field(
+        default=None,
+        description="The name of the shared place it lives in (a shared drive, a site, a workspace); None when it is "
+        "its owner's own",
+    )
+
+
+class GrantSnapshot(Model):
+    """Someone was given access to a document: a person by email, a domain, or anyone with the link."""
+
+    kind: Literal["grant"] = "grant"
+    document: str = Field(description="The title of the document, as it read when access was given")
+    to: str = Field(description="A person's email; a domain; or `anyone`")
+    role: AccessRole
 
 
 class RecordSnapshot(Model):
@@ -209,7 +226,7 @@ class RecordSnapshot(Model):
 
 
 Snapshot = Annotated[
-    TicketSnapshot | MessageSnapshot | DocumentSnapshot | RecordSnapshot | InteractionSnapshot,
+    TicketSnapshot | MessageSnapshot | DocumentSnapshot | GrantSnapshot | RecordSnapshot | InteractionSnapshot,
     Field(discriminator="kind"),
 ]
 

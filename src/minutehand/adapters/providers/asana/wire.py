@@ -180,6 +180,9 @@ class AsanaWorkspace(Model):
     strict_tokens: bool = Field(default=False, description="Only a seeded or minted token is accepted")
     status: StatusRule = SectionStatus()
     rate_limits: list[RateWindow] = []
+    unpaginated_limit: int = Field(
+        default=UNPAGINATED_MAX, ge=1, description="Past this many items a read without `limit` is refused"
+    )
 
 
 class AsanaUser(Model):
@@ -187,6 +190,11 @@ class AsanaUser(Model):
     gid: str
     name: str
     email: str
+    removed: bool = Field(
+        default=False,
+        description="Removed from the workspace by an administrator: unlisted, unassignable, its tokens refused; "
+        "what it did before still names it",
+    )
 
 
 class AsanaTeam(Model):
@@ -1220,17 +1228,20 @@ def decode_offset(token: str) -> str:
 Item = TypeVar("Item", bound=Representation)
 
 
-def page(items: list[Item], query: Query, path: str) -> tuple[list[Item], NextPage | None]:
+def page(
+    items: list[Item], query: Query, path: str, *, unpaginated_limit: int = UNPAGINATED_MAX
+) -> tuple[list[Item], NextPage | None]:
     """One page by gid, which is the order every collection here is answered in.
 
-    Without `limit` the whole collection is answered, until it is too large to answer at all.
+    Without `limit` the whole collection is answered, until it is larger than `unpaginated_limit` (the workspace's
+    own threshold), when it is not answered at all.
     """
     limit = query.count("limit")
     offset = query.text("offset")
     if offset is not None and limit is None:
         raise bad("offset: Cannot be used without limit")
     if limit is None:
-        if len(items) > UNPAGINATED_MAX:
+        if len(items) > unpaginated_limit:
             raise bad("The result is too large. You should use pagination (may require specifying a workspace)!")
         return items, None
     rest = items if offset is None else [i for i in items if int(i.gid) > int(decode_offset(offset))]

@@ -204,7 +204,8 @@ class AsanaWorld:
         return found if isinstance(found, wire.AsanaUser) else None
 
     def users(self) -> list[wire.AsanaUser]:
-        return [u for u in self._records(USERS) if isinstance(u, wire.AsanaUser)]
+        """The workspace's members: every user but those an administrator removed."""
+        return [u for u in self._records(USERS) if isinstance(u, wire.AsanaUser) and not u.removed]
 
     def user_by_email(self, email: str) -> wire.AsanaUser | None:
         wanted = email.strip().lower()

@@ -17,14 +17,24 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
+from minutehand.application.further_seed import Scratch, land
 from minutehand.application.model_calls import per_wake
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.runner import RunResult, evaluate, view_of
-from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply, Press
-from minutehand.domain.provider import Manifest
+from minutehand.domain.people import (
+    InboundCredential,
+    InboundCredentialAsk,
+    InboundTarget,
+    PermissionGrant,
+    PersonMessage,
+    PersonReply,
+    Press,
+)
+from minutehand.domain.provider import Manifest, PersonChange, merged_seed
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import (
     Answers,
@@ -32,7 +42,13 @@ from minutehand.domain.scenario import (
     Happening,
     Person,
     ProviderKey,
+    ProviderSeed,
     Scenario,
+    SeededChannel,
+    SeededDocument,
+    SeededTicket,
+    SharedSpace,
+    SignIn,
     TicketHappening,
     TicketState,
 )
@@ -48,10 +64,15 @@ from minutehand.ports.provider import (
     ActsOnTickets,
     ASGIApp,
     ChangesDocuments,
+    ChangesPeople,
     DeclaresFaults,
+    DeletesTickets,
     EditsTickets,
+    GrantsPermissions,
     HoldsTickets,
+    MintsInboundCredentials,
     NotifiesChanges,
+    OwnsSeed,
     Provider,
     PushesEvents,
     PushesInteractions,
@@ -64,6 +85,10 @@ STANDING_WAKE = 1
 
 class WorldRefused(RunRefused):
     """What was asked of a standing world cannot be done, and nothing was changed."""
+
+
+class Unsupported(WorldRefused):
+    """What was asked is a capability the provider does not have, in any world."""
 
 
 @dataclass(frozen=True)
@@ -80,7 +105,7 @@ class _Owed:
     at: datetime
     what: str
     reply: PersonReply | None = None
-    fate: tuple[EntityRef, TicketState] | None = None
+    fate: tuple[EntityRef, TicketState | None] | None = None
     direction: str | None = None
     happening: Happening | None = None
 
@@ -126,6 +151,7 @@ class StandingWorld:
         self._owed: list[_Owed] = []
         self._fated: set[EntityRef] = set()
         self._seen = 0
+        self._acted: list[Happening] = []
 
     # -- the world as the proxy answers it --------------------------------------------------------------------
 
@@ -233,7 +259,12 @@ class StandingWorld:
         self._owed.append(
             _Owed(
                 at=assigned.sim_time + fate.after,
-                what=f"{person.key} moves {assigned.entity.external_id} to {fate.becomes.value}",
+                what=f"{person.key} "
+                + (
+                    f"moves {assigned.entity.external_id} to {fate.becomes.value}"
+                    if fate.becomes is not None
+                    else f"deletes {assigned.entity.external_id}"
+                ),
                 fate=(assigned.entity, fate.becomes),
             )
         )
@@ -248,7 +279,10 @@ class StandingWorld:
             )
         elif owed.fate is not None:
             ticket, becomes = owed.fate
-            self._holds(ticket.provider).transition(ticket, becomes, self.store, self.clock)
+            if becomes is None:
+                self._deletes(ticket.provider).delete_ticket(ticket, self.store, self.clock)
+            else:
+                self._holds(ticket.provider).transition(ticket, becomes, self.store, self.clock)
         elif owed.direction is not None:
             await self.say(self.scenario.owner, owed.direction, provider=self._only_inbound())
 
@@ -313,7 +347,7 @@ class StandingWorld:
         lands one."""
         try:
             checked = type(self.scenario).model_validate(
-                {**self.scenario.model_dump(), "happenings": [happening.model_dump()]}
+                {**self.scenario.model_dump(), "happenings": [h.model_dump() for h in [*self._acted, happening]]}
             )
             key = checked.happening_provider(happening)
             refuse_unheld(checked, {key: self.provider(key).manifest})
@@ -322,7 +356,8 @@ class StandingWorld:
         self._lands(happening, 1)
         before = self.store.head()
         await self._happen(happening)
-        return self._written(before)
+        self._acted.append(happening)
+        return self._written(before, reads=True)
 
     async def press(self, person: str, on: EntityRef, press: Press) -> WorldEvent:
         """`person` uses a control on the message `on` now (a button, a pick, a form filled), pushed to the
@@ -346,6 +381,113 @@ class StandingWorld:
             found.declare(faults, self.store, self.clock)
         except ValueError as e:
             raise WorldRefused(f"{provider} cannot declare these faults: {e}") from e
+
+    def delete_ticket(self, ticket: EntityRef) -> WorldEvent:
+        """A person deletes the ticket now: one the agent filed, or one seeded."""
+        before = self.store.head()
+        try:
+            self._deletes(ticket.provider).delete_ticket(ticket, self.store, self.clock)
+        except LookupError as e:
+            raise WorldRefused(str(e.args[0]) if e.args else str(e)) from e
+        return self._written(before)
+
+    # -- the world changed from outside, while open ---------------------------------------------------------------
+
+    def extend(
+        self,
+        *,
+        people: Sequence[Person] = (),
+        tickets: Sequence[SeededTicket] = (),
+        documents: Sequence[SeededDocument] = (),
+        spaces: Sequence[SharedSpace] = (),
+        sign_ins: Sequence[SignIn] = (),
+        channels: Sequence[SeededChannel] = (),
+        provider_seeds: Sequence[ProviderSeed] = (),
+        directory: Path,
+        scratch: Scratch,
+    ) -> dict[ProviderKey, int]:
+        """Seed more into the world as it stands (`application.further_seed`): the scenario grows by the addition,
+        each provider the world holds is given what the addition means for it, and a provider it does not hold yet
+        is seeded from the grown scenario when it is first had. Refused with nothing written when the grown scenario
+        is not one, or the world cannot take it."""
+        before = self.scenario
+        seeds = {s.provider: s for s in before.provider_seeds}
+        try:
+            for fragment in provider_seeds:
+                found = self.provider(fragment.provider)
+                if not isinstance(found, OwnsSeed):
+                    raise Unsupported(f"{fragment.provider} has no seed of its own to add to")
+                held = seeds[fragment.provider].body if fragment.provider in seeds else None
+                body = merged_seed(found.seed_model, held, fragment.body)
+                seeds[fragment.provider] = ProviderSeed(provider=fragment.provider, body=body)
+            after = type(before).model_validate(
+                {
+                    **before.model_dump(),
+                    "people": [p.model_dump() for p in [*before.people, *people]],
+                    "tickets": [t.model_dump() for t in [*before.tickets, *tickets]],
+                    "documents": [d.model_dump() for d in [*before.documents, *documents]],
+                    "spaces": [x.model_dump() for x in [*before.spaces, *spaces]],
+                    "sign_ins": [x.model_dump() for x in [*before.sign_ins, *sign_ins]],
+                    "channels": [c.model_dump() for c in [*before.channels, *channels]],
+                    "provider_seeds": [x.model_dump() for x in seeds.values()],
+                }
+            )
+            named = {t.provider for t in tickets} | {d.provider for d in documents} | {c.provider for c in channels}
+            named |= {x.provider for x in [*spaces, *sign_ins, *provider_seeds]}
+            refuse_unheld(after, {k: self.provider(k).manifest for k in named | set(self._built)})
+            held = [k for k in self._built if any(e.entity.provider == k for e in self.store.events())]
+            written = land(lambda k: self._built[k], held, before, after, self.store, directory, scratch)
+        except (ValueError, RunRefused) as e:
+            if isinstance(e, WorldRefused):
+                raise
+            raise WorldRefused(f"this addition cannot land here: {e}") from e
+        self.scenario = after
+        self._people = {p.email: p for p in after.people}
+        if self._replier is not None:
+            self._replier = ScriptedReplier(after)
+        for key in sorted(named - set(held)):
+            self._built.pop(key, None)
+            self._apps.pop(key, None)
+            self.provider(key)
+        self._seen = self.store.head()
+        return dict(written)
+
+    def change_person(self, provider: ProviderKey, person: str, change: PersonChange) -> WorldEvent:
+        """Something happens to `person`'s account in `provider` now, as an administrator does it."""
+        found = self.provider(provider)
+        if not isinstance(found, ChangesPeople) or change not in found.manifest.people_changes:
+            can = ", ".join(c.value for c in found.manifest.people_changes) or "nothing"
+            raise Unsupported(f"{provider} cannot show a person {change.value}; it can show: {can}")
+        before = self.store.head()
+        try:
+            found.change_person(change, self._person(person), self.store, self.clock)
+        except (ValueError, LookupError) as e:
+            raise WorldRefused(f"{provider} cannot do that to {person}: {e}") from e
+        return self._written(before)
+
+    def permit(self, provider: ProviderKey, grant: PermissionGrant) -> WorldEvent:
+        """A named permission granted or withheld for a person now."""
+        found = self.provider(provider)
+        if not isinstance(found, GrantsPermissions):
+            raise Unsupported(f"{provider} names no permissions that can be granted or withheld")
+        before = self.store.head()
+        try:
+            found.permit(grant, self._person(grant.person), self.store, self.clock)
+        except (ValueError, LookupError) as e:
+            raise WorldRefused(f"{provider} cannot change that permission: {e}") from e
+        return self._written(before)
+
+    def credential(self, provider: ProviderKey, ask: InboundCredentialAsk) -> InboundCredential:
+        """What the provider's service would send with a request a test builds itself, signed with this world's
+        secret for the provider's inbound target (or a fresh one when it has none and its scheme needs none)."""
+        found = self.provider(provider)
+        if not isinstance(found, MintsInboundCredentials):
+            raise Unsupported(f"{provider} signs nothing it pushes")
+        secret = self._signing[provider] if provider in self._signing else ""
+        try:
+            return found.credential(ask, self.store, self.clock, secret=secret)
+        except ValueError as e:
+            raise WorldRefused(f"{provider} cannot sign that: {e}") from e
 
     def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
         """The ticket's assignee moves it, as actor PERSON."""
@@ -380,8 +522,10 @@ class StandingWorld:
 
     # -- lookups that refuse loudly -----------------------------------------------------------------------------
 
-    def _written(self, before: int) -> WorldEvent:
-        written = [e for e in self.store.events(since=before) if e.operation is not Operation.READ]
+    def _written(self, before: int, *, reads: bool = False) -> WorldEvent:
+        """The first change since `before`; with `reads`, a read counts too (a person opening the agent's page
+        changes nothing and is recorded as what they read)."""
+        written = [e for e in self.store.events(since=before) if reads or e.operation is not Operation.READ]
         if not written:
             raise WorldRefused("the provider recorded nothing for this act")
         return written[0]
@@ -411,6 +555,12 @@ class StandingWorld:
                 "a direction is said on the world's one inbound target, and it declares " + str(len(self._inbound))
             )
         return next(iter(self._inbound))
+
+    def _deletes(self, provider: ProviderKey) -> DeletesTickets:
+        found = self.provider(provider)
+        if not isinstance(found, DeletesTickets):
+            raise Unsupported(f"{provider} holds no tickets a person can delete")
+        return found
 
     def _holds(self, provider: ProviderKey) -> HoldsTickets:
         found = self.provider(provider)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import Manifest, PersonChange, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -11,4 +11,5 @@ MANIFEST = Manifest(
     hosts=["slack.com", "*.slack.com"],
     kinds=[EntityKind.MESSAGE, EntityKind.CHANNEL],
     pushes_events=True,
+    people_changes=[PersonChange.DEACTIVATED, PersonChange.REACTIVATED],
 )

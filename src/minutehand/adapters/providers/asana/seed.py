@@ -40,6 +40,12 @@ class SeedWorkspace(Model):
     name: str = state.WORKSPACE_NAME
     organization: bool = Field(default=True, description="An organization has teams; a project in one needs a team")
     premium: bool = Field(default=True, description="False: search and custom fields answer 402")
+    unpaginated_limit: int = Field(
+        default=wire.UNPAGINATED_MAX,
+        ge=1,
+        description="Past this many items a read without `limit` is refused, as Asana refuses a large one; lowered "
+        "so a small workspace reaches the refusal",
+    )
 
 
 class SeedAgent(Model):
@@ -172,6 +178,27 @@ class SeedRateLimit(Model):
     lasts: timedelta = Field(gt=timedelta(0))
 
 
+class SeedLimits(Model):
+    """The workspace's plan and thresholds, each None to leave it as it is: what a test changes on a world already
+    open (`AsanaProvider.declare`), and what a seed may set apart from its workspace."""
+
+    premium: bool | None = None
+    organization: bool | None = None
+    unpaginated_limit: int | None = Field(default=None, ge=1)
+
+
+def limited(workspace: wire.AsanaWorkspace, limits: SeedLimits | None) -> wire.AsanaWorkspace:
+    """The workspace with `limits` over it."""
+    if limits is None:
+        return workspace
+    changed = {
+        "premium": limits.premium,
+        "is_organization": limits.organization,
+        "unpaginated_limit": limits.unpaginated_limit,
+    }
+    return workspace.model_copy(update={k: v for k, v in changed.items() if v is not None})
+
+
 class AsanaSeed(Model):
     workspace: SeedWorkspace = SeedWorkspace()
     agent: SeedAgent = SeedAgent()
@@ -184,6 +211,9 @@ class AsanaSeed(Model):
     tokens: list[SeedToken] = Field(default=[], description="None declared: any bearer token acts as the agent")
     refresh_tokens: list[SeedRefreshToken] = []
     rate_limits: list[SeedRateLimit] = []
+    limits: SeedLimits | None = Field(
+        default=None, description="The plan and thresholds over what `workspace` says: what an open world changes"
+    )
 
 
 def asana_seed(scenario: Scenario) -> AsanaSeed:
@@ -260,18 +290,22 @@ class _Seeding:
         start = self.scenario.starts_at
         strict = bool(self.seed.tokens or self.seed.refresh_tokens)
         self.asana.put_record(
-            wire.AsanaWorkspace(
-                gid=WORKSPACE_GID,
-                name=self.seed.workspace.name,
-                is_organization=self.seed.workspace.organization,
-                email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people}),
-                premium=self.seed.workspace.premium,
-                strict_tokens=strict,
-                status=self._status(),
-                rate_limits=[
-                    wire.RateWindow(start=wire.stamp(start + r.after), end=wire.stamp(start + r.after + r.lasts))
-                    for r in self.seed.rate_limits
-                ],
+            limited(
+                wire.AsanaWorkspace(
+                    gid=WORKSPACE_GID,
+                    name=self.seed.workspace.name,
+                    is_organization=self.seed.workspace.organization,
+                    email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people}),
+                    premium=self.seed.workspace.premium,
+                    unpaginated_limit=self.seed.workspace.unpaginated_limit,
+                    strict_tokens=strict,
+                    status=self._status(),
+                    rate_limits=[
+                        wire.RateWindow(start=wire.stamp(start + r.after), end=wire.stamp(start + r.after + r.lasts))
+                        for r in self.seed.rate_limits
+                    ],
+                ),
+                self.seed.limits,
             ),
             parent=state.WORKSPACES,
             actor=Actor.SCENARIO,

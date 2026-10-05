@@ -8,14 +8,29 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from minutehand.checks.runner import RunResult
 from minutehand.domain.outbound import OutboundHost, refuse_repeats
-from minutehand.domain.people import InboundTarget, Press
-from minutehand.domain.scenario import Happening, Model, ProviderKey, Seed, TicketState
+from minutehand.domain.people import InboundCredential, InboundCredentialAsk, InboundTarget, PermissionGrant, Press
+from minutehand.domain.provider import PersonChange
+from minutehand.domain.scenario import (
+    Happening,
+    Model,
+    Person,
+    ProviderKey,
+    ProviderSeed,
+    Seed,
+    SeededChannel,
+    SeededDocument,
+    SeededTicket,
+    SharedSpace,
+    SignIn,
+    TicketState,
+)
 from minutehand.domain.telemetry import StoredSpan
 from minutehand.domain.world import EntityRef, RecordedCall, Stored, WorldEvent
 
@@ -55,11 +70,14 @@ class Inbound(Model):
 
     provider: ProviderKey
     url: str
+    interactivity_url: str | None = Field(
+        default=None, description="Where a person's use of a control or a form is pushed; None: the same as `url`"
+    )
     secret: str | None = None
 
     def to_target(self) -> InboundTarget:
         """The target as a provider pushes to it; the secret travels beside it, never in it."""
-        return InboundTarget(provider=self.provider, url=self.url)
+        return InboundTarget(provider=self.provider, url=self.url, interactivity_url=self.interactivity_url)
 
 
 class Fault(Model):
@@ -150,8 +168,9 @@ class SpansPage(Model):
 
 
 class Unmatched(Model):
-    """Calls no open world claimed, refused with 502, oldest first. `position` counts from 1 across the life
-    of the server, so `since` reads only what is new."""
+    """Calls no open world claimed, refused with 502, oldest first. `since` and `head` count every call the lobby
+    kept across the life of the server (a call to a provider's shared host, answered there and not listed here,
+    among them), so `since` reads only what is new."""
 
     calls: list[RecordedCall]
     head: int
@@ -209,7 +228,17 @@ class PressControl(Model):
     press: Press
 
 
-Act = Annotated[Say | Reply | MoveTicket | EditTicket | Happen | PressControl, Field(discriminator="kind")]
+class DeleteTicket(Model):
+    """A person deletes a ticket now: one the agent filed, or one seeded; its assignee, or the owner when unassigned.
+    Afterwards the service answers for it as for a ticket that never was."""
+
+    kind: Literal["delete_ticket"] = "delete_ticket"
+    ticket: EntityRef
+
+
+Act = Annotated[
+    Say | Reply | MoveTicket | EditTicket | Happen | PressControl | DeleteTicket, Field(discriminator="kind")
+]
 
 
 class ActRequest(Model):
@@ -254,5 +283,99 @@ class Environment(Model):
     variables: dict[str, str]
 
 
+class RefusalKind(StrEnum):
+    UNSUPPORTED = "unsupported"
+    """The provider cannot do what was asked at all, in any world: a capability it does not have."""
+
+
 class Refusal(Model):
     error: str
+    kind: RefusalKind | None = Field(default=None, description="Set when the refusal is of a known kind")
+
+
+class FurtherSeed(Model):
+    """More of what a world is seeded with, landed on a world already open: written with the same models and the
+    same seeding the world opened with, as actor SCENARIO at the world's now. Refused, with nothing written, when
+    it contradicts what is there (a key or title already taken, a seeded thing changed since, an id in use). A
+    provider fragment is merged into the provider's own seed: lists grow, and a value it sets must agree."""
+
+    people: list[Person] = []
+    tickets: list[SeededTicket] = []
+    documents: list[SeededDocument] = []
+    spaces: list[SharedSpace] = []
+    sign_ins: list[SignIn] = []
+    channels: list[SeededChannel] = []
+    provider_seeds: list[ProviderSeed] = []
+
+    @model_validator(mode="after")
+    def _adds_something(self) -> Self:
+        if not any(
+            (self.people, self.tickets, self.documents, self.spaces, self.sign_ins, self.channels, self.provider_seeds)
+        ):
+            raise ValueError("a further seed adds nothing")
+        return self
+
+
+class Seeded(Model):
+    """What a further seed gave each provider the world already held, by count of things written."""
+
+    view: WorldView
+    written: dict[ProviderKey, int]
+
+
+class ChangePerson(Model):
+    """Something happens to a person's account in one provider now, as an administrator would do it."""
+
+    provider: ProviderKey
+    person: str = Field(description="Person.key")
+    change: PersonChange
+
+
+class Permit(Model):
+    """A named permission granted or withheld for a person on a project now, in a provider that names them."""
+
+    provider: ProviderKey
+    grant: PermissionGrant
+
+
+class MintInbound(Model):
+    """Sign or mint, for a request a test builds itself, what the provider's service would send with it."""
+
+    provider: ProviderKey
+    ask: InboundCredentialAsk
+
+
+class Minted(Model):
+    credential: InboundCredential
+
+
+class ProviderView(Model):
+    """What one installed provider can be asked to do in a world already open."""
+
+    key: ProviderKey
+    people_changes: list[PersonChange]
+    permissions: bool = Field(description="Grants and withholds named permissions (`POST /permissions`)")
+    inbound_credentials: bool = Field(description="Signs a request a test builds (`POST /inbound-credential`)")
+    faults: bool = Field(description="Declares its own typed faults (`POST /provider-faults`)")
+    deletes_tickets: bool = Field(description="A person can delete its tickets (`act` `delete_ticket`, fates)")
+    seed_model: bool = Field(description="Has a seed model of its own (`provider_seeds`)")
+
+
+class ProvidersView(Model):
+    providers: list[ProviderView]
+
+
+class RawEntity(Model):
+    """One entity, every version of it the log holds, oldest first; `deleted` when its latest change removed it."""
+
+    entity: EntityRef
+    deleted: bool
+    versions: list[Stored]
+
+
+class RawState(Model):
+    """Everything a world holds of one provider, as the provider keeps it: for a person debugging, not for a test
+    to assert on. Its shape is the provider's own and changes with it."""
+
+    provider: ProviderKey
+    entities: list[RawEntity]

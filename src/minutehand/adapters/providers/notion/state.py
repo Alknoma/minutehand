@@ -202,7 +202,8 @@ class NotionWorld:
         return [w for w in self._list(EntityKind.RECORD, WORKSPACES) if isinstance(w, wire.StoredWorkspace)]
 
     def users(self, workspace: str) -> list[wire.StoredUser]:
-        return [u for u in self._list(EntityKind.RECORD, _users_of(workspace)) if isinstance(u, wire.StoredUser)]
+        found = self._list(EntityKind.RECORD, _users_of(workspace))
+        return [u for u in found if isinstance(u, wire.StoredUser) and not u.removed]
 
     def integrations(self, workspace: str) -> list[wire.StoredIntegration]:
         found = self._list(EntityKind.RECORD, _integrations_of(workspace))
@@ -309,6 +310,8 @@ class NotionWorld:
             parent=self._parent_title(page.parent),
             last_edited_by=self.editor(page.stamps.last_edited_by),
             last_edited_at=at,
+            owner=self.editor(page.stamps.created_by),
+            space=space.name if (space := self.workspace(page.workspace)) is not None else None,
         )
 
     # ------------------------------------------------------------------ writes
@@ -370,8 +373,8 @@ class NotionWorld:
     def write_workspace(self, workspace: wire.StoredWorkspace) -> WorldEvent:
         return self._setup(workspace.id, workspace, WORKSPACES, Operation.CREATE)
 
-    def write_user(self, user: wire.StoredUser) -> WorldEvent:
-        return self._setup(user.id, user, _users_of(user.workspace), Operation.CREATE)
+    def write_user(self, user: wire.StoredUser, *, operation: Operation = Operation.CREATE) -> WorldEvent:
+        return self._setup(user.id, user, _users_of(user.workspace), operation)
 
     def write_integration(self, integration: wire.StoredIntegration, *, operation: Operation) -> WorldEvent:
         return self._setup(

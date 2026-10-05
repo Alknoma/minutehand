@@ -61,17 +61,32 @@ run one at a time against it. A service that keeps a credential per tenant (an i
 workspace, a Personal Access Token per account, a tenant per Microsoft directory) isolates per test once each
 test's world claims its own.
 
+Per provider, given only what a client sends:
+
+| Provider | Per-test worlds | What names the world |
+|---|---|---|
+| Slack | Yes, when each test's service holds its own bot token | The bot token; each world seeds its own workspace (`SlackSeed.workspaces`: team id, bot user, tokens), so two worlds' teams differ, and one world may hold an agent installed in two workspaces |
+| Microsoft (Teams, Graph, SharePoint) | Yes | The tenant in the sign-in path, then the tokens it mints; each seed name gives its own tenant, domain, SharePoint host and bot id and secret. The Bot Framework's keys at `login.botframework.com` are the same in every world and answered with no world (`Manifest.shared_hosts`) |
+| Asana | Yes | The bearer token |
+| Jira | Yes | The site host (`<site>.atlassian.net`), the cloud id in `/ex/jira/{cloudId}/`, or the Basic password |
+| YouTrack | Yes | The instance host or the permanent token |
+| Notion | Yes | The integration token, or a public integration's token request |
+| GitHub | Yes | The personal access token |
+| Google Drive | Yes | The refresh token or the service account's assertion, then the token Google's endpoint mints |
+| AWS | No | SigV4 is no OAuth credential: a world claims the host, or is the default, one at a time |
+
 ## The control API
 
 Every request and answer is a model in `src/minutehand/adapters/control/wire.py`: frozen, and an unknown field
-is refused with 422. A refusal is `{"error": "..."}`: 404 for a world that is not open, 409 for what a world
-cannot do, 422 for a body that is not the model, 502 when the service an event was pushed to refused it.
+is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open, 409 for what a world
+cannot do (with `"kind": "unsupported"` when the provider cannot do it in any world; the client raises
+`Unsupported`), 422 for a body that is not the model, 502 when the service an event was pushed to refused it.
 
 | Route | Body → answer | What it does |
 |---|---|---|
 | `GET /v1/health` | → `ok` | |
 | `GET /v1/ca.pem` | → PEM | The bundle a service trusts: public roots, then the proxy's CA |
-| `GET /v1/environment[?ca_path=P]` | → `Environment` | The variables a service needs: proxy, `NO_PROXY`, the CA variable of each HTTP library, OTLP |
+| `GET /v1/environment[?ca_path=P][&no_proxy=H]...` | → `Environment` | The variables a service needs: proxy, `NO_PROXY` (with each `no_proxy` service of the stack and the server's own name; also as `no_grpc_proxy`), the CA variable of each HTTP library (`GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` too), OTLP |
 | `GET /v1/worlds` | → `WorldList` | Every open world |
 | `POST /v1/worlds` | `CreateWorld` → 201 `WorldView` | Open a world from a seed, with its claims, inbound targets, faults, outbound hosts, and whether scripted people speak |
 | `GET /v1/worlds/{id}` | → `WorldView` | Its clock, its head, what it owes |
@@ -84,8 +99,15 @@ cannot do, 422 for a body that is not the model, 502 when the service an event w
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
 | `POST /v1/worlds/{id}/clock` | `Advance` → `Advanced` | Move the clock `by` or `to`, firing what falls due |
 | `POST /v1/worlds/{id}/faults` | `Fault` → `WorldView` | Answer the next matching calls with a status and body of the caller's |
-| `POST /v1/worlds/{id}/provider-faults` | `DeclareFaults` → `WorldView` | A provider's own typed faults, as a fragment of its seed model |
+| `POST /v1/worlds/{id}/provider-faults` | `DeclareFaults` → `WorldView` | A provider's own typed faults and switches, as a fragment of its seed model |
+| `POST /v1/worlds/{id}/seed` | `FurtherSeed` → `Seeded` | More seeded into the open world: people, tickets, documents, spaces, sign-ins, channels, a provider seed fragment |
+| `POST /v1/worlds/{id}/people` | `ChangePerson` → `Acted` | A person's account removed, deactivated or reactivated in one provider |
+| `POST /v1/worlds/{id}/permissions` | `Permit` → `Acted` | A named permission granted or withheld for a person on a project |
+| `POST /v1/worlds/{id}/inbound-credential` | `MintInbound` → `Minted` | The headers a provider's service would send with a request the test builds itself |
+| `POST /v1/worlds/{id}/reset` | → `WorldView` | Back to the seed it was opened with, in place: the same id, claims, inbound targets and secrets |
+| `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
+| `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
 | `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed; `head` is the position to read on from |
 
 A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
@@ -161,6 +183,55 @@ fragment of the provider's seed model setting only its fault fields. The provide
 else it sets or what it names that the world does not hold) and records it as seeding does, its offsets counted
 from the world's now. `OpenWorld.declare_faults(provider, fragment)` sends it.
 
+### Changing a world while it is open
+
+What the old emulators' admin routes did to a running fake is a typed request here, validated by the provider
+that owns the thing, and recorded in the world as a change by actor `SCENARIO` at the world's clock, so the log
+says what the test did and when.
+
+- **A further seed** (`POST /seed`, `FurtherSeed`; `OpenWorld.seed()`, `.add_person()`): more people, tickets,
+  documents, spaces, sign-ins, channels, or a fragment of a provider's own seed, in the same models a world is
+  opened with. Each provider the world already holds is seeded twice in a scratch store, from the scenario before
+  and after the addition, starting at the position in the log it was first seeded at, and the world is given what
+  the second wrote that the first did not (`application/further_seed.py`). A provider fragment is merged into
+  the provider's seed: a list grows, an object merges field by field, a value it sets must agree, and the whole
+  is validated by the provider's model. `Seeded.written` says how many things each provider was given. Refused
+  with 409 and nothing written when the grown scenario is not one (a key or title taken), when a value
+  contradicts the seed, when the addition would renumber what is there, when it would rewrite something that has
+  changed since it was seeded, or when it would take an id in use. Jira, YouTrack, Drive, Notion and Microsoft put
+  the log's position into the ids of what they seed (an issue, a file, a page's blocks), so a person added to one
+  of them while it holds seeded issues, files or pages is refused (open the world with them), as is a ticket added
+  to Jira; tickets added to YouTrack and Asana, documents added to Drive, Notion and Microsoft, and people added to
+  Slack and Asana land.
+- **A person's account** (`POST /people`, `ChangePerson`; `OpenWorld.remove_person()`, `.deactivate_person()`,
+  `.reactivate_person()`): what each provider can show is its `Manifest.people_changes`; anything else is 409
+  with `kind: unsupported`, and the client raises `Unsupported`.
+- **A permission** (`POST /permissions`, `Permit`; `OpenWorld.grant()`, `.withhold()`): a named permission held
+  or withheld for a person on a project, after which the next call that needs it is answered accordingly.
+- **A ticket deleted** (`act` `delete_ticket`; `OpenWorld.delete_ticket()`): by its assignee, or the owner when
+  unassigned, one the agent filed or one seeded; afterwards the service answers for it as for one that never
+  was. A `TicketFate` with `deleted: true` does the same when the clock passes it, in a run and in a world.
+- **Switches** the emulators exposed (a page size, a tree cut short, a send answered without an id) are typed
+  faults and settings of the provider's own seed, declared through `provider-faults` like any fault.
+- **Reset** (`POST /reset`; `OpenWorld.reset()`): back to the seed the world was opened with, in place: the same
+  id, claims, inbound targets and secrets, its clock at its start, the faults it was opened with armed again,
+  and its log so far discarded. Tokens its fakes minted are no longer claimed, and further seeds are gone.
+- **Raw state** (`GET /state?provider=P`; `OpenWorld.raw_state()`): every version of every entity the provider
+  holds, deleted ones too, in its own JSON. For a person debugging; its shape is the provider's and changes with
+  it, so a test asserts on `events`, `entities` or the vendor API instead.
+
+`GET /v1/providers` (`MinutehandClient.providers()`) lists, per installed provider, which of these it has.
+
+### Requests a test builds itself
+
+A test that must call the service as the platform does, with a request it builds, asks the world for the
+credential the platform would send with it (`POST /inbound-credential`, `MintInbound`;
+`OpenWorld.inbound_credential(provider, InboundCredentialAsk(...))`): for Slack, `X-Slack-Request-Timestamp` and
+`X-Slack-Signature` over the body at the timestamp given, signed with the world's inbound secret for Slack; for
+the Bot Framework, `Authorization: Bearer <JWT>` for the `service_url` and `audience` given, signed with the key
+the fake publishes. A world with no Slack inbound target has no signing secret, and the request is refused. The
+supported path is still the acts above, which build, sign and push the request themselves.
+
 ## Each world is a run
 
 A world is a run in the state directory, named by its `world_id`:
@@ -208,7 +279,7 @@ def test_the_reminder_reaches_sofia(minutehand_world, gateway):
 |---|---|---|
 | `minutehand` | session | `MinutehandClient` to `$MINUTEHAND_URL`, or to a server started in this process |
 | `minutehand_spec` | test | The suite defines it; the default fails with how to |
-| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `say()`, `reply()`, `move_ticket()`, `edit_ticket()`, `advance()`, `arm()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
+| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `raw_state()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
 
 A failed `assert_*` prints the world's latest changes. `AsyncMinutehandClient` is the same client for an async
 suite.
@@ -269,16 +340,13 @@ script over the same code:
 
 - **Base-URL mode.** A service that reaches a fake by a base URL it is configured with (`SLACK_API_URL`) rather
   than through a proxy is not served: every call must go through the proxy.
-- **A modal submitted on its own, a user deactivated, a channel archived** by a person: no act. (A form a press
-  opens is filled and submitted by `press`.)
+- **A channel archived** by a person: no act.
 - **Retries of a pushed event or webhook.** Slack's retries are sent; Notion's and Graph's deliveries are sent
   once.
 - **A binary response is not recorded.** The call is answered, but a body the proxy cannot keep as text (a
   `.docx` download) leaves the call out of the world's `calls` (`docs/design.md`, Known issues).
-- **What the parent repository's emulators' admin endpoints did beyond this API**: adding, removing or
-  deactivating a user, and seeding tasks, documents, projects or team members into a world already open
-  (Asana, Jira, YouTrack, Drive: here the seed is fixed at creation); granting or withholding a YouTrack
-  permission at runtime (a seed fact here); resetting or reloading a world in place (close it and open another);
-  Teams' "answer the next send without an id" and GitHub's truncated-tree and wide-directory switches, which no
-  provider's fault model types yet; and dumping a fake's raw state (`/debug/state`), where here the log and
-  `entities` are what is read.
+- **Fixed ids the emulators used** (`U001`, `C001GENERAL`, a fixed Asana gid): ids here derive from names and
+  positions, so a test reads them back from the world (`entities`) or the vendor API after the world opens.
+- **AWS per world by credential.** A SigV4 request carries its access key id in a scheme the OAuth standards do
+  not define, and the router reads no provider's own format; AWS calls reach a world by a host it claims or the
+  default world.

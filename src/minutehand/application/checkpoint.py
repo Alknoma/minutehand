@@ -33,7 +33,7 @@ class PendingFate(Model):
     kind: Literal["fate"] = "fate"
     due: Due
     ticket: EntityRef
-    becomes: TicketState
+    becomes: TicketState | None = Field(description="None: its assignee deletes it")
 
 
 class PendingHappening(Model):
