@@ -62,24 +62,25 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
-from minutehand.application.model_calls import per_wake
+from minutehand.application.forks import ForkAccount, Outcomes, change_words, outcomes, restore_account, summary
+from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_model import PeopleReplier
 from minutehand.application.restore import Progress, Restored, SeenCall, restore_agent
-from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
+from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
-from minutehand.domain.experiment import Fork
+from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.world import Actor, Operation, TicketSnapshot
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
@@ -421,6 +422,66 @@ def restore_of(state: Path, run_id: str) -> Restored | None:
     started from the beginning."""
     path = run_dir(state, run_id) / RESTORE_RECORD
     return Restored.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def fork_of(state: Path, run_id: str) -> Fork | None:
+    """What a fork was asked to change, as kept with it. None for a run that was not forked."""
+    path = run_dir(state, run_id) / FORK_RECORD
+    return Fork.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def fork_account(state: Path, run_id: str) -> ForkAccount | None:
+    """A fork, told (`application.forks`): where it split, what it changed, whether its restore was proven, and,
+    once both have finished, how its outcome differs from its parent's. None for a run that was not forked."""
+    entry = find(state, run_id)
+    if entry.parent_run is None or entry.forked_at is None:
+        return None
+    at_seq = entry.forked_at
+    asked = fork_of(state, run_id)
+    parent_scenario = scenario_of(state, entry.parent_run)
+    with reading(state, entry.parent_run) as parent_world:
+        checkpoint = checkpoints(parent_world)[at_seq]
+        parent_events = parent_world.events()
+        asked_for = (model_call(s).model for s in parent_world.spans() if s.wake > checkpoint.wake and is_model_call(s))
+        models = list(dict.fromkeys(m for m in asked_for if m is not None))
+    with reading(state, run_id) as fork_world:
+        fork_events = fork_world.events()
+
+    def ticket_before(override: Override) -> TicketSnapshot | None:
+        if not isinstance(override, TicketEdit):
+            return None
+        held = [
+            e.after
+            for e in parent_events
+            if e.seq <= at_seq and e.entity == override.entity and isinstance(e.after, TicketSnapshot)
+        ]
+        return held[-1] if held else None
+
+    restored = restore_of(state, run_id)
+    outcome: Outcomes | None = None
+    if entry.finished and find(state, entry.parent_run).finished:
+        outcome = outcomes(
+            load(state, entry.parent_run).result,
+            load(state, run_id).result,
+            parent_events=parent_events,
+            fork_events=fork_events,
+            at_seq=at_seq,
+            scenario=parent_scenario,
+            fork_scenario=scenario_of(state, run_id),
+        )
+    return ForkAccount(
+        parent_run=entry.parent_run,
+        at_seq=at_seq,
+        after_wake=checkpoint.wake,
+        at=checkpoint.now,
+        changes=[
+            change_words(o, parent_scenario, ticket_before=ticket_before(o), models_before=models)
+            for o in (asked.overrides if asked is not None else [])
+        ],
+        summary=summary(asked, parent_scenario) if asked is not None else "Rerun; what it changed was not kept",
+        restore=restore_account(restored) if restored is not None else None,
+        outcome=outcome,
+    )
 
 
 class Checkpointed(Model):

@@ -55,7 +55,6 @@ import os
 import shlex
 import sys
 from collections.abc import Callable, Sequence
-from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 
@@ -69,6 +68,8 @@ from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
+from minutehand.application.forks import ForkAccount, scorecard_lines
+from minutehand.application.forks import described as fork_described
 from minutehand.application.outbound import described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
@@ -514,7 +515,14 @@ def _findings(args: argparse.Namespace, state: Path) -> int:
     if args.json:
         print(outcome.model_dump_json(indent=2))
     else:
-        print(_describe(outcome, session.fork_points(state, args.run_id), session.restore_of(state, args.run_id)))
+        print(
+            _describe(
+                outcome,
+                session.fork_points(state, args.run_id),
+                session.restore_of(state, args.run_id),
+                session.fork_account(state, args.run_id),
+            )
+        )
     return outcome.result.exit_code
 
 
@@ -526,8 +534,13 @@ def _runs(state: Path) -> int:
     for outcome in found:
         record = outcome.record
         failed = sum(1 for f in outcome.result.findings if f.kind is FindingKind.FAIL)
-        parent = f"  forked from {record.parent_run} at seq {record.forked_at}" if record.parent_run else ""
-        print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed{parent}")
+        print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed")
+        account = session.fork_account(state, record.run_id)
+        if account is not None:
+            print(
+                f"  forked from {account.parent_run} at seq {account.at_seq}, after wake {account.after_wake} "
+                f"({account.at:%Y-%m-%d %H:%M} UTC simulated): {account.summary}"
+            )
         print(f"  {_restorable_summary(session.fork_points(state, record.run_id))}")
         used = session.usage_of(state, record.run_id)
         print(
@@ -652,7 +665,12 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
     else:
         print(
             "\n\n".join(
-                _describe(o, session.fork_points(state, o.record.run_id), session.restore_of(state, o.record.run_id))
+                _describe(
+                    o,
+                    session.fork_points(state, o.record.run_id),
+                    session.restore_of(state, o.record.run_id),
+                    session.fork_account(state, o.record.run_id),
+                )
                 for o in outcomes
             )
         )
@@ -661,12 +679,12 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
     return exit_code([o.result for o in outcomes])
 
 
-def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None) -> str:
+def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None, account: ForkAccount | None) -> str:
     record, result = outcome.record, outcome.result
     lines = [f"run {record.run_id}: {record.scenario}", f"  {result.verdict.words}"]
-    if record.parent_run is not None:
-        lines.append(f"  forked from {record.parent_run} at seq {record.forked_at}")
-    if restored is not None:
+    if account is not None:
+        lines += [f"  {line}" for line in fork_described(account)]
+    elif restored is not None:
         verdict = "verified" if restored.verified else f"NOT verified: {restored.unverified}"
         lines.append(f"  the agent was restored from seq {restored.checkpoint_seq}, {verdict}")
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
@@ -717,25 +735,8 @@ def _finding(finding: Finding) -> str:
     return line
 
 
-def _span(delta: timedelta) -> str:
-    hours = delta.total_seconds() / 3600
-    return f"{hours / 24:.1f} days" if hours >= 48 else f"{hours:.0f} hours"
-
-
 def _scorecard(card: Effectiveness) -> list[str]:
-    lines = [
-        f"expectations met: {card.expectations_met} of {card.expectations_total}",
-        f"waits opened: {card.waits_opened}, still open at the end: {card.waits_open_at_end}",
-        f"follow-ups due: {card.follow_ups_due}, made: {card.follow_ups_made}, late: {card.follow_ups_late}, "
-        f"early: {card.follow_ups_early}",
-        f"time the agent lost: {_span(card.time_lost)}",
-        f"wakes: {card.wakes}, of which changed nothing: {card.idle_wakes}",
-        f"messages to people: {card.messages_to_people}",
-        f"failed checks: {card.failed_checks}",
-    ]
-    if card.slowest_follow_up is not None:
-        lines.insert(4, f"slowest follow-up: {_span(card.slowest_follow_up)} after its wait expired")
-    return lines
+    return [f"{line.label}: {line.value}" for line in scorecard_lines(card)]
 
 
 if __name__ == "__main__":
