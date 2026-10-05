@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, Field, model_validator
 
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
+from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Model, ProviderKey
@@ -145,36 +146,6 @@ class Command(Model):
 WakeSource = Annotated[Reported | Booked | Polled | Command, Field(discriminator="kind")]
 
 
-class ActionArgument(Model):
-    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    description: str
-
-
-class HumanAction(Model):
-    """Something a person does in the agent's OWN product, where no SaaS fake can stand in:
-    approving an operation in its web app, answering a question on its own page.
-
-    Declared here, or learned from the agent's API description wherever an operation
-    carries `x-minutehand: human_action`. Either way it becomes a tool the simulated
-    person can use, beside replying in chat and pressing a button.
-    """
-
-    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    description: str = Field(description="When a person would do this; the persona reads it")
-    method: Literal["POST", "PUT", "PATCH", "DELETE"] = "POST"
-    url: str = Field(description="May hold {argument} placeholders")
-    body: str | None = Field(default=None, description="JSON text with {argument} placeholders")
-    arguments: list[ActionArgument] = []
-
-
-class Inbox(Model):
-    """Where the monitor learns what is waiting on a person in the agent's own product."""
-
-    url: str = Field(description="Lists what is pending; may hold {person_email}")
-    id_field: str
-    summary_field: str
-
-
 class StateHooks(Model):
     """How the agent's own state is saved and put back, so a run can be rewound. Without hooks a run cannot be
     forked, and a sample after the first starts from whatever the agent remembers.
@@ -283,8 +254,11 @@ class AgentUnderTest(Model):
     goal: GoalSource = GoalByWake()
     wakes: list[WakeSource] = []
     inbound: list[InboundTarget] = []
-    human_actions: list[HumanAction] = []
-    inbox: Inbox | None = None
+    inboxes: list[HttpInbox] = Field(
+        default=[],
+        description="Where work waits on a person inside the agent's own product (an approval, a question on its "
+        "own page), read and decided as each person (`domain.inboxes`)",
+    )
     state: StateHooks | None = None
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"
@@ -299,6 +273,10 @@ class AgentUnderTest(Model):
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
         refuse_repeats(self.outbound)
+        refuse_repeated_inboxes(self.inboxes)
+        clash = sorted({i.name for i in self.inboxes} & {d.key for d in self.outbound})
+        if clash:
+            raise ValueError(f"an inbox and an outbound host are both recorded as {', '.join(clash)}")
         refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
         named = [b.env for b in self.base_urls]
         if len(named) != len(set(named)):

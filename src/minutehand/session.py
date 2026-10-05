@@ -34,13 +34,14 @@ import shutil
 import sqlite3
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import Field
 
+from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.emulator.fleet import Emulators
@@ -77,6 +78,7 @@ from minutehand.application.forks import (
     restore_account,
     summary,
 )
+from minutehand.application.inboxes import Inboxes
 from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused, refuse_unheld
@@ -92,9 +94,18 @@ from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
-from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
+from minutehand.domain.scenario import (
+    Answers,
+    GeneratedSecret,
+    Model,
+    Person,
+    ProviderKey,
+    Scenario,
+    SecretFromEnvironment,
+    SigningSecret,
+    WrittenScenario,
+)
 from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
 from minutehand.domain.world import Actor, Operation, TicketSnapshot
 from minutehand.ports.agent import Reports, TakesReplies
@@ -219,7 +230,7 @@ async def play(
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
             scorer.receiver = proxy.receiver
-            signing = signing_for(agent)
+            signing = signing_for(agent, scenario.people)
             env = agent_environment(
                 listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
             ) | base_url_environment(agent, listen.proxy_url(proxy.port))
@@ -234,7 +245,7 @@ async def play(
                     store=store,
                     clock=clock,
                     services=services,
-                    replier=PeopleReplier(scenario, model),
+                    replier=PeopleReplier(scenario, model, agent.inboxes),
                     telemetry=telemetry,
                     mounts=proxy,
                     scorer=scorer,
@@ -243,6 +254,7 @@ async def play(
                     traffic=proxy,
                     channels=replies_for(agent, scenario, signing),
                     environment=emulators,
+                    inboxes=inboxes_for(agent, scenario, signing),
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -332,7 +344,7 @@ async def fork(
     )
     child_id = _new_run_id()
     scorer = _Judge(changed, model if judge else None, judging=judge)
-    signing = signing_for(agent)
+    signing = signing_for(agent, changed.people)
 
     def open_parent(clock: Clock) -> Store:
         return SqliteStore(world, parent_run, clock)
@@ -361,7 +373,7 @@ async def fork(
                     agent=agent,
                     reach=reach_for(agent, env=env),
                     services=services,
-                    replier_for=lambda s: PeopleReplier(s, model),
+                    replier_for=lambda s: PeopleReplier(s, model, agent.inboxes),
                     state_dir=state / RUNS,
                     wire=routing,
                     telemetry=telemetry,
@@ -374,6 +386,7 @@ async def fork(
                     channels=replies_for(agent, changed, signing),
                     manifests=registry.manifests,
                     environment=emulators,
+                    inboxes=inboxes_for(agent, changed, signing),
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -983,6 +996,8 @@ class Signing:
     by_provider: dict[ProviderKey, str]
     for_agent: dict[str, str]
     by_host: dict[ProviderKey, str]
+    by_person: dict[str, str] = field(default_factory=lambda: dict[str, str]())
+    """Each person's `Person.credential` in the agent's own product, by `Person.key`: never stored."""
 
 
 def replies_for(agent: AgentUnderTest, scenario: Scenario, signing: Signing) -> dict[ProviderKey, TakesReplies]:
@@ -995,7 +1010,15 @@ def replies_for(agent: AgentUnderTest, scenario: Scenario, signing: Signing) -> 
     return channels
 
 
-def signing_for(agent: AgentUnderTest) -> Signing:
+def inboxes_for(agent: AgentUnderTest, scenario: Scenario, signing: Signing) -> Inboxes | None:
+    """Every inbox the agent declares in its own product, reached as the scenario's people; None when it declares
+    none."""
+    if not agent.inboxes:
+        return None
+    return Inboxes(scenario, [HttpInboxReach(declared, signing.by_person) for declared in agent.inboxes])
+
+
+def signing_for(agent: AgentUnderTest, people: Sequence[Person] = ()) -> Signing:
     """Each inbound target's secret for this run: generated and handed to the agent's command, read from this
     process's own variable (the secret an agent already running was configured with), or, when the target
     names none, generated and given to no one. A variable named and not set refuses the run."""
@@ -1022,7 +1045,12 @@ def signing_for(agent: AgentUnderTest) -> Signing:
     for declared in agent.outbound:
         if isinstance(declared, Acknowledge) and declared.replies is not None and declared.replies.signing is not None:
             by_host[declared.key] = resolve(declared.replies.signing.secret, f"{declared.host} reply")
-    return Signing(by_provider=by_provider, for_agent=for_agent, by_host=by_host)
+    by_person = {
+        person.key: resolve(person.credential, f"{person.key} credential")
+        for person in people
+        if person.credential is not None and agent.inboxes
+    }
+    return Signing(by_provider=by_provider, for_agent=for_agent, by_host=by_host, by_person=by_person)
 
 
 class Listen(Model):

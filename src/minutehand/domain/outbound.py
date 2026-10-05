@@ -33,8 +33,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, JsonValue, model_validator
 
-from minutehand.domain.people import SigningSecret
-from minutehand.domain.scenario import Model, ProviderKey
+from minutehand.domain.scenario import Model, ProviderKey, SigningSecret
 
 BODY_LIMIT = 1024 * 1024
 """Bytes of a text or JSON body kept by default. A longer body is kept up to this and marked truncated."""
@@ -135,7 +134,7 @@ class ReplyDelivery(Model):
 
     @model_validator(mode="after")
     def _names_known_fields(self) -> Self:
-        named = set(_placeholders(self.body))
+        named = set(placeholders(self.body))
         unknown = sorted(named - set(REPLY_FIELDS))
         if unknown:
             raise ValueError(f"a reply's body names {', '.join(unknown)}; it may name {', '.join(REPLY_FIELDS)}")
@@ -144,17 +143,19 @@ class ReplyDelivery(Model):
         return self
 
 
-def _placeholders(value: JsonValue) -> list[str]:
+def placeholders(value: JsonValue) -> list[str]:
+    """Every `{name}` inside the strings of a template, in order: what it asks to be filled with."""
     if isinstance(value, str):
-        return [m.group(1) for m in _PLACEHOLDER.finditer(value)]
+        return [m.group(1) for m in PLACEHOLDER.finditer(value)]
     if isinstance(value, list):
-        return [n for v in value for n in _placeholders(v)]
+        return [n for v in value for n in placeholders(v)]
     if isinstance(value, dict):
-        return [n for v in value.values() for n in _placeholders(v)]
+        return [n for v in value.values() for n in placeholders(v)]
     return []
 
 
-_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+"""A name to be filled inside a template's string: `{reply_id}`, `{item_id}`."""
 
 
 class _Declared(Model):

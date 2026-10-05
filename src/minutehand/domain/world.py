@@ -17,6 +17,7 @@ class EntityKind(StrEnum):
     DOCUMENT = "document"
     CHANNEL = "channel"
     RECORD = "record"
+    INBOX_ITEM = "inbox_item"  # something waiting on a person in the agent's own product (`domain.inboxes`)
 
 
 class Operation(StrEnum):
@@ -163,6 +164,21 @@ class CallFailure(Model):
     traceback: str | None = Field(default=None, description="Set for an internal error")
 
 
+class InboxAct(StrEnum):
+    """What Minutehand did as a person in the agent's own product (`domain.inboxes`)."""
+
+    LIST = "list"  # read what is waiting on the person
+    DECIDE = "decide"  # made the person's decision on one item
+
+
+class InboxCall(Model):
+    """A call Minutehand made itself, as a person, to the agent's own product: never one of the agent's."""
+
+    inbox: ProviderKey = Field(description="The inbox's `name`")
+    person: str = Field(description="Person.key it acted as")
+    act: InboxAct
+
+
 class Exchange(Model):
     """One HTTP call as it crossed the wire. Bodies are the provider's own format.
 
@@ -197,6 +213,11 @@ class Exchange(Model):
     )
     failure: CallFailure | None = Field(
         default=None, description="Set when Minutehand answered in the fake's place: not implemented, or its own error"
+    )
+    inbox_call: InboxCall | None = Field(
+        default=None,
+        description="Set for a call Minutehand made as a person to the agent's own product (reading an inbox, "
+        "deciding an item): the agent made no such call, and nothing counts it as the agent's",
     )
 
 
@@ -308,8 +329,49 @@ class RecordSnapshot(Model):
     text: str = Field(description="Every string field of the body, joined")
 
 
+class ItemStatus(StrEnum):
+    PENDING = "pending"  # waiting on the person
+    DECIDED = "decided"  # the person decided it, and the product took the decision
+    WITHDRAWN = "withdrawn"  # gone from the person's inbox without their deciding it: the agent took it back
+
+
+class InboxItemSnapshot(Model):
+    """Something waiting on a person in the agent's own product (`domain.inboxes`): an operation to approve, a
+    question raised on its own page. Seen by Minutehand reading the person's inbox, it is the agent asking that
+    person, as a message is; the person's decision is their answer.
+
+    Written as actor AGENT when first seen (`PENDING`) and when it is gone undecided (`WITHDRAWN`); as actor
+    PERSON when they decided (`DECIDED`), or tried to and the product refused (`PENDING`, with `refused`)."""
+
+    kind: Literal["inbox_item"] = "inbox_item"
+    inbox: ProviderKey = Field(description="The inbox's `name`")
+    item_id: str = Field(description="The product's own id for it")
+    person: str | None = Field(description="Person.key it waits on; None when it names nobody in the scenario")
+    waits_on: str = Field(description="Who it waits on, as the product named them, or the person whose list held it")
+    summary: str = Field(description="What it asks, as the product words it")
+    category: str | None = Field(default=None, description="Its kind in the product's own words, when listed")
+    decisions: list[str] = Field(description="The decisions the person can make on it, by name")
+    gates: str | None = Field(
+        default=None, description="The product's id for the operation it holds back, when the inbox says where"
+    )
+    status: ItemStatus
+    decision: str | None = Field(default=None, description="The decision made or tried, by name")
+    said: str | None = Field(default=None, description="The decision as the record says it: 'approved'")
+    permits: bool | None = Field(
+        default=None, description="Whether the decision lets what the item gates go ahead; None when it says nothing"
+    )
+    inputs: dict[str, str] = Field(default={}, description="What the person gave with the decision, by input name")
+    refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
+
+
 Snapshot = Annotated[
-    TicketSnapshot | MessageSnapshot | DocumentSnapshot | GrantSnapshot | RecordSnapshot | InteractionSnapshot,
+    TicketSnapshot
+    | MessageSnapshot
+    | DocumentSnapshot
+    | GrantSnapshot
+    | RecordSnapshot
+    | InteractionSnapshot
+    | InboxItemSnapshot,
     Field(discriminator="kind"),
 ]
 
@@ -365,7 +427,8 @@ class RecordedCall(Model):
     """One HTTP call the proxy saw, with the events it produced, if any.
 
     `provider` is None when no provider claimed the host: the call was captured (`exchange.captured`), relayed
-    unopened on a tunnel (`exchange.tunnelled`) or, when both are None, refused. `first_seq > last_seq` means the
+    unopened on a tunnel (`exchange.tunnelled`), made by Minutehand as a person (`exchange.inbox_call`) or, when
+    all three are None, refused. `first_seq > last_seq` means the
     call produced no event. `wake` and `sim_time` are those in progress when the call began.
     """
 
@@ -380,4 +443,9 @@ class RecordedCall(Model):
     def refused(self) -> bool:
         """No provider claimed it, nothing captured it and no tunnel carried it: it was answered 502 and reached
         nothing."""
-        return self.provider is None and self.exchange.captured is None and self.exchange.tunnelled is None
+        return (
+            self.provider is None
+            and self.exchange.captured is None
+            and self.exchange.tunnelled is None
+            and self.exchange.inbox_call is None
+        )

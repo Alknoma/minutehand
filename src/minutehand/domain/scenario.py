@@ -31,6 +31,29 @@ ProviderKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
 is whatever is installed; it is checked against the registry when a scenario loads."""
 
 
+VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+
+
+class GeneratedSecret(Model):
+    """A fresh secret made for every run and handed to the agent's command in the variable `env`.
+
+    Only a command Minutehand starts receives it; an agent already running has a secret of its own."""
+
+    kind: Literal["generated"] = "generated"
+    env: VariableName = Field(description="The variable the agent reads its signing secret from")
+
+
+class SecretFromEnvironment(Model):
+    """The agent's own secret, configured where it already runs: Minutehand reads the same value from its own
+    variable `env` when the run starts, and refuses the run when it is not set."""
+
+    kind: Literal["from_env"] = "from_env"
+    env: VariableName = Field(description="The variable in Minutehand's own environment that holds the secret")
+
+
+SigningSecret = Annotated[GeneratedSecret | SecretFromEnvironment, Field(discriminator="kind")]
+
+
 class AbsenceTrigger(StrEnum):
     AT_START = "at_start"
     ON_FIRST_ASK = "on_first_ask"
@@ -126,12 +149,31 @@ class Answers(Model):
     temperature: float = Field(default=0.6, ge=0, le=2)
 
 
+class ScriptedDecision(Model):
+    """What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth
+    such item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins
+    over one for every item. `inputs` fill what the decision asks for (a reason, an answer)."""
+
+    to_item: int | None = Field(default=None, ge=1, description="The nth item waiting on them, from 1; None: every one")
+    inbox: ProviderKey | None = Field(
+        default=None, description="The inbox's `name`; None: any. With one, `to_item` counts that inbox's items only"
+    )
+    decision: str = Field(pattern=r"^[a-z][a-z0-9_]*$", description="The name of one of the inbox's decisions")
+    inputs: dict[str, str] = Field(default={}, description="Each input the decision takes, by its name")
+
+
 class Scripted(Model):
     """Replies are fixed text. No model call, fully repeatable."""
 
     kind: Literal["scripted"] = "scripted"
     delay: DelayRange = DelayRange()
     replies: list[ScriptedReply]
+    decisions: list[ScriptedDecision] | None = Field(
+        default=None,
+        description="What they decide on items waiting on them in the agent's own product, after their delay like "
+        "a reply. None says nothing, and a run whose agent declares an inbox they can receive items in is refused: "
+        "there is no default decision. `[]` leaves every item pending",
+    )
     presses_every: ScriptedPress | None = Field(
         default=None,
         description="On every message the agent sends them that carries a control reading this label (an approval "
@@ -183,6 +225,12 @@ class Person(Model):
         ge=0,
         description="How many follow-ups on one ask this person takes, each sent before their answer was due, "
         "before it is nagging",
+    )
+    credential: SigningSecret | None = Field(
+        default=None,
+        description="How Minutehand signs in to the agent's own product as this person, to read what waits on them "
+        "and decide it (`AgentUnderTest.inboxes`, `{credential}` in `as_person`): generated per run and handed to the "
+        "agent's command in its variable, or read from Minutehand's own environment. Never stored",
     )
 
 

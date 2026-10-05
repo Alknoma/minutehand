@@ -168,6 +168,11 @@ class Effectiveness(Model):
         description="Agent messages to people rewritten in place after they were sent, each rewrite once",
     )
     messages_deleted: int = Field(default=0, ge=0, description="Agent messages to people deleted after they were sent")
+    decisions_asked: int = Field(
+        default=0, ge=0, description="Items the agent left waiting on a person in its own product (`domain.inboxes`)"
+    )
+    decisions_made: int = Field(default=0, ge=0, description="Of those, the ones the person decided")
+    decisions_pending: int = Field(default=0, ge=0, description="Of those, the ones still waiting when the run ended")
     burden: list[PersonBurden] = Field(default=[], description="Messages per person, in Scenario.people order")
     messages_per_outcome: float | None = Field(
         default=None, description="messages_to_people per expectation met; None when none was met"
