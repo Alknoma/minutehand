@@ -43,8 +43,9 @@ from pydantic import Field
 
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
-from minutehand.adapters.proxy.policy import Routing
-from minutehand.adapters.proxy.registry import Registry
+from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
+from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
+from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
@@ -161,10 +162,11 @@ async def play(
     registry = Registry.installed()
     routing = Routing(registry)
     services = _services(scenario, agent, registry)
+    capturing = capturing_for(agent, registry, state=state)
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
     listen = listen or Listen()
-    async with intercepting(routing, first[0], first[1], state, listen) as proxy:
+    async with intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             directory = run_dir(state, store.run_id)
@@ -193,6 +195,7 @@ async def play(
                     signing=signing.by_provider,
                     traffic=proxy,
                 )
+            write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
     return outcomes
 
@@ -263,6 +266,8 @@ async def fork(
     registry = Registry.installed()
     routing = Routing(registry)
     services = _services(changed, agent, registry)
+    forked_after = next((p.wake for p in fork_points(state, parent_run) if p.seq == changes.at_seq), 0)
+    capturing = capturing_for(agent, registry, state=state, parent=parent_run, after_wake=forked_after)
     child_id = _new_run_id()
     scorer = _Judge(changed, model if judge else None, judging=judge)
     signing = signing_for(agent)
@@ -272,7 +277,7 @@ async def fork(
 
     holding = RunClock(scenario.starts_at)
     listen = listen or Listen()
-    async with intercepting(routing, open_parent(holding), holding, state, listen) as proxy:
+    async with intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy:
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
         )
@@ -309,6 +314,8 @@ async def fork(
     for record in records:
         child = run_dir(state, record.run_id)
         _write_inputs(child, changed, agent)
+        with reading(state, record.run_id) as written:
+            write_recordings(child, written.calls())
         outcomes.append(_keep(child, record, scorer))
     return outcomes
 
@@ -507,7 +514,7 @@ class _Judge:
             world.replies(),
             withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
-            unmatched_calls=[call.exchange for call in world.calls() if call.provider is None],
+            unmatched_calls=[call.exchange for call in world.calls() if call.refused],
             model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
         )
         result = (
@@ -517,6 +524,20 @@ class _Judge:
         )
         self.results[record.run_id] = result
         return result
+
+
+def capturing_for(
+    agent: AgentUnderTest, registry: Registry, *, state: Path, parent: str | None = None, after_wake: int = 0
+) -> Capturing:
+    """What a run captures of the hosts no provider claims: the agent's outbound declarations, refused when one
+    names a host a provider claims or a model API, with the recordings each replay reads. In a fork of `parent`,
+    a pass-through host replays the parent's answer to the same call unless it says otherwise (`in_forks`)."""
+    try:
+        refuse_claimed(agent.outbound, registry, DEFAULT_MODEL_HOSTS)
+        replaying = replaying_for(agent.outbound, state=state, parent=parent, after_wake=after_wake)
+        return Capturing(agent.outbound, replaying=replaying)
+    except (ProviderConflict, FileNotFoundError, ValueError) as e:
+        raise RunRefused(f"agent {agent.name}'s outbound hosts: {e}") from e
 
 
 def _refuse_unwritten(scenario: Scenario, model: LanguageModel | None) -> None:
@@ -659,6 +680,16 @@ class Listen(Model):
         default=False,
         description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span",
     )
+    capture_unknown: bool = Field(
+        default=False,
+        description="Pass through and keep every call to a host no provider claims and no declaration names, "
+        "rather than refusing it: the first run of an agent, to see what it calls",
+    )
+    upstream_ca: Path | None = Field(
+        default=None,
+        description="The CAs a real host is verified against when a call is passed through, edited or recorded; "
+        "None trusts the system's",
+    )
 
     def _reached_at(self) -> str:
         """This machine as the agent names it. Binding every interface is not an address: it is reached on loopback."""
@@ -769,10 +800,17 @@ class Intercepting:
 
 @asynccontextmanager
 async def intercepting(
-    routing: Routing, store: Store, clock: Clock, state: Path, listen: Listen
+    routing: Routing,
+    store: Store,
+    clock: Clock,
+    state: Path,
+    listen: Listen,
+    *,
+    capturing: Capturing | None = None,
 ) -> AsyncIterator[Intercepting]:
     """The proxy and, unless `listen` turns it off, the receiver, on the same host. The receiver passes what it
-    takes on to wherever this process's own environment sent OTLP before (`Forwarding.from_environment`)."""
+    takes on to wherever this process's own environment sent OTLP before (`Forwarding.from_environment`).
+    """
     async with Proxy(
         routing,
         store,
@@ -780,7 +818,10 @@ async def intercepting(
         confdir=state / "ca",
         host=listen.host,
         port=listen.port,
+        upstream_ca=listen.upstream_ca,
         record_model_calls=listen.record_model_calls,
+        capturing=capturing,
+        capture_unknown=listen.capture_unknown,
     ) as proxy:
         if not listen.receive_telemetry:
             yield Intercepting(proxy, None)

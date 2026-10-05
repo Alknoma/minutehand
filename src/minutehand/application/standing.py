@@ -271,7 +271,7 @@ class StandingWorld:
             self.store.events(),
             [],
             self.store.replies(),
-            unmatched_calls=[c.exchange for c in self.store.calls() if c.provider is None],
+            unmatched_calls=[c.exchange for c in self.store.calls() if c.refused],
             model_calls=per_wake(self.store.spans(), [STANDING_WAKE]),
         )
         return evaluate(view, stop=stop, ended=self.clock.now())

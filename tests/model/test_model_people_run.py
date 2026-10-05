@@ -23,6 +23,7 @@ from minutehand.checks.ledger import build
 from minutehand.domain.checks import FindingKind, ObligationKind
 from minutehand.domain.conversation import Provenance
 from minutehand.domain.experiment import Fork
+from minutehand.domain.outbound import Acknowledge, HtmlAt, MessageReading
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import Answers, DelayRange, PersonAsked, Scenario
 from minutehand.domain.world import Actor
@@ -160,3 +161,27 @@ async def test_a_scenario_with_a_written_person_and_no_model_is_refused_before_i
     message = str(raised.value)
     assert "sofia" in message and all(v in message for v in (MODEL_VARIABLE, API_KEY_VARIABLE, BASE_URL_VARIABLE))
     assert not state.exists()
+
+
+async def test_a_question_emailed_to_a_person_whose_replies_a_model_writes_is_never_put_to_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sofia could answer a question in Slack, and the model would write her answer; an email through a captured
+    host is no place she answers, so the run never asks the model whether she would."""
+    launched = agent_under_test(tmp_path, monkeypatch, "diligent")
+    emailed = "Could you also confirm the renewal date by email?"
+    monkeypatch.setenv("MAIL_URL", "https://api.mail.test/v3/mail/send")
+    monkeypatch.setenv("MAIL_TO", SOFIA)
+    monkeypatch.setenv("MAIL_TEXT", emailed)
+    reading = MessageReading(recipients=["personalizations[*].to[*].email"], text=[HtmlAt(html="content[0].value")])
+    agent = launched.agent.model_copy(
+        update={"outbound": [Acknowledge(host="api.mail.test", name="mail", message=reading)]}
+    )
+    async with fake_completions(the_model) as fake:
+        [outcome] = await session.play(
+            with_sofia_writing(), agent, state=tmp_path / "state", command=launched.command, model=model(fake)
+        )
+    assert outcome.record.stop is StopReason.AGENT_DONE
+    assert [r.last for r in fake.for_schema("WrittenReply")] == [QUESTION, THANKS]
+    events = world(tmp_path / "state", outcome.record.run_id).events()
+    assert emailed in texts(messages(events, Actor.AGENT, to=SOFIA))
