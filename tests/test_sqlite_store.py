@@ -97,6 +97,53 @@ def test_a_fork_sees_its_parent_up_to_the_fork_and_neither_sees_the_other_after(
     assert [e.seq for e in store.events()] == [1, 2, 3]
 
 
+def test_versions_are_the_history_a_fork_can_see_and_a_delete_is_not_one(world: tuple[SqliteStore, RunClock]) -> None:
+    store, _ = world
+    store.apply(ticket("one", Operation.CREATE))
+    store.apply(ticket("two"))
+    store.apply(Change(entity=TICKET, operation=Operation.DELETE, actor=Actor.AGENT))
+    store.apply(ticket("three", Operation.CREATE))
+    fork = store.fork("what-if", at_seq=2, clock=RunClock(START))
+    fork.apply(ticket("forked"))
+    assert [(v.seq, v.body) for v in store.versions(TICKET)] == [
+        (1, '{"name": "one"}'),
+        (2, '{"name": "two"}'),
+        (4, '{"name": "three"}'),
+    ]
+    assert [(v.seq, v.body) for v in fork.versions(TICKET)] == [
+        (1, '{"name": "one"}'),
+        (2, '{"name": "two"}'),
+        (3, '{"name": "forked"}'),
+    ]
+
+
+def test_a_discarded_fork_leaves_nothing_and_its_parent_is_untouched(
+    world: tuple[SqliteStore, RunClock], tmp_path: Path
+) -> None:
+    store, _ = world
+    store.apply(ticket("one", Operation.CREATE))
+    before = store.events()
+    fork = store.fork("refused", at_seq=1, clock=RunClock(START))
+    fork.apply(ticket("forked"))
+    fork.remember(
+        PersonReply(person="sofia", in_reply_to=TICKET, text="Yes.", at=START),
+    )
+    fork.attach(Exchange(method="GET", host="x", path="/", status=200), first_seq=2, last_seq=2)
+    fork.discard()
+    db = sqlite3.connect(tmp_path / "world.db")
+    for table in ("run", "event", "entity_version", "exchange", "reply"):
+        assert db.execute(f"SELECT COUNT(*) FROM {table} WHERE run_id='refused'").fetchone()[0] == 0, table
+    assert store.events() == before
+
+
+def test_discarding_a_run_that_has_forks_is_refused(world: tuple[SqliteStore, RunClock]) -> None:
+    store, _ = world
+    store.apply(ticket("one", Operation.CREATE))
+    store.fork("child", at_seq=1, clock=RunClock(START))
+    with pytest.raises(ValueError, match="child"):
+        store.discard()
+
+
 def test_a_fork_past_the_head_is_refused(world: tuple[SqliteStore, RunClock]) -> None:
     store, _ = world
     with pytest.raises(ValueError, match="head is 0"):

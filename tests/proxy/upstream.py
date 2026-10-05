@@ -95,24 +95,56 @@ class Received:
 
 
 @dataclass
+class Answer:
+    """What the model API answers every request with. `chunks` after the first are held back until `hold` is set,
+    so a test can watch the first reach the client while the rest is still to come; sent chunked."""
+
+    content_type: str
+    chunks: list[bytes]
+    hold: asyncio.Event | None = None
+
+
+@dataclass
 class Upstream:
     port: int = 0
     received: list[Received] = field(default_factory=list)
+    headers: list[dict[str, str]] = field(default_factory=list)
 
 
-async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, upstream: Upstream) -> None:
+async def _answer(writer: asyncio.StreamWriter, answer: Answer) -> None:
+    writer.write(
+        f"HTTP/1.1 200 OK\r\ncontent-type: {answer.content_type}\r\ntransfer-encoding: chunked\r\n\r\n".encode()
+    )
+    for i, chunk in enumerate(answer.chunks):
+        if i == 1 and answer.hold is not None:
+            await answer.hold.wait()
+        writer.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+        await writer.drain()
+    writer.write(b"0\r\n\r\n")
+    await writer.drain()
+
+
+async def _serve(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, upstream: Upstream, answer: Answer | None
+) -> None:
     try:
         while True:
             head = await reader.readuntil(b"\r\n\r\n")
             lines = head.decode("latin-1").split("\r\n")
             method, path, _ = lines[0].split(" ", 2)
             length = 0
+            headers: dict[str, str] = {}
             for line in lines[1:]:
                 name, _, value = line.partition(":")
+                headers[name.strip().lower()] = value.strip()
                 if name.strip().lower() == "content-length":
                     length = int(value.strip())
             body = await reader.readexactly(length) if length else b""
             upstream.received.append(Received(method, path, body))
+            upstream.headers.append(headers)
+            if answer is not None:
+                await _answer(writer, answer)
+                continue
             reply = json.dumps({"received": len(upstream.received)}).encode()
             writer.write(
                 b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"
@@ -127,8 +159,9 @@ async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, ups
 
 
 @asynccontextmanager
-async def model_api(authority: Authority) -> AsyncIterator[Upstream]:
-    """An HTTPS server on 127.0.0.1 that records each request and answers 200."""
+async def model_api(authority: Authority, answer: Answer | None = None) -> AsyncIterator[Upstream]:
+    """An HTTPS server on 127.0.0.1 that records each request and answers 200: with `answer` when given, else
+    with a count of the requests so far."""
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     context.load_cert_chain(authority.server_cert, authority.server_key)
     upstream = Upstream()
@@ -137,7 +170,7 @@ async def model_api(authority: Authority) -> AsyncIterator[Upstream]:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         open_writers.add(writer)
         try:
-            await _serve(reader, writer, upstream)
+            await _serve(reader, writer, upstream, answer)
         finally:
             open_writers.discard(writer)
 

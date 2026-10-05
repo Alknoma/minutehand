@@ -33,6 +33,7 @@ from minutehand.adapters.mcp.results import (
     ScenarioListing,
 )
 from minutehand.application.files import FileRefused, load_agent, load_scenario
+from minutehand.application.model_calls import EventTrace, caller_of, trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult, stability
@@ -148,9 +149,10 @@ def build(state: Path) -> FastMCP:
             "The evidence for one finding (its number from list_findings): every world event it cites, what was "
             "created or changed, by whom (agent, person, scenario) and when on the simulated clock; the HTTP "
             "call behind each event (method, host, path, status, and bodies when they were stored) with the "
-            "caller's trace id when the call carried a traceparent; the wake it happened in; and the full "
-            "pattern: what goes wrong and the design a proactive agent uses to avoid it. Use the pattern's "
-            "design as the fix to make in the agent."
+            "caller's trace id when the call carried a traceparent; the agent's own model call that led to "
+            "each event, when the run received its telemetry (the model, the messages it was sent and answered, "
+            "token counts); the wake it happened in; and the full pattern: what goes wrong and the design a "
+            "proactive agent uses to avoid it. Use the pattern's design as the fix to make in the agent."
         )
     )
     def show_evidence(run_id: str, finding: int) -> Evidence:
@@ -161,12 +163,15 @@ def build(state: Path) -> FastMCP:
         chosen = numbered[finding - 1]
         with session.reading(state, run_id) as world:
             cited = [e for e in world.events() if e.seq in set(chosen.evidence)]
+            traces = [trace_of(e, world) for e in cited]
+            received = len(world.spans())
         wake_numbers = {e.wake for e in cited} | ({chosen.wake} if chosen.wake is not None else set())
         return Evidence(
             run_id=run_id,
             finding=chosen,
-            events=[_cited(e) for e in cited],
+            events=[_cited(e, t) for e, t in zip(cited, traces, strict=True)],
             wakes=[w for w in outcome.record.wakes if w.index in wake_numbers],
+            telemetry=_received(received),
             pattern=pattern(chosen.pattern) if chosen.pattern is not None else None,
         )
 
@@ -294,7 +299,17 @@ def _numbered(result: RunResult) -> list[NumberedFinding]:
     ]
 
 
-def _cited(event: WorldEvent) -> CitedEvent:
+def _received(count: int) -> str:
+    if count == 0:
+        return (
+            "No telemetry was received from the agent in this run, so no event is joined to a model call. An agent "
+            "exporting OpenTelemetry over OTLP/HTTP to the endpoint Minutehand hands it, or a run with "
+            "--record-model-calls, gives one."
+        )
+    return f"{count} span(s) of the agent's own telemetry were received in this run."
+
+
+def _cited(event: WorldEvent, trace: EventTrace) -> CitedEvent:
     return CitedEvent(
         seq=event.seq,
         wake=event.wake,
@@ -304,6 +319,9 @@ def _cited(event: WorldEvent) -> CitedEvent:
         entity=event.entity,
         after=event.after,
         call=_http(event.exchange) if event.exchange is not None else None,
+        model_call=trace.model_call,
+        joined_by=trace.joined_by,
+        agent_spans=[s.span.name for s in ([trace.caller] if trace.caller is not None else []) + trace.ancestors],
     )
 
 
@@ -315,18 +333,8 @@ def _http(exchange: Exchange) -> RecordedHttp:
         status=exchange.status,
         request_body=exchange.request_body,
         response_body=exchange.response_body,
-        trace_id=trace_id(exchange.traceparent),
+        trace_id=caller[0] if (caller := caller_of(exchange.traceparent)) is not None else None,
     )
-
-
-def trace_id(traceparent: str | None) -> str | None:
-    """The trace id in a W3C `traceparent` header (version-traceid-spanid-flags), or None when it is not one."""
-    if traceparent is None:
-        return None
-    parts = traceparent.strip().split("-")
-    if len(parts) < 4 or len(parts[1]) != 32:
-        return None
-    return parts[1]
 
 
 def _first_lines(text: str, lines: int = 3) -> str:

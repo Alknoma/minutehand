@@ -23,6 +23,7 @@ class HostPolicy(StrEnum):
     ANSWER = "answer"  # a provider claims the host and its fake answers
     TUNNEL = "tunnel"  # a model API with nothing to change: bytes pass through, never decrypted
     EDIT = "edit"  # a model API the run changes: decrypted, edited, sent on upstream
+    RECORD = "record"  # a model API the run records: decrypted, sent on unchanged, kept as a span
     REFUSE = "refuse"  # nobody claims it: 502, recorded
 
 

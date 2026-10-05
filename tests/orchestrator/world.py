@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -21,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from minutehand.application.restore import SeenCall
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
@@ -319,10 +321,15 @@ class Scheduler:
 
 
 class Switchboard:
-    """`Mounts`, served: `/<provider>/<path>` reaches that provider's app for the current run."""
+    """`Mounts`, served: `/<provider>/<path>` reaches that provider's app for the current run. Also `Traffic`: it
+    sees every call the test agents make, as the proxy does."""
 
     def __init__(self) -> None:
         self.apps: dict[ProviderKey, ASGIApp] = {}
+        self.seen: SeenCall | None = None
+
+    def last_call(self) -> SeenCall | None:
+        return self.seen
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.apps = dict(apps)
@@ -331,8 +338,10 @@ class Switchboard:
         path = scope["path"]
         assert isinstance(path, str)
         key, _, rest = path.lstrip("/").partition("/")
+        self.seen = SeenCall(at=time.monotonic(), what=f"{scope['method']} {path}")
         app = self.apps[key]
         await app({**scope, "path": "/" + rest, "raw_path": ("/" + rest).encode()}, receive, send)  # type: ignore[arg-type]
+        self.seen = SeenCall(at=time.monotonic(), what=f"{scope['method']} {path}")
 
 
 @asynccontextmanager

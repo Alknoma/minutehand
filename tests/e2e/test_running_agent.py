@@ -70,7 +70,7 @@ async def test_an_agent_already_running_with_its_own_secret_is_reached_through_a
     launched = agent_under_test(tmp_path, monkeypatch, "diligent")
     target = launched.agent.inbound[0].model_copy(update={"secret": SecretFromEnvironment(env=MINUTEHANDS_VARIABLE)})
     agent = launched.agent.model_copy(update={"inbound": [target]})
-    listen = session.Listen(port=free_port(), agent_host="localhost")
+    listen = session.Listen(port=free_port(), telemetry_port=free_port(), agent_host="localhost")
     state = tmp_path / "state"
 
     configured = session.environment(agent, state=state, listen=listen)
@@ -96,7 +96,9 @@ def test_the_environment_names_the_bundle_in_every_ca_variable_and_the_proxy_in_
     tmp_path: Path,
 ) -> None:
     agent = agent_under_test_without_generated_secret(tmp_path)
-    listen = session.Listen(host="0.0.0.0", port=18080, agent_host="host.docker.internal", no_proxy=["db"])
+    listen = session.Listen(
+        host="0.0.0.0", port=18080, telemetry_port=18081, agent_host="host.docker.internal", no_proxy=["db"]
+    )
 
     found = session.environment(agent, state=tmp_path / "state", listen=listen)
 
@@ -105,7 +107,11 @@ def test_the_environment_names_the_bundle_in_every_ca_variable_and_the_proxy_in_
     assert {name: found[name] for name in session.CA_VARIABLES} == {name: str(bundle) for name in session.CA_VARIABLES}
     for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
         assert found[name] == "http://host.docker.internal:18080"
-    assert found["NO_PROXY"] == found["no_proxy"] == "localhost,127.0.0.1,db"
+    # The receiver is reached directly, not through the proxy, at the name the agent has for this machine.
+    assert found["NO_PROXY"] == found["no_proxy"] == "localhost,127.0.0.1,db,host.docker.internal"
+    assert found["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://host.docker.internal:18081"
+    assert found["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://host.docker.internal:18081/v1/traces"
+    assert found["OTEL_EXPORTER_OTLP_PROTOCOL"] == found["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] == "http/protobuf"
 
 
 def test_binding_every_interface_hands_the_agent_loopback_unless_told_otherwise() -> None:
@@ -125,7 +131,7 @@ def test_an_environment_for_an_agent_whose_secret_is_generated_per_run_is_refuse
 ) -> None:
     launched = agent_under_test(tmp_path, monkeypatch, "diligent")
     with pytest.raises(RunRefused, match=f"generated per run for slack \\({SECRET_VARIABLE}\\)"):
-        session.environment(launched.agent, state=tmp_path, listen=session.Listen(port=18080))
+        session.environment(launched.agent, state=tmp_path, listen=session.Listen(port=18080, telemetry_port=18081))
 
 
 def agent_under_test_without_generated_secret(tmp_path: Path) -> AgentUnderTest:

@@ -12,7 +12,11 @@
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
 an agent in containers), --proxy-port (default: any free port), --agent-proxy-host (the host the agent uses
 for it, e.g. host.docker.internal; default the bind host) and --no-proxy HOST, repeated, for hosts the agent
-reaches directly.
+reaches directly. Beside the proxy, on the same host, an OTLP/HTTP receiver keeps the agent's own spans with
+the run: --telemetry-port (default: any free port), or --no-receive-telemetry to serve none. Spans the agent
+exports are passed on to wherever OTEL_EXPORTER_OTLP_ENDPOINT in Minutehand's own environment points.
+--record-model-calls opens the agent's calls to model APIs and keeps each as a span, for an agent that
+exports nothing.
 
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
@@ -28,7 +32,7 @@ import asyncio
 import os
 import shlex
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -41,8 +45,10 @@ from minutehand.adapters.model.openai_compatible import from_environment as mode
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.adapters.web import app as viewer
+from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
 from minutehand.application.refusals import RunRefused
+from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import stability
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
@@ -99,6 +105,22 @@ def _parser() -> argparse.ArgumentParser:
         )
         sub.add_argument(
             "--no-proxy", action="append", default=[], metavar="HOST", help="a host the agent reaches directly"
+        )
+        sub.add_argument(
+            "--telemetry-port",
+            type=int,
+            default=0,
+            help="the port the OTLP receiver listens on, on the proxy's host (default: any free one)",
+        )
+        sub.add_argument(
+            "--no-receive-telemetry",
+            action="store_true",
+            help="serve no OTLP receiver and leave the agent's OTLP exporter where it points",
+        )
+        sub.add_argument(
+            "--record-model-calls",
+            action="store_true",
+            help="open the agent's calls to model APIs, send them on unchanged and keep each as a span",
         )
 
     run = commands.add_parser("run", help="run a scenario against an agent")
@@ -196,7 +218,13 @@ def _telemetry() -> OtelTelemetry | None:
 
 def _listen(args: argparse.Namespace) -> session.Listen:
     return session.Listen(
-        host=args.proxy_host, port=args.proxy_port, agent_host=args.agent_proxy_host, no_proxy=args.no_proxy
+        host=args.proxy_host,
+        port=args.proxy_port,
+        agent_host=args.agent_proxy_host,
+        no_proxy=args.no_proxy,
+        telemetry_port=args.telemetry_port,
+        receive_telemetry=not args.no_receive_telemetry,
+        record_model_calls=args.record_model_calls,
     )
 
 
@@ -251,12 +279,22 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
                 model=model_from_environment(),
                 judge=args.judge,
                 listen=_listen(args),
+                progress=_progress("run"),
             )
         )
     finally:
         if telemetry is not None:
             telemetry.shutdown()
     return _report(outcomes, state, as_json=args.json, sampled=args.samples > 1)
+
+
+def _progress(command: str) -> Callable[[str], None]:
+    """Each step of a restore, as it is taken, on stderr: stdout carries the report, or the JSON."""
+
+    def say(line: str) -> None:
+        print(f"minutehand {command}: restore {line}", file=sys.stderr, flush=True)
+
+    return say
 
 
 def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
@@ -273,6 +311,7 @@ def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> i
                 model=model_from_environment(),
                 judge=args.judge,
                 listen=_listen(args),
+                progress=_progress("fork"),
             )
         )
     finally:
@@ -286,7 +325,7 @@ def _findings(args: argparse.Namespace, state: Path) -> int:
     if args.json:
         print(outcome.model_dump_json(indent=2))
     else:
-        print(_describe(outcome, session.fork_points(state, args.run_id)))
+        print(_describe(outcome, session.fork_points(state, args.run_id), session.restore_of(state, args.run_id)))
     return outcome.result.exit_code
 
 
@@ -300,7 +339,22 @@ def _runs(state: Path) -> int:
         failed = sum(1 for f in outcome.result.findings if f.kind is FindingKind.FAIL)
         parent = f"  forked from {record.parent_run} at seq {record.forked_at}" if record.parent_run else ""
         print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed{parent}")
+        print(f"  {_restorable_summary(session.fork_points(state, record.run_id))}")
     return 0
+
+
+def _restorable_summary(points: list[ForkPoint]) -> str:
+    """One line: the seqs a fork can be taken from, and those it cannot."""
+    if not points:
+        return "no checkpoints"
+    if all(isinstance(p.agent, NoHooks) for p in points):
+        return "no checkpoint is restorable: the agent declares no state hooks"
+    can = [str(p.seq) for p in points if isinstance(p.agent, Restorable)]
+    cannot = [str(p.seq) for p in points if not isinstance(p.agent, Restorable)]
+    parts = [f"restorable at seq {', '.join(can)}" if can else "no checkpoint is restorable"]
+    if cannot:
+        parts.append(f"not restorable at seq {', '.join(cannot)} (`minutehand findings` says why)")
+    return "; ".join(parts)
 
 
 def _mcp(state: Path) -> int:
@@ -319,7 +373,12 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
     if as_json:
         print(Played(outcomes=outcomes, stability=stable).model_dump_json(indent=2))
     else:
-        print("\n\n".join(_describe(o, session.fork_points(state, o.record.run_id)) for o in outcomes))
+        print(
+            "\n\n".join(
+                _describe(o, session.fork_points(state, o.record.run_id), session.restore_of(state, o.record.run_id))
+                for o in outcomes
+            )
+        )
         if stable is not None:
             print(f"\nstability: passed {stable.passed} of {stable.samples} samples")
     if stable is not None:
@@ -327,11 +386,14 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
     return max(o.result.exit_code for o in outcomes)
 
 
-def _describe(outcome: Outcome, points: list[ForkPoint]) -> str:
+def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None) -> str:
     record, result = outcome.record, outcome.result
     lines = [f"run {record.run_id}: {record.scenario}"]
     if record.parent_run is not None:
         lines.append(f"  forked from {record.parent_run} at seq {record.forked_at}")
+    if restored is not None:
+        verdict = "verified" if restored.verified else f"NOT verified: {restored.unverified}"
+        lines.append(f"  the agent was restored from seq {restored.checkpoint_seq}, {verdict}")
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
     if record.failure is not None:
         lines.append(f"  {record.failure}")
@@ -349,8 +411,18 @@ def _describe(outcome: Outcome, points: list[ForkPoint]) -> str:
     lines.append("\nscorecard")
     lines += [f"  {line}" for line in _scorecard(result.effectiveness)]
     if points:
-        lines.append("\ncheckpoints to fork from: " + ", ".join(f"after wake {p.wake} at seq {p.seq}" for p in points))
+        lines.append("\ncheckpoints")
+        lines += [f"  seq {p.seq}, after wake {p.wake}: {_point(p)}" for p in points]
     return "\n".join(lines)
+
+
+def _point(point: ForkPoint) -> str:
+    agent = point.agent
+    if isinstance(agent, Restorable):
+        return "restorable"
+    if isinstance(agent, NotRestorable):
+        return f"not restorable: {agent.reason}"
+    return "not restorable: the agent declares no state hooks"
 
 
 def _finding(finding: Finding) -> str:

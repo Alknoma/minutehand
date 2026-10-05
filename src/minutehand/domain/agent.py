@@ -168,13 +168,48 @@ class Inbox(Model):
 
 
 class StateHooks(Model):
-    """How the agent's own state is saved and put back, so a run can be rewound.
+    """How the agent's own state is saved and put back, so a run can be rewound. Without hooks a run cannot be
+    forked, and a sample after the first starts from whatever the agent remembers.
 
-    Each command receives MINUTEHAND_SNAPSHOT_DIR. Without hooks a rerun starts from the beginning.
+    Every command receives MINUTEHAND_SNAPSHOT_DIR, the directory one checkpoint's snapshot lives in.
+
+    A checkpoint is snapshotted only once the agent has settled: it reports it is not working, and no outbound
+    call of its has been seen for `quiet`. One that has not settled after `settle_limit` is recorded as not
+    restorable, with the reason, and is never snapshotted.
+
+    A restore is a sequence: `stop`, `restore`, `start`, then the agent's report endpoint must answer within
+    `answer_limit`, and its report must equal the one recorded at the checkpoint. Any command running longer
+    than `step_limit` fails its step.
     """
 
     snapshot: list[str] = Field(min_length=1)
     restore: list[str] = Field(min_length=1)
+    stop: list[str] | None = Field(default=None, min_length=1, description="Stops the agent's processes")
+    start: list[str] | None = Field(default=None, min_length=1, description="Starts them again after `restore`")
+    quiet: timedelta = Field(
+        default=timedelta(seconds=1),
+        ge=timedelta(0),
+        description="How long no outbound call of the agent's must be seen before a checkpoint is taken",
+    )
+    settle_limit: timedelta = Field(
+        default=timedelta(seconds=60),
+        gt=timedelta(0),
+        description="How long a checkpoint waits to settle before it is recorded as not restorable",
+    )
+    answer_limit: timedelta = Field(
+        default=timedelta(seconds=120),
+        gt=timedelta(0),
+        description="How long after `start` the agent's report endpoint has to answer",
+    )
+    step_limit: timedelta = Field(
+        default=timedelta(minutes=5), gt=timedelta(0), description="How long one hook command may run"
+    )
+
+    @model_validator(mode="after")
+    def _can_settle(self) -> StateHooks:
+        if self.settle_limit < self.quiet:
+            raise ValueError("settle_limit is shorter than quiet, so no checkpoint could ever settle")
+        return self
 
 
 class GoalByWake(Model):

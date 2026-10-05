@@ -28,6 +28,7 @@ from mitmproxy.master import Master
 from minutehand.adapters.proxy.addon import ProxyAddon
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
+from minutehand.application.restore import SeenCall
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -55,10 +56,12 @@ class Proxy:
         upstream_ca: Path | None = None,
         public_roots: str | None = None,
         telemetry: Telemetry | None = None,
+        record_model_calls: bool = False,
     ) -> None:
-        """`upstream_ca` replaces the system trust store when verifying the hosts an edited call is sent on to.
-        `public_roots` replaces certifi's roots in the bundle the agent is handed (`ca_bundle`)."""
-        self.addon = ProxyAddon(routing, store, clock, telemetry)
+        """`upstream_ca` replaces the system trust store when verifying the hosts an edited or recorded call is
+        sent on to. `public_roots` replaces certifi's roots in the bundle the agent is handed (`ca_bundle`).
+        `record_model_calls` opens the agent's calls to model APIs and keeps each as a span."""
+        self.addon = ProxyAddon(routing, store, clock, telemetry, record_model_calls=record_model_calls)
         self._confdir = confdir
         self._listen = (host, port)
         self._upstream_ca = upstream_ca
@@ -88,6 +91,10 @@ class Proxy:
         """`application.orchestrator.Mounts`: the run the proxy now answers and records for, and the scenario a
         provider first called mid-run is seeded with."""
         self.addon.mount(world, clock, apps, scenario=scenario)
+
+    def last_call(self) -> SeenCall | None:
+        """`application.restore.Traffic`: the agent's latest outbound call this proxy saw."""
+        return self.addon.last_seen
 
     async def __aenter__(self) -> Proxy:
         if _running:

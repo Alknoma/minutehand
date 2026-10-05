@@ -95,8 +95,10 @@ def agent_under_test(
     *,
     by_message: bool = False,
     hooks: bool = False,
+    tracing: bool = False,
 ) -> Launched:
-    """The agent under test, its behaviour chosen through the environment its command inherits."""
+    """The agent under test, its behaviour chosen through the environment its command inherits; with `tracing`, it
+    exports its own spans to the endpoint the run hands it."""
     monkeypatch.setenv("AGENT_BEHAVIOUR", behaviour)
     monkeypatch.setenv("ASK_EMAIL", SOFIA)
     monkeypatch.setenv("OWNER_EMAIL", OWNER)
@@ -112,14 +114,15 @@ def agent_under_test(
             InboundTarget(provider="slack", url=f"{base}/slack/events", secret=GeneratedSecret(env=SECRET_VARIABLE))
         ],
         state=StateHooks(
-            snapshot=[*program, "snapshot", str(state_file)], restore=[*program, "restore", str(state_file)]
+            snapshot=[*program, "snapshot", str(state_file)],
+            restore=[*program, "restore", str(state_file)],
+            quiet=timedelta(milliseconds=50),
         )
         if hooks
         else None,
     )
-    return Launched(
-        agent=agent, command=[*program, "serve", "--port", str(port), "--state", str(state_file)], state_file=state_file
-    )
+    serve = [*program, "serve", "--port", str(port), "--state", str(state_file), *(["--trace"] if tracing else [])]
+    return Launched(agent=agent, command=serve, state_file=state_file)
 
 
 def world(state: Path, run_id: str, *, root: str | None = None) -> SqliteStore:

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -126,17 +128,47 @@ def book(reason: str, now: datetime, state: dict[str, object]) -> None:
     report("idle")
 
 
+def ask_and_keep_calling(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: ask dania, then leave work running in the background that reads the inbox every 40 ms for
+    BACKGROUND_SECONDS after this process has reported idle. Later wakes: idle."""
+    if reason == "start":
+        call("POST", "/testchat/messages", {"to": "dania@example.com", "text": "Could you review the contract?"})
+        subprocess.Popen(
+            [sys.executable, __file__, "--background", os.environ["BACKGROUND_SECONDS"]],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    save(state)
+    report("idle")
+
+
+def background(seconds: float) -> None:
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        try:
+            call("GET", "/testchat/inbox")
+        except OSError:
+            return  # the run is over and its server gone
+        time.sleep(0.04)
+
+
 def fail(reason: str, now: datetime, state: dict[str, object]) -> None:
     print("the agent fell over", file=sys.stderr)
     sys.exit(3)
 
 
 BEHAVIOURS = {
-    f.__name__: f for f in (ask_and_file, placeholder, placeholder_later, ask_silent, keep_waking, book, fail)
+    f.__name__: f
+    for f in (ask_and_file, placeholder, placeholder_later, ask_silent, ask_and_keep_calling, keep_waking, book, fail)
 }
 
 
 def main() -> None:
+    if sys.argv[1] == "--background":
+        background(float(sys.argv[2]))
+        return
     request = json.loads(sys.stdin.read())
     state = load()
     reasons = state["reasons"]
