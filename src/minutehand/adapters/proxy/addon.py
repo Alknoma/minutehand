@@ -103,7 +103,9 @@ REPLAYED_HEADER = "x-minutehand-replayed"
 
 BURST_QUIET = 0.5
 """Seconds a tunnel the proxy never opens stays quiet, its last request answered, before what moved on it since
-its previous record is written as one call. A connection reused later starts a new record then."""
+its previous record is written as one call. This only splits calls within a wake: the agent sending in a later
+wake than its burst began in always ends that burst first, so a connection reused in a later wake is a record
+in each, however the machine's timers ran."""
 
 
 @dataclass
@@ -258,6 +260,11 @@ class ProxyAddon:
         tunnel = relayed.tunnel
         carried = tunnel.moved(message.content, from_client=message.from_client)
         self._seen(f"bytes {'to' if message.from_client else 'from'} {tunnel.host} on an open tunnel")
+        earlier = relayed.burst
+        if message.from_client and earlier is not None and earlier.world.clock.wake() != earlier.began.wake:
+            # The agent sends again in a later wake: what moved before is the earlier wake's call, whatever the
+            # bytes said of an answer. A wake edge ends a burst, never only a quiet period.
+            self._write(relayed, closed=None)
         burst = relayed.burst or self._burst(tunnel.host, message.timestamp)
         relayed.burst = burst
         burst.ended = message.timestamp

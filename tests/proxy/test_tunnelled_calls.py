@@ -77,10 +77,9 @@ async def test_a_connection_reused_in_a_later_wake_is_a_call_in_each_wake(
     ):
         clock.begin_wake()
         assert (await http.post(URL.format(port=upstream.port), content=b"{}")).status_code == 200
-        await asyncio.sleep(QUIET)
-        clock.begin_wake()
+        clock.begin_wake()  # no wait for the first burst to fall quiet: the wake's edge ends it
         assert (await http.post(URL.format(port=upstream.port), content=b"{}")).status_code == 200
-        await asyncio.sleep(QUIET)
+        proxy.flush()  # as the run's end does
         found = _tunnelled(store)
 
     assert [(c.wake, t.burst) for c, t in found] == [(1, 1), (2, 2)]
