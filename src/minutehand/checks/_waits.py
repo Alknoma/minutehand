@@ -50,6 +50,9 @@ class Chase(Model):
     follow_ups: list[int] = Field(description="WorldEvent.seq of each follow-up, in order")
     follow_up_times: list[AwareDatetime]
     expiries: list[Expiry]
+    early: list[int] = Field(
+        default=[], description="WorldEvent.seq of each follow-up sent before the wait had fallen due"
+    )
 
     @property
     def abandoned(self) -> Expiry | None:
@@ -70,13 +73,17 @@ def chase(o: Obligation, events: dict[int, WorldEvent], ended: datetime) -> Chas
     )
     due = max(o.expected_by, o.opened_at) if o.expected_by is not None and o.kind is not ObligationKind.DATE else None
     expiries: list[Expiry] = []
+    early: list[int] = []
     for touched_at, seq in seen:
-        if due is None or due >= closes:
+        if due is None:
             break
         if touched_at < due:
+            early.append(seq)
             if o.patience is not None:
                 due = max(due, touched_at + o.patience)
             continue
+        if due >= closes:
+            break
         expiries.append(Expiry(expired=due, closes=closes, touch=seq, touched_at=touched_at))
         due = touched_at + o.patience if o.patience is not None else None
     if due is not None and due < closes:
@@ -86,6 +93,7 @@ def chase(o: Obligation, events: dict[int, WorldEvent], ended: datetime) -> Chas
         follow_ups=[s for _, s in seen],
         follow_up_times=[t for t, _ in seen],
         expiries=expiries,
+        early=early,
     )
 
 

@@ -87,6 +87,8 @@ def is_genai(stored: StoredSpan) -> bool:
 def is_model_call(stored: StoredSpan) -> bool:
     """A span the GenAI conventions mark as a call to a model: its operation says so, or it names none and
     carries a model."""
+    if stored.source is SpanSource.LOG:
+        return False  # a prompt or an answer logged as an event belongs to a call; it is not one
     operation = _text(stored.span.attribute("gen_ai.operation.name"))
     if operation is not None:
         return operation in MODEL_OPERATIONS
@@ -102,8 +104,30 @@ def per_wake(spans: list[StoredSpan], wakes: list[int]) -> list[WakeModelCalls] 
     return [WakeModelCalls(wake=w, calls=calls.count(w)) for w in wakes]
 
 
-def model_call(stored: StoredSpan) -> ModelCall:
+INPUT_EVENTS = ("gen_ai.system.message", "gen_ai.user.message", "gen_ai.assistant.message", "gen_ai.tool.message")
+OUTPUT_EVENTS = ("gen_ai.choice",)
+EVENT_BODY = "gen_ai.event.body"
+
+
+def _logged(events: list[StoredSpan], names: tuple[str, ...]) -> str | None:
+    """The bodies of the GenAI log events of a call, in the order they were logged, as one JSON array of
+    `{"event": name, "body": body}`; None when there is none."""
+    found = sorted((e for e in events if e.span.name in names), key=lambda e: e.span.start)
+    if not found:
+        return None
+    bodies = [_text(e.span.attribute(EVENT_BODY)) or "null" for e in found]
+    return (
+        "[" + ",".join(f'{{"event": "{e.span.name}", "body": {b}}}' for e, b in zip(found, bodies, strict=True)) + "]"
+    )
+
+
+def model_call(stored: StoredSpan, logged: list[StoredSpan] | None = None) -> ModelCall:
+    """The call as its span carries it; what it was asked and answered, when the span holds neither, from the
+    GenAI log events (`logged`) kept as its children."""
     span = stored.span
+    children = [e for e in logged or [] if e.source is SpanSource.LOG and e.span.parent_span_id == span.span_id]
+    asked = _text(_first(stored, "gen_ai.input.messages", "gen_ai.prompt")) or _logged(children, INPUT_EVENTS)
+    answered = _text(_first(stored, "gen_ai.output.messages", "gen_ai.completion")) or _logged(children, OUTPUT_EVENTS)
     return ModelCall(
         trace_id=span.trace_id,
         span_id=span.span_id,
@@ -115,8 +139,8 @@ def model_call(stored: StoredSpan) -> ModelCall:
         model=_text(_first(stored, "gen_ai.response.model", "gen_ai.request.model")),
         system=_text(_first(stored, "gen_ai.provider.name", "gen_ai.system")),
         system_instructions=_text(span.attribute("gen_ai.system_instructions")),
-        input_messages=_text(_first(stored, "gen_ai.input.messages", "gen_ai.prompt")),
-        output_messages=_text(_first(stored, "gen_ai.output.messages", "gen_ai.completion")),
+        input_messages=asked,
+        output_messages=answered,
         input_tokens=_count(_first(stored, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens")),
         output_tokens=_count(_first(stored, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens")),
     )
@@ -174,6 +198,6 @@ def trace_of(event: WorldEvent, world: Store) -> EventTrace:
         caller=caller,
         ancestors=ancestors,
         genai=genai,
-        model_call=model_call(found) if found is not None else None,
+        model_call=model_call(found, world.spans(trace_id=found.span.trace_id)) if found is not None else None,
         joined_by=joined,
     )

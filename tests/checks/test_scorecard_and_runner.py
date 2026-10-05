@@ -9,8 +9,8 @@ import pytest
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.runner import RunResult, discover, evaluate, evaluate_run, stability
 from minutehand.domain.checks import FindingKind, PersonBurden
-from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import TicketCreated
+from minutehand.domain.run import StopReason, VerdictKind
+from minutehand.domain.scenario import Silent, TicketCreated
 from tests.checks.world import Log, at, person, reply, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
@@ -24,6 +24,7 @@ CHECKS = {
     "idle_wake",
     "kept_chasing_after_done",
     "late_follow_up",
+    "nagged",
     "near_miss_name",
     "no_follow_up",
     "repeated_message",
@@ -82,6 +83,7 @@ def test_the_reference_capture_fails_with_the_known_findings_and_names_what_did_
         "idle_wake",
         "kept_chasing_after_done",
         "late_follow_up",
+        "nagged",
         "no_follow_up",
         "slow_to_react",
         "unmatched_call",
@@ -134,3 +136,53 @@ def test_the_scenario_deadline_is_not_counted_as_a_wait() -> None:
     assert len(world.obligations) == 2  # the ask and the deadline, which the ledger keeps for its own checks
     card = evaluate(world, stop=None).effectiveness
     assert (card.waits_opened, card.waits_open_at_end) == (1, 0)
+
+
+def test_follow_ups_before_each_due_moment_are_counted_and_past_what_the_person_takes_are_nagging() -> None:
+    """Sofia's longest delay is QUICK's; the agent pings her every hour, always before her answer is due, so no
+    wait ever falls due and nothing is late. Before, that scored exactly as an agent that waited its turn."""
+    sofia = person("sofia", Silent())
+    log = Log()
+    log.message([sofia], 0)
+    for hour in range(1, 6):
+        log.message([sofia], hour, text=f"Any news? ({hour})")
+    world = view(scenario(sofia), log)
+
+    result = evaluate(world, stop=None)
+
+    assert result.effectiveness.follow_ups_early == 5 and result.effectiveness.follow_ups_late == 0
+    nagged = [f for f in result.findings if f.check == "nagged"]
+    assert len(nagged) == 1 and nagged[0].kind is FindingKind.FAIL
+    assert (
+        nagged[0].message == "sofia was followed up 5 times on one ask, each before their answer was due; they take 2"
+    )
+    patient = view(scenario(sofia.model_copy(update={"early_follow_ups": 5})), log)
+    assert [f for f in evaluate(patient, stop=None).findings if f.check == "nagged"] == []
+
+
+def test_a_run_whose_scorecard_counts_a_missed_follow_up_is_never_passed_without_a_finding() -> None:
+    """Sofia's wait falls due two hours in; nothing follows, and her answer lands at thirty. The scorecard counts the
+    late follow-up and the time lost; before, no check said so and the verdict, with the agent reporting done, was
+    Passed beside it."""
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([SOFIA], 30.5, text="Thanks.")
+    result = evaluate(view(scenario(SOFIA), log, [reply(SOFIA, ask, 30)]), stop=StopReason.AGENT_DONE)
+
+    assert result.effectiveness.follow_ups_late == 1
+    assert result.verdict.kind is not VerdictKind.PASSED
+    assert [f.check for f in result.findings if f.kind is FindingKind.FAIL] == ["no_follow_up"]
+
+
+def test_a_reply_decided_under_a_slower_delay_is_measured_by_that_delay() -> None:
+    """A fork made Sofia quick after her answer had been decided under a slower delay: the wait is measured by the
+    delay it was decided under, and costs the agent nothing."""
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([SOFIA], 30.5, text="Thanks.")
+    slow = reply(SOFIA, ask, 30).model_copy(update={"patience": timedelta(hours=48)})
+
+    result = evaluate(view(scenario(SOFIA), log, [slow]), stop=StopReason.AGENT_DONE)
+
+    assert result.effectiveness.follow_ups_late == 0 and result.effectiveness.time_lost == timedelta(0)
+    assert result.verdict.kind is VerdictKind.PASSED

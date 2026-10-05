@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, ConfigDict, Field
 
 from minutehand.domain.scenario import AccessRole, Model, ProviderKey, TicketState
 
@@ -60,7 +60,8 @@ class BodyKept(StrEnum):
 
     WHOLE = "whole"
     TRUNCATED = "truncated"  # text, kept up to the declared limit
-    BINARY = "binary"  # its length and content type only
+    BYTES = "raw"  # kept whole as the bytes that crossed: binary, or not valid text in its declared charset
+    BINARY = "binary"  # bytes longer than the declared limit: its length, content type and hash only
     EMPTY = "empty"
 
 
@@ -96,7 +97,13 @@ class Captured(Model):
 
 
 class Exchange(Model):
-    """One HTTP call as it crossed the wire. Bodies are the provider's own format."""
+    """One HTTP call as it crossed the wire. Bodies are the provider's own format.
+
+    A body that is valid UTF-8 is `*_body`, text, with credentials redacted. Any other (a .docx, an image, JSON in
+    another encoding or with bytes that are no text at all) is `*_bytes`, exactly the bytes that crossed, and its
+    `*_body` is None: every call is recorded whatever its bodies hold. In JSON, bytes are base64."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", ser_json_bytes="base64", val_json_bytes="base64")
 
     method: str
     host: str
@@ -104,6 +111,8 @@ class Exchange(Model):
     status: int
     request_body: str | None = None
     response_body: str | None = None
+    request_bytes: bytes | None = Field(default=None, description="The request body when it is not UTF-8 text")
+    response_bytes: bytes | None = Field(default=None, description="The answer's body when it is not UTF-8 text")
     traceparent: str | None = Field(default=None, description="W3C trace context the caller sent, if any")
     captured: Captured | None = Field(default=None, description="Set for a call to a host no provider claims")
 
@@ -146,8 +155,8 @@ class MessageSnapshot(Model):
     actions: list[MessageAction] = Field(default=[], description="What a reader can press or pick on it, in order")
     answerable: bool = Field(
         default=True,
-        description="Whether its recipients can answer where it was sent; False for a captured send (an email "
-        "through a declared host), which nobody answers in this version",
+        description="Whether its recipients can answer where it was sent; False for a captured send whose "
+        "declaration says nothing of replies (`Acknowledge.replies`), which nobody can answer",
     )
 
 

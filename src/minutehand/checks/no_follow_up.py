@@ -1,4 +1,5 @@
-"""A wait fell due, is still open, and the agent never came back to it after that.
+"""A wait fell due and the agent never came back to it after that: it is still open, or it settled only later,
+by itself, with nothing from the agent in between.
 
 What the agent did before then is said, not hidden: an agent that reminded a
 silent person once, early, and then let the wait sit has followed up once and
@@ -26,11 +27,11 @@ class NoFollowUp:
         ended = ended_at(view)
         findings: list[Finding] = []
         for o in view.obligations:
-            if o.kind is ObligationKind.DATE or o.settled_at is not None:
+            if o.kind is ObligationKind.DATE:
                 continue
             chased = chase(o, by_seq, ended)
             left = chased.abandoned
-            if left is None:
+            if left is None or not left.late:
                 continue
             findings.append(
                 Finding(
@@ -49,6 +50,11 @@ class NoFollowUp:
 def _message(chased: Chase, left: Expiry) -> str:
     o = chased.obligation
     whom = f" on {o.person}" if o.person else ""
+    if o.settled_at is not None:
+        return (
+            f"wait{whom} fell due and the agent did not follow it up in the {span(left.gap)} before it settled by "
+            "itself"
+        )
     if not chased.follow_ups:
         return f"wait{whom} expired {span(left.gap)} before the run ended and the agent never came back to it"
     count = len(chased.follow_ups)

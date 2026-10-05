@@ -9,12 +9,14 @@ import pytest
 from minutehand.checks.runner import evaluate, exit_code
 from minutehand.domain.agent import Commitment, CommitmentStatus, WaitingOn
 from minutehand.domain.checks import FindingKind
+from minutehand.domain.people import PersonReply
 from minutehand.domain.run import StopReason, VerdictKind
-from minutehand.domain.scenario import PersonAsked, Silent
+from minutehand.domain.scenario import Expectation, PersonAsked, Silent
 from tests.checks.world import Log, at, person, scenario, view
 
 OWNER = person("owner")
 SOFIA = person("sofia", Silent())
+SOFIA_ANSWERS = person("sofia")
 
 
 def _asked_and_waiting() -> Log:
@@ -45,13 +47,49 @@ def test_a_stop_without_done_while_a_wait_is_open_is_not_finished_and_exits_3(st
     assert result.verdict.stop is stop and result.verdict.open_waits == 1
 
 
-def test_the_same_world_passes_when_the_agent_reported_done() -> None:
+def test_done_with_a_question_it_never_followed_up_is_not_finished() -> None:
+    """The agent asked Sofia, never came back to it, and reported done: it stopped waiting, it did not finish.
+    Before, DONE passed whatever was left open."""
     world = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]), _asked_and_waiting())
 
     result = evaluate(world, stop=StopReason.AGENT_DONE)
 
+    assert result.verdict.kind is VerdictKind.UNFINISHED and result.exit_code == 3
+    assert result.verdict.words == (
+        "Not finished: no check failed, but the agent reported it was done with 1 ask it made still unanswered "
+        "and never followed up (sofia)."
+    )
+
+
+def test_done_after_following_the_question_up_passes() -> None:
+    log = _asked_and_waiting()
+    log.message([SOFIA], 30, text="Following up on the contract.")
+    world = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]), log)
+
+    result = evaluate(world, stop=StopReason.AGENT_DONE, ended=at(31))
+
     assert result.verdict.kind is VerdictKind.PASSED and result.exit_code == 0
     assert result.verdict.words == "Passed: no check failed, and the agent reported it was done."
+
+
+def test_a_silent_owner_told_the_result_once_every_expectation_is_met_leaves_nothing_open() -> None:
+    """The agent asks Sofia, she answers, every expectation is met, and it tells its owner, who never answers, and
+    stops without DONE. Before, that one message kept the run 'Not finished'."""
+    owner = person("owner", Silent())
+    log = Log()
+    asked = log.message([SOFIA_ANSWERS], 1)
+    log.message([SOFIA_ANSWERS], 3.5, text="Thank you!")
+    log.message([owner], 4, text="Sofia confirmed the contract.")
+    answered = [PersonReply(person="sofia", in_reply_to=asked.entity, text="Signed.", at=at(3))]
+    expected: list[Expectation] = [PersonAsked(person="owner", mentions=["confirmed"])]
+    world = view(scenario(owner, SOFIA_ANSWERS, expect=expected), log, answered)
+    unmet = view(scenario(owner, SOFIA_ANSWERS, expect=[PersonAsked(person="owner", mentions=["x"])]), log, answered)
+
+    told = evaluate(world, stop=StopReason.NOTHING_PENDING, ended=at(6))
+
+    assert told.verdict.kind is VerdictKind.PASSED and told.exit_code == 0, told.verdict.words
+    assert "1 message telling the owner, who never answers, is not counted as open" in told.verdict.words
+    assert evaluate(unmet, stop=StopReason.NOTHING_PENDING, ended=at(6)).verdict.kind is not VerdictKind.PASSED
 
 
 def test_a_limit_stop_with_nothing_open_passes_and_says_how_it_stopped() -> None:
@@ -90,7 +128,7 @@ def test_a_failed_check_is_a_failure_whatever_was_open() -> None:
 def test_samples_exit_1_on_any_failure_else_3_on_any_unfinished() -> None:
     waiting = view(scenario(OWNER, SOFIA), _asked_and_waiting())
     failing = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="owner")]), _asked_and_waiting())
-    done = evaluate(waiting, stop=StopReason.AGENT_DONE)
+    done = evaluate(view(scenario(OWNER, SOFIA), Log()), stop=StopReason.AGENT_DONE)
     cut_off = evaluate(waiting, stop=StopReason.WAKE_LIMIT)
     failed = evaluate(failing, stop=StopReason.AGENT_DONE)
 

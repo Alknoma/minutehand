@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from minutehand.adapters.providers.microsoft import docx, wire
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
+from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import (
     Actor,
@@ -47,7 +48,6 @@ from minutehand.domain.world import (
     DocumentSnapshot,
     EntityKind,
     EntityRef,
-    MessageSnapshot,
     Operation,
     RecordSnapshot,
     Snapshot,
@@ -567,26 +567,18 @@ class MicrosoftWorld:
         if not user.absences:
             return None
         email = user.user.mail
-        first: datetime | None = None
-        if email is not None and any(a.starts is None for a in user.absences):
-            first = next(
-                (
-                    e.sim_time
-                    for e in self.store.events()
-                    if e.actor is Actor.AGENT
-                    and e.operation is Operation.CREATE
-                    and isinstance(e.after, MessageSnapshot)
-                    and email in e.after.recipient_emails
-                ),
-                None,
-            )
+        asked = (
+            first_ask(email, self.store.events())
+            if email is not None and any(a.starts is None for a in user.absences)
+            else None
+        )
         known: list[tuple[datetime, datetime, AwayRecord]] = []
         for absence in user.absences:
-            anchor = absence.starts if absence.starts is not None else first
-            if anchor is None:
-                continue
-            start = anchor + absence.starts_after
-            known.append((start, start + absence.lasts, absence))
+            span = placed(
+                from_start=absence.starts, asked=asked, starts_after=absence.starts_after, lasts=absence.lasts
+            )
+            if span is not None:
+                known.append((span[0], span[1], absence))
         current = next((k for k in known if k[0] <= now < k[1]), None)
         if current is not None:
             return current

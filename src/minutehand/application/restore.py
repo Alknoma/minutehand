@@ -2,9 +2,11 @@
 
 Minutehand owns the procedure; the agent supplies the commands (`StateHooks`).
 
-- **Settle.** A checkpoint is snapshotted only when the agent says it is not working AND no outbound call of its
-  has been seen for `StateHooks.quiet`, measured from whichever is later: the moment settling began or its last
-  call. One that has not settled after `StateHooks.settle_limit` is recorded as `NotRestorable`, with the reason.
+- **Settle.** A checkpoint is snapshotted only when the agent says it is not working, no outbound call of its
+  has been seen for `StateHooks.quiet` (measured from whichever is later: the moment settling began or its last
+  call, or bytes on a tunnel), nothing it sent is still awaiting an answer, and its `busy` command, when it
+  declares one, says it is idle. One that has not settled after `StateHooks.settle_limit` is recorded as
+  `NotRestorable`, with the reason; one settled with no `busy` to ask is marked unconfirmed.
 - **Restore.** `stop` (the agent's program, when Minutehand started it, then the agent's own `stop`), `restore`,
   `start` (the agent's own `start`, then its program), then the report endpoint must answer within
   `StateHooks.answer_limit`. A failing step stops the fork, naming the step and showing its output.
@@ -58,10 +60,17 @@ class SeenCall:
 
 
 class Traffic(Protocol):
-    """Whoever sees the agent's outbound calls (the proxy): asked how long the agent has been quiet."""
+    """Whoever sees the agent's outbound calls (the proxy): asked how long the agent has been quiet, and what it
+    sent that has not been answered yet."""
 
     def last_call(self) -> SeenCall | None:
-        """The latest call seen in this process, or None before the first."""
+        """The latest call seen in this process, or None before the first: a request, an answer, or bytes moving
+        on a tunnel the proxy does not open."""
+        ...
+
+    def waiting(self) -> list[str]:
+        """What the agent sent and is still awaiting an answer to, for a person: a call sent on to a real host, or a
+        tunnel whose last bytes went from the agent."""
         ...
 
 
@@ -85,54 +94,105 @@ class OwnProgram(Protocol):
 @dataclass(frozen=True)
 class Settled:
     report: AgentReport | None
+    unconfirmed: str | None = None
+
+
+UNCONFIRMED = (
+    "settled by the agent's report and the proxy alone; work the proxy cannot see (a database on this machine, a "
+    "process still computing) was not asked about: declare `busy` in the agent's state hooks"
+)
 
 
 async def settle(
-    hooks: StateHooks, traffic: Traffic, reports: Reports | None, known: AgentReport | None
+    hooks: StateHooks, traffic: Traffic, reports: Reports | None, known: AgentReport | None, *, directory: Path
 ) -> Settled | NotRestorable:
-    """Wait until the agent is settled: not working, and quiet for `hooks.quiet`. `known` is its last report,
-    taken as its report when it cannot be asked (`reports` is None)."""
+    """Wait until the agent is settled: not working, quiet for `hooks.quiet`, nothing it sent still awaiting an
+    answer, and, when it declares `busy`, idle by its own word. `known` is its last report, taken as its report
+    when it cannot be asked (`reports` is None). `directory` is where the busy command is run with
+    MINUTEHAND_SNAPSHOT_DIR, as every hook is."""
     quiet = hooks.quiet.total_seconds()
     limit = hooks.settle_limit.total_seconds()
     began = time.monotonic()
     give_up = began + limit
     calm_from = began
     working = False
+    awaited: list[str] = []
+    busy: str | None = None
     while True:
         last = traffic.last_call()
         if last is not None and last.at > calm_from:
             calm_from = last.at
+        awaited = traffic.waiting()
+        if awaited:
+            calm_from = max(calm_from, time.monotonic())
         ready = calm_from + quiet
         now = time.monotonic()
-        if now < ready:
-            if ready > give_up:
-                return NotRestorable(reason=_unsettled(hooks, last, working, give_up))
-            await asyncio.sleep(ready - now)
+        if now < ready or awaited:
+            if ready > give_up or (awaited and now + WORKING_EVERY > give_up):
+                return NotRestorable(reason=_unsettled(hooks, last, working, give_up, awaited, busy))
+            await asyncio.sleep(max(ready - now, WORKING_EVERY if awaited else 0.0))
             continue
         if reports is None:
-            return Settled(report=known)
-        try:
-            report = await reports.report()
-        except AgentFailed as e:
-            return NotRestorable(reason=f"the agent's report endpoint did not answer while it settled: {e}")
+            report = known
+        else:
+            try:
+                report = await reports.report()
+            except AgentFailed as e:
+                return NotRestorable(reason=f"the agent's report endpoint did not answer while it settled: {e}")
         after = traffic.last_call()
         if after is not None and after.at > calm_from:
             continue  # it called out while it was asked: the quiet starts again from that call
-        if report.status is not AgentStatus.WORKING:
-            return Settled(report=report)
-        working = True
+        if report is not None and report.status is AgentStatus.WORKING:
+            working = True
+        elif hooks.busy is None:
+            return Settled(report=report, unconfirmed=UNCONFIRMED)
+        else:
+            asked = await run_command(RestoreStep.BUSY, hooks.busy, directory, hooks.step_limit.total_seconds())
+            if asked.exit_code == 1:
+                if reports is None:
+                    return Settled(report=report)
+                # The report was read before the busy command ran, and the work may have ended in between, changing
+                # it (a DONE): what is kept is what the agent says now that it is idle.
+                try:
+                    after_idle = await reports.report()
+                except AgentFailed as e:
+                    return NotRestorable(reason=f"the agent's report endpoint did not answer while it settled: {e}")
+                if after_idle.status is not AgentStatus.WORKING:
+                    return Settled(report=after_idle)
+                working = True
+                await asyncio.sleep(WORKING_EVERY)
+                calm_from = time.monotonic()
+                continue
+            if asked.exit_code != 0:
+                return NotRestorable(
+                    reason=f"the agent's busy command could not tell whether it was idle: {shlex.join(asked.command)} "
+                    f"exited {asked.exit_code}: {asked.output.strip()[-OUTPUT_SHOWN:] or '(it printed nothing)'}"
+                )
+            busy = asked.output.strip()[-300:] or "it exited 0"
         if time.monotonic() + max(quiet, WORKING_EVERY) > give_up:
-            return NotRestorable(reason=_unsettled(hooks, last, working, give_up))
+            return NotRestorable(reason=_unsettled(hooks, last, working, give_up, awaited, busy))
         await asyncio.sleep(WORKING_EVERY)
         calm_from = time.monotonic()
 
 
-def _unsettled(hooks: StateHooks, last: SeenCall | None, working: bool, give_up: float) -> str:
+def _unsettled(
+    hooks: StateHooks, last: SeenCall | None, working: bool, give_up: float, awaited: list[str], busy: str | None
+) -> str:
     limit = _span(hooks.settle_limit.total_seconds())
+    if awaited:
+        return (
+            f"the agent was still awaiting an answer when the settle limit ({limit}) ran out: "
+            f"{'; '.join(awaited[:3])}; a snapshot taken mid-call is of no moment a fork can resume"
+        )
     if working:
         return (
             f"the agent still reported WORKING when the settle limit ({limit}) ran out; its state was not "
             "snapshotted, because a snapshot of an agent at work is of no moment a fork can resume"
+        )
+    if busy is not None:
+        return (
+            f"the agent's busy command still said it was busy when the settle limit ({limit}) ran out ({busy}); "
+            "its state was not snapshotted"
         )
     assert last is not None
     return (
@@ -182,6 +242,8 @@ def _instant(at: datetime | None) -> str:
 
 
 class RestoreStep(StrEnum):
+    BUSY = "busy"
+    FINGERPRINT = "fingerprint"
     STOP = "stop"
     RESTORE = "restore"
     START = "start"
@@ -227,8 +289,11 @@ async def restore_agent(
     reports: Reports | None,
     own: OwnProgram | None = None,
     progress: Progress | None = None,
+    fingerprint: str | None = None,
 ) -> Restored:
-    """Put the agent back as it was at the checkpoint at `checkpoint_seq`, from `snapshot`, and prove it.
+    """Put the agent back as it was at the checkpoint at `checkpoint_seq`, from `snapshot`, and prove it: its
+    report against `recorded`, and, when the hooks declare `fingerprint`, its state against `fingerprint`, the
+    digest taken at the checkpoint.
 
     Raises `RestoreFailed` naming the step that failed and showing its output, or listing field by field how
     the restored agent's report differs from `recorded`."""
@@ -266,7 +331,14 @@ async def restore_agent(
         await command(RestoreStep.START, hooks.start)
     if own is not None:
         await program(RestoreStep.START, own.start, own)
+    printed: str | None = None
+    if hooks.fingerprint is not None and reports is None:
+        printed = await _fingerprint(hooks, snapshot, steps, checkpoint_seq)
     if reports is None:
+        if printed is not None and fingerprint is not None:
+            _compare(checkpoint_seq, [], fingerprint, printed, steps)
+            say(f"{RestoreStep.VERIFY.value}: the fingerprint equals the one at the checkpoint")
+            return Restored(checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=True)
         reason = (
             "the agent has no report endpoint to ask between wakes (only a `reported` wake source has one), so "
             "what its state holds after the restore was not compared with the checkpoint"
@@ -278,25 +350,54 @@ async def restore_agent(
     say(f"{RestoreStep.ANSWER.value}: waiting for the agent's report endpoint")
     report = await _answer(hooks, reports, checkpoint_seq, steps)
     say(f"{RestoreStep.ANSWER.value}: answered in {_span(steps[-1].seconds)}")
+    if hooks.fingerprint is not None:
+        printed = await _fingerprint(hooks, snapshot, steps, checkpoint_seq)
     if recorded is None:
         reason = "no report was recorded at the checkpoint to compare with"
         say(f"{RestoreStep.VERIFY.value}: not verified: {reason}")
         return Restored(
             checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=False, unverified=reason
         )
-    found = differences(recorded, report)
+    _compare(checkpoint_seq, differences(recorded, report), fingerprint, printed, steps)
+    say(
+        f"{RestoreStep.VERIFY.value}: the report equals the one at the checkpoint"
+        + (", and so does the fingerprint" if printed is not None and fingerprint is not None else "")
+    )
+    return Restored(checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=True)
+
+
+async def _fingerprint(hooks: StateHooks, snapshot: Path, steps: list[StepResult], checkpoint_seq: int) -> str:
+    assert hooks.fingerprint is not None
+    result = await run_command(RestoreStep.FINGERPRINT, hooks.fingerprint, snapshot, hooks.step_limit.total_seconds())
+    steps.append(result)
+    if result.exit_code != 0:
+        raise RestoreFailed(_failed(checkpoint_seq, result), steps)
+    return digest_of(result.output)
+
+
+def digest_of(output: str) -> str:
+    """A fingerprint command's digest: the last line it printed that is not blank."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def _compare(
+    checkpoint_seq: int, found: list[str], recorded: str | None, printed: str | None, steps: list[StepResult]
+) -> None:
+    """Refuse the restore when the report or the fingerprint differs from the checkpoint's."""
+    if recorded is not None and printed is not None and recorded != printed:
+        found = [*found, f"fingerprint: {recorded} at the checkpoint, {printed} after the restore"]
     steps.append(StepResult(step=RestoreStep.VERIFY, output="\n".join(found), seconds=0.0))
     if found:
         raise RestoreFailed(
             f"the restore did not bring back the agent as it was at the checkpoint at seq {checkpoint_seq}: "
-            "its report differs field by field:\n"
+            "it differs field by field:\n"
             + "\n".join(f"  {line}" for line in found)
-            + "\nEvery restore step exited 0, so a step that did nothing, or restored another snapshot, is the "
-            "likely cause. The fork was refused rather than run against an agent from another moment.",
+            + "\nEvery restore step exited 0, so a step that did nothing, restored another snapshot, or left a "
+            "process holding another moment is the likely cause. The fork was refused rather than run against an "
+            "agent from another moment.",
             steps,
         )
-    say(f"{RestoreStep.VERIFY.value}: the report equals the one at the checkpoint")
-    return Restored(checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=True)
 
 
 async def _answer(hooks: StateHooks, reports: Reports, checkpoint_seq: int, steps: list[StepResult]) -> AgentReport:

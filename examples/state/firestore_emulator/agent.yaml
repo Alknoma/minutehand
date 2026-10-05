@@ -13,6 +13,8 @@ wakes:
 
 state:
   snapshot: [python, hooks.py, snapshot]  # the emulator's own export, while it runs
+  busy: [python, hooks.py, busy]          # nothing runs after a wake is answered: always idle
+  fingerprint: [python, hooks.py, fingerprint]  # every document's fields, compared after every restore
   stop: [python, hooks.py, stop-agent]    # the agent remembers what it read: it must not outlive a restore
   restore: [python, hooks.py, restore]    # restart the emulator with --import: it cannot import while running
   start: [python, hooks.py, start-agent]

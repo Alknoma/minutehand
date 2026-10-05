@@ -127,7 +127,9 @@ async def test_two_samples_are_two_runs_through_one_proxy_each_from_the_agents_f
         events = store.events()
         assert texts(messages(events, Actor.AGENT, to=SOFIA)) == [QUESTION, THANKS]
         assert len(store.calls()) == len([c for c in store.calls() if c.provider == "slack"]) > 0
-    assert stability([o.result for o in outcomes]) == Stability(samples=2, passed=2)
+    assert stability([o.result for o in outcomes]) == Stability(samples=2, passed=2), [
+        o.result.verdict.words for o in outcomes
+    ]
 
 
 async def test_a_provider_neither_file_names_is_seeded_on_its_first_call_and_listed_as_called(

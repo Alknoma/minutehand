@@ -7,6 +7,8 @@ environment alone: no endpoint, protocol or header is written here.
                                           exporter; this encodes the SDK's own protobuf request with protobuf's
                                           JSON mapping and hex ids, as the OTLP specification defines)
     python exporting_agent.py metrics     the SDK's own metric exporter, which the receiver acknowledges
+    python exporting_agent.py grpc        the SDK's own gRPC exporter, built in code as many setups do: it reads
+                                          the endpoint from the environment and ignores OTEL_EXPORTER_OTLP_PROTOCOL
 
 It prints the trace id it made, then exits.
 """
@@ -65,7 +67,13 @@ def main() -> None:
         meters.shutdown()
         return
     provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter() if mode == "protobuf" else JsonExporter()))
+    if mode == "grpc":
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as GrpcSpanExporter
+
+        exporter: SpanExporter = GrpcSpanExporter(insecure=True, timeout=5)
+    else:
+        exporter = OTLPSpanExporter() if mode == "protobuf" else JsonExporter()
+    provider.add_span_processor(BatchSpanProcessor(exporter))
     tracer = provider.get_tracer("agent")
     with tracer.start_as_current_span("plan the wake") as root:
         with tracer.start_as_current_span(

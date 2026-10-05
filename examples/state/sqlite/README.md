@@ -64,7 +64,7 @@ Had the restore done nothing, the agent would answer as it was at the end of the
 wake, and the fork is refused before it plays:
 
 ```
-the restore did not bring back the agent as it was at the checkpoint at seq 18: its report differs field by field:
+the restore did not bring back the agent as it was at the checkpoint at seq 18: it differs field by field:
   next_wake: 2026-08-26T09:00:00+00:00 at the checkpoint, none after
 ```
 

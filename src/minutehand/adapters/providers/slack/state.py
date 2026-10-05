@@ -36,16 +36,17 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TypeVar
 
 from minutehand.adapters.providers.slack import wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
+from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.world import (
     Actor,
     Change,
     EntityKind,
     EntityRef,
-    MessageSnapshot,
     Operation,
     Snapshot,
     Stored,
@@ -419,25 +420,16 @@ class SlackWorld:
         found = self.body(away_ref(user), wire.SlackAway)
         if found is None:
             return None
-        first_ask: int | None = None
-        if any(s.on_first_ask for s in found.stretches):
-            first_ask = next(
-                (
-                    int(e.sim_time.timestamp())
-                    for e in self._store.events()
-                    if e.actor is Actor.AGENT
-                    and e.operation is Operation.CREATE
-                    and isinstance(e.after, MessageSnapshot)
-                    and found.email in e.after.recipient_emails
-                ),
-                None,
-            )
+        asked = first_ask(found.email, self._store.events()) if any(s.on_first_ask for s in found.stretches) else None
         for stretch in found.stretches:
-            anchor = first_ask if stretch.on_first_ask else found.starts_at
-            if anchor is None:
-                continue
-            starts = anchor + stretch.starts_after
-            if starts <= now < starts + stretch.lasts:
+            span = placed(
+                from_start=None if stretch.on_first_ask else datetime.fromtimestamp(found.starts_at, UTC),
+                asked=asked,
+                starts_after=timedelta(seconds=stretch.starts_after),
+                lasts=timedelta(seconds=stretch.lasts),
+            )
+            if span is not None and span[0].timestamp() <= now < span[1].timestamp():
+                starts = int(span[0].timestamp())
                 return Away(reason=stretch.reason, starts=starts, ends=starts + stretch.lasts)
         return None
 

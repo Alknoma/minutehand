@@ -36,6 +36,7 @@ pytestmark = [pytest.mark.firestore, pytest.mark.timeout(1800)]
 RECIPE = Path(__file__).parents[2] / "examples" / "state" / "firestore_emulator"
 HOOKS = [sys.executable, str(RECIPE / "hooks.py")]
 DOCUMENTS = "/v1/projects/demo-minutehand/databases/(default)/documents"
+CONTAINER_PREFIX = "MINUTEHAND_CONTAINER_PREFIX"
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,8 @@ class Emulator:
 def emulator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Emulator]:
     rest_port, hub_port, agent_port = free_port(), free_port(), free_port()
     env = {
-        "MINUTEHAND_FIRESTORE_PROJECT": f"minutehand-rewind-fs-{uuid.uuid4().hex[:8]}",
+        # The Compose project names the container: CONTAINER_PREFIX keeps it in a namespace the machine allows.
+        "MINUTEHAND_FIRESTORE_PROJECT": f"{os.environ.get(CONTAINER_PREFIX, 'minutehand-rewind-fs')}-{uuid.uuid4().hex[:8]}",
         "FIRESTORE_EXPORTS": str(tmp_path / "exports"),
         "FIRESTORE_PORT": str(rest_port),
         "FIRESTORE_HUB_PORT": str(hub_port),
@@ -115,6 +117,8 @@ def recipe_agent(port: int, *, restore: list[str] | None = None) -> AgentUnderTe
                     "stop": [*HOOKS, "stop-agent"],
                     "restore": restore or [*HOOKS, "restore"],
                     "start": [*HOOKS, "start-agent"],
+                    "busy": [*HOOKS, "busy"],
+                    "fingerprint": [*HOOKS, "fingerprint"],
                 }
             )
         }

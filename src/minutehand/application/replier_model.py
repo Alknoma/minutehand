@@ -223,6 +223,7 @@ class ModelReplier:
             text=text,
             press=press,
             at=lands_at(self._scenario, person, asked, history, behaviour.delay),
+            patience=behaviour.delay.longest,
             written_by=Provenance(model=behaviour.model or self._model.model_id, prompt_version=PERSON_PROMPT_VERSION),
         )
 

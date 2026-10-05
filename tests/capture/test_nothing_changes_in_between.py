@@ -23,6 +23,8 @@ from tests.proxy.upstream import Authority, model_api
 
 ODD_JSON = b'{ "b" :2,\n\t"a":  "caf\\u00e9 \xc3\xa9",   "n": 1.0e2 ,"z":[ ]}\r\n'
 NOT_TEXT = bytes(range(256)) * 3
+NOT_ITS_CHARSET = b'{"name": "Ren\xe9e", "bad": "\xff\xfe"}'
+"""JSON that says it is UTF-8 and is not: mitmproxy reads it with lone surrogates, which nothing can serialise."""
 # What a proxy may rightly change: headers that describe one hop of the connection, not the message.
 ONE_HOP = {"connection", "proxy-connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade"}
 
@@ -34,8 +36,12 @@ def _carried(headers: dict[str, str]) -> dict[str, str]:
 
 @pytest.mark.parametrize(
     ("sent", "content_type"),
-    [(ODD_JSON, "application/json"), (NOT_TEXT, "application/octet-stream")],
-    ids=["json a parser would tidy", "bytes that are not text"],
+    [
+        (ODD_JSON, "application/json"),
+        (NOT_TEXT, "application/octet-stream"),
+        (NOT_ITS_CHARSET, "application/json; charset=utf-8"),
+    ],
+    ids=["json a parser would tidy", "bytes that are not text", "json invalid in its declared charset"],
 )
 async def test_a_passed_through_call_and_its_answer_are_the_same_bytes_on_both_sides(
     sent: bytes,
@@ -79,6 +85,12 @@ async def test_a_passed_through_call_and_its_answer_are_the_same_bytes_on_both_s
     assert got.content == b"".join(answered)
     assert got.headers["content-type"] == "application/octet-stream"
     assert set(_carried(dict(got.headers))) == {"content-type"}
+
+    # The copy kept with the run is the same bytes, both ways, read back from the store: the call is recorded
+    # whatever its bodies hold. Before, a body that was not UTF-8 text was kept as nothing at all.
+    [kept] = store.calls()
+    assert (kept.exchange.request_body or "").encode() == sent or kept.exchange.request_bytes == sent
+    assert kept.exchange.response_bytes == b"".join(answered)
 
     # The copy kept with the run is a copy: the secret went to the host and stayed out of the store.
     assert real.headers[0]["authorization"] == "Bearer kept-on-the-wire-9c41"

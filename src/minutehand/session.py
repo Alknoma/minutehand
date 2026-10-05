@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 from pydantic import Field
 
 from minutehand.adapters.agent.reach import reach_for
+from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
@@ -70,14 +71,15 @@ from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
-from minutehand.domain.checks import WakeRecord
+from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.experiment import Fork
-from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment
+from minutehand.domain.outbound import Acknowledge
+from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
 from minutehand.domain.world import Actor, Operation
-from minutehand.ports.agent import Reports
+from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
@@ -92,6 +94,8 @@ from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 RUNS = "runs"
+TELEMETRY = "telemetry"
+"""The check name a notice about the agent's telemetry is reported under."""
 WORLD = "world.db"
 RECORD = "record.json"
 RESULT = "result.json"
@@ -176,14 +180,14 @@ async def play(
         raise RunRefused(f"a run needs at least one sample, not {samples}")
     scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
+    listen = listen or Listen()
     registry = Registry.installed()
-    routing = Routing(registry)
+    routing = _routing(registry, listen)
     services = _services(scenario, agent, registry)
-    capturing = capturing_for(agent, registry, state=state)
+    capturing = capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts)
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
     opened = [first[0]]
-    listen = listen or Listen()
     async with intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
@@ -192,6 +196,7 @@ async def play(
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
+            scorer.receiver = proxy.receiver
             signing = signing_for(agent)
             env = agent_environment(
                 listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
@@ -214,6 +219,7 @@ async def play(
                     state_dir=state / RUNS,
                     signing=signing.by_provider,
                     traffic=proxy,
+                    channels=replies_for(agent, scenario, signing),
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -259,6 +265,7 @@ async def _restore_start(
             reports=main if isinstance(main, Reports) else None,
             own=own,
             progress=progress,
+            fingerprint=restorable.fingerprint,
         )
     (directory / RESTORE_RECORD).write_text(restored.model_dump_json(indent=2), encoding="utf-8")
 
@@ -292,11 +299,14 @@ async def fork(
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, model)
+    listen = listen or Listen()
     registry = Registry.installed()
-    routing = Routing(registry)
+    routing = _routing(registry, listen)
     services = _services(changed, agent, registry)
     forked_after = next((p.wake for p in fork_points(state, parent_run) if p.seq == changes.at_seq), 0)
-    capturing = capturing_for(agent, registry, state=state, parent=parent_run, after_wake=forked_after)
+    capturing = capturing_for(
+        agent, registry, state=state, parent=parent_run, after_wake=forked_after, model_hosts=listen.model_hosts
+    )
     child_id = _new_run_id()
     scorer = _Judge(changed, model if judge else None, judging=judge)
     signing = signing_for(agent)
@@ -305,8 +315,8 @@ async def fork(
         return SqliteStore(world, parent_run, clock)
 
     holding = RunClock(scenario.starts_at)
-    listen = listen or Listen()
     async with intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy:
+        scorer.receiver = proxy.receiver
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
         )
@@ -333,6 +343,7 @@ async def fork(
                     signing=signing.by_provider,
                     own=own,
                     progress=progress,
+                    channels=replies_for(agent, changed, signing),
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -631,6 +642,8 @@ class _Judge:
         self._model = model
         self._judging = judging
         self.results: dict[str, RunResult] = {}
+        self.receiver: Receiver | None = None
+        """Whose notices about telemetry it could not receive end the run's findings."""
 
     async def score(self, record: RunRecord, world: Store) -> RunResult:
         last = read_checkpoint(world)
@@ -649,18 +662,38 @@ class _Judge:
             if self._judging
             else evaluate(view, stop=record.stop)
         )
+        heard = self.receiver.notices if self.receiver is not None else []
+        if heard:
+            told = [
+                Finding(check=TELEMETRY, severity=Severity.WARNING, kind=FindingKind.REVIEW, message=notice)
+                for notice in heard
+            ]
+            result = result.model_copy(update={"findings": [*result.findings, *told]})
         self.results[record.run_id] = result
         return result
 
 
+def _routing(registry: Registry, listen: Listen) -> Routing:
+    try:
+        return Routing(registry, model_hosts=listen.model_hosts)
+    except (ProviderConflict, ValueError) as e:
+        raise RunRefused(f"the model hosts {', '.join(listen.model_hosts)}: {e}") from e
+
+
 def capturing_for(
-    agent: AgentUnderTest, registry: Registry, *, state: Path, parent: str | None = None, after_wake: int = 0
+    agent: AgentUnderTest,
+    registry: Registry,
+    *,
+    state: Path,
+    parent: str | None = None,
+    after_wake: int = 0,
+    model_hosts: Sequence[str] = DEFAULT_MODEL_HOSTS,
 ) -> Capturing:
     """What a run captures of the hosts no provider claims: the agent's outbound declarations, refused when one
     names a host a provider claims or a model API, with the recordings each replay reads. In a fork of `parent`,
     a pass-through host replays the parent's answer to the same call unless it says otherwise (`in_forks`)."""
     try:
-        refuse_claimed(agent.outbound, registry, DEFAULT_MODEL_HOSTS)
+        refuse_claimed(agent.outbound, registry, model_hosts)
         replaying = replaying_for(agent.outbound, state=state, parent=parent, after_wake=after_wake)
         return Capturing(agent.outbound, replaying=replaying)
     except (ProviderConflict, FileNotFoundError, ValueError) as e:
@@ -759,33 +792,52 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
 
 @dataclass(frozen=True)
 class Signing:
-    """The secrets a run signs pushed events with: one per provider, and the ones the agent's command is given."""
+    """The secrets a run signs pushed events with: one per provider, one per captured host whose replies are
+    signed, and the ones the agent's command is given."""
 
     by_provider: dict[ProviderKey, str]
     for_agent: dict[str, str]
+    by_host: dict[ProviderKey, str]
+
+
+def replies_for(agent: AgentUnderTest, scenario: Scenario, signing: Signing) -> dict[ProviderKey, TakesReplies]:
+    """A channel per captured host whose sends people can answer, keyed by the name its messages go under."""
+    channels: dict[ProviderKey, TakesReplies] = {}
+    for declared in agent.outbound:
+        if isinstance(declared, Acknowledge) and declared.replies is not None:
+            secret = signing.by_host[declared.key] if declared.key in signing.by_host else None
+            channels[declared.key] = CapturedReplies(declared, scenario.people, secret=secret)
+    return channels
 
 
 def signing_for(agent: AgentUnderTest) -> Signing:
     """Each inbound target's secret for this run: generated and handed to the agent's command, read from this
     process's own variable (the secret an agent already running was configured with), or, when the target
     names none, generated and given to no one. A variable named and not set refuses the run."""
-    by_provider: dict[ProviderKey, str] = {}
     for_agent: dict[str, str] = {}
-    for target in agent.inbound:
-        source = target.secret
+
+    def resolve(source: SigningSecret | None, what: str) -> str:
         if isinstance(source, SecretFromEnvironment):
             if source.env not in os.environ:
                 raise RunRefused(
-                    f"the agent's {target.provider} signing secret is read from {source.env}, which is not set "
+                    f"the agent's {what} signing secret is read from {source.env}, which is not set "
                     "in Minutehand's environment; set it to the secret the agent was configured with"
                 )
-            value = os.environ[source.env]
-        else:
-            value = secrets.token_hex(16)
-            if isinstance(source, GeneratedSecret):
-                for_agent[source.env] = value
+            return os.environ[source.env]
+        value = secrets.token_hex(16)
+        if isinstance(source, GeneratedSecret):
+            for_agent[source.env] = value
+        return value
+
+    by_provider: dict[ProviderKey, str] = {}
+    for target in agent.inbound:
+        value = resolve(target.secret, target.provider)
         by_provider.setdefault(target.provider, value)
-    return Signing(by_provider=by_provider, for_agent=for_agent)
+    by_host: dict[ProviderKey, str] = {}
+    for declared in agent.outbound:
+        if isinstance(declared, Acknowledge) and declared.replies is not None and declared.replies.signing is not None:
+            by_host[declared.key] = resolve(declared.replies.signing.secret, f"{declared.host} reply")
+    return Signing(by_provider=by_provider, for_agent=for_agent, by_host=by_host)
 
 
 class Listen(Model):
@@ -819,6 +871,11 @@ class Listen(Model):
         default=None,
         description="The CAs a real host is verified against when a call is passed through, edited or recorded; "
         "None trusts the system's",
+    )
+    model_hosts: list[str] = Field(
+        default=list(DEFAULT_MODEL_HOSTS),
+        description="Hosts that are model APIs: tunnelled, or opened to edit or record their calls. The three "
+        "public ones by default; a self-hosted or other provider's API is added here",
     )
 
     def _reached_at(self) -> str:
@@ -881,9 +938,17 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
     run, which only reaches a command Minutehand starts."""
     if listen.port == 0:
         raise RunRefused("an agent configured before the run needs the proxy on a fixed port: give --proxy-port")
-    generated = [t for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
+    generated = [f"{t.provider} ({t.secret.env})" for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
+    generated += [
+        f"{d.host} replies ({d.replies.signing.secret.env})"
+        for d in agent.outbound
+        if isinstance(d, Acknowledge)
+        and d.replies is not None
+        and d.replies.signing is not None
+        and isinstance(d.replies.signing.secret, GeneratedSecret)
+    ]
     if generated:
-        names = ", ".join(f"{t.provider} ({t.secret.env})" for t in generated if t.secret is not None)
+        names = ", ".join(generated)
         raise RunRefused(
             f"agent {agent.name} has its signing secret generated per run for {names}, and a generated secret "
             "reaches only a command Minutehand starts; an agent started on its own says "
@@ -923,6 +988,10 @@ class Intercepting:
     def last_call(self) -> SeenCall | None:
         """`application.restore.Traffic`: the latest call the proxy saw from the agent."""
         return self.proxy.last_call()
+
+    def waiting(self) -> list[str]:
+        """`application.restore.Traffic`: what the agent sent and the proxy has not seen answered."""
+        return self.proxy.waiting()
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.proxy.mount(world, clock, apps, scenario=scenario)

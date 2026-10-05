@@ -225,7 +225,7 @@ async def test_no_secret_reaches_the_store_from_headers_query_or_bodies(
     assert [s for s in SECRETS if s.encode() in kept] == []
 
 
-async def test_a_body_past_the_limit_is_cut_and_a_binary_one_is_kept_as_its_length(
+async def test_a_body_past_the_limit_is_cut_and_a_binary_one_is_kept_as_its_bytes_or_past_the_limit_its_length(
     registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
 ) -> None:
     declared = Acknowledge(host="api.mail.test", body_limit=40)
@@ -236,18 +236,21 @@ async def test_a_body_past_the_limit_is_cut_and_a_binary_one_is_kept_as_its_leng
             [
                 Call("POST", "https://api.mail.test/send", long_text, {"content-type": "application/json"}),
                 Call("POST", "https://api.mail.test/attach", "\x00\x01binary", {"content-type": "image/png"}),
+                Call("POST", "https://api.mail.test/attach", "\x00" * 100, {"content-type": "image/png"}),
             ],
         )
-    cut, binary = store.calls()
+    cut, binary, too_long = store.calls()
     assert cut.exchange.captured is not None and binary.exchange.captured is not None
     assert cut.exchange.request_body == long_text[:40]
     assert (cut.exchange.captured.request.kept, cut.exchange.captured.request.size) == (
         BodyKept.TRUNCATED,
         len(long_text),
     )
-    assert binary.exchange.request_body is None
+    assert binary.exchange.request_body is None and binary.exchange.request_bytes == b"\x00\x01binary"
     assert (binary.exchange.captured.request.kept, binary.exchange.captured.request.content_type) == (
-        BodyKept.BINARY,
+        BodyKept.BYTES,
         "image/png",
     )
     assert binary.exchange.captured.request.size == 8
+    assert too_long.exchange.captured is not None and too_long.exchange.request_bytes is None
+    assert (too_long.exchange.captured.request.kept, too_long.exchange.captured.request.size) == (BodyKept.BINARY, 100)

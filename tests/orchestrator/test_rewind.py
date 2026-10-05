@@ -311,3 +311,35 @@ async def test_a_fork_from_a_checkpoint_whose_snapshot_was_pruned_is_refused(rig
     newest_seq = next(seq for seq, c in found.items() if isinstance(c.agent, Restorable) and c.agent.wake == newest)
     [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=newest_seq))
     assert child.parent_run == "root"
+
+
+def test_a_fork_whose_change_leaves_a_relayed_tell_unsayable_is_refused_saying_why() -> None:
+    """Rosa's new answer no longer holds the tell the scenario expects her to say. Before, the fork crashed with a
+    validation traceback and exited 1, which every surface reads as 'a check failed'."""
+    from minutehand.application.refusals import RunRefused
+    from minutehand.application.rewind import changed_scenario
+    from minutehand.domain.experiment import Fork, PersonChange
+    from minutehand.domain.scenario import Scenario, Scripted, ScriptedReply
+
+    scenario = Scenario.model_validate(
+        {
+            "name": "relay",
+            "goal": "Tell Owen the reference.",
+            "owner": "owen",
+            "starts_at": "2026-08-24T09:00:00Z",
+            "people": [
+                {"key": "owen", "name": "Owen", "email": "owen@example.com", "reply": {"kind": "silent"}},
+                {
+                    "key": "rosa",
+                    "name": "Rosa",
+                    "email": "rosa@example.com",
+                    "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": "Reference LH-2291."}]},
+                },
+            ],
+            "expect": [{"kind": "relayed", "said_by": "rosa", "to": "owen", "tell": "LH-2291"}],
+        }
+    )
+    change = PersonChange(person="rosa", reply=Scripted(replies=[ScriptedReply(to_ask=1, text="Friday is taken.")]))
+
+    with pytest.raises(RunRefused, match=r"self-contradictory: .*no scripted reply of rosa holds the tell 'LH-2291'"):
+        changed_scenario(scenario, Fork(parent_run="p", at_seq=1, overrides=[change]))

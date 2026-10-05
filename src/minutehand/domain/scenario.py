@@ -178,6 +178,12 @@ class Person(Model):
     reply: ReplyBehaviour = Answers()
     working_hours: WorkingHours | None = None
     absences: list[Absence] = []
+    early_follow_ups: int = Field(
+        default=2,
+        ge=0,
+        description="How many follow-ups on one ask this person takes, each sent before their answer was due, "
+        "before it is nagging",
+    )
 
 
 class TicketState(StrEnum):

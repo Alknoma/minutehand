@@ -24,6 +24,10 @@ dependencies = [
     "zstandard>=0.23",
 ]
 
+[project.optional-dependencies]
+# Receiving an agent's OTLP over gRPC, on the same port as OTLP/HTTP.
+grpc = ["grpcio>=1.60"]
+
 [project.scripts]
 minutehand = "minutehand.cli:main"
 
@@ -35,7 +39,8 @@ minutehand = "minutehand.testing.plugin"
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "pyright>=1.1.390", "ruff>=0.8", "boto3>=1.35", "slack_sdk>=3.33", "psutil>=6",
        "uvicorn>=0.30", "asana>=5", "google-api-python-client>=2.150", "google-auth>=2.35",
        "pytest-socket>=0.7", "pytest-timeout>=2.3", "pytest-randomly>=3.15", "pytest-xdist>=3.6", "aiohttp>=3.10", "pysocks>=1.7",
-       "notion-client==2.2.1", "pyjwt[crypto]>=2.10", "python-docx==1.2.0"]
+       "notion-client==2.2.1", "pyjwt[crypto]>=2.10", "python-docx==1.2.0",
+       "opentelemetry-exporter-otlp-proto-grpc>=1.27"]
 
 [build-system]
 requires = ["hatchling"]

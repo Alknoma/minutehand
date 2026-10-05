@@ -294,6 +294,8 @@ class Scheduler:
 
     def __init__(self) -> None:
         self.fired: list[tuple[str, datetime]] = []
+        self.delivered: list[str] = []
+        self.taken_refs: list[str] = []
         self._wakes: Wakes | None = None
 
     def bind(self, wakes: Wakes) -> None:
@@ -331,18 +333,34 @@ class Scheduler:
             self._bound().cancel(ref)
             return JSONResponse({"ok": True})
 
+        async def deliveries(request: Request) -> Response:
+            """The agent's poll of its queue: every delivery it has not yet acknowledged. Receiving is not taking:
+            as with SQS, a delivery is taken when the agent deletes it, after acting on it."""
+            return JSONResponse({"deliveries": [ref for ref in self.delivered if ref not in self.taken_refs]})
+
+        async def acknowledge(request: Request) -> Response:
+            self.taken_refs.append(request.path_params["ref"])
+            return JSONResponse({"ok": True})
+
         return Starlette(
             routes=[
                 Route("/schedules", book, methods=["POST"]),
                 Route("/schedules/{ref}", cancel, methods=["DELETE"]),
+                Route("/deliveries", deliveries, methods=["GET"]),
+                Route("/deliveries/{ref}", acknowledge, methods=["DELETE"]),
             ]
         )
+
+    def taken(self, ref: str, world: Store) -> bool:
+        """`ConfirmsDelivery`: the agent's poll has picked this booking's delivery up."""
+        return ref in self.taken_refs
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scheduler starts with no bookings: a scenario has nothing to seed here."""
 
     async def fire(self, ref: str, world: Store, clock: Clock) -> None:
         self.fired.append((ref, clock.now()))
+        self.delivered.append(ref)
         world.apply(
             Change(
                 entity=EntityRef(provider=SCHED, kind=EntityKind.RECORD, external_id=ref),
@@ -360,9 +378,13 @@ class Switchboard:
     def __init__(self) -> None:
         self.apps: dict[ProviderKey, ASGIApp] = {}
         self.seen: SeenCall | None = None
+        self.answering: list[str] = []
 
     def last_call(self) -> SeenCall | None:
         return self.seen
+
+    def waiting(self) -> list[str]:
+        return list(self.answering)
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.apps = dict(apps)
@@ -371,10 +393,15 @@ class Switchboard:
         path = scope["path"]
         assert isinstance(path, str)
         key, _, rest = path.lstrip("/").partition("/")
-        self.seen = SeenCall(at=time.monotonic(), what=f"{scope['method']} {path}")
+        what = f"{scope['method']} {path}"
+        self.seen = SeenCall(at=time.monotonic(), what=what)
         app = self.apps[key]
-        await app({**scope, "path": "/" + rest, "raw_path": ("/" + rest).encode()}, receive, send)  # type: ignore[arg-type]
-        self.seen = SeenCall(at=time.monotonic(), what=f"{scope['method']} {path}")
+        self.answering.append(what)
+        try:
+            await app({**scope, "path": "/" + rest, "raw_path": ("/" + rest).encode()}, receive, send)  # type: ignore[arg-type]
+        finally:
+            self.answering.remove(what)
+        self.seen = SeenCall(at=time.monotonic(), what=what)
 
 
 @asynccontextmanager

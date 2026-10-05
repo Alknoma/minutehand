@@ -11,6 +11,9 @@
     minutehand pin <run_id> <seq> [--state DIR]  keep a checkpoint's snapshot whatever `state: keep` says
     minutehand unpin <run_id> <seq> [--state DIR]
     minutehand gc [--state DIR]                  remove stored bodies and snapshot files nothing refers to
+    minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--json] -- <command...>
+                                                 which HTTP clients in the agent's interpreter would go around the
+                                                 proxy, and which declared hosts NO_PROXY would send directly
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
@@ -24,7 +27,8 @@ reaches directly. Beside the proxy, on the same host, an OTLP/HTTP receiver keep
 the run: --telemetry-port (default: any free port), or --no-receive-telemetry to serve none. Spans the agent
 exports are passed on to wherever OTEL_EXPORTER_OTLP_ENDPOINT in Minutehand's own environment points.
 --record-model-calls opens the agent's calls to model APIs and keeps each as a span, for an agent that
-exports nothing. A host no provider claims is refused unless the agent file declares it under `outbound`
+exports nothing. --model-host HOST, repeated, names a model API besides the three public ones (a self-hosted
+model, another provider), so it is tunnelled, edited by a fork's PromptPatch or ModelSwap, or recorded. A host no provider claims is refused unless the agent file declares it under `outbound`
 (acknowledge, pass_through or replay); --capture-unknown passes every undeclared one through and keeps it, and
 the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 
@@ -59,6 +63,7 @@ import yaml
 from minutehand import serve as standing
 from minutehand import session
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
@@ -143,6 +148,14 @@ def _parser() -> argparse.ArgumentParser:
             "--record-model-calls",
             action="store_true",
             help="open the agent's calls to model APIs, send them on unchanged and keep each as a span",
+        )
+        sub.add_argument(
+            "--model-host",
+            action="append",
+            default=[],
+            metavar="HOST",
+            help="a host that is a model API, besides api.openai.com, api.anthropic.com and "
+            "generativelanguage.googleapis.com: tunnelled, edited by a fork, or recorded with --record-model-calls",
         )
         capture(sub)
 
@@ -252,6 +265,12 @@ def _parser() -> argparse.ArgumentParser:
     capture(served)
     state(served)
 
+    doctor = commands.add_parser(
+        "doctor", help="which HTTP clients in the agent's interpreter would go around the proxy (-- <command>)"
+    )
+    doctor.add_argument("--agent", type=Path, default=None, help="the agent file: its outbound hosts are checked too")
+    doctor.add_argument("--model-host", action="append", default=[], metavar="HOST")
+    doctor.add_argument("--json", action="store_true")
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
     state(view)
@@ -268,6 +287,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("minutehand: nothing follows --; give the agent's command or leave -- out", file=sys.stderr)
             return 2
     args = _parser().parse_args(args_in)
+    if args.command == "doctor":
+        if not command:
+            print("minutehand doctor: give the agent's command after --", file=sys.stderr)
+            return 2
+        try:
+            return _doctor(args, command)
+        except (FileRefused, RuntimeError, OSError) as e:
+            print(f"minutehand doctor: {e}", file=sys.stderr)
+            return 2
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
     if command is not None and args.command not in ("run", "fork"):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
@@ -315,6 +343,7 @@ def _listen(args: argparse.Namespace) -> session.Listen:
         record_model_calls=args.record_model_calls,
         capture_unknown=args.capture_unknown,
         upstream_ca=args.upstream_ca,
+        model_hosts=list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host])),
     )
 
 
@@ -556,6 +585,17 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
     return "; ".join(parts)
 
 
+def _doctor(args: argparse.Namespace, command: list[str]) -> int:
+    """0 when every client found reaches the proxy, 1 when one would go around it."""
+    from minutehand import doctor
+
+    agent = load_agent(args.agent) if args.agent is not None else None
+    hosts = list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host]))
+    found = asyncio.run(doctor.diagnose(command, agent, hosts))
+    print(found.model_dump_json(indent=2) if args.json else doctor.described(found))
+    return 1 if found.bypasses else 0
+
+
 def _mcp(state: Path) -> int:
     from minutehand.adapters.mcp import server as mcp_server  # loaded only for this command: it is slow to import
 
@@ -648,7 +688,7 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
 def _point(point: ForkPoint) -> str:
     agent = point.agent
     if isinstance(agent, Restorable):
-        return "restorable"
+        return "restorable" if agent.unconfirmed is None else f"restorable, unconfirmed: {agent.unconfirmed}"
     if isinstance(agent, NotRestorable):
         return f"not restorable: {agent.reason}"
     return "not restorable: the agent declares no state hooks"
@@ -672,7 +712,8 @@ def _scorecard(card: Effectiveness) -> list[str]:
     lines = [
         f"expectations met: {card.expectations_met} of {card.expectations_total}",
         f"waits opened: {card.waits_opened}, still open at the end: {card.waits_open_at_end}",
-        f"follow-ups due: {card.follow_ups_due}, made: {card.follow_ups_made}, late: {card.follow_ups_late}",
+        f"follow-ups due: {card.follow_ups_due}, made: {card.follow_ups_made}, late: {card.follow_ups_late}, "
+        f"early: {card.follow_ups_early}",
         f"time the agent lost: {_span(card.time_lost)}",
         f"wakes: {card.wakes}, of which changed nothing: {card.idle_wakes}",
         f"messages to people: {card.messages_to_people}",

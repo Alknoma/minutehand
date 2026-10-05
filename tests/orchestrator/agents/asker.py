@@ -128,6 +128,38 @@ def book(reason: str, now: datetime, state: dict[str, object]) -> None:
     report("idle")
 
 
+def book_and_poll(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: book a wake-up in five hours, and leave a poller running that reads the scheduler's queue every
+    POLL_SECONDS and, for each delivery, follows up with sofia. Every wake reports idle at once: the work a
+    delivery asks for is done by the poller, after it."""
+    if reason == "start":
+        call("POST", "/testsched/schedules", {"ref": "kept", "at": (now + timedelta(hours=5)).isoformat()})
+        subprocess.Popen(
+            [sys.executable, __file__, "--poll", os.environ["POLL_SECONDS"], os.environ["BACKGROUND_SECONDS"]],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=os.environ.copy(),
+        )
+    save(state)
+    report("idle")
+
+
+def poll(every: float, seconds: float) -> None:
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        try:
+            found = call("GET", "/testsched/deliveries")
+            assert isinstance(found, dict)
+            for ref in found["deliveries"]:
+                call("POST", "/testchat/messages", {"to": "sofia@example.com", "text": "Following up as booked."})
+                call("DELETE", f"/testsched/deliveries/{ref}")  # acknowledged once acted on, as SQS's delete
+        except OSError:
+            return
+        time.sleep(every)
+
+
 def ask_and_keep_calling(reason: str, now: datetime, state: dict[str, object]) -> None:
     """START: ask dania, then leave work running in the background that reads the inbox every 40 ms for
     BACKGROUND_SECONDS after this process has reported idle. Later wakes: idle."""
@@ -161,13 +193,26 @@ def fail(reason: str, now: datetime, state: dict[str, object]) -> None:
 
 BEHAVIOURS = {
     f.__name__: f
-    for f in (ask_and_file, placeholder, placeholder_later, ask_silent, ask_and_keep_calling, keep_waking, book, fail)
+    for f in (
+        ask_and_file,
+        placeholder,
+        placeholder_later,
+        ask_silent,
+        ask_and_keep_calling,
+        keep_waking,
+        book,
+        book_and_poll,
+        fail,
+    )
 }
 
 
 def main() -> None:
     if sys.argv[1] == "--background":
         background(float(sys.argv[2]))
+        return
+    if sys.argv[1] == "--poll":
+        poll(float(sys.argv[2]), float(sys.argv[3]))
         return
     request = json.loads(sys.stdin.read())
     state = load()

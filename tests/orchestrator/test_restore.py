@@ -14,6 +14,7 @@ import pytest
 from minutehand.application.checkpoint import NotRestorable
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import (
+    UNCONFIRMED,
     RestoreFailed,
     RestoreStep,
     SeenCall,
@@ -25,6 +26,8 @@ from minutehand.application.restore import (
 from minutehand.domain.agent import AgentReport, AgentStatus, Commitment, CommitmentStatus, StateHooks, WaitingOn
 
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
+UNUSED = Path(__file__).parent
+"""Where a busy command would run; these hooks declare none."""
 
 
 class Calls:
@@ -32,9 +35,13 @@ class Calls:
 
     def __init__(self) -> None:
         self.seen: SeenCall | None = None
+        self.open: list[str] = []
 
     def last_call(self) -> SeenCall | None:
         return self.seen
+
+    def waiting(self) -> list[str]:
+        return list(self.open)
 
     def call(self, what: str = "GET chat.test/inbox") -> None:
         self.seen = SeenCall(at=time.monotonic(), what=what)
@@ -77,18 +84,18 @@ async def test_a_call_inside_the_quiet_period_delays_the_checkpoint() -> None:
 
     began = time.monotonic()
     background = asyncio.create_task(late_call())
-    settled = await settle(hooks(quiet=timedelta(seconds=0.3)), calls, Answers(IDLE), None)
+    settled = await settle(hooks(quiet=timedelta(seconds=0.3)), calls, Answers(IDLE), None, directory=UNUSED)
     await background
 
-    assert settled == Settled(report=IDLE)
+    assert settled == Settled(report=IDLE, unconfirmed=UNCONFIRMED)
     # quiet is measured from the call at 0.15 s, not from when settling began
     assert time.monotonic() - began >= 0.45
 
 
 async def test_with_no_call_the_checkpoint_waits_the_quiet_period_once() -> None:
     began = time.monotonic()
-    settled = await settle(hooks(quiet=timedelta(seconds=0.2)), Calls(), Answers(IDLE), None)
-    assert settled == Settled(report=IDLE)
+    settled = await settle(hooks(quiet=timedelta(seconds=0.2)), Calls(), Answers(IDLE), None, directory=UNUSED)
+    assert settled == Settled(report=IDLE, unconfirmed=UNCONFIRMED)
     assert 0.2 <= time.monotonic() - began < 1.0
 
 
@@ -104,7 +111,11 @@ async def test_a_checkpoint_that_cannot_settle_is_not_restorable_with_its_reason
     background = asyncio.create_task(keeps_calling())
     began = time.monotonic()
     settled = await settle(
-        hooks(quiet=timedelta(seconds=0.2), settle_limit=timedelta(seconds=0.6)), calls, Answers(IDLE), None
+        hooks(quiet=timedelta(seconds=0.2), settle_limit=timedelta(seconds=0.6)),
+        calls,
+        Answers(IDLE),
+        None,
+        directory=UNUSED,
     )
     stop.set()
     await background
@@ -118,8 +129,8 @@ async def test_a_checkpoint_that_cannot_settle_is_not_restorable_with_its_reason
 async def test_an_agent_still_working_is_settled_only_once_it_stops() -> None:
     working = AgentReport(status=AgentStatus.WORKING)
     answers = Answers(working, working, IDLE)
-    settled = await settle(hooks(quiet=timedelta(0)), Calls(), answers, None)
-    assert settled == Settled(report=IDLE) and answers.asked == 3
+    settled = await settle(hooks(quiet=timedelta(0)), Calls(), answers, None, directory=UNUSED)
+    assert settled == Settled(report=IDLE, unconfirmed=UNCONFIRMED) and answers.asked == 3
 
 
 async def test_an_agent_working_past_the_settle_limit_is_not_restorable() -> None:
@@ -128,17 +139,20 @@ async def test_an_agent_working_past_the_settle_limit_is_not_restorable() -> Non
         Calls(),
         Answers(AgentReport(status=AgentStatus.WORKING)),
         None,
+        directory=UNUSED,
     )
     assert isinstance(settled, NotRestorable) and "still reported WORKING" in settled.reason
 
 
 async def test_an_agent_that_cannot_be_asked_settles_on_quiet_alone_with_its_last_report() -> None:
-    settled = await settle(hooks(quiet=timedelta(seconds=0.05)), Calls(), None, IDLE)
-    assert settled == Settled(report=IDLE)
+    settled = await settle(hooks(quiet=timedelta(seconds=0.05)), Calls(), None, IDLE, directory=UNUSED)
+    assert settled == Settled(report=IDLE, unconfirmed=UNCONFIRMED)
 
 
 async def test_a_report_endpoint_that_fails_while_settling_is_not_restorable() -> None:
-    settled = await settle(hooks(quiet=timedelta(0)), Calls(), Answers(AgentFailed("GET /report answered 500")), None)
+    settled = await settle(
+        hooks(quiet=timedelta(0)), Calls(), Answers(AgentFailed("GET /report answered 500")), None, directory=UNUSED
+    )
     assert isinstance(settled, NotRestorable) and "answered 500" in settled.reason
 
 
@@ -349,3 +363,85 @@ async def test_an_agent_without_a_report_endpoint_is_restored_unverified_and_say
     assert not restored.verified
     assert restored.unverified is not None and "no report endpoint" in restored.unverified
     assert [s.step for s in restored.steps] == [RestoreStep.RESTORE]
+
+
+async def test_a_busy_command_holds_the_checkpoint_until_it_says_idle(tmp_path: Path) -> None:
+    """The proxy and the report say nothing is happening; the agent's own `busy` says a job is still running (a
+    database write on this machine the proxy never sees). The checkpoint waits for it, and is then confirmed."""
+    flag = tmp_path / "busy"
+    flag.write_text("1")
+    busy = [sys.executable, "-c", f"import pathlib, sys; sys.exit(0 if pathlib.Path({str(flag)!r}).exists() else 1)"]
+
+    async def finish() -> None:
+        await asyncio.sleep(0.4)
+        flag.unlink()
+
+    began = time.monotonic()
+    background = asyncio.create_task(finish())
+    settled = await settle(
+        hooks(quiet=timedelta(seconds=0.05), busy=busy), Calls(), Answers(IDLE), None, directory=tmp_path
+    )
+    await background
+
+    assert settled == Settled(report=IDLE)
+    assert time.monotonic() - began >= 0.4
+
+
+async def test_a_busy_command_still_busy_at_the_limit_is_not_restorable(tmp_path: Path) -> None:
+    busy = [sys.executable, "-c", "print('job 4 running'); raise SystemExit(0)"]
+    settled = await settle(
+        hooks(quiet=timedelta(0), settle_limit=timedelta(seconds=0.5), busy=busy),
+        Calls(),
+        Answers(IDLE),
+        None,
+        directory=tmp_path,
+    )
+    assert isinstance(settled, NotRestorable)
+    assert "busy command still said it was busy" in settled.reason and "job 4 running" in settled.reason
+
+
+async def test_a_call_awaiting_its_answer_holds_the_checkpoint() -> None:
+    """A request sent on (a model call on a tunnel already open) and not yet answered: no new call is seen while
+    it waits, and the checkpoint is held until the answer comes."""
+    calls = Calls()
+    calls.open.append("a request on the open tunnel to model.example")
+
+    async def answered() -> None:
+        await asyncio.sleep(0.4)
+        calls.open.clear()
+
+    began = time.monotonic()
+    background = asyncio.create_task(answered())
+    settled = await settle(hooks(quiet=timedelta(seconds=0.05)), calls, Answers(IDLE), None, directory=UNUSED)
+    await background
+
+    assert isinstance(settled, Settled)
+    assert time.monotonic() - began >= 0.4
+
+
+async def test_a_call_still_awaiting_its_answer_at_the_limit_is_not_restorable_naming_it() -> None:
+    calls = Calls()
+    calls.open.append("a request on the open tunnel to model.example")
+    settled = await settle(
+        hooks(quiet=timedelta(0), settle_limit=timedelta(seconds=0.3)), calls, Answers(IDLE), None, directory=UNUSED
+    )
+    assert isinstance(settled, NotRestorable)
+    assert "a request on the open tunnel to model.example" in settled.reason
+
+
+async def test_the_report_kept_is_the_one_after_the_busy_command_says_idle(tmp_path: Path) -> None:
+    """The report says IDLE while a job still runs; the job ends and changes it to DONE before the busy command
+    reports idle. Before, the stale IDLE was kept, and a run whose agent had finished was woken again a day later."""
+    done = AgentReport(status=AgentStatus.DONE)
+    flag = tmp_path / "busy"
+    flag.write_text("1")
+    answers = Answers(IDLE, IDLE, done)
+    busy = [
+        sys.executable,
+        "-c",
+        f"import pathlib, sys; f = pathlib.Path({str(flag)!r}); e = f.exists(); f.unlink(missing_ok=True); sys.exit(0 if e else 1)",
+    ]
+
+    settled = await settle(hooks(quiet=timedelta(0), busy=busy), Calls(), answers, None, directory=tmp_path)
+
+    assert settled == Settled(report=done)

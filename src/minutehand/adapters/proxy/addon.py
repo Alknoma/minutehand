@@ -26,9 +26,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import unquote
 
-from mitmproxy import http, tls
+from mitmproxy import http, tcp, tls
 from mitmproxy.addons import asgiapp
 from mitmproxy.net import encoding
+from mitmproxy.proxy import layer, layers
 
 from minutehand.adapters.proxy import capture, credentials, redact
 from minutehand.adapters.proxy.capture import Capturing, Declaration
@@ -132,15 +133,58 @@ class ProxyAddon:
         self._streams: dict[str, list[bytes]] = {}
         self._recorded: set[str] = set()
         self.last_seen: SeenCall | None = None
+        # Calls sent on to a real host and not answered yet, by flow id; tunnels by flow id, with whether their
+        # last bytes went from the agent.
+        self._sent_on: dict[str, str] = {}
+        self._tunnels: dict[str, tuple[str, bool]] = {}
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
-        can wait until the agent has been quiet. A request on a tunnelled connection that is already open is
-        never seen: the proxy does not read inside a tunnel."""
+        can wait until the agent has been quiet. A tunnel the proxy does not open is seen as its bytes move."""
         self.last_seen = SeenCall(at=time.monotonic(), what=what)
+
+    def waiting(self) -> list[str]:
+        """What the agent sent and has not had answered: a call sent on to a real host, and a tunnel whose last
+        bytes went from the agent to the host (a request on it, unanswered as far as bytes can tell)."""
+        sent = list(self._sent_on.values())
+        tunnels = [f"a request on the open tunnel to {host}" for host, asked in self._tunnels.values() if asked]
+        return sent + tunnels
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
         self._seen(f"CONNECT {flow.request.pretty_host}:{flow.request.port}")
+
+    def next_layer(self, nextlayer: layer.NextLayer) -> None:
+        """A tunnel to a model API the run neither edits nor records is relayed as bytes, never decrypted, as a
+        TCP flow rather than an ignored connection, so the bytes it carries are seen (`tcp_message`): a request
+        on a tunnel that was already open is activity like any other call. mitmproxy's own NextLayer addon has
+        chosen first; this replaces its choice for those hosts only."""
+        context = nextlayer.context
+        address = context.server.address
+        if context.client.transport_protocol != "tcp" or address is None:
+            return
+        if not any(isinstance(lay, layers.HttpLayer) for lay in context.layers):
+            return  # not the inside of a CONNECT
+        if isinstance(nextlayer.layer, layers.TCPLayer) or self.policy(str(address[0])) is not HostPolicy.TUNNEL:
+            return
+        nextlayer.layer = layers.TCPLayer(context)
+
+    def tcp_start(self, flow: tcp.TCPFlow) -> None:
+        host = str(flow.server_conn.address[0]) if flow.server_conn.address else "?"
+        self._seen(f"a new tunnelled connection to {host}")
+        self._tunnels[flow.id] = (host, False)
+
+    def tcp_message(self, flow: tcp.TCPFlow) -> None:
+        message = flow.messages[-1]
+        host = self._tunnels[flow.id][0] if flow.id in self._tunnels else "?"
+        self._tunnels[flow.id] = (host, message.from_client)
+        self._seen(f"bytes {'to' if message.from_client else 'from'} {host} on an open tunnel")
+        del flow.messages[:-1]  # bytes are relayed, not kept: a long-lived tunnel would grow without end
+
+    def tcp_end(self, flow: tcp.TCPFlow) -> None:
+        self._tunnels.pop(flow.id, None)
+
+    def tcp_error(self, flow: tcp.TCPFlow) -> None:
+        self._tunnels.pop(flow.id, None)
 
     def mount(
         self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
@@ -176,9 +220,11 @@ class ProxyAddon:
         if self.record_model_calls and policy in (HostPolicy.EDIT, HostPolicy.RECORD):
             self._recorded.add(flow.id)
         if policy is HostPolicy.EDIT:
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             self._edit(flow, host)
             return
         if policy not in (HostPolicy.ANSWER, HostPolicy.REFUSE):
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
         manifest = self.routing.claimant(host)
@@ -231,6 +277,7 @@ class ProxyAddon:
         response.stream = tee
 
     def response(self, flow: http.HTTPFlow) -> None:
+        self._sent_on.pop(flow.id, None)
         if flow.id in self._passing:
             self._passed(flow, self._passing.pop(flow.id))
             return
@@ -241,7 +288,7 @@ class ProxyAddon:
         request, response = flow.request, flow.response
         assert response is not None
         if streamed is None:
-            body = response.get_text(strict=False) or ""
+            body = (response.get_content(strict=False) or b"").decode("utf-8", errors="replace")
         else:
             raw = b"".join(streamed)
             coding = _first_header(response, "content-encoding")
@@ -251,7 +298,7 @@ class ProxyAddon:
             host=request.pretty_host,
             path=request.path,
             status=response.status_code,
-            request_body=request.get_text(strict=False) or "",
+            request_body=(request.get_content(strict=False) or b"").decode("utf-8", errors="replace"),
             response_body=body,
             response_type=_first_header(response, "content-type") or "",
             traceparent=_first_header(request, TRACEPARENT),
@@ -303,17 +350,21 @@ class ProxyAddon:
     ) -> Exchange:
         request, response = flow.request, flow.response
         assert response is not None
+        asked, asked_bytes = redact.kept(
+            request.get_content(strict=False) or b"", _first_header(request, "content-type") or ""
+        )
+        answered, answered_bytes = redact.kept(
+            response.get_content(strict=False) or b"", _first_header(response, "content-type") or ""
+        )
         exchange = Exchange(
             method=request.method,
             host=host,
             path=redact.path(path),
             status=response.status_code,
-            request_body=redact.body(
-                request.get_text(strict=False) or None, _first_header(request, "content-type") or ""
-            ),
-            response_body=redact.body(
-                response.get_text(strict=False) or None, _first_header(response, "content-type") or ""
-            ),
+            request_body=asked,
+            response_body=answered,
+            request_bytes=asked_bytes,
+            response_bytes=answered_bytes,
             traceparent=_first_header(request, TRACEPARENT),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
@@ -330,6 +381,7 @@ class ProxyAddon:
         """Answer a call to a host no provider claims as its world declares, or, undeclared, pass it through."""
         if declaration is None:
             self._passing[flow.id] = _Passing(world, None, CaptureMode.DISCOVERED, None)
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         if isinstance(declaration, Acknowledge):
             await self._acknowledge(flow, host, world, declaration)
@@ -338,6 +390,7 @@ class ProxyAddon:
         plan = world.capturing.replaying[declaration.host] if declaration.host in world.capturing.replaying else None
         if plan is None:
             self._passing[flow.id] = _Passing(world, declaration, mode, None)
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
         whole = capture.keep(
@@ -361,33 +414,40 @@ class ProxyAddon:
             headers = {REPLAYED_HEADER: plan.recordings.source}
             if recorded.captured.response.content_type is not None:
                 headers["content-type"] = recorded.captured.response.content_type
-            flow.response = http.Response.make(recorded.status, (recorded.response_body or "").encode("utf-8"), headers)
+            answer = recorded.response_bytes or (recorded.response_body or "").encode("utf-8")
+            flow.response = http.Response.make(recorded.status, answer, headers)
             await self._keep(
                 flow, host, world, declaration, mode, AnsweredBy.RECORDING, replayed_from=plan.recordings.source
             )
             return
         if plan.on_miss is OnMiss.PASS_THROUGH:
             self._passing[flow.id] = _Passing(world, declaration, mode, f"not replayed: {why}")
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
 
     async def _acknowledge(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Acknowledge) -> None:
-        """Answer as declared; with a message reading, the send is also a message from the agent to a person."""
+        """Answer as declared, with an id made for this call in place of `{message_id}`; with a message reading,
+        the send is also a message from the agent to a person."""
         request = flow.request
-        answer = capture.canned(declaration, request.method, request.path)
-        flow.response = http.Response.make(answer.status, answer.body, answer.headers)
         reading = declaration.message
-        if reading is None:
-            await self._keep(flow, host, world, declaration, CaptureMode.ACKNOWLEDGE, AnsweredBy.DECLARATION)
-            return
-        content_type = _first_header(request, "content-type")
-        whole = capture.keep(
-            request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=declaration.redact
-        )
-        read = capture.read_message(reading, whole.text, content_type, world.capturing.people)
         async with world.lock:
             first = world.store.head() + 1
+            answer = capture.canned(
+                declaration, request.method, request.path, message_id=message_id(declaration, first)
+            )
+            flow.response = http.Response.make(answer.status, answer.body, answer.headers)
+            if reading is None:
+                await self._keep(
+                    flow, host, world, declaration, CaptureMode.ACKNOWLEDGE, AnsweredBy.DECLARATION, locked=True
+                )
+                return
+            content_type = _first_header(request, "content-type")
+            whole = capture.keep(
+                request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=declaration.redact
+            )
+            read = capture.read_message(reading, whole.text, content_type, world.capturing.people)
             if read.unread is None:
                 self._message(world, declaration, read, first)
             await self._keep(
@@ -406,7 +466,8 @@ class ProxyAddon:
     @staticmethod
     def _message(world: Mounted, declaration: Acknowledge, read: capture.Read, seq: int) -> None:
         """The send as a world event: a message from the agent to each person it reached, as their email, and to
-        each address that reaches nobody, as written. Nobody can answer it where it went."""
+        each address that reaches nobody, as written. Its people can answer it when the declaration says how an
+        answer reaches the agent (`replies`)."""
         by_key = {p.key: p for p in world.capturing.people}
         emails = [by_key[r.person].email if r.person is not None else r.address for r in read.recipients]
         channel = "to:" + ",".join(sorted({r.address.lower() for r in read.recipients}))
@@ -422,7 +483,9 @@ class ProxyAddon:
                 actor=Actor.AGENT,
                 body=body,
                 parent=channel,
-                after=MessageSnapshot(text=text, channel=channel, recipient_emails=emails, answerable=False),
+                after=MessageSnapshot(
+                    text=text, channel=channel, recipient_emails=emails, answerable=declaration.replies is not None
+                ),
             )
         )
 
@@ -471,6 +534,7 @@ class ProxyAddon:
 
     def error(self, flow: http.HTTPFlow) -> None:
         """A captured call whose real host could not be reached or broke off: kept, saying so."""
+        self._sent_on.pop(flow.id, None)
         passing = self._passing.pop(flow.id, None)
         if passing is None:
             return
@@ -571,7 +635,7 @@ class ProxyAddon:
         answered = capture.keep(answer, _first_header(response, "content-type"), limit=limit, paths=paths)
         if whole_size is not None and whole_size > len(answer):
             answered = capture.KeptBody(
-                None, answered.body.model_copy(update={"size": whole_size, "kept": BodyKept.BINARY})
+                None, answered.body.model_copy(update={"size": whole_size, "kept": BodyKept.BINARY}), None
             )
         keys = capture.query_keys(declaration) if declaration is not None else redact.CAPTURED_QUERY_KEYS
         started = datetime.fromtimestamp(request.timestamp_start, UTC)
@@ -583,6 +647,8 @@ class ProxyAddon:
             status=response.status_code,
             request_body=asked.text,
             response_body=answered.text,
+            request_bytes=asked.raw,
+            response_bytes=answered.raw,
             traceparent=_first_header(request, TRACEPARENT),
             captured=Captured(
                 mode=mode,
@@ -603,6 +669,11 @@ class ProxyAddon:
         world.store.attach(exchange, first_seq=first if first is not None else head + 1, last_seq=head)
         self.worlds.answered(world, exchange, [])
         return exchange
+
+
+def message_id(declaration: Acknowledge, seq: int) -> str:
+    """The id an acknowledged send is answered with: its declaration's name and the seq its message takes."""
+    return f"{declaration.key}-{seq}"
 
 
 def _path_decoded(app: ASGIApp) -> ASGIApp:

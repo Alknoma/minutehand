@@ -255,3 +255,28 @@ async def test_a_mounted_run_records_into_its_own_store(
         async with client(proxy, proxy.ca_cert) as http:
             await http.post("https://acme.ledger.test/api/v2/entries", json={"text": "filed"})
     assert store.events() == [] and len(other.events()) == 1
+
+
+TALLY_HOST = "tally.test"
+FILE = (
+    b"PK\x03\x04\x14\x00\x06\x00" + bytes(range(256)) * 4
+)  # what tally's /file answers; importing it would load tally
+MISLABELLED = b'{"name": "Ren\xe9e", "bad": "\xff\xfe"}'
+
+
+@pytest.mark.parametrize("path", ["/file", "/mislabel"], ids=["a .docx download", "json invalid in its charset"])
+async def test_a_call_answered_with_bytes_that_are_not_text_is_recorded_with_exactly_those_bytes(
+    path: str, registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path
+) -> None:
+    """A provider's answer that is not UTF-8 text reached the agent and was missing from the run: its body, read with
+    lone surrogates, could not be serialised. Every call is recorded, and these bytes read back as they crossed."""
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
+        async with client(proxy, proxy.ca_cert) as http:
+            answered = await http.get(f"https://{TALLY_HOST}{path}")
+            after = await http.get(f"https://{TALLY_HOST}/")
+
+    assert answered.status_code == 200 and after.status_code == 200
+    first, second = store.calls()
+    assert first.exchange.path == path and first.exchange.response_body is None
+    assert first.exchange.response_bytes == answered.content == (FILE if path == "/file" else MISLABELLED)
+    assert second.exchange.response_body is not None and second.exchange.response_bytes is None

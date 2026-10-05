@@ -19,10 +19,13 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from pydantic import JsonValue
+
 from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.hosts import HostPattern
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.domain.outbound import (
+    MESSAGE_ID,
     Acknowledge,
     Answer,
     HtmlAt,
@@ -208,24 +211,34 @@ def digest(text: str) -> str:
 class KeptBody:
     text: str | None
     body: Body
+    raw: bytes | None = None
+    """The bytes themselves, when the body is not UTF-8 text and fits the limit."""
 
 
 def keep(raw: bytes, content_type: str | None, *, limit: int, paths: Sequence[str]) -> KeptBody:
-    """What the record holds of a body: text or JSON redacted and cut at `limit` bytes; anything else its length,
-    type and hash only."""
+    """What the record holds of a body: UTF-8 text or JSON redacted and cut at `limit` bytes; any other body (binary,
+    or text not valid in UTF-8) its bytes exactly, when they fit `limit`, else its length, type and hash only."""
     if not raw:
         return KeptBody(None, Body(content_type=content_type, size=0, kept=BodyKept.EMPTY, sha256=digest("")))
-    if not is_text(content_type, raw):
+    decoded: str | None = None
+    if is_text(content_type, raw):
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            decoded = None
+    if decoded is None:
+        fits = len(raw) <= limit
         return KeptBody(
             None,
             Body(
                 content_type=content_type,
                 size=len(raw),
-                kept=BodyKept.BINARY,
+                kept=BodyKept.BYTES if fits else BodyKept.BINARY,
                 sha256=hashlib.sha256(raw).hexdigest(),
             ),
+            raw if fits else None,
         )
-    clean = redacted(raw.decode("utf-8", errors="replace"), content_type, paths)
+    clean = redacted(decoded, content_type, paths)
     encoded = clean.encode("utf-8")
     whole = len(encoded) <= limit
     text = clean if whole else encoded[:limit].decode("utf-8", errors="ignore")
@@ -264,8 +277,9 @@ class Canned:
     body: bytes
 
 
-def canned(declaration: Acknowledge, method: str, path: str) -> Canned:
-    """The answer the first matching route declares, else the host's own."""
+def canned(declaration: Acknowledge, method: str, path: str, *, message_id: str) -> Canned:
+    """The answer the first matching route declares, else the host's own, with each `{message_id}` in its strings
+    replaced by `message_id`."""
     route_path = urlsplit(path).path
     answer: Answer = next(
         (
@@ -276,12 +290,27 @@ def canned(declaration: Acknowledge, method: str, path: str) -> Canned:
         declaration.answer,
     )
     if answer.text is not None:
-        body, kind = answer.text.encode("utf-8"), TEXT
+        body, kind = answer.text.replace(MESSAGE_ID, message_id).encode("utf-8"), TEXT
     else:
-        body, kind = json.dumps({} if answer.json_body is None else answer.json_body).encode("utf-8"), JSON
+        filled = fill({} if answer.json_body is None else answer.json_body, {MESSAGE_ID: message_id})
+        body, kind = json.dumps(filled).encode("utf-8"), JSON
     named = {k.lower() for k in answer.headers}
     headers = dict(answer.headers) if "content-type" in named else {**answer.headers, "content-type": kind}
     return Canned(status=answer.status, headers=headers, body=body)
+
+
+def fill(template: JsonValue, values: Mapping[str, str]) -> JsonValue:
+    """`template` with every placeholder in `values` replaced inside its strings; the structure is kept, so a
+    value is never parsed as JSON and needs no escaping."""
+    if isinstance(template, str):
+        for placeholder, value in values.items():
+            template = template.replace(placeholder, value)
+        return template
+    if isinstance(template, list):
+        return [fill(v, values) for v in template]
+    if isinstance(template, dict):
+        return {k: fill(v, values) for k, v in template.items()}
+    return template
 
 
 # -- a send read as a message -----------------------------------------------------------------------------------
@@ -489,7 +518,7 @@ class Recordings:
         captured = call.exchange.captured
         assert captured is not None
         request = captured.request
-        if request.kept in (BodyKept.BINARY, BodyKept.EMPTY) or not ignore:
+        if request.kept in (BodyKept.BINARY, BodyKept.BYTES, BodyKept.EMPTY) or not ignore:
             return request.sha256
         if request.kept is BodyKept.TRUNCATED or call.exchange.request_body is None:
             return None

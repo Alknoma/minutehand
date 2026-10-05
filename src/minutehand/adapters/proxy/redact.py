@@ -95,3 +95,15 @@ def body(text: str | None, content_type: str) -> str | None:
         redacted = _walk(parsed)
         return text if redacted == parsed else json.dumps(redacted, ensure_ascii=False)
     return text
+
+
+def kept(raw: bytes, content_type: str) -> tuple[str | None, bytes | None]:
+    """A body as the record keeps it: UTF-8 text with its credentials redacted, or, when it is not UTF-8 text (a
+    file, an image, JSON in another encoding), exactly its bytes. No body is (None, None)."""
+    if not raw:
+        return None, None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, raw
+    return body(text, content_type), None

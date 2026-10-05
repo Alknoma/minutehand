@@ -7,6 +7,7 @@ from the world and schedule what the world owes back: people's replies and ticke
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -31,9 +32,9 @@ from minutehand.application.checkpoint import (
 )
 from minutehand.application.outbound import outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
-from minutehand.application.restore import Traffic, settle
+from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import take_snapshot
+from minutehand.application.state_hooks import take_snapshot, wake_dir
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import (
     AgentReport,
@@ -51,7 +52,7 @@ from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
 from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
-from minutehand.ports.agent import AgentDriver, Reports
+from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
@@ -59,6 +60,7 @@ from minutehand.ports.provider import (
     ASGIApp,
     BooksWakes,
     ChangesDocuments,
+    ConfirmsDelivery,
     DeletesTickets,
     EditsTickets,
     HoldsTickets,
@@ -71,6 +73,9 @@ from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 _NOT_CHANGES = frozenset({Operation.READ, Operation.SEARCH})
+
+TAKEN_EVERY = 0.05
+"""Seconds between two asks whether the agent has taken a booking's delivery."""
 
 _PRIORITY = [WakeReason.PERSON_REPLIED, WakeReason.DIRECTION, WakeReason.DUE, WakeReason.TICK]
 """When one jump fires several things, the wake carries the reason that matters most to the agent."""
@@ -188,6 +193,7 @@ class Orchestrator:
         forked_at: int | None = None,
         prior_wakes: Sequence[WakeRecord] = (),
         traffic: Traffic | None = None,
+        channels: Mapping[ProviderKey, TakesReplies] | None = None,
     ) -> None:
         if agent.state is not None and state_dir is None:
             raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
@@ -222,6 +228,7 @@ class Orchestrator:
         self._parent_run = parent_run
         self._forked_at = forked_at
         self._traffic = traffic
+        self._channels = dict(channels or {})
         self._mounted = False
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
@@ -424,6 +431,7 @@ class Orchestrator:
             async def fire(due: list[Pending] = fired) -> None:
                 await self._fire(due)
                 await self._notify(self._watched(due))
+                await self._taken(due)
 
             stop = await self._wake(wake, reason, fire, requests, settle)
             if stop is not None:
@@ -465,7 +473,9 @@ class Orchestrator:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
-                if reply.press is not None:
+                if provider in self._channels:
+                    await self._channels[provider].deliver(reply, self._store, self._clock)
+                elif reply.press is not None:
                     await self._interactions(provider).press(
                         reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
                     )
@@ -506,6 +516,22 @@ class Orchestrator:
             self._clock,
             secret=self._secret(happening.provider),
         )
+
+    async def _taken(self, fired: list[Pending]) -> None:
+        """Wait until the agent has taken each booking just delivered from its own queue, when the scheduler can
+        tell, or `Booked.take_limit` passes: an agent that reports IDLE before its poll has run would otherwise be
+        moved past the wake its booking was for."""
+        bookings = [p for p in fired if isinstance(p, PendingBooking)]
+        limit = next((w.take_limit for w in self._agent.wakes if isinstance(w, Booked)), None)
+        if not bookings or limit is None:
+            return
+        give_up = time.monotonic() + limit.total_seconds()
+        for booking in bookings:
+            scheduler = self._services.schedulers[booking.provider]
+            if not isinstance(scheduler, ConfirmsDelivery):
+                continue
+            while not scheduler.taken(booking.ref, self._store) and time.monotonic() < give_up:
+                await asyncio.sleep(TAKEN_EVERY)
 
     def _unheard(self, pending: Pending) -> bool:
         """A pending happening the agent is not told of as it lands: one on a ticket or a document, which the agent
@@ -605,6 +631,12 @@ class Orchestrator:
         except AgentFailed as e:
             failed = True
             self._failure = str(e)
+        settled = None if failed else await self._settled(wake)
+        if isinstance(settled, Settled) and settled.report is not None and isinstance(self._reach.main, Reports):
+            # The wake is over when the agent's background work is: what it reports now replaces what it said when
+            # its driver first answered, and what it wrote meanwhile belongs to this wake.
+            commitments_changed = self._adopt(settled.report) or commitments_changed
+            done = done or settled.report.status is AgentStatus.DONE
         new = self._record_new()
         if not failed:
             await self._schedule(new)
@@ -623,7 +655,7 @@ class Orchestrator:
         if failed:
             return StopReason.AGENT_FAILED
         try:
-            await self._checkpoint()
+            await self._checkpoint(settled)
         except AgentFailed as e:
             self._failure = str(e)
             return StopReason.AGENT_FAILED
@@ -736,10 +768,11 @@ class Orchestrator:
         reply = await self._replier.decide(person, asked, history, self._clock)
         if reply is None:
             return
-        self._pushes(reply.in_reply_to.provider)
-        if reply.press is not None:
-            self._interactions(reply.in_reply_to.provider)
-        self._inbound(reply.in_reply_to.provider)
+        if reply.in_reply_to.provider not in self._channels:
+            self._pushes(reply.in_reply_to.provider)
+            if reply.press is not None:
+                self._interactions(reply.in_reply_to.provider)
+            self._inbound(reply.in_reply_to.provider)
         self._store.remember(reply)
         position = len(self._replies)
         self._replies.append(reply)
@@ -772,9 +805,25 @@ class Orchestrator:
             )
         )
 
-    async def _checkpoint(self) -> None:
+    async def _settled(self, wake: int) -> Settled | NotRestorable | None:
+        """Wait for the agent's background work to end, as a checkpoint does: None for an agent with no hooks."""
+        hooks = self._agent.state
+        if hooks is None:
+            return None
+        assert self._state_dir is not None and self._traffic is not None
+        main = self._reach.main
+        return await settle(
+            hooks,
+            self._traffic,
+            main if isinstance(main, Reports) else None,
+            self._last_report,
+            directory=wake_dir(self._state_dir, self._store.run_id, wake),
+        )
+
+    async def _checkpoint(self, settled: Settled | NotRestorable | None = None) -> None:
+        """`settled` is how the wake just played settled, when it has; otherwise the checkpoint settles it."""
         wake = self._clock.wake()
-        self._agent_state = await self._snapshot(wake)
+        self._agent_state = await self._snapshot(wake, settled)
         write_checkpoint(
             self._store,
             Checkpoint(
@@ -790,19 +839,38 @@ class Orchestrator:
         )
         self._record_new()
 
-    async def _snapshot(self, wake: int) -> AgentState:
+    async def _snapshot(self, wake: int, settled: Settled | NotRestorable | None) -> AgentState:
         """The agent's own state at the end of this wake: snapshotted once it has settled, or recorded as not
         restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
         hooks = self._agent.state
         if hooks is None:
             return NoHooks()
-        assert self._state_dir is not None and self._traffic is not None
-        main = self._reach.main
-        settled = await settle(hooks, self._traffic, main if isinstance(main, Reports) else None, self._last_report)
+        assert self._state_dir is not None
+        directory = wake_dir(self._state_dir, self._store.run_id, wake)
+        if settled is None:
+            settled = await self._settled(wake)
+        assert settled is not None
         if isinstance(settled, NotRestorable):
             return settled
+        fingerprint: str | None = None
+        if hooks.fingerprint is not None:
+            printed = await run_command(
+                RestoreStep.FINGERPRINT, hooks.fingerprint, directory, hooks.step_limit.total_seconds()
+            )
+            if printed.exit_code != 0:
+                return NotRestorable(
+                    reason=f"the agent's fingerprint command failed, so a restore here could not be verified: "
+                    f"{' '.join(printed.command)} exited {printed.exit_code}: {printed.output.strip()[-500:]}"
+                )
+            fingerprint = digest_of(printed.output)
         await take_snapshot(hooks, self._store, self._state_dir, wake)
-        return Restorable(snapshot_of=self._store.run_id, wake=wake, report=settled.report)
+        return Restorable(
+            snapshot_of=self._store.run_id,
+            wake=wake,
+            report=settled.report,
+            fingerprint=fingerprint,
+            unconfirmed=settled.unconfirmed,
+        )
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
 
@@ -923,9 +991,11 @@ async def run_scenario(
     state_dir: Path | None = None,
     signing: Mapping[ProviderKey, str] | None = None,
     traffic: Traffic | None = None,
+    channels: Mapping[ProviderKey, TakesReplies] | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
-    `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint."""
+    `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
+    `channels` delivers people's answers to the agent's captured sends."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -942,4 +1012,5 @@ async def run_scenario(
         state_dir=state_dir,
         signing=signing,
         traffic=traffic,
+        channels=channels,
     ).run()

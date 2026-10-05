@@ -97,6 +97,7 @@ class ReceivedSpan(Model):
 class SpanSource(StrEnum):
     RECEIVED = "received"  # the agent's own SDK exported it to the receiver
     WIRE = "wire"  # Minutehand recorded a model call it saw on the wire (`--record-model-calls`)
+    LOG = "log"  # a GenAI log event the agent exported (a prompt or an answer), kept as a child of its span
 
 
 class Placement(StrEnum):

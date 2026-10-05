@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import os
+import subprocess
 import sys
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
@@ -13,12 +14,17 @@ from pathlib import Path
 
 import httpx
 import pytest
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue, KeyValueList
+from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs, ScopeLogs
+from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Span
 
 from minutehand import session
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import Receiver
+from minutehand.application.model_calls import model_call
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.telemetry import (
     ArrayValue,
@@ -60,7 +66,7 @@ def handed_out(port: int) -> dict[str, str]:
     return {**own, **session.agent_environment(listen, 1, "/nowhere.pem", {}, telemetry_port=port)}
 
 
-async def export(mode: str, env: Mapping[str, str]) -> str:
+async def export(mode: str, env: Mapping[str, str], *, clean: bool = True) -> str:
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         str(EXPORTER),
@@ -71,7 +77,8 @@ async def export(mode: str, env: Mapping[str, str]) -> str:
     )
     out, err = await asyncio.wait_for(process.communicate(), 30)
     assert process.returncode == 0, err.decode()
-    assert b"Failed to export" not in err and b"Exception" not in err, err.decode()
+    if clean:
+        assert b"Failed to export" not in err and b"Exception" not in err, err.decode()
     return out.decode().strip()
 
 
@@ -224,3 +231,120 @@ async def test_a_destination_that_is_the_receiver_itself_is_not_forwarded_to(
         assert receiver.forwarding.destinations == ()
         await export("protobuf", handed_out(receiver.port))
     assert len(store.spans()) == 2
+
+
+async def test_a_grpc_exporter_built_in_code_is_received_on_the_same_port_and_placed_in_its_wake(
+    receiver: Receiver, store: SqliteStore, clock: RunClock
+) -> None:
+    """The stock gRPC exporter, constructed explicitly, reads the endpoint a run hands out and ignores its
+    protocol: it opens HTTP/2 to the receiver's one port. Before, that was answered by an HTTP/1.1 server and
+    nothing was kept."""
+    clock.jump(START.replace(day=26))
+    clock.begin_wake()
+
+    trace_id = await export("grpc", handed_out(receiver.port))
+
+    kept = store.spans(trace_id=trace_id)
+    assert [s.span.name for s in kept] == ["chat model-luna", "plan the wake"]
+    assert {(s.wake, s.source) for s in kept} == {(1, SpanSource.RECEIVED)}
+    assert kept[0].span.attribute("gen_ai.request.model") == StringValue(value="model-luna")
+    assert receiver.notices == []
+
+
+async def test_a_grpc_exporter_without_grpc_installed_is_said_once_and_not_left_silent(
+    store: SqliteStore, clock: RunClock
+) -> None:
+    async with Receiver(store, clock, grpc=False) as without:
+        await export("grpc", handed_out(without.port), clean=False)
+        await export("grpc", handed_out(without.port), clean=False)
+        notices = without.notices
+
+    assert len(notices) == 1 and "install `minutehand[grpc]`" in notices[0], notices
+    assert store.spans() == []
+
+
+async def test_a_genai_log_event_is_kept_as_a_child_of_its_span_and_shows_what_the_model_was_asked(
+    receiver: Receiver, store: SqliteStore
+) -> None:
+    """An instrumentation on the older GenAI event conventions puts the prompt and the answer in log records, and
+    none on the span: the call's evidence reads them from there. A log record of anything else is dropped."""
+    trace_id, call = bytes.fromhex("5" * 32), bytes.fromhex("6" * 16)
+    span = Span(
+        trace_id=trace_id,
+        span_id=call,
+        name="chat model-luna",
+        start_time_unix_nano=1_790_000_000_000_000_000,
+        end_time_unix_nano=1_790_000_001_000_000_000,
+        attributes=[KeyValue(key="gen_ai.operation.name", value=AnyValue(string_value="chat"))],
+    )
+    traces = ExportTraceServiceRequest(resource_spans=[ResourceSpans(scope_spans=[ScopeSpans(spans=[span])])])
+
+    def event(name: str, body: str) -> LogRecord:
+        return LogRecord(
+            time_unix_nano=1_790_000_000_500_000_000,
+            trace_id=trace_id,
+            span_id=call,
+            event_name=name,
+            body=AnyValue(
+                kvlist_value=KeyValueList(values=[KeyValue(key="content", value=AnyValue(string_value=body))])
+            ),
+            attributes=[KeyValue(key="gen_ai.system", value=AnyValue(string_value="openai"))],
+        )
+
+    logs = ExportLogsServiceRequest(
+        resource_logs=[
+            ResourceLogs(
+                scope_logs=[
+                    ScopeLogs(
+                        log_records=[
+                            event("gen_ai.user.message", "Is Lakeside Hall free on Friday?"),
+                            event("gen_ai.choice", "Ask Rosa."),
+                            LogRecord(time_unix_nano=1, trace_id=trace_id, span_id=call, event_name="http.request"),
+                        ]
+                    )
+                ]
+            )
+        ]
+    )
+    async with httpx.AsyncClient() as client:
+        for path, message in (("traces", traces), ("logs", logs)):
+            answered = await client.post(
+                f"http://127.0.0.1:{receiver.port}/v1/{path}",
+                content=message.SerializeToString(),
+                headers={"content-type": "application/x-protobuf"},
+            )
+            assert answered.status_code == 200
+
+    kept = store.spans(trace_id=trace_id.hex())
+    logged = [s for s in kept if s.source is SpanSource.LOG]
+    assert [s.span.name for s in logged] == ["gen_ai.user.message", "gen_ai.choice"]
+    assert all(s.span.parent_span_id == call.hex() for s in logged)
+    found = model_call(next(s for s in kept if s.source is SpanSource.RECEIVED), kept)
+    assert found.input_messages is not None and "Is Lakeside Hall free on Friday?" in found.input_messages
+    assert found.output_messages is not None and "Ask Rosa." in found.output_messages
+
+
+def test_receiving_loads_no_grpc_until_a_grpc_exporter_connects(tmp_path: Path) -> None:
+    """Once gRPC is loaded, its fork handlers write to stderr at every fork, and block when nobody reads it: a
+    60-day run hung at wake 93 starting a hook. A run whose agent exports over HTTP never loads it."""
+    script = """
+import asyncio, sys
+from datetime import UTC, datetime
+from pathlib import Path
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.adapters.telemetry.receiver import Receiver
+from minutehand.application.run_clock import RunClock
+
+async def main() -> None:
+    clock = RunClock(datetime(2026, 8, 24, tzinfo=UTC))
+    async with Receiver(SqliteStore(Path(sys.argv[1]), "run", clock), clock):
+        pass
+    print("grpc" in sys.modules)
+
+asyncio.run(main())
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "world.db")], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "False"

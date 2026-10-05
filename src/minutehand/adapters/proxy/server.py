@@ -109,6 +109,11 @@ class Proxy:
         """`application.restore.Traffic`: the agent's latest outbound call this proxy saw."""
         return self.addon.last_seen
 
+    def waiting(self) -> list[str]:
+        """`application.restore.Traffic`: calls sent on and not answered yet, and tunnels whose last bytes went
+        from the agent."""
+        return self.addon.waiting()
+
     async def __aenter__(self) -> Proxy:
         if _running:
             raise ProxyRunning(

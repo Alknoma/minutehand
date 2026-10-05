@@ -24,11 +24,13 @@ A path names a value in a request body read as JSON (or a form, whose fields are
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, JsonValue, model_validator
 
+from minutehand.domain.people import SigningSecret
 from minutehand.domain.scenario import Model, ProviderKey
 
 BODY_LIMIT = 1024 * 1024
@@ -40,8 +42,14 @@ BodyPath = Annotated[
 """A value in a JSON or form body: dotted keys, `[n]` for one list item, `[*]` for every item."""
 
 
+MESSAGE_ID = "{message_id}"
+"""In a string of an acknowledged answer, replaced by an id made for each call: the id a real email API hands
+back for the message it queued, which a reply then names (`ReplyDelivery.thread`)."""
+
+
 class Answer(Model):
-    """What an acknowledged call is answered with. With neither body, the JSON `{}`."""
+    """What an acknowledged call is answered with. With neither body, the JSON `{}`. Any `{message_id}` in its
+    strings is replaced by an id made for that call."""
 
     status: int = Field(default=200, ge=100, le=599)
     headers: dict[str, str] = Field(default={}, description="Sent as given; content-type follows the body")
@@ -87,6 +95,65 @@ class MessageReading(Model):
     handles: dict[str, str] = Field(default={}, description="A recipient value -> the Person.key it reaches")
 
 
+REPLY_FIELDS = ("reply_id", "from", "from_name", "to", "subject", "text", "in_reply_to", "sent_at")
+"""What a reply's body template may name, each as `{name}` inside a string: the reply's own id, who sends it (their
+email and name), who it goes to (the address the agent sent from, else the first it wrote to), the subject, the
+text, the id of the message it answers (`thread`), and the simulated moment it is sent (ISO 8601)."""
+
+
+class ReplySigning(Model):
+    """An HMAC-SHA256 over the delivered body, in a header: `format` holds `{hex}` or `{base64}` for the digest,
+    and may hold `{timestamp}` (the simulated moment, in Unix seconds), which then also leads what is signed as
+    `<timestamp>.<body>`, as several webhook senders do."""
+
+    secret: SigningSecret
+    header: str = Field(min_length=1)
+    format: str = Field(default="sha256={hex}", pattern=r"\{(hex|base64)\}")
+    timestamp_header: str | None = Field(
+        default=None, description="A header that carries `{timestamp}` by itself, when the sender sends one"
+    )
+
+
+class ReplyDelivery(Model):
+    """How a person's answer to a captured send reaches the agent: the request its own inbound webhook expects.
+
+    `body` is the JSON (or, with `form`, the form fields) the agent's endpoint reads, as structure; each string in
+    it may name the reply's fields as `{name}` (`REPLY_FIELDS`). `thread` is a path into the acknowledged send's
+    own answer (its `{message_id}`, as the email API answered it), giving `{in_reply_to}`; without it,
+    `{in_reply_to}` is the id of the message in the run."""
+
+    url: str = Field(min_length=1)
+    method: Literal["POST", "PUT"] = "POST"
+    headers: dict[str, str] = {}
+    body: JsonValue = Field(description="The body, as structure, with `{name}` placeholders in its strings")
+    form: bool = Field(default=False, description="Sent as application/x-www-form-urlencoded: `body` is flat")
+    thread: BodyPath | None = None
+    signing: ReplySigning | None = None
+
+    @model_validator(mode="after")
+    def _names_known_fields(self) -> Self:
+        named = set(_placeholders(self.body))
+        unknown = sorted(named - set(REPLY_FIELDS))
+        if unknown:
+            raise ValueError(f"a reply's body names {', '.join(unknown)}; it may name {', '.join(REPLY_FIELDS)}")
+        if self.form and not (isinstance(self.body, dict) and all(isinstance(v, str) for v in self.body.values())):
+            raise ValueError("a reply sent as a form has a flat body of strings")
+        return self
+
+
+def _placeholders(value: JsonValue) -> list[str]:
+    if isinstance(value, str):
+        return [m.group(1) for m in _PLACEHOLDER.finditer(value)]
+    if isinstance(value, list):
+        return [n for v in value for n in _placeholders(v)]
+    if isinstance(value, dict):
+        return [n for v in value.values() for n in _placeholders(v)]
+    return []
+
+
+_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+
+
 class _Declared(Model):
     host: str = Field(description="An exact lower-case host, or '*.' and a domain for any host under it")
     name: ProviderKey | None = Field(
@@ -116,6 +183,17 @@ class Acknowledge(_Declared):
     message: MessageReading | None = Field(
         default=None, description="When given, each call is also a message from the agent to a person"
     )
+    replies: ReplyDelivery | None = Field(
+        default=None,
+        description="When given, the people a send reaches can answer it: each answer is delivered to the agent "
+        "as declared, and a send to someone who will answer opens a wait like any other ask",
+    )
+
+    @model_validator(mode="after")
+    def _replies_need_a_reading(self) -> Self:
+        if self.replies is not None and self.message is None:
+            raise ValueError("a host whose sends are answered must say how a send is read (`message`)")
+        return self
 
 
 class InForks(StrEnum):

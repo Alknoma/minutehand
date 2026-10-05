@@ -23,6 +23,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
+from pydantic import ValidationError
+
 from minutehand.application.checkpoint import (
     Checkpoint,
     NoHooks,
@@ -43,7 +45,7 @@ from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonC
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
-from minutehand.ports.agent import Reports
+from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
@@ -80,9 +82,17 @@ def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
             if deadline_after is None:
                 raise RunRefused(f"the fork shifts the deadline of scenario {scenario.name}, which has none")
             deadline_after += override.by
-    return Scenario.model_validate(
-        {**scenario.model_dump(), "people": [p.model_dump() for p in people.values()], "deadline_after": deadline_after}
-    )
+    try:
+        return Scenario.model_validate(
+            {
+                **scenario.model_dump(),
+                "people": [p.model_dump() for p in people.values()],
+                "deadline_after": deadline_after,
+            }
+        )
+    except ValidationError as e:
+        problems = "; ".join(str(error["msg"]) for error in e.errors())
+        raise RunRefused(f"the fork's changes leave scenario {scenario.name} self-contradictory: {problems}") from e
 
 
 async def fork_run(
@@ -105,6 +115,7 @@ async def fork_run(
     signing: Mapping[ProviderKey, str] | None = None,
     own: OwnProgram | None = None,
     progress: Progress | None = None,
+    channels: Mapping[ProviderKey, TakesReplies] | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -163,6 +174,7 @@ async def fork_run(
                 forked_at=fork.at_seq,
                 prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],
                 traffic=traffic,
+                channels=channels,
             )
             orchestrator.mount()
             with materialised(
@@ -176,6 +188,7 @@ async def fork_run(
                     reports=reports,
                     own=own,
                     progress=progress,
+                    fingerprint=restorable.fingerprint,
                 )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)

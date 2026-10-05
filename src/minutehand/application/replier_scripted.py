@@ -70,6 +70,7 @@ class ScriptedReplier:
             text=scripted.said or (press.label if press is not None else ""),
             at=lands_at(self._scenario, person, asked, history, behaviour.delay),
             press=press,
+            patience=behaviour.delay.longest,
         )
 
 
