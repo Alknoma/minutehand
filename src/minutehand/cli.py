@@ -683,7 +683,8 @@ def _scorecard(card: Effectiveness) -> list[str]:
     lines = [
         f"expectations met: {card.expectations_met} of {card.expectations_total}",
         f"waits opened: {card.waits_opened}, still open at the end: {card.waits_open_at_end}",
-        f"follow-ups due: {card.follow_ups_due}, made: {card.follow_ups_made}, late: {card.follow_ups_late}",
+        f"follow-ups due: {card.follow_ups_due}, made: {card.follow_ups_made}, late: {card.follow_ups_late}, "
+        f"early: {card.follow_ups_early}",
         f"time the agent lost: {_span(card.time_lost)}",
         f"wakes: {card.wakes}, of which changed nothing: {card.idle_wakes}",
         f"messages to people: {card.messages_to_people}",

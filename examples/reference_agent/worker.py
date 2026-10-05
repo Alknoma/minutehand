@@ -18,7 +18,7 @@ REFERENCE_BEHAVIOUR is how it carries the work:
 
     diligent    follows up when its follow-up moment comes, once per moment (the default)
     forgetful   asks once and never comes back to it
-    nagging     follows up an hour before each moment the venue could still answer in, again and again
+    nagging     follows up every 12 hours, long before the venue's answer could be due, again and again
     liar        reports DONE as soon as it has asked, without waiting for or relaying any answer
     slow        diligent, but each job takes REFERENCE_SLOW_SECONDS of real work (default 3) before it starts
 
@@ -59,7 +59,8 @@ FOLLOW_UP_HOURS = os.environ.get("REFERENCE_FOLLOW_UP_HOURS")
 MAIL_KEY = os.environ.get("REFERENCE_MAIL_KEY", "SG.reference-mail-key")
 MODEL_KEY = os.environ.get("REFERENCE_MODEL_KEY", "sk-reference")
 SEARCH_KEY = os.environ.get("REFERENCE_SEARCH_KEY", "search-reference")
-NAG_BEFORE = timedelta(hours=1)
+NAG_EVERY = 12.0
+"""Hours between a nagging agent's follow-ups."""
 SYSTEM = (
     "You book venues for a small team. Answer with one JSON object and nothing else. "
     "Be brief and polite in every email you draft."
@@ -218,10 +219,7 @@ class Worker:
 
     def next_follow_up(self, last: str, hours: float) -> str:
         base = datetime.now(UTC).replace(microsecond=0) if REAL_CLOCK else datetime.fromisoformat(last)
-        moment = base + timedelta(hours=hours)
-        if BEHAVIOUR == "nagging":
-            moment -= NAG_BEFORE
-        return moment.isoformat()
+        return (base + timedelta(hours=NAG_EVERY if BEHAVIOUR == "nagging" else hours)).isoformat()
 
     def follow_up_if_due(self, now: str) -> None:
         due = self.store.fact("next_wake")

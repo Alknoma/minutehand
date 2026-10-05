@@ -15,10 +15,12 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
     waits = [o for o in view.obligations if o.kind is not ObligationKind.DATE]
     due = late = 0
     made: set[int] = set()
+    early: set[int] = set()
     lost = timedelta(0)
     slowest: timedelta | None = None
     for chased in chases(view, ended_at):
         made.update(chased.follow_ups)  # one message chasing two waits is one follow-up
+        early.update(chased.early)
         for expiry in chased.expiries:
             due += 1
             if not expiry.late:
@@ -40,6 +42,7 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
         follow_ups_due=due,
         follow_ups_made=len(made),
         follow_ups_late=late,
+        follow_ups_early=len(early),
         time_lost=lost,
         slowest_follow_up=slowest,
         reactions_due=len(reactions),
