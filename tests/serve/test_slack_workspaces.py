@@ -79,7 +79,7 @@ def test_two_worlds_with_their_own_teams_and_tokens_are_separate_when_hit_at_onc
         assert (a["auth"]["team_id"], a["auth"]["user_id"]) == ("TALPHA", "UALPHABOT")
         assert (b["auth"]["team_id"], b["auth"]["user_id"]) == ("TBETA", "UBETABOT")
         assert {u["team_id"] for u in a["users"]} == {"TALPHA"} and {u["team_id"] for u in b["users"]} == {"TBETA"}
-        assert not {u["id"] for u in a["users"]} & {u["id"] for u in b["users"]}
+        assert {u["id"] for u in a["users"]} & {u["id"] for u in b["users"]} == {"USLACKBOT"}
         assert a["channel"] != b["channel"]
         assert {m["text"].split()[0] for m in a["history"]} == {"xoxb-alpha-1"}
         assert {m["team"] for m in b["history"]} == {"TBETA"}
@@ -120,7 +120,8 @@ def test_one_agent_installed_in_two_workspaces_of_one_world(served: Served) -> N
             assert answer(one.auth_test())["team_id"] == "TONE" and answer(two.auth_test())["team_id"] == "TTWO"
             in_one = {u["name"]: u["id"] for u in answer(one.users_list())["members"]}
             in_two = {u["name"]: u["id"] for u in answer(two.users_list())["members"]}
-            assert set(in_one) == {"agent", "owen"} and set(in_two) == {"agent", "owen", "sofia"}
+            assert set(in_one) == {"agent", "owen", "slackbot"}
+            assert set(in_two) == {"agent", "owen", "sofia", "slackbot"}
             assert in_one["owen"] != in_two["owen"]
             with pytest.raises(SlackApiError) as elsewhere:
                 one.users_lookupByEmail(email="sofia@example.com")

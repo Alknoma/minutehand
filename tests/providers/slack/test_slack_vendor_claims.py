@@ -375,8 +375,8 @@ async def test_users_list_pages_by_cursor(slack: Intercepted) -> None:
 
     pages = await _every_page(lambda cursor: sdk.users_list(limit=3, cursor=cursor), "members")
 
-    assert [len(p) for p in pages] == [3, 1]
-    assert BOT_USER_ID in pages[0] + pages[1]
+    assert [len(p) for p in pages] == [3, 2]
+    assert BOT_USER_ID in pages[0] + pages[1] and pages[1][-1] == "USLACKBOT"
 
 
 async def test_conversations_members_pages_by_cursor(slack: Intercepted) -> None:
