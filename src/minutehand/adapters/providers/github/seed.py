@@ -19,6 +19,7 @@ import base64
 import binascii
 import hashlib
 import math
+import re
 from datetime import datetime, timedelta
 from itertools import pairwise
 from typing import ClassVar, Self
@@ -29,7 +30,7 @@ from minutehand.adapters.providers.github import wire
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Person, Scenario
+from minutehand.domain.scenario import Model, Person, Scenario
 from minutehand.ports.store import Store
 
 LOGIN = r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$"
@@ -196,22 +197,11 @@ class GitHubSeed(wire.Wire):
 
     @model_validator(mode="after")
     def _names_resolve(self) -> Self:
-        users = {u.login.lower() for u in self.users}
+        """What the seed can tell alone. Which users and owners exist is known only beside the scenario, whose people
+        may declare their GitHub accounts (`Person.accounts`): `seed()` refuses a name that is no account."""
         logins = [u.login.lower() for u in self.users] + [o.login.lower() for o in self.organizations]
         if len(logins) != len(set(logins)):
             raise ValueError("two accounts share a login")
-        accounts = set(logins)
-        named_users = [m for o in self.organizations for m in o.members]
-        named_users += [t.login for t in self.tokens]
-        named_users += [c.login for r in self.repositories for c in r.collaborators]
-        named_users += [c.author for r in self.repositories for c in r.commits]
-        named_users += [b.login for b in self.budgets if b.login is not None]
-        missing = sorted({n for n in named_users if n.lower() not in users})
-        if missing:
-            raise ValueError(f"no such user: {', '.join(missing)}")
-        owners = sorted({r.owner for r in self.repositories if r.owner.lower() not in accounts})
-        if owners:
-            raise ValueError(f"no such owner: {', '.join(owners)}")
         names = [f"{r.owner}/{r.name}".lower() for r in self.repositories]
         if len(names) != len(set(names)):
             raise ValueError("two repositories share a name")
@@ -230,6 +220,22 @@ class GitHubSeed(wire.Wire):
             raise ValueError("a budget is started twice")
         return self
 
+    def refuse_unknown(self, users: set[str]) -> None:
+        """Every user and owner the seed names is an account: one of `users` (its own and the people's, lower
+        case), or, for an owner, one of its organizations."""
+        named_users = [m for o in self.organizations for m in o.members]
+        named_users += [t.login for t in self.tokens]
+        named_users += [c.login for r in self.repositories for c in r.collaborators]
+        named_users += [c.author for r in self.repositories for c in r.commits]
+        named_users += [b.login for b in self.budgets if b.login is not None]
+        missing = sorted({n for n in named_users if n.lower() not in users})
+        if missing:
+            raise ValueError(f"no such user: {', '.join(missing)}")
+        accounts = users | {o.login.lower() for o in self.organizations}
+        owners = sorted({r.owner for r in self.repositories if r.owner.lower() not in accounts})
+        if owners:
+            raise ValueError(f"no such owner: {', '.join(owners)}")
+
 
 def number(text: str) -> int:
     """A stable positive id from a name: the same name has the same id in every run."""
@@ -240,18 +246,77 @@ def _commit_sha(full_name: str, position: int, message: str, date: str) -> str:
     return hashlib.sha1(f"commit\0{full_name}\0{position}\0{date}\0{message}".encode()).hexdigest()
 
 
-def _people(scenario: Scenario) -> dict[str, Person]:
-    return {p.key: p for p in scenario.people}
+USER_ID = re.compile(r"^[1-9][0-9]{0,18}$")
+"""A GitHub user's `id`: a positive integer (https://docs.github.com/en/rest/users/users#get-a-user)."""
 
 
-def _user(user: SeedUser, people: dict[str, Person], created: str) -> wire.StoredAccount:
-    name, email = user.name, None
-    if user.person is not None:
-        if user.person not in people:
-            raise ValueError(f"GitHub user {user.login} is person {user.person}, who is nobody in the scenario")
-        name, email = people[user.person].name, people[user.person].email
+class _Account(Model):
+    """A user as seeding makes them: from the seed's `users`, a person's GitHub account entry, or both."""
+
+    login: str
+    person: Person | None = None
+    name: str | None = None
+    declared_id: int | None = None
+
+
+def _accounts(given: GitHubSeed, scenario: Scenario) -> list[_Account]:
+    """Every GitHub user the world holds: the seed's own, then each person whose entry declares one that the seed
+    does not name. A seed user and a person's entry naming one login are one account when the user is that person
+    (or names nobody); otherwise refused."""
+    people = {p.key: p for p in scenario.people}
+    made: list[_Account] = []
+    for user in given.users:
+        person = None
+        if user.person is not None:
+            if user.person not in people:
+                raise ValueError(f"GitHub user {user.login} is person {user.person}, who is nobody in the scenario")
+            person = people[user.person]
+        made.append(_Account(login=user.login, person=person, name=user.name))
+    for person in scenario.people:
+        entry = person.account_in(MANIFEST.key)
+        if entry is None:
+            continue
+        if entry.login is None:
+            raise ValueError(f"{person.key}'s GitHub account names no login; a GitHub account is known by its login")
+        if re.fullmatch(LOGIN, entry.login) is None:
+            raise ValueError(
+                f"{person.key}'s GitHub login {entry.login!r} is not one GitHub allows: letters, digits and single "
+                "inner hyphens, at most 39 characters"
+            )
+        declared = None
+        if entry.id is not None:
+            if USER_ID.fullmatch(entry.id) is None:
+                raise ValueError(f"{person.key}'s GitHub id {entry.id!r} is not a GitHub user id, a positive integer")
+            declared = int(entry.id)
+        others = [a for a in made if a.person is not None and a.person.key == person.key]
+        if any(a.login.lower() != entry.login.lower() for a in others):
+            raise ValueError(
+                f"{person.key} is GitHub user {others[0].login} in the GitHub seed and {entry.login} in their account"
+            )
+        at = next((n for n, a in enumerate(made) if a.login.lower() == entry.login.lower()), None)
+        if at is None:
+            made.append(_Account(login=entry.login, person=person, declared_id=declared))
+            continue
+        held = made[at]
+        if held.person is not None and held.person.key != person.key:
+            raise ValueError(
+                f"GitHub user {held.login} is {held.person.key} in the GitHub seed and {person.key}'s account"
+            )
+        made[at] = held.model_copy(update={"person": person, "declared_id": declared})
+    return made
+
+
+def _user(account: _Account, created: str) -> wire.StoredAccount:
+    """A user as GitHub shows them: a person's name (their entry's, else theirs) and email unless they have none or
+    it is private there (`email_visible: false`), when GitHub's `email` is null."""
+    name, email = account.name, None
+    if account.person is not None:
+        entry = account.person.account_in(MANIFEST.key)
+        name = entry.name if entry is not None and entry.name is not None else account.person.name
+        email = account.person.shown_email(MANIFEST.key)
+    user_id = account.declared_id if account.declared_id is not None else number(account.login)
     return wire.StoredAccount(
-        login=user.login, id=number(user.login), type=wire.AccountType.USER, name=name, email=email, created_at=created
+        login=account.login, id=user_id, type=wire.AccountType.USER, name=name, email=email, created_at=created
     )
 
 
@@ -290,11 +355,12 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
     """Write `given` into the world; people it names are the scenario's."""
     github = GitHubWorld(world)
     created = wire.timestamp(scenario.starts_at)
-    people = _people(scenario)
+    users = _accounts(given, scenario)
+    given.refuse_unknown({u.login.lower() for u in users})
 
     accounts: dict[str, wire.StoredAccount] = {}
-    for user in given.users:
-        accounts[user.login.lower()] = _user(user, people, created)
+    for user in users:
+        accounts[user.login.lower()] = _user(user, created)
     for organization in given.organizations:
         accounts[organization.login.lower()] = wire.StoredAccount(
             login=organization.login,
@@ -304,6 +370,13 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
             members=[accounts[m.lower()].login for m in organization.members],
             created_at=created,
         )
+    ids: dict[int, str] = {}
+    for account in accounts.values():
+        if account.id in ids:
+            raise ValueError(
+                f"GitHub accounts {ids[account.id]} and {account.login} would both have the id {account.id}"
+            )
+        ids[account.id] = account.login
     for account in accounts.values():
         github.write_account(account)
 

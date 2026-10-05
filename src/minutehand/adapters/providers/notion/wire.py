@@ -875,6 +875,10 @@ class StoredUser(Model):
     type: UserType
     name: str
     email: str | None = None
+    email_hidden: bool = Field(
+        default=False, description="A person whose email Notion shows no integration, whatever its capabilities"
+    )
+    person: str | None = Field(default=None, description="Person.key this member was seeded from; never served")
     integration: str | None = Field(default=None, description="For a bot: the integration it acts for")
     removed: bool = Field(
         default=False,
@@ -1167,7 +1171,8 @@ def property_value(schema: Json, value: JsonValue, where: str, names: Names, peo
     if kind in READ_ONLY:
         raise invalid(f"{where}: a {kind.value} property cannot be written.")
     given = as_object(value, where)
-    given = {k: v for k, v in given.items() if k not in ("id", "type")}
+    kept = ("id", "type")  # enum-lint: exempt Notion's own property keys
+    given = {k: v for k, v in given.items() if k not in kept}
     if list(given) != [kind.value]:
         raise invalid(f"{where} is a {kind.value} property; the value should be given as `{kind.value}`.")
     raw = given[kind.value]
@@ -1281,7 +1286,7 @@ def value_text(value: Json) -> str:
 def render_user(user: StoredUser, *, email: bool, owner: JsonValue = None, workspace_name: str = "") -> Json:
     found: Json = {"object": "user", "id": user.id, "name": user.name, "avatar_url": None, "type": user.type.value}
     if user.type is UserType.PERSON:
-        found["person"] = {"email": user.email} if email and user.email else {}
+        found["person"] = {"email": user.email} if email and user.email and not user.email_hidden else {}
     else:
         found["bot"] = {"owner": owner, "workspace_name": workspace_name} if owner is not None else {}
     return found

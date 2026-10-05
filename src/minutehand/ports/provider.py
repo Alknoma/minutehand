@@ -118,9 +118,10 @@ class EditsTickets(Protocol):
     """A provider whose tickets the scenario can rewrite: how a fork's `TicketEdit` lands."""
 
     def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
+        self, ticket: EntityRef, *, state: TicketState | None, assignee: Person | None, world: Store, clock: Clock
     ) -> None:
-        """Change the ticket's state and/or assignee, recorded as actor SCENARIO. None leaves a field as it is."""
+        """Change the ticket's state and/or assignee (the account `assignee` was seeded as, found by who they are,
+        never by their email), recorded as actor SCENARIO. None leaves a field as it is."""
         ...
 
 
@@ -247,7 +248,8 @@ class ChangesPeople(Protocol):
     reactivated, each one of `manifest.people_changes`."""
 
     def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
-        """Do `change` to the account `person` was seeded as, recorded as actor SCENARIO, so the service answers
+        """Do `change` to the account `person` was seeded as (found by who they are, never by their email), recorded
+        as actor SCENARIO, so the service answers
         for it as the real one does after an administrator did it. Never asked for a change outside
         `manifest.people_changes`. An account it holds nothing of, or one already so, raises `ValueError`."""
         ...

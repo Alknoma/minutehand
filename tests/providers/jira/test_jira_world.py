@@ -22,6 +22,7 @@ from minutehand.domain.scenario import (
     Comments,
     Deletes,
     Moves,
+    Person,
     Reassigns,
     Scenario,
     TicketAction,
@@ -49,12 +50,19 @@ def test_seeding_writes_the_site_as_the_scenario_with_each_tickets_meaning(site:
             body="Cover the new export.\nLink the changelog.",
             project="LAUNCH",
             assignee_email="tomas@example.com",
+            assignee="tomas",
         ),
         TicketSnapshot(
-            title="Book the venue", project="LAUNCH", assignee_email="noor@example.com", state=TicketState.DONE
+            title="Book the venue",
+            project="LAUNCH",
+            assignee_email="noor@example.com",
+            assignee="noor",
+            state=TicketState.DONE,
         ),
         TicketSnapshot(title="Ship the demo kits", project="FIELD"),
-        TicketSnapshot(title="Rotate the vault keys", project="VAULT", assignee_email="iris@example.com"),
+        TicketSnapshot(
+            title="Rotate the vault keys", project="VAULT", assignee_email="iris@example.com", assignee="iris"
+        ),
     ]
     vault = site.jira.find_issue("VAULT-1")
     assert vault is not None and site.jira.site().status(vault.status).name == "In Progress", "a seed's own status"
@@ -132,7 +140,7 @@ async def test_edit_rewrites_state_and_assignee_as_the_scenario(site: Site) -> N
     site.provider.edit(
         _ref(site, "LAUNCH-1"),
         state=TicketState.CANCELLED,
-        assignee_email="iris@example.com",
+        assignee=_person("iris"),
         world=site.store,
         clock=site.clock,
     )
@@ -143,15 +151,19 @@ async def test_edit_rewrites_state_and_assignee_as_the_scenario(site: Site) -> N
         body="Cover the new export.\nLink the changelog.",
         project="LAUNCH",
         assignee_email="iris@example.com",
+        assignee="iris",
         state=TicketState.CANCELLED,
     )
 
 
-def test_edit_to_an_email_nobody_has_is_refused(site: Site) -> None:
-    with pytest.raises(LookupError, match=r"nobody@example\.com"):
-        site.provider.edit(
-            _ref(site, "LAUNCH-1"), state=None, assignee_email="nobody@example.com", world=site.store, clock=site.clock
-        )
+def test_edit_to_a_person_the_site_has_no_account_for_is_refused(site: Site) -> None:
+    nobody = Person(key="nobody", name="Nobody", email="iris@example.com")
+    with pytest.raises(LookupError, match="nobody has no Jira account"):
+        site.provider.edit(_ref(site, "LAUNCH-1"), state=None, assignee=nobody, world=site.store, clock=site.clock)
+
+
+def _person(key: str) -> Person:
+    return next(p for p in SCENARIO.people if p.key == key)
 
 
 def _happening(person: str, after: timedelta, action: TicketAction) -> TicketHappening:

@@ -1,6 +1,8 @@
 """The instance a scenario starts in.
 
-From the provider-neutral scenario: a user per person and one for the agent; a project per distinct seeded project
+From the provider-neutral scenario: a user per person and one for the agent, with the login, database id, full name
+and email visibility the person's `accounts` entry for `youtrack` declares (by default: their key, `1-<n>`, their
+name, their email shown; no email at all shows `email: null`), banned when the person's account is deactivated; a project per distinct seeded project
 name, each carrying the standard field set with every user on its team and the agent as its leader; an issue per
 seeded ticket with its title, body, assignee and state, its labels as tags and its comments.
 
@@ -15,6 +17,7 @@ entry is then a change after that, oldest first, by the user it names. The run s
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import ClassVar
@@ -25,7 +28,7 @@ from minutehand.adapters.providers.youtrack import fields, state, wire
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Person, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
@@ -60,10 +63,18 @@ LINK_TYPES = [
 
 Login = str
 
+LOGIN = r"^[A-Za-z0-9._-]+$"
+"""What a YouTrack login is made of here: letters, digits, `.`, `_` and `-` (`john.smith`). Hub's own rule is wider
+(it refuses only spaces and a few separators); this keeps the characters every login in the wild uses."""
+USER_ID = re.compile(r"^1-\d+$")
+"""A user's database id: entity type 1, then its number (`1-5`)."""
+ISSUE_ID = re.compile(r"^2-\d+$")
+"""An issue's database id: entity type 2, then its number (`2-5`)."""
+
 
 class UserSeed(Model, Keyed):
     IDENTITY: ClassVar[tuple[str, ...]] = ("login",)
-    login: Login = Field(pattern=r"^[A-Za-z0-9._-]+$")
+    login: Login = Field(pattern=LOGIN)
     name: str
     email: str | None = None
     banned: bool = False
@@ -222,9 +233,45 @@ def ring_id(kind: str, name: str) -> str:
     return str(uuid.uuid5(_RING, f"{kind}:{name}"))
 
 
-def user(user_id: str, login: str, full_name: str, email: str | None, *, banned: bool = False) -> wire.StoredUser:
+def user(
+    user_id: str,
+    login: str,
+    full_name: str,
+    email: str | None,
+    *,
+    banned: bool = False,
+    email_visible: bool = True,
+    person: str | None = None,
+) -> wire.StoredUser:
     return wire.StoredUser(
-        id=user_id, login=login, fullName=full_name, email=email, ringId=ring_id("user", login), banned=banned
+        id=user_id,
+        login=login,
+        fullName=full_name,
+        email=email,
+        ringId=ring_id("user", login),
+        banned=banned,
+        emailVisible=email_visible,
+        person=person,
+    )
+
+
+def person_user(person: Person, position: int) -> wire.StoredUser:
+    """The account seeded for `person`, the `position`-th of the scenario's people, as their entry declares it."""
+    declared = person.account_in(MANIFEST.key)
+    login = person.key if declared is None or declared.login is None else declared.login
+    if re.fullmatch(LOGIN, login) is None:
+        raise ValueError(f"{person.key}'s YouTrack login {login!r} is not a login: letters, digits, '.', '_', '-'")
+    user_id = f"1-{position + 1}" if declared is None or declared.id is None else declared.id
+    if USER_ID.fullmatch(user_id) is None:
+        raise ValueError(f"{person.key}'s YouTrack id {user_id!r} is not a user's database id, such as 1-5")
+    return user(
+        user_id,
+        login,
+        person.name if declared is None or declared.name is None else declared.name,
+        person.email,
+        banned=person.account is Account.DEACTIVATED,
+        email_visible=declared is None or declared.email_visible,
+        person=person.key,
     )
 
 
@@ -335,13 +382,11 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     agent = user("1-0", state.AGENT_LOGIN, state.AGENT_NAME, state.AGENT_EMAIL)
     accounts = [agent]
-    accounts += [user(f"1-{n + 1}", p.key, p.name, p.email) for n, p in enumerate(scenario.people)]
+    accounts += [person_user(p, n) for n, p in enumerate(scenario.people)]
     accounts += [
         user(f"1-{state.EXTRA_USERS + n}", u.login, u.name, u.email, banned=u.banned) for n, u in enumerate(extra.users)
     ]
-    logins = [a.login.lower() for a in accounts]
-    if len(logins) != len(set(logins)):
-        raise ValueError("two YouTrack users share a login")
+    _refuse_shared(accounts)
     for account in accounts:
         youtrack.write_user(account, actor=Actor.SCENARIO)
     by_login = {a.login: a for a in accounts}
@@ -435,16 +480,35 @@ def seed(scenario: Scenario, world: Store) -> None:
     stray = sorted(set(details) - keys)
     if stray:
         raise ValueError(f"the YouTrack seed describes tickets no seeded YouTrack ticket is: {', '.join(stray)}")
-    people = {p.key: by_login[p.key] for p in scenario.people}
+    people = {a.person: a for a in accounts if a.person is not None}
     reporter = people[scenario.owner]
     made_issues: dict[str, wire.StoredIssue] = {}
     labels = list(dict.fromkeys(label.lower() for t in seeded for label in t.labels))
+    declared_ids = {t.id for t in seeded if t.id is not None}
+    for ticket in seeded:
+        if ticket.id is not None and ISSUE_ID.fullmatch(ticket.id) is None:
+            raise ValueError(
+                f"the seeded ticket {ticket.title!r} declares id {ticket.id!r}, not an issue's, such as 2-5"
+            )
+        if ticket.id is not None and youtrack.taken(ticket.id):
+            raise ValueError(f"the seeded ticket {ticket.title!r} declares id {ticket.id}, which something already has")
+    numbers = _numbers(scenario.tickets)
     for position, ticket in enumerate(scenario.tickets):
         if ticket.provider != MANIFEST.key:
             continue
         detail = details.get(ticket.key or "", IssueSeed(ticket=ticket.key or "-"))
         issue = _seed_issue(
-            youtrack, projects[ticket.project], ticket, position, detail, reporter, people, start, labels
+            youtrack,
+            projects[ticket.project],
+            ticket,
+            position,
+            detail,
+            reporter,
+            people,
+            start,
+            labels,
+            number=numbers[position],
+            declared_ids=declared_ids,
         )
         if ticket.key is not None:
             made_issues[ticket.key] = issue
@@ -455,6 +519,49 @@ def seed(scenario: Scenario, world: Store) -> None:
             _seed_link(youtrack, made_issues[detail.ticket], made_issues[link.ticket], link.phrase, reporter, start)
     for detail in sorted(extra.issues, key=lambda d: d.ticket):
         _seed_history(youtrack, made_issues[detail.ticket], detail, start)
+
+
+def _refuse_shared(accounts: list[wire.StoredUser]) -> None:
+    """No two users share a login or a database id: one would answer for the other."""
+    for attribute in ("login", "id"):
+        seen: dict[str, wire.StoredUser] = {}
+        for account in accounts:
+            value = getattr(account, attribute).lower()
+            if value not in seen:
+                seen[value] = account
+                continue
+            first = seen[value]
+            if first.person is not None or account.person is not None:
+                who = first.person if first.person is not None else account.person
+                raise ValueError(
+                    f"{who}'s YouTrack account and another YouTrack user share the {attribute} {value!r}: declare it "
+                    "once, as a person's account (`accounts: [{provider: youtrack, ...}]`) to act as it, assign it "
+                    "and deactivate it, or in the YouTrack seed's `users`"
+                )
+            raise ValueError(f"two YouTrack users share the {attribute} {value!r}")
+
+
+def _numbers(tickets: list[SeededTicket]) -> dict[int, int]:
+    """Each YouTrack ticket's number in its project, by its position in `Scenario.tickets`: the one it declares,
+    else the next its project has not handed out in seed order, skipping every declared one."""
+    seeded = [(n, t) for n, t in enumerate(tickets) if t.provider == MANIFEST.key]
+    declared: dict[str, set[int]] = {}
+    for _, ticket in seeded:
+        if ticket.number is not None:
+            declared.setdefault(ticket.project, set()).add(ticket.number)
+    following: dict[str, int] = {}
+    found: dict[int, int] = {}
+    for position, ticket in seeded:
+        if ticket.number is not None:
+            found[position] = ticket.number
+            continue
+        skip = declared[ticket.project] if ticket.project in declared else set()
+        number = following[ticket.project] if ticket.project in following else 1
+        while number in skip:
+            number += 1
+        found[position] = number
+        following[ticket.project] = number + 1
+    return found
 
 
 def _project_fields(
@@ -501,11 +608,14 @@ def _seed_issue(
     people: dict[str, wire.StoredUser],
     start: datetime,
     labels: list[str],
+    *,
+    number: int,
+    declared_ids: set[str],
 ) -> wire.StoredIssue:
-    """The issue seeded from `Scenario.tickets[position]`: its id from its position and title, its tags' from their
-    names, its comments' from its id and their place on it, so none moves when more is seeded."""
+    """The issue seeded from `Scenario.tickets[position]`: its id and number as declared, else its id from its
+    position and title and its number the next in seed order; its tags' from their names, its comments' from its id
+    and their place on it, so none moves when more is seeded."""
     at = state.millis(start - detail.created_ago)
-    number = youtrack.next_number(home.id)
     values: dict[str, wire.FieldValue] = {f.id: f.defaultValue for f in home.fields if f.defaultValue is not None}
     state_field = youtrack.state_field(home)
     if state_field is not None:
@@ -533,8 +643,11 @@ def _seed_issue(
             )
             youtrack.write_tag(tag, actor=Actor.SCENARIO)
         tags.append(tag.id)
+    issue_id = ticket.id or state.seeded_id(
+        2, str(position), home.name, ticket.title, taken=lambda i: youtrack.taken(i) or i in declared_ids
+    )
     issue = wire.StoredIssue(
-        id=state.seeded_id(2, str(position), home.name, ticket.title, taken=youtrack.taken),
+        id=issue_id,
         idReadable=f"{home.shortName}-{number}",
         numberInProject=number,
         project=home.id,
@@ -547,6 +660,7 @@ def _seed_issue(
         values=values,
         tags=tags,
         seededFrom=position,
+        numberDeclared=ticket.number is not None,
     )
     issue = issue.model_copy(update={"resolved": at if youtrack.is_resolved(home, issue) else None})
     youtrack.create_issue(issue, actor=Actor.SCENARIO)

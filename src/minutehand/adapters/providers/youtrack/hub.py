@@ -162,7 +162,10 @@ class Hub:
         found = [
             u
             for u in self._world.users()
-            if not query or query in u.login.lower() or query in u.fullName.lower() or query in (u.email or "").lower()
+            if not query
+            or query in u.login.lower()
+            or query in u.fullName.lower()
+            or query in (u.shown_email or "").lower()
         ]
         self._world.saw(state.instance_ref(), Operation.SEARCH)
         return self._page(call, "users", [self._user(u) for u in found])

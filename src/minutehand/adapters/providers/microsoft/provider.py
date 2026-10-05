@@ -35,7 +35,6 @@ from minutehand.domain.people import (
 )
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
-    AccessRole,
     DocumentHappening,
     Edited,
     Happening,
@@ -50,14 +49,6 @@ from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
-
-ROLES = {
-    AccessRole.READER: ["read"],
-    AccessRole.COMMENTER: ["read"],
-    AccessRole.WRITER: ["write"],
-    AccessRole.ORGANIZER: ["owner"],
-}
-"""Graph's roles for each access a scenario gives: it has no commenter, so a commenter reads."""
 
 
 class MicrosoftProvider:
@@ -128,7 +119,7 @@ class MicrosoftProvider:
             if target is None:
                 raise LookupError(f"{action.access.person} is not a user of the tenant")
             email = target.user.mail or target.user.userPrincipalName
-            files.share(stored, email, ROLES[action.access.role], actor=Actor.PERSON)
+            files.share(stored, email, seed.ROLES[action.access.role], actor=Actor.PERSON)
         elif isinstance(action, Trashed):
             files.delete(stored, by=by, actor=Actor.PERSON)
         else:

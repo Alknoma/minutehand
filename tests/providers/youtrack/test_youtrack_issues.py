@@ -200,6 +200,7 @@ async def test_the_snapshot_carries_the_assignee_email_and_the_state_the_value_m
         body="Front desk",
         project="LAUNCH",
         assignee_email="noor@example.com",
+        assignee="noor",
         state=outcome,
     )
 

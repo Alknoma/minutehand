@@ -1,8 +1,8 @@
 # YouTrack provider: where its behaviour comes from
 
 Each row is one fact about how YouTrack (and the Hub beside it) answers, the test that pins it here, and where the
-fact comes from: **documented** (the page is cited, paraphrased in the test) or **observed** (learned by watching a
-real instance answer, not stated in the documentation). Tests are under `tests/providers/youtrack/`; `claims` is
+fact comes from: **documented** (the page is cited, paraphrased in the test), **observed** (learned by watching a
+real instance answer, not stated in the documentation), or **assumed** (neither; said so, so nobody leans on it). Tests are under `tests/providers/youtrack/`; `claims` is
 `test_youtrack_vendor_claims.py`, `claims_projects` is `test_youtrack_vendor_claims_projects.py`.
 
 ## Ported
@@ -75,6 +75,10 @@ real instance answer, not stated in the documentation). Tests are under `tests/p
 | 64 | Update Project is held per project | observed | `claims_projects::test_withholding_update_project_in_one_project_leaves_another_writable` |
 | 65 | Permissions are a user's: one taken from another user leaves the caller's | observed | `claims_projects::test_a_permission_taken_from_another_user_leaves_the_caller_alone` |
 | 66 | The permissions cache lists a per-project permission as not global, by Hub id and key, leaving out a project it was taken from and one made through the API | observed | `claims_projects::test_the_permissions_cache_leaves_out_a_withheld_project_and_one_made_through_the_api` |
+| 67 | A user's `email` may be null; a user whose email is hidden or absent is shown none and is not found by it — [User](https://www.jetbrains.com/help/youtrack/devportal/api-entity-User.html) | documented (null), observed (search) | `test_youtrack_people_and_ids::test_a_person_without_an_email_or_with_it_hidden_shows_none` |
+| 68 | A login holds letters, digits, `.`, `_` and `-` (`john.smith`); a database id is its entity type and a number (`1-5` a user, `2-5` an issue) — [Issue](https://www.jetbrains.com/help/youtrack/devportal/api-entity-Issue.html), [User](https://www.jetbrains.com/help/youtrack/devportal/api-entity-User.html) | observed | `test_youtrack_people_and_ids::test_a_login_or_id_not_in_youtracks_format_or_taken_is_refused`, `test_a_declared_issue_id_not_in_youtracks_format_is_refused` |
+| 69 | `idReadable` is the project's short name and the issue's `numberInProject` — [Issue](https://www.jetbrains.com/help/youtrack/devportal/api-entity-Issue.html) | documented | `test_youtrack_people_and_ids::test_a_declared_number_and_id_are_the_issues_and_the_next_issue_follows_the_highest` |
+| 70 | After an issue numbered above the rest (imported with its number), the next issue takes the number after the highest; a number is never handed out twice | assumed: not documented, and not observed on a real instance | `test_youtrack_people_and_ids::test_a_declared_number_and_id_are_the_issues_and_the_next_issue_follows_the_highest` |
 
 ## Not carried over
 

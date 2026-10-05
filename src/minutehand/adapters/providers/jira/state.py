@@ -98,6 +98,11 @@ def seeded_comment_id(issue: str, n: int) -> str:
     return str(SEEDED_COMMENTS + int(issue) * 1000 + n)
 
 
+def key_number(external_id: str) -> int:
+    """The number of an issue key's record (`key:LAUNCH-12` is 12): Jira's own key format, `<project>-<number>`."""
+    return int(external_id.rsplit("-", 1)[1])
+
+
 def _ref(kind: EntityKind, external_id: str) -> EntityRef:
     return EntityRef(provider=MANIFEST.key, kind=kind, external_id=external_id)
 
@@ -182,6 +187,10 @@ class JiraWorld:
     def user(self, account: str) -> wire.StoredUser | None:
         stored = self._store.get(user_ref(account))
         return None if stored is None else wire.parse(wire.StoredUser, stored.body)
+
+    def user_of(self, person: str) -> wire.StoredUser | None:
+        """The account seeded for the person with this key, found by who they are, never by their email."""
+        return next((u for u in self.users() if u.person == person), None)
 
     def user_by_email(self, email: str) -> wire.StoredUser | None:
         wanted = email.strip().lower()
@@ -285,12 +294,25 @@ class JiraWorld:
         return 0 if stored is None else wire.parse(wire.StoredFaultUse, stored.body).used
 
     def next_number(self, project: str) -> int:
-        """The number the project's next issue takes: one past every key it has handed out."""
-        return sum(1 for _ in self._all(EntityKind.RECORD, project)) + 1
+        """The number the project's next issue takes: one past the highest key it has handed out, a number a seed
+        declared among them, as Jira numbers on from the highest key after issues are imported with their own."""
+        return max((key_number(s.entity.external_id) for s in self._all(EntityKind.RECORD, project)), default=0) + 1
+
+    def key_taken(self, key: str) -> bool:
+        """Whether a project has ever handed out this key: a key's record is never deleted."""
+        return self._store.get(key_ref(key)) is not None
 
     def next_id(self) -> str:
         """An id from the sequence of the event about to be written."""
         return str(10000 + self._store.head() + 1)
+
+    def next_issue_id(self) -> str:
+        """An issue id from the sequence of the event about to be written, past any a seed declared that it would
+        otherwise repeat (an issue ever written under it, deleted or not)."""
+        candidate = 10000 + self._store.head() + 1
+        while self._store.versions(issue_ref(str(candidate))):
+            candidate += 1
+        return str(candidate)
 
     def snapshot(self, issue: wire.StoredIssue) -> TicketSnapshot:
         """The issue read across every provider: its summary, its description as text, its project's key, its
@@ -304,6 +326,7 @@ class JiraWorld:
             body=wire.adf_text(issue.description),
             project=project.key,
             assignee_email=assignee.emailAddress if assignee is not None else None,
+            assignee=assignee.person if assignee is not None else None,
             state=self.site().status(issue.status).outcome,
         )
 
@@ -411,31 +434,45 @@ class JiraWorld:
 
 
 def placed(additions: Sequence[Change], world: Store) -> list[Change]:
-    """`PlacesAdditions`: each issue a further seed adds to a project the world holds takes the project's next
+    """`PlacesAdditions`: each issue a further seed adds to a project the world holds takes the project's next free
     number, as the agent's next issue there would, so one the agent has filed since the world was seeded keeps its
-    key. The key record and the issue it names are renamed together."""
+    key; an issue whose ticket declared its number keeps it, and is refused when the world has handed that key out.
+    The key record and the issue it names are renamed together."""
     jira = JiraWorld(world)
     found = list(additions)
     issues = {c.entity.external_id: n for n, c in enumerate(found) if c.entity.kind is EntityKind.TICKET}
-    following: dict[str, int] = {}
+    aliases: list[tuple[int, str, wire.StoredIssue]] = []
     for n, change in enumerate(found):
         if change.entity.kind is not EntityKind.RECORD or change.parent is None or change.body is None:
             continue
-        project = jira.project(change.parent)
-        if project is None:
+        if jira.project(change.parent) is None:
             continue  # a project the addition itself brings: nothing in the world is numbered in it
         alias = wire.parse(wire.StoredAlias, change.body)
         if alias.issue not in issues:
             raise ValueError(
                 f"the key record {change.entity.external_id} names issue {alias.issue}, which is not added"
             )
-        number = following[change.parent] if change.parent in following else jira.next_number(change.parent)
-        following[change.parent] = number + 1
+        aliases.append((n, change.parent, wire.parse(wire.StoredIssue, found[issues[alias.issue]].body or "")))
+    declared: dict[str, set[int]] = {}
+    for _, project, issue in aliases:
+        if issue.numberDeclared:
+            if jira.key_taken(issue.key):
+                raise ValueError(f"{issue.key} is declared by the addition, and the world has handed that key out")
+            declared.setdefault(project, set()).add(key_number(issue.key))
+    following: dict[str, int] = {}
+    for n, project_id, issue in aliases:
+        if issue.numberDeclared:
+            continue
+        project = jira.project(project_id)
+        assert project is not None
+        number = following[project_id] if project_id in following else jira.next_number(project_id)
+        while number in declared.get(project_id, set()):
+            number += 1
+        following[project_id] = number + 1
         key = f"{project.key}-{number}"
-        held = found[issues[alias.issue]]
-        issue = wire.parse(wire.StoredIssue, held.body or "")
         if issue.key == key:
             continue
-        found[n] = change.model_copy(update={"entity": key_ref(key)})
-        found[issues[alias.issue]] = held.model_copy(update={"body": wire.dump(issue.model_copy(update={"key": key}))})
+        held = found[issues[issue.id]]
+        found[n] = found[n].model_copy(update={"entity": key_ref(key)})
+        found[issues[issue.id]] = held.model_copy(update={"body": wire.dump(issue.model_copy(update={"key": key}))})
     return found

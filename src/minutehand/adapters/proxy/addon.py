@@ -699,11 +699,12 @@ class ProxyAddon:
 
     @staticmethod
     def _message(world: Mounted, declaration: Acknowledge, read: capture.Read, seq: int) -> None:
-        """The send as a world event: a message from the agent to each person it reached, as their email, and to
-        each address that reaches nobody, as written. Its people can answer it when the declaration says how an
+        """The send as a world event: a message from the agent to each person it reached, by key and as the
+        address it was sent to, and to each address that reaches nobody, as written. Its people can answer it when the declaration says how an
         answer reaches the agent (`replies`)."""
         by_key = {p.key: p for p in world.capturing.people}
-        emails = [by_key[r.person].email if r.person is not None else r.address for r in read.recipients]
+        emails = [r.address if r.person is None else by_key[r.person].email or r.address for r in read.recipients]
+        reached = [r.person for r in read.recipients if r.person is not None]
         channel = "to:" + ",".join(sorted({r.address.lower() for r in read.recipients}))
         text = f"{read.subject}\n\n{read.text}" if read.subject else read.text
         body = json.dumps(
@@ -718,7 +719,11 @@ class ProxyAddon:
                 body=body,
                 parent=channel,
                 after=MessageSnapshot(
-                    text=text, channel=channel, recipient_emails=emails, answerable=declaration.replies is not None
+                    text=text,
+                    channel=channel,
+                    recipient_emails=emails,
+                    recipients=list(dict.fromkeys(reached)),
+                    answerable=declaration.replies is not None,
                 ),
             )
         )

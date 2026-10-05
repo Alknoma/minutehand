@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import DocumentChange, Manifest, PersonChange, Tier
+from minutehand.domain.provider import (
+    AccountFact,
+    DocumentChange,
+    DocumentField,
+    Manifest,
+    PersonChange,
+    PersonFact,
+    Tier,
+)
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -18,4 +26,13 @@ MANIFEST = Manifest(
         DocumentChange.FIELD_SET,
     ],
     people_changes=[PersonChange.REMOVED],
+    document_fields=[
+        DocumentField.FOLDER,
+        DocumentField.OWNER,
+        DocumentField.MODIFIED_BEFORE_START,
+        DocumentField.MODIFIED_BY,
+        DocumentField.ID,
+    ],
+    account_facts=[AccountFact.ID, AccountFact.NAME, AccountFact.EMAIL_HIDDEN],
+    person_facts=[PersonFact.WITHOUT_EMAIL],
 )

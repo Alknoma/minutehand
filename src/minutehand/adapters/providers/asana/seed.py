@@ -23,6 +23,7 @@ must name something; one that does not is refused before anything is written.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from typing import Annotated, ClassVar, Literal
 
@@ -32,7 +33,7 @@ from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.state import AGENT_GID, WORKSPACE_GID, AsanaWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Person, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
@@ -229,9 +230,58 @@ def asana_seed(scenario: Scenario) -> AsanaSeed:
     return AsanaSeed() if found is None else AsanaSeed.model_validate_json(found.body)
 
 
+GID = re.compile(r"^[0-9]{1,19}$")
+"""An Asana gid as a client stores one. The schema says "Globally unique identifier of the resource, as a string",
+example "12345" (https://developers.asana.com/reference/getuser); every gid the API hands out is a string of digits
+(observed), and a declared one is held to that."""
+
+
 def seeded_gid(scenario: Scenario, ticket: SeededTicket) -> str:
-    """The gid of the task seeded from `ticket`: its position among the scenario's asana tickets."""
+    """The gid of the task seeded from `ticket`: the one it declares, else from its position among the scenario's
+    asana tickets."""
+    if ticket.id is not None:
+        return ticket.id
     return state.task_gid(_position(scenario, ticket))
+
+
+def person_gid(person: Person) -> str:
+    """The gid of the user seeded for `person`: the one their asana account declares, else from their key."""
+    account = person.account_in(MANIFEST.key)
+    if account is not None and account.id is not None:
+        return account.id
+    return state.user_gid(person.key)
+
+
+def gid_of_person(scenario: Scenario, key: str) -> str:
+    """The gid of the user seeded for the scenario's person `key`."""
+    found = next((p for p in scenario.people if p.key == key), None)
+    if found is None:
+        raise ValueError(f"no person {key!r} in the scenario")
+    return person_gid(found)
+
+
+def _declared_gids(scenario: Scenario) -> None:
+    """Every gid a seed declares is a gid, and names one thing: no declared gid is another's derived one."""
+    people = list(scenario.people)
+    tickets = [t for t in scenario.tickets if t.provider == MANIFEST.key]
+    declared = [(f"{p.key}'s asana account", person_gid(p)) for p in people if p.account_in(MANIFEST.key)]
+    declared += [(f"the asana ticket {t.title!r}", t.id) for t in tickets if t.id is not None]
+    for what, gid in declared:
+        if not GID.fullmatch(gid):
+            raise ValueError(f"{what} declares the id {gid!r}, and an Asana gid is a string of digits")
+    taken: dict[str, str] = {state.WORKSPACE_GID: "the workspace", AGENT_GID: "the agent's user"}
+    for person in people:
+        taken.setdefault(person_gid(person), f"{person.key}'s asana user")
+    for ticket in tickets:
+        gid = seeded_gid(scenario, ticket)
+        if gid in taken:
+            raise ValueError(f"the asana ticket {ticket.title!r} would take the gid {gid}, which {taken[gid]} has")
+        taken[gid] = f"the asana ticket {ticket.title!r}"
+    users = [person_gid(p) for p in people]
+    for person in people:
+        gid = person_gid(person)
+        if users.count(gid) > 1 or gid in (state.WORKSPACE_GID, AGENT_GID):
+            raise ValueError(f"{person.key}'s asana user would take the gid {gid}, which another thing has")
 
 
 def _position(scenario: Scenario, ticket: SeededTicket) -> int:
@@ -241,6 +291,7 @@ def _position(scenario: Scenario, ticket: SeededTicket) -> int:
 
 
 def seed(scenario: Scenario, world: Store) -> None:
+    _declared_gids(scenario)
     _Seeding(scenario, asana_seed(scenario), AsanaWorld(world)).write()
 
 
@@ -273,10 +324,12 @@ class _Seeding:
             return AGENT_GID
         if person not in self.people:
             raise ValueError(f"the asana seed names the person {person!r}, who is not in the scenario")
-        return state.user_gid(person)
+        return person_gid(self.people[person])
 
     def everyone(self, members: list[str] | None, agent: bool) -> list[str]:
-        keys = [p.key for p in self.scenario.people] if members is None else members
+        """The members named, or with None every person but a deactivated one (removed from the workspace)."""
+        active = [p.key for p in self.scenario.people if p.account is not Account.DEACTIVATED]
+        keys = active if members is None else members
         return [*([AGENT_GID] if agent else []), *(self.user(k) for k in keys)]
 
     def write(self) -> None:
@@ -308,7 +361,7 @@ class _Seeding:
                     gid=WORKSPACE_GID,
                     name=self.seed.workspace.name,
                     is_organization=self.seed.workspace.organization,
-                    email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people}),
+                    email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people if p.email is not None}),
                     premium=self.seed.workspace.premium,
                     unpaginated_limit=self.seed.workspace.unpaginated_limit,
                     strict_tokens=strict,
@@ -350,8 +403,16 @@ class _Seeding:
             actor=Actor.SCENARIO,
         )
         for person in self.scenario.people:
+            account = person.account_in(MANIFEST.key)
             self.asana.put_record(
-                wire.AsanaUser(gid=state.user_gid(person.key), name=person.name, email=person.email),
+                wire.AsanaUser(
+                    gid=person_gid(person),
+                    name=account.name if account is not None and account.name is not None else person.name,
+                    email=person.shown_email(MANIFEST.key),
+                    hidden_email=person.email if person.shown_email(MANIFEST.key) is None else None,
+                    person=person.key,
+                    removed=person.account is Account.DEACTIVATED,
+                ),
                 parent=state.USERS,
                 actor=Actor.SCENARIO,
             )

@@ -151,5 +151,6 @@ async def test_an_oauth_app_runs_an_issue_from_creation_to_deletion(site: Site) 
         body="Two hours on launch day.",
         project="LAUNCH",
         assignee_email="iris@example.com",
+        assignee="iris",
         state=TicketState.DONE,
     )

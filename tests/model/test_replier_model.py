@@ -90,7 +90,7 @@ def say(
             operation=Operation.CREATE,
             actor=actor,
             body="{}",
-            after=MessageSnapshot(text=text, channel=channel, recipient_emails=to),
+            after=MessageSnapshot(text=text, channel=channel, recipients=to),
         )
     )
 
@@ -108,7 +108,7 @@ async def test_each_helpfulness_reaches_the_model_and_the_reply_lands_when_a_scr
         update={"reply": Scripted(delay=DELAY, replies=[ScriptedReply(to_ask=1, text="scripted")])}
     )
     store, clock = world(tmp_path)
-    asked = say(store, Actor.AGENT, QUESTION, [written.email], "m1")
+    asked = say(store, Actor.AGENT, QUESTION, [written.key], "m1")
     async with fake_completions(answering) as fake:
         reply = await ModelReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), written]), model(fake)
@@ -135,7 +135,7 @@ async def test_each_helpfulness_reaches_the_model_and_the_reply_lands_when_a_scr
 async def test_a_message_that_needs_no_answer_gets_none(tmp_path: Path) -> None:
     who = sofia()
     store, clock = world(tmp_path)
-    thanks = say(store, Actor.AGENT, "Thanks, that is all I needed.", [who.email], "m1")
+    thanks = say(store, Actor.AGENT, "Thanks, that is all I needed.", [who.key], "m1")
     async with fake_completions(answering) as fake:
         reply = await ModelReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
@@ -148,7 +148,7 @@ async def test_a_person_asked_beyond_their_facts_is_told_to_say_they_do_not_know
 ) -> None:
     who = sofia()
     store, clock = world(tmp_path)
-    asked = say(store, Actor.AGENT, "Who signs for legal, and what is the price?", [who.email], "m1")
+    asked = say(store, Actor.AGENT, "Who signs for legal, and what is the price?", [who.key], "m1")
     async with fake_completions(answering) as fake:
         await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
             who, asked, store.events(), clock
@@ -162,7 +162,7 @@ async def test_a_person_asked_beyond_their_facts_is_told_to_say_they_do_not_know
 async def test_a_person_with_no_facts_is_told_they_know_nothing(tmp_path: Path) -> None:
     who = sofia().model_copy(update={"facts": []})
     store, clock = world(tmp_path)
-    asked = say(store, Actor.AGENT, QUESTION, [who.email], "m1")
+    asked = say(store, Actor.AGENT, QUESTION, [who.key], "m1")
     async with fake_completions(answering) as fake:
         await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
             who, asked, store.events(), clock
@@ -173,12 +173,12 @@ async def test_a_person_with_no_facts_is_told_they_know_nothing(tmp_path: Path) 
 async def test_the_earlier_exchange_with_that_person_and_no_one_else_is_given_in_order(tmp_path: Path) -> None:
     who = sofia()
     store, clock = world(tmp_path)
-    say(store, Actor.AGENT, "Hi Sofia, a question soon.", [who.email], "m1")
+    say(store, Actor.AGENT, "Hi Sofia, a question soon.", [who.key], "m1")
     say(store, Actor.AGENT, "Tom, unrelated.", ["tom@example.com"], "m2", channel="dm-tom")
     say(store, Actor.PERSON, "Sure, go ahead.", [], "m3")
     say(store, Actor.PERSON, "Tom here.", [], "m4", channel="dm-tom")
-    say(store, Actor.PERSON, "Tom again, in a group with her.", [who.email], "m5")
-    asked = say(store, Actor.AGENT, QUESTION, [who.email], "m6")
+    say(store, Actor.PERSON, "Tom again, in a group with her.", [who.key], "m5")
+    asked = say(store, Actor.AGENT, QUESTION, [who.key], "m6")
     async with fake_completions(answering) as fake:
         await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
             who, asked, store.events(), clock
@@ -195,14 +195,14 @@ async def test_the_earlier_exchange_with_that_person_and_no_one_else_is_given_in
 async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(tmp_path: Path) -> None:
     who = sofia()
     store, clock = world(tmp_path)
-    say(store, Actor.AGENT, "Thinking...", [who.email], "m1")
+    say(store, Actor.AGENT, "Thinking...", [who.key], "m1")
     asked = store.apply(
         Change(
             entity=EntityRef(provider="testchat", kind=EntityKind.MESSAGE, external_id="m1"),
             operation=Operation.UPDATE,
             actor=Actor.AGENT,
             body="{}",
-            after=MessageSnapshot(text=QUESTION, channel="dm-sofia", recipient_emails=[who.email]),
+            after=MessageSnapshot(text=QUESTION, channel="dm-sofia", recipients=[who.key]),
         )
     )
     async with fake_completions(answering) as fake:
@@ -216,7 +216,7 @@ async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(
 async def test_a_person_may_name_their_own_model(tmp_path: Path) -> None:
     who = sofia(model="people-large")
     store, clock = world(tmp_path)
-    asked = say(store, Actor.AGENT, QUESTION, [who.email], "m1")
+    asked = say(store, Actor.AGENT, QUESTION, [who.key], "m1")
     async with fake_completions(answering) as fake:
         reply = await ModelReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
@@ -237,7 +237,7 @@ async def test_absence_and_working_hours_move_a_written_reply_as_they_move_a_scr
         update={"reply": Scripted(delay=DELAY, replies=[ScriptedReply(to_ask=1, text="scripted")])}
     )
     store, clock = world(tmp_path, FRIDAY_1630)
-    asked = say(store, Actor.AGENT, QUESTION, [written.email], "m1")
+    asked = say(store, Actor.AGENT, QUESTION, [written.key], "m1")
     async with fake_completions(answering) as fake:
         reply = await ModelReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), written]), model(fake)
@@ -252,7 +252,7 @@ async def test_absence_and_working_hours_move_a_written_reply_as_they_move_a_scr
 async def test_an_answer_that_breaks_its_own_rule_is_sent_back_once(tmp_path: Path) -> None:
     who = sofia()
     store, clock = world(tmp_path)
-    asked = say(store, Actor.AGENT, QUESTION, [who.email], "m1")
+    asked = say(store, Actor.AGENT, QUESTION, [who.key], "m1")
 
     def careless(received: Received) -> str | WrittenReply:
         if len(fake.received) == 1:
@@ -271,8 +271,8 @@ async def test_the_router_sends_scripted_people_to_the_script_and_written_ones_t
     written = sofia()
     tom = person("tom", Scripted(delay=DELAY, replies=[ScriptedReply(to_ask=1, text="From the script.")]))
     store, clock = world(tmp_path)
-    to_tom = say(store, Actor.AGENT, QUESTION, [tom.email], "m1")
-    to_sofia = say(store, Actor.AGENT, QUESTION, [written.email], "m2")
+    to_tom = say(store, Actor.AGENT, QUESTION, [tom.key], "m1")
+    to_sofia = say(store, Actor.AGENT, QUESTION, [written.key], "m2")
     async with fake_completions(answering) as fake:
         replier = PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), written, tom]), model(fake)
@@ -304,7 +304,7 @@ def card(store: SqliteStore, to: list[str]) -> WorldEvent:
             after=MessageSnapshot(
                 text="May I send the contract at 40k?",
                 channel="dm-sofia",
-                recipient_emails=to,
+                recipients=to,
                 actions=[
                     MessageAction(action_id="approve_op1", label="Accept", value="op1"),
                     MessageAction(action_id="reject_op1", label="Reject", value="op1"),
@@ -318,7 +318,7 @@ def card(store: SqliteStore, to: list[str]) -> WorldEvent:
 async def test_the_person_is_shown_the_controls_and_a_press_with_a_reason_comes_back_as_one(tmp_path: Path) -> None:
     who = sofia()
     store, clock = world(tmp_path)
-    asked = card(store, [who.email])
+    asked = card(store, [who.key])
 
     def rejects(received: Received) -> WrittenReply:
         return WrittenReply(replies=True, text=None, press="Reject", form="The price is 45k now.")
@@ -342,7 +342,7 @@ async def test_the_person_is_shown_the_controls_and_a_press_with_a_reason_comes_
 async def test_a_press_the_message_does_not_carry_is_refused(tmp_path: Path) -> None:
     who = sofia()
     store, clock = world(tmp_path)
-    asked = card(store, [who.email])
+    asked = card(store, [who.key])
 
     def invents(received: Received) -> WrittenReply:
         return WrittenReply(replies=True, text=None, press="Approve all")

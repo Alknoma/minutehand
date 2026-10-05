@@ -262,12 +262,13 @@ def test_a_field_set_on_a_drive_document_is_refused_at_load_naming_the_happening
         after=timedelta(hours=1),
         action=FieldSet(field="Status", value="x"),
     )
-    scenario = SCENARIO.model_copy(update={"happenings": [happening]})
+    drive_only = [d for d in SCENARIO.documents if d.provider == "google_drive"]
+    scenario = SCENARIO.model_copy(update={"happenings": [happening], "documents": drive_only})
     manifests = {m.key: m for m in Registry.installed().manifests}
     with pytest.raises(RunRefused, match=r"happening 1 \(mara field_set the seeded document 'Supplier Shortlist'\) "):
         refuse_unheld(scenario, manifests)
     commented = happening.model_copy(update={"action": Commented(text="ok")})
-    refuse_unheld(SCENARIO.model_copy(update={"happenings": [commented]}), manifests)
+    refuse_unheld(SCENARIO.model_copy(update={"happenings": [commented], "documents": drive_only}), manifests)
 
 
 async def test_a_change_listing_says_removed_for_a_file_deleted_and_the_token_is_checked(

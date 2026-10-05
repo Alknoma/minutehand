@@ -153,7 +153,17 @@ class UserRecord(Model):
     user: wire.GraphUser
     tenant_id: str
     person_key: str | None = None
+    email: str | None = Field(
+        default=None,
+        description="The person's own email, kept beside the user even when Graph shows none (`mail` null): who a "
+        "message to them reaches, as the world's records name it",
+    )
     absences: list[AwayRecord] | None = None
+
+    @property
+    def reached_as(self) -> str | None:
+        """The email the world's records name this user by: the person's own, else the mail Graph shows."""
+        return self.email or self.user.mail
 
     @property
     def mri(self) -> str:
@@ -185,6 +195,8 @@ class ConversationRecord(Model):
     type: wire.ConversationType
     tenant_id: str
     display_name: str | None = None
+    description: str | None = Field(default=None, description="A channel's description, as Teams shows it")
+    private: bool = Field(default=False, description="A private channel: `membershipType` private")
     team_id: str | None = None
     members: list[str]
     bot_installed: bool
@@ -223,6 +235,9 @@ class PostRecord(Model):
 class SiteRecord(Model):
     site: wire.Site
     drive_id: str
+    space: str | None = Field(
+        default=None, description="The name of the scenario's shared space this site is; None for the team's own site"
+    )
 
 
 class DriveRecord(Model):
@@ -520,6 +535,7 @@ class MicrosoftWorld:
             last_edited_by=self._editor(stored.item.lastModifiedBy),
             last_edited_at=datetime.fromisoformat(stored.item.lastModifiedDateTime.replace("Z", "+00:00")),
             owner=self._editor(stored.item.createdBy),
+            owned_by=self._person_of(stored.item.createdBy),
             space=self._space(stored.item.parentReference.driveId),
         )
         return self.write(
@@ -535,11 +551,16 @@ class MicrosoftWorld:
         """Who last changed an item as every document provider names them: a person's email, or the app's name."""
         if by.user is not None:
             found = self.user(by.user.id)
-            return (found.user.mail if found is not None else None) or by.user.displayName
+            return (found.reached_as if found is not None else None) or by.user.displayName
         if by.application is None:
             return None
         app = self.app(by.application.id)
         return by.application.displayName or (app.display_name if app is not None else None)
+
+    def _person_of(self, by: wire.IdentitySet) -> str | None:
+        """The person a user identity is, when it is a person's user."""
+        found = self.user(by.user.id) if by.user is not None else None
+        return found.person_key if found is not None else None
 
     def _space(self, drive_id: str) -> str | None:
         """The shared place a drive is: its site's name for a team's library; None for a person's own OneDrive."""
@@ -547,7 +568,9 @@ class MicrosoftWorld:
         if drive is None or drive.site_id is None:
             return None
         site = self.site(drive.site_id)
-        return site.site.displayName if site is not None else drive.drive.name
+        if site is None:
+            return drive.drive.name
+        return site.space if site.space is not None else site.site.displayName
 
     def write_user(self, user: UserRecord, *, actor: Actor, text: str) -> WorldEvent:
         """A user changed while the world is open, as an administrator changes them."""
@@ -566,10 +589,9 @@ class MicrosoftWorld:
         the store holds that message, in any provider."""
         if not user.absences:
             return None
-        email = user.user.mail
         asked = (
-            first_ask(email, self.store.events())
-            if email is not None and any(a.starts is None for a in user.absences)
+            first_ask(user.person_key or "", user.reached_as, self.store.events())
+            if any(a.starts is None for a in user.absences)
             else None
         )
         known: list[tuple[datetime, datetime, AwayRecord]] = []

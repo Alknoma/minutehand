@@ -26,12 +26,13 @@ from minutehand.application.restore import SeenCall
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import Manifest, MessagingKind, TicketActionKind, Tier
 from minutehand.domain.scenario import (
     Deletes,
     MessagingHappening,
     Model,
     Moves,
+    Person,
     PersonPosts,
     ProviderKey,
     Scenario,
@@ -92,6 +93,8 @@ class Chat:
         hosts=["chat.test"],
         kinds=[EntityKind.MESSAGE, EntityKind.TICKET],
         pushes_events=True,
+        ticket_actions=[TicketActionKind.MOVES, TicketActionKind.DELETES],
+        messaging_happenings=[MessagingKind.POSTS],
     )
 
     def __init__(self) -> None:
@@ -247,9 +250,10 @@ class Chat:
         self._rewrite(ticket, Actor.PERSON, state=to, assignee_email=None, world=world)
 
     def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
+        self, ticket: EntityRef, *, state: TicketState | None, assignee: Person | None, world: Store, clock: Clock
     ) -> None:
-        self._rewrite(ticket, Actor.SCENARIO, state=state, assignee_email=assignee_email, world=world)
+        email = assignee.email if assignee is not None else None
+        self._rewrite(ticket, Actor.SCENARIO, state=state, assignee_email=email, world=world)
 
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         seeded = scenario.happening_ticket(happening)

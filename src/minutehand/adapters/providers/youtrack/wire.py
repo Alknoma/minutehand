@@ -194,9 +194,19 @@ class StoredUser(Wire):
     id: str
     login: str
     fullName: str
-    email: str | None
+    email: str | None = Field(description="The account's email, shown or not; None when it has none")
     ringId: str = Field(description="The same person's id in Hub")
     banned: bool = False
+    emailVisible: bool = Field(default=True, description="False: no email is shown for it, as for a hidden one")
+    person: str | None = Field(
+        default=None,
+        description="The Person.key it was seeded for; None for the agent and a seed's own users. Never served",
+    )
+
+    @property
+    def shown_email(self) -> str | None:
+        """The email a client is shown, and finds the account by: none when hidden."""
+        return self.email if self.emailVisible else None
 
 
 class StoredFieldDefinition(Wire):
@@ -267,6 +277,9 @@ class StoredIssue(Wire):
     tags: list[str] = Field(default=[], description="StoredTag ids, in the order they were added")
     seededFrom: int | None = Field(
         default=None, description="Its position in `Scenario.tickets`, for a seeded issue: how a happening finds it"
+    )
+    numberDeclared: bool = Field(
+        default=False, description="Its seed declared its number (`SeededTicket.number`): a further seed keeps it"
     )
 
 

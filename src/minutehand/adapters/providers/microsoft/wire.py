@@ -23,7 +23,16 @@ from enum import StrEnum
 from typing import Literal, TypeVar
 from urllib.parse import parse_qs
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+)
 
 from minutehand.domain.scenario import Model
 
@@ -455,6 +464,13 @@ class GraphUser(Aliased):
     jobTitle: str | None = None
     businessPhones: list[str] = []
     accountEnabled: bool | None = Field(default=None, description="Said only once an administrator changed it")
+
+    @model_serializer(mode="wrap")
+    def _mail_said_when_none(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        """Graph says `"mail": null` for a user with no mailbox address (a service account, an address hidden),
+        rather than leaving the field out: https://learn.microsoft.com/en-us/graph/api/resources/user#properties."""
+        found: dict[str, object] = handler(self)
+        return found if "mail" in found else {**found, "mail": None}
 
 
 class OutOfOfficeSettings(Aliased):

@@ -349,6 +349,9 @@ class StoredUser(Wire):
     active: bool = True
     timeZone: str = "UTC"
     siteAdmin: bool = False
+    person: str | None = Field(
+        default=None, description="Minutehand's own: the `Person.key` this account was seeded for; never served"
+    )
 
 
 class CredentialKind(StrEnum):
@@ -494,6 +497,11 @@ class StoredIssue(Wire):
     seededFrom: int | None = Field(
         default=None,
         description="Minutehand's own: the position in `Scenario.tickets` it was seeded from; never served",
+    )
+    numberDeclared: bool = Field(
+        default=False,
+        description="Minutehand's own: its key's number is the one its seed declared (`SeededTicket.number`), kept "
+        "when a further seed places it; never served",
     )
 
     def value(self, field: str) -> JsonValue:

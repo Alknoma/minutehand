@@ -266,11 +266,17 @@ class NotionWorld:
         return None if database is None else database_title(database)
 
     def editor(self, user_id: str) -> str:
-        """Who made a change, as the world's snapshot names them: a person's email, a bot's name."""
+        """Who made a change, as the world's snapshot names them: a person's email, or their name when they have
+        none; a bot's name."""
         user = self.user(user_id)
         if user is None:
             return user_id
         return user.email if user.type is wire.UserType.PERSON and user.email else user.name
+
+    def person(self, user_id: str) -> str | None:
+        """The Person.key a member was seeded from; None for a bot, or a member nobody seeded."""
+        user = self.user(user_id)
+        return user.person if user is not None and user.type is wire.UserType.PERSON else None
 
     # ------------------------------------------------------------------ snapshots
 
@@ -325,6 +331,7 @@ class NotionWorld:
             last_edited_by=self.editor(page.stamps.last_edited_by),
             last_edited_at=at,
             owner=self.editor(page.stamps.created_by),
+            owned_by=self.person(page.stamps.created_by),
             space=space.name if (space := self.workspace(page.workspace)) is not None else None,
         )
 

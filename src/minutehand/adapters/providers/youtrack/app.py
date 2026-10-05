@@ -180,7 +180,7 @@ class YouTrackApi:
             if not wanted
             or wanted in u.login.lower()
             or wanted in u.fullName.lower()
-            or (u.email is not None and wanted in u.email.lower())
+            or (u.shown_email is not None and wanted in u.shown_email.lower())
         ]
         present = self.presenter()
         page: list[wire.Answer] = [present.user(u) for u in self.page(call, found)]

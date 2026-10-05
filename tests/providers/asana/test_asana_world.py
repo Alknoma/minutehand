@@ -21,7 +21,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
 from minutehand.domain.provider import Tier
-from minutehand.domain.scenario import SeededComment, SeededTicket, TicketState
+from minutehand.domain.scenario import Person, SeededComment, SeededTicket, TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
 from minutehand.session import _services  # pyright: ignore[reportPrivateUsage]
@@ -130,9 +130,15 @@ def test_seeding_writes_the_workspace_people_projects_and_asana_tickets_as_the_s
     assert sorted(p.name for p in asana.projects()) == ["Catering", "Venue Move"]
     snapshots = [e.after for e in events if e.entity.kind is EntityKind.TICKET]
     assert snapshots == [
-        TicketSnapshot(title="Book the freight lift", project="Venue Move", assignee_email="tomas@example.com"),
         TicketSnapshot(
-            title="Return the old keys", project="Venue Move", assignee_email="noor@example.com", state=TicketState.DONE
+            title="Book the freight lift", project="Venue Move", assignee_email="tomas@example.com", assignee="tomas"
+        ),
+        TicketSnapshot(
+            title="Return the old keys",
+            project="Venue Move",
+            assignee_email="noor@example.com",
+            assignee="noor",
+            state=TicketState.DONE,
         ),
         TicketSnapshot(title="Confirm the menu", body="Vegetarian count first.", project="Catering"),
     ]
@@ -177,13 +183,17 @@ async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, clien
     seeded = items(await client.get(f"/projects/{VENUE}/tasks"))[1]  # Return the old keys, done, with noor
     ticket = state.task_ref(str(seeded["gid"]))
     workspace.provider.edit(
-        ticket, state=TicketState.OPEN, assignee_email="iris@example.com", world=workspace.store, clock=workspace.clock
+        ticket, state=TicketState.OPEN, assignee=SCENARIO.people[0], world=workspace.store, clock=workspace.clock
     )
 
     last = workspace.store.events()[-1]
     assert (last.actor, last.operation) == (Actor.SCENARIO, Operation.UPDATE)
     assert last.after == TicketSnapshot(
-        title="Return the old keys", project="Venue Move", assignee_email="iris@example.com", state=TicketState.OPEN
+        title="Return the old keys",
+        project="Venue Move",
+        assignee_email="iris@example.com",
+        assignee="iris",
+        state=TicketState.OPEN,
     )
     read = data(await client.get(f"/tasks/{seeded['gid']}", params={"opt_fields": "completed,completed_at,assignee"}))
     assert read == {
@@ -194,12 +204,11 @@ async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, clien
     }
 
 
-def test_editing_to_an_email_nobody_has_is_refused(workspace: Workspace) -> None:
+def test_editing_to_a_person_the_workspace_has_not_got_is_refused(workspace: Workspace) -> None:
     ticket = state.task_ref(workspace.asana.tasks()[0].gid)
-    with pytest.raises(LookupError):
-        workspace.provider.edit(
-            ticket, state=None, assignee_email="stranger@example.com", world=workspace.store, clock=workspace.clock
-        )
+    stranger = Person(key="stranger", name="Stranger", email="iris@example.com")
+    with pytest.raises(LookupError, match="stranger"):
+        workspace.provider.edit(ticket, state=None, assignee=stranger, world=workspace.store, clock=workspace.clock)
 
 
 def test_moving_a_task_that_is_not_there_is_refused(workspace: Workspace) -> None:

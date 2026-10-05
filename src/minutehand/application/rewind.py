@@ -46,7 +46,7 @@ from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonC
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
-from minutehand.domain.world import Actor, MessageSnapshot, Operation
+from minutehand.domain.world import Actor, MessageSnapshot, Operation, reached
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -270,12 +270,12 @@ def _refuse_ticket_edits(fork: Fork, services: Services, scenario: Scenario) -> 
 
 
 def _edit_tickets(fork: Fork, services: Services, scenario: Scenario, child: Store, clock: Clock) -> None:
-    emails = {p.key: p.email for p in scenario.people}
+    people = {p.key: p for p in scenario.people}
     for override in fork.overrides:
         if isinstance(override, TicketEdit):
-            assignee = emails[override.assignee] if override.assignee is not None else None
+            assignee = people[override.assignee] if override.assignee is not None else None
             services.editors[override.entity.provider].edit(
-                override.entity, state=override.state, assignee_email=assignee, world=child, clock=clock
+                override.entity, state=override.state, assignee=assignee, world=child, clock=clock
             )
 
 
@@ -353,7 +353,7 @@ async def _ask_again(
     ]
     withdrawn = [*checkpoint.withdrawn, *unsaid]
     answered = {(r.in_reply_to, r.person) for i, r in enumerate(replies) if i not in withdrawn}
-    changed = {p.email: p for p in scenario.people if p.key in people}
+    changed = [p for p in scenario.people if p.key in people]
     pending = [p for p in checkpoint.pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
     count = len(replies)
     for event in events:
@@ -365,10 +365,10 @@ async def _ask_again(
             and after.answerable
         ):
             continue
-        for email in after.recipient_emails:
-            if email not in changed or (event.entity, changed[email].key) in answered:
+        for person in reached(after, changed):
+            if (event.entity, person.key) in answered:
                 continue
-            reply = await replier.decide(changed[email], event, [e for e in events if e.seq <= event.seq], clock)
+            reply = await replier.decide(person, event, [e for e in events if e.seq <= event.seq], clock)
             if reply is None:
                 continue
             reply = reply.model_copy(update={"at": max(reply.at, clock.now())})

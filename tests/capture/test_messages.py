@@ -70,6 +70,7 @@ async def test_a_send_is_a_message_from_the_agent_to_the_person_it_names(
         text="Partner pricing\n\nCould you confirm the pricing?",
         channel="to:sofia@example.com",
         recipient_emails=["sofia@example.com"],
+        recipients=["sofia"],
         answerable=False,
     )
     # The call that carried it is tied to it, as a provider's call is to what it wrote.

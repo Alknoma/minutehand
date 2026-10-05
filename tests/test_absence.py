@@ -26,7 +26,7 @@ def _message(seq: int, actor: Actor, to: str, hours: float) -> WorldEvent:
 
 def test_an_absence_is_placed_from_the_start_or_from_the_first_ask_plus_its_own_offset() -> None:
     events = [_message(1, Actor.PERSON, "rosa@x", 1), _message(2, Actor.AGENT, "rosa@x", 3)]
-    asked = first_ask("rosa@x", events)
+    asked = first_ask("rosa", "rosa@x", events)
 
     assert asked == T0 + timedelta(hours=3)
     assert placed(from_start=T0, asked=asked, starts_after=timedelta(hours=1), lasts=timedelta(hours=2)) == (

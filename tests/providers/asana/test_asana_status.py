@@ -107,6 +107,7 @@ def test_with_the_completed_box_as_the_source_a_person_cannot_cancel(tmp_path: P
             title="Book the freight lift",
             project="Venue Move",
             assignee_email="tomas@example.com",
+            assignee="tomas",
             state=TicketState.DONE,
         ),
     )
@@ -149,10 +150,19 @@ def test_a_person_moves_a_task_by_the_status_field_and_ticks_it(rich: Workspace)
         last_change(rich, INCIDENT)[0] is Actor.PERSON and last_change(rich, INCIDENT)[1].state is TicketState.CANCELLED
     )
     rich.provider.edit(
-        ticket, state=TicketState.OPEN, assignee_email="alice.chen@company.com", world=rich.store, clock=rich.clock
+        ticket,
+        state=TicketState.OPEN,
+        assignee=next(p for p in SCENARIO.people if p.key == "alice"),
+        world=rich.store,
+        clock=rich.clock,
     )
     actor, after = last_change(rich, INCIDENT)
-    assert (actor, after.state, after.assignee_email) == (Actor.SCENARIO, TicketState.OPEN, "alice.chen@company.com")
+    assert (actor, after.state, after.assignee_email, after.assignee) == (
+        Actor.SCENARIO,
+        TicketState.OPEN,
+        "alice.chen@company.com",
+        "alice",
+    )
 
 
 def test_a_task_in_no_project_with_the_status_field_cannot_be_cancelled(rich: Workspace) -> None:

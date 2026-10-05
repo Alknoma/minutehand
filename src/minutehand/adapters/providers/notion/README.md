@@ -89,12 +89,30 @@ documentation.
 - **Not reproduced:** aggregation of frequent events, delivery delay and out-of-order delivery,
   retries (each event is sent once), `page.moved`, `page.locked`, data-source events.
 
+## People, accounts and declared ids
+
+- A person with no email is a member whose user object reads `"person": {}`, as Notion serves any person to an
+  integration without the capability to read emails (https://developers.notion.com/reference/user,
+  https://developers.notion.com/reference/capabilities). A person's Notion account entry (`Person.accounts`) may
+  set `id` (a UUID, dashed or not, served dashed), `name`, and `email_visible: false`, after which their email is
+  shown to no integration. A `login` is refused at load: Notion users have none. A declared user id is one
+  member: the same person in two seeded workspaces would be one id twice, and is refused.
+- A seeded document may declare its page `id` (a UUID, https://developers.notion.com/reference/intro#conventions);
+  undeclared ones keep the ids derived from what they are. A declared id another seeded thing has, declared or
+  derived, spelled with or without dashes, is refused at load.
+- A seeded document's `owner` is its `created_by`, `modified_by` its `last_edited_by`, and
+  `modified_before_start` its `created_time` and `last_edited_time`. A shared space, a document's `space` or
+  `shared_with`, a spreadsheet, presentation or file, and a sign-in are refused at load: this provider holds none
+  of them.
+- Each person member records which person it was seeded from, so every page version names its owner by
+  `owned_by` (the person's key), whatever their email.
+
 ## While a world is open (`minutehand serve`)
 
 - A member is removed (`OpenWorld.remove_person("notion", key)`) from every workspace they belong to: `/v1/users`
   lists them no more, `/v1/users/{id}` answers 404 `object_not_found`, and what they wrote still names them.
   Deactivation is refused as unsupported: Notion has no such state for a member.
-- Every page version tells its `owner` (who created it: a person's email, or the integration's name) and its
+- Every page version tells its `owner` (who created it: a person's email, their name when they have none, or the integration's name; `owned_by` the person's key) and its
   `space` (the workspace's name).
 
 ## In the world log

@@ -53,6 +53,27 @@ or at a moment of their own. Faults declared there (`rate_limits`), or on an ope
 `DeclaresFaults`: a rate limit on a method and path prefix answers 429 with `Retry-After` the given number of
 times. World keys: `<site>.atlassian.net` and `/ex/jira/{cloudId}/`.
 
+People: each scenario person is an Atlassian account (`seed.person_user`), found by their `Person.key` (kept on the
+stored account as `person`, never served), never by their email. A person with no email is an account whose
+`emailAddress` is left out, as Jira leaves out the email of an account whose owner hid it
+(https://developer.atlassian.com/cloud/jira/platform/deprecation-notice-user-privacy-api-migration-guide/: "fields such as email will only be returned by the API if the user has permitted that data to be visible"); an API token cannot sign them in (Basic
+is the account's email and the token), so a seed giving one is refused, and an OAuth grant can. Their entry
+`accounts: [{provider: jira, id, name, email_visible}]` gives the accountId (at most 128 letters, digits, `:` and
+`-`: `accountId` "Max length: 128",
+https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/#api-rest-api-3-user-get), the display
+name, and an email kept for the world's record but never shown. `account: deactivated` is `active: false`,
+`account: bot` an app's account, `working_hours.timezone` the profile's `timeZone`; Jira has no job title and no
+guest account, so `title` and `guest` show nothing. A person and a `SeededAccount` that would be one accountId are
+refused: declare it once, as the person's account, to act as it, assign it and deactivate it. `Manifest`
+`account_facts` and `person_facts` list exactly this.
+
+Declared identities: `SeededTicket.number` is the issue's number in its project (`BACKEND-142`) and
+`SeededTicket.id` its numeric issue id. Undeclared tickets take the free numbers from 1 in seed order, passing over
+declared ones; an issue created later takes one past the highest number the project has handed out, declared ones
+included, as a site numbers on after issues are imported with their own keys (assumed: Atlassian documents the
+import behaviour for CSV and Jira Cloud migration only, not for this fake's case). A minted issue id passes over any
+a seed declared. A further seed keeps a declared number and refuses one the world has handed out.
+
 A person's acts are `TicketHappening`s through `ActsOnTickets.act`: `Moves` (the fewest transitions with no
 required screen), `Reassigns` (to someone or nobody), `Comments`, `Deletes`, each by the happening's person at the
 run clock's time, recorded as actor PERSON with that person as the changelog's or comment's author.
@@ -67,7 +88,7 @@ run clock's time, recorded as actor PERSON with that person as the changelog's o
 
 ## What it does not do
 
-- API v2 (`/rest/api/2`), the old `/rest/api/3/search`, bulk create, webhooks, watchers, votes, worklogs,
+- API v2 (`/rest/api/2`), the old `/rest/api/3/search` (answered 410, `CLAIMS.md`), bulk create, webhooks, watchers, votes, worklogs,
   attachments, components and versions (empty lists), issue security, groups, filters, dashboards.
 - Writing `timetracking`, ranking, epics' own endpoints, sprint create or edit, board configuration.
 - The authorization-code grant (no browser flow: tokens are seeded), scopes (every token holds every scope),

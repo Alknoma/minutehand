@@ -93,6 +93,19 @@ Observed by the old emulator, not adopted (the documentation is silent, so this 
   (https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-api-reference); this
   provider answers 200, and only "success, no body" is pinned.
 
+## People, spaces and declared ids
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| A user with no mailbox address is `"mail": null`, and still has a `userPrincipalName` | documented | `test_a_person_with_no_email_is_a_user_with_a_principal_name_and_no_mail` | https://learn.microsoft.com/en-us/graph/api/resources/user#properties |
+| An object id is a GUID; a principal name is `alias@domain` | documented | `test_an_object_id_that_is_no_guid_is_refused`, `test_a_principal_name_that_is_no_alias_at_domain_is_refused` | https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/plan-connect-userprincipalname |
+| A disabled account is `accountEnabled: false` | documented | `test_a_deactivated_person_is_a_disabled_user` | https://learn.microsoft.com/en-us/graph/api/resources/user#properties |
+| A private channel is `membershipType: private`, with its `description` | documented | `test_a_declared_channel_is_private_with_its_id_description_and_message_id` | https://learn.microsoft.com/en-us/graph/api/resources/channel |
+| A driveItem id in SharePoint and OneDrive for Business is `01` and 32 base32 characters | observed | `test_a_document_id_that_is_no_drive_item_id_is_refused` | — |
+| A site's id is `{hostname},{site collection id},{web id}` | documented | `test_a_site_id_on_another_host_is_refused` | https://learn.microsoft.com/en-us/graph/api/resources/site#id-property |
+| A site has a default document library at `/sites/{id}/drive`, and a library's items carry `permissions` | documented | `test_a_shared_space_is_a_site_whose_library_holds_its_documents_and_its_members` | https://learn.microsoft.com/en-us/graph/api/drive-get |
+| A driveItem says who created and last changed it (`createdBy`, `lastModifiedBy`) | documented | `test_a_declared_document_has_its_id_owner_editor_age_and_sharing` | https://learn.microsoft.com/en-us/graph/api/resources/driveitem |
+
 Error codes this provider answers that are not on Teams' status-code table, kept as they are (every other connector
 code it answers is on that table, https://learn.microsoft.com/en-us/microsoftteams/platform/bots/build-conversational-capability):
 

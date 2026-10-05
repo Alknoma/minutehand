@@ -126,16 +126,12 @@ def acting(world: Store, person: str, channel: str | None = None) -> SlackWorld:
     """The workspace a person acts in: of the workspaces they belong to, the first that has `channel` with them in
     it when one is named, else the first."""
     every = SlackWorld(world)
-    theirs = [
-        every.as_team(w) for w in every.workspaces() if every.as_team(w).user(state.user_id(person, w.id)) is not None
-    ]
+    theirs = [every.as_team(w) for w in every.workspaces() if every.as_team(w).find_member(person) is not None]
     if not theirs:
         raise LookupError(f"{person} is not a member of any workspace")
     if channel is not None:
         named = [
-            w
-            for w in theirs
-            if w.is_member(state.named_channel_id(channel, w.team.id), state.user_id(person, w.team.id))
+            w for w in theirs if (c := w.channel_named(channel)) is not None and w.is_member(c.id, w.member(person))
         ]
         if named:
             return named[0]
@@ -188,7 +184,7 @@ async def deliver(reply: PersonReply, target: InboundTarget, world: Store, clock
     channel_id, asked = found
     slack = where(world, channel_id)
     channel = slack.channel(channel_id)
-    author = state.user_id(reply.person, slack.team.id)
+    author = slack.member(reply.person)
     if channel is None or not slack.is_member(channel_id, author):
         raise LookupError(f"{reply.person} is not in the conversation {channel_id} they are answering")
     # In an IM a reply is a new message; anywhere else it goes in the thread of what it answers. An ephemeral
@@ -203,8 +199,8 @@ async def say(message: PersonMessage, target: InboundTarget, world: Store, clock
     """The person DMs the agent's bot: a new message in their IM with it, never in a thread."""
     refuse_foreign(target)
     slack = acting(world, message.person)
-    author = state.user_id(message.person, slack.team.id)
-    channel = slack.channel(state.conversation_id([slack.bot, author]))
+    author = slack.member(message.person)
+    channel = slack.conversation_between([slack.bot, author])
     if channel is None:
         raise LookupError(f"{message.person} has no DM with the agent's bot; the workspace was not seeded for them")
     await _post(slack, channel, author, message.text, None, [], False, target, clock, secret)
@@ -270,7 +266,7 @@ async def happen(
     if happening.provider != MANIFEST.key:
         raise ValueError(f"a {happening.provider} happening is not Slack's")
     slack = _acts_in(world, happening)
-    author = state.user_id(happening.person, slack.team.id)
+    author = slack.member(happening.person)
     if isinstance(happening, PersonPosts):
         await _posts(slack, happening, author, target, clock, secret)
     elif isinstance(happening, PersonEdits):
@@ -308,12 +304,11 @@ def _acts_in(world: Store, happening: MessagingHappening) -> SlackWorld:
 
 def conversation(slack: SlackWorld, name: str | None, author: str) -> wire.SlackChannel:
     """A channel by its name, or with none, the person's DM with the agent's bot; the person must be in it."""
-    cid = state.conversation_id([slack.bot, author]) if name is None else state.named_channel_id(name, slack.team.id)
-    found = slack.channel(cid)
+    found = slack.conversation_between([slack.bot, author]) if name is None else slack.channel_named(name)
     where = "their DM with the agent" if name is None else f"#{name}"
     if found is None:
         raise LookupError(f"there is no {where} in the workspace")
-    if not slack.is_member(cid, author):
+    if not slack.is_member(found.id, author):
         raise LookupError(f"{author} is not in {where}")
     return found
 
@@ -370,6 +365,7 @@ async def _edits(
             text=edits.text,
             channel=channel.id,
             recipient_emails=slack.human_emails(channel.id, besides=author),
+            recipients=slack.human_people(channel.id, besides=author),
             thread_of=before.thread_ts,
         ),
     )
@@ -447,10 +443,10 @@ async def _reacts(
 async def _joins(
     slack: SlackWorld, joins: PersonJoins, author: str, target: InboundTarget, clock: Clock, secret: str
 ) -> None:
-    cid = state.named_channel_id(joins.channel, slack.team.id)
-    channel = slack.channel(cid)
+    channel = slack.channel_named(joins.channel)
     if channel is None:
         raise LookupError(f"there is no #{joins.channel} in the workspace")
+    cid = channel.id
     if slack.is_member(cid, author):
         raise LookupError(f"{joins.person} is already in #{joins.channel}")
     if channel.is_private:
@@ -481,8 +477,8 @@ async def _adds_agent(
     invited it. A bot is never invited to a DM, so a happening with no channel is refused."""
     if adds.channel is None:
         raise ValueError("a Slack bot is invited to a channel; a DM with it exists already, so name a channel")
-    cid = state.named_channel_id(adds.channel, slack.team.id)
     channel = conversation(slack, adds.channel, author)
+    cid = channel.id
     if slack.is_member(cid, slack.bot):
         raise LookupError(f"the agent is already in #{adds.channel}")
     stamp = slack.next_ts(clock)

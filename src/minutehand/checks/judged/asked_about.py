@@ -45,7 +45,6 @@ class AskedAbout:
 
     async def judge(self, view: RunView, model: LanguageModel, *, failed: frozenset[EntityRef]) -> CheckReport:
         people = {p.key: p for p in view.scenario.people}
-        email = {p.key: p.email for p in view.scenario.people}
         start = view.scenario.starts_at
         findings: list[Finding] = []
         notes: list[str] = []
@@ -55,7 +54,7 @@ class AskedAbout:
             candidates = [
                 e
                 for e in view.events
-                if Expectations.matches(expected, e, email)
+                if Expectations.matches(expected, e, people)
                 and (expected.by is None or e.sim_time <= start + expected.by)
                 and e.entity not in failed
             ]

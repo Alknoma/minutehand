@@ -317,6 +317,8 @@ class TeamsGraph:
         return wire.GraphChannel(
             id=channel.graph_id,
             displayName=channel.display_name or "General",
+            description=channel.description,
+            membershipType="private" if channel.private else "standard",
             createdDateTime=channel.created,
             webUrl=f"https://teams.microsoft.com/l/channel/{channel.graph_id}",
             tenantId=channel.tenant_id,

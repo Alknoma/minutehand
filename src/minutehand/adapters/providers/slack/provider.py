@@ -67,7 +67,8 @@ class SlackProvider:
         changed = False
         for workspace in every.workspaces():
             slack = every.as_team(workspace)
-            user = slack.user(state.user_id(person.key, workspace.id))
+            member = slack.find_member(person.key)
+            user = slack.user(member) if member is not None else None
             if user is None:
                 continue
             deleted = change is PersonChange.DEACTIVATED

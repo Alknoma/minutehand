@@ -5,7 +5,7 @@ from __future__ import annotations
 from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
-from minutehand.adapters.providers.asana.seed import AsanaSeed, limited, seed, seeded_gid
+from minutehand.adapters.providers.asana.seed import AsanaSeed, gid_of_person, limited, person_gid, seed, seeded_gid
 from minutehand.adapters.providers.asana.state import AsanaWorld
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
@@ -62,16 +62,16 @@ class AsanaProvider:
         asana.put_task(asana.moved(task, to, now=clock.now()), operation=Operation.UPDATE, actor=Actor.PERSON)
 
     def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
+        self, ticket: EntityRef, *, state: TicketState | None, assignee: Person | None, world: Store, clock: Clock
     ) -> None:
         asana = AsanaWorld(world)
         task = _task(asana, ticket)
         if state is not None:
             task = asana.moved(task, state, now=clock.now())
-        if assignee_email is not None:
-            user = asana.user_by_email(assignee_email)
-            if user is None:
-                raise LookupError(f"no asana user has the email {assignee_email}")
+        if assignee is not None:
+            user = asana.user_of_person(assignee.key)
+            if user is None or user.removed:
+                raise LookupError(f"{assignee.key} is no member of the asana workspace")
             task = task.model_copy(update={"assignee": user.gid, "modified_at": wire.stamp(clock.now())})
         asana.put_task(task, operation=Operation.UPDATE, actor=Actor.SCENARIO)
 
@@ -87,7 +87,7 @@ class AsanaProvider:
         if change is not PersonChange.REMOVED:
             raise ValueError(f"asana has no way to show a person {change.value}")
         asana = AsanaWorld(world)
-        user = asana.user(state.user_gid(person.key))
+        user = asana.user_of_person(person.key) or asana.user(person_gid(person))
         if user is None or user.removed:
             raise ValueError(f"{person.key} is not a member of the asana workspace")
         asana.put_record(
@@ -114,7 +114,7 @@ class AsanaProvider:
         task = asana.task(seeded_gid(scenario, seeded))
         if task is None:
             return
-        person = state.user_gid(happening.person)
+        person = gid_of_person(scenario, happening.person)
         now = wire.stamp(clock.now())
         match happening.action:
             case Moves():
@@ -124,7 +124,7 @@ class AsanaProvider:
                     actor=Actor.PERSON,
                 )
             case Reassigns():
-                to = state.user_gid(happening.action.to) if happening.action.to is not None else None
+                to = gid_of_person(scenario, happening.action.to) if happening.action.to is not None else None
                 asana.put_task(
                     task.model_copy(update={"assignee": to, "modified_at": now}),
                     operation=Operation.UPDATE,

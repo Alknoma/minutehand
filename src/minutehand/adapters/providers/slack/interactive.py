@@ -120,7 +120,7 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
     channel_id, message = found
     slack = inbound.where(world, channel_id)
     channel = slack.channel(channel_id)
-    author = state.user_id(reply.person, slack.team.id)
+    author = slack.member(reply.person)
     shown = message.ephemeral_to == author if message.ephemeral_to is not None else slack.is_member(channel_id, author)
     if channel is None or not shown:
         raise LookupError(f"{reply.person} was never shown the message {message.ts} they press on")
@@ -135,7 +135,7 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
     if control is None:
         offered = [a.action_id for a in message_actions(message)]
         raise LookupError(f"the message {message.ts} has no control {pressed.action_id!r} to press; it has {offered}")
-    picked = state.user_id(pressed.picks, slack.team.id) if pressed.picks is not None else None
+    picked = slack.member(pressed.picks) if pressed.picks is not None else None
     if control.type == "users_select" and picked is None:
         raise ValueError(f"{reply.person} uses the person picker {control.label!r} and picks nobody")
 
@@ -348,7 +348,7 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
     once shown to them alone, or to the channel when it says `in_channel`."""
     inbound.refuse_foreign(target)
     slack = inbound.acting(world, happening.person, happening.channel)
-    author = state.user_id(happening.person, slack.team.id)
+    author = slack.member(happening.person)
     channel = inbound.conversation(slack, happening.channel, author)
     trigger, hook = mint(slack, clock, author, channel.id, None)
     slack.write(
@@ -394,6 +394,11 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
         ephemeral_to=None if in_channel else author,
     )
     seen = slack.human_emails(channel.id, besides=slack.bot) if in_channel else [e for e in [slack.email_of(user)] if e]
+    reached = (
+        slack.human_people(channel.id, besides=slack.bot)
+        if in_channel
+        else [k for k in [slack.person_of(user)] if k is not None]
+    )
     slack.write(
         state.message_ref(ts),
         message,
@@ -404,6 +409,7 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
             text=wire.visible_text(message.text, message.blocks),
             channel=channel.id,
             recipient_emails=seen,
+            recipients=reached,
             actions=message_actions(message),
         ),
     )

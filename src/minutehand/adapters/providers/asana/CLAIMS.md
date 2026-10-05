@@ -46,6 +46,19 @@ asserted it on a reading of real responses, and the reference does not state it)
 | In a workspace that is not an organization, asking for the caller's teams is a 400 "Not an organization" | observed | `claims::test_a_plain_workspace_refuses_to_list_my_teams_not_an_organization` | |
 | In a workspace that is not an organization, a project needs no team and answers `team: null` | documented | `claims::test_a_project_in_a_plain_workspace_needs_no_team_and_has_none` | https://developers.asana.com/reference/createproject |
 
+## People and identities a seed declares
+
+| Claim | Class | Pinned by | Documentation |
+|---|---|---|---|
+| A gid is a string; every gid Asana hands out is digits, so a declared task or user gid that is not is refused at load | documented (string), observed (digits) | `test_asana_people_and_ids.py::test_a_gid_that_is_not_digits_is_refused` | https://developers.asana.com/reference/getuser |
+| A seeded task takes the gid its ticket declares (`SeededTicket.id`), a person's user the gid their account declares (`PersonAccount.id`); a declared gid another seeded thing has is refused; a gid minted later passes over every declared one | Minutehand's own | `test_asana_people_and_ids.py::test_a_seeded_task_takes_its_declared_gid_and_the_rest_keep_theirs`, `::test_a_declared_gid_another_seeded_thing_has_is_refused`, `::test_a_task_the_agent_makes_never_takes_a_declared_gid` | |
+| A user whose email is not visible (a person with none, or `email_visible: false`) answers `email: null`. The reference types `email` as a string and says nothing of when it is absent; null is this provider's reading, not Asana's word | Minutehand's own | `test_asana_people_and_ids.py::test_a_person_without_an_email_is_a_user_whose_email_is_null`, `::test_a_hidden_email_is_not_shown_though_the_person_has_one` | https://developers.asana.com/reference/getuser |
+| A person seeded `deactivated` is a user removed from the workspace: unlisted and in no team, as `PersonChange.REMOVED` leaves them | Minutehand's own | `test_asana_people_and_ids.py::test_a_deactivated_person_is_seeded_removed_from_the_workspace` | |
+| Asana has no login, so a person's asana account entry that sets one is refused at load | Minutehand's own | `test_asana_people_and_ids.py::test_a_login_on_an_asana_account_is_refused` | |
+
+A person's job title, working hours, absences, a guest's limited access and a bot have no place on an Asana user
+the API shows, and are not shown (`Manifest.person_facts`).
+
 ## Not carried over
 
 - **A bare `GET /projects/{gid}` answered compact, without `team`.** Contradicted by the reference: a single

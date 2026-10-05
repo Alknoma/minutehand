@@ -32,7 +32,7 @@ from minutehand.adapters.providers.jira.state import (
     ticket_project_id,
 )
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Person, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
@@ -42,6 +42,14 @@ AGENT = "agent"
 _ACCOUNTS = uuid.UUID("2b7f0d4e-91c3-4f55-8f0a-6d2c1e7b9a30")
 _CLOUD = uuid.UUID("c41f0f6a-0b7e-4c1e-9d8f-3a5e2b6c7d18")
 _KEY = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
+ACCOUNT_ID = re.compile(r"^[A-Za-z0-9:-]{1,128}$")
+"""An Atlassian accountId: at most 128 characters (the user resource's `accountId`, "Max length: 128",
+https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/#api-rest-api-3-user-get), in the shapes
+Atlassian hands out: `5b10ac8d82e05b22cc7d4ef5`, `557058:f58131cb-b67d-43c7-b30d-6b58d40bd077`, `qm:…` for a portal
+customer."""
+ISSUE_ID = re.compile(r"^[1-9][0-9]{0,17}$")
+"""A Jira issue id: a positive number, sent as a string (`"10002"` in the issue resource,
+https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-issueidorkey-get)."""
 
 
 class SeededAccount(Model, Keyed):
@@ -230,6 +238,37 @@ def jira_seed(scenario: Scenario) -> JiraSeed:
 def account_id(email: str) -> str:
     """An Atlassian accountId for an email: the same in every run."""
     return f"712020:{uuid.uuid5(_ACCOUNTS, email.strip().lower())}"
+
+
+def person_account_id(person: Person) -> str:
+    """The accountId a person's account takes: the one their entry declares; else from their email, as before
+    entries existed; else, with no email, from their key (which holds no `@`, so it is no email's)."""
+    declared = person.account_in(MANIFEST.key)
+    if declared is not None and declared.id is not None:
+        if not ACCOUNT_ID.match(declared.id):
+            raise ValueError(
+                f"{person.key}'s Jira accountId {declared.id!r} is not one: at most 128 letters, digits, ':' and '-'"
+            )
+        return declared.id
+    if person.email is not None:
+        return account_id(person.email)
+    return f"712020:{uuid.uuid5(_ACCOUNTS, person.key)}"
+
+
+def person_user(person: Person) -> wire.StoredUser:
+    """The Atlassian account seeded for a person: their declared id, name and email visibility; deactivated, or an
+    app's account for a bot, as their account says; their working hours' timezone as the profile's."""
+    declared = person.account_in(MANIFEST.key)
+    return wire.StoredUser(
+        accountId=person_account_id(person),
+        displayName=declared.name if declared is not None and declared.name is not None else person.name,
+        emailAddress=person.email,
+        emailVisible=declared.email_visible if declared is not None else True,
+        accountType=wire.AccountType.APP if person.account is Account.BOT else wire.AccountType.ATLASSIAN,
+        active=person.account is not Account.DEACTIVATED,
+        timeZone=person.working_hours.timezone if person.working_hours is not None else "UTC",
+        person=person.key,
+    )
 
 
 def cloud_id(site: str) -> str:
@@ -445,9 +484,7 @@ def seed(scenario: Scenario, world: Store) -> None:
         )
     }
     for person in scenario.people:
-        accounts[person.key] = wire.StoredUser(
-            accountId=account_id(person.email), displayName=person.name, emailAddress=person.email
-        )
+        accounts[person.key] = person_user(person)
     for extra in spec.accounts:
         email = extra.email or f"{extra.key}@{spec.site}.invalid"
         accounts[extra.key] = wire.StoredUser(
@@ -458,6 +495,14 @@ def seed(scenario: Scenario, world: Store) -> None:
             accountType=extra.kind,
             active=extra.active,
         )
+    held: dict[str, str] = {}
+    for name, account in accounts.items():
+        if account.accountId in held:
+            raise ValueError(
+                f"{held[account.accountId]!r} and {name!r} are both the Jira account {account.accountId}: declare it "
+                "once, as a person's account (`people[].accounts`) to act as it, assign it and change it"
+            )
+        held[account.accountId] = name
     for account in accounts.values():
         jira.write_user(account, actor=Actor.SCENARIO)
 
@@ -468,6 +513,11 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     for n, credential in enumerate(spec.credentials):
         oauth = credential.oauth
+        if oauth is None and credential.account in accounts and accounts[credential.account].emailAddress is None:
+            raise ValueError(
+                f"an API token signs in to Jira as the account's email and the token, and {credential.account!r} has "
+                "no email: give them one, or sign them in with an oauth grant"
+            )
         if oauth is None:
             stored = wire.StoredCredential(
                 id=str(n + 1),
@@ -549,12 +599,15 @@ def seed(scenario: Scenario, world: Store) -> None:
             raise ValueError(f"the Jira seed describes {detail.ticket!r}, which is the key of no seeded Jira ticket")
     by_key: dict[str, wire.StoredIssue] = {}
     commented: dict[str, int] = {}
+    numbers = _numbers(scenario)
     for position, ticket in enumerate(scenario.tickets):
         if ticket.provider != MANIFEST.key:
             continue
         found = next((i for i in spec.issues if i.ticket == ticket.key), None) if ticket.key is not None else None
         detail = found or SeededIssue(ticket=ticket.key or "")
-        made = _issue(desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position)
+        made = _issue(
+            desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position, numbers[position]
+        )
         for n, comment in enumerate(ticket.comments):
             desk.comment(made, wire.adf_from_text(comment.text), by=who(comment.by), at=scenario.starts_at,
                          actor=Actor.SCENARIO, seeded=n)  # fmt: skip
@@ -595,6 +648,7 @@ def _issue(
     who: Callable[[str], str],
     earlier: dict[str, wire.StoredIssue],
     position: int,
+    number: int,
 ) -> wire.StoredIssue:
     jira = desk.world
     issue_type = next((t for t in site.issueTypes if t.name.lower() == detail.issue_type.lower()), None)
@@ -645,9 +699,8 @@ def _issue(
         )
         for n, change in enumerate(detail.history)
     ]
-    number = jira.next_number(project.id)
     issue = wire.StoredIssue(
-        id=seeded_issue_id(position),
+        id=_issue_id(ticket, position, scenario),
         key=f"{project.key}-{number}",
         project=project.id,
         issuetype=issue_type.id,
@@ -670,6 +723,44 @@ def _issue(
         timeSpentSeconds=detail.spent_seconds,
         history=history,
         seededFrom=position,
+        numberDeclared=ticket.number is not None,
     )
     jira.create_issue(issue, actor=Actor.SCENARIO)
     return issue
+
+
+def _numbers(scenario: Scenario) -> dict[int, int]:
+    """Each seeded Jira ticket's number in its project, by its place in `Scenario.tickets`: the one it declares,
+    else the next in seed order that no ticket of the project declares, from 1."""
+    jira_tickets = [(n, t) for n, t in enumerate(scenario.tickets) if t.provider == MANIFEST.key]
+    declared: dict[str, set[int]] = {}
+    for _, ticket in jira_tickets:
+        if ticket.number is not None:
+            declared.setdefault(ticket.project, set()).add(ticket.number)
+    following: dict[str, int] = {}
+    numbers: dict[int, int] = {}
+    for position, ticket in jira_tickets:
+        if ticket.number is not None:
+            numbers[position] = ticket.number
+            continue
+        number = following.get(ticket.project, 1)
+        while number in declared.get(ticket.project, set()):
+            number += 1
+        numbers[position] = number
+        following[ticket.project] = number + 1
+    return numbers
+
+
+def _issue_id(ticket: SeededTicket, position: int, scenario: Scenario) -> str:
+    """The ticket's declared id, refused when it is no Jira issue id or another seeded ticket's derived one; else
+    the id derived from its place."""
+    if ticket.id is None:
+        return seeded_issue_id(position)
+    if not ISSUE_ID.match(ticket.id):
+        raise ValueError(f"the Jira issue id {ticket.id!r} of {ticket.title!r} is not one: a positive whole number")
+    for n, other in enumerate(scenario.tickets):
+        if other.provider == MANIFEST.key and other.id is None and seeded_issue_id(n) == ticket.id:
+            raise ValueError(
+                f"{ticket.title!r} declares the Jira issue id {ticket.id}, the id {other.title!r} is seeded with"
+            )
+    return ticket.id

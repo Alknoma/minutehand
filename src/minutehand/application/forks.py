@@ -53,6 +53,8 @@ from minutehand.domain.world import (
     RecordSnapshot,
     TicketSnapshot,
     WorldEvent,
+    assigned,
+    reached,
 )
 
 QUOTED = 160
@@ -265,9 +267,9 @@ def change_words(
             was = ticket_before.state.value if ticket_before is not None else "unknown"
             said.append(f"state {was} to {override.state.value}")
         if override.assignee is not None:
-            by_email = {p.email: p for p in scenario.people}
+            held = assigned(ticket_before, scenario.people) if ticket_before is not None else None
             holder = ticket_before.assignee_email if ticket_before is not None else None
-            was = (by_email[holder].name if holder in by_email else holder) if holder else "nobody"
+            was = held.name if held is not None else (holder or "nobody")
             said.append(f"assignee {was} to {_person(people, override.assignee)}")
         return f"edits ticket {name} at the fork: " + (", ".join(said) or "nothing")
     assert isinstance(override, DeadlineShift)
@@ -375,7 +377,6 @@ def _paired(parent: list[Finding], fork: list[Finding]) -> tuple[list[Finding], 
 
 def event_words(event: WorldEvent, scenario: Scenario) -> str:
     """One change in the world as a sentence: who did what to what, and when."""
-    names = {p.email: p.name for p in scenario.people} | {p.key: p.name for p in scenario.people}
     who = {Actor.AGENT: "the agent", Actor.PERSON: "a person", Actor.SCENARIO: "the scenario"}[event.actor]
     verb = {Operation.CREATE: "created", Operation.UPDATE: "changed", Operation.DELETE: "deleted"}.get(
         event.operation, event.operation.value
@@ -386,12 +387,17 @@ def event_words(event: WorldEvent, scenario: Scenario) -> str:
             f"a person {'wrote' if event.operation is Operation.CREATE else verb + ' a message'}: {_quoted(after.text)}"
         )
     elif isinstance(after, MessageSnapshot):
-        to = ", ".join(names.get(e, e) for e in after.recipient_emails) or after.channel
+        named = reached(after, scenario.people)
+        known = {p.email for p in named if p.email is not None}
+        to = ", ".join([p.name for p in named] + [e for e in after.recipient_emails if e not in known]) or after.channel
         what = (
             f"{who} {'sent' if event.operation is Operation.CREATE else verb} a message to {to}: {_quoted(after.text)}"
         )
     elif isinstance(after, TicketSnapshot):
-        holder = f", for {names.get(after.assignee_email, after.assignee_email)}" if after.assignee_email else ""
+        held = assigned(after, scenario.people)
+        holder = (
+            f", for {held.name if held is not None else after.assignee_email}" if held or after.assignee_email else ""
+        )
         what = f"{who} {verb} ticket {_quoted(after.title, 80)} ({after.state.value}{holder})"
     elif isinstance(after, DocumentSnapshot):
         what = f"{who} {verb} document {_quoted(after.title, 80)}"
@@ -400,6 +406,7 @@ def event_words(event: WorldEvent, scenario: Scenario) -> str:
     elif isinstance(after, RecordSnapshot):
         what = f"{who} {verb} a {after.resource} record: {_quoted(after.text)}"
     elif isinstance(after, InteractionSnapshot):
+        names = {p.key: p.name for p in scenario.people}
         what = f"{names.get(after.person, after.person)} pressed {_quoted(after.label, 60)}"
     else:
         ref = event.entity

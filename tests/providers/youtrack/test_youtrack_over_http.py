@@ -84,5 +84,9 @@ async def test_an_agent_hands_an_issue_to_a_person_over_a_socket(instance: Insta
     created = next(e for e in instance.store.events() if e.entity.external_id == made["id"])
     assert (created.actor, created.operation) == (Actor.AGENT, Operation.CREATE)
     assert created.after == TicketSnapshot(
-        title="Proof the programme", project="LAUNCH", assignee_email="noor@example.com", state=TicketState.OPEN
+        title="Proof the programme",
+        project="LAUNCH",
+        assignee_email="noor@example.com",
+        assignee="noor",
+        state=TicketState.OPEN,
     )

@@ -17,6 +17,8 @@ they are read from; **observed** facts are what callers of the real service repo
 | An append whose `after` names a direct child lands right behind it, not at the end | documented | `test_an_append_after_a_direct_child_lands_right_behind_it` | https://developers.notion.com/reference/patch-block-children |
 | An update that carries another block type's body is a 400, and the block keeps its type | observed | `test_an_update_that_names_another_block_type_is_refused` | https://developers.notion.com/reference/update-a-block says only that a wrong type is a 400 |
 | A children listing stops at 100 with `has_more` and a `next_cursor` that fetches the rest | documented | `test_a_children_listing_stops_at_a_hundred_and_hands_a_cursor_for_the_rest` | https://developers.notion.com/reference/intro |
+| A person user an integration may not read the email of carries `"person": {}` | documented | `test_a_person_with_no_email_is_a_member_whose_person_object_holds_none`, `test_an_account_that_hides_its_email_reads_without_one_under_its_own_id_and_name` | https://developers.notion.com/reference/user |
+| An id may be given with or without its dashes, and is served dashed | documented | `test_a_declared_page_id_is_the_id_the_api_serves_the_document_under` | https://developers.notion.com/reference/intro#conventions |
 
 ## Not carried over
 

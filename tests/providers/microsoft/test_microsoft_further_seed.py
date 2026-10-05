@@ -19,8 +19,8 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import StandingWorld
-from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Seed, SeededChannel, SeededDocument
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
+from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Seed, SeededChannel, SeededDocument, SharedSpace
+from minutehand.domain.world import Actor, Change, DocumentSnapshot, EntityKind, EntityRef, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -43,7 +43,9 @@ BASE: dict[str, object] = {
         {"provider": "microsoft", "title": "Plan", "text": "hello"},
         {"provider": "microsoft", "title": "Minutes", "text": "m", "folder": "Meetings"},
         {"provider": "microsoft", "title": "notes.txt", "text": "plain"},
+        {"provider": "microsoft", "title": "Ledger", "text": "l", "space": "Finance", "folder": "Q3"},
     ],
+    "spaces": [{"provider": "microsoft", "name": "Finance", "members": [{"person": "owen", "role": "organizer"}]}],
     "channels": [
         {"provider": "microsoft", "name": "launch", "members": ["owen", "sofia"], "history": [
             {"by": "sofia", "text": "one", "ago": "PT1H", "key": "first", "replies": [
@@ -160,6 +162,13 @@ ADDITIONS: dict[str, dict[str, object]] = {
         ],
         "documents": [{"provider": "microsoft", "title": "Ivy", "text": "i", "owner": "ivy"}],
     },
+    "a shared space and a document in it": {
+        "spaces": [{"provider": "microsoft", "name": "Legal", "members": [{"person": "sofia"}]}],
+        "documents": [{"provider": "microsoft", "title": "Contract", "text": "c", "space": "Legal"}],
+    },
+    "a document in a space already seeded": {
+        "documents": [{"provider": "microsoft", "title": "Forecast", "text": "f", "space": "Finance", "folder": "Q3"}]
+    },
     "a fault": {"provider_seeds": {"faults": [{"answer": {"kind": "rate_limited"}}]}},
     "a hold on a document already seeded": {"provider_seeds": {"holds": [{"document": "Minutes", "by": "owen"}]}},
     "a document and a hold on it": {
@@ -185,6 +194,7 @@ def _extend(world: StandingWorld, added: dict[str, object], directory: Path) -> 
         people=[Person.model_validate(p) for p in each("people")],
         documents=[SeededDocument.model_validate(d) for d in each("documents")],
         channels=[SeededChannel.model_validate(c) for c in each("channels")],
+        spaces=[SharedSpace.model_validate(x) for x in each("spaces")],
         provider_seeds=_fragment(fragment) if fragment is not None else [],
         directory=directory,
         scratch=_scratch,
@@ -227,5 +237,23 @@ def test_a_message_seeded_into_an_open_world_is_listed_in_its_order_before_what_
         texts = [(m.id, m.text) for m in teams.messages(ops.id)]
         assert [t for _, t in texts] == ["later", "after it"]
         assert all(i < sent for i, _ in texts)
+    finally:
+        store.close()
+
+
+def test_a_space_seeded_into_an_open_world_is_a_site_holding_its_document(tmp_path: Path) -> None:
+    world, store = _open(tmp_path)
+    try:
+        _extend(world, ADDITIONS["a shared space and a document in it"], tmp_path)
+        teams = MicrosoftWorld(world.store)
+        legal = next(s for s in teams.sites() if s.space == "Legal")
+        contract = next(
+            e
+            for e in world.store.events()
+            if isinstance(e.after, DocumentSnapshot) and e.after.title == "Contract.docx"
+        )
+        assert isinstance(contract.after, DocumentSnapshot) and contract.after.space == "Legal"
+        stored = teams.item(contract.entity.external_id)
+        assert stored is not None and stored.item.parentReference.driveId == legal.drive_id
     finally:
         store.close()

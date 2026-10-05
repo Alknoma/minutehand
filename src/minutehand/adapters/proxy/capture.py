@@ -410,7 +410,7 @@ def read_message(reading: MessageReading, text: str | None, content_type: str | 
     said = _first_text(parsed, reading.text)
     if said is None:
         return Read(unread="no text at any of the declared paths")
-    by_email = {p.email.lower(): p for p in people}
+    by_email = {p.email.lower(): p for p in people if p.email is not None}
     by_key = {p.key: p for p in people}
     recipients: list[Recipient] = []
     for address in addresses:

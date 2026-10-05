@@ -111,7 +111,11 @@ class Log:
     ) -> WorldEvent:
         ref = EntityRef(provider="chat", kind=EntityKind.MESSAGE, external_id=f"m{len(self.events) + 1}")
         snapshot = MessageSnapshot(
-            text=text, channel=channel, recipient_emails=[p.email for p in to], thread_of=thread_of
+            text=text,
+            channel=channel,
+            recipient_emails=[p.email for p in to if p.email is not None],
+            recipients=[p.key for p in to],
+            thread_of=thread_of,
         )
         return self._add(hours, actor, Operation.CREATE, ref, snapshot, wake, wall)
 
@@ -120,8 +124,11 @@ class Log:
     ) -> WorldEvent:
         """A send through a captured host (`adapters.proxy.capture`): a message nobody can answer where it went."""
         ref = EntityRef(provider="mail", kind=EntityKind.MESSAGE, external_id=f"e{len(self.events) + 1}")
-        channel = "to:" + ",".join(sorted(p.email for p in to))
-        snapshot = MessageSnapshot(text=text, channel=channel, recipient_emails=[p.email for p in to], answerable=False)
+        addresses = [p.email for p in to if p.email is not None]
+        channel = "to:" + ",".join(sorted(addresses))
+        snapshot = MessageSnapshot(
+            text=text, channel=channel, recipient_emails=addresses, recipients=[p.key for p in to], answerable=False
+        )
         return self._add(hours, Actor.AGENT, Operation.CREATE, ref, snapshot, wake)
 
     def ticket(
@@ -141,7 +148,11 @@ class Log:
             provider="tracker", kind=EntityKind.TICKET, external_id=external_id or f"t{len(self.events) + 1}"
         )
         snapshot = TicketSnapshot(
-            title=title, project=project, state=state, assignee_email=assignee.email if assignee else None
+            title=title,
+            project=project,
+            state=state,
+            assignee_email=assignee.email if assignee else None,
+            assignee=assignee.key if assignee else None,
         )
         return self._add(hours, actor, operation, ref, snapshot, wake)
 

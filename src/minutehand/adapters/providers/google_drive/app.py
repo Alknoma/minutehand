@@ -356,7 +356,7 @@ class DriveApi:
         if call.driveId is not None:
             self._member(call.driveId, caller)
             return [call.driveId]
-        mine = [state.root_id(u.emailAddress) for u in self._drive.users() if u.emailAddress]
+        mine = [state.user_root(u) for u in self._drive.users()]
         shared = [d.id for d in self._drive.drives()] if call.items_from_all_drives else []
         return [r for r in [*mine, *shared] if self._drive.file(r) is not None]
 
@@ -712,7 +712,7 @@ class DriveApi:
         organizer deletes."""
         role = self._drive.role(caller.email, stored)
         if stored.file.driveId is None:
-            allowed = role == "owner"
+            allowed = role == "owner"  # enum-lint: exempt Drive's permission role
         else:
             allowed = role is not None and ROLE_RANK[role] >= ROLE_RANK["fileOrganizer" if trash else "organizer"]
         if not allowed:
@@ -821,13 +821,14 @@ class DriveApi:
         """The owner, then what was granted on the file, then what it inherits from the folders above it."""
         found: dict[str, wire.Permission] = {}
         for owner in stored.file.owners or []:
+            account = self._drive.user_by_permission(owner.permissionId)
             found.setdefault(
                 owner.permissionId,
                 wire.Permission(
                     id=owner.permissionId,
                     type="user",
                     role="owner",
-                    emailAddress=owner.emailAddress,
+                    emailAddress=account.emailAddress if account is not None else owner.emailAddress,
                     displayName=owner.displayName,
                 ),
             )
@@ -915,7 +916,7 @@ class DriveApi:
             raise _sharing_refused(f"A permission of type {kind} has no emailAddress.")
         if kind == "domain" and not asked.domain:
             raise _sharing_refused("A permission of type domain needs a domain.")
-        if role == "owner":
+        if role == "owner":  # enum-lint: exempt Drive's permission role
             if not transfer:
                 raise wire.forbidden(
                     "forbidden",
@@ -925,7 +926,7 @@ class DriveApi:
         if asked.emailAddress:
             person = self._drive.user(asked.emailAddress)
             return wire.Permission(
-                id=state.permission_id(asked.emailAddress),
+                id=person.permissionId if person is not None else state.permission_id(asked.emailAddress),
                 type=kind,
                 role=role,
                 emailAddress=asked.emailAddress,
@@ -1241,12 +1242,17 @@ class DriveApi:
         action = change.action
         if isinstance(action, Shared):
             target = self._drive.person(action.access.person)
-            assert target is not None and target.emailAddress is not None
+            account = self._drive.user_by_permission(target.permissionId) if target is not None else None
+            if target is None or account is None or account.emailAddress is None:
+                raise ValueError(
+                    f"{action.access.person} has no email, and Drive shares with a user by their emailAddress; the "
+                    "seed is refused at load for this"
+                )
             permission = wire.Permission(
                 id=target.permissionId,
                 type="user",
                 role=state.ROLES[action.access.role],
-                emailAddress=target.emailAddress,
+                emailAddress=account.emailAddress,
                 displayName=target.displayName,
             )
             self.grant(stored, permission, actor=Actor.PERSON)

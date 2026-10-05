@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import DocumentChange, Manifest, PersonChange, Tier, WorldKey
+from minutehand.domain.provider import (
+    AccountFact,
+    ChannelField,
+    DocumentChange,
+    DocumentField,
+    Manifest,
+    MessagingKind,
+    PersonChange,
+    PersonFact,
+    SpaceField,
+    Tier,
+    WorldKey,
+)
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -33,4 +45,45 @@ MANIFEST = Manifest(
         DocumentChange.TRASHED,
     ],
     people_changes=[PersonChange.REMOVED, PersonChange.DEACTIVATED, PersonChange.REACTIVATED],
+    document_fields=[
+        DocumentField.FOLDER,
+        DocumentField.OWNER,
+        DocumentField.SPACE,
+        DocumentField.SHARED_WITH,
+        DocumentField.MODIFIED_BEFORE_START,
+        DocumentField.MODIFIED_BY,
+        DocumentField.ID,
+    ],
+    channel_fields=[
+        ChannelField.NAMED,
+        ChannelField.DIRECT,
+        ChannelField.PRIVATE,
+        ChannelField.TOPIC,
+        ChannelField.PURPOSE,
+        ChannelField.WITHOUT_AGENT,
+        ChannelField.HISTORY,
+        ChannelField.THREADS,
+        ChannelField.FILES,
+        ChannelField.ID,
+        ChannelField.POST_ID,
+    ],
+    space_fields=[SpaceField.SPACES, SpaceField.ID],
+    account_facts=[AccountFact.LOGIN, AccountFact.ID, AccountFact.NAME, AccountFact.EMAIL_HIDDEN],
+    person_facts=[
+        PersonFact.WITHOUT_EMAIL,
+        PersonFact.TITLE,
+        PersonFact.GUEST,
+        PersonFact.DEACTIVATED,
+        PersonFact.BOT,
+        PersonFact.ABSENCES,
+    ],
+    messaging_happenings=[
+        MessagingKind.POSTS,
+        MessagingKind.EDITS,
+        MessagingKind.DELETES,
+        MessagingKind.REACTS,
+        MessagingKind.JOINS,
+        MessagingKind.ADDS_AGENT,
+        MessagingKind.COMMANDS,
+    ],
 )

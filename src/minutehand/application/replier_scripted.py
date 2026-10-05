@@ -28,7 +28,7 @@ from minutehand.domain.scenario import (
     Silent,
     WorkingHours,
 )
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, WorldEvent
+from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, WorldEvent, reached
 from minutehand.ports.clock import Clock
 
 _MAX_PUSHES = 1000
@@ -119,7 +119,7 @@ def _asks_of(person: Person, history: list[WorldEvent]) -> list[WorldEvent]:
         and e.entity.kind is EntityKind.MESSAGE
         and isinstance(e.after, MessageSnapshot)
         and e.after.answerable
-        and person.email in e.after.recipient_emails
+        and person in reached(e.after, [person])
     ]
 
 

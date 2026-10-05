@@ -29,6 +29,94 @@ class TicketField(StrEnum):
     KEY = "key"  # the scenario's own name for the ticket, by which the provider's own seed names it
     LABELS = "labels"
     COMMENTS = "comments"
+    NUMBER = "number"  # its declared number within its project (`BACKEND-142`)
+    ID = "id"  # its declared id in the service
+
+
+class DocumentField(StrEnum):
+    """A `SeededDocument` fact not every document provider can hold: a kind other than a plain document, or a field
+    other than its title and text."""
+
+    SPREADSHEET = "spreadsheet"
+    PRESENTATION = "presentation"
+    FILE = "file"
+    FOLDER = "folder"
+    OWNER = "owner"
+    SPACE = "space"
+    SHARED_WITH = "shared_with"
+    MODIFIED_BEFORE_START = "modified_before_start"
+    MODIFIED_BY = "modified_by"
+    ID = "id"
+
+
+class ChannelField(StrEnum):
+    """A `SeededChannel` (or `SeededPost`) fact not every messaging provider can hold."""
+
+    NAMED = "named"  # a channel with a name
+    DIRECT = "direct"  # with no name: the agent's direct conversation with its members
+    PRIVATE = "private"
+    ARCHIVED = "archived"
+    TOPIC = "topic"
+    PURPOSE = "purpose"
+    WITHOUT_AGENT = "without_agent"  # `agent_member: false`
+    HISTORY = "history"
+    THREADS = "threads"  # a post's replies
+    FILES = "files"  # a post's files
+    ID = "id"
+    POST_ID = "post_id"
+
+
+class SpaceField(StrEnum):
+    """What a provider holds of `Scenario.spaces`."""
+
+    SPACES = "spaces"  # any shared space at all
+    ID = "id"
+
+
+class AccountFact(StrEnum):
+    """A `PersonAccount` field: what a person's entry may say of their account in one service."""
+
+    LOGIN = "login"
+    ID = "id"
+    NAME = "name"
+    EMAIL_HIDDEN = "email_hidden"  # `email_visible: false`
+
+
+class PersonFact(StrEnum):
+    """A fact of a `Person` the services they have accounts in present (or have no place for).
+
+    A person is one across every service, so a fact a service has no place for is not refused: the manifest lists
+    what the service shows, and the real service shows nothing of the rest (Asana has no job title)."""
+
+    WITHOUT_EMAIL = "without_email"
+    TITLE = "title"
+    GUEST = "guest"
+    DEACTIVATED = "deactivated"
+    BOT = "bot"
+    WORKING_HOURS = "working_hours"
+    ABSENCES = "absences"
+
+
+class TicketActionKind(StrEnum):
+    """What a `TicketHappening` has its person do (`TicketAction.kind`)."""
+
+    MOVES = "moves"
+    REASSIGNS = "reassigns"
+    COMMENTS = "comments"
+    DELETES = "deletes"
+
+
+class MessagingKind(StrEnum):
+    """What a `MessagingHappening` has its person do (its `kind`)."""
+
+    POSTS = "posts"
+    EDITS = "edits"
+    DELETES = "deletes"
+    REACTS = "reacts"
+    JOINS = "joins"
+    ADDS_AGENT = "adds_agent"
+    OPENS_AGENT = "opens_agent"
+    COMMANDS = "commands"
 
 
 class DocumentChange(StrEnum):
@@ -120,6 +208,39 @@ class Manifest(Model):
         default=[],
         description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "
         "is refused at the call, naming these",
+    )
+    document_fields: list[DocumentField] = Field(
+        default=[],
+        description="The optional `SeededDocument` facts its documents hold; a seed setting any other on one of its "
+        "documents is refused at load",
+    )
+    channel_fields: list[ChannelField] = Field(
+        default=[],
+        description="The `SeededChannel` and `SeededPost` facts it holds; a seed setting any other on one of its "
+        "channels is refused at load",
+    )
+    space_fields: list[SpaceField] = Field(
+        default=[], description="What it holds of shared spaces; a seed declaring one it cannot hold is refused"
+    )
+    sign_ins: bool = Field(default=False, description="Whether it holds `Scenario.sign_ins`; refused when not")
+    account_facts: list[AccountFact] = Field(
+        default=[],
+        description="What a person's account entry for this service may say (`Person.accounts`); an entry setting "
+        "any other is refused at load",
+    )
+    person_facts: list[PersonFact] = Field(
+        default=[],
+        description="The person facts it presents on their account; the real service has no place for the rest, "
+        "and a person is one across services, so those are not refused",
+    )
+    ticket_actions: list[TicketActionKind] = Field(
+        default=[],
+        description="What a person can do to its seeded tickets (`TicketHappening.action`); any other is refused at "
+        "load",
+    )
+    messaging_happenings: list[MessagingKind] = Field(
+        default=[],
+        description="What a person can do unprompted in it (`MessagingHappening`); any other is refused at load",
     )
     state_outside_log: str | None = Field(
         default=None,

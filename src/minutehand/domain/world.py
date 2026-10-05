@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 
-from minutehand.domain.scenario import AccessRole, Model, ProviderKey, TicketState
+from minutehand.domain.scenario import AccessRole, Model, Person, ProviderKey, TicketState
 
 
 class EntityKind(StrEnum):
@@ -163,7 +164,10 @@ class TicketSnapshot(Model):
     title: str
     body: str = ""
     project: str | None = None
-    assignee_email: str | None = None
+    assignee_email: str | None = Field(default=None, description="The assignee's email, when they have one")
+    assignee: str | None = Field(
+        default=None, description="Person.key of the assignee; None when unassigned or the account is nobody's"
+    )
     state: TicketState = TicketState.OPEN
 
 
@@ -191,7 +195,8 @@ class MessageSnapshot(Model):
     kind: Literal["message"] = "message"
     text: str
     channel: str
-    recipient_emails: list[str] = []
+    recipient_emails: list[str] = Field(default=[], description="The email of each person it reached who has one")
+    recipients: list[str] = Field(default=[], description="Person.key of each person it reached, email or none")
     thread_of: str | None = None
     actions: list[MessageAction] = Field(default=[], description="What a reader can press or pick on it, in order")
     answerable: bool = Field(
@@ -235,6 +240,7 @@ class DocumentSnapshot(Model):
     owner: str | None = Field(
         default=None, description="Who owns it: a person's email, or the integration's name; None when unknown"
     )
+    owned_by: str | None = Field(default=None, description="Person.key of its owner, when a person owns it")
     space: str | None = Field(
         default=None,
         description="The name of the shared place it lives in (a shared drive, a site, a workspace); None when it is "
@@ -248,6 +254,7 @@ class GrantSnapshot(Model):
     kind: Literal["grant"] = "grant"
     document: str = Field(description="The title of the document, as it read when access was given")
     to: str = Field(description="A person's email; a domain; or `anyone`")
+    person: str | None = Field(default=None, description="Person.key of whom it was given to, when a person")
     role: AccessRole
 
 
@@ -339,3 +346,35 @@ class RecordedCall(Model):
         """No provider claimed it, nothing captured it and no tunnel carried it: it was answered 502 and reached
         nothing."""
         return self.provider is None and self.exchange.captured is None and self.exchange.tunnelled is None
+
+
+def _named(keys: Sequence[str], emails: Sequence[str], people: Sequence[Person]) -> list[Person]:
+    """The people a record names, in the order given: by key, or, for a record written before records named keys
+    (or a send matched only by its address), by an email they have, any case."""
+    lowered = {e.casefold() for e in emails}
+    return [p for p in people if p.key in keys or (p.email is not None and p.email.casefold() in lowered)]
+
+
+def reached(after: MessageSnapshot, people: Sequence[Person]) -> list[Person]:
+    """The people a message reached, in the scenario's order."""
+    return _named(after.recipients, after.recipient_emails, people)
+
+
+def assigned(after: TicketSnapshot, people: Sequence[Person]) -> Person | None:
+    """The person a ticket is assigned to, when it is a person's."""
+    found = _named(
+        [after.assignee] if after.assignee else [], [after.assignee_email] if after.assignee_email else [], people
+    )
+    return found[0] if found else None
+
+
+def owned(after: DocumentSnapshot, people: Sequence[Person]) -> Person | None:
+    """The person who owns a document, when a person does."""
+    found = _named([after.owned_by] if after.owned_by else [], [after.owner] if after.owner else [], people)
+    return found[0] if found else None
+
+
+def granted(after: GrantSnapshot, people: Sequence[Person]) -> Person | None:
+    """The person access was given to, when it was a person."""
+    found = _named([after.person] if after.person else [], [after.to], people)
+    return found[0] if found else None

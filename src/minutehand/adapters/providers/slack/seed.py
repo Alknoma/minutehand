@@ -8,6 +8,7 @@ is in the first workspace every one of its members and authors belongs to."""
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from typing import Annotated, ClassVar, Literal, Self
 from zoneinfo import ZoneInfo
@@ -112,6 +113,34 @@ def slack_seed(scenario: Scenario) -> SlackSeed:
     return SlackSeed() if found is None else SlackSeed.model_validate_json(found.body)
 
 
+USER_ID = re.compile(r"^[UW][A-Z0-9]{2,}$")
+"""A Slack member id: `U`, or `W` for an Enterprise Grid user, then upper-case letters and digits
+(https://docs.slack.dev/reference/objects/user-object)."""
+CHANNEL_ID = re.compile(r"^[CG][A-Z0-9]{2,}$")
+"""A channel's id: `C`, or `G` for a private channel or group DM made before 2021
+(https://docs.slack.dev/reference/objects/conversation-object)."""
+IM_ID = re.compile(r"^D[A-Z0-9]{2,}$")
+"""A direct message's id: `D`, then upper-case letters and digits (https://docs.slack.dev/reference/objects/conversation-object)."""
+TS = re.compile(r"^\d{10}\.\d{6}$")
+"""A message's `ts`: epoch seconds, a dot, six digits, unique in its channel (https://docs.slack.dev/messaging/retrieving-messages)."""
+
+
+def declared_member(person: Person) -> str | None:
+    """The Slack member id the person's account entry declares, checked against Slack's format."""
+    account = person.account_in(MANIFEST.key)
+    if account is None or account.id is None:
+        return None
+    if not USER_ID.fullmatch(account.id):
+        raise ValueError(f"{person.key}'s Slack user id {account.id!r} is not one: U or W, then capitals and digits")
+    return account.id
+
+
+def member_id(person: Person, team: str = state.TEAM_ID) -> str:
+    """The person's member id in workspace `team`: the one their account entry declares, else derived from their
+    key."""
+    return declared_member(person) or state.user_id(person.key, team)
+
+
 def workspaces_of(scenario: Scenario) -> list[tuple[wire.SlackWorkspace, list[Person]]]:
     """Each workspace the scenario's Slack holds, with its people, in order."""
     spec = slack_seed(scenario)
@@ -138,6 +167,12 @@ def workspaces_of(scenario: Scenario) -> list[tuple[wire.SlackWorkspace, list[Pe
             None if w.members is None else {*w.members, *(j.person for j in spec.joined if j.team_id == w.team_id)}
         )
         people = [p for p in scenario.people if members is None or p.key in members]
+        for person in people:
+            if declared_member(person) is not None and position > 0:
+                raise ValueError(
+                    f"{person.key} declares one Slack user id and is a member of more than one workspace, where "
+                    "Slack gives each its own; declare the person in one workspace"
+                )
         workspace = wire.SlackWorkspace(
             id=w.team_id,
             name=w.name,
@@ -158,12 +193,20 @@ REACHABLE = (Account.MEMBER, Account.GUEST)
 """Who the agent can open a DM with: a bot cannot be DMed and a deactivated account cannot be reached."""
 
 
+def _hides_email(person: Person, spec: SlackSeed) -> bool:
+    """Whether the person's profile shows no email though they have one: the Slack seed says so, or their account
+    entry hides it."""
+    hidden = person.email is not None and person.shown_email(MANIFEST.key) is None
+    return hidden or person.key in spec.without_email
+
+
 def _member(person: Person, at: datetime, team: str, spec: SlackSeed) -> wire.SlackUser:
     tz = person.working_hours.timezone if person.working_hours is not None else "UTC"
     offset = ZoneInfo(tz).utcoffset(at)
     bot = person.account is Account.BOT
+    account = person.account_in(MANIFEST.key)
     return wire.SlackUser(
-        id=state.user_id(person.key, team),
+        id=member_id(person, team),
         team_id=team,
         name=person.key,
         real_name=person.name,
@@ -175,8 +218,8 @@ def _member(person: Person, at: datetime, team: str, spec: SlackSeed) -> wire.Sl
         tz_offset=int(offset.total_seconds()) if offset is not None else 0,
         profile=wire.SlackProfile(
             real_name=person.name,
-            display_name=person.name,
-            email=None if bot or person.key in spec.without_email else person.email,
+            display_name=account.name if account is not None and account.name is not None else person.name,
+            email=None if bot or _hides_email(person, spec) else person.email,
             title=person.title or "",
             bot_id=state.other_bot_id(person.key) if bot else None,
         ),
@@ -202,10 +245,13 @@ def seed(scenario: Scenario, world: Store) -> None:
     for workspace, people in every:
         kept = len(every) > 1 or workspace != state.DEFAULT_WORKSPACE
         _workspace(SlackWorld(world, workspace), workspace, people, scenario, created, kept=kept)
+    reserved = frozenset(
+        p.id for c in scenario.channels if c.provider == MANIFEST.key for p in _every(c.history) if p.id is not None
+    )
     for channel in (c for c in scenario.channels if c.provider == MANIFEST.key):
         named = {*channel.members, *(p.by for p in _every(channel.history))}
         home = next((w for w, people in every if named <= {p.key for p in people}), every[0][0])
-        _channel(SlackWorld(world, home), channel, scenario, created)
+        _channel(SlackWorld(world, home), channel, scenario, created, reserved)
     write_faults(SlackWorld(world, every[0][0]), slack_seed(scenario).faults, scenario.starts_at)
 
 
@@ -235,9 +281,14 @@ def _workspace(
     spec = slack_seed(scenario)
     users = [_bot(workspace), *(_member(p, scenario.starts_at, team, spec) for p in people)]
     for user in users:
+        if slack.body(state.user_ref(user.id), wire.SlackUser) is not None:
+            raise ValueError(f"two Slack members would have the id {user.id}")
         slack.write(state.user_ref(user.id), user, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=team)
-    for person in (p for p in people if p.key in spec.without_email and p.account is not Account.BOT):
-        user = state.user_id(person.key, team)
+    ids = {p.key: member_id(p, team) for p in people}
+    for person in (p for p in people if _hides_email(p, spec) and p.account is not Account.BOT):
+        if person.email is None:
+            continue
+        user = ids[person.key]
         slack.write(
             state.unlisted_email_ref(user),
             wire.SlackUnlistedEmail(user=user, email=person.email),
@@ -248,7 +299,7 @@ def _workspace(
     installer = next((p for p in people if p.key == scenario.owner), people[0] if people else None)
     slack.write(
         state.install_ref(team),
-        wire.SlackInstall(installer=state.user_id(installer.key, team) if installer is not None else bot),
+        wire.SlackInstall(installer=ids[installer.key] if installer is not None else bot),
         operation=Operation.CREATE,
         actor=Actor.SCENARIO,
         parent=state.APP,
@@ -257,7 +308,7 @@ def _workspace(
     for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
         slack.write(
             state.sign_in_ref(sign_in.credential),
-            wire.SlackSignIn(user=None if sign_in.person is None else state.user_id(sign_in.person)),
+            wire.SlackSignIn(user=None if sign_in.person is None else member_id(_person(scenario, sign_in.person))),
             operation=Operation.CREATE,
             actor=Actor.SCENARIO,
             parent=state.SIGN_INS,
@@ -272,22 +323,49 @@ def _workspace(
         creator=bot,
     )
     slack.write(state.channel_ref(general.id), general, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=team)
-    for member in [bot, *(state.user_id(p.key, team) for p in people if p.account is Account.MEMBER)]:
+    for member in [bot, *(ids[p.key] for p in people if p.account is Account.MEMBER)]:
         _join(slack, general.id, member)
+    declared = _declared_conversations(scenario, ids, bot)
     for person in (p for p in people if p.account in REACHABLE):
-        slack.open_conversation([bot, state.user_id(person.key, team)], created=created, actor=Actor.SCENARIO)
+        members = [bot, ids[person.key]]
+        slack.open_conversation(
+            members, created=created, actor=Actor.SCENARIO, declared=declared.get(frozenset(members))
+        )
     for person in (p for p in people if p.absences):
-        write_away(slack, person, scenario.starts_at, team)
+        write_away(slack, person, scenario.starts_at, ids[person.key])
 
 
-def write_away(slack: SlackWorld, person: Person, start: datetime, team: str) -> None:
-    """The person's absences beside their account, so their status, presence and do-not-disturb show each one."""
-    user = state.user_id(person.key, team)
+def _person(scenario: Scenario, key: str) -> Person:
+    return next(p for p in scenario.people if p.key == key)
+
+
+def _declared_conversations(scenario: Scenario, ids: dict[str, str], bot: str) -> dict[frozenset[str], str]:
+    """The id each seeded direct conversation of this workspace declares, by its members, the agent's bot among
+    them, checked against Slack's format: `D` for an IM, `C` or `G` for a group DM."""
+    found: dict[frozenset[str], str] = {}
+    for channel in scenario.channels:
+        if channel.provider != MANIFEST.key or channel.name is not None or channel.id is None:
+            continue
+        if any(k not in ids for k in channel.members):
+            continue
+        members = frozenset([bot, *(ids[k] for k in channel.members)])
+        shape = IM_ID if len(members) <= 2 else CHANNEL_ID
+        if not shape.fullmatch(channel.id):
+            what = "an IM's id starts with D" if len(members) <= 2 else "a group DM's id starts with C or G"
+            raise ValueError(f"the direct conversation id {channel.id!r} is not one: {what}, then capitals and digits")
+        found[members] = channel.id
+    return found
+
+
+def write_away(slack: SlackWorld, person: Person, start: datetime, user: str) -> None:
+    """The person's absences beside their account (`user`, their member id), so their status, presence and
+    do-not-disturb show each one."""
     slack.write(
         state.away_ref(user),
         wire.SlackAway(
             user=user,
             email=person.email,
+            person=person.key,
             starts_at=int(start.timestamp()),
             stretches=[
                 wire.SlackAwayStretch(
@@ -344,17 +422,44 @@ def _join(slack: SlackWorld, channel: str, user: str) -> None:
     )
 
 
-def _channel(slack: SlackWorld, seeded: SeededChannel, scenario: Scenario, created: int) -> None:
+def _channel(
+    slack: SlackWorld, seeded: SeededChannel, scenario: Scenario, created: int, reserved: frozenset[str]
+) -> None:
     team, bot = slack.team.id, slack.bot
-    members = [state.user_id(k, team) for k in seeded.members]
+    people = {p.key: p for p in scenario.people}
+    members = [member_id(people[k], team) for k in seeded.members]
     if seeded.name is None:
-        cid = state.conversation_id([bot, *members])
-        if slack.channel(cid) is None:
-            slack.open_conversation([bot, *members], created=created, actor=Actor.SCENARIO)
+        direct = [
+            f
+            for f, set_ in (("archived", seeded.archived), ("topic", seeded.topic), ("purpose", seeded.purpose))
+            if set_
+        ]
+        direct += ["agent_member: false"] if not seeded.agent_member else []
+        if direct:
+            raise ValueError(
+                f"a direct conversation with the agent in Slack has no {', '.join(direct)}: Slack seeds none on one"
+            )
+        found = slack.conversation_between([bot, *members])
+        if found is None:
+            declared = _declared_conversations(scenario, {k: member_id(people[k], team) for k in seeded.members}, bot)
+            found = slack.open_conversation(
+                [bot, *members],
+                created=created,
+                actor=Actor.SCENARIO,
+                declared=declared.get(frozenset([bot, *members])),
+            )
+        cid = found.id
     else:
+        if seeded.id is not None and not CHANNEL_ID.fullmatch(seeded.id):
+            raise ValueError(
+                f"#{seeded.name}'s Slack channel id {seeded.id!r} is not one: C or G, then capitals and digits"
+            )
+        cid = seeded.id if seeded.id is not None else state.named_channel_id(seeded.name, team)
+        if slack.channel(cid) is not None:
+            raise ValueError(f"#{seeded.name} would take the Slack channel id {cid}, which another channel has")
         creator = members[0] if members else bot
         channel = wire.SlackChannel(
-            id=state.named_channel_id(seeded.name, team),
+            id=cid,
             name=seeded.name,
             is_channel=not seeded.private,
             is_group=seeded.private,
@@ -367,15 +472,16 @@ def _channel(slack: SlackWorld, seeded: SeededChannel, scenario: Scenario, creat
             if seeded.purpose
             else None,
         )
-        cid = channel.id
         slack.write(state.channel_ref(cid), channel, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=team)
         for member in sorted(set(members + ([bot] if seeded.agent_member else []))):
             _join(slack, cid, member)
     seconds: dict[int, int] = {}
     for post in sorted(seeded.history, key=lambda p: p.ago, reverse=True):
-        root = _post(slack, cid, post, scenario, None, seconds)
+        root = _post(slack, cid, post, scenario, None, seconds, reserved)
         for reply in sorted(post.replies, key=lambda p: p.ago, reverse=True):
-            _post(slack, cid, reply, scenario, root, seconds)
+            if reply.id is not None and post.id is not None and float(reply.id) <= float(post.id):
+                raise ValueError(f"the reply ts {reply.id} is not after its thread's ts {post.id}")
+            _post(slack, cid, reply, scenario, root, seconds, reserved)
 
 
 def _post(
@@ -385,13 +491,27 @@ def _post(
     scenario: Scenario,
     thread_ts: str | None,
     seconds: dict[int, int],
+    reserved: frozenset[str],
 ) -> str:
-    """A seeded message, as its author wrote it before the run began, with its files. Its `ts` is its second and
-    its order among the channel's seeded messages in that second (`SlackWorld.seeded_ts`)."""
-    at = int((scenario.starts_at - post.ago).timestamp())
-    seconds[at] = (seconds[at] if at in seconds else 0) + 1
-    stamp = slack.seeded_ts(channel, at, seconds[at])
-    author = state.user_id(post.by, slack.team.id)
+    """A seeded message, as its author wrote it before the run began, with its files. Its `ts` is the one its seed
+    declares, else its second and its order among the channel's seeded messages in that second
+    (`SlackWorld.seeded_ts`). A `ts` is when Slack says a message was posted, so a declared one places the post at
+    its own second, which must be before the scenario's start; its `ago` then only orders it among its channel's
+    posts."""
+    if post.id is not None:
+        stamp = post.id
+        if not TS.fullmatch(stamp):
+            raise ValueError(f"the Slack ts {stamp!r} is not one: ten digits of seconds, a dot, six digits")
+        at = int(stamp.split(".")[0])
+        if at >= int(scenario.starts_at.timestamp()):
+            raise ValueError(f"the seeded post with ts {stamp} is not before the scenario's start")
+        if slack.located(stamp) is not None:
+            raise ValueError(f"two Slack messages would have the ts {stamp}")
+    else:
+        at = int((scenario.starts_at - post.ago).timestamp())
+        seconds[at] = (seconds[at] if at in seconds else 0) + 1
+        stamp = slack.seeded_ts(channel, at, seconds[at], reserved=reserved)
+    author = member_id(next(p for p in scenario.people if p.key == post.by), slack.team.id)
     files = [
         write_file(slack, f, author, at, seed=f"{channel}|{post.ago}|{i}", actor=Actor.SCENARIO)
         for i, f in enumerate(post.files)
@@ -427,6 +547,7 @@ def write_post(
             text=text,
             channel=channel,
             recipient_emails=slack.human_emails(channel, besides=author),
+            recipients=slack.human_people(channel, besides=author),
             thread_of=thread_ts,
         ),
     )

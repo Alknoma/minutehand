@@ -63,7 +63,11 @@ async def test_the_snapshot_carries_the_assignees_email_and_state(
     ]
     assert writes[0].entity.kind is EntityKind.TICKET
     assert writes[0].after == TicketSnapshot(
-        title="Sign the lease", project="Venue Move", assignee_email="noor@example.com", state=TicketState.OPEN
+        title="Sign the lease",
+        project="Venue Move",
+        assignee_email="noor@example.com",
+        assignee="noor",
+        state=TicketState.OPEN,
     )
     second = writes[1].after
     assert isinstance(second, TicketSnapshot)

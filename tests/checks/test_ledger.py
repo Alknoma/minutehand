@@ -167,7 +167,7 @@ def test_the_ledger_reads_a_real_store_and_its_stored_replies(tmp_path: Path) ->
             operation=Operation.CREATE,
             actor=Actor.AGENT,
             body="{}",
-            after=MessageSnapshot(text="Could you sign?", channel="dm", recipient_emails=[SOFIA.email]),
+            after=MessageSnapshot(text="Could you sign?", channel="dm", recipients=[SOFIA.key]),
         )
     )
     store.remember(PersonReply(person="sofia", in_reply_to=message, text="Signed.", at=at(1)))

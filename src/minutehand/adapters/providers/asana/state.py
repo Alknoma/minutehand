@@ -221,7 +221,12 @@ class AsanaWorld:
 
     def user_by_email(self, email: str) -> wire.AsanaUser | None:
         wanted = email.strip().lower()
-        return next((u for u in self.users() if u.email.lower() == wanted), None)
+        return next((u for u in self.users() if u.email is not None and u.email.lower() == wanted), None)
+
+    def user_of_person(self, person: str) -> wire.AsanaUser | None:
+        """The user seeded for the person whose key is `person`, removed or not."""
+        found = (u for u in self._records(USERS) if isinstance(u, wire.AsanaUser) and u.person == person)
+        return next(found, None)
 
     def resolve_user(self, identifier: str, *, me: str) -> wire.AsanaUser | None:
         """A user the way Asana names one: `me` (the caller, whose gid is `me`), an email address, or a gid."""
@@ -296,8 +301,12 @@ class AsanaWorld:
         return [wire.parse(wire.AsanaStory, s.body) for s in self._pages(EntityKind.COMMENT, task)]
 
     def next_gid(self) -> str:
-        """The gid of the entity the next event writes: no two events share a sequence number."""
-        return str(_MINTED + self._store.head() + 1)
+        """The gid of the entity the next event writes: no two events share a sequence number, and one a seed
+        declared (`SeededTicket.id`, `PersonAccount.id`) is passed over."""
+        gid = _MINTED + self._store.head() + 1
+        while self._record(str(gid)) is not None or self.task(str(gid)) is not None:
+            gid += 1
+        return str(gid)
 
     # ------------------------------------------------------------------ status
 
@@ -388,7 +397,8 @@ class AsanaWorld:
             title=task.name,
             body=task.notes,
             project=first.name if first is not None else None,
-            assignee_email=assignee.email if assignee is not None else None,
+            assignee_email=(assignee.email or assignee.hidden_email) if assignee is not None else None,
+            assignee=assignee.person if assignee is not None else None,
             state=ticket_state(task.completed, self.says(task)),
         )
 

@@ -322,8 +322,10 @@ class Files:
         folder: bool,
         content: bytes,
         by: wire.IdentitySet,
+        declared: str | None = None,
     ) -> wire.StoredItem:
-        made = (
+        """`declared`: the id a scenario's document declares for itself, in place of the one it would be given."""
+        made = declared or (
             seeded_item_id(drive.drive.id, parent.item.id, name)
             if self._seeding
             else item_id(drive.drive.id, self._world.next_seq())
@@ -426,14 +428,16 @@ class Files:
         behaviour: str,
         by: wire.IdentitySet,
         actor: Actor,
+        declared: str | None = None,
     ) -> tuple[wire.StoredItem, bool]:
-        """Create `name` under `folder` with `content`, or replace an existing file's bytes; True when created."""
+        """Create `name` under `folder` with `content`, or replace an existing file's bytes; True when created.
+        `declared`: the id a seeded document declares, for one created."""
         if folder.item.folder is None:
             raise bad_request(f"'{folder.item.name}' is not a folder.")
         name, existing = self._free_name(folder, name, behaviour)
         if existing is not None:
             return self.replace_content(existing, content, by=by, actor=actor), False
-        made = self.new_item(drive, folder, name, folder=False, content=content, by=by)
+        made = self.new_item(drive, folder, name, folder=False, content=content, by=by, declared=declared)
         self._world.write_item(made, operation=Operation.CREATE, actor=actor)
         return made, True
 
@@ -528,7 +532,12 @@ class Files:
             operation=Operation.CREATE,
             actor=actor,
             parent=PERMISSION_PARENT.format(item=stored.item.id),
-            after=GrantSnapshot(document=stored.item.name, to=email, role=_role(roles)),
+            after=GrantSnapshot(
+                document=stored.item.name,
+                to=(user.reached_as if user is not None else None) or email,
+                person=user.person_key if user is not None else None,
+                role=_role(roles),
+            ),
         )
         return permission
 

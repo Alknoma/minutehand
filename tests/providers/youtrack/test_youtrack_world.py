@@ -17,7 +17,7 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
-from minutehand.domain.scenario import TicketState
+from minutehand.domain.scenario import Person, TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
 from tests.providers.youtrack.youtrack_instance import (
@@ -98,12 +98,15 @@ def test_seeding_writes_people_the_agent_projects_and_issues_as_the_scenario(ins
 
     tickets = [e for e in events if e.entity.kind is EntityKind.TICKET]
     assert [e.after for e in tickets] == [
-        TicketSnapshot(title="Write the release notes", project="LAUNCH", assignee_email="tomas@example.com"),
+        TicketSnapshot(
+            title="Write the release notes", project="LAUNCH", assignee_email="tomas@example.com", assignee="tomas"
+        ),
         TicketSnapshot(
             title="Book the venue",
             body="Forty seats",
             project="LAUNCH",
             assignee_email="noor@example.com",
+            assignee="noor",
             state=TicketState.DONE,
         ),
         TicketSnapshot(title="Ship the demo kits", project="FIELDOPS"),
@@ -149,6 +152,7 @@ async def test_transition_moves_the_issue_as_its_assignee(
         title="Write the release notes",
         project="LAUNCH",
         assignee_email="tomas@example.com",
+        assignee="tomas",
         state=to,
     )
     read = entity(
@@ -195,7 +199,7 @@ def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) ->
     instance.provider.edit(
         state.issue_ref(issue_id),
         state=TicketState.CANCELLED,
-        assignee_email="iris@example.com",
+        assignee=SCENARIO.people[0],
         world=instance.store,
         clock=instance.clock,
     )
@@ -206,6 +210,7 @@ def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) ->
         title="Write the release notes",
         project="LAUNCH",
         assignee_email="iris@example.com",
+        assignee="iris",
         state=TicketState.CANCELLED,
     )
 
@@ -214,7 +219,7 @@ def test_edit_with_nothing_named_leaves_both_fields(instance: Instance) -> None:
     issue_id = _assigned(instance, "LAUNCH-2")
 
     instance.provider.edit(
-        state.issue_ref(issue_id), state=None, assignee_email=None, world=instance.store, clock=instance.clock
+        state.issue_ref(issue_id), state=None, assignee=None, world=instance.store, clock=instance.clock
     )
 
     last = instance.store.events()[-1]
@@ -224,16 +229,18 @@ def test_edit_with_nothing_named_leaves_both_fields(instance: Instance) -> None:
         body="Forty seats",
         project="LAUNCH",
         assignee_email="noor@example.com",
+        assignee="noor",
         state=TicketState.DONE,
     )
 
 
-def test_edit_to_an_email_nobody_has_is_refused(instance: Instance) -> None:
-    with pytest.raises(LookupError, match=r"nobody@example\.com"):
+def test_edit_to_a_person_with_no_youtrack_account_is_refused(instance: Instance) -> None:
+    stranger = Person(key="nobody", name="Nobody", email="iris@example.com")
+    with pytest.raises(ValueError, match="nobody has no YouTrack account"):
         instance.provider.edit(
             state.issue_ref(_assigned(instance, "LAUNCH-1")),
             state=None,
-            assignee_email="nobody@example.com",
+            assignee=stranger,
             world=instance.store,
             clock=instance.clock,
         )

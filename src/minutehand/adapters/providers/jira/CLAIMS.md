@@ -45,6 +45,14 @@ Pages cited:
 | A project read, its statuses, or `mypermissions?projectKey=` naming a malformed key is a 404 | documented | `test_a_read_naming_a_malformed_project_key_is_refused_404` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-projectidorkey-get |
 | An issue create naming a malformed project key is a 400 on `project` | documented | `test_an_issue_create_naming_a_malformed_project_key_is_refused_400_on_project` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-post |
 
+## What the retired emulator tests held
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| `GET` and `POST /rest/api/3/search` answer 410, pointing at `/search/jql`, and write nothing | documented (the removal) / observed (the 410) | `test_the_retired_search_is_refused_410_and_writes_nothing` | https://developer.atlassian.com/changelog/#CHANGE-2046 |
+| An edit refused for one field (an unknown priority beside a valid summary) is a 400 and writes none of its fields | documented (400) / observed (nothing written) | `test_an_edit_refused_for_one_field_writes_none_of_them` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-issueidorkey-put |
+| `/rest/api/3/myself` with no credentials is a 401 | documented | `test_myself_without_credentials_is_refused_401` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-myself/#api-rest-api-3-myself-get |
+
 ## Where the earlier stand-in was wrong
 
 - It refused a create that named a template but no `projectTypeKey`. The create-project reference makes the type

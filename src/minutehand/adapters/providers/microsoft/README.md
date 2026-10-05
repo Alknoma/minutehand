@@ -49,10 +49,36 @@ manifest, and because the tenant, its bot and its users are one directory every 
   library, the site they are in (`space`; None in a person's OneDrive). Access given (`invite`, `createLink`, a
   person's `Shared`) is a `GrantSnapshot`: Graph's `read`, `write`, `owner` as reader, writer, organizer; a link's
   `to` is `anyone` or its scope.
+- **Shared spaces** (`Scenario.spaces`) are SharePoint sites of the tenant, at `/sites/<name>`, each with its own
+  document library (found by `GET /sites?search=`, `/sites/{id}/drive`); each member is given the library's root
+  with their role (`GET …/root/permissions`). A document naming the space is a file in that library, and its
+  snapshot's `space` is the space's name. A space a further seed adds lands as a new site.
+- **A seeded document** keeps its `owner` (`createdBy`, the app's when none), `modified_by` (`lastModifiedBy`),
+  `modified_before_start` (its timestamps) and `shared_with` (a permission each, Graph's role). Only a
+  `document` kind is held (a Word file, or the title's own extension); a spreadsheet, presentation or file kind is
+  refused at load.
+- **Declared ids**, each refused at load when not in Graph's format or when something else of the tenant has it: a
+  person's object id (a GUID, https://learn.microsoft.com/en-us/graph/api/resources/user#properties) and
+  principal name (`alias@domain`), a document's driveItem id (`01` and 32 base32 characters,
+  https://learn.microsoft.com/en-us/graph/api/resources/driveitem), a named channel's id (`19:…@thread.tacv2`,
+  https://learn.microsoft.com/en-us/graph/api/resources/channel), a group chat's (`19:…@thread.v2`), a post's
+  message id (digits, from before the start: https://learn.microsoft.com/en-us/graph/api/resources/chatmessage),
+  a space's site id (`{host},{guid},{guid}` on the tenant's host,
+  https://learn.microsoft.com/en-us/graph/api/resources/site#id-property). A 1:1 chat's id is the pair's and
+  cannot be declared.
+- **Channels** keep `private` (`membershipType: private`) and one description, the `topic` or the `purpose`; a
+  channel giving both, a private or purposeful chat, and an archived channel are refused at load.
 - **World keys** (`Manifest.world_keys`): the tenant in a sign-in path and the label of a SharePoint host, so
   `minutehand serve` routes a sign-in, its metadata and a pre-authenticated download to the tenant's world.
 
 ## People
+
+A person with no email is a user with `mail: null` and a principal name from their key at the tenant's domain; one
+whose account entry says `email_visible: false` is shown the same way, though the world's records still name the
+email they have. An entry's `id`, `login` and `name` are the user's object id, principal name and display name. A
+person whose account is `deactivated` is seeded disabled (`accountEnabled: false`); a `bot` is no user. Who a
+message reached, a document's owner and whom access was given to are named by person key in the world's records
+(`recipients`, `owned_by`, `GrantSnapshot.person`), and by email beside it when they have one.
 
 Through the shared ports: `say`, `deliver`, `happen` (posts, edits, deletes, reactions, joins, commands as a
 message), `press` (a card button: `invoke` `adaptiveCard/action` for `Action.Execute`, a `message` with `value`

@@ -590,7 +590,7 @@ class _Run:
         repository = visible.repository
         nested = at.selections or []
         name = at.name
-        if name == "id":
+        if name == "id":  # enum-lint: exempt GraphQL's own field name, not a seed fact
             return wire.node_id("R", repository.id)
         if name == "name":  # enum-lint: exempt a field of GitHub's GraphQL schema
             return repository.name

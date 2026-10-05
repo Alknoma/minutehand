@@ -12,7 +12,7 @@ from pydantic import Field
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 from minutehand.domain.conversation import Judgement, ModelMessage, Speaker
 from minutehand.domain.scenario import Model
-from minutehand.domain.world import Actor, EntityRef, Operation, TicketSnapshot, WorldEvent
+from minutehand.domain.world import Actor, EntityRef, Operation, TicketSnapshot, WorldEvent, assigned
 from minutehand.ports.model import Model as LanguageModel
 
 TICKET_PROMPT_VERSION = "ticket-is-actionable/1"
@@ -52,7 +52,6 @@ class TicketIsActionable:
     prompt_version = TICKET_PROMPT_VERSION
 
     async def judge(self, view: RunView, model: LanguageModel, *, failed: frozenset[EntityRef]) -> CheckReport:
-        people = {p.email: p for p in view.scenario.people}
         filed: dict[EntityRef, WorldEvent] = {}
         latest: dict[EntityRef, WorldEvent] = {}
         for event in view.events:
@@ -73,7 +72,7 @@ class TicketIsActionable:
             last = latest[entity]
             ticket = last.after
             assert isinstance(ticket, TicketSnapshot)
-            person = people[ticket.assignee_email] if ticket.assignee_email in people else None
+            person = assigned(ticket, view.scenario.people)
             if person is not None:
                 assignee = f"{person.name}, {person.title}" if person.title else person.name
             else:

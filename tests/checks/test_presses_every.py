@@ -20,10 +20,10 @@ from tests.checks.world import START, Log, at, person, scenario
 QUICK = DelayRange(shortest=at(1) - START, longest=at(1) - START)
 
 
-def _card(log: Log, owner_email: str, hours: float, *, approvable: bool) -> WorldEvent:
+def _card(log: Log, owner: str, hours: float, *, approvable: bool) -> WorldEvent:
     ref = EntityRef(provider="chat", kind=EntityKind.MESSAGE, external_id=f"m{len(log.events) + 1}")
     actions = [MessageAction(action_id="approve", label="Approve", value="op-1")] if approvable else []
-    snapshot = MessageSnapshot(text="Approve sending the summary?", channel="dm", recipient_emails=[owner_email],
+    snapshot = MessageSnapshot(text="Approve sending the summary?", channel="dm", recipients=[owner],
                                actions=actions)  # fmt: skip
     return log._add(hours, Actor.AGENT, Operation.CREATE, ref, snapshot, wake=1)
 
@@ -32,8 +32,8 @@ async def test_every_approval_card_is_pressed_and_a_message_without_one_is_not()
     owner = person("owner", Scripted(delay=QUICK, replies=[], presses_every=ScriptedPress(label="approve")))
     replier = ScriptedReplier(scenario(owner))
     log = Log()
-    cards = [_card(log, owner.email, h, approvable=True) for h in (1, 2, 3)]
-    plain = _card(log, owner.email, 4, approvable=False)
+    cards = [_card(log, owner.key, h, approvable=True) for h in (1, 2, 3)]
+    plain = _card(log, owner.key, 4, approvable=False)
     for card in cards:
         reply = await replier.decide(owner, card, log.events, RunClock(START))
         assert reply is not None and reply.press is not None and reply.press.action_id == "approve"
@@ -46,7 +46,7 @@ async def test_a_scripted_reply_to_an_ask_is_used_before_pressing_every_card() -
                       presses_every=ScriptedPress(label="Approve"))  # fmt: skip
     owner = person("owner", script)
     log = Log()
-    first, second = (_card(log, owner.email, h, approvable=True) for h in (1, 2))
+    first, second = (_card(log, owner.key, h, approvable=True) for h in (1, 2))
     replier = ScriptedReplier(scenario(owner))
     pressed = await replier.decide(owner, first, log.events, RunClock(START))
     written = await replier.decide(owner, second, log.events, RunClock(START))

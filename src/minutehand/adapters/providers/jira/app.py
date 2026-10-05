@@ -817,7 +817,8 @@ class JiraApi:
                 nextPageToken=_param(call.request, "nextPageToken"),
             )
         wanted = body.fields if body.fields else None
-        id_only = wanted is None or wanted == ["id"]
+        id_only = wanted is None or wanted == ["id"]  # enum-lint: exempt Jira's `fields` value
+
         most = min(body.maxResults or SEARCH_DEFAULT, ID_ONLY_MOST if id_only else SEARCH_MOST)
         if most < 1:
             raise wire.bad("'maxResults' must be at least 1.")
@@ -875,7 +876,7 @@ class JiraApi:
         now = self._now()
         number = self._world.next_number(project.id)
         skeleton = wire.StoredIssue(
-            id=self._world.next_id(),
+            id=self._world.next_issue_id(),
             key=f"{project.key}-{number}",
             project=project.id,
             issuetype=issue_type.id,
@@ -1301,7 +1302,7 @@ def _chosen(every: wire.Json, wanted: list[str] | None) -> wire.Json | None:
     if wanted is None:
         return every
     names = [w.strip() for w in wanted if w.strip()]
-    if names == ["id"]:
+    if names == ["id"]:  # enum-lint: exempt Jira's `fields` parameter value, not a seed fact
         return None
     keep: set[str] = set()
     for name in names:

@@ -52,7 +52,7 @@ class YouTrackProvider:
         youtrack.update_issue(moved, actor=Actor.PERSON)
 
     def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
+        self, ticket: EntityRef, *, state: TicketState | None, assignee: Person | None, world: Store, clock: Clock
     ) -> None:
         """The scenario rewrites the issue's state and/or assignee; None leaves a field as it is."""
         youtrack = YouTrackWorld(world)
@@ -61,11 +61,8 @@ class YouTrackProvider:
         changed = issue
         if state is not None:
             changed = youtrack.moved(changed, project, youtrack.state_for(project, state), by=changed.updater, at=at)
-        if assignee_email is not None:
-            user = youtrack.user_by_email(assignee_email)
-            if user is None:
-                raise LookupError(f"no YouTrack user has the email {assignee_email}")
-            changed = _assigned(youtrack, project, changed, user, by=changed.updater, at=at)
+        if assignee is not None:
+            changed = _assigned(youtrack, project, changed, _account(youtrack, assignee), by=changed.updater, at=at)
         youtrack.update_issue(changed, actor=Actor.SCENARIO)
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
@@ -130,7 +127,7 @@ class YouTrackProvider:
         project = youtrack.project(issue.project)
         if project is None:
             raise LookupError(f"{issue.idReadable} names project {issue.project}, which does not exist")
-        author = youtrack.user_by_login(happening.person)
+        author = youtrack.user_of(happening.person)
         if author is None:
             raise LookupError(f"{happening.person} has no YouTrack account")
         at = millis(clock.now())
@@ -139,7 +136,7 @@ class YouTrackProvider:
             moved = youtrack.moved(issue, project, youtrack.state_for(project, action.to), by=author.id, at=at)
             youtrack.update_issue(moved, actor=Actor.PERSON)
         elif isinstance(action, Reassigns):
-            to = None if action.to is None else youtrack.user_by_login(action.to)
+            to = None if action.to is None else youtrack.user_of(action.to)
             if action.to is not None and to is None:
                 raise LookupError(f"{action.to} has no YouTrack account")
             youtrack.update_issue(_assigned(youtrack, project, issue, to, by=author.id, at=at), actor=Actor.PERSON)
@@ -176,7 +173,7 @@ def _assigned(
 
 
 def _account(youtrack: YouTrackWorld, person: Person) -> wire.StoredUser:
-    user = youtrack.user_by_login(person.key) or youtrack.user_by_email(person.email)
+    user = youtrack.user_of(person.key)
     if user is None:
         raise ValueError(f"{person.key} has no YouTrack account")
     return user

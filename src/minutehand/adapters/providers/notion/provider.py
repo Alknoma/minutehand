@@ -21,9 +21,9 @@ from minutehand.adapters.providers.notion.seed import (
     NotionSeed,
     SeedValue,
     document_page,
-    person_id,
     plan,
     seed,
+    user_id,
     value_request,
 )
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row
@@ -65,8 +65,8 @@ class NotionProvider:
         found = NotionWorld(world).page(page)
         if found is None:
             return
-        email = next(p.email for p in scenario.people if p.key == happening.person)
-        editor, user = _as_person(page, email, world, clock)
+        person = next(p for p in scenario.people if p.key == happening.person)
+        editor, user = _as_person(page, person, world, clock)
         action = happening.action
         if isinstance(action, Edited):
             paragraphs: list[JsonValue] = [
@@ -108,9 +108,10 @@ class NotionProvider:
         elif kind in (wire.PropertyType.MULTI_SELECT, wire.PropertyType.PEOPLE, wire.PropertyType.RELATION):
             value = [v.strip() for v in action.value.split(",") if v.strip()]
         users = editor.world.users(row.workspace)
-        emails = {u.email: u.id for u in users if u.email}
-        emails |= {p.key: emails[p.email] for p in scenario.people if p.email in emails}
-        raw = value_request(schema, value, {}, emails, by_id=True)
+        members = {u.id for u in users}
+        named = {u.email: u.id for u in users if u.email}
+        named |= {p.key: found for p in scenario.people if (found := user_id(row.workspace, p)) in members}
+        raw = value_request(schema, value, {}, named, by_id=True)
         editor.update_page(row.id, {"properties": {action.field: raw}}, by=user)
 
     # ------------------------------------------------------------------ ChangesPeople
@@ -125,7 +126,7 @@ class NotionProvider:
             u
             for w in notion.workspaces()
             for u in notion.users(w.id)
-            if u.type is wire.UserType.PERSON and (u.email or "").lower() == person.email.lower()
+            if u.type is wire.UserType.PERSON and u.id == user_id(w.id, person)
         ]
         if not members:
             raise ValueError(f"{person.key} is not a member of any Notion workspace")
@@ -164,15 +165,15 @@ def _title_property(editor: Editor, page: wire.StoredPage) -> str:
     return next(name for name, prop in schema.items() if wire.schema_type(prop) is wire.PropertyType.TITLE)
 
 
-def _as_person(object_id: str, email: str, world: Store, clock: Clock) -> tuple[Editor, str]:
+def _as_person(object_id: str, person: Person, world: Store, clock: Clock) -> tuple[Editor, str]:
     notion = NotionWorld(world)
     page = notion.page(object_id)
     if page is None:
         raise ValueError(f"no page {object_id} in this world")
-    user = person_id(page.workspace, email)
+    user = user_id(page.workspace, person)
     found = notion.user(user)
     if found is None or found.workspace != page.workspace:
-        raise ValueError(f"{email} is not a member of the page's workspace")
+        raise ValueError(f"{person.key} is not a member of the page's workspace")
     return Editor(notion, page.workspace, clock, actor=Actor.PERSON), user
 
 

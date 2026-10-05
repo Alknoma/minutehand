@@ -24,14 +24,14 @@ from tests.orchestrator.rig import T0, person, scenario, scripted
 FRIDAY_1630 = datetime(2026, 8, 28, 16, 30, tzinfo=UTC)
 
 
-def ask(store: SqliteStore, email: str, external_id: str) -> WorldEvent:
+def ask(store: SqliteStore, person: str, external_id: str) -> WorldEvent:
     return store.apply(
         Change(
             entity=EntityRef(provider="testchat", kind=EntityKind.MESSAGE, external_id=external_id),
             operation=Operation.CREATE,
             actor=Actor.AGENT,
             body="{}",
-            after=MessageSnapshot(text="?", channel="dm", recipient_emails=[email]),
+            after=MessageSnapshot(text="?", channel="dm", recipients=[person]),
         )
     )
 
@@ -44,7 +44,7 @@ def world(tmp_path: Path, at: datetime = T0) -> tuple[SqliteStore, RunClock]:
 
 async def landing(tmp_path: Path, who: Person, *, seed: int = 17, at: datetime = T0, message: str = "m1") -> datetime:
     store, clock = world(tmp_path, at)
-    asked = ask(store, who.email, message)
+    asked = ask(store, who.key, message)
     reply = await ScriptedReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who], seed=seed)).decide(
         who, asked, store.events(), clock
     )
@@ -116,7 +116,7 @@ async def test_the_nth_ask_gets_the_nth_scripted_reply_and_an_unscripted_ask_get
     replier = ScriptedReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), sofia]))
     texts = []
     for n in (1, 2, 3):
-        asked = ask(store, sofia.email, f"m{n}")
+        asked = ask(store, sofia.key, f"m{n}")
         reply = await replier.decide(sofia, asked, store.events(), clock)
         texts.append(reply.text if reply else None)
     assert texts == ["first", "second", None]
@@ -125,5 +125,5 @@ async def test_the_nth_ask_gets_the_nth_scripted_reply_and_an_unscripted_ask_get
 async def test_a_silent_person_returns_no_reply(tmp_path: Path) -> None:
     store, clock = world(tmp_path)
     dania = person("dania", Silent())
-    asked = ask(store, dania.email, "m1")
+    asked = ask(store, dania.key, "m1")
     assert await ScriptedReplier(scenario()).decide(dania, asked, store.events(), clock) is None

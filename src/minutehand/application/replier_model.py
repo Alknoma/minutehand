@@ -32,6 +32,7 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     WorldEvent,
+    reached,
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
@@ -158,12 +159,13 @@ def exchange(person: Person, asked: WorldEvent, history: list[WorldEvent]) -> li
         if not (event.operation is Operation.CREATE and isinstance(after, MessageSnapshot)):
             continue
         where = (event.entity.provider, after.channel)
-        if event.actor is Actor.AGENT and person.email in after.recipient_emails:
+        to_them = person in reached(after, [person])
+        if event.actor is Actor.AGENT and to_them:
             channels.add(where)
             said.append(
                 ModelMessage(speaker=Speaker.ASKER, text=reads[event.entity] + _controls(controls[event.entity]))
             )
-        elif event.actor is Actor.PERSON and where in channels and person.email not in after.recipient_emails:
+        elif event.actor is Actor.PERSON and where in channels and not to_them:
             said.append(ModelMessage(speaker=Speaker.MODEL, text=reads[event.entity]))
     return said
 

@@ -561,12 +561,12 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     var a = ev.after, actor = ev.actor === "agent" ? "The agent" : ev.actor === "person" ? "Someone" : "The scenario";
     var verb = { create: "created", update: "changed", "delete": "deleted" }[ev.operation] || ev.operation;
     if (a && a.kind === "message") {
-      var to = a.recipient_emails.map(who.email).join(", ");
+      var to = (a.recipients && a.recipients.length ? a.recipients.map(who.key) : a.recipient_emails.map(who.email)).join(", ");
       if (ev.actor === "agent") { return ["Message to " + (to || "a channel"), a.text]; }
       return [(to ? "Message to " + to : "Message") + (ev.actor === "person" ? ", from a person" : ", set up by the scenario"), a.text];
     }
     if (a && a.kind === "ticket") {
-      var holder = a.assignee_email ? " for " + who.email(a.assignee_email) : "";
+      var holder = a.assignee ? " for " + who.key(a.assignee) : a.assignee_email ? " for " + who.email(a.assignee_email) : "";
       return [actor + " " + verb + " a ticket" + holder, "“" + a.title + "”, " + a.state];
     }
     if (a && a.kind === "document") { return [actor + " " + verb + " a document", "“" + a.title + "”"]; }

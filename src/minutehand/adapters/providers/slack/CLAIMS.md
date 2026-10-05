@@ -64,3 +64,7 @@ reference says it, at the page given; **observed** means someone saw Slack do it
 | `_post_as`, a body field that sets the author | The emulator's private dialect; a person's message here is a scenario happening. |
 | `/health` | The emulator's own route. |
 | The emulator's token holds exactly the install's scopes | A check on the emulator's fixture file. |
+| A member with no email (none, or hidden) has no `profile.email`, and `users.lookupByEmail` does not find them | documented | `test_a_person_with_no_email_is_listed_without_one_and_a_message_still_reaches_them`, `test_an_account_whose_email_is_hidden_shows_none_and_is_not_found_by_it` | https://docs.slack.dev/reference/objects/user-object, https://docs.slack.dev/reference/methods/users.lookupByEmail |
+| A member id is `U` or `W` then capitals and digits; a channel id `C`/`G`, an IM's `D` | documented | `test_a_declared_slack_id_out_of_format_or_taken_is_refused` | https://docs.slack.dev/reference/objects/user-object, https://docs.slack.dev/reference/objects/conversation-object |
+| A message's `ts` is its epoch second, a dot and six digits, and names it in its channel; a reply's thread is its parent's `ts` | documented | `test_declared_channel_post_and_thread_ids_are_the_ones_slack_answers_with` | https://docs.slack.dev/messaging/retrieving-messages |
+| Opening an IM that exists answers its id with `already_open` | documented | `test_a_declared_direct_conversation_id_is_the_one_opening_it_answers` | https://docs.slack.dev/reference/methods/conversations.open |

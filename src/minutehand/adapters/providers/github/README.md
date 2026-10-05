@@ -43,6 +43,17 @@ nothing. `GET /rate_limit` reports every budget and spends none. Budgets live in
 Faults, armed in the seed and spent in order: `rate_limited` (403 or 429, `X-RateLimit-Remaining: 0` and the reset;
 a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with `Retry-After`), `server_error`.
 
+## People and their ids
+
+A person is a GitHub user when their account entry declares one (`people[].accounts: [{provider: github, login:
+john-smith}]`) or the GitHub seed's `users` names them (`{login, person}`); both naming one login for one person are
+one account, and a login or person named two ways is refused. The entry's `login` is required and follows GitHub's
+rule; its `id` (a positive integer) replaces the id derived from the login, refused when another account already
+has it; its `name` replaces the person's; `email_visible: false`, or a person with no email, reads `email: null`, as a
+private email does, and their commits carry the `<id>+<login>@users.noreply.github.com` address. A seed's tokens,
+collaborators, commit authors, members and owners may name a login only a person's entry declares, so whether each
+names an account is checked when seeding, beside the scenario's people.
+
 ## What it does not do
 
 - Issues, pull requests, comments, labels, webhooks, OAuth web flow, GitHub App installation tokens.

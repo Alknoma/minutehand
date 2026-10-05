@@ -200,9 +200,9 @@ class YouTrackWorld:
         wanted = login.strip().lower()
         return next((u for u in self.users() if u.login.lower() == wanted), None)
 
-    def user_by_email(self, email: str) -> wire.StoredUser | None:
-        wanted = email.strip().lower()
-        return next((u for u in self.users() if u.email is not None and u.email.lower() == wanted), None)
+    def user_of(self, person: str) -> wire.StoredUser | None:
+        """The account seeded for the person with this `Person.key`, whatever its login."""
+        return next((u for u in self.users() if u.person == person), None)
 
     def user_by_ring_id(self, ring_id: str) -> wire.StoredUser | None:
         return next((u for u in self.users() if u.ringId == ring_id), None)
@@ -214,7 +214,7 @@ class YouTrackWorld:
             (
                 u
                 for u in self.users()
-                if wanted in (u.login.lower(), u.fullName.lower(), (u.email or "").lower()) and wanted
+                if wanted in (u.login.lower(), u.fullName.lower(), (u.shown_email or "").lower()) and wanted
             ),
             None,
         )
@@ -342,8 +342,14 @@ class YouTrackWorld:
         return self._store.head()
 
     def next_number(self, project: str) -> int:
-        """The number the project's next issue takes: one past every number it has handed out."""
-        return sum(1 for _ in self._all(EntityKind.RECORD, project)) + 1
+        """The number the project's next issue takes: one past the highest it has handed out, a declared one too
+        (`SeededTicket.number`), as YouTrack's counter moves past an imported issue's number."""
+        return max(self.numbers(project), default=0) + 1
+
+    def numbers(self, project: str) -> set[int]:
+        """Every number the project has handed out: a readable id is never deleted."""
+        found = (_short_name_of(s.entity.external_id) for s in self._all(EntityKind.RECORD, project))
+        return {shape[1] for shape in found if shape is not None}
 
     def taken(self, entity_id: str) -> bool:
         """Whether an issue, a comment or a tag already has this id."""
@@ -353,8 +359,11 @@ class YouTrackWorld:
         )
 
     def next_id(self, prefix: int) -> str:
-        """A database id from the sequence of the event about to be written."""
-        return f"{prefix}-{self._store.head() + 1}"
+        """A database id from the sequence of the event about to be written, or the next one no seed declared."""
+        number = self._store.head() + 1
+        while self.taken(f"{prefix}-{number}"):
+            number += 1
+        return f"{prefix}-{number}"
 
     # ------------------------------------------------------------------ what an issue is
 
@@ -415,6 +424,7 @@ class YouTrackWorld:
             body=issue.description or "",
             project=project.shortName,
             assignee_email=assignee.email if assignee is not None else None,
+            assignee=assignee.person if assignee is not None else None,
             state=state.outcome if state is not None else TicketState.OPEN,
         )
 
@@ -582,6 +592,12 @@ def placed(additions: Sequence[Change], world: Store) -> list[Change]:
     youtrack = YouTrackWorld(world)
     found = list(additions)
     issues = {c.entity.external_id: n for n, c in enumerate(found) if c.entity.kind is EntityKind.TICKET}
+    declared: dict[str, set[int]] = {}
+    for change in found:
+        if change.entity.kind is EntityKind.TICKET and change.parent is not None and change.body is not None:
+            issue = wire.parse(wire.StoredIssue, change.body)
+            if issue.numberDeclared:
+                declared.setdefault(change.parent, set()).add(issue.numberInProject)
     following: dict[str, int] = {}
     for n, change in enumerate(found):
         if change.entity.kind is not EntityKind.RECORD or change.parent is None or change.body is None:
@@ -594,11 +610,19 @@ def placed(additions: Sequence[Change], world: Store) -> list[Change]:
             raise ValueError(
                 f"the readable-id record {change.entity.external_id} names issue {alias.issue}, which is not added"
             )
-        number = following[change.parent] if change.parent in following else youtrack.next_number(change.parent)
-        following[change.parent] = number + 1
-        readable = f"{project.shortName}-{number}"
         held = found[issues[alias.issue]]
         issue = wire.parse(wire.StoredIssue, held.body or "")
+        if issue.numberDeclared:
+            if issue.numberInProject in youtrack.numbers(change.parent):
+                raise ValueError(
+                    f"{issue.idReadable} declares a number {project.shortName} has already handed out in this world"
+                )
+            continue
+        ahead = declared[change.parent] if change.parent in declared else set()
+        number = following[change.parent] if change.parent in following else youtrack.next_number(change.parent)
+        number = max(number, max(ahead, default=0) + 1)
+        following[change.parent] = number + 1
+        readable = f"{project.shortName}-{number}"
         if issue.idReadable == readable:
             continue
         found[n] = change.model_copy(update={"entity": alias_ref(readable)})

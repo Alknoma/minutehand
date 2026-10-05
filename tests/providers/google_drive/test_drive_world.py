@@ -100,6 +100,7 @@ def test_seeding_writes_my_drive_people_access_and_documents_as_the_scenario(dri
                 last_edited_by=OWNER,
                 last_edited_at=START,
                 owner=OWNER,
+                owned_by="mara",
             ),
         ),
     ]

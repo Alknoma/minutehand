@@ -187,6 +187,7 @@ class SlackApi:
             text=wire.visible_text(message.text, message.blocks),
             channel=channel,
             recipient_emails=world.human_emails(channel, besides=message.user),
+            recipients=world.human_people(channel, besides=message.user),
             thread_of=message.thread_ts,
             actions=message_actions(message),
         )
@@ -369,8 +370,7 @@ class SlackApi:
     def _conversation(self, others: list[str], *, actor: Actor) -> tuple[wire.SlackChannel, bool]:
         """The IM or group DM between the app and `others`, created when it does not exist yet."""
         members = sorted({self._world.bot, *others})
-        cid = state.conversation_id(members)
-        existing = self._world.channel(cid)
+        existing = self._world.conversation_between(members)
         if existing is not None:
             return existing, False
         channel = self._world.open_conversation(members, created=int(self._clock.now().timestamp()), actor=actor)
@@ -542,6 +542,7 @@ class SlackApi:
         self, world: SlackWorld, channel: str, message: wire.SlackMessage, user: wire.SlackUser
     ) -> None:
         seen_by = [e for e in [world.email_of(user)] if e is not None]
+        reached = [k for k in [world.person_of(user)] if k is not None]
         world.write(
             state.message_ref(message.ts),
             message,
@@ -552,6 +553,7 @@ class SlackApi:
                 text=wire.visible_text(message.text, message.blocks),
                 channel=channel,
                 recipient_emails=seen_by,
+                recipients=reached,
                 thread_of=message.thread_ts,
                 actions=message_actions(message),
             ),
@@ -862,7 +864,10 @@ class SlackApi:
                 self._snapshot_in(world, channel, replaced)
                 if replaced.ephemeral_to is None
                 else self._snapshot_in(world, channel, replaced).model_copy(
-                    update={"recipient_emails": self._emails_in(world, [replaced.ephemeral_to])}
+                    update={
+                        "recipient_emails": self._emails_in(world, [replaced.ephemeral_to]),
+                        "recipients": self._people_in(world, [replaced.ephemeral_to]),
+                    }
                 )
             )
             world.write(
@@ -892,6 +897,11 @@ class SlackApi:
         message = self._from_bot_in(world, body.text, body.blocks, body.attachments, thread_ts, ephemeral_to=user.id)
         self._write_ephemeral_in(world, hook.channel, message, user)
         return JSONResponse({"ok": True})
+
+    def _people_in(self, world: SlackWorld, users: list[str]) -> list[str]:
+        found = [world.user(u) for u in users]
+        keys = [world.person_of(u) for u in found if u is not None]
+        return [k for k in keys if k is not None]
 
     def _emails_in(self, world: SlackWorld, users: list[str]) -> list[str]:
         found = [world.user(u) for u in users]

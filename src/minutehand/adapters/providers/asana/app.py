@@ -207,7 +207,8 @@ class View:
         found: dict[str, str] = {"me": self.caller.gid}
         for user in self.world.users():
             found[user.gid] = user.gid
-            found[user.email] = user.gid
+            if user.email is not None:
+                found[user.email] = user.gid
         return found
 
     # ------------------------------------------------------------------ representations
@@ -1190,7 +1191,9 @@ class AsanaApi:
                 ]
             case "user":  # enum-lint: exempt Asana's typeahead resource_type, its wire vocabulary
                 found = [
-                    view.user_out(u) for u in self._world.users() if words in u.name.lower() or words in u.email.lower()
+                    view.user_out(u)
+                    for u in self._world.users()
+                    if words in u.name.lower() or words in (u.email or "").lower()
                 ]
             case "project":  # enum-lint: exempt Asana's typeahead resource_type, its wire vocabulary
                 found = [

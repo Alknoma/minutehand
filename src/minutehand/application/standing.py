@@ -60,6 +60,8 @@ from minutehand.domain.world import (
     Operation,
     TicketSnapshot,
     WorldEvent,
+    assigned,
+    reached,
 )
 from minutehand.ports.provider import (
     ActsOnTickets,
@@ -148,7 +150,6 @@ class StandingWorld:
         self._signing = dict(signing)
         self._built: dict[ProviderKey, Provider] = {}
         self._apps: dict[ProviderKey, ASGIApp] = {}
-        self._people = {p.email: p for p in scenario.people}
         self._replier = ScriptedReplier(scenario) if scripted else None
         self._owed: list[_Owed] = []
         self._fated: set[EntityRef] = set()
@@ -258,13 +259,12 @@ class StandingWorld:
             if event.actor is not Actor.AGENT or event.operation not in (Operation.CREATE, Operation.UPDATE):
                 continue
             after = event.after
-            if isinstance(after, TicketSnapshot) and after.assignee_email in self._people:
-                self._fate(self._people[after.assignee_email], event)
+            if isinstance(after, TicketSnapshot) and (holder := assigned(after, self.scenario.people)) is not None:
+                self._fate(holder, event)
             if event.operation is Operation.CREATE and isinstance(after, MessageSnapshot):
                 history = history if history is not None else self.store.events()
-                for email in after.recipient_emails:
-                    if email in self._people:
-                        await self._ask(self._people[email], event, [h for h in history if h.seq <= event.seq])
+                for person in reached(after, self.scenario.people):
+                    await self._ask(person, event, [h for h in history if h.seq <= event.seq])
 
     async def _ask(self, person: Person, asked: WorldEvent, history: list[WorldEvent]) -> None:
         assert self._replier is not None
@@ -471,7 +471,6 @@ class StandingWorld:
                 raise
             raise WorldRefused(f"this addition cannot land here: {e}") from e
         self.scenario = after
-        self._people = {p.email: p for p in after.people}
         if self._replier is not None:
             self._replier = ScriptedReplier(after)
         for key in sorted(named - set(held)):
@@ -526,12 +525,15 @@ class StandingWorld:
 
     def edit_ticket(self, ticket: EntityRef, *, state: TicketState | None, assignee: str | None) -> WorldEvent:
         """The ticket is rewritten from outside the agent (reassigned, reopened), as actor SCENARIO."""
-        email = self._person(assignee).email if assignee is not None else None
+        holder = self._person(assignee) if assignee is not None else None
         provider = self.provider(ticket.provider)
         if not isinstance(provider, EditsTickets):
             raise WorldRefused(f"{ticket.provider} holds no tickets that can be rewritten")
         before = self.store.head()
-        provider.edit(ticket, state=state, assignee_email=email, world=self.store, clock=self.clock)
+        try:
+            provider.edit(ticket, state=state, assignee=holder, world=self.store, clock=self.clock)
+        except ValueError as e:
+            raise WorldRefused(f"{ticket.provider} cannot rewrite {ticket.external_id}: {e}") from e
         return self._written(before)
 
     # -- reading ------------------------------------------------------------------------------------------------
@@ -562,8 +564,20 @@ class StandingWorld:
     def _person(self, key: str) -> Person:
         found = next((p for p in self.scenario.people if p.key == key), None)
         if found is None:
+            by_login = [
+                f"{p.key} (who is {a.login} in {a.provider})"
+                for p in self.scenario.people
+                for a in p.accounts
+                if a.login is not None and a.login.casefold() == key.casefold()
+            ]
+            hint = (
+                f"; {key} is the login of {', '.join(by_login)}: name the person by their key"
+                if by_login
+                else "; an account only a provider's own seed declares is no person: declare it as a person with "
+                f"`accounts: [{{provider: ..., login: {key}}}]` to act as it, assign it or change it"
+            )
             raise WorldRefused(
-                f"no person {key} in this world; it has {', '.join(p.key for p in self.scenario.people)}"
+                f"no person {key} in this world; it has {', '.join(p.key for p in self.scenario.people)}{hint}"
             )
         return found
 

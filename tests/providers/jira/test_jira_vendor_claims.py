@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from minutehand.domain.world import Operation
 from tests.providers.jira.jira_site import AGENT, API, Site, ok, refused
 
 KANBAN = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
@@ -247,3 +248,50 @@ async def test_mypermissions_with_a_malformed_permission_key_is_refused_400(site
     — a `permissions` list holding an invalid key is a 400; keys are matched exactly, so a lowercase spelling or a
     space for the underscore is invalid."""
     refused(await site.http.get(f"{API}/mypermissions", params={"permissions": permissions}), 400)
+
+
+# --------------------------------------------------------------------------- what the retired emulator tests held
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_the_retired_search_is_refused_410_and_writes_nothing(site: Site, method: str) -> None:
+    """Documented: https://developer.atlassian.com/changelog/#CHANGE-2046 — `/rest/api/3/search` is removed in
+    favour of `/rest/api/3/search/jql`. Observed: callers of the removed endpoint are answered 410 Gone."""
+    head = site.store.head()
+    if method == "GET":
+        answer = await site.http.get(f"{API}/search", params={"jql": "project = LAUNCH"})
+    else:
+        answer = await site.http.post(f"{API}/search", json={"jql": "project = LAUNCH"})
+
+    body = refused(answer, 410)
+    assert "search/jql" in " ".join(body["errorMessages"])
+    assert site.store.head() == head
+
+
+async def test_an_edit_refused_for_one_field_writes_none_of_them(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-issueidorkey-put
+    — an edit naming a value the field cannot take is a 400. Observed: the whole edit is refused, so a valid field
+    beside the refused one is not written either, and the issue reads as before."""
+    before = ok(await site.http.get(f"{API}/issue/LAUNCH-1"))
+    head = site.store.head()
+
+    refused(
+        await site.http.put(
+            f"{API}/issue/LAUNCH-1", json={"fields": {"summary": "Renamed", "priority": {"name": "No such priority"}}}
+        ),
+        400,
+    )
+
+    after = ok(await site.http.get(f"{API}/issue/LAUNCH-1"))
+    assert after["fields"]["summary"] == before["fields"]["summary"] == "Write the release notes"
+    changes = [e for e in site.store.events(since=head) if e.operation not in (Operation.READ, Operation.SEARCH)]
+    assert changes == []
+
+
+async def test_myself_without_credentials_is_refused_401(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-myself/#api-rest-api-3-myself-get
+    — 401 when the authentication credentials are incorrect or missing."""
+    async with site.client(None) as anonymous:
+        answer = await anonymous.get(f"{API}/myself")
+
+    assert answer.status_code == 401, answer.text

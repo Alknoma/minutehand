@@ -189,7 +189,17 @@ class AsanaUser(Model):
     resource_type: Literal["user"] = "user"
     gid: str
     name: str
-    email: str
+    email: str | None = Field(
+        default=None, description="None for a user whose email the workspace does not show, or who has none"
+    )
+    person: str | None = Field(
+        default=None, description="Person.key this user was seeded for; kept by the world, never served"
+    )
+    hidden_email: str | None = Field(
+        default=None,
+        description="The person's email when the workspace does not show it: the world's record of whom a ticket "
+        "reaches, never served",
+    )
     removed: bool = Field(
         default=False,
         description="Removed from the workspace by an administrator: unlisted, unassignable, its tokens refused; "
@@ -888,7 +898,7 @@ class UserOut(Model):
     gid: str
     resource_type: Literal["user"] = "user"
     name: str
-    email: str
+    email: str | None = Field(description="null for a user whose email is not shown")
     workspaces: list[WorkspaceOut]
 
 

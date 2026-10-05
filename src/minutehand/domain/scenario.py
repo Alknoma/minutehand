@@ -167,12 +167,47 @@ class Account(StrEnum):
     BOT = "bot"  # another app's bot user, not a human; never answers
 
 
+class PersonAccount(Model):
+    """Who a person is in one service: the account that service holds for them, as it names it. Every fact left out
+    is derived as for a person with no entry for that service (a login from the key, an id from what the account is,
+    the person's name, their email shown). A provider holds the facts its manifest lists (`Manifest.account_facts`)
+    and refuses, at load, an entry setting any other, and an id or login not in its service's own format."""
+
+    provider: ProviderKey
+    login: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Their username in the service (a YouTrack or GitHub login), in whatever characters the service "
+        "allows: never constrained by the person's key",
+    )
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The service's own id for the account, as a client stores it (a Jira accountId, a Slack user id, "
+        "a YouTrack database id, an Asana gid, a Microsoft object id, a Notion user id)",
+    )
+    name: str | None = Field(default=None, min_length=1, description="Their display name there; None: Person.name")
+    email_visible: bool = Field(
+        default=True,
+        description="False: the service shows no email for this account (hidden by privacy settings, an app without "
+        "the email scope, a private GitHub email), though the person has one",
+    )
+
+
 class Person(Model):
     key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     name: str
-    email: str
+    email: str | None = Field(
+        default=None,
+        description="None: an account with no email (a service account, a user known only by login); each service "
+        "presents them as it presents an account with no email",
+    )
     title: str | None = None
     account: Account = Account.MEMBER
+    accounts: list[PersonAccount] = Field(
+        default=[],
+        description="Who they are in each service that names them otherwise than by default; one per service",
+    )
     facts: list[str] = Field(default=[], description="What this person knows; all a model reply may draw on")
     stale_facts: list[str] = Field(default=[], description="What they believe that is no longer true")
     reply: ReplyBehaviour = Answers()
@@ -184,6 +219,23 @@ class Person(Model):
         description="How many follow-ups on one ask this person takes, each sent before their answer was due, "
         "before it is nagging",
     )
+
+    @model_validator(mode="after")
+    def _one_account_per_service(self) -> Person:
+        providers = [a.provider for a in self.accounts]
+        twice = sorted({p for p in providers if providers.count(p) > 1})
+        if twice:
+            raise ValueError(f"{self.key} has more than one account in {', '.join(twice)}; give one per service")
+        return self
+
+    def account_in(self, provider: str) -> PersonAccount | None:
+        """What this person's entry says of their account in `provider`, when it says anything."""
+        return next((a for a in self.accounts if a.provider == provider), None)
+
+    def shown_email(self, provider: str) -> str | None:
+        """The email `provider` shows for this person: theirs, unless they have none or it is hidden there."""
+        found = self.account_in(provider)
+        return None if found is not None and not found.email_visible else self.email
 
 
 class TicketState(StrEnum):
@@ -200,6 +252,19 @@ class SeededComment(Model):
 
 
 class SeededTicket(Model):
+    number: int | None = Field(
+        default=None,
+        ge=1,
+        description="Its number within its project as the service shows it (142 of `BACKEND-142`, a GitHub issue's "
+        "number); None: the next free one, in seed order. Later tickets in the project take numbers above the "
+        "highest declared. Only a provider whose manifest holds ticket numbers accepts one",
+    )
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The service's own id for it (a YouTrack database id `2-5`, a Jira numeric id, an Asana gid), in "
+        "that service's format; None: the stable id derived from what it is",
+    )
     key: str | None = Field(
         default=None,
         pattern=r"^[a-z][a-z0-9_]*$",
@@ -242,6 +307,12 @@ class Access(Model):
 class SeededDocument(Model):
     provider: ProviderKey
     title: str
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The service's own id for it (a Drive file id, a Notion page id, a SharePoint item id), in that "
+        "service's format; None: the stable id derived from what it is",
+    )
     text: str = ""
     kind: DocumentKind = DocumentKind.DOCUMENT
     rows: list[list[str]] = Field(default=[], description="A spreadsheet's cells, row by row")
@@ -272,6 +343,9 @@ class SharedSpace(Model):
     provider: ProviderKey
     name: str
     members: list[Access] = Field(min_length=1)
+    id: str | None = Field(
+        default=None, min_length=1, description="The service's own id for it (a shared drive's id); None: derived"
+    )
 
 
 class SignIn(Model):
@@ -392,6 +466,11 @@ class SeededPost(Model):
     text: str
     ago: timedelta = Field(gt=timedelta(0), description="How long before the scenario starts it was posted")
     key: PostKey | None = Field(default=None, description="How a happening names this post")
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The service's own id for it (a Slack message's `ts`, a Teams message id); None: derived",
+    )
     files: list[SeededFile] = []
     replies: list[SeededPost] = Field(default=[], description="Its thread, each reply posted after it")
 
@@ -410,6 +489,11 @@ class SeededChannel(Model):
 
     provider: ProviderKey
     name: ChannelName | None = None
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The service's own id for it (a Slack channel id, a Teams channel id); None: derived",
+    )
     private: bool = False
     archived: bool = False
     topic: str = ""
@@ -740,6 +824,7 @@ class _ScenarioBody(Model):
         for happening in self._on_tickets():
             self.happening_ticket(happening)
         self._places_resolve()
+        self._declared_identities_differ()
         seeded = [s.provider for s in self.provider_seeds]
         twice = sorted({p for p in seeded if seeded.count(p) > 1})
         if twice:
@@ -831,6 +916,37 @@ class _ScenarioBody(Model):
             raise ValueError("two seeded documents of one provider share a title")
         for happening in self._on_documents():
             self.happening_document(happening)
+
+    def _declared_identities_differ(self) -> None:
+        """No two seeded things of one provider declare the same id, and no two tickets of one project the same
+        number: either would be one thing in the service, seeded twice."""
+        numbers = [(t.provider, t.project, t.number) for t in self.tickets if t.number is not None]
+        for provider, project, number in sorted({n for n in numbers if numbers.count(n) > 1}):
+            raise ValueError(f"two seeded {provider} tickets in {project!r} declare the number {number}")
+        ids: list[tuple[str, str, str, str]] = []
+        ids += [(t.provider, "id", t.id, f"ticket {t.title!r}") for t in self.tickets if t.id is not None]
+        ids += [(d.provider, "id", d.id, f"document {d.title!r}") for d in self.documents if d.id is not None]
+        ids += [(s.provider, "id", s.id, f"space {s.name!r}") for s in self.spaces if s.id is not None]
+        ids += [(c.provider, "id", c.id, f"channel {c.name or 'direct'!r}") for c in self.channels if c.id is not None]
+        ids += [
+            (c.provider, "id", p.id, f"post {p.text[:30]!r}")
+            for c in self.channels
+            for p in _every_post(c.history)
+            if p.id is not None
+        ]
+        for person in self.people:
+            for account in person.accounts:
+                if account.id is not None:
+                    ids.append((account.provider, "id", account.id, f"{person.key}'s account"))
+                if account.login is not None:
+                    ids.append((account.provider, "login", account.login.casefold(), f"{person.key}'s account"))
+        seen: dict[tuple[str, str, str], str] = {}
+        for provider, space, declared, what in ids:
+            if (provider, space, declared) in seen:
+                raise ValueError(
+                    f"{seen[(provider, space, declared)]} and {what} both declare {declared!r} in {provider}"
+                )
+            seen[(provider, space, declared)] = what
 
     def _refuse_tell(self, relayed: Relayed) -> None:
         """A tell the agent could write without hearing it from `said_by`, or that `said_by` can never say."""

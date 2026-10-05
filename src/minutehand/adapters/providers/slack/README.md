@@ -66,6 +66,22 @@ An absence the scenario gives a person (`Person.absences`, anchored as the check
 agent's first message to them) shows while it lasts: `status_text` (its reason, else `Away`), `status_emoji`
 `:palm_tree:`, `status_expiration` at its end; `users.getPresence` `away`; `dnd.info` snoozed until its end.
 
+## People, their accounts, and the ids a seed declares
+
+- A person with no `email` is a member whose profile carries none, as Slack serves a member with no email or an app
+  without `users:read.email`: `users.lookupByEmail` does not find them, and a message to them still reaches them in
+  the world (`MessageSnapshot.recipients` names their key; `recipient_emails` holds only emails that exist).
+- A person's `accounts` entry for `slack` may say `id` (their member id, `U…` or `W…`; refused in any other shape,
+  when it is another member's, or when the person is in more than one workspace, where Slack gives each its own),
+  `name` (their display name) and `email_visible: false` (as `SlackSeed.without_email`). `login` is refused: a member's
+  `name` handle is the person's key, which is how the world knows which person a member is.
+- A seeded channel may declare its `id` (`C…`/`G…` named, `D…` for an IM, `C…`/`G…` for a group DM) and a post its
+  `ts`. A `ts` is when Slack says the message was posted, so a declared one places the post at its own second, which
+  must be before the scenario's start (a reply's after its thread's); the post's `ago` then only orders it among its
+  channel's posts. Undeclared ones keep the ids derived from what they are, and pass over a declared `ts`.
+- A direct conversation (a seeded channel with no name) holds no `archived`, `topic`, `purpose` or
+  `agent_member: false`: refused at load, naming them.
+
 ## What it does not do
 
 - Enterprise Grid: a person in two workspaces is two unrelated users, and no shared channel spans workspaces.

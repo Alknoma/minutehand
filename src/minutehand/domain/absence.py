@@ -14,8 +14,9 @@ from datetime import datetime, timedelta
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, WorldEvent
 
 
-def first_ask(email: str, events: Iterable[WorldEvent]) -> datetime | None:
-    """When the agent first wrote to `email`, on any provider; None before it has."""
+def first_ask(person: str, email: str | None, events: Iterable[WorldEvent]) -> datetime | None:
+    """When the agent first wrote to the person keyed `person` (or, in a record that names no keys, to `email`, when
+    they have one), on any provider; None before it has."""
     return next(
         (
             e.sim_time
@@ -23,7 +24,7 @@ def first_ask(email: str, events: Iterable[WorldEvent]) -> datetime | None:
             if e.actor is Actor.AGENT
             and e.operation is Operation.CREATE
             and isinstance(e.after, MessageSnapshot)
-            and email in e.after.recipient_emails
+            and (person in e.after.recipients or (email is not None and email in e.after.recipient_emails))
         ),
         None,
     )

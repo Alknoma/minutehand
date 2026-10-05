@@ -5,12 +5,16 @@ learned about api.github.com; this provider keeps it, and the named test fails i
 GitHub's public reference says so (the page is given); **observed** means the reference does not settle it and the
 claim rests on what was seen from the real service. Tests are in `tests/providers/github/`, files
 `test_github_vendor_claims_rest.py` (R), `test_github_vendor_claims_search.py` (S),
-`test_github_vendor_claims_graphql.py` (G) and `test_github_vendor_claims_budget.py` (B).
+`test_github_vendor_claims_graphql.py` (G), `test_github_vendor_claims_budget.py` (B) and
+`test_github_people_and_ids.py` (P).
 
 ## Ported
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
+| A user's `id` is a positive integer; a person's declared id is answered as theirs | documented | P `test_a_persons_account_entry_is_a_github_user_with_its_declared_login_and_id` | https://docs.github.com/en/rest/users/users#get-the-authenticated-user |
+| A login is letters, digits and single inner hyphens, at most 39 characters; a dotted login is refused at load | documented | P `test_a_login_github_does_not_allow_is_refused` | https://docs.github.com/en/enterprise-cloud@latest/admin/managing-iam/iam-configuration-reference/username-considerations-for-external-authentication |
+| `email` is null when the user keeps their email private (or has none public) | documented | P `test_a_private_email_reads_null`, `test_a_person_with_no_email_reads_null_and_shows_the_entrys_name` | https://docs.github.com/en/rest/users/users#get-the-authenticated-user |
 | No credential: public data is served, `/user` is 401 "Requires authentication" | documented | R `test_without_any_credential_the_user_is_refused_requires_authentication` | https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api |
 | Basic authentication with a password is 401 | documented | R `test_basic_authentication_with_a_password_is_refused_401` | https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api |
 | `Bearer` with no token is 401 "Bad credentials" | observed | R `test_a_bearer_scheme_with_no_token_after_it_is_refused_401` | |

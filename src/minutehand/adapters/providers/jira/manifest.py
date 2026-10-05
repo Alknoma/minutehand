@@ -8,7 +8,16 @@ paths differ by host, so the manifest strips nothing and the app reads both shap
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, PersonChange, TicketField, Tier, WorldKey
+from minutehand.domain.provider import (
+    AccountFact,
+    Manifest,
+    PersonChange,
+    PersonFact,
+    TicketActionKind,
+    TicketField,
+    Tier,
+    WorldKey,
+)
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -16,7 +25,15 @@ MANIFEST = Manifest(
     tier=Tier.FINISHED,
     hosts=["*.atlassian.net", "api.atlassian.com", "auth.atlassian.com"],
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],
-    ticket_fields=[TicketField.KEY, TicketField.LABELS, TicketField.COMMENTS],
+    ticket_fields=[TicketField.KEY, TicketField.LABELS, TicketField.COMMENTS, TicketField.NUMBER, TicketField.ID],
     world_keys=[WorldKey(host="{key}.atlassian.net"), WorldKey(path="/ex/jira/{key}/")],
     people_changes=[PersonChange.DEACTIVATED, PersonChange.REACTIVATED],
+    account_facts=[AccountFact.ID, AccountFact.NAME, AccountFact.EMAIL_HIDDEN],
+    person_facts=[PersonFact.WITHOUT_EMAIL, PersonFact.DEACTIVATED, PersonFact.BOT, PersonFact.WORKING_HOURS],
+    ticket_actions=[
+        TicketActionKind.MOVES,
+        TicketActionKind.REASSIGNS,
+        TicketActionKind.COMMENTS,
+        TicketActionKind.DELETES,
+    ],
 )

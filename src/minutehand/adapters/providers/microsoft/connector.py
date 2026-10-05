@@ -73,21 +73,34 @@ def snapshot(
     world: MicrosoftWorld, conversation: ConversationRecord, activity: wire.Activity, author: str | None
 ) -> MessageSnapshot:
     """A message as the checks read it: who it reaches is every human member but its author."""
-    emails: list[str] = []
-    for oid in conversation.members:
-        if oid == author:
-            continue
-        user = world.user(oid)
-        if user is not None and user.user.mail is not None:
-            emails.append(user.user.mail)
+    emails, people = reached(world, conversation, author)
     thread = activity.replyToId if conversation.type is wire.ConversationType.CHANNEL else None
     return MessageSnapshot(
         text=cards.visible_text(activity),
         channel=conversation.id,
         recipient_emails=emails,
+        recipients=people,
         thread_of=thread,
         actions=cards.message_actions(activity),
     )
+
+
+def reached(world: MicrosoftWorld, conversation: ConversationRecord, author: str | None) -> tuple[list[str], list[str]]:
+    """Whom a message in `conversation` reaches, every human member but its author: their emails (those who have
+    one, shown or not) and their person keys."""
+    emails: list[str] = []
+    people: list[str] = []
+    for oid in conversation.members:
+        if oid == author:
+            continue
+        user = world.user(oid)
+        if user is None:
+            continue
+        if user.reached_as is not None:
+            emails.append(user.reached_as)
+        if user.person_key is not None:
+            people.append(user.person_key)
+    return emails, people
 
 
 def member_of(user: UserRecord) -> wire.TeamsChannelAccount:

@@ -51,7 +51,16 @@ from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
-from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    TicketSnapshot,
+    WorldEvent,
+    assigned,
+    reached,
+)
 from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -246,7 +255,6 @@ class Orchestrator:
         self._failure: str | None = None
         self._seen = 0
         self._calls_seen = 0
-        self._people = {p.email: p for p in scenario.people}
 
     # -- Wakes, for scheduler providers ---------------------------------------------------------------------
 
@@ -732,18 +740,15 @@ class Orchestrator:
             if (
                 event.operation in (Operation.CREATE, Operation.UPDATE)
                 and isinstance(after, TicketSnapshot)
-                and after.assignee_email in self._people
+                and (holder := assigned(after, self._scenario.people)) is not None
                 and event.entity not in self._fated
             ):
-                self._fate(self._people[after.assignee_email], event)
+                self._fate(holder, event)
         for event in sorted(shown.values(), key=lambda e: e.seq):
             assert history is not None and isinstance(event.after, MessageSnapshot)
             if not event.after.answerable:
                 continue  # a captured send: nobody can answer where it went
-            for email in event.after.recipient_emails:
-                if email not in self._people:
-                    continue
-                person = self._people[email]
+            for person in reached(event.after, self._scenario.people):
                 if event.operation is Operation.UPDATE and not self._withdraw(event.entity, person):
                     continue
                 await self._ask(person, event, [h for h in history if h.seq <= event.seq])

@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import DocumentChange, Manifest, Tier
+from minutehand.domain.provider import (
+    AccountFact,
+    DocumentChange,
+    DocumentField,
+    Manifest,
+    PersonFact,
+    SpaceField,
+    Tier,
+)
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -24,4 +32,20 @@ MANIFEST = Manifest(
         DocumentChange.TRASHED,
         DocumentChange.COMMENTED,
     ],
+    document_fields=[
+        DocumentField.SPREADSHEET,
+        DocumentField.PRESENTATION,
+        DocumentField.FILE,
+        DocumentField.FOLDER,
+        DocumentField.OWNER,
+        DocumentField.SPACE,
+        DocumentField.SHARED_WITH,
+        DocumentField.MODIFIED_BEFORE_START,
+        DocumentField.MODIFIED_BY,
+        DocumentField.ID,
+    ],
+    space_fields=[SpaceField.SPACES, SpaceField.ID],
+    sign_ins=True,
+    account_facts=[AccountFact.ID, AccountFact.NAME, AccountFact.EMAIL_HIDDEN],
+    person_facts=[PersonFact.WITHOUT_EMAIL],
 )

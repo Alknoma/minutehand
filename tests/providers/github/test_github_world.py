@@ -66,7 +66,6 @@ def test_a_token_is_never_written_down(hub: Hub) -> None:
             "a classic token starts with 'ghp_'",
         ),
         ({"users": [SeedUser(login="iris-calder"), SeedUser(login="Iris-Calder")]}, "two accounts share a login"),
-        ({"repositories": [SeedRepository(owner="nobody", name="x")]}, "no such owner: nobody"),
     ],
 )
 def test_a_seed_github_could_not_hold_is_rejected(change: dict[str, object], message: str) -> None:
@@ -75,6 +74,13 @@ def test_a_seed_github_could_not_hold_is_rejected(change: dict[str, object], mes
         raw[key] = [v.model_dump(mode="json") for v in value]  # type: ignore[attr-defined]
     with pytest.raises(ValidationError, match=message):
         GitHubSeed.model_validate(raw)
+
+
+def test_a_repository_whose_owner_is_no_account_is_refused(tmp_path: Path) -> None:
+    """Which accounts exist is known only beside the scenario, whose people may declare theirs, so seeding refuses."""
+    store = SqliteStore(tmp_path / "world.db", "root", RunClock(START))
+    with pytest.raises(ValueError, match="no such owner: nobody"):
+        build().seed_with(github_seed(repositories=[SeedRepository(owner="nobody", name="x")]), SCENARIO, store)
 
 
 def test_a_github_user_who_is_nobody_in_the_scenario_is_refused(tmp_path: Path) -> None:

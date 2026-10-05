@@ -75,7 +75,10 @@ async def test_a_dm_records_the_recipient_email_on_its_snapshot(
     assert event.actor is Actor.AGENT and event.operation is Operation.CREATE
     assert event.entity.kind is EntityKind.MESSAGE and event.entity.external_id == posted["ts"]
     assert event.after == MessageSnapshot(
-        text="can you sign off today?", channel=workspace.dm("tomas"), recipient_emails=["tomas@example.com"]
+        text="can you sign off today?",
+        channel=workspace.dm("tomas"),
+        recipient_emails=["tomas@example.com"],
+        recipients=["tomas"],
     )
     assert stored is not None and stored.parent == workspace.dm("tomas")
 

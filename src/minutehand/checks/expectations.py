@@ -20,6 +20,7 @@ answer: it is left to the judged check `asked_about`, and noted here as left.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
@@ -28,6 +29,7 @@ from minutehand.domain.scenario import (
     DocumentCreated,
     DocumentShared,
     Expectation,
+    Person,
     PersonAsked,
     Relayed,
     Scenario,
@@ -47,6 +49,10 @@ from minutehand.domain.world import (
     RecordSnapshot,
     TicketSnapshot,
     WorldEvent,
+    assigned,
+    granted,
+    owned,
+    reached,
 )
 
 QUOTED = 160
@@ -78,7 +84,7 @@ class Expectations:
     pattern = "honest_closure"
 
     def run(self, view: RunView) -> CheckReport:
-        email = {p.key: p.email for p in view.scenario.people}
+        people = {p.key: p for p in view.scenario.people}
         start = view.scenario.starts_at
         findings: list[Finding] = []
         notes: list[str] = []
@@ -86,7 +92,7 @@ class Expectations:
             if isinstance(expected, PersonAsked) and expected.about is not None:
                 notes.append(f"{self.describe(expected)}: left to the judged check asked_about")
                 continue
-            matched = [e for e in view.events if self.matches(expected, e, email)]
+            matched = [e for e in view.events if self.matches(expected, e, people)]
             unheard: str | None = None
             if isinstance(expected, Relayed):
                 heard, unheard = _heard(expected, view)
@@ -132,14 +138,16 @@ class Expectations:
         return sum(1 for f in report.findings if f.kind is FindingKind.FAIL)
 
     @staticmethod
-    def matches(expected: Expectation, event: WorldEvent, email: dict[str, str]) -> bool:
+    def matches(expected: Expectation, event: WorldEvent, people: Mapping[str, Person]) -> bool:
+        """Whether `event` meets `expected`; `people` are the scenario's, by key, and each is matched by who they
+        are: by key, or by an email they have in a record that names no keys."""
         after = event.after
         if isinstance(expected, PersonAsked):
             return (
                 event.actor is Actor.AGENT
                 and event.operation is Operation.CREATE
                 and isinstance(after, MessageSnapshot)
-                and email[expected.person] in after.recipient_emails
+                and bool(reached(after, [people[expected.person]]))
                 and has_words(after.text, expected.mentions)
             )
         if isinstance(expected, TicketCreated):
@@ -147,7 +155,7 @@ class Expectations:
                 event.actor is Actor.AGENT
                 and event.operation is Operation.CREATE
                 and isinstance(after, TicketSnapshot)
-                and (expected.assignee is None or after.assignee_email == email[expected.assignee])
+                and (expected.assignee is None or assigned(after, [people[expected.assignee]]) is not None)
                 and has_words(f"{after.title} {after.body}", expected.mentions)
             )
         if isinstance(expected, TicketDeleted):
@@ -159,7 +167,7 @@ class Expectations:
         if isinstance(expected, TicketInState):
             return (
                 isinstance(after, TicketSnapshot)
-                and after.assignee_email == email[expected.assignee]
+                and assigned(after, [people[expected.assignee]]) is not None
                 and after.state is expected.state
             )
         if isinstance(expected, DocumentCreated):
@@ -170,13 +178,13 @@ class Expectations:
                 and (expected.provider is None or event.entity.provider == expected.provider)
                 and has_words(after.title, expected.titled)
                 and (expected.space is None or after.space == expected.space)
-                and (expected.owner is None or after.owner == email[expected.owner])
+                and (expected.owner is None or owned(after, [people[expected.owner]]) is not None)
             )
         if isinstance(expected, DocumentShared):
             return (
                 event.actor is Actor.AGENT
                 and isinstance(after, GrantSnapshot)
-                and after.to.casefold() == email[expected.person].casefold()
+                and granted(after, [people[expected.person]]) is not None
                 and _ROLES.index(after.role) >= _ROLES.index(expected.role)
                 and has_words(after.document, expected.titled)
             )
@@ -185,7 +193,7 @@ class Expectations:
                 event.actor is Actor.AGENT
                 and event.operation is Operation.CREATE
                 and isinstance(after, MessageSnapshot)
-                and email[expected.to] in after.recipient_emails
+                and bool(reached(after, [people[expected.to]]))
                 and has_words(after.text, [expected.tell])
             )
         raise TypeError(f"no matcher for {type(expected).__name__}")
@@ -237,25 +245,29 @@ def _met_by(matched: list[WorldEvent], scenario: Scenario) -> str:
     """What met an expectation, quoted: each message with who it went to, each ticket with its holder."""
     if not matched:
         return "nothing, as wanted"
-    names = {p.email: p.name for p in scenario.people}
-    shown = [_quoted(e, names) for e in matched[:SHOWN]]
+    shown = [_quoted(e, scenario.people) for e in matched[:SHOWN]]
     more = f"; and {len(matched) - SHOWN} more" if len(matched) > SHOWN else ""
     return "; ".join(shown) + more
 
 
-def _quoted(event: WorldEvent, names: dict[str, str]) -> str:
+def _quoted(event: WorldEvent, people: Sequence[Person]) -> str:
     after = event.after
     if isinstance(after, MessageSnapshot):
-        to = ", ".join(names[e] if e in names else e for e in after.recipient_emails) or f"channel {after.channel}"
+        named = reached(after, people)
+        known = {p.email for p in named}
+        others = [e for e in after.recipient_emails if e not in known]
+        to = ", ".join([p.name for p in named] + others) or f"channel {after.channel}"
         return f"the message to {to} (seq {event.seq}): \u201c{_trimmed(after.text)}\u201d"
     if isinstance(after, TicketSnapshot):
-        holder = after.assignee_email
-        held = f" for {names[holder] if holder in names else holder}" if holder is not None else ""
+        holder = assigned(after, people)
+        shown = holder.name if holder is not None else after.assignee_email
+        held = f" for {shown}" if shown is not None else ""
         return f"the ticket{held} (seq {event.seq}): \u201c{_trimmed(after.title)}\u201d, {after.state.value}"
     if isinstance(after, DocumentSnapshot):
         return f"the document (seq {event.seq}): \u201c{_trimmed(after.title)}\u201d"
     if isinstance(after, GrantSnapshot):
-        to = names[after.to] if after.to in names else after.to
+        given = granted(after, people)
+        to = given.name if given is not None else after.to
         return f"{after.document!r} shared with {to} as {after.role.value} (seq {event.seq})"
     return f"{event.operation.value} of {event.entity.kind.value} {event.entity.external_id} (seq {event.seq})"
 

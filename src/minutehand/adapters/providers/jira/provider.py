@@ -70,7 +70,7 @@ class JiraProvider:
         self._move(desk, issue, to, by=issue.assignee, clock=clock)
 
     def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
+        self, ticket: EntityRef, *, state: TicketState | None, assignee: Person | None, world: Store, clock: Clock
     ) -> None:
         """The scenario rewrites the issue's state and/or assignee, past the workflow; None leaves a field."""
         desk = Desk(world)
@@ -85,12 +85,12 @@ class JiraProvider:
             if status is None:
                 raise LookupError(f"project {project.key} has no status that is {state.value}")
             changed = desk.moved(changed, status)
-        if assignee_email is not None:
-            user = desk.world.user_by_email(assignee_email)
+        if assignee is not None:
+            user = desk.world.user_of(assignee.key)
             if user is None:
-                raise LookupError(f"no Jira account has the email {assignee_email}")
+                raise LookupError(f"{assignee.key} has no Jira account")
             if user.accountId not in {u.accountId for u in desk.assignable(project)}:
-                raise ValueError(f"{assignee_email} cannot be assigned issues in {project.key}")
+                raise ValueError(f"{assignee.key} cannot be assigned issues in {project.key}")
             changed = changed.model_copy(update={"assignee": user.accountId})
         written = desk.write(issue, changed, by=None, at=clock.now(), actor=Actor.SCENARIO)
         if written is issue:
@@ -109,7 +109,7 @@ class JiraProvider:
         """A site administrator deactivates or reactivates the person's Atlassian account: deactivated, it signs in
         to nothing, is not assignable, and reads `active: false` wherever it is shown."""
         jira = Desk(world).world
-        user = jira.user_by_email(person.email)
+        user = jira.user_of(person.key)
         if user is None:
             raise ValueError(f"{person.key} has no Jira account")
         active = change is PersonChange.REACTIVATED
@@ -130,12 +130,12 @@ class JiraProvider:
         issue = next((i for i in desk.world.every_issue() if i.seededFrom == position), None)
         if issue is None:
             return
-        by = _account(desk, _email(scenario, happening.person))
+        by = _account(desk, happening.person)
         action = happening.action
         if isinstance(action, Moves):
             self._move(desk, issue, action.to, by=by, clock=clock)
         elif isinstance(action, Reassigns):
-            to = None if action.to is None else _account(desk, _email(scenario, action.to))
+            to = None if action.to is None else _account(desk, action.to)
             changed = desk.apply_fields(issue, _project(desk, issue), {"assignee": _assignee(to)}, creating=False)
             desk.write(issue, changed, by=by, at=clock.now(), actor=Actor.PERSON)
         elif isinstance(action, Comments):
@@ -195,18 +195,15 @@ def _project(desk: Desk, issue: wire.StoredIssue) -> wire.StoredProject:
     return project
 
 
-def _email(scenario: Scenario, person: str) -> str:
-    return next(p.email for p in scenario.people if p.key == person)
-
-
 def _assignee(account: str | None) -> JsonValue:
     return {"accountId": account} if account is not None else None
 
 
-def _account(desk: Desk, email: str) -> str:
-    user = desk.world.user_by_email(email)
+def _account(desk: Desk, person: str) -> str:
+    """The accountId seeded for the person with this key."""
+    user = desk.world.user_of(person)
     if user is None:
-        raise LookupError(f"no Jira account has the email {email}")
+        raise LookupError(f"{person} has no Jira account")
     return user.accountId
 
 

@@ -35,7 +35,17 @@ from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.checks import Obligation, ObligationKind
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import AbsenceTrigger, DelayRange, Model, Person, Scenario, Silent, TicketState
-from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    TicketSnapshot,
+    WorldEvent,
+    assigned,
+    reached,
+)
 
 FINISHED = frozenset({TicketState.DONE, TicketState.CANCELLED})
 
@@ -56,15 +66,14 @@ def recipients(event: WorldEvent, scenario: Scenario) -> list[Person]:
     """The scenario's people an agent message was addressed to, in scenario order."""
     if not isinstance(event.after, MessageSnapshot):
         return []
-    emails = set(event.after.recipient_emails)
-    return [p for p in scenario.people if p.email in emails]
+    return reached(event.after, scenario.people)
 
 
 def absences(scenario: Scenario, events: list[WorldEvent]) -> list[Away]:
     """Every absence in the scenario, anchored: at the start, or at the agent's first message to that person."""
     stretches: list[Away] = []
     for person in scenario.people:
-        asked = first_ask(person.email, events)
+        asked = first_ask(person.key, person.email, events)
         for absence in person.absences:
             found = placed(
                 from_start=scenario.starts_at if absence.trigger is AbsenceTrigger.AT_START else None,
@@ -118,7 +127,6 @@ def build(
     events = sorted(events, key=lambda e: e.seq)
     head = events[-1].sim_time if events else scenario.starts_at
     by_key = {p.key: p for p in scenario.people}
-    by_email = {p.email: p for p in scenario.people}
     away = absences(scenario, events)
     asked = {(_ref(r.in_reply_to), r.person) for r in replies}
     answered = {(_ref(r.in_reply_to), r.person): r for i, r in enumerate(replies) if i not in withdrawn}
@@ -170,14 +178,14 @@ def build(
         if not isinstance(after, TicketSnapshot):
             continue
         previous = holder.get(_ref(event.entity))
-        holder[_ref(event.entity)] = after.assignee_email
+        person = assigned(after, scenario.people)
+        holding = person.key if person is not None else after.assignee_email
+        holder[_ref(event.entity)] = holding
         if event.actor is Actor.PERSON and after.state in FINISHED:
             continue
         handed = event.actor is Actor.AGENT and (
-            event.operation is Operation.CREATE
-            or (event.operation is Operation.UPDATE and after.assignee_email != previous)
+            event.operation is Operation.CREATE or (event.operation is Operation.UPDATE and holding != previous)
         )
-        person = by_email.get(after.assignee_email) if after.assignee_email is not None else None
         if not handed or person is None or after.state in FINISHED:
             continue
         fate = next((f for f in scenario.ticket_fates if f.assignee == person.key), None)
@@ -241,8 +249,7 @@ def _finished(ticket: EntityRef, since: int, events: list[WorldEvent]) -> dateti
 
 
 def _finish(o: _Open, events: list[WorldEvent], by_key: dict[str, Person], away: list[Away]) -> Obligation:
-    emails = {o.person.email}
-    emails.update(by_key[a.delegate].email for a in away if a.person == o.person.key and a.delegate)
+    covering = [o.person, *(by_key[a.delegate] for a in away if a.person == o.person.key and a.delegate)]
     touches: list[int] = []
     after_settled: int | None = None
     for event in events:
@@ -252,7 +259,7 @@ def _finish(o: _Open, events: list[WorldEvent], by_key: dict[str, Person], away:
         on_person = (
             event.operation is Operation.CREATE
             and isinstance(event.after, MessageSnapshot)
-            and bool(emails.intersection(event.after.recipient_emails))
+            and bool(reached(event.after, covering))
         )
         if not (on_entity or on_person):
             continue

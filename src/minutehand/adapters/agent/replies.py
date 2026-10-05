@@ -22,7 +22,7 @@ from minutehand.adapters.proxy.capture import fill, structured, values_at
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.outbound import Acknowledge, ReplyDelivery
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Model, Person
+from minutehand.domain.scenario import Account, Model, Person, Silent
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -52,6 +52,20 @@ class CapturedReplies:
         self._delivery: ReplyDelivery = declaration.replies
         self._people = {p.key: p for p in people}
         self._secret = secret
+        handles = declaration.message.handles if declaration.message is not None else {}
+        self._addresses = {key: address for address, key in handles.items()}
+        self._addresses.update({p.key: p.email for p in people if p.email is not None})
+        unaddressed = [
+            p.key
+            for p in people
+            if p.key not in self._addresses and not isinstance(p.reply, Silent) and p.account is not Account.BOT
+        ]
+        if unaddressed:
+            raise ValueError(
+                f"outbound host {declaration.host} delivers people's answers to its sends from their address, and "
+                f"{', '.join(unaddressed)} have none: give each an email, a handle under `message.handles`, or "
+                "`reply: {kind: silent}`"
+            )
 
     async def deliver(self, reply: PersonReply, world: Store, clock: Clock) -> None:
         asked = world.get(reply.in_reply_to)
@@ -65,7 +79,9 @@ class CapturedReplies:
                 entity=EntityRef(provider=self._declaration.key, kind=EntityKind.MESSAGE, external_id=reply_id),
                 operation=Operation.CREATE,
                 actor=Actor.PERSON,
-                body=json.dumps({"from": person.email, "text": reply.text, "in_reply_to": asked.entity.external_id}),
+                body=json.dumps(
+                    {"from": self._addresses[person.key], "text": reply.text, "in_reply_to": asked.entity.external_id}
+                ),
                 parent=asked.parent,
                 after=MessageSnapshot(
                     text=reply.text,
@@ -79,7 +95,7 @@ class CapturedReplies:
         to = sent.to[0] if sent.to else ""
         values = {
             "{reply_id}": reply_id,
-            "{from}": person.email,
+            "{from}": self._addresses[person.key],
             "{from_name}": person.name,
             "{to}": str(to),
             "{subject}": f"Re: {subject}" if subject else "",

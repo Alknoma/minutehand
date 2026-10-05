@@ -20,6 +20,7 @@ Everything is written as actor SCENARIO, stamped with the scenario's start.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Annotated, ClassVar, Literal, Self
 
@@ -245,6 +246,50 @@ def person_id(workspace: str, email: str) -> str:
     return wire.minted_id("person", workspace, email.lower())
 
 
+def declared_id(raw: str, what: str) -> str:
+    """An id a seed declares, in Notion's format: a UUID, with or without its dashes, as Notion accepts one in a
+    path (https://developers.notion.com/reference/intro#conventions); kept dashed and lower-case, as Notion serves
+    it. Anything else is refused."""
+    bare = raw.replace("-", "")
+    shaped = len(bare) == 32 and all(c in "0123456789abcdefABCDEF" for c in bare)
+    dashed = len(raw) == 36 and [len(part) for part in raw.split("-")] == [8, 4, 4, 4, 12]
+    if not shaped or (len(raw) != 32 and not dashed):
+        raise ValueError(f"{what} declares the Notion id {raw!r}, which is no UUID (32 hex digits, dashed or not)")
+    return str(uuid.UUID(hex=bare))
+
+
+def user_id(workspace: str, person: Person) -> str:
+    """A person's user id in a workspace: the one their Notion account entry declares, else one per address, else,
+    for a person with no email, one per key."""
+    account = person.account_in(MANIFEST.key)
+    if account is not None and account.id is not None:
+        return declared_id(account.id, f"{person.key}'s Notion account")
+    if person.email is not None:
+        return person_id(workspace, person.email)
+    return wire.minted_id("person-key", workspace, person.key)
+
+
+def stored_person(workspace: str, person: Person) -> wire.StoredUser:
+    """A person as a Notion member: their account's name, their email, hidden when their account hides it (an
+    integration then reads `person: {}`, as one without the capability to read emails does)."""
+    account = person.account_in(MANIFEST.key)
+    return wire.StoredUser(
+        id=user_id(workspace, person),
+        workspace=workspace,
+        type=wire.UserType.PERSON,
+        name=account.name if account is not None and account.name is not None else person.name,
+        email=person.email,
+        email_hidden=account is not None and not account.email_visible,
+        person=person.key,
+    )
+
+
+def document_id(scenario: Scenario, document: SeededDocument) -> str | None:
+    """The id a seeded Notion document declares, normalized; None when it declares none."""
+    del scenario
+    return None if document.id is None else declared_id(document.id, f"the seeded document {document.title!r}")
+
+
 DEFAULT_WORKSPACE = SeedWorkspace(key="workspace", name="Workspace")
 
 
@@ -309,9 +354,10 @@ def seed(scenario: Scenario, world: Store) -> None:
     unknown = sorted(set(claimed) - set(documents))
     if unknown:
         raise ValueError(f"a Notion row is the seeded document {unknown[0]!r}, which is no seeded Notion document")
+    _refuse_taken_ids(scenario, workspaces)
     for workspace in workspaces:
         _seed_workspace(notion, workspace, people, owner, now, documents)
-    _seed_documents(notion, workspaces[0], scenario, owner, now, set(claimed))
+    _seed_documents(notion, workspaces[0], scenario, now, set(claimed))
     for n, hook in enumerate(found.webhooks):
         where = next(w for w in workspaces for i in w.integrations if i.key == hook.integration)
         notion.write_webhook(
@@ -377,17 +423,8 @@ def _seed_workspace(
     if unknown:
         raise ValueError(f"workspace {workspace.key} names nobody: {', '.join(unknown)}")
     for key in members:
-        person = people[key]
-        notion.write_user(
-            wire.StoredUser(
-                id=person_id(ws, person.email),
-                workspace=ws,
-                type=wire.UserType.PERSON,
-                name=person.name,
-                email=person.email,
-            )
-        )
-    by_person = {k: person_id(ws, people[k].email) for k in members}
+        notion.write_user(stored_person(ws, people[key]))
+    by_person = {k: user_id(ws, people[k]) for k in members}
     creator = by_person[owner.key] if owner.key in by_person else next(iter(by_person.values()), ws)
 
     for integration in workspace.integrations:
@@ -396,13 +433,7 @@ def _seed_workspace(
             wire.StoredUser(id=bot, workspace=ws, type=wire.UserType.BOT, name=integration.name, integration=bot)
         )
     editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
-    ids: dict[str, str] = {}
-    for page in workspace.pages:
-        ids[page.key] = object_id(workspace.key, page.key)
-    for database in workspace.databases:
-        ids[database.key] = object_id(workspace.key, database.key)
-        for row in database.rows:
-            ids[row.key] = object_id(workspace.key, row.key)
+    ids = _content_ids(workspace, documents)
 
     def who(key: str | None) -> str:
         if key is None:
@@ -480,6 +511,62 @@ def _seed_workspace(
             editor.archive(ids[page.key], by=who(page.created_by))
     for integration in workspace.integrations:
         _seed_integration(notion, workspace, integration, ws, ids, by_person)
+
+
+def _content_ids(workspace: SeedWorkspace, documents: dict[str, SeededDocument]) -> dict[str, str]:
+    """The id of each page, database and row of a workspace, by key: derived from its key, or, for a page or row
+    that is a seeded document declaring its id, that id."""
+
+    def made(key: str, document: str | None) -> str:
+        declared = documents[document].id if document is not None and document in documents else None
+        if declared is not None:
+            return declared_id(declared, f"the seeded document {document!r}")
+        return object_id(workspace.key, key)
+
+    ids: dict[str, str] = {}
+    for page in workspace.pages:
+        ids[page.key] = made(page.key, page.document)
+    for database in workspace.databases:
+        ids[database.key] = object_id(workspace.key, database.key)
+        for row in database.rows:
+            ids[row.key] = made(row.key, row.document)
+    return ids
+
+
+def _refuse_taken_ids(scenario: Scenario, workspaces: list[SeedWorkspace]) -> None:
+    """A declared id another seeded thing has, declared or derived (spelled with or without dashes), is refused:
+    it would be two things in one Notion."""
+    people = list(scenario.people)
+    documents = {d.title: d for d in scenario.documents if d.provider == MANIFEST.key}
+    seen: dict[str, str] = {}
+
+    def hold(found: str, what: str) -> None:
+        if found in seen:
+            raise ValueError(f"{what} and {seen[found]} would both have the Notion id {found}")
+        seen[found] = what
+
+    for workspace in workspaces:
+        ws = object_id(workspace.key, workspace.key)
+        hold(ws, f"workspace {workspace.key}")
+        for key, found in _content_ids(workspace, documents).items():
+            hold(found, f"{key} of {workspace.key}")
+        for integration in workspace.integrations:
+            hold(object_id(workspace.key, integration.key), f"integration {integration.key}")
+        members = workspace.members if workspace.members is not None else [p.key for p in people]
+        for person in people:
+            if person.key in members:
+                hold(user_id(ws, person), f"{person.key}'s account in {workspace.key}")
+    bridged = {p.document for w in workspaces for p in w.pages} | {
+        r.document for w in workspaces for d in w.databases for r in d.rows
+    }
+    first = workspaces[0].key
+    for n, document in enumerate(documents.values()):
+        if document.title in bridged:
+            continue
+        found = document_id(scenario, document) or _document_page(first, n)
+        hold(found, f"the seeded document {document.title!r}")
+        if document.folder is not None and wire.minted_id("seed", first, "folder", document.folder) not in seen:
+            hold(wire.minted_id("seed", first, "folder", document.folder), f"the folder {document.folder!r}")
 
 
 def _parents_first(pages: list[SeedPage]) -> list[SeedPage]:
@@ -590,38 +677,61 @@ def _seed_documents(
     notion: NotionWorld,
     workspace: SeedWorkspace,
     scenario: Scenario,
-    owner: Person,
     now: datetime,
     rows: set[str],
 ) -> None:
+    """Each seeded Notion document no seeded page or row is, as a page: by its owner (the scenario's owner when it
+    names none), last edited by whoever changed it last, as long before the start as it was."""
     documents = [d for d in scenario.documents if d.provider == MANIFEST.key]
     if not documents:
         return
     ws = object_id(workspace.key, workspace.key)
-    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
-    users = notion.users(ws)
-    by = next((u.id for u in users if u.email == owner.email), users[0].id if users else ws)
+    members = [u.id for u in notion.users(ws)]
+    people = {p.key: p for p in scenario.people}
+
+    def member(key: str, what: str) -> str:
+        found = user_id(ws, people[key])
+        if found not in members:
+            raise ValueError(f"{what} names {key}, who is not a member of workspace {workspace.key}")
+        return found
+
+    owner_key = scenario.owner
+    by = user_id(ws, people[owner_key]) if user_id(ws, people[owner_key]) in members else next(iter(members), ws)
     made: list[str] = []
     folders: dict[str, str] = {}
     for n, document in enumerate(documents):
         if document.title in rows:
             continue
+        editor = Editor(notion, ws, _At(now - document.modified_before_start), actor=Actor.SCENARIO, seeding=True)
+        author = by if document.owner is None else member(document.owner, f"the seeded document {document.title!r}")
         parent = wire.Parent(type=wire.ParentType.WORKSPACE)
         if document.folder is not None:
             if document.folder not in folders:
                 folder_id = wire.minted_id("seed", workspace.key, "folder", document.folder)
-                editor.create_page(folder_id, parent, {"title": {"title": wire.text_run(document.folder)}}, [], by=by)
+                folder_editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
+                folder_editor.create_page(
+                    folder_id, parent, {"title": {"title": wire.text_run(document.folder)}}, [], by=by
+                )
                 folders[document.folder] = folder_id
                 made.append(folder_id)
             parent = wire.Parent(type=wire.ParentType.PAGE_ID, id=folders[document.folder])
-        page_id = _document_page(workspace.key, n)
-        editor.create_page(
+        page_id = document_id(scenario, document) or _document_page(workspace.key, n)
+        page = editor.create_page(
             page_id,
             parent,
             {"title": {"title": wire.text_run(document.title)}},
             _paragraphs(document.text)[: wire.MAX_CHILDREN],
-            by=by,
+            by=author,
         )
+        if document.modified_by is not None:
+            editor_id = member(document.modified_by, f"the seeded document {document.title!r}")
+            stamps = page.stamps.model_copy(update={"last_edited_by": editor_id})
+            notion.write_page(
+                page.model_copy(update={"stamps": stamps}),
+                operation=Operation.UPDATE,
+                actor=Actor.SCENARIO,
+                at=now - document.modified_before_start,
+            )
         if document.folder is None:
             made.append(page_id)
     for integration in notion.integrations(ws):
@@ -644,11 +754,12 @@ def _document_page(workspace: str, position: int) -> str:
 def document_page(scenario: Scenario, title: str) -> str:
     """The id of the page or row a seeded Notion document was written as."""
     workspaces = read(scenario).workspaces or [DEFAULT_WORKSPACE]
+    documents_by_title = {d.title: d for d in scenario.documents if d.provider == MANIFEST.key}
     for workspace in workspaces:
         bridged = [p.key for p in workspace.pages if p.document == title]
         bridged += [r.key for d in workspace.databases for r in d.rows if r.document == title]
         if bridged:
-            return object_id(workspace.key, bridged[0])
+            return _content_ids(workspace, documents_by_title)[bridged[0]]
     documents = [d for d in scenario.documents if d.provider == MANIFEST.key]
     position = next(n for n, d in enumerate(documents) if d.title == title)
-    return _document_page(workspaces[0].key, position)
+    return document_id(scenario, documents[position]) or _document_page(workspaces[0].key, position)

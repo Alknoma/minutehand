@@ -13,7 +13,15 @@ lists, portfolios, goals) is answered Asana's 404 "No matching route for request
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, PersonChange, TicketField, Tier
+from minutehand.domain.provider import (
+    AccountFact,
+    Manifest,
+    PersonChange,
+    PersonFact,
+    TicketActionKind,
+    TicketField,
+    Tier,
+)
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -22,6 +30,14 @@ MANIFEST = Manifest(
     hosts=["app.asana.com"],
     path_prefix="/api/1.0",
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],
-    ticket_fields=[TicketField.LABELS, TicketField.COMMENTS],
+    ticket_fields=[TicketField.LABELS, TicketField.COMMENTS, TicketField.ID],
     people_changes=[PersonChange.REMOVED],
+    account_facts=[AccountFact.ID, AccountFact.NAME, AccountFact.EMAIL_HIDDEN],
+    person_facts=[PersonFact.WITHOUT_EMAIL, PersonFact.DEACTIVATED],
+    ticket_actions=[
+        TicketActionKind.MOVES,
+        TicketActionKind.REASSIGNS,
+        TicketActionKind.COMMENTS,
+        TicketActionKind.DELETES,
+    ],
 )

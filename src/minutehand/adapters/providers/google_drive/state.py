@@ -17,6 +17,10 @@
 | the file a seeded document became | RECORD       | SHA-256 of its title         | `SEEDED`                |
 | a scenario person, by `Person.key`| RECORD       | `person.<key>`               | `PEOPLE`                |
 
+A user's record (`USERS`) holds the address they sign in with, even when Drive shows it to nobody else; the copy a
+file names as its owner or last modifier, and a person's record (`PEOPLE`), holds what others are shown: no
+`emailAddress` for a person with none, or whose account hides it (`PersonAccount.email_visible`).
+
 A file's metadata and its structured content (a Doc, a deck, a sheet) are one entity, so a version of the
 file is both, read as of any sequence. Binary bytes are their own entity, written once. Nothing is held
 between calls: a new app over the same store sees the same Drive, and a fork sees it as of the fork.
@@ -134,6 +138,18 @@ def permission_id(email: str) -> str:
     return str(int(_digest("permission", email.lower())[:15], 16)).zfill(20)
 
 
+def person_permission_id(key: str) -> str:
+    """The permission id of a person with no email: one per `Person.key`, never an address's."""
+    return str(int(_digest("person permission", key)[:15], 16)).zfill(20)
+
+
+def user_root(user: wire.DriveUser) -> str:
+    """A user's My Drive: from their address (`root_id`), or, for a person with no email, from their permission id."""
+    if user.emailAddress is not None:
+        return root_id(user.emailAddress)
+    return "0A" + _digest("root of", user.permissionId)[:17].upper()
+
+
 def domain_permission_id(domain: str) -> str:
     return str(int(_digest("domain", domain.lower())[:15], 16)).zfill(20)
 
@@ -163,23 +179,6 @@ def user_ref(permission: str) -> EntityRef:
 
 def record_ref(external_id: str) -> EntityRef:
     return _ref(EntityKind.RECORD, external_id)
-
-
-def snapshot(stored: wire.StoredFile, *, space: str | None = None) -> DocumentSnapshot:
-    """The file as every document provider tells it: title, type, its text where Drive holds it as text (a Doc, a
-    deck, a sheet), who last changed it and who owns it, by email, and `space`, the name of the shared drive it is
-    in (None in its owner's My Drive, where a shared drive owns nothing and a file is owned by a person)."""
-    editor = stored.file.lastModifyingUser
-    owners = stored.file.owners or []
-    return DocumentSnapshot(
-        owner=owners[0].emailAddress if owners else None,
-        space=space,
-        title=stored.file.name,
-        mime_type=stored.file.mimeType,
-        text=readable_text(stored) or None,
-        last_edited_by=(editor.emailAddress or editor.displayName) if editor is not None else None,
-        last_edited_at=datetime.fromisoformat(stored.file.modifiedTime.replace("Z", "+00:00")),
-    )
 
 
 def readable_text(stored: wire.StoredFile, blob: bytes | None = None) -> str:
@@ -274,7 +273,7 @@ class DriveWorld:
 
     def roots(self) -> list[str]:
         """Every My Drive and every shared drive."""
-        found = [root_id(user.emailAddress) for user in self.users() if user.emailAddress]
+        found = [user_root(user) for user in self.users()]
         found += [d.id for d in self.drives()]
         return [r for r in found if self.file(r) is not None]
 
@@ -315,8 +314,32 @@ class DriveWorld:
                 actor=actor,
                 body=wire.dump(stored),
                 parent=parents[0] if parents else None,
-                after=snapshot(stored, space=self._space(stored)),
+                after=self.snapshot(stored),
             )
+        )
+
+    def snapshot(self, stored: wire.StoredFile) -> DocumentSnapshot:
+        """The file as every document provider tells it: title, type, its text where Drive holds it as text (a Doc,
+        a deck, a sheet), who last changed it and who owns it (by the address they sign in with, and by `Person.key`
+        when a scenario person), and `space`, the name of the shared drive it is in (None in its owner's My Drive,
+        where a shared drive owns nothing and a file is owned by a person)."""
+        editor = stored.file.lastModifyingUser
+        owners = stored.file.owners or []
+        owner = self.user_by_permission(owners[0].permissionId) if owners else None
+        edited = self.user_by_permission(editor.permissionId) if editor is not None else None
+        return DocumentSnapshot(
+            owner=owner.emailAddress if owner is not None else (owners[0].emailAddress if owners else None),
+            owned_by=self.person_key(owners[0].permissionId) if owners else None,
+            space=self._space(stored),
+            title=stored.file.name,
+            mime_type=stored.file.mimeType,
+            text=readable_text(stored) or None,
+            last_edited_by=(
+                ((edited.emailAddress if edited is not None else None) or editor.emailAddress or editor.displayName)
+                if editor is not None
+                else None
+            ),
+            last_edited_at=datetime.fromisoformat(stored.file.modifiedTime.replace("Z", "+00:00")),
         )
 
     def _space(self, stored: wire.StoredFile) -> str | None:
@@ -359,7 +382,17 @@ class DriveWorld:
     # ------------------------------------------------------------------ people and access
 
     def user(self, email: str) -> wire.DriveUser | None:
-        return self._record(wire.DriveUser, permission_id(email), USERS)
+        """The user who signs in with this address, any case: their permission id may be one the seed declared."""
+        wanted = email.lower()
+        return next((u for u in self.users() if u.emailAddress is not None and u.emailAddress.lower() == wanted), None)
+
+    def user_by_permission(self, permission: str) -> wire.DriveUser | None:
+        return self._record(wire.DriveUser, permission, USERS)
+
+    def permission_of(self, email: str) -> str:
+        """The permission id of whoever has this address: a user's own, else the one Drive gives the address."""
+        found = self.user(email)
+        return found.permissionId if found is not None else permission_id(email)
 
     def users(self) -> list[wire.DriveUser]:
         return [wire.parse(wire.DriveUser, s.body) for s in self._records(USERS)]
@@ -381,7 +414,10 @@ class DriveWorld:
                 body=wire.dump(permission),
                 parent=file,
                 after=GrantSnapshot(
-                    document=held.file.name if held is not None else file, to=who, role=GRANTED[permission.role]
+                    document=held.file.name if held is not None else file,
+                    to=who,
+                    person=self.person_key(permission.id) if permission.type == "user" else None,
+                    role=GRANTED[permission.role],
                 ),
             )
         )
@@ -396,7 +432,8 @@ class DriveWorld:
         or a folder above it. None: the file is not theirs to see. `searching` leaves out a grant to anyone
         that does not allow discovery, which opens a file but does not put it in a search."""
         best: str | None = None
-        if any(owner.emailAddress == email for owner in stored.file.owners or []):
+        mine = self.permission_of(email)
+        if any(owner.permissionId == mine for owner in stored.file.owners or []):
             best = "owner"
         domain = email.rsplit("@", 1)[-1].lower()
         for holder in [stored, *self.ancestors(stored)]:
@@ -502,7 +539,15 @@ class DriveWorld:
         return self._keep(f"person.{key}", PEOPLE, user, operation=Operation.CREATE)
 
     def person(self, key: str) -> wire.DriveUser | None:
+        """A scenario person as others are shown them: no `emailAddress` when they have none or it is hidden."""
         return self._record(wire.DriveUser, f"person.{key}", PEOPLE)
+
+    def person_key(self, permission: str) -> str | None:
+        """The `Person.key` of the scenario person with this permission id; None for anyone else."""
+        for stored in self._records(PEOPLE):
+            if wire.parse(wire.DriveUser, stored.body).permissionId == permission:
+                return stored.entity.external_id.removeprefix("person.")
+        return None
 
     # ------------------------------------------------------------------ comments
 

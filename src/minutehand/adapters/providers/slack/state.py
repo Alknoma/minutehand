@@ -383,6 +383,62 @@ class SlackWorld:
     def every_member(self, channel: str) -> list[str]:
         return [wire.parse(wire.SlackMembership, s.body).user for s in self._pages(EntityKind.RECORD, channel)]
 
+    def find_member(self, person: str) -> str | None:
+        """The member id of the scenario person `person` (a `Person.key`) in this workspace, or None when they are
+        not in it: the id derived from the key, or the one their account entry declared. A person's member is the
+        human user seeding wrote with their key as its `name`, the handle Slack keeps beside the display name."""
+        derived = self.user(user_id(person, self.team.id))
+        if derived is not None and derived.name == person:
+            return derived.id
+        found = next(
+            (u for u in self.every_user() if u.name == person and u.id != self.team.bot_user_id),
+            None,
+        )
+        return None if found is None else found.id
+
+    def member(self, person: str) -> str:
+        """The member id of `person` in this workspace; `LookupError` when they are not in it."""
+        found = self.find_member(person)
+        if found is None:
+            raise LookupError(f"{person} is not a member of workspace {self.team.id}")
+        return found
+
+    def person_of(self, user: wire.SlackUser) -> str | None:
+        """The `Person.key` a member is, None for a bot (the agent's or another app's), which no message reaches."""
+        if user.is_bot or user.id == self.team.bot_user_id:
+            return None
+        return user.name
+
+    def channel_named(self, name: str) -> wire.SlackChannel | None:
+        """The named channel `name` in this workspace: at the id derived from its name, or the one its seed declared."""
+        derived = self.channel(named_channel_id(name, self.team.id))
+        if derived is not None and derived.name == name:
+            return derived
+        return next((c for c in self.channels_after(None) if c.name == name and not c.is_im and not c.is_mpim), None)
+
+    def conversation_between(self, members: list[str]) -> wire.SlackChannel | None:
+        """The IM or group DM whose members are exactly `members`: at the id derived from them, or the one its seed
+        declared."""
+        derived = self.channel(conversation_id(members))
+        if derived is not None:
+            return derived
+        wanted = set(members)
+        return next(
+            (c for c in self.channels_after(None) if (c.is_im or c.is_mpim) and set(self.every_member(c.id)) == wanted),
+            None,
+        )
+
+    def human_people(self, channel: str, *, besides: str) -> list[str]:
+        """Who a message in `channel` reaches, by `Person.key`: its human members other than the author, whether
+        or not they have an email."""
+        found: list[str] = []
+        for member in self.every_member(channel):
+            user = self.user(member) if member != besides else None
+            person = self.person_of(user) if user is not None else None
+            if person is not None:
+                found.append(person)
+        return found
+
     def human_emails(self, channel: str, *, besides: str) -> list[str]:
         """Who a message in `channel` reaches: its human members other than the author."""
         emails: list[str] = []
@@ -444,7 +500,7 @@ class SlackWorld:
                 return ts
             seq += 1
 
-    def seeded_ts(self, channel: str, second: int, nth: int) -> str:
+    def seeded_ts(self, channel: str, second: int, nth: int, *, reserved: frozenset[str] = frozenset()) -> str:
         """The `ts` of the `nth` (from 1) message seeded in `channel` at `second`: named by the channel and its order
         there, never by the log's position, so the same seed gives the same stamps however far into a world it is
         written. The channel's own three digits keep two channels' messages in one second apart; when two channels'
@@ -452,7 +508,8 @@ class SlackWorld:
         slot = int(hashlib.sha256(f"seeded|{self.team.id}|{channel}".encode()).hexdigest(), 16) % 1000
         for n in range(nth, 1000):
             ts = f"{second}.{slot * 1000 + n:06d}"
-            if self._store.get(message_ref(ts)) is None and not self._store.versions(message_ref(ts)):
+            taken = self._store.get(message_ref(ts)) is not None or bool(self._store.versions(message_ref(ts)))
+            if not taken and ts not in reserved:
                 return ts
         raise OverflowError(f"more than 999 messages are seeded in {channel} at the second {second}")
 
@@ -472,7 +529,7 @@ class SlackWorld:
         found = self.body(away_ref(user), wire.SlackAway)
         if found is None:
             return None
-        asked = first_ask(found.email, self._store.events()) if any(s.on_first_ask for s in found.stretches) else None
+        asked = self._first_ask(found) if any(s.on_first_ask for s in found.stretches) else None
         for stretch in found.stretches:
             span = placed(
                 from_start=None if stretch.on_first_ask else datetime.fromtimestamp(found.starts_at, UTC),
@@ -484,6 +541,10 @@ class SlackWorld:
                 starts = int(span[0].timestamp())
                 return Away(reason=stretch.reason, starts=starts, ends=starts + stretch.lasts)
         return None
+
+    def _first_ask(self, away: wire.SlackAway) -> datetime | None:
+        """When the agent first wrote to the person away, on any provider: to their key, or their email."""
+        return first_ask(away.person or "", away.email, self._store.events())
 
     def post(self, key: str) -> wire.SlackPostKey | None:
         return self.body(post_ref(key), wire.SlackPostKey)
@@ -522,9 +583,12 @@ class SlackWorld:
         """Record that the agent read or searched something. It changes nothing."""
         return self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
 
-    def open_conversation(self, members: list[str], *, created: int, actor: Actor) -> wire.SlackChannel:
-        """Write an IM (the app and one other) or a group DM, and a membership for each member."""
-        cid = conversation_id(members)
+    def open_conversation(
+        self, members: list[str], *, created: int, actor: Actor, declared: str | None = None
+    ) -> wire.SlackChannel:
+        """Write an IM (the app and one other) or a group DM, and a membership for each member; at the id its seed
+        `declared`, else the one derived from its members."""
+        cid = declared if declared is not None else conversation_id(members)
         bot = self.team.bot_user_id
         others = [m for m in members if m != bot]
         if len(set(members)) <= 2:

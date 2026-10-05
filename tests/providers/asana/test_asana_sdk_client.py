@@ -111,7 +111,11 @@ async def test_the_sdk_hands_a_task_to_a_person_and_reads_it_back(sdk: Sdk, work
     assert [t["gid"] for t in found] == [made["gid"]]
     created = next(e for e in workspace.store.events() if e.entity.external_id == made["gid"])
     assert created.actor is Actor.AGENT and created.after == TicketSnapshot(
-        title="Collect the badges", project="Venue Move", assignee_email="tomas@example.com", state=TicketState.OPEN
+        title="Collect the badges",
+        project="Venue Move",
+        assignee_email="tomas@example.com",
+        assignee="tomas",
+        state=TicketState.OPEN,
     )
 
 

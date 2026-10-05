@@ -25,6 +25,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.further_seed import Scratch
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import StandingWorld
+from minutehand.domain.provider import DocumentField, Manifest
 from minutehand.domain.scenario import (
     Person,
     Scenario,
@@ -82,16 +83,25 @@ def base(provider: str) -> dict[str, object]:
             {"provider": provider, "project": "Launch", "title": "Order food", "assignee": "mila"},
         ]
     if provider in DOCUMENTS:
-        seed["documents"] = [
-            {"provider": provider, "title": "Plan", "text": "hello", "shared_with": [{"person": "sofia"}]},
-            {"provider": provider, "title": "Budget", "kind": "spreadsheet", "rows": [["a", "b"], ["1", "2"]]},
-        ]
+        holds = _manifest(provider).document_fields
+        plan: dict[str, object] = {"provider": provider, "title": "Plan", "text": "hello"}
+        if DocumentField.SHARED_WITH in holds:
+            plan["shared_with"] = [{"person": "sofia"}]
+        budget: dict[str, object] = {"provider": provider, "title": "Budget", "text": "a b"}
+        if DocumentField.SPREADSHEET in holds:
+            budget = {"provider": provider, "title": "Budget", "kind": "spreadsheet", "rows": [["a", "b"], ["1", "2"]]}
+        seed["documents"] = [plan, budget]
     if provider in MESSAGING:
         seed["channels"] = [{"provider": provider, "name": "launch", "members": ["owen", "sofia", "mila"],
                              "history": HISTORY}]  # fmt: skip
     if provider == "github":
         seed["provider_seeds"] = [{"provider": "github", "body": _github_seed()}]
     return seed
+
+
+def _manifest(provider: str) -> Manifest:
+    """What the provider holds of a document, so the seed sets only that: anything else is refused at load."""
+    return next(m for m in Registry.installed().manifests if m.key == provider)
 
 
 IVY = {"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com", "reply": {"kind": "silent"}}
@@ -116,8 +126,10 @@ def additions(provider: str) -> dict[str, dict[str, list[dict[str, object]]]]:
         found["person and their ticket"] = {"people": [IVY], "tickets": [
             {"provider": provider, "project": "Launch", "title": "Ivy's task", "assignee": "ivy"}]}  # fmt: skip
     if provider in DOCUMENTS:
-        found["document"] = {"documents": [{"provider": provider, "title": "Second doc", "text": "x",
-                                            "shared_with": [{"person": "mila"}]}]}  # fmt: skip
+        second: dict[str, object] = {"provider": provider, "title": "Second doc", "text": "x"}
+        if DocumentField.SHARED_WITH in _manifest(provider).document_fields:
+            second["shared_with"] = [{"person": "mila"}]
+        found["document"] = {"documents": [second]}
         found["person and their document"] = {"people": [IVY], "documents": [
             {"provider": provider, "title": "Ivy's notes", "text": "y", "owner": "ivy"}]}  # fmt: skip
     if provider in MESSAGING:

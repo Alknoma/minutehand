@@ -41,7 +41,7 @@ class Presenter:
             login=user.login,
             fullName=user.fullName,
             name=user.fullName,
-            email=user.email,
+            email=user.shown_email,
             ringId=user.ringId,
             avatarUrl=f"/hub/api/rest/avatar/{user.ringId}?s=48",
             banned=user.banned,
