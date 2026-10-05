@@ -275,7 +275,7 @@ def _history(
     log, and unmoved by anything seeded after it. A seeded post is before the start, so no minted id (the start or
     later) can be one of these."""
     for post in posts:
-        author = users[post.by]
+        author = _user(users, post.by, "the author of a seeded post")
         at = start - post.ago
         second = int(at.timestamp())
         seconds[second] = seconds[second] + 1 if second in seconds else 1
@@ -336,9 +336,23 @@ def _history(
             _history(world, conversation, post.replies, users, start, None, seconds)
 
 
+def _user(users: dict[str, UserRecord], key: str, what: str) -> UserRecord:
+    """The user a person was seeded as; a person seeded as another app's bot is no user, and is refused by name."""
+    if key not in users:
+        raise ValueError(f"{key} is {what}, and is another app's bot, which Teams and Graph hold as no user")
+    return users[key]
+
+
 def _channel(
     world: MicrosoftWorld, directory: Directory, seeded: SeededChannel, users: dict[str, UserRecord], stamp: str
 ) -> ConversationRecord:
+    bots = [k for k in seeded.members if k not in users]
+    if bots:
+        where = f"#{seeded.name}" if seeded.name is not None else "the direct conversation"
+        raise ValueError(
+            f"{', '.join(bots)} in {where} is another app's bot, which Teams holds as no user: a bot is not a member "
+            "of a channel or chat"
+        )
     members = [users[k].user.id for k in seeded.members]
     if seeded.name is not None:
         if seeded.topic and seeded.purpose:
@@ -706,7 +720,12 @@ def _documents(
         for access in document.shared_with:
             if access.person not in users:
                 raise ValueError(f"{document.title!r} is shared with {access.person}, who is no user of the tenant")
-            files.share(made, users[access.person].user.userPrincipalName, ROLES[access.role], actor=Actor.SCENARIO)
+            files.share(
+                made,
+                _user(users, access.person, "shared a document").user.userPrincipalName,
+                ROLES[access.role],
+                actor=Actor.SCENARIO,
+            )
         world.write_seeded(position, document.title, made.item.id)
 
 

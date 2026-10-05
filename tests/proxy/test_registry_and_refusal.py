@@ -18,7 +18,7 @@ from minutehand.adapters.proxy.registry import ENTRY_POINT_GROUP, ProviderConfli
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import Holds, Manifest, Tier
 from minutehand.domain.scenario import Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -68,19 +68,21 @@ class Listener:
 def test_two_providers_claiming_one_host_are_rejected(registry: Registry) -> None:
     with pytest.raises(ProviderConflict, match=r"ledger\.example"):
         registry.register(
-            Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"]),
-            lambda: Loopback(Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"])),
+            Manifest(holds=Holds.nothing(), key="clash", tier=Tier.FINISHED, hosts=["ledger.example"]),
+            lambda: Loopback(
+                Manifest(holds=Holds.nothing(), key="clash", tier=Tier.FINISHED, hosts=["ledger.example"])
+            ),
         )
 
 
 def test_a_host_inside_another_providers_wildcard_is_rejected(registry: Registry) -> None:
-    manifest = Manifest(key="inner", tier=Tier.FINISHED, hosts=["eu.ledger.test"])
+    manifest = Manifest(holds=Holds.nothing(), key="inner", tier=Tier.FINISHED, hosts=["eu.ledger.test"])
     with pytest.raises(ProviderConflict, match=r"\*\.ledger\.test"):
         registry.register(manifest, lambda: Loopback(manifest))
 
 
 def test_two_providers_with_one_key_are_rejected(registry: Registry) -> None:
-    manifest = Manifest(key="ledger", tier=Tier.FINISHED, hosts=["elsewhere.example"])
+    manifest = Manifest(holds=Holds.nothing(), key="ledger", tier=Tier.FINISHED, hosts=["elsewhere.example"])
     with pytest.raises(ProviderConflict, match="two providers are named 'ledger'"):
         registry.register(manifest, lambda: Loopback(manifest))
 
@@ -135,7 +137,7 @@ async def test_unclaimed_host_is_refused_and_recorded_without_contacting_it(
 async def test_claimed_host_is_answered_without_contacting_it(
     store: SqliteStore, clock: RunClock, tmp_path: Path
 ) -> None:
-    manifest = Manifest(key="loopback", tier=Tier.FINISHED, hosts=["127.0.0.1"])
+    manifest = Manifest(holds=Holds.nothing(), key="loopback", tier=Tier.FINISHED, hosts=["127.0.0.1"])
     registry = Registry()
     registry.register(manifest, lambda: Loopback(manifest))
     async with Listener() as upstream, Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:

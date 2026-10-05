@@ -83,12 +83,12 @@ def base(provider: str) -> dict[str, object]:
             {"provider": provider, "project": "Launch", "title": "Order food", "assignee": "mila"},
         ]
     if provider in DOCUMENTS:
-        holds = _manifest(provider).document_fields
+        holds = _manifest(provider).holds
         plan: dict[str, object] = {"provider": provider, "title": "Plan", "text": "hello"}
-        if DocumentField.SHARED_WITH in holds:
+        if holds.document_field(DocumentField.SHARED_WITH):
             plan["shared_with"] = [{"person": "sofia"}]
         budget: dict[str, object] = {"provider": provider, "title": "Budget", "text": "a b"}
-        if DocumentField.SPREADSHEET in holds:
+        if holds.document_field(DocumentField.SPREADSHEET):
             budget = {"provider": provider, "title": "Budget", "kind": "spreadsheet", "rows": [["a", "b"], ["1", "2"]]}
         seed["documents"] = [plan, budget]
     if provider in MESSAGING:
@@ -127,7 +127,7 @@ def additions(provider: str) -> dict[str, dict[str, list[dict[str, object]]]]:
             {"provider": provider, "project": "Launch", "title": "Ivy's task", "assignee": "ivy"}]}  # fmt: skip
     if provider in DOCUMENTS:
         second: dict[str, object] = {"provider": provider, "title": "Second doc", "text": "x"}
-        if DocumentField.SHARED_WITH in _manifest(provider).document_fields:
+        if _manifest(provider).holds.document_field(DocumentField.SHARED_WITH):
             second["shared_with"] = [{"person": "mila"}]
         found["document"] = {"documents": [second]}
         found["person and their document"] = {"people": [IVY], "documents": [

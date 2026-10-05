@@ -26,7 +26,7 @@ from minutehand.application.restore import SeenCall
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.provider import Manifest, MessagingKind, TicketActionKind, Tier
+from minutehand.domain.provider import Holds, Manifest, Tier
 from minutehand.domain.scenario import (
     Deletes,
     MessagingHappening,
@@ -93,8 +93,9 @@ class Chat:
         hosts=["chat.test"],
         kinds=[EntityKind.MESSAGE, EntityKind.TICKET],
         pushes_events=True,
-        ticket_actions=[TicketActionKind.MOVES, TicketActionKind.DELETES],
-        messaging_happenings=[MessagingKind.POSTS],
+        holds=Holds.nothing().model_copy(
+            update={"ticket_action_moves": True, "ticket_action_deletes": True, "messaging_posts": True}
+        ),
     )
 
     def __init__(self) -> None:
@@ -293,7 +294,12 @@ class Chat:
 
 class Scheduler:
     manifest = Manifest(
-        key=SCHED, tier=Tier.FINISHED, hosts=["sched.test"], kinds=[EntityKind.RECORD], books_wakes=True
+        key=SCHED,
+        tier=Tier.FINISHED,
+        hosts=["sched.test"],
+        kinds=[EntityKind.RECORD],
+        books_wakes=True,
+        holds=Holds.nothing(),
     )
 
     def __init__(self) -> None:

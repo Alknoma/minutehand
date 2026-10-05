@@ -483,8 +483,8 @@ class StandingWorld:
     def change_person(self, provider: ProviderKey, person: str, change: PersonChange) -> WorldEvent:
         """Something happens to `person`'s account in `provider` now, as an administrator does it."""
         found = self.provider(provider)
-        if not isinstance(found, ChangesPeople) or change not in found.manifest.people_changes:
-            can = ", ".join(c.value for c in found.manifest.people_changes) or "nothing"
+        if not isinstance(found, ChangesPeople) or not found.manifest.holds.people_change(change):
+            can = ", ".join(c.value for c in found.manifest.holds.people_changes()) or "nothing"
             raise Unsupported(f"{provider} cannot show a person {change.value}; it can show: {can}")
         before = self.store.head()
         try:

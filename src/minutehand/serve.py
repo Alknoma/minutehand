@@ -468,7 +468,7 @@ class Standing:
             found.append(
                 ProviderView(
                     key=key,
-                    people_changes=list(provider.manifest.people_changes)
+                    people_changes=provider.manifest.holds.people_changes()
                     if isinstance(provider, ChangesPeople)
                     else [],
                     permissions=isinstance(provider, GrantsPermissions),

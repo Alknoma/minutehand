@@ -173,6 +173,266 @@ class WorldKey(Model):
         return matched.group(1) if matched else None
 
 
+class Holds(Model):
+    """What a provider holds of everything the shared seed can say, one answer per fact, none defaulted: a fact
+    added to a shared seed model, a happening kind or a people change is a field here, and every manifest fails the
+    type checker until it answers it. `False` is a promise: `application.refusals.unheld` refuses the fact at load,
+    naming it, rather than let the provider drop it in silence. `tests/providers/test_held_or_refused.py` walks
+    every field of the shared seed models against these and seeds each fact into each provider: a fact held must
+    change what the provider stores."""
+
+    # a `Person` fact presented on their account
+    person_without_email: bool
+    person_title: bool
+    person_guest: bool
+    person_deactivated: bool
+    person_bot: bool
+    person_working_hours: bool
+    person_absences: bool
+    # a `PersonAccount` fact
+    account_login: bool
+    account_id: bool
+    account_name: bool
+    account_email_hidden: bool
+    # an optional `SeededTicket` fact
+    ticket_key: bool
+    ticket_labels: bool
+    ticket_comments: bool
+    ticket_number: bool
+    ticket_id: bool
+    # an optional `SeededDocument` fact
+    document_spreadsheet: bool
+    document_presentation: bool
+    document_file: bool
+    document_folder: bool
+    document_owner: bool
+    document_space: bool
+    document_shared_with: bool
+    document_modified_before_start: bool
+    document_modified_by: bool
+    document_id: bool
+    # a `SeededChannel`/`SeededPost` fact
+    channel_named: bool
+    channel_direct: bool
+    channel_private: bool
+    channel_archived: bool
+    channel_topic: bool
+    channel_purpose: bool
+    channel_without_agent: bool
+    channel_history: bool
+    channel_threads: bool
+    channel_files: bool
+    channel_id: bool
+    channel_post_id: bool
+    # what it holds of `Scenario.spaces`
+    space_spaces: bool
+    space_id: bool
+    # a `TicketHappening` action
+    ticket_action_moves: bool
+    ticket_action_reassigns: bool
+    ticket_action_comments: bool
+    ticket_action_deletes: bool
+    # a `MessagingHappening` kind
+    messaging_posts: bool
+    messaging_edits: bool
+    messaging_deletes: bool
+    messaging_reacts: bool
+    messaging_joins: bool
+    messaging_adds_agent: bool
+    messaging_opens_agent: bool
+    messaging_commands: bool
+    # a `DocumentHappening` action
+    document_change_edited: bool
+    document_change_renamed: bool
+    document_change_moved: bool
+    document_change_shared: bool
+    document_change_trashed: bool
+    document_change_commented: bool
+    document_change_field_set: bool
+    # a change to an account while a world is open
+    people_change_removed: bool
+    people_change_deactivated: bool
+    people_change_reactivated: bool
+    sign_ins: bool
+    """Whether it holds `Scenario.sign_ins`."""
+    faults: bool
+    """Whether it declares deliberate faults of its own kinds (`ports.provider.DeclaresFaults`)."""
+
+    def person_fact(self, fact: PersonFact) -> bool:
+        """Whether it holds a `Person` fact presented on their account (`PersonFact`)."""
+        match fact:
+            case PersonFact.WITHOUT_EMAIL:
+                return self.person_without_email
+            case PersonFact.TITLE:
+                return self.person_title
+            case PersonFact.GUEST:
+                return self.person_guest
+            case PersonFact.DEACTIVATED:
+                return self.person_deactivated
+            case PersonFact.BOT:
+                return self.person_bot
+            case PersonFact.WORKING_HOURS:
+                return self.person_working_hours
+            case PersonFact.ABSENCES:
+                return self.person_absences
+
+    def account_fact(self, fact: AccountFact) -> bool:
+        """Whether it holds a `PersonAccount` fact (`AccountFact`)."""
+        match fact:
+            case AccountFact.LOGIN:
+                return self.account_login
+            case AccountFact.ID:
+                return self.account_id
+            case AccountFact.NAME:
+                return self.account_name
+            case AccountFact.EMAIL_HIDDEN:
+                return self.account_email_hidden
+
+    def ticket_field(self, fact: TicketField) -> bool:
+        """Whether it holds an optional `SeededTicket` fact (`TicketField`)."""
+        match fact:
+            case TicketField.KEY:
+                return self.ticket_key
+            case TicketField.LABELS:
+                return self.ticket_labels
+            case TicketField.COMMENTS:
+                return self.ticket_comments
+            case TicketField.NUMBER:
+                return self.ticket_number
+            case TicketField.ID:
+                return self.ticket_id
+
+    def document_field(self, fact: DocumentField) -> bool:
+        """Whether it holds an optional `SeededDocument` fact (`DocumentField`)."""
+        match fact:
+            case DocumentField.SPREADSHEET:
+                return self.document_spreadsheet
+            case DocumentField.PRESENTATION:
+                return self.document_presentation
+            case DocumentField.FILE:
+                return self.document_file
+            case DocumentField.FOLDER:
+                return self.document_folder
+            case DocumentField.OWNER:
+                return self.document_owner
+            case DocumentField.SPACE:
+                return self.document_space
+            case DocumentField.SHARED_WITH:
+                return self.document_shared_with
+            case DocumentField.MODIFIED_BEFORE_START:
+                return self.document_modified_before_start
+            case DocumentField.MODIFIED_BY:
+                return self.document_modified_by
+            case DocumentField.ID:
+                return self.document_id
+
+    def channel_field(self, fact: ChannelField) -> bool:
+        """Whether it holds a `SeededChannel`/`SeededPost` fact (`ChannelField`)."""
+        match fact:
+            case ChannelField.NAMED:
+                return self.channel_named
+            case ChannelField.DIRECT:
+                return self.channel_direct
+            case ChannelField.PRIVATE:
+                return self.channel_private
+            case ChannelField.ARCHIVED:
+                return self.channel_archived
+            case ChannelField.TOPIC:
+                return self.channel_topic
+            case ChannelField.PURPOSE:
+                return self.channel_purpose
+            case ChannelField.WITHOUT_AGENT:
+                return self.channel_without_agent
+            case ChannelField.HISTORY:
+                return self.channel_history
+            case ChannelField.THREADS:
+                return self.channel_threads
+            case ChannelField.FILES:
+                return self.channel_files
+            case ChannelField.ID:
+                return self.channel_id
+            case ChannelField.POST_ID:
+                return self.channel_post_id
+
+    def space_field(self, fact: SpaceField) -> bool:
+        """Whether it holds what it holds of `Scenario.spaces` (`SpaceField`)."""
+        match fact:
+            case SpaceField.SPACES:
+                return self.space_spaces
+            case SpaceField.ID:
+                return self.space_id
+
+    def ticket_action(self, fact: TicketActionKind) -> bool:
+        """Whether it holds a `TicketHappening` action (`TicketActionKind`)."""
+        match fact:
+            case TicketActionKind.MOVES:
+                return self.ticket_action_moves
+            case TicketActionKind.REASSIGNS:
+                return self.ticket_action_reassigns
+            case TicketActionKind.COMMENTS:
+                return self.ticket_action_comments
+            case TicketActionKind.DELETES:
+                return self.ticket_action_deletes
+
+    def messaging(self, fact: MessagingKind) -> bool:
+        """Whether it holds a `MessagingHappening` kind (`MessagingKind`)."""
+        match fact:
+            case MessagingKind.POSTS:
+                return self.messaging_posts
+            case MessagingKind.EDITS:
+                return self.messaging_edits
+            case MessagingKind.DELETES:
+                return self.messaging_deletes
+            case MessagingKind.REACTS:
+                return self.messaging_reacts
+            case MessagingKind.JOINS:
+                return self.messaging_joins
+            case MessagingKind.ADDS_AGENT:
+                return self.messaging_adds_agent
+            case MessagingKind.OPENS_AGENT:
+                return self.messaging_opens_agent
+            case MessagingKind.COMMANDS:
+                return self.messaging_commands
+
+    def document_change(self, fact: DocumentChange) -> bool:
+        """Whether it holds a `DocumentHappening` action (`DocumentChange`)."""
+        match fact:
+            case DocumentChange.EDITED:
+                return self.document_change_edited
+            case DocumentChange.RENAMED:
+                return self.document_change_renamed
+            case DocumentChange.MOVED:
+                return self.document_change_moved
+            case DocumentChange.SHARED:
+                return self.document_change_shared
+            case DocumentChange.TRASHED:
+                return self.document_change_trashed
+            case DocumentChange.COMMENTED:
+                return self.document_change_commented
+            case DocumentChange.FIELD_SET:
+                return self.document_change_field_set
+
+    def people_change(self, fact: PersonChange) -> bool:
+        """Whether it holds a change to an account while a world is open (`PersonChange`)."""
+        match fact:
+            case PersonChange.REMOVED:
+                return self.people_change_removed
+            case PersonChange.DEACTIVATED:
+                return self.people_change_deactivated
+            case PersonChange.REACTIVATED:
+                return self.people_change_reactivated
+
+    @classmethod
+    def nothing(cls) -> Holds:
+        """A provider that holds none of it: everything the shared seed says for it is refused at load. For a
+        provider that holds no people, tickets, documents or channels at all; any other answers field by field."""
+        return cls.model_validate(dict.fromkeys(cls.model_fields, False))
+
+    def people_changes(self) -> list[PersonChange]:
+        """The changes to an account it can show while a world is open."""
+        return [c for c in PersonChange if self.people_change(c)]
+
+
 class Manifest(Model):
     key: ProviderKey
     tier: Tier
@@ -183,20 +443,10 @@ class Manifest(Model):
     books_wakes: bool = Field(
         default=False, description="True for a scheduler: what the agent books here becomes a wake"
     )
-    ticket_fields: list[TicketField] = Field(
-        default=[],
-        description="The optional `SeededTicket` fields its tickets hold; a scenario that sets any other on one of "
-        "its tickets is refused at load, since the provider would drop it in silence",
-    )
     world_keys: list[WorldKey] = Field(
         default=[],
         description="Where a request to this provider names its world without a credential: per-customer hosts, "
         "tenant or site ids in the path",
-    )
-    document_changes: list[DocumentChange] = Field(
-        default=[],
-        description="What a person can do to its seeded documents; a scenario whose document happening does any "
-        "other is refused at load, since the provider could not show it",
     )
     shared_hosts: list[str] = Field(
         default=[],
@@ -204,43 +454,8 @@ class Manifest(Model):
         "keys and their metadata): under `minutehand serve`, a call to one that no world claims is answered "
         "rather than refused",
     )
-    people_changes: list[PersonChange] = Field(
-        default=[],
-        description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "
-        "is refused at the call, naming these",
-    )
-    document_fields: list[DocumentField] = Field(
-        default=[],
-        description="The optional `SeededDocument` facts its documents hold; a seed setting any other on one of its "
-        "documents is refused at load",
-    )
-    channel_fields: list[ChannelField] = Field(
-        default=[],
-        description="The `SeededChannel` and `SeededPost` facts it holds; a seed setting any other on one of its "
-        "channels is refused at load",
-    )
-    space_fields: list[SpaceField] = Field(
-        default=[], description="What it holds of shared spaces; a seed declaring one it cannot hold is refused"
-    )
-    sign_ins: bool = Field(default=False, description="Whether it holds `Scenario.sign_ins`; refused when not")
-    account_facts: list[AccountFact] = Field(
-        default=[],
-        description="What a person's account entry for this service may say (`Person.accounts`); an entry setting "
-        "any other is refused at load",
-    )
-    person_facts: list[PersonFact] = Field(
-        default=[],
-        description="The person facts it presents on their account; the real service has no place for the rest, "
-        "and a person is one across services, so those are not refused",
-    )
-    ticket_actions: list[TicketActionKind] = Field(
-        default=[],
-        description="What a person can do to its seeded tickets (`TicketHappening.action`); any other is refused at "
-        "load",
-    )
-    messaging_happenings: list[MessagingKind] = Field(
-        default=[],
-        description="What a person can do unprompted in it (`MessagingHappening`); any other is refused at load",
+    holds: Holds = Field(
+        description="What it holds of everything the shared seed can say; whatever it does not hold is refused at load"
     )
     state_outside_log: str | None = Field(
         default=None,

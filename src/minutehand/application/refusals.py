@@ -55,18 +55,18 @@ def unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest])
         if manifest is None:
             continue
         if isinstance(happening, DocumentHappening):
-            if DocumentChange(happening.action.kind) not in manifest.document_changes:
+            if not manifest.holds.document_change(DocumentChange(happening.action.kind)):
                 found.append(
                     f"happening {n} ({happening.person} {happening.action.kind} the seeded document "
                     f"{happening.document!r}) lands on {provider}, which has no way to show that"
                 )
         elif isinstance(happening, TicketHappening):
-            if TicketActionKind(happening.action.kind) not in manifest.ticket_actions:
+            if not manifest.holds.ticket_action(TicketActionKind(happening.action.kind)):
                 found.append(
                     f"happening {n} ({happening.person} {happening.action.kind} the seeded ticket "
                     f"{happening.ticket!r}) lands on {provider}, which has no way to show that"
                 )
-        elif MessagingKind(happening.kind) not in manifest.messaging_happenings:
+        elif not manifest.holds.messaging(MessagingKind(happening.kind)):
             found.append(
                 f"happening {n} ({happening.person} {happening.kind}) lands on {provider}, which has no way to show that"
             )
@@ -84,7 +84,7 @@ def unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest])
             TicketField.NUMBER: ticket.number is not None,
             TicketField.ID: ticket.id is not None,
         }
-        unheld_fields = [f.value for f, set_ in given.items() if set_ and f not in manifest.ticket_fields]
+        unheld_fields = [f.value for f, set_ in given.items() if set_ and not manifest.holds.ticket_field(f)]
         if unheld_fields:
             found.append(
                 f"the seeded ticket {ticket.title!r} sets {', '.join(unheld_fields)}, which {ticket.provider} "
@@ -109,7 +109,7 @@ def unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest])
             DocumentField.MODIFIED_BY: document.modified_by is not None,
             DocumentField.ID: document.id is not None,
         }
-        missing = [f.value for f, set_ in facts.items() if set_ and f not in manifest.document_fields]
+        missing = [f.value for f, set_ in facts.items() if set_ and not manifest.holds.document_field(f)]
         if missing:
             found.append(
                 f"the seeded document {document.title!r} sets {', '.join(missing)}, which {document.provider} "
@@ -119,13 +119,13 @@ def unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest])
         manifest = manifests.get(space.provider)
         if manifest is None:
             continue
-        if SpaceField.SPACES not in manifest.space_fields:
+        if not manifest.holds.space_field(SpaceField.SPACES):
             found.append(f"the shared space {space.name!r} is on {space.provider}, which holds no shared spaces")
-        elif space.id is not None and SpaceField.ID not in manifest.space_fields:
+        elif space.id is not None and not manifest.holds.space_field(SpaceField.ID):
             found.append(f"the shared space {space.name!r} sets id, which {space.provider} spaces cannot hold")
     for sign_in in scenario.sign_ins:
         manifest = manifests.get(sign_in.provider)
-        if manifest is not None and not manifest.sign_ins:
+        if manifest is not None and not manifest.holds.sign_ins:
             found.append(f"a sign-in is declared for {sign_in.provider}, which takes no seeded sign-ins")
     for channel in scenario.channels:
         manifest = manifests.get(channel.provider)
@@ -150,7 +150,7 @@ def unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest])
             ChannelField.ID: channel.id is not None,
             ChannelField.POST_ID: any(p.id is not None for p in posts),
         }
-        missing = [f.value for f, given in set_.items() if given and f not in manifest.channel_fields]
+        missing = [f.value for f, given in set_.items() if given and not manifest.holds.channel_field(f)]
         if missing:
             found.append(
                 f"the seeded channel {where} sets {', '.join(missing)}, which {channel.provider} channels cannot hold"
@@ -169,7 +169,7 @@ def unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest])
                 AccountFact.NAME: account.name is not None,
                 AccountFact.EMAIL_HIDDEN: not account.email_visible,
             }
-            missing = [f.value for f, given in facts_given.items() if given and f not in manifest.account_facts]
+            missing = [f.value for f, given in facts_given.items() if given and not manifest.holds.account_fact(f)]
             if missing:
                 found.append(
                     f"{person.key}'s account in {account.provider} sets {', '.join(missing)}, which "

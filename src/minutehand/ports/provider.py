@@ -245,13 +245,13 @@ class ConfirmsDelivery(Protocol):
 @runtime_checkable
 class ChangesPeople(Protocol):
     """A provider whose accounts change while a world is open (`minutehand serve`): a person removed, deactivated or
-    reactivated, each one of `manifest.people_changes`."""
+    reactivated, each one of `manifest.holds.people_changes()`."""
 
     def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
         """Do `change` to the account `person` was seeded as (found by who they are, never by their email), recorded
         as actor SCENARIO, so the service answers
         for it as the real one does after an administrator did it. Never asked for a change outside
-        `manifest.people_changes`. An account it holds nothing of, or one already so, raises `ValueError`."""
+        `manifest.holds.people_changes()`. An account it holds nothing of, or one already so, raises `ValueError`."""
         ...
 
 

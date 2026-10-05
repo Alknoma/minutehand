@@ -1,3 +1,3 @@
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import Holds, Manifest, Tier
 
-MANIFEST = Manifest(key="tally", tier=Tier.FINISHED, hosts=["tally.test"])
+MANIFEST = Manifest(holds=Holds.nothing(), key="tally", tier=Tier.FINISHED, hosts=["tally.test"])

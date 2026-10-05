@@ -1,7 +1,8 @@
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import Holds, Manifest, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
+    holds=Holds.nothing(),
     key="ledger",
     tier=Tier.FINISHED,
     hosts=["ledger.example", "*.ledger.test"],
