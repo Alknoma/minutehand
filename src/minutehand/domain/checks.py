@@ -172,6 +172,13 @@ class WakeRecord(Model):
     commitments_changed: bool
 
 
+class WakeModelCalls(Model):
+    """How many of the agent's model calls the run received telemetry of, for one wake."""
+
+    wake: int = Field(ge=0)
+    calls: int = Field(ge=0, description="Spans of a model call placed in this wake")
+
+
 class RunView(Model):
     """Everything a check may read. A check never reaches past this."""
 
@@ -183,6 +190,11 @@ class RunView(Model):
         default=[], description="What people said: every reply not withdrawn before it landed, with who and when"
     )
     commitments: list[Commitment] | None = None
+    model_calls: list[WakeModelCalls] | None = Field(
+        default=None,
+        description="Model calls per wake, from the agent's telemetry; None when the run received no span of a "
+        "model call, so nobody can say how many it made",
+    )
     unmatched_calls: list[Exchange] | None = Field(
         default=None,
         description="Calls to hosts no provider claims, which produced no event; None when nobody could say",
