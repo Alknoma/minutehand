@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.application.model_calls import JoinedBy, ModelCall
 from minutehand.domain.checks import Effectiveness, FindingKind, Pattern, Severity, Stability, WakeRecord
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import Expectation, Model, Person
@@ -105,6 +106,18 @@ class CitedEvent(Model):
     entity: EntityRef
     after: Snapshot | None = Field(description="What the entity looked like after the change")
     call: RecordedHttp | None
+    model_call: ModelCall | None = Field(
+        description="The agent's model call that led to this event, from the telemetry the run received: the "
+        "model, what it was asked and answered when the span carries the messages, and the token counts"
+    )
+    joined_by: JoinedBy | None = Field(
+        description="trace: the call's traceparent put both in one trace. wake: no trace joined them; this is the "
+        "last model call of the same wake before the event, the nearest rather than a proven cause"
+    )
+    agent_spans: list[str] = Field(
+        description="Names of the agent's spans the call came from: the calling span first, then its ancestors up "
+        "to the root"
+    )
 
 
 class Evidence(Model):
@@ -112,6 +125,7 @@ class Evidence(Model):
     finding: NumberedFinding
     events: list[CitedEvent]
     wakes: list[WakeRecord] = Field(description="The wake the finding and its events happened in")
+    telemetry: str = Field(description="Whether the run received any of the agent's own telemetry, in words")
     pattern: Pattern | None = Field(description="What goes wrong, and the design that stops it")
 
 

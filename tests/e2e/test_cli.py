@@ -102,13 +102,25 @@ def test_env_prints_shell_exports_for_an_agent_minutehand_does_not_start(tmp_pat
     state = tmp_path / "state"
 
     printed = _cli(
-        "env", "--agent", str(agent_file), "--proxy-port", "18080", "--state", str(state), env=dict(os.environ)
+        "env",
+        "--agent",
+        str(agent_file),
+        "--proxy-port",
+        "18080",
+        "--telemetry-port",
+        "18081",
+        "--state",
+        str(state),
+        env=dict(os.environ),
     )
 
     assert printed.returncode == 0, printed.stderr
     exports = dict(line.removeprefix("export ").split("=", 1) for line in printed.stdout.splitlines())
     bundle = str((state / "ca" / "minutehand-ca-bundle.pem").resolve())
     assert exports["HTTPS_PROXY"] == exports["https_proxy"] == "http://127.0.0.1:18080"
+    assert exports["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:18081"
+    assert exports["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://127.0.0.1:18081/v1/traces"
+    assert exports["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
     assert exports["SSL_CERT_FILE"] == exports["REQUESTS_CA_BUNDLE"] == exports["HTTPLIB2_CA_CERTS"] == bundle
     assert "SLACK_SIGNING_SECRET" not in exports
 
@@ -125,6 +137,8 @@ def test_env_writes_a_compose_override_that_injects_the_variables_and_mounts_the
         "0.0.0.0",
         "--proxy-port",
         "18080",
+        "--telemetry-port",
+        "18081",
         "--agent-proxy-host",
         "host.docker.internal",
         "--format",
@@ -150,7 +164,20 @@ def test_env_writes_a_compose_override_that_injects_the_variables_and_mounts_the
     environment = platform["environment"]
     assert environment["HTTPS_PROXY"] == "http://host.docker.internal:18080"
     assert environment["SSL_CERT_FILE"] == environment["NODE_EXTRA_CA_CERTS"] == "/etc/minutehand/ca-bundle.pem"
-    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,worker,firestore"
+    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,worker,firestore,host.docker.internal"
+    assert environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://host.docker.internal:18081"
+
+
+def test_env_without_a_telemetry_port_is_refused_and_without_receiving_names_no_endpoint(tmp_path: Path) -> None:
+    agent_file = _dump(tmp_path / "agent.yaml", RUNNING_AGENT)
+    base = ("env", "--agent", str(agent_file), "--proxy-port", "18080", "--state", str(tmp_path))
+
+    refused = _cli(*base, env=dict(os.environ))
+    off = _cli(*base, "--no-receive-telemetry", env=dict(os.environ))
+
+    assert refused.returncode == 2 and "--telemetry-port" in refused.stderr
+    assert off.returncode == 0, off.stderr
+    assert "OTEL_EXPORTER_OTLP" not in off.stdout
 
 
 def test_env_for_an_agent_whose_secret_is_generated_per_run_is_refused_with_exit_2(tmp_path: Path) -> None:

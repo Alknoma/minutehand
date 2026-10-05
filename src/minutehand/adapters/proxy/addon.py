@@ -3,8 +3,11 @@
 A claimed host is answered by its provider's ASGI app and the call is recorded as an
 `Exchange` tied to the events the provider wrote while answering. An unclaimed host
 is refused with 502 and recorded the same way. A model API is tunnelled without being
-decrypted, unless the run edits its requests; then it is decrypted, edited and sent on,
-and neither its request nor its response is stored.
+decrypted, unless the run edits its requests or records model calls. An edited call is
+decrypted, edited and sent on. A recorded call (`record_model_calls`) is decrypted and sent
+on unchanged, its answer streamed back to the agent as it arrives when it is a stream, and
+kept as a span (`model_calls.span_of`); it is not an `Exchange`, and nothing from its
+headers or query string is stored.
 """
 
 from __future__ import annotations
@@ -13,15 +16,19 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping
+from datetime import UTC, datetime
 
 from mitmproxy import http, tls
 from mitmproxy.addons import asgiapp
+from mitmproxy.net import encoding
 
 from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.edit import apply_edits
+from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
+from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import Exchange
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -55,11 +62,23 @@ def _first_header(message: http.Message, name: str) -> str | None:
 
 
 class ProxyAddon:
-    def __init__(self, routing: Routing, store: Store, clock: Clock, telemetry: Telemetry | None = None) -> None:
+    def __init__(
+        self,
+        routing: Routing,
+        store: Store,
+        clock: Clock,
+        telemetry: Telemetry | None = None,
+        *,
+        record_model_calls: bool = False,
+    ) -> None:
         self.routing = routing
         self.store = store
         self.clock = clock
         self.telemetry = telemetry
+        self.record_model_calls = record_model_calls
+        # The streamed answer of each recorded call, chunk by chunk as it passed through, by flow id.
+        self._streams: dict[str, list[bytes]] = {}
+        self._recorded: set[str] = set()
         self._apps: dict[str, ASGIApp] = {}
         self._scenario: Scenario | None = None
         # One answered call at a time, so the events between two reads of the head
@@ -81,12 +100,19 @@ class ProxyAddon:
         host = data.client_hello.sni
         if host is None and data.context.server.address is not None:
             host = data.context.server.address[0]
-        if host is not None and self.routing.policy(host) is HostPolicy.TUNNEL:
+        if host is not None and self.policy(host) is HostPolicy.TUNNEL:
             data.ignore_connection = True
+
+    def policy(self, host: str) -> HostPolicy:
+        """The routing's policy for `host`, with a model API this proxy records opened rather than tunnelled."""
+        policy = self.routing.policy(host)
+        return HostPolicy.RECORD if policy is HostPolicy.TUNNEL and self.record_model_calls else policy
 
     async def request(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host
-        policy = self.routing.policy(host)
+        policy = self.policy(host)
+        if self.record_model_calls and policy in (HostPolicy.EDIT, HostPolicy.RECORD):
+            self._recorded.add(flow.id)
         if policy is HostPolicy.ANSWER:
             manifest = self.routing.claimant(host)
             assert manifest is not None
@@ -98,6 +124,49 @@ class ProxyAddon:
                 first = self.store.head() + 1
                 flow.response = _json_response(502, "no provider claims this host", host)
                 self._record(flow, host, flow.request.path, first, None)
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        """A recorded call answered as a stream reaches the agent as one: each chunk is passed on as it arrives
+        and kept beside, to be read when the stream ends."""
+        response = flow.response
+        if flow.id not in self._recorded or response is None:
+            return
+        if (_first_header(response, "content-type") or "").split(";", 1)[0].strip().lower() != EVENT_STREAM:
+            return
+        chunks = self._streams.setdefault(flow.id, [])
+
+        def tee(chunk: bytes) -> bytes:
+            chunks.append(chunk)
+            return chunk
+
+        response.stream = tee
+
+    def response(self, flow: http.HTTPFlow) -> None:
+        if flow.id not in self._recorded:
+            return
+        self._recorded.discard(flow.id)
+        streamed = self._streams.pop(flow.id, None)
+        request, response = flow.request, flow.response
+        assert response is not None
+        if streamed is None:
+            body = response.get_text(strict=False) or ""
+        else:
+            raw = b"".join(streamed)
+            coding = _first_header(response, "content-encoding")
+            decoded = encoding.decode(raw, coding) if coding else raw
+            body = decoded.decode("utf-8", errors="replace") if isinstance(decoded, bytes) else decoded
+        exchanged = Exchanged(
+            host=request.pretty_host,
+            path=request.path,
+            status=response.status_code,
+            request_body=request.get_text(strict=False) or "",
+            response_body=body,
+            response_type=_first_header(response, "content-type") or "",
+            traceparent=_first_header(request, TRACEPARENT),
+            started=datetime.fromtimestamp(request.timestamp_start, UTC),
+            ended=datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC),
+        )
+        self.store.receive([span_of(exchanged)], source=SpanSource.WIRE)
 
     def _app(self, manifest: Manifest) -> ASGIApp:
         """The provider's app for this run; built on its first call, and seeded first when it is new to the world:

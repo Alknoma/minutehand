@@ -12,7 +12,11 @@
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
 an agent in containers), --proxy-port (default: any free port), --agent-proxy-host (the host the agent uses
 for it, e.g. host.docker.internal; default the bind host) and --no-proxy HOST, repeated, for hosts the agent
-reaches directly.
+reaches directly. Beside the proxy, on the same host, an OTLP/HTTP receiver keeps the agent's own spans with
+the run: --telemetry-port (default: any free port), or --no-receive-telemetry to serve none. Spans the agent
+exports are passed on to wherever OTEL_EXPORTER_OTLP_ENDPOINT in Minutehand's own environment points.
+--record-model-calls opens the agent's calls to model APIs and keeps each as a span, for an agent that
+exports nothing.
 
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
@@ -99,6 +103,22 @@ def _parser() -> argparse.ArgumentParser:
         )
         sub.add_argument(
             "--no-proxy", action="append", default=[], metavar="HOST", help="a host the agent reaches directly"
+        )
+        sub.add_argument(
+            "--telemetry-port",
+            type=int,
+            default=0,
+            help="the port the OTLP receiver listens on, on the proxy's host (default: any free one)",
+        )
+        sub.add_argument(
+            "--no-receive-telemetry",
+            action="store_true",
+            help="serve no OTLP receiver and leave the agent's OTLP exporter where it points",
+        )
+        sub.add_argument(
+            "--record-model-calls",
+            action="store_true",
+            help="open the agent's calls to model APIs, send them on unchanged and keep each as a span",
         )
 
     run = commands.add_parser("run", help="run a scenario against an agent")
@@ -196,7 +216,13 @@ def _telemetry() -> OtelTelemetry | None:
 
 def _listen(args: argparse.Namespace) -> session.Listen:
     return session.Listen(
-        host=args.proxy_host, port=args.proxy_port, agent_host=args.agent_proxy_host, no_proxy=args.no_proxy
+        host=args.proxy_host,
+        port=args.proxy_port,
+        agent_host=args.agent_proxy_host,
+        no_proxy=args.no_proxy,
+        telemetry_port=args.telemetry_port,
+        receive_telemetry=not args.no_receive_telemetry,
+        record_model_calls=args.record_model_calls,
     )
 
 

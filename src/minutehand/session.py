@@ -44,6 +44,8 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
+from minutehand.adapters.telemetry.forward import Forwarding
+from minutehand.adapters.telemetry.receiver import Receiver, exporter_environment
 from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused
@@ -61,7 +63,7 @@ from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, Wr
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.provider import BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -145,7 +147,7 @@ async def play(
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
     listen = listen or Listen()
-    async with _proxy(routing, first[0], first[1], state, listen) as proxy:
+    async with intercepting(routing, first[0], first[1], state, listen) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0 and agent.state is not None:
@@ -154,7 +156,9 @@ async def play(
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
             signing = signing_for(agent)
-            env = agent_environment(listen, proxy.port, proxy.ca_bundle, signing.for_agent)
+            env = agent_environment(
+                listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+            )
             async with _agent_process(command, env, agent, directory / AGENT_LOG):
                 record = await run_scenario(
                     scenario=scenario,
@@ -211,8 +215,10 @@ async def fork(
 
     holding = RunClock(scenario.starts_at)
     listen = listen or Listen()
-    async with _proxy(routing, open_parent(holding), holding, state, listen) as proxy:
-        env = agent_environment(listen, proxy.port, proxy.ca_bundle, signing.for_agent)
+    async with intercepting(routing, open_parent(holding), holding, state, listen) as proxy:
+        env = agent_environment(
+            listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+        )
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -545,11 +551,11 @@ def signing_for(agent: AgentUnderTest) -> Signing:
 
 
 class Listen(Model):
-    """Where the proxy listens, and how the agent reaches it.
+    """Where the proxy and the telemetry receiver listen, how the agent reaches them, and what the proxy records.
 
-    The defaults suit an agent Minutehand starts on this machine: loopback, a port the system picks. An agent in
-    containers, or one already running, needs a fixed `port`, a `host` it can reach (`0.0.0.0`), and
-    `agent_host`, the name the AGENT uses for this machine, which is not the bind address
+    The defaults suit an agent Minutehand starts on this machine: loopback, ports the system picks. An agent in
+    containers, or one already running, needs a fixed `port` and `telemetry_port`, a `host` it can reach
+    (`0.0.0.0`), and `agent_host`, the name the AGENT uses for this machine, which is not the bind address
     (`host.docker.internal`)."""
 
     host: str = "127.0.0.1"
@@ -558,23 +564,50 @@ class Listen(Model):
         default=None, description="The host in the proxy URL the agent is given; None is the bind host"
     )
     no_proxy: list[str] = Field(default=[], description="More hosts the agent reaches directly, not through the proxy")
+    receive_telemetry: bool = Field(
+        default=True, description="Serve an OTLP/HTTP endpoint on `host` and point the agent's exporter at it"
+    )
+    telemetry_port: int = Field(default=0, ge=0, le=65535, description="The receiver's port; 0 lets the system pick")
+    record_model_calls: bool = Field(
+        default=False,
+        description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span",
+    )
+
+    def _reached_at(self) -> str:
+        """This machine as the agent names it. Binding every interface is not an address: it is reached on loopback."""
+        return self.agent_host or ("127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host)
 
     def proxy_url(self, port: int) -> str:
-        """The proxy as the agent reaches it. Binding every interface is not an address: it is reached on loopback."""
-        host = self.agent_host or ("127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host)
-        return f"http://{host}:{port}"
+        """The proxy as the agent reaches it."""
+        return f"http://{self._reached_at()}:{port}"
+
+    def telemetry_url(self, port: int) -> str:
+        """The telemetry receiver as the agent reaches it."""
+        return f"http://{self._reached_at()}:{port}"
+
+    def direct(self) -> list[str]:
+        """The hosts the agent reaches directly: itself, those named, and this machine when the receiver is on,
+        whose OTLP endpoint is not reached through the proxy."""
+        hosts = [*DIRECT, *self.no_proxy]
+        if self.receive_telemetry:
+            hosts.append(self._reached_at())
+        return list(dict.fromkeys(hosts))
 
 
 DIRECT = ("localhost", "127.0.0.1")
 """Hosts every agent reaches directly: itself, and Minutehand's own calls to it never go through the proxy."""
 
 
-def agent_environment(listen: Listen, port: int, ca_bundle: str | Path, secrets: Mapping[str, str]) -> dict[str, str]:
+def agent_environment(
+    listen: Listen, port: int, ca_bundle: str | Path, secrets: Mapping[str, str], *, telemetry_port: int | None
+) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
     spellings libraries read, the hosts it reaches directly, the one CA file in each library's variable
-    (`ca_bundle`, as the agent sees the path), and the signing secrets it is handed."""
+    (`ca_bundle`, as the agent sees the path), the signing secrets it is handed, and, unless `telemetry_port`
+    is None (receiving is off), its OTLP exporter pointed at the receiver."""
     proxy = listen.proxy_url(port)
-    direct = ",".join(dict.fromkeys([*DIRECT, *listen.no_proxy]))
+    direct = ",".join(listen.direct())
+    exporter = exporter_environment(listen.telemetry_url(telemetry_port)) if telemetry_port is not None else {}
     return {
         "HTTPS_PROXY": proxy,
         "HTTP_PROXY": proxy,
@@ -583,6 +616,7 @@ def agent_environment(listen: Listen, port: int, ca_bundle: str | Path, secrets:
         "http_proxy": proxy,
         "no_proxy": direct,
         **{name: str(ca_bundle) for name in CA_VARIABLES},
+        **exporter,
         **secrets,
     }
 
@@ -605,14 +639,71 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
             "reaches only a command Minutehand starts; an agent started on its own says "
             "`secret: {kind: from_env, env: <variable>}` with the secret it was configured with"
         )
+    if listen.receive_telemetry and listen.telemetry_port == 0:
+        raise RunRefused(
+            "an agent configured before the run needs the telemetry receiver on a fixed port: give "
+            "--telemetry-port, or --no-receive-telemetry to leave the agent's telemetry where it goes"
+        )
     bundle = write_bundle(state / "ca")
-    return agent_environment(listen, listen.port, ca_bundle or str(bundle.resolve()), {})
+    telemetry_port = listen.telemetry_port if listen.receive_telemetry else None
+    return agent_environment(listen, listen.port, ca_bundle or str(bundle.resolve()), {}, telemetry_port=telemetry_port)
+
+
+@dataclass(frozen=True)
+class Intercepting:
+    """`application.orchestrator.Mounts`: the proxy, and the telemetry receiver beside it when receiving is on,
+    each moved to the next run together."""
+
+    proxy: Proxy
+    receiver: Receiver | None
+
+    @property
+    def port(self) -> int:
+        return self.proxy.port
+
+    @property
+    def ca_bundle(self) -> Path:
+        return self.proxy.ca_bundle
+
+    @property
+    def telemetry_port(self) -> int | None:
+        """The receiver's port; None when receiving is off."""
+        return self.receiver.port if self.receiver is not None else None
+
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
+        self.proxy.mount(world, clock, apps, scenario=scenario)
+        if self.receiver is not None:
+            self.receiver.mount(world, clock)
 
 
 @asynccontextmanager
-async def _proxy(routing: Routing, store: Store, clock: Clock, state: Path, listen: Listen) -> AsyncIterator[Proxy]:
-    async with Proxy(routing, store, clock, confdir=state / "ca", host=listen.host, port=listen.port) as proxy:
-        yield proxy
+async def intercepting(
+    routing: Routing, store: Store, clock: Clock, state: Path, listen: Listen
+) -> AsyncIterator[Intercepting]:
+    """The proxy and, unless `listen` turns it off, the receiver, on the same host. The receiver passes what it
+    takes on to wherever this process's own environment sent OTLP before (`Forwarding.from_environment`)."""
+    async with Proxy(
+        routing,
+        store,
+        clock,
+        confdir=state / "ca",
+        host=listen.host,
+        port=listen.port,
+        record_model_calls=listen.record_model_calls,
+    ) as proxy:
+        if not listen.receive_telemetry:
+            yield Intercepting(proxy, None)
+            return
+        receiver = Receiver(
+            store,
+            clock,
+            host=listen.host,
+            port=listen.telemetry_port,
+            forwarding=Forwarding.from_environment(os.environ),
+            agent_host=listen.agent_host,
+        )
+        async with receiver:
+            yield Intercepting(proxy, receiver)
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:
