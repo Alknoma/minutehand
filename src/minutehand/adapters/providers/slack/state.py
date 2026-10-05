@@ -138,17 +138,21 @@ class SlackWorld:
         return emails
 
     def messages(self, channel: str) -> list[wire.SlackMessage]:
-        """Every live message in the channel, roots and replies, oldest first."""
-        return [wire.parse(wire.SlackMessage, s.body) for s in self._pages(EntityKind.MESSAGE, channel)]
+        """Every live message in the channel that anyone can list, roots and replies, oldest first: an
+        ephemeral one was shown to one member once and is in no listing."""
+        found = (wire.parse(wire.SlackMessage, s.body) for s in self._pages(EntityKind.MESSAGE, channel))
+        return [m for m in found if m.ephemeral_to is None]
 
     def message(self, channel: str, ts: str) -> wire.SlackMessage | None:
+        """A message the Web API can find by its ts; an ephemeral one it cannot."""
         stored = self._store.get(message_ref(ts))
         if stored is None or stored.parent != channel:
             return None
-        return wire.parse(wire.SlackMessage, stored.body)
+        found = wire.parse(wire.SlackMessage, stored.body)
+        return found if found.ephemeral_to is None else None
 
     def located(self, ts: str) -> tuple[str, wire.SlackMessage] | None:
-        """A message and the channel it is in, from its ts alone."""
+        """A message and the channel it is in, from its ts alone, ephemeral or not."""
         stored = self._store.get(message_ref(ts))
         if stored is None or stored.parent is None:
             return None

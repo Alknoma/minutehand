@@ -116,6 +116,11 @@ class SlackMessage(Model):
     attachments: list[JsonValue] | None = None
     edited: SlackEdited | None = None
     reactions: list[SlackReaction] | None = None
+    ephemeral_to: str | None = Field(
+        default=None,
+        description="Minutehand's own: the one member an ephemeral message was shown to. Never served, because "
+        "Slack never lists an ephemeral message",
+    )
     reply_count: int | None = Field(default=None, description="Thread summary; computed when served, never stored")
     reply_users: list[str] | None = None
     reply_users_count: int | None = None
@@ -216,6 +221,18 @@ class EmailArgs(Model):
 
 class PostMessageArgs(Model):
     channel: str = ""
+    text: str = ""
+    thread_ts: str | None = None
+    blocks: list[JsonValue] | None = None
+    attachments: list[JsonValue] | None = None
+    as_user: bool = False
+
+    _parse_blocks = field_validator("blocks", "attachments", mode="before")(_blocks_from_form)
+
+
+class PostEphemeralArgs(Model):
+    channel: str = ""
+    user: str = ""
     text: str = ""
     thread_ts: str | None = None
     blocks: list[JsonValue] | None = None
@@ -424,6 +441,10 @@ class Posted(Ok):
     channel: str
     ts: str
     message: SlackMessage
+
+
+class PostedEphemeral(Ok):
+    message_ts: str
 
 
 class Updated(Ok):

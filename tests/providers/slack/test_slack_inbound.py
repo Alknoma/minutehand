@@ -240,3 +240,17 @@ async def test_a_reply_to_a_message_that_does_not_exist_is_refused(workspace: Wo
         await workspace.provider.deliver(
             reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock, secret=SECRET
         )
+
+
+async def test_an_answer_to_an_ephemeral_message_is_posted_where_it_was_shown_not_in_a_thread(
+    workspace: Workspace, client: httpx.AsyncClient, agent: Agent
+) -> None:
+    shown = await form(client, "chat.postEphemeral", channel=GENERAL, user=state.user_id("iris"), text="Ready?")
+    reply = PersonReply(person="iris", in_reply_to=_message(shown["message_ts"]), text="Ready.", at=START)
+    await workspace.provider.deliver(
+        reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock, secret=SECRET
+    )
+
+    event = json.loads(agent.received[0].body)["event"]
+    assert (event["channel"], event["text"]) == (GENERAL, "Ready.")
+    assert "thread_ts" not in event

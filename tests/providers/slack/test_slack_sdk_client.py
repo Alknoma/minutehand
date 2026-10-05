@@ -18,6 +18,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web import SlackResponse
 
 from minutehand.adapters.providers.slack import state
+from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from tests.providers.slack.slack_workspace import GENERAL, TOKEN, Workspace
 
 T = TypeVar("T")
@@ -83,3 +84,22 @@ async def test_a_refusal_reaches_the_sdk_as_its_own_error(sdk: WebClient) -> Non
     with pytest.raises(SlackApiError) as refused:
         await off_loop(lambda: sdk.conversations_info(channel="C0NOSUCHCHAN"))
     assert refused.value.response["error"] == "channel_not_found"
+
+
+async def test_the_sdk_posts_an_ephemeral_message_that_only_its_member_was_shown(
+    sdk: WebClient, workspace: Workspace
+) -> None:
+    iris = state.user_id("iris")
+    posted = await sent(lambda: sdk.chat_postEphemeral(channel=GENERAL, user=iris, text="Sign in to continue."))
+    history = await sent(lambda: sdk.conversations_history(channel=GENERAL))
+
+    assert posted["ok"] is True and isinstance(posted["message_ts"], str)
+    assert [m["ts"] for m in history["messages"]] == [], "an ephemeral message is in no history"
+    [shown] = [e for e in workspace.store.events() if e.entity == state.message_ref(posted["message_ts"])]
+    assert shown.actor is Actor.AGENT and shown.operation is Operation.CREATE
+    assert isinstance(shown.after, MessageSnapshot)
+    assert (shown.after.text, shown.after.channel, shown.after.recipient_emails) == (
+        "Sign in to continue.",
+        GENERAL,
+        ["iris@example.com"],
+    )

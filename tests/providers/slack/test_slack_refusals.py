@@ -298,3 +298,44 @@ async def test_replies_page_oldest_first(client: httpx.AsyncClient) -> None:
         client, "conversations.replies", channel=GENERAL, ts=str(parent["ts"]), limit="2", cursor=_cursor(first)
     )
     assert text_of(first) == ["root", "r0"] and text_of(rest) == ["r1", "r2"] and rest["has_more"] is False
+
+
+# ---------------------------------------------------------------------- chat.postEphemeral
+
+
+async def test_ephemeral_to_a_member_not_in_the_channel_is_refused(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
+    answer = await form(
+        client, "chat.postEphemeral", channel=workspace.dm("iris"), user=state.user_id("tomas"), text="hi"
+    )
+    assert answer == {"ok": False, "error": "user_not_in_channel"}
+
+
+async def test_ephemeral_to_nobody_and_with_nothing_to_say_is_refused(client: httpx.AsyncClient) -> None:
+    unknown = await form(client, "chat.postEphemeral", channel=GENERAL, user="U0NOBODY00", text="hi")
+    empty = await form(client, "chat.postEphemeral", channel=GENERAL, user=state.user_id("iris"))
+    assert unknown == {"ok": False, "error": "user_not_found"}
+    assert empty == {"ok": False, "error": "no_text"}
+
+
+async def test_ephemeral_in_a_channel_without_the_app_is_refused(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
+    channel = workspace.channel_without_the_app("design", members=["iris"])
+    answer = await form(client, "chat.postEphemeral", channel=channel, user=state.user_id("iris"), text="hi")
+    assert answer == {"ok": False, "error": "not_in_channel"}
+
+
+async def test_an_ephemeral_message_cannot_be_updated_threaded_or_deleted_by_its_ts(client: httpx.AsyncClient) -> None:
+    posted = await form(client, "chat.postEphemeral", channel=GENERAL, user=state.user_id("iris"), text="once")
+    ts = str(posted["message_ts"])
+    assert await form(client, "chat.update", channel=GENERAL, ts=ts, text="again") == {
+        "ok": False,
+        "error": "message_not_found",
+    }
+    assert await form(client, "chat.delete", channel=GENERAL, ts=ts) == {"ok": False, "error": "message_not_found"}
+    assert await form(client, "conversations.replies", channel=GENERAL, ts=ts) == {
+        "ok": False,
+        "error": "thread_not_found",
+    }
