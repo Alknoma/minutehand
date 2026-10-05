@@ -27,7 +27,17 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
-from minutehand.domain.scenario import Deletes, Model, Moves, ProviderKey, Scenario, TicketHappening, TicketState
+from minutehand.domain.scenario import (
+    Deletes,
+    MessagingHappening,
+    Model,
+    Moves,
+    PersonPosts,
+    ProviderKey,
+    Scenario,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -223,6 +233,15 @@ class Chat:
         )
         async with httpx.AsyncClient() as client:
             (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
+
+    async def happen(
+        self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        """This chat has only messages: a post is said like any message; anything else is refused."""
+        if not isinstance(happening, PersonPosts):
+            raise ValueError(f"the test chat has nothing a person {happening.kind}")
+        message = PersonMessage(person=happening.person, text=happening.text, at=clock.now())
+        await self.say(message, target, world, clock, secret=secret)
 
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         self._rewrite(ticket, Actor.PERSON, state=to, assignee_email=None, world=world)

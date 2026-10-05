@@ -160,7 +160,7 @@ async def test_a_token_that_is_not_a_slack_token_is_refused_invalid_auth(client:
 
 
 async def test_an_unknown_method_is_refused(client: httpx.AsyncClient) -> None:
-    assert await form(client, "views.open") == {"ok": False, "error": "unknown_method"}
+    assert await form(client, "views.push") == {"ok": False, "error": "unknown_method"}
 
 
 async def test_lookup_by_email_finds_the_seeded_person(client: httpx.AsyncClient) -> None:

@@ -22,7 +22,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
 | World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 4 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 37 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
-| Slack provider | 15 Web API methods; message events pushed to the agent, signed with the run's secret or the agent's own | Built and tested | 74 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
+| Slack provider | 19 Web API methods, `response_url`, `url_private`; every Events API shape its production caller handles, plus edits, deletes, reactions and joins; buttons, person pickers, modals and slash commands pushed as interactivity payloads and the agent's answers applied; seeded channels, history, threads, files, guests, bots and deactivated accounts; scenario-declared faults including `ratelimited` with `Retry-After` | Built and tested | 115 (`tests/providers/slack/`), most through the real proxy with stock `slack_sdk` | One workspace. Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. See "Slack, against its production caller". |
 | Asana provider | 54 routes over users, teams, workspaces, projects and their members, sections, custom fields and their settings, tags, tasks, subtasks and stories, and `/-/oauth_token`; a scenario's Asana seed; a declared status source; people acting on seeded tasks | Built and tested | 102 (`tests/providers/asana/`) | With no seeded token, any bearer token acts as the agent. A bare `custom_fields` in `opt_fields` answers each field's gid and resource type, as every bare nested field does. Webhooks answer 501. No system stories (assigned, moved, completed) are written. |
 | YouTrack provider | 45 REST routes, each at `/api` and `/youtrack/api`, and 9 Hub routes at `/hub/api/rest`: issues, custom fields of every single-valued type with per-project bundles, defaults and required flags, comments, tags, links, activities read from the log, projects and their fields, the instance's fields and bundles, users, commands, `issuesGetter/count`, Hub projects, groups, permissions and OAuth tokens; the query language every shape a production client builds; people acting on seeded issues (`ActsOnTickets`) | Built and tested | 119 (`tests/providers/youtrack/`, 221 cases with parameters; most through the proxy) | Only a seeded `*.youtrack.cloud` or `*.myjetbrains.com` host is reached: a self-hosted instance's own host cannot be declared. Multi-valued fields (`enum[*]`, `user[*]`, `version[*]`), text fields, work items, attachments, saved searches, agile boards and sprints as boards are not served. Wording of 403, 429 and several 400s, the activity item `$type`s for tags, links and summary, and the default issue order are not verified against the real service. |
 | Google Drive provider | 14 Drive v3 routes, Docs v1 `documents.get`, Google's `/token` | Built and tested | 62 (`tests/providers/google_drive/`) | Sign-in is not verified; any bearer token is accepted. Content is capped at 5 MiB per file. |
@@ -200,15 +200,18 @@ Designed, not built: the same loop as MCP tools (see "What a coding agent calls"
 ```
 src/minutehand/
   domain/             pure: no I/O, no clock reads
-    scenario.py       Model, Scenario, Person, Answers, Scripted, Silent, DelayRange, WorkingHours, Absence,
-                      SeededTicket, SeededComment, SeededDocument, ProviderSeed, TicketFate, TicketHappening
-                      (Moves, Reassigns, Comments, Deletes), Direction, PersonAsked, TicketCreated,
-                      TicketDeleted, TicketInState, Relayed
+    scenario.py       Model, Scenario, Person, Account, Answers, Scripted, ScriptedReply, ScriptedPress, FormInput,
+                      Silent, DelayRange, WorkingHours, Absence, SeededTicket, SeededComment, SeededDocument,
+                      SeededChannel, SeededPost, SeededFile, ProviderSeed, Happening (TicketHappening (Moves,
+                      Reassigns, Comments, Deletes) | MessagingHappening (PersonPosts, PersonEdits, PersonDeletes,
+                      PersonReacts, PersonJoins, PersonOpensAgent, PersonCommands)), TicketFate, Direction,
+                      PersonAsked, TicketCreated, TicketDeleted, TicketInState, Relayed
     world.py          WorldEvent, Change, Stored, Exchange, RecordedCall, EntityRef,
-                      TicketSnapshot, MessageSnapshot, DocumentSnapshot, RecordSnapshot
+                      TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, RecordSnapshot,
+                      InteractionSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
                       GoalByWake, GoalByMessage, HumanAction, Inbox, StateHooks
-    people.py         PersonReply, PersonMessage, InboundTarget
+    people.py         PersonReply, Press, PersonMessage, InboundTarget
     provider.py       Manifest, Tier
     experiment.py     Fork, CallMatch, PromptPatch, ModelSwap, PersonChange, TicketEdit, DeadlineShift
     checks.py         Finding, CheckReport, Pattern, Obligation, Stability, Effectiveness, PersonBurden,
@@ -343,6 +346,17 @@ class PushesEvents(Protocol):
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None: ...
 
+    async def happen(
+        self, happening: Happening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None: ...
+
+
+@runtime_checkable
+class PushesInteractions(Protocol):
+    async def press(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None: ...
+
 
 @runtime_checkable
 class HoldsTickets(Protocol):
@@ -376,7 +390,7 @@ class BooksWakes(Protocol):
 
 | Provider | `Manifest.key` | Hosts (`path_prefix`) | Ports beyond `Provider` |
 |---|---|---|---|
-| Slack | `slack` | `slack.com`, `*.slack.com` | `PushesEvents` |
+| Slack | `slack` | `slack.com`, `*.slack.com` (`files.slack.com` and `hooks.slack.com` included) | `PushesEvents`, `PushesInteractions` |
 | Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets` |
 | YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets` |
 | Google Drive | `google_drive` | `www.googleapis.com`, `oauth2.googleapis.com`, `docs.googleapis.com` | none |
@@ -439,6 +453,31 @@ provider_seeds:
 
 The YouTrack seed (`adapters/providers/youtrack/seed.py`, `YouTrackSeed`) declares users beyond the people, tokens and Hub services that act as them (once a token is seeded, any other is a 401), instance fields, projects with their own field sets, bundles, resolved flags, defaults, required flags, teams and leaders, any field value on a seeded issue, links between seeded issues, an issue's history before the run, permissions given or taken (403), refusals put in the way of one path for a while (`Retry-After`), and `issuesGetter/count` answering -1. A project made through `POST /admin/projects` carries YouTrack's default template (no Due Date), has no Hub project, and nobody holds Update Project on it, as measured on a live instance. `issuesGetter/count` answers the exact count at once unless the seed says `count_unknown`.
 
+#### Slack, against its production caller
+
+The fake was brought to what a production Slack agent sends and expects, read call by call from its source and driven with stock `slack_sdk` (`WebClient` and `AsyncWebClient`, no base URL) through the real proxy (`tests/providers/slack/test_slack_through_the_proxy.py`, `test_slack_interactions.py`, `test_slack_happenings.py`, `test_slack_whole_run.py`). Every inbound request is checked at the test endpoint by `slack_sdk.signature.SignatureVerifier`.
+
+| Call or shape | Answered | Notes |
+|---|---|---|
+| `auth.test`, `users.list`, `users.info`, `users.lookupByEmail` | Yes | Users carry `is_restricted` (guest), `deleted` (deactivated), `is_bot`, `tz`, `tz_offset`, profile `email` and `title`. No `tz_label`, no profile images. |
+| `conversations.list`, `.info`, `.open`, `.members`, `.history`, `.replies` | Yes | Cursors, `has_more`, `inclusive`, thread summaries. `conversations.open` is idempotent and refuses a deactivated person (`user_disabled`) and a bot (`cannot_dm_bot`). |
+| `chat.postMessage`, `.postEphemeral`, `.update`, `.delete`; `reactions.add` | Yes | Blocks get a `block_id` and interactive elements an `action_id` when the agent leaves them out, as Slack does; an app's message carries `bot_profile`. `blocks=[]` on an update clears them. `unfurl_*` and `mrkdwn` are accepted and change nothing. |
+| `views.open`, `views.update`, `views.publish` | Yes | A modal needs a `trigger_id` from a press or a command, once (`exchanged_trigger_id`), within three simulated seconds (`expired_trigger_id`); `hash` is checked (`hash_conflict`). `views.push` is `unknown_method`. |
+| `oauth.v2.access` | Yes | Client id and secret by HTTP Basic or arguments. Any code is accepted once, since no browser makes one; the installer is the scenario's owner. |
+| `response_url` POST (`hooks.slack.com/actions/…`, `/commands/…`) | Yes | New message (ephemeral by default, or `in_channel`), `replace_original`, `delete_original`; five uses within thirty minutes. Error answers (`used_url`, `expired_url`, `invalid_token`, 404) are not verified against Slack. |
+| `url_private`, `url_private_download` GET | Yes | Served to any bot or user bearer token; without one, a 302 to an HTML sign-in page, as a browser is redirected. |
+| `files.*`, `chat.scheduleMessage`, `search.*`, `team.info`, `reactions.remove` | No | The caller makes none of these. |
+| Events: `message` (channel, group, IM, group DM, thread, `file_share` with `files`), `app_mention`, `message_changed`, `message_deleted`, `reaction_added`, `member_joined_channel`, `app_home_opened` (with the published Home view) | Yes | Sent only from conversations the agent's bot is in. A refused event is sent again three times with `X-Slack-Retry-Num` and `X-Slack-Retry-Reason`. |
+| `url_verification` | Yes, as `inbound.verify_url` | Nothing in a run sends it. |
+| `app_uninstalled`, `tokens_revoked`, `message` subtypes other than `file_share` | No | |
+| `block_actions` (buttons, `users_select`) | Yes | Form-encoded `payload`, with `trigger_id`, `response_url`, `actions[]`, `container`, `channel`, `message`, `user`, `team`; the message is left out for an ephemeral one, as Slack does. Other element types (static selects, overflow, date pickers) are not offered to a person. |
+| `view_submission` | Yes | `view.state.values` for every input block, `private_metadata`, `callback_id`; the answer's `response_action` (`errors`, `update`, `push`, `clear`, or none) is applied to the view. Only `plain_text_input` can be filled. `view_closed` is never sent. |
+| Slash commands | Yes, as `PersonCommands` | Form fields with `response_url` and `trigger_id`; the immediate answer is shown to the person, or the channel with `in_channel`. Sent to the inbound URL, not one per command. |
+| Faults | `Scenario.faults` | `RateLimited(retry_after)` answers HTTP 429 with `Retry-After`; `Refused(error)` answers any Slack error code; `only_rich` fails only calls with blocks or attachments, so a plain retry passes; `times` and `after` bound it. Each failure is a `faults` record by actor `SCENARIO`. |
+| Seeding | `Scenario.channels`, `Person.account` | Public and private channels with topic, purpose, members, the agent in or out, history with threads and files; DMs and group DMs with history; guests (not in `#general`), deactivated accounts and other apps' bots. |
+
+Where the parent repository's emulator answered differently from Slack, the fake follows Slack, and a test written against the emulator would change: it listed ephemeral messages in history; minted DM ids as `D` and the joined member ids; never listed IMs; let any author's message be updated or deleted (Slack: `cant_update_message`, `cant_delete_message`); ran a request with no token as the bot (Slack: `not_authed`); gave every user `tz_offset` 3600; answered missing reaction arguments `invalid_arguments`; served no `response_url` (a 404); and answered `missing_scope` from a per-token scope list, which this fake has not, so `missing_scope` is a declared `Refused` fault.
+
 ### Flow of one wake
 
 ```
@@ -454,7 +493,9 @@ Orchestrator.run():
     clock.jump(jump.now)
     only ticket fates and happenings fired -> HoldsTickets.transition, ActsOnTickets.act, no wake
     otherwise, one wake:
-      fire in order: fates (transition) and happenings (happen), replies (PushesEvents.deliver), directions by message (say),
+      fire in order: fates (transition), replies (PushesEvents.deliver, or PushesInteractions.press for a
+                     reply that uses a control), happenings (ActsOnTickets.act for a ticket, PushesEvents.happen
+                     for a message), directions by message (say),
                      bookings (BooksWakes.fire), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
       read the new events: an agent message to a person, as its text reads when the wake ends
@@ -1204,6 +1245,9 @@ What is built for people today (`application/replier_scripted.py`, `ScriptedRepl
 - The delay is drawn from the person's `DelayRange` (default 6 to 66 hours) by hashing the scenario's `seed` with the asked message's identity, so the same seed gives the same delays on every run and every fork.
 - A reply that would land inside an `Absence` (from the start, or from the first ask) or outside `WorkingHours` (in the person's own timezone) moves to the next moment they would answer.
 - A reply is stored the first time it is decided and arrives through the provider as a real inbound event: a threaded reply in a channel, a new message in a DM.
+- A scripted reply may use a control instead of writing back (`ScriptedReply.press`): the control on the asked message whose label reads `ScriptedPress.label`, in any case, a person picked for a person picker, and `form` typed into the modal the agent opens in answer. A message with no such control gets no reply: the person cannot press what is not there. A model-written person is shown the message's controls (a link is not one) and may answer with `press` and `form` instead of `text`. Either way the reply is a `PersonReply` with `press` set, stored and replayed like any other, its `text` what the person typed or else the label, so `Relayed` hears a reason typed into a form. The press lands as `InteractionSnapshot` events by actor `PERSON` naming the person, the control, its value and what was typed: "nadia pressed “Accept”" is one event in the log.
+- An edit that changes a message's controls without changing its text is put to the person again, as a text change is: a "Thinking…" message turned into a card by `chat.update` asks its question then.
+- `Scenario.happenings` are what people do unprompted at set offsets (post, edit, delete, react, join, open the agent's Home tab, run a slash command); each wakes the agent with `PERSON_REPLIED`.
 
 Designed:
 
@@ -1321,6 +1365,9 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
+- **Slack is one workspace.** Every id hangs off one team and one bot user; an agent installed in two workspaces cannot be tested.
+- **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called.
+- **A press that means to fill a form waits three real seconds** for the agent to open it with the press's `trigger_id`, as Slack's trigger lives three seconds; an agent slower than that fails the run (`FormNeverOpened`).
 - **Most providers accept any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Drive accepts any bearer token, and its `/token` verifies nothing. Asana accepts any bearer token as the agent unless the scenario's Asana seed declares tokens, and then only those and the ones its `/-/oauth_token` mints; YouTrack likewise unless its seed names tokens, and then only those and the ones its Hub issued.
 - **No fake's wire details have been verified against the real service.**
 - **`PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run.**

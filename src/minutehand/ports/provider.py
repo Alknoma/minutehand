@@ -12,7 +12,7 @@ from typing import Protocol, runtime_checkable
 from minutehand.domain.clock import Due
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario, TicketHappening, TicketState
+from minutehand.domain.scenario import MessagingHappening, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -51,6 +51,29 @@ class PushesEvents(Protocol):
     ) -> None:
         """The person messages the agent directly (in Slack, a DM to its bot), recorded as actor PERSON and
         pushed like any event, signed with `secret`. How a goal or a direction sent by message reaches the agent."""
+        ...
+
+    async def happen(
+        self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        """Something a person does unprompted at a moment the scenario sets (posts, edits, deletes, reacts, joins a
+        channel, opens the agent's page, runs one of its commands), recorded as actor PERSON and pushed as the real
+        service pushes it. A happening this provider has no such thing for is refused loudly."""
+        ...
+
+
+@runtime_checkable
+class PushesInteractions(Protocol):
+    """A provider whose messages carry controls a person can use (Slack's buttons, Teams' card actions), and whose
+    real service tells the agent when one is used."""
+
+    async def press(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None:
+        """The person uses `reply.press` on the message `reply.in_reply_to`: recorded as actor PERSON, pushed to
+        `target`'s interactivity URL signed with `secret`, and the agent's answer applied as the real service applies
+        it. A form the agent opens in answer is filled with `reply.press.form` and submitted the same way. A
+        reply with no press, or a control the message does not carry, is refused loudly."""
         ...
 
 

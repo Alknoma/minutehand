@@ -37,7 +37,7 @@ class PendingFate(Model):
 
 
 class PendingHappening(Model):
-    """Something a person does to a seeded ticket by themselves, not yet done."""
+    """Something the scenario has a person do by themselves (`Scenario.happenings`), of any family, not yet done."""
 
     kind: Literal["happening"] = "happening"
     due: Due

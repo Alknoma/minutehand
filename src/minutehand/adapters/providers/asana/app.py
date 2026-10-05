@@ -351,7 +351,7 @@ class View:
                         "display_value": wire.display_number(number, field.precision) if number is not None else None,
                     }
                 )
-            case "date":
+            case "date":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
                 on = value.date if value is not None else None
                 at = value.date_time if value is not None else None
                 return out.model_copy(

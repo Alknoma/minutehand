@@ -134,7 +134,7 @@ def test_two_seeds_for_one_provider_are_rejected() -> None:
 
 
 def test_a_happening_on_a_ticket_nobody_seeded_is_rejected() -> None:
-    happening = {"person": "owner", "ticket": "Ghost", "after": "P1D", "action": {"kind": "deletes"}}
+    happening = {"kind": "ticket", "person": "owner", "ticket": "Ghost", "after": "P1D", "action": {"kind": "deletes"}}
     with pytest.raises(ValidationError, match="'Ghost', and 0 seeded tickets have that title"):
         Scenario.model_validate({**BASE, "happenings": [happening]})
 
@@ -142,6 +142,7 @@ def test_a_happening_on_a_ticket_nobody_seeded_is_rejected() -> None:
 def test_a_happening_that_reassigns_to_nobody_real_is_rejected() -> None:
     ticket = {"provider": "asana", "project": "P", "title": "Book the hall"}
     happening = {
+        "kind": "ticket",
         "person": "owner",
         "ticket": "Book the hall",
         "after": "P1D",
@@ -172,6 +173,7 @@ def test_a_tell_a_seeded_comment_or_a_commenting_person_holds_is_rejected() -> N
     with pytest.raises(ValidationError, match="a comment on 'Legal review'"):
         Scenario.model_validate({**BASE, "people": people, "tickets": [commented], "expect": [relayed]})
     happening = {
+        "kind": "ticket",
         "ticket": "Legal review",
         "person": "owner",
         "after": "P1D",
@@ -180,4 +182,56 @@ def test_a_tell_a_seeded_comment_or_a_commenting_person_holds_is_rejected() -> N
     with pytest.raises(ValidationError, match="owner's comment on 'Legal review'"):
         Scenario.model_validate(
             {**BASE, "people": people, "tickets": [LEGAL], "happenings": [happening], "expect": [relayed]}
+        )
+
+
+def test_a_scripted_reply_that_neither_writes_nor_presses_is_rejected() -> None:
+    from minutehand.domain.scenario import ScriptedReply
+
+    with pytest.raises(ValidationError, match="writes text or presses"):
+        ScriptedReply(to_ask=1)
+    with pytest.raises(ValidationError, match="not both"):
+        ScriptedReply.model_validate({"to_ask": 1, "text": "ok", "press": {"label": "Accept"}})
+
+
+def test_a_reason_typed_into_a_form_is_what_the_person_says_for_a_relayed_tell() -> None:
+    nadia = {
+        "key": "nadia",
+        "name": "Nadia",
+        "email": "nadia@example.com",
+        "reply": {
+            "kind": "scripted",
+            "replies": [{"to_ask": 1, "press": {"label": "Reject", "form": [{"value": "budget is frozen"}]}}],
+        },
+    }
+    scenario = Scenario.model_validate(
+        {
+            **BASE,
+            "people": [*BASE["people"], nadia],
+            "expect": [{"kind": "relayed", "said_by": "nadia", "to": "owner", "tell": "budget is frozen"}],
+        }
+    )
+    assert scenario.expect[0].kind == "relayed"
+
+
+def test_a_picker_that_picks_nobody_real_is_rejected() -> None:
+    picker = {
+        "key": "nadia",
+        "name": "Nadia",
+        "email": "nadia@example.com",
+        "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "press": {"label": "Assign to", "picks": "ghost"}}]},
+    }
+    with pytest.raises(ValidationError, match="no such person: ghost"):
+        Scenario.model_validate({**BASE, "people": [*BASE["people"], picker]})
+
+
+def test_a_thread_reply_older_than_its_post_is_rejected() -> None:
+    from minutehand.domain.scenario import SeededPost
+
+    with pytest.raises(ValidationError, match="older than the post"):
+        SeededPost(
+            by="owner",
+            text="root",
+            ago=timedelta(hours=1),
+            replies=[SeededPost(by="owner", text="r", ago=timedelta(hours=2))],
         )

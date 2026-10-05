@@ -92,6 +92,7 @@ async def test_a_happening_lands_at_its_moment_as_the_persons_change_and_wakes_n
         tickets=[{"provider": "testchat", "project": "P", "title": "Sign the lease", "assignee": "tom"}],
         happenings=[
             {
+                "kind": "ticket",
                 "person": "tom",
                 "ticket": "Sign the lease",
                 "after": timedelta(days=2),
@@ -113,10 +114,19 @@ async def test_a_happening_on_a_provider_that_cannot_act_is_refused_before_the_r
         ticket_fates=[],
         tickets=[{"provider": "testsched", "project": "P", "title": "Nobody holds this"}],
         happenings=[
-            {"person": "tom", "ticket": "Nobody holds this", "after": timedelta(days=1), "action": {"kind": "deletes"}}
+            {
+                "kind": "ticket",
+                "person": "tom",
+                "ticket": "Nobody holds this",
+                "after": timedelta(days=1),
+                "action": {"kind": "deletes"},
+            }
         ],
     )
-    with pytest.raises(RunRefused, match="testsched has no tickets a person can act on"):
+    refusal = (
+        r"happening 1 \(tom deletes the seeded ticket 'Nobody holds this'\) lands on testsched, which has no tickets"
+    )
+    with pytest.raises(RunRefused, match=refusal):
         await rig.run(scn, rig.agent("ask_silent"))
     assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"
 
@@ -126,12 +136,19 @@ HAPPENINGS = {
     "tickets": [LEGAL],
     "happenings": [
         {
+            "kind": "ticket",
             "ticket": "Legal review",
             "person": "tom",
             "after": timedelta(days=2),
             "action": {"kind": "moves", "to": "done"},
         },
-        {"ticket": "Legal review", "person": "dania", "after": timedelta(days=5), "action": {"kind": "deletes"}},
+        {
+            "kind": "ticket",
+            "ticket": "Legal review",
+            "person": "dania",
+            "after": timedelta(days=5),
+            "action": {"kind": "deletes"},
+        },
     ],
 }
 
