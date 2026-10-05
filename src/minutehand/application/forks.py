@@ -473,7 +473,12 @@ def described(account: ForkAccount) -> list[str]:
     if split is None:
         lines.append("  the records make the same changes at the same moments: nothing diverged")
     else:
-        lines.append(f"  the records part after {split.shared} shared change(s):")
+        where = (
+            "at the first change in the world after the split"
+            if split.shared == 0
+            else f"after {split.shared} change{'s' if split.shared != 1 else ''} in the world made alike"
+        )
+        lines.append(f"  the records part {where}:")
         lines.append(f"    parent: {split.parent.words if split.parent else 'nothing more'}")
         lines.append(f"    fork:   {split.fork.words if split.fork else 'nothing more'}")
     return lines

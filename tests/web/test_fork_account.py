@@ -85,7 +85,7 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_it_was_restored_an
     assert "Sofia Romano (sofia) answers with 1 scripted reply" in said
     assert "its restore was verified: the agent's report" in said
     assert "verdict: failed -> passed" in said
-    assert "the records part after" in said and ANSWER in said
+    assert "the records part at the first change in the world after the split" in said and ANSWER in said
 
     cli.main(["runs", "--state", str(state)])
     listing = capsys.readouterr().out
