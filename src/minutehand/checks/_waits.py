@@ -65,6 +65,7 @@ def chase(o: Obligation, events: dict[int, WorldEvent], ended: datetime) -> Chas
         for s in o.agent_touches
         if s in events
         and events[s].operation in VISIBLE
+        and not _unchanged(events[s], events)
         and (o.settled_at is None or events[s].sim_time < o.settled_at)  # only while the wait is open
     )
     due = max(o.expected_by, o.opened_at) if o.expected_by is not None and o.kind is not ObligationKind.DATE else None
@@ -86,6 +87,18 @@ def chase(o: Obligation, events: dict[int, WorldEvent], ended: datetime) -> Chas
         follow_up_times=[t for t, _ in seen],
         expiries=expiries,
     )
+
+
+def _unchanged(event: WorldEvent, events: dict[int, WorldEvent]) -> bool:
+    """An update that leaves the entity as it was: an edit nobody can see, so not a follow-up."""
+    if event.operation is not Operation.UPDATE:
+        return False
+    before = max(
+        (e for e in events.values() if e.seq < event.seq and e.entity == event.entity and e.after is not None),
+        key=lambda e: e.seq,
+        default=None,
+    )
+    return before is not None and before.after == event.after
 
 
 class Reaction(Model):
