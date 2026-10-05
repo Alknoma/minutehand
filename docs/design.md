@@ -812,10 +812,21 @@ Built and tested (`tests/proxy/`). `Routing.policy(host)` decides by host alone:
 | `HostPolicy` | When | What happens |
 |---|---|---|
 | `ANSWER` | A provider claims the host | Its app answers with the manifest's `path_prefix` stripped; the call is recorded. A provider that fails to load answers 500; the call never reaches the real host. |
-| `TUNNEL` | A model host (`DEFAULT_MODEL_HOSTS`: `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`) with no edit for this run | Bytes pass through, never decrypted, never recorded |
+| `TUNNEL` | A model host (`DEFAULT_MODEL_HOSTS`: `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`) with no edit for this run | Bytes pass through, never decrypted. That the call happened is recorded, never what it said: one `RecordedCall` per burst, its `Exchange.tunnelled` holding the port, the connection, the burst's number on it, when the connection opened, the burst began and ended and the connection closed (real clock), and the bytes each way; no body is kept. Under `serve` it is kept in the world that declared the host a model host, else in the lobby, where `GET /v1/unmatched` lists it |
 | `EDIT` | A model host the run edits | Decrypted, edited, sent on with the upstream certificate verified; recorded as a span only with `--record-model-calls`. An edit that fails answers 502 rather than sending the request unedited. |
 | `RECORD` | A model host, with no edit, in a run started with `--record-model-calls` | Decrypted, sent on unchanged with the upstream certificate verified, and kept as a span (`adapters/proxy/model_calls.py`) whose `minutehand.request.body` and `minutehand.response.body` hold both bodies byte for byte: UTF-8 text as a string, credentials redacted, anything else as its bytes; a streamed answer is passed to the agent chunk by chunk as it arrives |
 | `REFUSE` | Anything else | Captured when the call's world declares the host outbound (below); else passed through and kept as `discovered` under `--capture-unknown`; else 502 and recorded with no provider, surfacing as an `unmatched_call` finding that says how to declare it |
+
+A tunnelled call is recorded per burst, not per `CONNECT`: a client's pooled connection to its model API is opened
+once and reused for every later call, across wakes, so a record per connection would put every call it ever carried
+in the wake it opened in. A burst is what moved on the connection from the first byte after it opened, or after its
+previous record was written, until the server had answered (`tunnel.Tunnel`) and nothing moved for `BURST_QUIET`
+(0.5 s), or the connection closed, or the run ended (`Mounts.flush`), or under `serve` its world closed. It is
+written then, stamped with the wake and simulated time in progress when its first byte moved (`Store.attach(began=…)`),
+so a burst still answering when the wake ends stays in the wake it began in; it is listed after the calls recorded
+while it was in progress. A burst of nothing but TLS alerts (a connection's `close_notify`) is no call and is
+dropped. The run output's per-host summary counts the bursts, their connections and the bytes; the viewer lists
+each beside the captured calls (`tests/proxy/test_tunnelled_calls.py`, `tests/serve/test_tunnelled_calls.py`).
 
 A host left to `REFUSE` is decided per world, by the declarations of the world the call belongs to (`Mounted.capturing`; `docs/capture.md`):
 
@@ -852,7 +863,9 @@ then reaches the proxy, which forwards it, plain or tunnelled, to this machine u
 settling, as if it had gone direct (`ProxyAddon.forwarded`), unless a provider, a model host or a declaration claims
 it; a name under `localhost` is a host like any other. An agent elsewhere cannot be forwarded to: its `localhost` is
 its own, so it is handed `localhost` by name, and every `*.localhost` host it declares goes direct under the suffix
-readers. `minutehand doctor --agent agent.yaml [--agent-host H] [--no-proxy H]` checks each declared and model host
+readers. A call to `localhost` forwarded so is not recorded: it stands for a call that went direct before, which no
+record held, and recording it would make an agent's record depend on whether its HTTP library honours `NO_PROXY` for
+`localhost`. `minutehand doctor --agent agent.yaml [--agent-host H] [--no-proxy H]` checks each declared and model host
 against the `NO_PROXY` that run would hand out, by each library's own code in the agent's interpreter (requests,
 urllib, httpx, aiohttp) and by the documented rules above (curl, Node), and names each that would go direct.
 
@@ -1603,6 +1616,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **`--capture-unknown` sends for real.** An undeclared email API is passed through in discovery mode, and the email goes out.
 - **A fork's lookups replay its parent's by default** (`in_forks: replay`): a pass-through host is answered from the parent's recording of the same call, falling back to the real host on a miss.
 - **A restore is proven by what the report and the fingerprint cover.** A `fingerprint` that digests only the database misses a process left running with another moment in memory; the reference agent's covers each process's memory digest too (`examples/reference_agent/hooks.py`).
+- **A tunnelled call is a burst of bytes, not a request.** Two requests on one connection less than `BURST_QUIET` apart are one record, and requests multiplexed at once on HTTP/2 are one; an answer streamed with a pause longer than `BURST_QUIET` is two records, the second opened by the server. A burst still unanswered at the end of a run is written as far as it had gone.
 - **Settling cannot see work the proxy cannot see unless the agent says so.** Writes to a database on this machine, or computation, are seen only through the report's WORKING and the `busy` command; a checkpoint settled without `busy` is marked unconfirmed. On a tunnel, server bytes are read as an answer by their TLS record headers alone: a TLS 1.3 server that sends its session tickets in two writes, or an HTTP/2 server's preface, still reads as answering the first request on a new connection (`adapters/proxy/tunnel.py`).
 - **A booked delivery is taken only when everything its schedule delivered is deleted.** A recurring schedule whose earlier delivery the agent never deleted holds each later wake until `Booked.take_limit`.
 - **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; curl and Node are checked by their documented `NO_PROXY` rules, not run.
