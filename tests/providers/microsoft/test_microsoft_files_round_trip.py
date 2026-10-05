@@ -5,61 +5,13 @@ reported gone by `delta`."""
 
 from __future__ import annotations
 
-import asyncio
 import io
-import json
-import socket
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
-from typing import Any
 
 import docx
-import pytest
-import uvicorn
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response
-from starlette.routing import Route
 
 from minutehand.adapters.providers.microsoft import docx as word
 from minutehand.domain.world import Actor, DocumentSnapshot, Operation
-from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, bearer, token
-
-
-@dataclass
-class Webhook:
-    url: str
-    validations: list[str] = field(default_factory=list)
-    notifications: list[dict[str, Any]] = field(default_factory=list)
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-@pytest.fixture
-async def webhook() -> AsyncIterator[Webhook]:
-    """The service's notification route: the validation handshake echoed as text, notifications kept."""
-    port = _free_port()
-    handle = Webhook(url=f"http://127.0.0.1:{port}/api/v1/webhook/sharepoint")
-
-    async def receive(request: Request) -> Response:
-        if "validationToken" in request.query_params:
-            handle.validations.append(request.query_params["validationToken"])
-            return PlainTextResponse(request.query_params["validationToken"])
-        handle.notifications.append(json.loads(await request.body()))
-        return Response(status_code=202)
-
-    app = Starlette(routes=[Route("/api/v1/webhook/sharepoint", receive, methods=["POST"])])
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None, lifespan="off"))
-    serving = asyncio.create_task(server.serve())
-    while not server.started:
-        await asyncio.sleep(0.01)
-    yield handle
-    server.should_exit = True
-    await serving
+from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, token
 
 
 def paragraphs(content: bytes) -> list[str]:

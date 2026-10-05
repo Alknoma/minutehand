@@ -27,7 +27,7 @@ import uvicorn
 from jwt import PyJWKClient
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
 from minutehand.adapters.providers.microsoft.provider import MicrosoftProvider, build
@@ -234,3 +234,33 @@ async def bot(tenant: Tenant, microsoft: Intercepted, monkeypatch: pytest.Monkey
     finally:
         server.should_exit = True
         await serving
+
+
+@dataclass
+class Webhook:
+    url: str
+    validations: list[str] = field(default_factory=list)
+    notifications: list[dict[str, Any]] = field(default_factory=list)
+
+
+@pytest.fixture
+async def webhook() -> AsyncIterator[Webhook]:
+    """The service's notification route: the validation handshake echoed as text, notifications kept."""
+    port = _free_port()
+    handle = Webhook(url=f"http://127.0.0.1:{port}/api/v1/webhook/sharepoint")
+
+    async def receive(request: Request) -> Response:
+        if "validationToken" in request.query_params:
+            handle.validations.append(request.query_params["validationToken"])
+            return PlainTextResponse(request.query_params["validationToken"])
+        handle.notifications.append(json.loads(await request.body()))
+        return Response(status_code=202)
+
+    app = Starlette(routes=[Route("/api/v1/webhook/sharepoint", receive, methods=["POST"])])
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None, lifespan="off"))
+    serving = asyncio.create_task(server.serve())
+    while not server.started:
+        await asyncio.sleep(0.01)
+    yield handle
+    server.should_exit = True
+    await serving

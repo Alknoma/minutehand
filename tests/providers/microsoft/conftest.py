@@ -1,3 +1,3 @@
-from tests.providers.microsoft.tenant import bot, microsoft, tenant
+from tests.providers.microsoft.tenant import bot, microsoft, tenant, webhook
 
-__all__ = ["bot", "microsoft", "tenant"]
+__all__ = ["bot", "microsoft", "tenant", "webhook"]

@@ -1050,8 +1050,6 @@ class Files:
     # ------------------------------------------------------------------ sites
 
     async def _sites(self, request: Request, caller: Caller, parts: list[str]) -> Response:
-        if request.method != "GET":
-            raise GraphRefusal(405, "methodNotAllowed", "Sites are read only here.")
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
         if len(parts) == 1:
             search = query(request, "search")
@@ -1063,17 +1061,19 @@ class Files:
             return Response(wire.select_page(body, fields), media_type=GRAPH_JSON)
         key = parts[1]
         rest = parts[2:]
-        if ":" in key and rest and not key.endswith(":"):
-            joined = "/".join(parts[1:])
-            key, _, tail = joined.partition(":/")
-            path, _, after = tail.partition(":")
-            key = f"{key}:/{path}"
-            rest = [p for p in after.split("/") if p]
+        addressed = re.fullmatch(r"([^:/]+):(/[^:]*)?(?::(/.*)?)?", "/".join(parts[1:]))
+        if addressed is not None:
+            key = f"{addressed.group(1)}:{addressed.group(2) or ''}"
+            rest = [p for p in (addressed.group(3) or "").split("/") if p]
         site = self.site(key)
-        if not rest:
+        if rest[:1] == ["drive"]:
+            return await self.answer(request, ["drives", site.drive_id, *rest[1:]])
+        if not rest and request.method == "GET":
             self._world.saw(site_ref(site.site.id), Operation.READ)
             body = wire.with_context(wire.dump(site.site), f"{GRAPH}/$metadata#sites/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
+        if request.method != "GET":
+            raise GraphRefusal(405, "methodNotAllowed", "Sites are read only here.")
         if rest == ["drives"]:
             drives = [d.drive for d in self._world.drives() if d.site_id == site.site.id]
             body = wire.dump(wire.Page[wire.Drive](context=f"{GRAPH}/$metadata#drives", value=drives))
