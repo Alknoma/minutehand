@@ -42,6 +42,7 @@ from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_U
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
+from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
 from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
 from minutehand.application.orchestrator import Services, run_scenario
@@ -116,6 +117,7 @@ async def play(
     telemetry: Telemetry | None = None,
     model: LanguageModel | None = None,
     judge: bool = False,
+    listen: Listen | None = None,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
 
@@ -138,7 +140,8 @@ async def play(
     services = _services(scenario, agent, registry)
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
-    async with Proxy(routing, first[0], first[1], confdir=state / "ca") as proxy:
+    listen = listen or Listen()
+    async with _proxy(routing, first[0], first[1], state, listen) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0 and agent.state is not None:
@@ -147,7 +150,7 @@ async def play(
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
             signing = signing_for(agent)
-            env = _agent_env(proxy, signing.for_agent)
+            env = agent_environment(listen, proxy.port, proxy.ca_bundle, signing.for_agent)
             async with _agent_process(command, env, agent, directory / AGENT_LOG):
                 record = await run_scenario(
                     scenario=scenario,
@@ -176,6 +179,7 @@ async def fork(
     telemetry: Telemetry | None = None,
     model: LanguageModel | None = None,
     judge: bool = False,
+    listen: Listen | None = None,
 ) -> list[Outcome]:
     """Rerun a finished run from one of its checkpoints with `changes` applied, once per `Fork.samples`.
 
@@ -202,8 +206,9 @@ async def fork(
         return SqliteStore(world, parent_run, clock)
 
     holding = RunClock(scenario.starts_at)
-    async with Proxy(routing, open_parent(holding), holding, confdir=state / "ca") as proxy:
-        env = _agent_env(proxy, signing.for_agent)
+    listen = listen or Listen()
+    async with _proxy(routing, open_parent(holding), holding, state, listen) as proxy:
+        env = agent_environment(listen, proxy.port, proxy.ca_bundle, signing.for_agent)
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -530,16 +535,75 @@ def signing_for(agent: AgentUnderTest) -> Signing:
     return Signing(by_provider=by_provider, for_agent=for_agent)
 
 
-def _agent_env(proxy: Proxy, run_secrets: Mapping[str, str]) -> dict[str, str]:
-    """What the agent's process needs to reach the fakes and trust them, and nothing else."""
-    ca = str(proxy.ca_bundle)
+class Listen(Model):
+    """Where the proxy listens, and how the agent reaches it.
+
+    The defaults suit an agent Minutehand starts on this machine: loopback, a port the system picks. An agent in
+    containers, or one already running, needs a fixed `port`, a `host` it can reach (`0.0.0.0`), and
+    `agent_host`, the name the AGENT uses for this machine, which is not the bind address
+    (`host.docker.internal`)."""
+
+    host: str = "127.0.0.1"
+    port: int = Field(default=0, ge=0, le=65535, description="0 lets the system pick one for each run")
+    agent_host: str | None = Field(
+        default=None, description="The host in the proxy URL the agent is given; None is the bind host"
+    )
+    no_proxy: list[str] = Field(default=[], description="More hosts the agent reaches directly, not through the proxy")
+
+    def proxy_url(self, port: int) -> str:
+        """The proxy as the agent reaches it. Binding every interface is not an address: it is reached on loopback."""
+        host = self.agent_host or ("127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host)
+        return f"http://{host}:{port}"
+
+
+DIRECT = ("localhost", "127.0.0.1")
+"""Hosts every agent reaches directly: itself, and Minutehand's own calls to it never go through the proxy."""
+
+
+def agent_environment(listen: Listen, port: int, ca_bundle: str | Path, secrets: Mapping[str, str]) -> dict[str, str]:
+    """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
+    spellings libraries read, the hosts it reaches directly, the one CA file in each library's variable
+    (`ca_bundle`, as the agent sees the path), and the signing secrets it is handed."""
+    proxy = listen.proxy_url(port)
+    direct = ",".join(dict.fromkeys([*DIRECT, *listen.no_proxy]))
     return {
-        "HTTPS_PROXY": proxy.url,
-        "HTTP_PROXY": proxy.url,
-        "NO_PROXY": "localhost,127.0.0.1",
-        **{name: ca for name in CA_VARIABLES},
-        **run_secrets,
+        "HTTPS_PROXY": proxy,
+        "HTTP_PROXY": proxy,
+        "NO_PROXY": direct,
+        "https_proxy": proxy,
+        "http_proxy": proxy,
+        "no_proxy": direct,
+        **{name: str(ca_bundle) for name in CA_VARIABLES},
+        **secrets,
     }
+
+
+def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle: str | None = None) -> dict[str, str]:
+    """The environment an agent Minutehand does not start needs for every run under `state` and `listen`, so it
+    can be configured once and be running before `minutehand run` begins.
+
+    The proxy's CA is made under `state` now if it is not there yet, and the bundle written; `ca_bundle` is
+    where the agent will find that file when it is mounted elsewhere (in a container). Refused when the port is
+    left to the system, which the agent could not know in advance, and when a signing secret is generated per
+    run, which only reaches a command Minutehand starts."""
+    if listen.port == 0:
+        raise RunRefused("an agent configured before the run needs the proxy on a fixed port: give --proxy-port")
+    generated = [t for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
+    if generated:
+        names = ", ".join(f"{t.provider} ({t.secret.env})" for t in generated if t.secret is not None)
+        raise RunRefused(
+            f"agent {agent.name} has its signing secret generated per run for {names}, and a generated secret "
+            "reaches only a command Minutehand starts; an agent started on its own says "
+            "`secret: {kind: from_env, env: <variable>}` with the secret it was configured with"
+        )
+    bundle = write_bundle(state / "ca")
+    return agent_environment(listen, listen.port, ca_bundle or str(bundle.resolve()), {})
+
+
+@asynccontextmanager
+async def _proxy(routing: Routing, store: Store, clock: Clock, state: Path, listen: Listen) -> AsyncIterator[Proxy]:
+    async with Proxy(routing, store, clock, confdir=state / "ca", host=listen.host, port=listen.port) as proxy:
+        yield proxy
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:

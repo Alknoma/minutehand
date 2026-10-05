@@ -86,3 +86,78 @@ def test_an_agent_command_that_exits_before_it_listens_is_refused_with_exit_2(
 
     assert ran.returncode == 2
     assert "exited 4 before http://127.0.0.1:" in ran.stderr and "no secret for me" in ran.stderr
+
+
+RUNNING_AGENT = """\
+name: running_agent
+goal: {kind: by_message, provider: slack}
+inbound:
+  - {provider: slack, url: "http://platform:8025/slack/events", secret: {kind: from_env, env: SLACK_SIGNING_SECRET}}
+"""
+
+
+def test_env_prints_shell_exports_for_an_agent_minutehand_does_not_start(tmp_path: Path) -> None:
+    agent_file = _dump(tmp_path / "agent.yaml", RUNNING_AGENT)
+    state = tmp_path / "state"
+
+    printed = _cli(
+        "env", "--agent", str(agent_file), "--proxy-port", "18080", "--state", str(state), env=dict(os.environ)
+    )
+
+    assert printed.returncode == 0, printed.stderr
+    exports = dict(line.removeprefix("export ").split("=", 1) for line in printed.stdout.splitlines())
+    bundle = str((state / "ca" / "minutehand-ca-bundle.pem").resolve())
+    assert exports["HTTPS_PROXY"] == exports["https_proxy"] == "http://127.0.0.1:18080"
+    assert exports["SSL_CERT_FILE"] == exports["REQUESTS_CA_BUNDLE"] == exports["HTTPLIB2_CA_CERTS"] == bundle
+    assert "SLACK_SIGNING_SECRET" not in exports
+
+
+def test_env_writes_a_compose_override_that_injects_the_variables_and_mounts_the_bundle(tmp_path: Path) -> None:
+    agent_file = _dump(tmp_path / "agent.yaml", RUNNING_AGENT)
+    state = tmp_path / "state"
+
+    printed = _cli(
+        "env",
+        "--agent",
+        str(agent_file),
+        "--proxy-host",
+        "0.0.0.0",
+        "--proxy-port",
+        "18080",
+        "--agent-proxy-host",
+        "host.docker.internal",
+        "--format",
+        "compose",
+        "--service",
+        "platform",
+        "--service",
+        "worker",
+        "--no-proxy",
+        "firestore",
+        "--state",
+        str(state),
+        env=dict(os.environ),
+    )
+
+    assert printed.returncode == 0, printed.stderr
+    override = yaml.safe_load(printed.stdout)
+    assert sorted(override["services"]) == ["platform", "worker"]
+    platform = override["services"]["platform"]
+    bundle = (state / "ca" / "minutehand-ca-bundle.pem").resolve()
+    assert platform["volumes"] == [f"{bundle}:/etc/minutehand/ca-bundle.pem:ro"]
+    assert platform["extra_hosts"] == ["host.docker.internal:host-gateway"]
+    environment = platform["environment"]
+    assert environment["HTTPS_PROXY"] == "http://host.docker.internal:18080"
+    assert environment["SSL_CERT_FILE"] == environment["NODE_EXTRA_CA_CERTS"] == "/etc/minutehand/ca-bundle.pem"
+    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,worker,firestore"
+
+
+def test_env_for_an_agent_whose_secret_is_generated_per_run_is_refused_with_exit_2(tmp_path: Path) -> None:
+    agent_file = _dump(tmp_path / "agent.yaml", RUNNING_AGENT.replace("from_env", "generated"))
+
+    printed = _cli(
+        "env", "--agent", str(agent_file), "--proxy-port", "18080", "--state", str(tmp_path), env=dict(os.environ)
+    )
+
+    assert printed.returncode == 2
+    assert "generated per run for slack (SLACK_SIGNING_SECRET)" in printed.stderr
