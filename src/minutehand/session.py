@@ -240,6 +240,7 @@ async def _restore_start(
         reports=main if isinstance(main, Reports) else None,
         own=own,
         progress=progress,
+        fingerprint=restorable.fingerprint,
     )
     (directory / RESTORE_RECORD).write_text(restored.model_dump_json(indent=2), encoding="utf-8")
 
@@ -852,6 +853,10 @@ class Intercepting:
     def last_call(self) -> SeenCall | None:
         """`application.restore.Traffic`: the latest call the proxy saw from the agent."""
         return self.proxy.last_call()
+
+    def waiting(self) -> list[str]:
+        """`application.restore.Traffic`: what the agent sent and the proxy has not seen answered."""
+        return self.proxy.waiting()
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.proxy.mount(world, clock, apps, scenario=scenario)

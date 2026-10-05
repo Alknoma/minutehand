@@ -31,7 +31,7 @@ from minutehand.application.checkpoint import (
 )
 from minutehand.application.outbound import outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
-from minutehand.application.restore import Traffic, settle
+from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import run_hook, wake_dir
 from minutehand.checks.runner import RunResult
@@ -604,6 +604,12 @@ class Orchestrator:
         except AgentFailed as e:
             failed = True
             self._failure = str(e)
+        settled = None if failed else await self._settled(wake)
+        if isinstance(settled, Settled) and settled.report is not None and isinstance(self._reach.main, Reports):
+            # The wake is over when the agent's background work is: what it reports now replaces what it said when
+            # its driver first answered, and what it wrote meanwhile belongs to this wake.
+            commitments_changed = self._adopt(settled.report) or commitments_changed
+            done = done or settled.report.status is AgentStatus.DONE
         new = self._record_new()
         if not failed:
             await self._schedule(new)
@@ -622,7 +628,7 @@ class Orchestrator:
         if failed:
             return StopReason.AGENT_FAILED
         try:
-            await self._checkpoint()
+            await self._checkpoint(settled)
         except AgentFailed as e:
             self._failure = str(e)
             return StopReason.AGENT_FAILED
@@ -769,9 +775,25 @@ class Orchestrator:
             )
         )
 
-    async def _checkpoint(self) -> None:
+    async def _settled(self, wake: int) -> Settled | NotRestorable | None:
+        """Wait for the agent's background work to end, as a checkpoint does: None for an agent with no hooks."""
+        hooks = self._agent.state
+        if hooks is None:
+            return None
+        assert self._state_dir is not None and self._traffic is not None
+        main = self._reach.main
+        return await settle(
+            hooks,
+            self._traffic,
+            main if isinstance(main, Reports) else None,
+            self._last_report,
+            directory=wake_dir(self._state_dir, self._store.run_id, wake),
+        )
+
+    async def _checkpoint(self, settled: Settled | NotRestorable | None = None) -> None:
+        """`settled` is how the wake just played settled, when it has; otherwise the checkpoint settles it."""
         wake = self._clock.wake()
-        self._agent_state = await self._snapshot(wake)
+        self._agent_state = await self._snapshot(wake, settled)
         write_checkpoint(
             self._store,
             Checkpoint(
@@ -787,23 +809,38 @@ class Orchestrator:
         )
         self._record_new()
 
-    async def _snapshot(self, wake: int) -> AgentState:
+    async def _snapshot(self, wake: int, settled: Settled | NotRestorable | None) -> AgentState:
         """The agent's own state at the end of this wake: snapshotted once it has settled, or recorded as not
         restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
         hooks = self._agent.state
         if hooks is None:
             return NoHooks()
-        assert self._state_dir is not None and self._traffic is not None
-        main = self._reach.main
-        settled = await settle(hooks, self._traffic, main if isinstance(main, Reports) else None, self._last_report)
+        assert self._state_dir is not None
+        directory = wake_dir(self._state_dir, self._store.run_id, wake)
+        if settled is None:
+            settled = await self._settled(wake)
+        assert settled is not None
         if isinstance(settled, NotRestorable):
             return settled
-        await run_hook(
-            hooks.snapshot,
-            wake_dir(self._state_dir, self._store.run_id, wake),
-            limit=hooks.step_limit.total_seconds(),
+        await run_hook(hooks.snapshot, directory, limit=hooks.step_limit.total_seconds())
+        fingerprint: str | None = None
+        if hooks.fingerprint is not None:
+            printed = await run_command(
+                RestoreStep.FINGERPRINT, hooks.fingerprint, directory, hooks.step_limit.total_seconds()
+            )
+            if printed.exit_code != 0:
+                return NotRestorable(
+                    reason=f"the agent's fingerprint command failed, so a restore here could not be verified: "
+                    f"{' '.join(printed.command)} exited {printed.exit_code}: {printed.output.strip()[-500:]}"
+                )
+            fingerprint = digest_of(printed.output)
+        return Restorable(
+            snapshot_of=self._store.run_id,
+            wake=wake,
+            report=settled.report,
+            fingerprint=fingerprint,
+            unconfirmed=settled.unconfirmed,
         )
-        return Restorable(snapshot_of=self._store.run_id, wake=wake, report=settled.report)
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
 

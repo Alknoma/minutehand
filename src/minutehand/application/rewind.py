@@ -177,6 +177,7 @@ async def fork_run(
                 reports=reports,
                 own=own,
                 progress=progress,
+                fingerprint=restorable.fingerprint,
             )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)

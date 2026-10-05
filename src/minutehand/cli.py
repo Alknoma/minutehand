@@ -585,7 +585,7 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
 def _point(point: ForkPoint) -> str:
     agent = point.agent
     if isinstance(agent, Restorable):
-        return "restorable"
+        return "restorable" if agent.unconfirmed is None else f"restorable, unconfirmed: {agent.unconfirmed}"
     if isinstance(agent, NotRestorable):
         return f"not restorable: {agent.reason}"
     return "not restorable: the agent declares no state hooks"

@@ -166,6 +166,8 @@ class Worker:
     # -- one wake ------------------------------------------------------------------------------------------------
 
     def run(self, job: Job) -> None:
+        self.sent |= {row["id"] for row in self.store.sent()}  # the API sends too: what it sent is known from here on
+        self._remember()
         payload = job.payload
         carrier = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
         token = context.attach(propagate.extract(carrier))  # the wake's span, in the API, is this job's parent

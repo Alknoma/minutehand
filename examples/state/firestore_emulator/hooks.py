@@ -7,6 +7,9 @@ private Firestore emulator. Standard library only; it drives `docker compose` an
     python hooks.py stop-agent    stop it
     python hooks.py snapshot      export the emulator into $MINUTEHAND_SNAPSHOT_DIR/firestore
     python hooks.py restore       restart the emulator importing $MINUTEHAND_SNAPSHOT_DIR/firestore
+    python hooks.py busy          exits 1: the agent does all its work inside the request that wakes it
+    python hooks.py fingerprint   prints a digest of every document's fields, in no particular order, leaving out
+                                  the fields VOLATILE names
 
 Google's emulator exports while it runs (POST /_admin/export on its hub), but cannot import while it runs: it
 reads an export only as it starts (`--import`). So `restore` copies the snapshot to the shared directory,
@@ -22,6 +25,7 @@ Environment:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -44,6 +48,10 @@ PIDFILE = Path(os.environ.get("AGENT_PIDFILE", "agent.pid"))
 AGENT_LOG = Path(os.environ.get("AGENT_LOG", "agent.log"))
 IN_CONTAINER = "/exports"
 RESTORE = "restore"
+VOLATILE: frozenset[str] = frozenset()
+"""Fields a restore need not bring back (a timestamp from the machine's clock); this agent writes none. A
+document's createTime and updateTime are the emulator's and never part of the digest."""
+DOCUMENTS = "/v1/projects/demo-minutehand/databases/(default)/documents"
 READY_WITHIN = 300.0
 
 
@@ -154,7 +162,56 @@ def stop_agent() -> None:
     print(f"stopped the agent ({pid})", flush=True)
 
 
+def _rest(method: str, path: str, body: object | None = None) -> dict:
+    request = urllib.request.Request(
+        f"{FIRESTORE}{DOCUMENTS}{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method,
+        headers={"authorization": "Bearer owner", "content-type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read() or b"{}")
+
+
+def _documents(parent: str) -> list[dict]:
+    """Every document under `parent` (the root, or a document), in every collection, recursively."""
+    found: list[dict] = []
+    for collection in _rest("POST", f"{parent}:listCollectionIds", {"pageSize": 1000}).get("collectionIds", []):
+        token = ""
+        while True:
+            page = _rest("GET", f"{parent}/{collection}?pageSize=300" + (f"&pageToken={token}" if token else ""))
+            for document in page.get("documents", []):
+                found.append(document)
+                found += _documents(parent + "/" + collection + "/" + document["name"].rsplit("/", 1)[1])
+            token = page.get("nextPageToken", "")
+            if not token:
+                break
+    return found
+
+
+def fingerprint() -> None:
+    """The same digest for the same documents, whatever order they were written in."""
+    held = sorted(
+        json.dumps(
+            {
+                "name": d["name"].split("/documents", 1)[1],
+                "fields": {k: v for k, v in d.get("fields", {}).items() if k not in VOLATILE},
+            },
+            sort_keys=True,
+        )
+        for d in _documents("")
+    )
+    print(hashlib.sha256(json.dumps(held).encode()).hexdigest())
+
+
+def busy() -> None:
+    print("idle: the agent works only inside the request that wakes it, and has answered it")
+    sys.exit(1)
+
+
 COMMANDS = {
+    "busy": busy,
+    "fingerprint": fingerprint,
     "up": up,
     "down": down,
     "snapshot": snapshot,

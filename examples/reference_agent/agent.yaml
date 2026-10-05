@@ -40,6 +40,8 @@ outbound:
 state:
   snapshot: [python, hooks.py, snapshot]
   restore: [python, hooks.py, restore]
+  busy: [python, hooks.py, busy]                  # a job queued or running is work in flight
+  fingerprint: [python, hooks.py, fingerprint]    # the database, and what each process holds in memory
   quiet: PT0.5S
   settle_limit: PT30S
   answer_limit: PT30S

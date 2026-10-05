@@ -360,9 +360,13 @@ class Switchboard:
     def __init__(self) -> None:
         self.apps: dict[ProviderKey, ASGIApp] = {}
         self.seen: SeenCall | None = None
+        self.answering: list[str] = []
 
     def last_call(self) -> SeenCall | None:
         return self.seen
+
+    def waiting(self) -> list[str]:
+        return list(self.answering)
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.apps = dict(apps)
@@ -371,10 +375,15 @@ class Switchboard:
         path = scope["path"]
         assert isinstance(path, str)
         key, _, rest = path.lstrip("/").partition("/")
-        self.seen = SeenCall(at=time.monotonic(), what=f"{scope['method']} {path}")
+        what = f"{scope['method']} {path}"
+        self.seen = SeenCall(at=time.monotonic(), what=what)
         app = self.apps[key]
-        await app({**scope, "path": "/" + rest, "raw_path": ("/" + rest).encode()}, receive, send)  # type: ignore[arg-type]
-        self.seen = SeenCall(at=time.monotonic(), what=f"{scope['method']} {path}")
+        self.answering.append(what)
+        try:
+            await app({**scope, "path": "/" + rest, "raw_path": ("/" + rest).encode()}, receive, send)  # type: ignore[arg-type]
+        finally:
+            self.answering.remove(what)
+        self.seen = SeenCall(at=time.monotonic(), what=what)
 
 
 @asynccontextmanager

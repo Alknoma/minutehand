@@ -24,6 +24,8 @@ inbound:
 state:
   snapshot: [python, hooks.py, snapshot]
   restore: [python, hooks.py, restore]
+  busy: [python, hooks.py, busy]                  # nothing runs after a wake is answered: always idle
+  fingerprint: [python, hooks.py, fingerprint]    # a digest of the file, compared after every restore
   quiet: PT0.5S          # no Slack call for half a second before a checkpoint is taken
   settle_limit: PT30S    # otherwise the checkpoint is recorded as not restorable
   answer_limit: PT30S    # the restarted agent must answer GET /report within this

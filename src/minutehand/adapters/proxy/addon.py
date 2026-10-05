@@ -26,9 +26,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import unquote
 
-from mitmproxy import http, tls
+from mitmproxy import http, tcp, tls
 from mitmproxy.addons import asgiapp
 from mitmproxy.net import encoding
+from mitmproxy.proxy import layer, layers
 
 from minutehand.adapters.proxy import capture, credentials, redact
 from minutehand.adapters.proxy.capture import Capturing, Declaration
@@ -132,15 +133,58 @@ class ProxyAddon:
         self._streams: dict[str, list[bytes]] = {}
         self._recorded: set[str] = set()
         self.last_seen: SeenCall | None = None
+        # Calls sent on to a real host and not answered yet, by flow id; tunnels by flow id, with whether their
+        # last bytes went from the agent.
+        self._sent_on: dict[str, str] = {}
+        self._tunnels: dict[str, tuple[str, bool]] = {}
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
-        can wait until the agent has been quiet. A request on a tunnelled connection that is already open is
-        never seen: the proxy does not read inside a tunnel."""
+        can wait until the agent has been quiet. A tunnel the proxy does not open is seen as its bytes move."""
         self.last_seen = SeenCall(at=time.monotonic(), what=what)
+
+    def waiting(self) -> list[str]:
+        """What the agent sent and has not had answered: a call sent on to a real host, and a tunnel whose last
+        bytes went from the agent to the host (a request on it, unanswered as far as bytes can tell)."""
+        sent = list(self._sent_on.values())
+        tunnels = [f"a request on the open tunnel to {host}" for host, asked in self._tunnels.values() if asked]
+        return sent + tunnels
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
         self._seen(f"CONNECT {flow.request.pretty_host}:{flow.request.port}")
+
+    def next_layer(self, nextlayer: layer.NextLayer) -> None:
+        """A tunnel to a model API the run neither edits nor records is relayed as bytes, never decrypted, as a
+        TCP flow rather than an ignored connection, so the bytes it carries are seen (`tcp_message`): a request
+        on a tunnel that was already open is activity like any other call. mitmproxy's own NextLayer addon has
+        chosen first; this replaces its choice for those hosts only."""
+        context = nextlayer.context
+        address = context.server.address
+        if context.client.transport_protocol != "tcp" or address is None:
+            return
+        if not any(isinstance(lay, layers.HttpLayer) for lay in context.layers):
+            return  # not the inside of a CONNECT
+        if isinstance(nextlayer.layer, layers.TCPLayer) or self.policy(str(address[0])) is not HostPolicy.TUNNEL:
+            return
+        nextlayer.layer = layers.TCPLayer(context)
+
+    def tcp_start(self, flow: tcp.TCPFlow) -> None:
+        host = str(flow.server_conn.address[0]) if flow.server_conn.address else "?"
+        self._seen(f"a new tunnelled connection to {host}")
+        self._tunnels[flow.id] = (host, False)
+
+    def tcp_message(self, flow: tcp.TCPFlow) -> None:
+        message = flow.messages[-1]
+        host = self._tunnels[flow.id][0] if flow.id in self._tunnels else "?"
+        self._tunnels[flow.id] = (host, message.from_client)
+        self._seen(f"bytes {'to' if message.from_client else 'from'} {host} on an open tunnel")
+        del flow.messages[:-1]  # bytes are relayed, not kept: a long-lived tunnel would grow without end
+
+    def tcp_end(self, flow: tcp.TCPFlow) -> None:
+        self._tunnels.pop(flow.id, None)
+
+    def tcp_error(self, flow: tcp.TCPFlow) -> None:
+        self._tunnels.pop(flow.id, None)
 
     def mount(
         self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
@@ -176,9 +220,11 @@ class ProxyAddon:
         if self.record_model_calls and policy in (HostPolicy.EDIT, HostPolicy.RECORD):
             self._recorded.add(flow.id)
         if policy is HostPolicy.EDIT:
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             self._edit(flow, host)
             return
         if policy not in (HostPolicy.ANSWER, HostPolicy.REFUSE):
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
         world = self.worlds.world_for(
@@ -230,6 +276,7 @@ class ProxyAddon:
         response.stream = tee
 
     def response(self, flow: http.HTTPFlow) -> None:
+        self._sent_on.pop(flow.id, None)
         if flow.id in self._passing:
             self._passed(flow, self._passing.pop(flow.id))
             return
@@ -329,6 +376,7 @@ class ProxyAddon:
         """Answer a call to a host no provider claims as its world declares, or, undeclared, pass it through."""
         if declaration is None:
             self._passing[flow.id] = _Passing(world, None, CaptureMode.DISCOVERED, None)
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         if isinstance(declaration, Acknowledge):
             await self._acknowledge(flow, host, world, declaration)
@@ -337,6 +385,7 @@ class ProxyAddon:
         plan = world.capturing.replaying[declaration.host] if declaration.host in world.capturing.replaying else None
         if plan is None:
             self._passing[flow.id] = _Passing(world, declaration, mode, None)
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
         whole = capture.keep(
@@ -367,6 +416,7 @@ class ProxyAddon:
             return
         if plan.on_miss is OnMiss.PASS_THROUGH:
             self._passing[flow.id] = _Passing(world, declaration, mode, f"not replayed: {why}")
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
@@ -478,6 +528,7 @@ class ProxyAddon:
 
     def error(self, flow: http.HTTPFlow) -> None:
         """A captured call whose real host could not be reached or broke off: kept, saying so."""
+        self._sent_on.pop(flow.id, None)
         passing = self._passing.pop(flow.id, None)
         if passing is None:
             return

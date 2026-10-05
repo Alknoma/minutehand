@@ -36,7 +36,12 @@ def recipe_agent(port: int, *, restore: list[str] | None = None) -> AgentUnderTe
     return moved.model_copy(
         update={
             "state": moved.state.model_copy(
-                update={"snapshot": [*hooks, "snapshot"], "restore": restore or [*hooks, "restore"]}
+                update={
+                    "snapshot": [*hooks, "snapshot"],
+                    "restore": restore or [*hooks, "restore"],
+                    "busy": [*hooks, "busy"],
+                    "fingerprint": [*hooks, "fingerprint"],
+                }
             )
         }
     )
@@ -89,11 +94,12 @@ async def test_the_sqlite_recipe_forks_from_the_end_of_a_wake_with_its_restore_v
         RestoreStep.RESTORE,
         RestoreStep.START,
         RestoreStep.ANSWER,
+        RestoreStep.FINGERPRINT,
         RestoreStep.VERIFY,
     ]
     assert "restored from" in next(s.output for s in restored.steps if s.step is RestoreStep.RESTORE)
     assert said[0].startswith("stop: stopping the agent's command")
-    assert said[-1] == "verify: the report equals the one at the checkpoint"
+    assert said[-1] == "verify: the report equals the one at the checkpoint, and so does the fingerprint"
 
 
 async def test_a_restore_that_silently_did_nothing_is_refused_field_by_field_and_leaves_no_run(
