@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+from collections.abc import Callable
 from types import TracebackType
 
 import httpx
@@ -33,7 +34,7 @@ from starlette.routing import Route
 
 from minutehand.adapters.telemetry import otlp
 from minutehand.adapters.telemetry.forward import ENDPOINT, Forwarding, forward, signal_variable
-from minutehand.domain.telemetry import Signal, SpanSource
+from minutehand.domain.telemetry import ReceivedSpan, Signal, SpanSource
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -79,11 +80,17 @@ class Receiver:
         self._socket: socket.socket | None = None
         self._client: httpx.AsyncClient | None = None
         self._forwards: set[asyncio.Task[None]] = set()
+        self._by_trace: Callable[[str], Store | None] | None = None
 
     def mount(self, world: Store, clock: Clock) -> None:
         """From now on spans are kept in `world`, stamped from `clock`."""
         self.store = world
         self.clock = clock
+
+    def route(self, by_trace: Callable[[str], Store | None]) -> None:
+        """`minutehand serve`: a span is kept in the world `by_trace` names for its trace id, and in `store` when
+        it names none."""
+        self._by_trace = by_trace
 
     @property
     def forwarding(self) -> Forwarding:
@@ -112,8 +119,13 @@ class Receiver:
         except otlp.NotOtlp as e:
             logger.warning("refused an OTLP %s payload: %s", signal.value, e)
             return PlainTextResponse(str(e), status_code=400)
-        if received:
-            self.store.receive(received, source=SpanSource.RECEIVED)
+        by_store: dict[int, tuple[Store, list[ReceivedSpan]]] = {}
+        for span in received:
+            found = self._by_trace(span.trace_id) if self._by_trace is not None else None
+            store = found or self.store
+            by_store.setdefault(id(store), (store, []))[1].append(span)
+        for store, spans in by_store.values():
+            store.receive(spans, source=SpanSource.RECEIVED)
         content, media = otlp.answer(signal, payload.format)
         return Response(content, media_type=media)
 

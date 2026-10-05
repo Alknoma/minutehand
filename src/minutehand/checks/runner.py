@@ -160,6 +160,7 @@ _STOPPED = {
     StopReason.DEADLINE_PASSED: "the run stopped at the scenario's deadline",
     StopReason.NOTHING_PENDING: "the run stopped because nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the run stopped because the agent could not be reached or answered with an error",
+    StopReason.CLOSED: "the standing world was closed by whoever opened it",
 }
 
 

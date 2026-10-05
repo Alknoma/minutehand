@@ -52,7 +52,8 @@ class PlayedRun(Model):
         description=(
             "agent_done: the agent said it was done. wake_limit: the scenario's wake limit was reached. "
             "deadline_passed: the clock reached the deadline. nothing_pending: nothing more was due and the "
-            "agent asked for no wake. agent_failed: the agent could not be reached or answered with an error."
+            "agent asked for no wake. agent_failed: the agent could not be reached or answered with an error. "
+            "closed: a standing world served by `minutehand serve` was closed by whoever opened it."
         )
     )
     stopped_at: AwareDatetime = Field(description="Simulated time the run ended")

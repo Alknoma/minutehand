@@ -33,6 +33,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP only: a gRPC exporter is not received. Logs and metrics are acknowledged and dropped. A span is placed in a wake by comparing its SDK's clock with this machine's. |
 | Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers is untested. Samples without `StateHooks` are not independent. |
+| Standing mode: `serve.py`, `application/standing.py`, `adapters/control/`, `adapters/proxy/worlds.py`, `adapters/proxy/credentials.py`, `minutehand.testing` | `minutehand serve`: one process holding many worlds at once for a test suite; each call routed to the world that claims its host or credential; a control API under `/v1`; a pytest client and plugin; the image serves by default | Built and tested | 26 (`tests/serve/` 17, `tests/testing/` 3, `tests/e2e/test_cli.py` 2, `tests/test_scenario.py` 3, `tests/packaging/test_stack.py` 1) | Isolation is as fine as the credentials the services carry: one fixed token per stack means one world at a time. No base-URL mode. Only DMs and replies as inbound shapes; only ticket state and assignee as a person's acts. Faults are answered in front of the provider with the caller's body. Booked wakes are never fired. See `docs/serve.md`. |
 | Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
 | MCP tools, control API and viewer, container image, model-written people, judged checks, generated providers, human actions, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
@@ -453,7 +454,7 @@ What a run leaves behind (`session.py`):
 
 ### One container
 
-Designed, not built. Today Minutehand runs as one Python process. `Proxy` listens on `127.0.0.1` on a port the system picks unless `--proxy-host` and `--proxy-port` say otherwise; `minutehand run … -- <command>` starts the agent's own process beside it, or, with no command, wakes an agent that is already running. An agent in containers is given the proxy as `--agent-proxy-host` names this machine (`host.docker.internal`), and `minutehand env --format compose --service <name>…` prints a Compose override that sets the variables below in each named service and mounts the CA bundle read-only.
+Partly built: the image runs `minutehand serve` by default, and `minutehand env --format compose --serve-as minutehand` writes a stack's override ("The standing mode", `docs/serve.md`, `tests/packaging/test_stack.py`). For `run`, Minutehand runs as one Python process. `Proxy` listens on `127.0.0.1` on a port the system picks unless `--proxy-host` and `--proxy-port` say otherwise; `minutehand run … -- <command>` starts the agent's own process beside it, or, with no command, wakes an agent that is already running. An agent in containers is given the proxy as `--agent-proxy-host` names this machine (`host.docker.internal`), and `minutehand env --format compose --service <name>…` prints a Compose override that sets the variables below in each named service and mounts the CA bundle read-only.
 
 The design: one image, one process, two ports.
 
@@ -482,6 +483,27 @@ Three limits of the design:
 - **The agent's own database is not a SaaS fake.** Firebase's emulator suite is Google's and stays a separate container.
 - **The agent's container must trust the CA.** One environment variable per HTTP library, as above, each naming the bundle: certifi's public roots and then the proxy's CA. A file holding the proxy's CA alone replaces a library's roots, and every call the proxy tunnels to a real host, a model API, fails verification.
 - **A client that ignores proxy settings** would use the `/p/<provider>/` base URL instead, which is a configuration change in the agent. That base-URL mode is not built.
+
+### The standing mode
+
+Built and tested; the whole of it is in `docs/serve.md`. `minutehand run` owns the loop, the clock and the people;
+`minutehand serve` owns none of them and holds a world per test for as long as the test needs it, so a suite that
+used to seed an emulator, call its own services and inspect the emulator can do the same against Minutehand.
+
+- **Which world.** `adapters/proxy/addon.py` asks a `Worlds` (`adapters/proxy/worlds.py`) for each call's world.
+  `minutehand run` gives it `One`; `serve.Standing` routes by the host a world claims, then by the first
+  credential the call carries in a place the OAuth standards define (`adapters/proxy/credentials.py`), then to
+  the one default world, else refuses with 502 into the lobby. An OAuth token answer's tokens are claimed by the
+  world whose call minted them. Each world has its own lock, so calls in different worlds do not wait on each
+  other.
+- **A world** is `application/standing.py`'s `StandingWorld` over a `Seed` (`domain/scenario.py`): its own
+  store and `RunClock`, providers seeded on first use, and, with scripted people on, the replies, fates and
+  directions it owes, fired only when its clock is moved past them.
+- **The record.** A world is a run (`StopReason.CLOSED` when closed), so `findings`, `view` and the MCP tools
+  read it; the newest `--keep` closed worlds are kept.
+
+When to use which: `run` measures an agent over simulated days and gives a verdict; `serve` stands in for a set
+of emulators under an ordinary service-level suite, where the test drives and asserts.
 
 ### Lazy loading
 
@@ -1023,7 +1045,7 @@ minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 | The agent agrees on what time it is | `WakeRequest.now`; `libfaketime` preloaded through the same wrapper | `WakeRequest.now` built; `libfaketime` not built |
 | Scenarios and the agent file | Plain YAML or JSON files, in the project or anywhere else | Built |
 
-- There is no client package and nothing to import.
+- A run needs no client package and nothing imported. A suite that uses `minutehand serve` imports `minutehand.testing` (a client and a pytest plugin), which is test tooling, never a dependency of the code under test.
 - mitmproxy requires Python 3.12 and pins many dependencies, which is one more reason the tool never enters a project's environment.
 - Providers register under the entry-point group `minutehand.providers`. Five ship inside `minutehand`; anything else is `minutehand-provider-<name>`, installed into the tool's environment with `uvx --with`.
 
@@ -1048,7 +1070,7 @@ minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 | `pyyaml` | Scenario, agent and fork files |
 | `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http` | Telemetry Minutehand sends |
 | `opentelemetry-proto`, `protobuf` | Reading the OTLP the agent sends |
-| `uvicorn` | Serving the OTLP receiver in the run's event loop, and the viewer |
+| `uvicorn` | Serving the OTLP receiver in the run's event loop, the viewer, and `serve`'s control API |
 | `mcp`, `flask` | Declared in `pyproject.toml`; no module in `src/` imports either |
 | `uv`, `ruff`, `pyright`, `pytest` (with `pytest-xdist`, `pytest-socket`, `pytest-timeout`, `pytest-randomly`) | Tooling |
 
@@ -1228,7 +1250,8 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 ## Known issues / limitations
 
 - **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample after the first starts from the agent's state at the first sample's start, restored and verified as a fork's is; without hooks the samples are not independent.
-- **One proxy per process.** mitmproxy keeps its master in a module global; `Proxy` refuses a second and is moved from run to run with `mount`.
+- **One proxy per process.** mitmproxy keeps its master in a module global; `Proxy` refuses a second and is moved from run to run with `mount`, or, under `minutehand serve`, routes each call to its world (`route`).
+- **A standing world isolates only by what the call carries.** Services that hold one fixed credential per provider put every test's calls in one world (`docs/serve.md`).
 - **A fork starts only at a restorable checkpoint,** and only for an agent with `StateHooks`. A checkpoint at which the agent did not settle within `settle_limit` is not restorable.
 - **A restore is proven by the agent's report alone.** Two moments with the same status, next wake and commitments are indistinguishable to the verify step; an agent with no report endpoint between wakes is restored unverified.
 - **Settling sees only calls through the proxy.** A call to `localhost` or a request on a tunnel already open is invisible, so background work there can outlive the quiet period unseen.

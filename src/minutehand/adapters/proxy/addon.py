@@ -12,7 +12,6 @@ headers or query string is stored.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -23,10 +22,11 @@ from mitmproxy import http, tls
 from mitmproxy.addons import asgiapp
 from mitmproxy.net import encoding
 
-from minutehand.adapters.proxy import redact
+from minutehand.adapters.proxy import credentials, redact
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
+from minutehand.adapters.proxy.worlds import Mounted, Worlds, one_run
 from minutehand.application.restore import SeenCall
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
@@ -74,18 +74,12 @@ class ProxyAddon:
         record_model_calls: bool = False,
     ) -> None:
         self.routing = routing
-        self.store = store
-        self.clock = clock
+        self.worlds: Worlds = one_run(store, clock, {}, scenario=None, provider=routing.registry.provider)
         self.telemetry = telemetry
         self.record_model_calls = record_model_calls
         # The streamed answer of each recorded call, chunk by chunk as it passed through, by flow id.
         self._streams: dict[str, list[bytes]] = {}
         self._recorded: set[str] = set()
-        self._apps: dict[str, ASGIApp] = {}
-        self._scenario: Scenario | None = None
-        # One answered call at a time, so the events between two reads of the head
-        # are exactly the events this call produced.
-        self._recording = asyncio.Lock()
         self.last_seen: SeenCall | None = None
 
     def _seen(self, what: str) -> None:
@@ -103,10 +97,11 @@ class ProxyAddon:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
         its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
         and seeded then with `scenario`'s people and things, unless `world` already holds anything of it."""
-        self.store = world
-        self.clock = clock
-        self._apps = dict(apps)
-        self._scenario = scenario
+        self.worlds = one_run(world, clock, apps, scenario=scenario, provider=self.routing.registry.provider)
+
+    def route(self, worlds: Worlds) -> None:
+        """`minutehand serve`: from now on each call is answered in the world `worlds` finds for it."""
+        self.worlds = worlds
 
     def tls_clienthello(self, data: tls.ClientHelloData) -> None:
         host = data.client_hello.sni
@@ -127,17 +122,35 @@ class ProxyAddon:
         policy = self.policy(host)
         if self.record_model_calls and policy in (HostPolicy.EDIT, HostPolicy.RECORD):
             self._recorded.add(flow.id)
-        if policy is HostPolicy.ANSWER:
-            manifest = self.routing.claimant(host)
-            assert manifest is not None
-            await self._answer(flow, host, manifest)
-        elif policy is HostPolicy.EDIT:
+        if policy is HostPolicy.EDIT:
             self._edit(flow, host)
-        elif policy is HostPolicy.REFUSE:
-            async with self._recording:
-                first = self.store.head() + 1
+            return
+        if policy not in (HostPolicy.ANSWER, HostPolicy.REFUSE):
+            return
+        request = flow.request
+        world = self.worlds.world_for(
+            host,
+            credentials.presented(
+                authorization=_first_header(request, "authorization"),
+                path=request.path,
+                content_type=_first_header(request, "content-type") or "",
+                body=request.get_content(strict=False) or b"",
+            ),
+        )
+        manifest = self.routing.claimant(host)
+        if policy is HostPolicy.ANSWER and manifest is not None and world is not None:
+            await self._answer(flow, host, manifest, world)
+            return
+        refused = world or self.worlds.lobby
+        async with refused.lock:
+            first = refused.store.head() + 1
+            if manifest is None:
                 flow.response = _json_response(502, "no provider claims this host", host)
-                self._record(flow, host, flow.request.path, first, None)
+            else:
+                flow.response = _json_response(
+                    502, "no world claims this call: none holds its credentials or host", host
+                )
+            self._record(refused, flow, host, flow.request.path, first, manifest.key if manifest else None)
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """A recorded call answered as a stream reaches the agent as one: each chunk is passed on as it arrives
@@ -180,25 +193,16 @@ class ProxyAddon:
             started=datetime.fromtimestamp(request.timestamp_start, UTC),
             ended=datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC),
         )
-        self.store.receive([span_of(exchanged)], source=SpanSource.WIRE)
+        self.worlds.lobby.store.receive([span_of(exchanged)], source=SpanSource.WIRE)
 
-    def _app(self, manifest: Manifest) -> ASGIApp:
-        """The provider's app for this run; built on its first call, and seeded first when it is new to the world:
-        an agent calling a service the scenario never named still finds the scenario's people there."""
-        if manifest.key not in self._apps:
-            provider = self.routing.registry.provider(manifest)
-            if self._scenario is not None and not any(e.entity.provider == manifest.key for e in self.store.events()):
-                provider.seed(self._scenario, self.store)
-            self._apps[manifest.key] = provider.app(self.store, self.clock)
-        return self._apps[manifest.key]
-
-    async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest) -> None:
-        async with self._recording:
-            first = self.store.head() + 1
+    async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> None:
+        async with world.lock:
+            first = world.store.head() + 1
             original = flow.request.path
+            exchange: Exchange | None = None
             try:
-                app = self._app(manifest)
-                first = self.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
+                app = world.app_for(manifest)
+                first = world.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
                 flow.request.path = strip_prefix(original, manifest.path_prefix)
                 await asgiapp.serve(app, flow)
             except Exception:
@@ -207,7 +211,17 @@ class ProxyAddon:
                 raise
             finally:
                 flow.request.path = original
-                self._record(flow, host, original, first, manifest.key)
+                exchange = self._record(world, flow, host, original, first, manifest.key)
+        response = flow.response
+        minted = (
+            credentials.minted(
+                content_type=_first_header(response, "content-type") or "",
+                body=response.get_content(strict=False) or b"",
+            )
+            if response is not None and response.status_code < 400
+            else []
+        )
+        self.worlds.answered(world, exchange, minted)
 
     def _edit(self, flow: http.HTTPFlow, host: str) -> None:
         try:
@@ -219,7 +233,9 @@ class ProxyAddon:
         if edited is not None:
             flow.request.content = edited
 
-    def _record(self, flow: http.HTTPFlow, host: str, path: str, first: int, provider: str | None) -> None:
+    def _record(
+        self, world: Mounted, flow: http.HTTPFlow, host: str, path: str, first: int, provider: str | None
+    ) -> Exchange:
         request, response = flow.request, flow.response
         assert response is not None
         exchange = Exchange(
@@ -236,8 +252,9 @@ class ProxyAddon:
             traceparent=_first_header(request, TRACEPARENT),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
-        last = self.store.head()
-        self.store.attach(exchange, first_seq=first, last_seq=last, provider=provider)
+        last = world.store.head()
+        world.store.attach(exchange, first_seq=first, last_seq=last, provider=provider)
         if self.telemetry is not None and last >= first:
-            for event in self.store.events(since=first - 1):
+            for event in world.store.events(since=first - 1):
                 self.telemetry.recorded(event)
+        return exchange

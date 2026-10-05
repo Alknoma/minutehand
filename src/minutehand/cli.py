@@ -8,6 +8,9 @@
     minutehand runs [--state DIR]
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
+    minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
+                     [--agent-host NAME] [--keep N]
+                                                 a standing proxy with a control API, for test suites (docs/serve.md)
 
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
 an agent in containers), --proxy-port (default: any free port), --agent-proxy-host (the host the agent uses
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import os
 import shlex
 import sys
@@ -45,12 +49,11 @@ from pathlib import Path
 
 import yaml
 
+from minutehand import serve as standing
 from minutehand import session
-from minutehand.adapters.mcp import server as mcp_server
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
-from minutehand.adapters.web import app as viewer
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
 from minutehand.application.refusals import RunRefused
@@ -64,6 +67,10 @@ from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
 
 DEFAULT_STATE = Path(".minutehand")
+SERVE_IMAGE = "minutehand"
+SERVE_CA_VOLUME = "minutehand-ca"
+SERVE_CA_DIR = "/etc/minutehand"
+IMAGE_STATE = "/var/lib/minutehand"
 COMPOSE_CA_PATH = "/etc/minutehand/ca-bundle.pem"
 DOCKER_HOST = "host.docker.internal"
 VIEW_PORT = 8081
@@ -75,6 +82,7 @@ _STOPPED = {
     StopReason.DEADLINE_PASSED: "the clock reached the scenario's deadline",
     StopReason.NOTHING_PENDING: "nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
+    StopReason.CLOSED: "the standing world was closed by whoever opened it",
 }
 _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
 
@@ -155,7 +163,17 @@ def _parser() -> argparse.ArgumentParser:
     env = commands.add_parser(
         "env", help="print the environment an agent needs when Minutehand does not start it, then run without --"
     )
-    env.add_argument("--agent", type=Path, required=True)
+    env.add_argument("--agent", type=Path, default=None, help="the agent file (not needed with --serve-as)")
+    env.add_argument(
+        "--serve-as",
+        default=None,
+        metavar="NAME",
+        help="--format compose: the services reach a `minutehand serve` container of this Compose service name, "
+        "which the override adds, and download nothing: its CA is shared through a volume",
+    )
+    env.add_argument(
+        "--image", default=SERVE_IMAGE, help=f"with --serve-as: the image the service runs (default {SERVE_IMAGE})"
+    )
     env.add_argument("--format", choices=[f.value for f in EnvFormat], default=EnvFormat.SHELL.value)
     env.add_argument(
         "--service",
@@ -177,6 +195,25 @@ def _parser() -> argparse.ArgumentParser:
 
     tools = commands.add_parser("mcp", help="serve the tools a coding agent calls, over MCP on stdio")
     state(tools)
+
+    served = commands.add_parser(
+        "serve", help="a standing proxy with a control API: worlds a test suite opens, reads and closes"
+    )
+    served.add_argument("--host", default="127.0.0.1", help="where the proxy, receiver and control API listen")
+    served.add_argument("--proxy-port", type=int, default=standing.DEFAULT_PROXY_PORT)
+    served.add_argument("--control-port", type=int, default=standing.DEFAULT_CONTROL_PORT)
+    served.add_argument("--telemetry-port", type=int, default=standing.DEFAULT_TELEMETRY_PORT)
+    served.add_argument("--no-receive-telemetry", action="store_true", help="serve no OTLP receiver")
+    served.add_argument(
+        "--agent-host", default=None, help="the name services reach this server by (a Compose service name)"
+    )
+    served.add_argument(
+        "--no-proxy", action="append", default=[], metavar="HOST", help="a host services reach directly"
+    )
+    served.add_argument(
+        "--keep", type=int, default=standing.DEFAULT_KEEP, help="closed worlds kept; older ones are removed"
+    )
+    state(served)
 
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
@@ -211,6 +248,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _mcp(state)
         if args.command == "view":
             return _view(state, args.port)
+        if args.command == "serve":
+            return _serve(args, state)
         return _runs(state)
     except (RunRefused, FileRefused, ModelFailed, OSError) as e:
         print(f"minutehand: the run could not be performed: {e}", file=sys.stderr)
@@ -235,6 +274,21 @@ def _listen(args: argparse.Namespace) -> session.Listen:
 
 
 def _env(args: argparse.Namespace, state: Path) -> int:
+    if args.serve_as is not None:
+        if EnvFormat(args.format) is not EnvFormat.COMPOSE or not args.service:
+            print(
+                "minutehand env: --serve-as writes a Compose override: give --format compose and --service",
+                file=sys.stderr,
+            )
+            return 2
+        print(yaml.safe_dump(_standing_compose(args), sort_keys=False), end="")
+        return 0
+    if args.agent is None:
+        print(
+            "minutehand env: --agent is needed unless the services use a `minutehand serve` (--serve-as)",
+            file=sys.stderr,
+        )
+        return 2
     agent = load_agent(args.agent)
     listen = _listen(args)
     if EnvFormat(args.format) is EnvFormat.SHELL:
@@ -267,6 +321,50 @@ def _compose(
     if listen.agent_host == DOCKER_HOST:
         service["extra_hosts"] = [f"{DOCKER_HOST}:host-gateway"]
     return {"services": {name: service for name in services}}
+
+
+def _standing_compose(args: argparse.Namespace) -> dict[str, object]:
+    """A Compose override for a stack whose services reach a `minutehand serve` container by service name: the
+    container, sharing its CA directory through a named volume and healthy once its control API answers, and
+    every named service given the variables, the CA read-only, and a wait for it."""
+    name: str = args.serve_as
+    listen = session.Listen(
+        host="0.0.0.0",
+        port=standing.DEFAULT_PROXY_PORT,
+        agent_host=name,
+        no_proxy=[*args.service, *args.no_proxy],
+        telemetry_port=standing.DEFAULT_TELEMETRY_PORT,
+        receive_telemetry=not args.no_receive_telemetry,
+    )
+    bundle = f"{SERVE_CA_DIR}/{BUNDLE}"
+    telemetry = standing.DEFAULT_TELEMETRY_PORT if listen.receive_telemetry else None
+    variables = session.agent_environment(listen, standing.DEFAULT_PROXY_PORT, bundle, {}, telemetry_port=telemetry)
+    health = f"http://127.0.0.1:{standing.DEFAULT_CONTROL_PORT}/v1/health"
+    server: dict[str, object] = {
+        "image": args.image,
+        "command": ["serve", "--host", "0.0.0.0", "--agent-host", name],
+        "volumes": [f"{SERVE_CA_VOLUME}:{IMAGE_STATE}/ca"],
+        "healthcheck": {
+            "test": [
+                "CMD",
+                "/opt/minutehand/bin/python",
+                "-c",
+                f"import urllib.request; urllib.request.urlopen({health!r})",
+            ],
+            "interval": "1s",
+            "timeout": "2s",
+            "retries": 30,
+        },
+    }
+    service: dict[str, object] = {
+        "environment": variables,
+        "volumes": [f"{SERVE_CA_VOLUME}:{SERVE_CA_DIR}:ro"],
+        "depends_on": {name: {"condition": "service_healthy"}},
+    }
+    return {
+        "services": {name: server, **{s: copy.deepcopy(service) for s in args.service}},
+        "volumes": {SERVE_CA_VOLUME: {}},
+    }
 
 
 def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
@@ -364,11 +462,33 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
 
 
 def _mcp(state: Path) -> int:
+    from minutehand.adapters.mcp import server as mcp_server  # loaded only for this command: it is slow to import
+
     mcp_server.serve(state)
     return 0
 
 
+def _serve(args: argparse.Namespace, state: Path) -> int:
+    options = standing.ServeOptions(
+        host=args.host,
+        proxy_port=args.proxy_port,
+        control_port=args.control_port,
+        telemetry_port=args.telemetry_port,
+        receive_telemetry=not args.no_receive_telemetry,
+        agent_host=args.agent_host,
+        no_proxy=args.no_proxy,
+        keep=args.keep,
+    )
+    try:
+        asyncio.run(standing.serve_forever(state, options))
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
 def _view(state: Path, port: int) -> int:
+    from minutehand.adapters.web import app as viewer  # loaded only for this command
+
     print(f"minutehand: the viewer is at http://127.0.0.1:{port}/ (state {state})", file=sys.stderr)
     viewer.serve(state, port=port)
     return 0

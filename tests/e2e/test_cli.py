@@ -189,3 +189,44 @@ def test_env_for_an_agent_whose_secret_is_generated_per_run_is_refused_with_exit
 
     assert printed.returncode == 2
     assert "generated per run for slack (SLACK_SIGNING_SECRET)" in printed.stderr
+
+
+def test_env_serve_as_writes_a_stack_whose_services_reach_minutehand_by_its_service_name(tmp_path: Path) -> None:
+    printed = _cli(
+        "env",
+        "--format",
+        "compose",
+        "--serve-as",
+        "minutehand",
+        "--service",
+        "platform",
+        "--service",
+        "worker",
+        "--no-proxy",
+        "firestore",
+        "--state",
+        str(tmp_path),
+        env=dict(os.environ),
+    )
+
+    assert printed.returncode == 0, printed.stderr
+    override = yaml.safe_load(printed.stdout)
+    assert list(override["services"]) == ["minutehand", "platform", "worker"]
+    server = override["services"]["minutehand"]
+    assert server["command"] == ["serve", "--host", "0.0.0.0", "--agent-host", "minutehand"]
+    assert server["volumes"] == ["minutehand-ca:/var/lib/minutehand/ca"]
+    platform = override["services"]["platform"]
+    assert platform["depends_on"] == {"minutehand": {"condition": "service_healthy"}}
+    assert platform["volumes"] == ["minutehand-ca:/etc/minutehand:ro"]
+    environment = platform["environment"]
+    assert environment["HTTPS_PROXY"] == "http://minutehand:8080"
+    assert environment["SSL_CERT_FILE"] == "/etc/minutehand/minutehand-ca-bundle.pem"
+    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,worker,firestore,minutehand"
+    assert environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://minutehand:4318"
+    assert override["volumes"] == {"minutehand-ca": {}}
+    assert "&id" not in printed.stdout
+
+
+def test_env_serve_as_without_compose_is_refused_with_exit_2(tmp_path: Path) -> None:
+    printed = _cli("env", "--serve-as", "minutehand", "--state", str(tmp_path), env=dict(os.environ))
+    assert printed.returncode == 2 and "--format compose" in printed.stderr

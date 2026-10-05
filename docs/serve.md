@@ -1,0 +1,241 @@
+# The standing mode: `minutehand serve`
+
+`minutehand run` owns the loop, the clock and the people of one scenario. A test suite that starts a stack, seeds
+a fake, calls its own services and then inspects the fake needs the opposite: a server that stays up, holds a
+world per test, and does nothing until told. That is `minutehand serve`.
+
+```
+minutehand serve [--state DIR] [--host 127.0.0.1] [--proxy-port 8080] [--control-port 8081]
+                 [--telemetry-port 4318] [--no-receive-telemetry] [--agent-host NAME] [--no-proxy HOST]... [--keep 100]
+```
+
+One process: the proxy, the OTLP receiver and the control API (HTTP and JSON, under `/v1`). Every installed
+provider is available and built on its first call. There is no scenario, no run loop and no agent wake.
+
+## When to use it, and when `run`
+
+| | `minutehand run` | `minutehand serve` |
+|---|---|---|
+| Who drives | Minutehand: wakes the agent, plays the people, moves the clock | The test: opens a world, calls its services, speaks for people, moves the clock |
+| Worlds | One per run, played to its end | Many at once, one per test, open as long as the test needs |
+| Time | Jumps to the next thing due | Stands still until `POST /v1/worlds/{id}/clock` |
+| People | Scripted or model-written replies, delivered when due | Only the test, unless the world is opened with `scripted_people: true` |
+| Result | A verdict, findings and a scorecard at the end | Whatever the test asserts; the same checks on demand, and once more when the world is closed |
+| Use for | Measuring an agent across simulated days | A service-level suite that used emulators |
+
+## Which world a call belongs to
+
+Tests run in parallel against one stack, so the proxy decides per call. In order:
+
+1. **The host**, when a world claims it (`claims.hosts`: a self-hosted tracker's `acme.youtrack.cloud`).
+2. **A credential the call carries**, when a world claims it (`claims.tokens`). Read only where the OAuth
+   standards put one (`adapters/proxy/credentials.py`): `Authorization: Bearer`, the password of
+   `Authorization: Basic`, `access_token` in the query or a form body, a token request's `refresh_token`, and a
+   JWT-bearer assertion's `iss` and `sub` (a service account's email). No provider's own format is read.
+3. **Minted credentials.** When a call of a world is answered with an OAuth token answer (RFC 6749 §5.1), its
+   `access_token` and `refresh_token` are claimed by that world from then on. A Google service account claimed
+   by its email signs in and its Drive calls follow it (`test_a_service_account_signs_in_and_its_minted_token_is_routed_to_the_same_world`).
+4. **The default world**, when one is open (`claims.default: true`; at most one).
+5. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`.
+
+A token or host is claimed by one open world at a time; a second claim is refused (409).
+
+Why not the other two options. *One current world with a reset between tests* breaks the moment two tests run
+at once. *A header naming the world* needs the service under test to send it, which means changing its code.
+
+**The limit.** Isolation is only as fine as the credentials the services use. A stack whose services hold one
+fixed token for a provider (one Slack bot token in the environment) sends every test's calls with the same
+token; two worlds cannot both claim it, so such tests share one world (`default: true`, or that token) and must
+run one at a time against it. A service that keeps a credential per tenant (an installation token per Slack
+workspace, a Personal Access Token per account) isolates per test once each test's world claims its own.
+Slack's legacy `token` form argument is not read: a call that carries its token only there matches by host or
+default only.
+
+## The control API
+
+Every request and answer is a model in `src/minutehand/adapters/control/wire.py`: frozen, and an unknown field
+is refused with 422. A refusal is `{"error": "..."}`: 404 for a world that is not open, 409 for what a world
+cannot do, 422 for a body that is not the model, 502 when the service an event was pushed to refused it.
+
+| Route | Body → answer | What it does |
+|---|---|---|
+| `GET /v1/health` | → `ok` | |
+| `GET /v1/ca.pem` | → PEM | The bundle a service trusts: public roots, then the proxy's CA |
+| `GET /v1/environment[?ca_path=P]` | → `Environment` | The variables a service needs: proxy, `NO_PROXY`, the CA variable of each HTTP library, OTLP |
+| `GET /v1/worlds` | → `WorldList` | Every open world |
+| `POST /v1/worlds` | `CreateWorld` → 201 `WorldView` | Open a world from a seed, with its claims, inbound targets, faults, and whether scripted people speak |
+| `GET /v1/worlds/{id}` | → `WorldView` | Its clock, its head, what it owes |
+| `DELETE /v1/worlds/{id}` | → `Checked` | Close it: the checks as it stood, its record written, its claims released |
+| `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since` | → `EventsPage` | The log, filtered; `since` is a seq |
+| `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
+| `GET /v1/worlds/{id}/calls[?unmatched=true]` | → `CallsPage` | Every call, or those of this world to hosts no provider claims |
+| `GET /v1/worlds/{id}/spans` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
+| `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket` |
+| `GET /v1/worlds/{id}/clock` | → `WorldView` | |
+| `POST /v1/worlds/{id}/clock` | `Advance` → `Advanced` | Move the clock `by` or `to`, firing what falls due |
+| `POST /v1/worlds/{id}/faults` | `Fault` → `WorldView` | Answer the next matching calls with a status and body of the caller's |
+| `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
+| `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed; `head` is the position to read on from |
+
+A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
+opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`).
+
+### A seed
+
+`Seed` (`domain/scenario.py`) is a scenario file with nothing to achieve: the goal and expectations may be left
+out, the owner defaults to the first person, and at least one person is required. A whole scenario file loads
+too; its expectations are what `checks` holds the world to.
+
+```json
+{
+  "seed": {
+    "people": [{"key": "sofia", "name": "Sofia Romano", "email": "sofia@example.com",
+                "reply": {"kind": "scripted", "delay": {"shortest": "PT1H", "longest": "PT1H"},
+                          "replies": [{"to_ask": 1, "text": "Yes, Thursday works."}]}}],
+    "tickets": [{"provider": "asana", "project": "Launch", "title": "Legal review", "assignee": "sofia"}]
+  },
+  "claims": {"tokens": ["xoxb-test-7f3a", "asana-pat-7f3a"]},
+  "inbound": [{"provider": "slack", "url": "http://platform:8025/api/v1/slack", "secret": "<the service's signing secret>"}],
+  "scripted_people": true
+}
+```
+
+### People and time
+
+The clock of a world stands still. Nothing fires on its own.
+
+- **`scripted_people: false`** (the default): nobody answers but the test. `say` is a DM to the agent's bot,
+  `reply` answers a message (in its thread in a channel, a new message in a DM); both are recorded as actor
+  `PERSON` and pushed to the world's inbound target, signed with its secret, exactly as the run loop pushes them.
+  `move_ticket` is the assignee completing, cancelling or reopening a ticket (actor `PERSON`); `edit_ticket`
+  reassigns it or sets its state from outside (actor `SCENARIO`). A world with scripted people off ignores the
+  seed's scripts, fates and directions however far the clock moves.
+- **`scripted_people: true`**: each message the agent sends a scripted person is answered after the person's
+  delay, each ticket handed to a person with a `TicketFate` meets it, and the owner's directions are said, each
+  only when the clock passes its moment. A message is answered as it read when it was first seen; an edit is not
+  put to the person again. A person whose replies a model writes is refused: a standing world has no model.
+- **Booked wakes** (a scheduler provider such as AWS) are recorded in the log and never fired: a booking
+  becomes a wake only in the run loop.
+
+### Faults
+
+No provider exposes typed faults yet, so a fault is answered by the server in front of the provider: the next
+`times` calls of the world to `provider` whose method matches and whose path, as the provider's app sees it
+(Asana's `/api/1.0` removed), starts with `path` get `status`, `body` and an optional `Retry-After`. The body is
+the caller's to write in the service's error shape. Provider-rendered faults (Slack's `ratelimited`, a Graph
+401) are pending.
+
+## Each world is a run
+
+A world is a run in the state directory, named by its `world_id`:
+
+```
+<state>/runs/<world_id>/world.db       its log
+<state>/runs/<world_id>/scenario.json  the seed as the world plays it
+<state>/runs/<world_id>/world.json     its name and claims (marks it a standing world)
+<state>/runs/<world_id>/record.json    once closed: stop `closed`
+<state>/runs/<world_id>/result.json    once closed: the checks as it stood
+<state>/runs/lobby-<id>/world.db       calls no world claimed
+```
+
+`minutehand findings <world_id>`, `minutehand view` and the MCP tools read it like any run. Closing a world keeps
+the newest `--keep` closed worlds (default 100) and removes older ones. A world open when the server stops is
+closed then.
+
+## From pytest
+
+`minutehand.testing` ships a client and a plugin; pytest loads the plugin from its entry point once `minutehand`
+is installed. It adds fixtures and nothing else, and imports nothing of Minutehand until one is requested.
+
+```python
+# conftest.py
+import pytest
+from minutehand.adapters.control.wire import Claims, CreateWorld
+from minutehand.domain.scenario import Seed
+
+
+@pytest.fixture
+def minutehand_spec(request) -> CreateWorld:
+    return CreateWorld(
+        seed=Seed.model_validate({"people": [{"key": "sofia", "name": "Sofia", "email": "sofia@example.com"}]}),
+        claims=Claims(tokens=[f"xoxb-{request.node.name}"]),
+    )
+
+
+# test_reminders.py
+def test_the_reminder_reaches_sofia(minutehand_world, gateway):
+    gateway.remind(token=minutehand_world.view.claims.tokens[0])
+    minutehand_world.assert_message(containing="reminder", to="sofia@example.com")
+```
+
+| Fixture | Scope | What |
+|---|---|---|
+| `minutehand` | session | `MinutehandClient` to `$MINUTEHAND_URL`, or to a server started in this process |
+| `minutehand_spec` | test | The suite defines it; the default fails with how to |
+| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `say()`, `reply()`, `move_ticket()`, `edit_ticket()`, `advance()`, `arm()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
+
+A failed `assert_*` prints the world's latest changes. `AsyncMinutehandClient` is the same client for an async
+suite.
+
+## One container in a stack
+
+`docker run <image>` serves: proxy 8080, control API 8081, OTLP 4318. For a Compose stack:
+
+```
+minutehand env --format compose --serve-as minutehand --service platform --service worker --no-proxy firestore
+```
+
+writes the override: the `minutehand` service (healthy once its control API answers, its CA directory in the
+named volume `minutehand-ca`), and each named service given the variables, the CA read-only at
+`/etc/minutehand/minutehand-ca-bundle.pem`, and a wait for it to be healthy:
+
+```yaml
+services:
+  minutehand:
+    image: minutehand
+    command: [serve, --host, 0.0.0.0, --agent-host, minutehand]
+    volumes: ["minutehand-ca:/var/lib/minutehand/ca"]
+    healthcheck:
+      test: [CMD, /opt/minutehand/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/v1/health')"]
+      interval: 1s
+      retries: 30
+  platform:
+    environment:
+      HTTPS_PROXY: http://minutehand:8080
+      NO_PROXY: localhost,127.0.0.1,platform,worker,firestore,minutehand
+      SSL_CERT_FILE: /etc/minutehand/minutehand-ca-bundle.pem
+      REQUESTS_CA_BUNDLE: /etc/minutehand/minutehand-ca-bundle.pem
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://minutehand:4318
+      # ... and the other CA and proxy spellings
+    volumes: ["minutehand-ca:/etc/minutehand:ro"]
+    depends_on: {minutehand: {condition: service_healthy}}
+volumes:
+  minutehand-ca: {}
+```
+
+A container that cannot share a volume downloads the bundle at start from `GET http://minutehand:8081/v1/ca.pem`
+(`tests/packaging/test_stack.py` does exactly that from a second container on the same network). The test
+process on the host reaches the control API at the published port and sets `MINUTEHAND_URL`.
+
+## Measured
+
+On the development machine (macOS, Python 3.13), 2026-10-04, `tests/serve/test_footprint.py` and a throwaway
+script over the same code:
+
+| Measure | Value |
+|---|---|
+| `minutehand serve` started to `/v1/health` answering | 0.56–0.73 s at low load; up to 4 s with the machine's load average at 20. The in-process test bound is 10 s. |
+| Memory after start | 127 MB RSS |
+| Memory over 2,000 worlds opened, read and closed | 128 MB after 100, 83 MB after 1,000, 81 MB after 2,000: no growth |
+| One world opened, read and closed | 6–9 ms |
+
+## What it does not do
+
+- **Base-URL mode.** A service that reaches a fake by a base URL it is configured with (`SLACK_API_URL`) rather
+  than through a proxy is not served: every call must go through the proxy.
+- **Inbound shapes beyond a message.** A person can DM the agent and answer a message. A top-level message in a
+  channel, an app mention, a slash command, a button click (`block_actions`) or a modal submission has no port.
+- **Person acts beyond a ticket's state and assignee.** A comment, a ticket deleted by a person, a document
+  edited by a person, a user deactivated: no port.
+- **Provider-rendered faults** (above).
+- **Platforms with no provider**: Teams, Microsoft Graph, Notion, Jira and GitHub.
