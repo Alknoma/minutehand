@@ -147,7 +147,7 @@ async def play(
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
     listen = listen or Listen()
-    async with _proxy(routing, first[0], first[1], state, listen) as proxy:
+    async with intercepting(routing, first[0], first[1], state, listen) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0 and agent.state is not None:
@@ -215,7 +215,7 @@ async def fork(
 
     holding = RunClock(scenario.starts_at)
     listen = listen or Listen()
-    async with _proxy(routing, open_parent(holding), holding, state, listen) as proxy:
+    async with intercepting(routing, open_parent(holding), holding, state, listen) as proxy:
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
         )
@@ -677,12 +677,20 @@ class Intercepting:
 
 
 @asynccontextmanager
-async def _proxy(
+async def intercepting(
     routing: Routing, store: Store, clock: Clock, state: Path, listen: Listen
 ) -> AsyncIterator[Intercepting]:
     """The proxy and, unless `listen` turns it off, the receiver, on the same host. The receiver passes what it
     takes on to wherever this process's own environment sent OTLP before (`Forwarding.from_environment`)."""
-    async with Proxy(routing, store, clock, confdir=state / "ca", host=listen.host, port=listen.port) as proxy:
+    async with Proxy(
+        routing,
+        store,
+        clock,
+        confdir=state / "ca",
+        host=listen.host,
+        port=listen.port,
+        record_model_calls=listen.record_model_calls,
+    ) as proxy:
         if not listen.receive_telemetry:
             yield Intercepting(proxy, None)
             return
