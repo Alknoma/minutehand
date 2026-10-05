@@ -389,7 +389,7 @@ def _seed_workspace(
         notion.write_user(
             wire.StoredUser(id=bot, workspace=ws, type=wire.UserType.BOT, name=integration.name, integration=bot)
         )
-    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO)
+    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
     ids: dict[str, str] = {}
     for page in workspace.pages:
         ids[page.key] = object_id(workspace.key, page.key)
@@ -592,7 +592,7 @@ def _seed_documents(
     if not documents:
         return
     ws = object_id(workspace.key, workspace.key)
-    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO)
+    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
     users = notion.users(ws)
     by = next((u.id for u in users if u.email == owner.email), users[0].id if users else ws)
     made: list[str] = []

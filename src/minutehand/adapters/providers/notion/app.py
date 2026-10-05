@@ -445,7 +445,7 @@ class NotionApi:
         children = wire.as_list(body["children"], "body.children") if "children" in body else []
         editor = self._editor(call)
         page = editor.create_page(
-            editor.mint("page"),
+            editor.mint("page", within=parent.id or call.workspace),
             parent,
             properties,
             children,
@@ -657,7 +657,7 @@ class NotionApi:
             raise wire.invalid("body.parent and body.properties should be defined.")
         parent = self._parent(call, wire.as_object(body["parent"], "body.parent"))
         editor = self._editor(call)
-        database_id = editor.mint("database")
+        database_id = editor.mint("database", within=parent.id or call.workspace)
         schema: dict[str, wire.Json] = {}
         for name, raw in wire.as_object(body["properties"], "body.properties").items():
             made = wire.schema_from_request(
