@@ -26,6 +26,7 @@ from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.master import Master
 
 from minutehand.adapters.proxy.addon import ProxyAddon
+from minutehand.adapters.proxy.base_url import BaseUrls
 from minutehand.adapters.proxy.capture import Capturing
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
@@ -75,6 +76,7 @@ class Proxy:
             capturing=capturing,
             capture_unknown=capture_unknown,
         )
+        self.base_urls = BaseUrls(routing)
         self._confdir = confdir
         self._listen = (host, port)
         self._upstream_ca = upstream_ca
@@ -125,7 +127,7 @@ class Proxy:
             options.Options(listen_host=self._listen[0], listen_port=self._listen[1], confdir=str(self._confdir))
         )
         master.addons.add(*default_addons())
-        master.addons.add(self.addon)
+        master.addons.add(self.addon, self.base_urls)  # in this order: a base-URL answer is rewritten after it is kept
         master.options.update(
             connection_strategy="lazy",
             upstream_cert=False,
