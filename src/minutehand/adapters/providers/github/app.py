@@ -70,6 +70,35 @@ def _json(entity: wire.Wire | list[wire.Wire], status: int = 200, headers: dict[
     return Answered(status, body, headers or {})
 
 
+class _Exhausted(Exception):
+    """A call refused because its budget is spent; it carries its whole answer, headers and all."""
+
+    def __init__(self, answered: Answered) -> None:
+        super().__init__("rate limit exceeded")
+        self.answered = answered
+
+
+def _login(caller: Caller | None) -> str | None:
+    return caller.account.login if caller is not None and caller.account is not None else None
+
+
+def _budget_headers(budget: wire.StoredBudget, resource: wire.Resource) -> dict[str, str]:
+    """The `X-RateLimit-*` headers GitHub puts on every answer, for the budget the call spent."""
+    return {
+        "X-RateLimit-Limit": str(budget.limit),
+        "X-RateLimit-Remaining": str(budget.remaining),
+        "X-RateLimit-Used": str(budget.used),
+        "X-RateLimit-Reset": str(budget.reset),
+        "X-RateLimit-Resource": resource.value,
+    }
+
+
+def _budget_out(budget: wire.StoredBudget, resource: wire.Resource) -> wire.BudgetOut:
+    return wire.BudgetOut(
+        limit=budget.limit, remaining=budget.remaining, used=budget.used, reset=budget.reset, resource=resource
+    )
+
+
 def resource_of(path: str) -> wire.Resource:
     if path == "/graphql":
         return wire.Resource.GRAPHQL
@@ -91,20 +120,32 @@ class GitHubApi:
 
     # ------------------------------------------------------------------ the gate
 
-    def endpoint(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
+    def endpoint(self, handler: Handler, *, spends: bool = True) -> Callable[[Request], Awaitable[Response]]:
         async def answer(request: Request) -> Response:
             version = _header(request, "x-github-api-version")
+            resource = resource_of(request.url.path)
             caller: Caller | None = None
+            budget: wire.StoredBudget | None = None
             try:
                 if version is not None and version not in wire.API_VERSIONS:
                     raise wire.Refusal(400, f"API version {version} is not supported.", section="/about-the-rest-api")
                 caller = self._authenticate(request)
+                budget = self._window(caller, resource)
+                if spends and budget.limit > 0:
+                    if budget.remaining == 0:
+                        raise self._exhausted(budget, resource, caller)
+                    budget = budget.model_copy(update={"used": budget.used + 1})
+                    self._world.write_budget(_login(caller), resource, budget)
                 answered = self._fault(request, caller) or await handler(request, caller)
             except wire.Refusal as refusal:
                 answered = Answered(refusal.status, wire.error_body(refusal), refusal.headers)
+            except _Exhausted as exhausted:
+                answered = exhausted.answered
+            if budget is None:
+                budget = self._window(caller, resource)
             headers = {
                 "X-GitHub-Media-Type": "github.v3; format=json",
-                **self._budget(request, caller),
+                **_budget_headers(budget, resource),
                 **answered.headers,
             }
             if caller is not None and caller.token is not None and caller.token.kind is wire.TokenKind.CLASSIC:
@@ -115,22 +156,28 @@ class GitHubApi:
 
         return answer
 
-    def _budget(self, request: Request, caller: Caller | None) -> dict[str, str]:
-        """The `X-RateLimit-*` headers GitHub puts on every answer, for the budget the call spends: the user's,
-        or the address's when nobody is authenticated. Budgets are not counted (a run's clock stands still inside
-        a wake, so a counted window would never reset), so what remains is the whole budget until a fault the
-        scenario armed spends it; the faulted answer's own headers then say 0."""
-        resource = resource_of(request.url.path)
-        authenticated = caller is not None and caller.account is not None
-        limit = (wire.LIMITS if authenticated else wire.ANONYMOUS_LIMITS)[resource]
-        reset = math.ceil(self._clock.now().timestamp()) + wire.WINDOW_SECONDS[resource]
-        return {
-            "X-RateLimit-Limit": str(limit),
-            "X-RateLimit-Remaining": str(limit),
-            "X-RateLimit-Used": "0",
-            "X-RateLimit-Reset": str(reset),
-            "X-RateLimit-Resource": resource.value,
-        }
+    def _window(self, caller: Caller | None, resource: wire.Resource) -> wire.StoredBudget:
+        """The caller's primary budget for `resource` as it stands now: the user's, shared by every token that acts
+        as them, or the address's when nobody is authenticated. A window that has ended on the run's clock is a
+        whole budget again, ending a full window from now; the run's clock does not move inside a wake, so a
+        budget spent there stays spent until the clock passes its reset."""
+        login = _login(caller)
+        limit = wire.limit_for(resource, authenticated=login is not None)
+        now = self._clock.now().timestamp()
+        stored = self._world.budget(login, resource)
+        if stored is not None and now < stored.reset:
+            return stored
+        return wire.StoredBudget(limit=limit, used=0, reset=math.ceil(now) + wire.WINDOW_SECONDS[resource])
+
+    def _exhausted(self, budget: wire.StoredBudget, resource: wire.Resource, caller: Caller) -> _Exhausted:
+        """The call after the last one the budget allows: GitHub's primary-limit refusal, which spends nothing."""
+        return _Exhausted(self._rate_limited(403, resource, caller, _budget_headers(budget, resource)))
+
+    async def rate_limit(self, request: Request, caller: Caller) -> Answered:
+        """`GET /rate_limit`: every budget of the caller as it stands, `rate` being the core one. Reading it
+        spends nothing."""
+        budgets = {resource: _budget_out(self._window(caller, resource), resource) for resource in wire.Resource}
+        return _json(wire.RateLimitOut(resources=budgets, rate=budgets[wire.Resource.CORE]))
 
     def _authenticate(self, request: Request) -> Caller:
         authorization = (_header(request, "authorization") or "").strip()
@@ -158,7 +205,6 @@ class GitHubApi:
         return None
 
     def _faulted(self, fault: wire.Fault, resource: wire.Resource, caller: Caller) -> Answered:
-        who = f"user ID {caller.account.id}" if caller.account is not None else "this address"
         if isinstance(fault, wire.ServerError):
             return Answered(fault.status, json.dumps({"message": "Server Error"}).encode())
         if isinstance(fault, wire.SecondaryRateLimited):
@@ -170,19 +216,18 @@ class GitHubApi:
             return Answered(fault.status, wire.error_body(refusal), {"Retry-After": str(fault.retry_after)})
         reset = math.ceil(self._clock.now().timestamp()) + wire.WINDOW_SECONDS[resource]
         limit = wire.LIMITS[resource]
-        headers = {
-            "X-RateLimit-Limit": str(limit),
-            "X-RateLimit-Remaining": "0",
-            "X-RateLimit-Used": str(limit),
-            "X-RateLimit-Reset": str(reset),
-            "X-RateLimit-Resource": resource.value,
-        }
+        spent = wire.StoredBudget(limit=limit, used=limit, reset=reset)
+        return self._rate_limited(fault.status, resource, caller, _budget_headers(spent, resource))
+
+    def _rate_limited(self, status: int, resource: wire.Resource, caller: Caller, headers: dict[str, str]) -> Answered:
+        """The primary limit's refusal: a 403 (or 429) on REST, a 200 whose `errors` say RATE_LIMITED on GraphQL."""
+        who = f"user ID {caller.account.id}" if caller.account is not None else "this address"
         message = f"API rate limit exceeded for {who}."
         if resource is wire.Resource.GRAPHQL:
             errors = wire.GraphErrorsOut(errors=[wire.GraphError(type="RATE_LIMITED", message=message)])
             return Answered(200, errors.model_dump_json(exclude_none=True).encode(), headers)
-        refusal = wire.Refusal(fault.status, message, section="/using-the-rest-api/rate-limits-for-the-rest-api")
-        return Answered(fault.status, wire.error_body(refusal), headers)
+        refusal = wire.Refusal(status, message, section="/using-the-rest-api/rate-limits-for-the-rest-api")
+        return Answered(status, wire.error_body(refusal), headers)
 
     # ------------------------------------------------------------------ who may see what
 
@@ -735,6 +780,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/graphql", "POST", api.graph),
     ]
     routes = [Route(path, api.endpoint(handler), methods=[method]) for path, method, handler in table]
+    routes.append(Route("/rate_limit", api.endpoint(api.rate_limit, spends=False), methods=["GET"]))
 
     async def refused(request: Request, error: Exception) -> Response:
         status = error.status_code if isinstance(error, HTTPException) else 500

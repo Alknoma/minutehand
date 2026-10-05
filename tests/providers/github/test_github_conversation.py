@@ -1,5 +1,6 @@
 """A code-reading client's whole conversation, call for call as it makes them: validate the token, then answer a
-question by overview, tree, listing, search, a batch of files, history and branches. Nothing it does writes."""
+question by overview, tree, listing, search, a batch of files, history and branches. Nothing it does writes; the
+only changes are the world's own bookkeeping of the user's rate-limit budgets."""
 
 from __future__ import annotations
 
@@ -54,8 +55,15 @@ async def test_a_token_is_validated_and_a_question_answered_from_the_repository(
     assert len(branches["data"]["repository"]["refs"]["nodes"]) == 2  # type: ignore[index]
 
     events = hub.store.events(since=before)
-    assert {e.actor for e in events} == {Actor.AGENT}
-    assert {e.operation for e in events} == {Operation.READ, Operation.SEARCH}
-    assert all(e.after is None for e in events)
+    acts = [e for e in events if e.actor is Actor.AGENT]
+    kept = [e for e in events if e.actor is not Actor.AGENT]
+    assert {e.operation for e in acts} == {Operation.READ, Operation.SEARCH}
+    assert all(e.after is None for e in acts)
+    assert {e.entity.external_id for e in kept} == {
+        "budget/tomas-b/core",
+        "budget/tomas-b/graphql",
+        "budget/tomas-b/code_search",
+    }
+    assert {e.actor for e in kept} == {Actor.SCENARIO}
     calls = hub.store.calls()
     assert [c.exchange.status for c in calls] == [200, 200, 404, 200, 200, 200, 200, 200, 200, 200, 200]

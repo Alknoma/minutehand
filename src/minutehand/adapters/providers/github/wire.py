@@ -99,6 +99,38 @@ ANONYMOUS_LIMITS: dict[Resource, int] = {
 """A call with no credential spends the address's budget: 60 an hour for the REST core, and nothing on GraphQL."""
 
 
+def limit_for(resource: Resource, *, authenticated: bool) -> int:
+    return (LIMITS if authenticated else ANONYMOUS_LIMITS)[resource]
+
+
+class StoredBudget(Wire):
+    """One user's (or the address's) primary budget for one resource, in its current window: spent calls and the
+    epoch second the window ends. A window that has ended is a whole budget again."""
+
+    limit: int = Field(ge=0)
+    used: int = Field(ge=0)
+    reset: int = Field(description="UTC epoch seconds, as `X-RateLimit-Reset` carries them")
+
+    @property
+    def remaining(self) -> int:
+        return max(self.limit - self.used, 0)
+
+
+class BudgetOut(Wire):
+    """One resource in `GET /rate_limit`."""
+
+    limit: int
+    remaining: int
+    used: int
+    reset: int
+    resource: Resource
+
+
+class RateLimitOut(Wire):
+    resources: dict[Resource, BudgetOut]
+    rate: BudgetOut
+
+
 # --------------------------------------------------------------------------- errors
 
 
@@ -283,7 +315,9 @@ class StoredFault(Wire):
     answered: int = 0
 
 
-StoredModel = TypeVar("StoredModel", StoredAccount, StoredToken, StoredRepository, StoredFile, StoredFault)
+StoredModel = TypeVar(
+    "StoredModel", StoredAccount, StoredToken, StoredRepository, StoredFile, StoredFault, StoredBudget
+)
 
 
 def parse(model: type[StoredModel], body: str) -> StoredModel:

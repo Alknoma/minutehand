@@ -30,16 +30,23 @@ Credentials: classic (`ghp_`, scoped by `repo`) and fine-grained (`github_pat_`,
 personal access tokens, under `Authorization: Bearer` or `token`. An unknown one is 401 `Bad credentials`; a
 repository the token may not see is 404, as one that does not exist. No token reads public repositories only.
 
+Primary rate limits are counted. Every call spends one from its budget: the user's, shared by every token acting
+as them, or the address's with no credential; core 5,000 an hour, search 30 and code search 10 a minute, GraphQL
+5,000 an hour (one point a query), 60 an hour for core without a credential. `X-RateLimit-*` on every answer says
+what is left and when the window ends. The call after the last is refused 403 "API rate limit exceeded" with
+`X-RateLimit-Remaining: 0` (a 200 with `RATE_LIMITED` errors on GraphQL) and spends nothing; the budget is whole
+again once the run's clock reaches `X-RateLimit-Reset`. The run's clock stands still inside a wake, so a budget
+spent there stays spent until the clock passes the reset. A refused credential (401) or API version (400) spends
+nothing. `GET /rate_limit` reports every budget and spends none. Budgets live in the store
+(`budget/<login>/<resource>`, `-` for the address), and the seed's `budgets` can start one part spent.
+
 Faults, armed in the seed and spent in order: `rate_limited` (403 or 429, `X-RateLimit-Remaining: 0` and the reset;
 a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with `Retry-After`), `server_error`.
 
 ## What it does not do
 
-- Issues, pull requests, comments, labels, webhooks, OAuth web flow, GitHub App installation tokens, `/rate_limit`.
-- Budgets are not counted. Every answer carries `X-RateLimit-*` for the budget it spends (5,000 an hour, code
-  search 10 a minute, 60 an hour without a credential), but `Remaining` is always the whole budget and a limit is
-  reached only when the seed arms one. A run's clock stands still inside a wake, so a counted window would never
-  reset while a client waited one out.
+- Issues, pull requests, comments, labels, webhooks, OAuth web flow, GitHub App installation tokens.
+- A GraphQL query costs one point, whatever its size; GitHub prices a query by the nodes it may return.
 - Every branch and commit shows the head's files; history is a list of commits, not a sequence of trees.
 - No `ETag` or conditional requests, no `Accept: application/vnd.github.raw`. A text match's fragment is the first
   line holding a term, not GitHub's wider snippet.

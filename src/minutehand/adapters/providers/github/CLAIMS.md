@@ -4,8 +4,8 @@ The behaviours below were each asserted by a test of an older, home-grown GitHub
 learned about api.github.com; this provider keeps it, and the named test fails if it stops. **Documented** means
 GitHub's public reference says so (the page is given); **observed** means the reference does not settle it and the
 claim rests on what was seen from the real service. Tests are in `tests/providers/github/`, files
-`test_github_vendor_claims_rest.py` (R), `test_github_vendor_claims_search.py` (S) and
-`test_github_vendor_claims_graphql.py` (G).
+`test_github_vendor_claims_rest.py` (R), `test_github_vendor_claims_search.py` (S),
+`test_github_vendor_claims_graphql.py` (G) and `test_github_vendor_claims_budget.py` (B).
 
 ## Ported
 
@@ -18,6 +18,13 @@ claim rests on what was seen from the real service. Tests are in `tests/provider
 | Every answer carries `X-RateLimit-Limit/Remaining/Used/Reset/Resource`; core is 5,000 | documented | R `test_every_answer_carries_the_rate_limit_headers_for_its_budget` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | Without a credential the budget is 60 an hour | documented | R `test_an_unauthenticated_answer_carries_the_sixty_an_hour_budget` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | Code search spends its own budget, `code_search`, 10 a minute | documented | R `test_code_search_reports_its_own_ten_a_minute_budget` | https://docs.github.com/en/rest/search/search#search-code |
+| Each call spends one from its budget; the reset moment stays put through the window; a 404 spends too | documented | B `test_each_call_spends_one_from_the_users_budget_and_the_reset_stays_put` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
+| The budget is the user's, shared by all their tokens, not the token's | documented | B `test_two_tokens_of_one_user_spend_one_budget_and_another_user_has_their_own` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
+| Core, code search and GraphQL are separate budgets | documented | B `test_each_resource_is_its_own_budget` | https://docs.github.com/en/rest/rate-limit/rate-limit |
+| The call after the last is 403 "API rate limit exceeded", `Remaining: 0`, until `X-RateLimit-Reset`; the budget is whole after it | documented | B `test_the_call_after_the_last_is_refused_403_until_the_reset_on_the_runs_clock` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
+| Without a credential the address's budget is spent and refused the same way | documented | B `test_without_a_credential_the_addresss_budget_is_spent_and_refused_403` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
+| A spent GraphQL budget is a 200 whose errors say RATE_LIMITED | documented | B `test_a_spent_graphql_budget_answers_200_with_rate_limited_errors` | https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api |
+| `GET /rate_limit` reports every budget, `rate` as core, and does not count | documented | B `test_rate_limit_reports_every_budget_and_spends_none` | https://docs.github.com/en/rest/rate-limit/rate-limit |
 | A secondary limit is 403 or 429 with `Retry-After`, then calls go through | documented | G `test_a_secondary_limit_is_a_403_or_429_with_retry_after_and_then_the_call_goes_through` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | An unknown or unreachable repository is 404 on every repository route | documented | R `test_an_unknown_repository_is_not_found_on_every_route` | https://docs.github.com/en/rest/repos/repos#get-a-repository |
 | `/user/repos` lists only what the token reaches, with `permissions` | documented | R `test_user_repos_lists_only_what_the_token_can_see_with_its_permissions` | https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user |
@@ -65,10 +72,10 @@ claim rests on what was seen from the real service. Tests are in `tests/provider
 
 ## Not carried over
 
-- **Counted budgets** (documented, not ported by design): the old emulator decremented `X-RateLimit-Remaining`
-  per call and refused the eleventh code search in a minute with 403. Here budgets are not counted, because a run's
-  clock stands still inside a wake and a counted window would never reset; an exhausted budget is a fault the
-  scenario arms (`RateLimited`).
+- **One budget for every caller** (the old emulator kept one window per resource, whoever called, on the machine's
+  clock): GitHub's documentation puts the limit on the user, shared by every token acting as them, or on the
+  address without a credential, and so does this provider, on the run's clock.
+- **GraphQL priced by the query** (documented, simplified): every query costs one point here.
 - **Admin routes** (emulator artefact): arming rate limits, lowering the tree limit, seeding a wide directory and
   resetting were HTTP routes of the emulator; here they are the seed (`faults`, `tree_entry_limit`, files).
 - **Its fixed world** (emulator artefact): one owner, one repository and one bot login, canned commit ids.
