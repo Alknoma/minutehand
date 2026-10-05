@@ -11,7 +11,15 @@ from mcp.client.stdio import stdio_client
 from minutehand.adapters.mcp.results import RunListing
 
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
-TOOLS = {"list_scenarios", "run_scenario", "list_findings", "show_evidence", "rerun_from", "list_runs"}
+TOOLS = {
+    "list_scenarios",
+    "run_scenario",
+    "list_findings",
+    "show_evidence",
+    "list_outbound_calls",
+    "rerun_from",
+    "list_runs",
+}
 
 
 async def test_the_command_serves_every_tool_over_stdio(tmp_path: Path) -> None:
