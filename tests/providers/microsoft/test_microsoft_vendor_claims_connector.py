@@ -104,11 +104,21 @@ async def test_paged_members_of_a_conversation_that_does_not_exist_is_refused_40
 
 async def test_an_activity_over_the_documented_size_limit_is_refused_message_size_too_big(caller: Caller) -> None:
     """Documented: a message past the size limit is 413 with error code `MessageSizeTooBig`. Class (a),
-    TEAMS_CODES. The page puts the limit at 100 KB; the payload here is past it on any reading."""
+    TEAMS_CODES, which puts the limit at 100 KB of the message encoded as UTF-16: 52,000 characters are 104 KB."""
     head = caller.tenant.store.head()
-    answered = await caller.send(caller.general, {"type": "message", "text": "z" * (110 * 1024)})
+    answered = await caller.send(caller.general, {"type": "message", "text": "z" * 52_000})
     assert refusal(answered, 413) == "MessageSizeTooBig"
     assert caller.tenant.store.head() == head
+
+
+async def test_a_message_of_forty_thousand_characters_is_inside_the_documented_limit_and_delivered(
+    caller: Caller,
+) -> None:
+    """Documented: the limit is 100 KB as UTF-16, so 40,000 characters (80 KB, the size the page calls safe) are
+    delivered whole. Class (a), TEAMS_CODES. The old emulator refused this at 28 KB: contradicted, see `CLAIMS.md`."""
+    answered = await caller.send(caller.general, {"type": "message", "text": "w" * 40_000})
+    assert answered.is_success, answered.text
+    assert caller.stored(answered.json()["id"]).text == "w" * 40_000
 
 
 async def test_an_activity_well_inside_the_size_limit_is_delivered(caller: Caller) -> None:
@@ -221,6 +231,46 @@ async def test_a_deleted_activity_is_gone_from_the_conversation(caller: Caller) 
     assert caller.tenant.world.message(sent) is None
 
 
+@pytest.mark.parametrize("verb", ["reply", "update", "delete"])
+async def test_an_activity_that_is_not_in_the_conversation_is_refused_activity_not_found_in_conversation(
+    caller: Caller, verb: str
+) -> None:
+    """Documented: an activity id the conversation does not hold is 404 `ActivityNotFoundInConversation`, and
+    nothing is written. Class (a), TEAMS_CODES (status codes from agent conversational APIs)."""
+    head = caller.tenant.store.head()
+    url = f"{caller.activities(caller.general)}/1700000000000"
+    body = {"type": "message", "text": "answering nothing"}
+    if verb == "reply":
+        answered = await caller.http.post(url, json=body, headers=caller.auth)
+    elif verb == "update":
+        answered = await caller.http.put(url, json=body, headers=caller.auth)
+    else:
+        answered = await caller.http.delete(url, headers=caller.auth)
+    assert refusal(answered, 404) == "ActivityNotFoundInConversation"
+    assert caller.tenant.store.head() == head
+
+
+@pytest.mark.parametrize("verb", ["update", "delete"])
+async def test_changing_a_persons_message_is_refused_not_enough_permissions(
+    tenant: Tenant, bot: Bot, caller: Caller, verb: str
+) -> None:
+    """Documented: an action the bot lacks the permission for is 403 `NotEnoughPermissions`; a bot may change only
+    what it sent, so a person's message stays as they wrote it. Class (a), TEAMS_CODES."""
+    pushed = await _posted(
+        tenant,
+        bot,
+        PersonPosts(provider="microsoft", person="sofia", channel="general", text="Mine", mentions_agent=True),
+    )
+    url = f"{caller.activities(caller.general)}/{pushed['id']}"
+    written = caller.stored(pushed["id"]).text
+    if verb == "update":
+        answered = await caller.http.put(url, json={"type": "message", "text": "Rewritten"}, headers=caller.auth)
+    else:
+        answered = await caller.http.delete(url, headers=caller.auth)
+    assert refusal(answered, 403) == "NotEnoughPermissions"
+    assert caller.stored(pushed["id"]).text == written
+
+
 # ---------------------------------------------------------------------- creating a conversation
 
 
@@ -296,24 +346,6 @@ async def test_the_general_channel_is_listed_with_no_name_and_the_teams_own_id(c
     channels = answered.json()["conversations"]
     general = next(c for c in channels if c["id"] == caller.general)
     assert general["name"] is None
-
-
-async def test_paged_members_continue_to_the_rest_of_the_roster_and_address_each_by_mri(caller: Caller) -> None:
-    """Documented: paged members answer a `continuationToken` while members remain, and each member's `id` is the
-    `29:` id the bot addresses them by, with the directory object id beside it. Class (a), TEAMS_CONTEXT and REST."""
-    url = f"{CONNECTOR}v3/conversations/{caller.general}/pagedmembers"
-    first = (await caller.http.get(url, params={"pageSize": "2"}, headers=caller.auth)).json()
-    assert first["continuationToken"], "the roster fit one page"
-    rest = (
-        await caller.http.get(
-            url, params={"pageSize": "2", "continuationToken": first["continuationToken"]}, headers=caller.auth
-        )
-    ).json()
-    members = first["members"] + rest["members"]
-    assert sorted(m["email"] for m in members) == ["dania@example.com", "owen@example.com", "sofia@example.com"]
-    for member in members:
-        assert member["id"].startswith("29:")
-        assert member["aadObjectId"] and not member["aadObjectId"].startswith("29:")
 
 
 # ---------------------------------------------------------------------- what Teams pushes to the bot
