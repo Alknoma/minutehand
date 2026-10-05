@@ -313,8 +313,36 @@ class Advanced(Model):
     fired: list[FiredView]
 
 
+QUIET_FOR = timedelta(milliseconds=250)
+"""How long a world must have had no call before closing it counts it quiet, unless the close says otherwise."""
+QUIET_AT_MOST = timedelta(seconds=5)
+"""How long closing a world waits for it to go quiet, unless the close says otherwise."""
+
+
+class Quiet(Model):
+    """Wait until no call routed to this world has been seen for `quiet_for`, and no delivery from Minutehand to
+    the service (an event pushed, a webhook sent) still awaits the service's answer; give up after `at_most`."""
+
+    quiet_for: timedelta = Field(default=QUIET_FOR, ge=timedelta(0))
+    at_most: timedelta = Field(default=QUIET_AT_MOST, ge=timedelta(0))
+
+
+class Quieted(Model):
+    """Whether the world went quiet before the wait gave up, and what was still going on when it stopped."""
+
+    quiet: bool
+    waited: timedelta = Field(description="Real time spent waiting")
+    busy: list[str] = Field(
+        default=[], description="When not quiet: each call still in progress and each delivery still awaited"
+    )
+    last_call: str | None = Field(default=None, description="The latest call routed to the world, for a person")
+
+
 class Checked(Model):
     result: RunResult
+    quiet: Quieted | None = Field(
+        default=None, description="On a close: how waiting for the world to go quiet ended; None when not waited for"
+    )
 
 
 class Environment(Model):

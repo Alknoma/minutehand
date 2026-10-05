@@ -208,6 +208,17 @@ class NotifiesChanges(Protocol):
 
 
 @runtime_checkable
+class DeliversInBackground(Protocol):
+    """A provider's app (the object `Provider.app` answers) that pushes to the agent after the call that set it
+    off has been answered: Notion's webhooks, Drive's channel notifications. A standing world is not quiet while
+    one of these still awaits the agent's answer."""
+
+    def delivering(self) -> int:
+        """How many deliveries it has started whose answer from the agent has not come back yet."""
+        ...
+
+
+@runtime_checkable
 class ConfirmsDelivery(Protocol):
     """A scheduler that can tell whether the agent has taken what a booking delivered (an SQS message deleted, a
     queued job acknowledged), which an agent does after acting on it: the run waits for that before it moves past
