@@ -54,8 +54,10 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 4
-"""Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at."""
+SCHEMA_VERSION = 5
+"""Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at.
+5: an exchange may carry `captured` and a message `answerable`, which a reader of version 4 would refuse row by
+row; refused here as a whole file instead."""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS run(
