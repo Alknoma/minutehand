@@ -90,6 +90,13 @@ LIMITS: dict[Resource, int] = {
     Resource.CODE_SEARCH: 10,
     Resource.GRAPHQL: 5000,
 }
+ANONYMOUS_LIMITS: dict[Resource, int] = {
+    Resource.CORE: 60,
+    Resource.SEARCH: 10,
+    Resource.CODE_SEARCH: 10,
+    Resource.GRAPHQL: 0,
+}
+"""A call with no credential spends the address's budget: 60 an hour for the REST core, and nothing on GraphQL."""
 
 
 # --------------------------------------------------------------------------- errors
@@ -509,10 +516,43 @@ class CodeItemOut(Wire):
     score: float
 
 
+class TermMatchOut(Wire):
+    """Where one search term sits in a text match's fragment: its text and its start and end offsets."""
+
+    text: str
+    indices: list[int]
+
+
+class TextMatchOut(Wire):
+    """One `text_matches` entry, sent only under the `application/vnd.github.text-match+json` media type."""
+
+    object_url: str
+    object_type: str
+    property: str
+    fragment: str
+    matches: list[TermMatchOut]
+
+
+class MatchedCodeItemOut(CodeItemOut):
+    text_matches: list[TextMatchOut]
+
+
 class CodeSearchOut(Wire):
     total_count: int
     incomplete_results: bool
     items: list[CodeItemOut]
+
+
+class MatchedCodeSearchOut(Wire):
+    total_count: int
+    incomplete_results: bool
+    items: list[MatchedCodeItemOut]
+
+
+class BranchOut(Wire):
+    name: str
+    commit: ShaRefOut
+    protected: bool
 
 
 class GraphErrorLocation(Wire):

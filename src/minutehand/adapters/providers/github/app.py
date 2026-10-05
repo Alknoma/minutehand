@@ -32,6 +32,8 @@ PAGE_DEFAULT = 30
 PAGE_MAX = 100
 SEARCH_CEILING = 1000
 """Search serves the first thousand results and no more."""
+TEXT_MATCH = "application/vnd.github.text-match+json"
+"""The media type that asks search for `text_matches`."""
 
 
 @dataclass(frozen=True)
@@ -100,7 +102,11 @@ class GitHubApi:
                 answered = self._fault(request, caller) or await handler(request, caller)
             except wire.Refusal as refusal:
                 answered = Answered(refusal.status, wire.error_body(refusal), refusal.headers)
-            headers = {"X-GitHub-Media-Type": "github.v3; format=json", **answered.headers}
+            headers = {
+                "X-GitHub-Media-Type": "github.v3; format=json",
+                **self._budget(request, caller),
+                **answered.headers,
+            }
             if caller is not None and caller.token is not None and caller.token.kind is wire.TokenKind.CLASSIC:
                 headers["X-OAuth-Scopes"] = ", ".join(caller.token.scopes)
             if version is not None and version in wire.API_VERSIONS:
@@ -108,6 +114,23 @@ class GitHubApi:
             return Response(answered.body, status_code=answered.status, media_type=wire.JSON, headers=headers)
 
         return answer
+
+    def _budget(self, request: Request, caller: Caller | None) -> dict[str, str]:
+        """The `X-RateLimit-*` headers GitHub puts on every answer, for the budget the call spends: the user's,
+        or the address's when nobody is authenticated. Budgets are not counted (a run's clock stands still inside
+        a wake, so a counted window would never reset), so what remains is the whole budget until a fault the
+        scenario armed spends it; the faulted answer's own headers then say 0."""
+        resource = resource_of(request.url.path)
+        authenticated = caller is not None and caller.account is not None
+        limit = (wire.LIMITS if authenticated else wire.ANONYMOUS_LIMITS)[resource]
+        reset = math.ceil(self._clock.now().timestamp()) + wire.WINDOW_SECONDS[resource]
+        return {
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Remaining": str(limit),
+            "X-RateLimit-Used": "0",
+            "X-RateLimit-Reset": str(reset),
+            "X-RateLimit-Resource": resource.value,
+        }
 
     def _authenticate(self, request: Request) -> Caller:
         authorization = (_header(request, "authorization") or "").strip()
@@ -419,6 +442,32 @@ class GitHubApi:
         self._world.saw(state.repository_ref(owner, name), Operation.READ)
         return _json(self._repository_out(caller, repository))
 
+    async def languages(self, request: Request, caller: Caller) -> Answered:
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repository = self._visible(caller, owner, name, "/repos/repos#list-repository-languages")
+        self._world.saw(state.repository_ref(owner, name), Operation.READ)
+        counted = dict(content.breakdown(self._world.files(repository)))
+        return Answered(200, json.dumps(counted).encode())
+
+    async def branches(self, request: Request, caller: Caller) -> Answered:
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repository = self._visible(caller, owner, name, "/branches/branches#list-branches")
+        self._world.saw(state.repository_ref(owner, name), Operation.READ)
+        if not repository.commits:
+            return _json([])
+        head = repository.commits[0].sha
+        names = sorted({repository.default_branch, *repository.branches})
+        start, end, links = self._page(request, len(names))
+        out: list[wire.Wire] = [
+            wire.BranchOut(
+                name=branch,
+                commit=wire.ShaRefOut(sha=head, url=f"{wire.API}/repos/{repository.full_name}/commits/{head}"),
+                protected=False,
+            )
+            for branch in names[start:end]
+        ]
+        return _json(out, headers=links)
+
     async def contents(self, request: Request, caller: Caller) -> Answered:
         section = "/repos/contents#get-repository-content"
         owner, name = request.path_params["owner"], request.path_params["repo"]
@@ -583,8 +632,33 @@ class GitHubApi:
                 if query.matches(file, raw.decode("utf-8")):
                     hits.append((repository, file))
         start, end, links = self._page(request, len(hits), ceiling=SEARCH_CEILING)
-        items = [self._code_item(r, f) for r, f in hits[start:end]]
-        return _json(wire.CodeSearchOut(total_count=len(hits), incomplete_results=False, items=items), headers=links)
+        window = hits[start:end]
+        if TEXT_MATCH not in (_header(request, "accept") or ""):
+            items = [self._code_item(r, f) for r, f in window]
+            return _json(
+                wire.CodeSearchOut(total_count=len(hits), incomplete_results=False, items=items), headers=links
+            )
+        matched = [
+            wire.MatchedCodeItemOut(
+                **self._code_item(r, f).model_dump(),
+                text_matches=[self._text_match(r, f, query)],
+            )
+            for r, f in window
+        ]
+        out = wire.MatchedCodeSearchOut(total_count=len(hits), incomplete_results=False, items=matched)
+        return _json(out, headers=links)
+
+    def _text_match(
+        self, repository: wire.StoredRepository, file: wire.StoredFile, query: search.CodeQuery
+    ) -> wire.TextMatchOut:
+        fragment, terms = search.text_match(query, _raw(file).decode("utf-8"))
+        return wire.TextMatchOut(
+            object_url=f"{wire.API}/repositories/{repository.id}/contents/{file.path}?ref={repository.commits[0].sha}",
+            object_type="FileContent",
+            property="content",
+            fragment=fragment,
+            matches=[wire.TermMatchOut(text=t.text, indices=[t.start, t.end]) for t in terms],
+        )
 
     def _code_item(self, repository: wire.StoredRepository, file: wire.StoredFile) -> wire.CodeItemOut:
         full = repository.full_name
@@ -610,11 +684,16 @@ class GitHubApi:
         )
 
     async def graph(self, request: Request, caller: Caller) -> Answered:
-        if caller.account is None:
+        viewer = caller.account
+        if viewer is None:
             raise wire.Refusal(401, "This endpoint requires you to be authenticated.", section="/graphql")
         try:
             body = wire.GraphQLIn.model_validate_json(await request.body())
         except ValidationError as error:
+            if any(problem["loc"] == ("query",) for problem in error.errors()):
+                raise wire.Refusal(
+                    400, "A query attribute must be specified and must be a string.", section="/graphql"
+                ) from error
             raise wire.Refusal(400, "Problems parsing JSON", section="/graphql") from error
 
         def find(owner: str, name: str) -> graphql.Visible | None:
@@ -623,7 +702,7 @@ class GitHubApi:
                 return None
             return graphql.Visible(repository=repository, files=lambda: self._world.files(repository))
 
-        answer = graphql.execute(body, find)
+        answer = graphql.execute(body, find, viewer)
         for repository in answer.seen:
             self._world.saw(state.repository_ref(repository.owner, repository.name), Operation.READ)
         return Answered(200, answer.body)
@@ -644,6 +723,8 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/user", "GET", api.user),
         ("/user/repos", "GET", api.user_repos),
         ("/repos/{owner}/{repo}", "GET", api.repository),
+        ("/repos/{owner}/{repo}/languages", "GET", api.languages),
+        ("/repos/{owner}/{repo}/branches", "GET", api.branches),
         ("/repos/{owner}/{repo}/contents", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/{path:path}", "GET", api.contents),
