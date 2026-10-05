@@ -142,11 +142,134 @@ class SeededTicket(Model):
     state: TicketState = TicketState.OPEN
 
 
+class DocumentKind(StrEnum):
+    """What a seeded document is, whatever its provider calls it."""
+
+    DOCUMENT = "document"  # a word-processor document; `text` is Markdown: headings, lists, tables, links
+    SPREADSHEET = "spreadsheet"  # `rows` are its cells, first sheet only
+    PRESENTATION = "presentation"  # `text`: one slide per block of lines separated by a blank line
+    FILE = "file"  # an uploaded file: `text` is its content, as UTF-8, of `mime_type`
+
+
+class AccessRole(StrEnum):
+    """What a person may do with a document or a shared space, from least to most."""
+
+    READER = "reader"
+    COMMENTER = "commenter"
+    WRITER = "writer"
+    ORGANIZER = "organizer"
+
+
+class Access(Model):
+    person: str = Field(description="Person.key")
+    role: AccessRole = AccessRole.WRITER
+
+
 class SeededDocument(Model):
     provider: ProviderKey
     title: str
-    text: str
-    folder: str | None = None
+    text: str = ""
+    kind: DocumentKind = DocumentKind.DOCUMENT
+    rows: list[list[str]] = Field(default=[], description="A spreadsheet's cells, row by row")
+    mime_type: str | None = Field(default=None, description="A FILE's media type; text/plain when None")
+    folder: str | None = Field(
+        default=None, description="A folder path, '/'-separated, made the first time it is named"
+    )
+    owner: str | None = Field(default=None, description="Person.key; None is the scenario's owner")
+    space: str | None = Field(default=None, description="SharedSpace.name it lives in; None is its owner's own")
+    shared_with: list[Access] = []
+    modified_before_start: timedelta = Field(
+        default=timedelta(0), ge=timedelta(0), description="How long before the scenario starts it was last changed"
+    )
+    modified_by: str | None = Field(default=None, description="Person.key who changed it last; None is its owner")
+
+    @model_validator(mode="after")
+    def _content_fits_kind(self) -> SeededDocument:
+        if self.rows and self.kind is not DocumentKind.SPREADSHEET:
+            raise ValueError(f"document {self.title!r} has rows but is a {self.kind.value}")
+        if self.mime_type is not None and self.kind is not DocumentKind.FILE:
+            raise ValueError(f"document {self.title!r} has a mime_type but is a {self.kind.value}")
+        return self
+
+
+class SharedSpace(Model):
+    """A place documents live that no one person owns: a shared drive."""
+
+    provider: ProviderKey
+    name: str
+    members: list[Access] = Field(min_length=1)
+
+
+class SignIn(Model):
+    """A credential the agent signs in to a provider with, and whom it signs in as.
+
+    The provider decides what the credential is: for Google, a refresh token or a service account's email.
+    Once a scenario names any sign-in for a provider, a credential it does not name is refused."""
+
+    provider: ProviderKey
+    credential: str = Field(min_length=1)
+    person: str | None = Field(default=None, description="Person.key; None: an account of its own, not a person's")
+
+
+class Edited(Model):
+    """The person adds a paragraph at the end of the document."""
+
+    kind: Literal["edited"] = "edited"
+    append: str = Field(min_length=1)
+
+
+class Renamed(Model):
+    kind: Literal["renamed"] = "renamed"
+    to: str = Field(min_length=1)
+
+
+class Moved(Model):
+    kind: Literal["moved"] = "moved"
+    folder: str = Field(description="A folder path in the same place, made if it is not there")
+
+
+class Shared(Model):
+    kind: Literal["shared"] = "shared"
+    access: Access
+
+
+class Trashed(Model):
+    kind: Literal["trashed"] = "trashed"
+
+
+DocumentAction = Annotated[Edited | Renamed | Moved | Shared | Trashed, Field(discriminator="kind")]
+
+
+class DocumentChange(Model):
+    """Something a person does to a seeded document without the agent, at a moment of the run."""
+
+    provider: ProviderKey
+    document: str = Field(description="SeededDocument.title")
+    by: str = Field(description="Person.key")
+    after: timedelta = Field(gt=timedelta(0), description="Offset from the scenario's start")
+    action: DocumentAction
+
+
+class FaultKind(StrEnum):
+    """A refusal a scenario makes the service answer on purpose, in the service's own shape."""
+
+    RATE_LIMITED = "rate_limited"  # too many requests for the project
+    USER_RATE_LIMITED = "user_rate_limited"  # too many requests for the user
+    FORBIDDEN = "forbidden"  # the caller may not do this to this resource
+    NOT_FOUND = "not_found"
+    UNAUTHENTICATED = "unauthenticated"  # the credential presented is not accepted
+    EXPIRED = "expired"  # a cursor or token handed out earlier is no longer valid
+    UNAVAILABLE = "unavailable"  # the service is down for a moment
+
+
+class Fault(Model):
+    """The next `times` calls of `operation`, from `after` on, are refused with `kind`."""
+
+    provider: ProviderKey
+    operation: str = Field(min_length=1, description="The provider's own name for the call, e.g. 'documents.get'")
+    kind: FaultKind
+    times: int = Field(default=1, ge=1)
+    after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="Offset from the scenario's start")
 
 
 class TicketFate(Model):
@@ -248,6 +371,10 @@ class _ScenarioBody(Model):
     people: list[Person]
     tickets: list[SeededTicket] = []
     documents: list[SeededDocument] = []
+    spaces: list[SharedSpace] = []
+    sign_ins: list[SignIn] = []
+    document_changes: list[DocumentChange] = []
+    faults: list[Fault] = []
     ticket_fates: list[TicketFate] = []
     directions: list[Direction] = []
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
@@ -265,12 +392,35 @@ class _ScenarioBody(Model):
         named += [e.person for e in self.expect if isinstance(e, PersonAsked)]
         named += [e.assignee for e in self.expect if isinstance(e, (TicketCreated, TicketInState)) and e.assignee]
         named += [k for e in self.expect if isinstance(e, Relayed) for k in (e.said_by, e.to)]
+        named += [k for d in self.documents for k in (d.owner, d.modified_by) if k is not None]
+        named += [a.person for d in self.documents for a in d.shared_with]
+        named += [a.person for s in self.spaces for a in s.members]
+        named += [s.person for s in self.sign_ins if s.person is not None]
+        named += [c.by for c in self.document_changes]
+        named += [c.action.access.person for c in self.document_changes if isinstance(c.action, Shared)]
         missing = sorted(set(named) - known)
         if missing:
             raise ValueError(f"no such person: {', '.join(missing)}")
+        self._places_resolve()
         for relayed in (e for e in self.expect if isinstance(e, Relayed)):
             self._refuse_tell(relayed)
         return self
+
+    def _places_resolve(self) -> None:
+        """Every space a document names exists, every changed document exists, and no title is seeded twice in
+        one provider, so a change names exactly one document."""
+        spaces = [(s.provider, s.name) for s in self.spaces]
+        if len(spaces) != len(set(spaces)):
+            raise ValueError("two shared spaces of one provider share a name")
+        for document in self.documents:
+            if document.space is not None and (document.provider, document.space) not in spaces:
+                raise ValueError(f"document {document.title!r} is in space {document.space!r}, which is not seeded")
+        titles = [(d.provider, d.title) for d in self.documents]
+        if len(titles) != len(set(titles)):
+            raise ValueError("two seeded documents of one provider share a title")
+        for change in self.document_changes:
+            if (change.provider, change.document) not in titles:
+                raise ValueError(f"a document change names {change.document!r}, which is not seeded")
 
     def _refuse_tell(self, relayed: Relayed) -> None:
         """A tell the agent could write without hearing it from `said_by`, or that `said_by` can never say."""
@@ -280,7 +430,15 @@ class _ScenarioBody(Model):
         elsewhere = [("the goal", self.goal)]
         elsewhere += [(f"direction {i + 1}", d.text) for i, d in enumerate(self.directions)]
         elsewhere += [(f"seeded ticket {t.title!r}", f"{t.title} {t.body}") for t in self.tickets]
-        elsewhere += [(f"seeded document {d.title!r}", f"{d.title} {d.text}") for d in self.documents]
+        elsewhere += [
+            (f"seeded document {d.title!r}", " ".join([d.title, d.text, *(cell for row in d.rows for cell in row)]))
+            for d in self.documents
+        ]
+        elsewhere += [
+            (f"the change to {c.document!r}", c.action.append)
+            for c in self.document_changes
+            if isinstance(c.action, Edited)
+        ]
         for person in self.people:
             if person.key == relayed.said_by:
                 continue

@@ -12,7 +12,7 @@ from typing import Protocol, runtime_checkable
 from minutehand.domain.clock import Due
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.scenario import DocumentChange, Scenario, TicketState
 from minutehand.domain.world import EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -104,4 +104,22 @@ class BooksWakes(Protocol):
         The booking has already left the pending set when this is called, so a recurring
         schedule books its next occurrence under the same `ref` from here.
         """
+        ...
+
+
+@runtime_checkable
+class ChangesDocuments(Protocol):
+    """A provider whose documents people change without the agent: how a `DocumentChange` lands, and how the
+    agent is told of it when it asked to be (Drive's `changes.watch`)."""
+
+    def change(self, change: DocumentChange, world: Store, clock: Clock) -> None:
+        """Make the change the way the person would, recorded as actor PERSON."""
+        ...
+
+    def watched(self, world: Store, clock: Clock) -> bool:
+        """Whether the agent has asked to be told of changes and has not stopped asking."""
+        ...
+
+    async def notify(self, world: Store, clock: Clock) -> None:
+        """Tell the agent, the way the real service would, of every change it has not been told of."""
         ...
