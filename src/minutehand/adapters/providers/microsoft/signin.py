@@ -26,7 +26,14 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route, Router
 
 from minutehand.adapters.providers.microsoft import keys, tokens, wire
-from minutehand.adapters.providers.microsoft.state import AppRecord, MicrosoftWorld, TenantRecord, app_ref, user_ref
+from minutehand.adapters.providers.microsoft.state import (
+    AppRecord,
+    MicrosoftWorld,
+    TenantRecord,
+    UserRecord,
+    app_ref,
+    user_ref,
+)
 from minutehand.adapters.providers.microsoft.wire import TokenUse
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
@@ -61,6 +68,12 @@ class SignInRefused(Exception):
         self.error = error
         self.code = code
         self.description = description
+
+
+def _refuse_disabled(user: UserRecord) -> None:
+    """A user an administrator disabled cannot sign in, as Entra refuses them."""
+    if user.user.accountEnabled is False:
+        raise SignInRefused(400, "invalid_grant", 50057, "The user account is disabled.")
 
 
 def _refused(refusal: SignInRefused, clock: Clock) -> Response:
@@ -254,6 +267,7 @@ class SignIn:
         user = self._world.user(granted.oid or "")
         if user is None or granted.tid is None:
             raise SignInRefused(400, "invalid_grant", 50034, "The user account does not exist in the directory.")
+        _refuse_disabled(user)
         audience, scopes = self._delegated(scope)
         issuer = tokens.issuer_for(granted.tid)
         access, _ = tokens.issued(
@@ -319,6 +333,7 @@ class SignIn:
                 )
             if tenant is not None and user.tenant_id != tenant.id:
                 raise SignInRefused(400, "invalid_request", 50020, f"User account '{hint}' does not exist in tenant.")
+            _refuse_disabled(user)
         except SignInRefused as refusal:
             return _refused(refusal, self._clock)
         code, _ = tokens.issued(

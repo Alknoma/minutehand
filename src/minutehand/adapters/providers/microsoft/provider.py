@@ -2,7 +2,8 @@
 tenant acting in Teams and on files.
 
 It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesInteractions`,
-`ChangesDocuments` and `NotifiesChanges`. A person's change to a seeded document (edit, rename, move, share, delete)
+`ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `ChangesPeople` (a user removed, disabled or enabled again
+by an administrator) and `MintsInboundCredentials` (the Bot Framework's token for an activity a test posts itself). A person's change to a seeded document (edit, rename, move, share, delete)
 lands at its moment as that person, recorded as actor PERSON, and owes every live Graph subscription on the drive a
 notification; `notify` sends what is owed, through the same `subscriptions.notify` an agent's own change goes
 through. A file held open is not something a person does here: it is a fault the scenario declares
@@ -14,17 +15,32 @@ from __future__ import annotations
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
 from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of
-from minutehand.adapters.providers.microsoft.inbound import People
+from minutehand.adapters.providers.microsoft.inbound import People, activity_token
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
-from minutehand.adapters.providers.microsoft.state import DriveRecord, MicrosoftWorld, UserRecord, item_text
-from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.provider import Manifest, fault_fragment
+from minutehand.adapters.providers.microsoft.state import (
+    USERS,
+    DriveRecord,
+    MicrosoftWorld,
+    UserRecord,
+    item_text,
+    user_ref,
+)
+from minutehand.domain.people import (
+    Header,
+    InboundCredential,
+    InboundCredentialAsk,
+    InboundTarget,
+    PersonMessage,
+    PersonReply,
+)
+from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
     AccessRole,
     DocumentHappening,
     Edited,
     Happening,
     Moved,
+    Person,
     Renamed,
     Scenario,
     Shared,
@@ -46,6 +62,7 @@ ROLES = {
 
 class MicrosoftProvider:
     manifest: Manifest = MANIFEST
+    seed_model = seed.MicrosoftSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
@@ -127,6 +144,43 @@ class MicrosoftProvider:
         seed.write_faults(mw, found.faults, clock.now())
         seed.write_holds(mw, found.holds, clock.now())
 
+    # ------------------------------------------------------------------ ChangesPeople
+
+    def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
+        """An administrator removes the person's user from the directory, disables it (`accountEnabled: false`:
+        sign-in refused 50057, their 1:1 chat refuses the bot), or enables it again; actor SCENARIO."""
+        mw = MicrosoftWorld(world)
+        user = mw.person(person.key)
+        if user is None:
+            raise ValueError(f"{person.key} is no user of the tenant")
+        email = user.user.mail or user.user.userPrincipalName
+        if change is PersonChange.REMOVED:
+            mw.remove(user_ref(user.user.id), actor=Actor.SCENARIO, parent=USERS)
+            return
+        enabled = change is PersonChange.REACTIVATED
+        if (user.user.accountEnabled is not False) == enabled:
+            raise ValueError(f"{email} is {'enabled' if enabled else 'disabled'} already")
+        changed = user.model_copy(update={"user": user.user.model_copy(update={"accountEnabled": enabled})})
+        mw.write_user(changed, actor=Actor.SCENARIO, text=f"{email} {'enabled' if enabled else 'disabled'}")
+        del clock
+
+    # ------------------------------------------------------------------ MintsInboundCredentials
+
+    def credential(self, asked: InboundCredentialAsk, world: Store, clock: Clock, *, secret: str) -> InboundCredential:
+        """The Bot Framework's bearer token for an activity a test posts to the bot itself, signed as every pushed
+        activity's is: issued by `https://api.botframework.com` for the bot's app id, naming the activity's
+        `serviceUrl`. `secret` is not used: the Bot Framework signs with its published key."""
+        if not asked.service_url or not asked.audience:
+            raise ValueError("a Bot Framework token names the activity's service_url and the bot's app id (audience)")
+        apps = MicrosoftWorld(world).apps()
+        app = next((a for a in apps if a.app_id == asked.audience), None)
+        if app is None:
+            known = ", ".join(a.app_id for a in apps) or "none"
+            raise ValueError(f"{asked.audience} is no bot of this world; its bots are {known}")
+        token = activity_token(app, service_url=asked.service_url)
+        del secret, clock
+        return InboundCredential(headers=[Header(name="Authorization", value=f"Bearer {token}")])
+
     # ------------------------------------------------------------------ NotifiesChanges
 
     def watched(self, world: Store, clock: Clock) -> bool:
@@ -169,5 +223,6 @@ def _by(user: UserRecord) -> wire.IdentitySet:
 
 
 def build() -> MicrosoftProvider:
-    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `ChangesDocuments` and `NotifiesChanges`."""
+    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `ChangesDocuments`, `NotifiesChanges`,
+    `DeclaresFaults`, `ChangesPeople` and `MintsInboundCredentials`."""
     return MicrosoftProvider()

@@ -40,7 +40,15 @@ manifest, and because the tenant, its bot and its users are one directory every 
   the `call` names (`"METHOD /path prefix"` or `"/path prefix"`), in that surface's error shape, with `Retry-After`
   for a rate limit. **A held file** is `MicrosoftSeed.holds` (a seeded document, the person holding it, from an
   offset, for a while or for good): every write to it is refused 423 `resourceLocked` in that window. Both can be
-  declared on an open standing world (`DeclaresFaults`).
+  declared on an open standing world (`DeclaresFaults`). A fault answered `{"kind": "without_id"}` lets a connector
+  send through and answers it 201 without its `id` (nor a new conversation's `activityId`). Failing the next sends
+  is `{"call": "POST /teams/v3/conversations", "answer": {"kind": "refused", "error": "generalException"}}`; failing
+  the next Graph reads is `{"call": "GET /v1.0/teams", "answer": {"kind": "refused", "error":
+  "InvalidAuthenticationToken"}}`.
+- **Documents** say who created them (`DocumentSnapshot.owner`: a person's email or the app's name) and, in a team's
+  library, the site they are in (`space`; None in a person's OneDrive). Access given (`invite`, `createLink`, a
+  person's `Shared`) is a `GrantSnapshot`: Graph's `read`, `write`, `owner` as reader, writer, organizer; a link's
+  `to` is `anyone` or its scope.
 - **World keys** (`Manifest.world_keys`): the tenant in a sign-in path and the label of a SharePoint host, so
   `minutehand serve` routes a sign-in, its metadata and a pre-authenticated download to the tenant's world.
 
@@ -57,6 +65,22 @@ own chat, which `MicrosoftSeed.not_installed_for` leaves without the bot until t
 role (a commenter reads), `Trashed` deletes. `Commented` and `FieldSet` are refused at load: Graph `v1.0` has no
 file comments and a file is no record.
 
+An administrator changes a person's account (`ChangesPeople`, `POST /v1/worlds/{id}/people`): `deactivated` sets
+`accountEnabled: false` (sign-in refused `AADSTS50057`, and their 1:1 chat refuses the bot 403
+`BotNotInConversationRoster`), `reactivated` sets it back, `removed` deletes the user (Graph 404
+`Request_ResourceNotFound`, sign-in 50034).
+
+A person's `Absence` is what Graph shows of them: `GET /users/{id}/presence`, `/communications/presences/{id}` and
+`POST /communications/getPresencesByUserId` answer `Away`/`OutOfOffice` with the reason as the out-of-office message
+while it lasts, `Available` otherwise; `GET /users/{id}/mailboxSettings[/automaticRepliesSetting]` is `scheduled`
+over the stretch that lasts now or the next one known, `disabled` when none is. An absence from the first ask is
+known once the store holds the agent's first message to them, in any provider. Teams posts no automatic reply into
+a chat, so none is pushed.
+
+A test that posts an activity to the bot itself gets the Bot Framework's token for it
+(`MintsInboundCredentials`, `POST /v1/worlds/{id}/inbound-credential` with `service_url` and `audience`), signed as
+every pushed activity is.
+
 ## What it does not do
 
 - No `$batch`, `$orderby` beyond a folder's `name`, `lastModifiedDateTime` and `size`, `$search`, `$count`, or
@@ -72,3 +96,6 @@ file comments and a file is no record.
 - Sign-in has no browser: `authorize` answers at once for the user named in `login_hint`. No certificate
   credentials (`client_assertion`), no on-behalf-of, no device code.
 - Opening the bot's app in Teams pushes nothing, so `PersonOpensAgent` is refused.
+- The Bot Framework's OpenID metadata and keys (`login.botframework.com`) carry no tenant and no credential, so under
+  `minutehand serve` a bot fetching them is routed only by a world claiming that host (one at a time) or the default
+  world.

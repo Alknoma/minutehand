@@ -451,6 +451,48 @@ class GraphUser(Aliased):
     userPrincipalName: str
     jobTitle: str | None = None
     businessPhones: list[str] = []
+    accountEnabled: bool | None = Field(default=None, description="Said only once an administrator changed it")
+
+
+class OutOfOfficeSettings(Aliased):
+    message: str | None = None
+    isOutOfOffice: bool
+
+
+class Presence(Aliased):
+    """`GET /users/{id}/presence`: `Away` and `OutOfOffice` while the person is out, else `Available`."""
+
+    id: str
+    availability: str
+    activity: str
+    outOfOfficeSettings: OutOfOfficeSettings
+
+
+class PresencesByUserId(Aliased):
+    """`POST /communications/getPresencesByUserId`'s body."""
+
+    ids: list[str] = Field(min_length=1)
+
+
+class DateTimeTimeZone(Aliased):
+    dateTime: str
+    timeZone: str = "UTC"
+
+
+class AutomaticRepliesSetting(Aliased):
+    """A person's automatic replies: `scheduled` with its window while an absence is known, else `disabled`."""
+
+    status: Literal["disabled", "alwaysEnabled", "scheduled"]
+    externalAudience: Literal["none", "contactsOnly", "all"] = "all"
+    scheduledStartDateTime: DateTimeTimeZone | None = None
+    scheduledEndDateTime: DateTimeTimeZone | None = None
+    internalReplyMessage: str = ""
+    externalReplyMessage: str = ""
+
+
+class MailboxSettings(Aliased):
+    automaticRepliesSetting: AutomaticRepliesSetting
+    timeZone: str = "UTC"
 
 
 class GraphTeam(Aliased):
@@ -890,3 +932,4 @@ class StoredFault(Model):
     remaining: int | None = Field(default=None, description="None: every call")
     from_time: int = Field(description="Simulated seconds since the epoch from which it applies")
     only_rich: bool = Field(default=False, description="Only a connector POST: a send, a reply or a new conversation")
+    without_id: bool = Field(default=False, description="Answered as sent, with no id; only a connector POST")

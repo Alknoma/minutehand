@@ -36,6 +36,7 @@ from minutehand.adapters.providers.microsoft.state import (
     TENANTS,
     USERS,
     AppRecord,
+    AwayRecord,
     ConversationRecord,
     Directory,
     DriveRecord,
@@ -58,7 +59,15 @@ from minutehand.adapters.providers.microsoft.state import (
     tenant_ref,
     user_ref,
 )
-from minutehand.domain.scenario import Account, Model, Person, Scenario, SeededChannel, SeededPost
+from minutehand.domain.scenario import (
+    AbsenceTrigger,
+    Account,
+    Model,
+    Person,
+    Scenario,
+    SeededChannel,
+    SeededPost,
+)
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 
 ERROR_STATUS = {
@@ -87,11 +96,19 @@ class Refused(Model):
     error: str = Field(min_length=1, description="Graph's or the connector's own error code, as it sends it")
 
 
+class WithoutId(Model):
+    """A send the connector carries out and answers 201 as usual, but with no `id` (nor a new conversation's
+    `activityId`) in its answer: what a bot that keeps the id of what it sent must survive."""
+
+    kind: Literal["without_id"] = "without_id"
+
+
 class FaultSeed(Model):
-    """A call Graph or the connector fails on purpose, in that surface's own error shape."""
+    """A call Graph or the connector fails on purpose, in that surface's own error shape; or, `without_id`, a
+    connector send answered without the id of what it sent."""
 
     call: str | None = Field(default=None, description="'METHOD /path prefix' or '/path prefix'; None: every call")
-    answer: Annotated[RateLimited | Refused, Field(discriminator="kind")]
+    answer: Annotated[RateLimited | Refused | WithoutId, Field(discriminator="kind")]
     times: int | None = Field(default=1, ge=1, description="How many calls it fails; None is every one")
     after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="From this offset on")
     only_rich: bool = Field(default=False, description="Only a connector POST: a send, a reply or a new conversation")
@@ -329,7 +346,21 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
     for person in scenario.people:
         if person.account is Account.BOT:
             continue
-        user = UserRecord(user=_graph_user(person, directory), tenant_id=directory.tenant_id, person_key=person.key)
+        user = UserRecord(
+            user=_graph_user(person, directory),
+            tenant_id=directory.tenant_id,
+            person_key=person.key,
+            absences=[
+                AwayRecord(
+                    starts=scenario.starts_at if a.trigger is AbsenceTrigger.AT_START else None,
+                    starts_after=a.starts_after,
+                    lasts=a.lasts,
+                    reason=a.reason,
+                )
+                for a in person.absences
+            ]
+            or None,
+        )
         users[person.key] = user
         world.write(user_ref(user.user.id), user, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=USERS)
     spec = microsoft_seed(scenario)
@@ -487,18 +518,20 @@ def write_faults(world: MicrosoftWorld, faults: list[FaultSeed], starts_at: date
     for position, fault in enumerate(faults, start=first):
         answer = fault.answer
         limited = isinstance(answer, RateLimited)
-        error = "TooManyRequests" if limited else answer.error
+        stripped = isinstance(answer, WithoutId)
+        error = "TooManyRequests" if limited else ("" if isinstance(answer, WithoutId) else answer.error)
         world.write(
             fault_ref(position),
             wire.StoredFault(
                 position=position,
                 call=fault.call,
                 error=error,
-                status=429 if limited else (ERROR_STATUS[error] if error in ERROR_STATUS else 400),
+                status=429 if limited else 201 if stripped else (ERROR_STATUS[error] if error in ERROR_STATUS else 400),
                 retry_after=int(answer.retry_after.total_seconds()) if isinstance(answer, RateLimited) else None,
                 remaining=fault.times,
                 from_time=int((starts_at + fault.after).timestamp()),
                 only_rich=fault.only_rich,
+                without_id=stripped,
             ),
             operation=Operation.CREATE,
             actor=Actor.SCENARIO,
