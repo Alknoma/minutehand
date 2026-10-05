@@ -80,8 +80,9 @@ class ActsOnTickets(Protocol):
 
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         """Do what the happening says to the seeded ticket it names (`Scenario.happening_ticket`), as its person
-        would, recorded as actor PERSON. A ticket the agent has deleted, or an action the provider cannot
-        express, raises: the scenario asked for something this world cannot show."""
+        would, recorded as actor PERSON. A ticket no longer there (the agent deleted it) is left alone and
+        nothing is written: the person finds nothing to act on. An action the provider cannot express raises:
+        the scenario asked for something this world cannot show."""
         ...
 
 
