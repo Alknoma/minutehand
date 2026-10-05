@@ -1,26 +1,47 @@
 """The Microsoft provider: sign-in, the Bot Framework connector, Graph for Teams and files, and the people of the
 tenant acting in Teams and on files.
 
-It implements `Provider`, `PushesEvents` and `PushesInteractions`. What a person does to a file (edit, rename,
-move, delete, share, hold it open) has no shared port yet: those are this provider's own methods, recorded as
-actor PERSON and notified to Graph subscriptions exactly as an agent's change is.
+It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesInteractions`,
+`ChangesDocuments` and `NotifiesChanges`. A person's change to a seeded document (edit, rename, move, share, delete)
+lands at its moment as that person, recorded as actor PERSON, and owes every live Graph subscription on the drive a
+notification; `notify` sends what is owed, through the same `subscriptions.notify` an agent's own change goes
+through. A file held open is not something a person does here: it is a fault the scenario declares
+(`MicrosoftSeed.holds`).
 """
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.microsoft import docx, seed, wire
+from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
-from minutehand.adapters.providers.microsoft.graph_files import Files, mime_of
+from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of, readable_text
 from minutehand.adapters.providers.microsoft.inbound import People
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import DriveRecord, MicrosoftWorld, UserRecord
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Happening, Scenario
-from minutehand.domain.world import Actor, Operation, WorldEvent
+from minutehand.domain.scenario import (
+    AccessRole,
+    DocumentHappening,
+    Edited,
+    Happening,
+    Moved,
+    Renamed,
+    Scenario,
+    Shared,
+    Trashed,
+)
+from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
+
+ROLES = {
+    AccessRole.READER: ["read"],
+    AccessRole.COMMENTER: ["read"],
+    AccessRole.WRITER: ["write"],
+    AccessRole.ORGANIZER: ["owner"],
+}
+"""Graph's roles for each access a scenario gives: it has no commenter, so a commenter reads."""
 
 
 class MicrosoftProvider:
@@ -57,80 +78,87 @@ class MicrosoftProvider:
     ) -> None:
         await People(world, clock).press(reply, target)
 
-    # ------------------------------------------------------------------ this provider's own: Teams
+    # ------------------------------------------------------------------ ChangesDocuments
 
-    async def install(self, person: str, conversation: str, target: InboundTarget, world: Store, clock: Clock) -> None:
-        """`person` adds the bot to `conversation` (a connector conversation id) where it was not installed."""
-        people = People(world, clock)
-        found = people.world.conversation(conversation)
-        if found is None:
-            raise LookupError(f"no conversation {conversation}")
-        await people.install(people.person(person), found, target)
-
-    # ------------------------------------------------------------------ this provider's own: files
-
-    async def edit_file(self, person: str, item: str, text: str, world: Store, clock: Clock) -> WorldEvent:
-        """`person` saves new content into a file: a Word file's paragraphs, or a text file's bytes."""
-        files, user, stored, drive = self._file(person, item, world, clock)
-        content = docx.build(text) if mime_of(stored.item.name) == docx.DOCX else text.encode()
-        updated = files.replace_content(stored, content, by=_by(user), actor=Actor.PERSON)
-        await files.notify(drive, updated)
-        return _last(world)
-
-    async def rename_file(
-        self, person: str, item: str, world: Store, clock: Clock, *, name: str | None = None, folder: str | None = None
-    ) -> WorldEvent:
-        """`person` renames a file, moves it into the folder with id `folder`, or both."""
-        files, user, stored, drive = self._file(person, item, world, clock)
-        updated = files.move(drive, stored, name=name, parent=folder, by=_by(user), actor=Actor.PERSON)
-        await files.notify(drive, updated)
-        return _last(world)
-
-    async def delete_file(self, person: str, item: str, world: Store, clock: Clock) -> WorldEvent:
-        files, user, stored, drive = self._file(person, item, world, clock)
-        files.delete(stored, by=_by(user), actor=Actor.PERSON)
-        await files.notify(drive, stored)
-        return _last(world)
-
-    async def share_file(
-        self, person: str, item: str, with_email: str, roles: list[str], world: Store, clock: Clock
-    ) -> WorldEvent:
-        files, _, stored, drive = self._file(person, item, world, clock)
-        files.share(stored, with_email, roles, actor=Actor.PERSON)
-        await files.notify(drive, stored)
-        return _last(world)
-
-    def hold_file(self, person: str, item: str, world: Store, clock: Clock, *, held: bool) -> WorldEvent:
-        """`person` opens a file for editing (`held`), so every write to it is refused 423, or closes it."""
-        _, user, stored, _ = self._file(person, item, world, clock)
+    def change(self, happening: DocumentHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        """The person does the happening's action to the file its seeded document became. A file the agent deleted
+        is not there, and nothing is written."""
         mw = MicrosoftWorld(world)
-        changed = stored.model_copy(update={"locked_by": user.user.mail if held else None})
-        return mw.write_item(changed, operation=Operation.UPDATE, actor=Actor.PERSON)
-
-    @staticmethod
-    def _file(
-        person: str, item: str, world: Store, clock: Clock
-    ) -> tuple[Files, UserRecord, wire.StoredItem, DriveRecord]:
-        mw = MicrosoftWorld(world)
-        user = mw.person(person)
-        if user is None:
-            raise LookupError(f"{person} is not a user of the tenant")
-        stored = mw.item(item)
+        item = mw.seeded(scenario.happening_document(happening).title)
+        stored = mw.item(item) if item is not None else None
         if stored is None:
-            raise LookupError(f"no file {item}")
+            return
+        user = mw.person(happening.person)
+        if user is None:
+            raise LookupError(f"{happening.person} is not a user of the tenant")
         drive = mw.drive(stored.item.parentReference.driveId)
         assert drive is not None
-        return Files(mw, clock), user, stored, drive
+        files, by, action = Files(mw, clock), _by(user), happening.action
+        if isinstance(action, Edited):
+            text = readable_text(stored)
+            joined = f"{text}\n{action.append}" if text else action.append
+            content = docx.build(joined) if mime_of(stored.item.name) == docx.DOCX else joined.encode()
+            files.replace_content(stored, content, by=by, actor=Actor.PERSON)
+        elif isinstance(action, Renamed):
+            ending = stored.item.name[stored.item.name.rfind(".") :] if "." in stored.item.name else ""
+            name = action.to if "." in action.to else f"{action.to}{ending}"
+            files.move(drive, stored, name=name, parent=None, by=by, actor=Actor.PERSON)
+        elif isinstance(action, Moved):
+            folder = _folder(files, mw, drive, action.folder, by)
+            files.move(drive, stored, name=None, parent=folder.item.id, by=by, actor=Actor.PERSON)
+        elif isinstance(action, Shared):
+            target = mw.person(action.access.person)
+            if target is None:
+                raise LookupError(f"{action.access.person} is not a user of the tenant")
+            email = target.user.mail or target.user.userPrincipalName
+            files.share(stored, email, ROLES[action.access.role], actor=Actor.PERSON)
+        elif isinstance(action, Trashed):
+            files.delete(stored, by=by, actor=Actor.PERSON)
+        else:
+            raise ValueError(f"a person cannot {action.kind} a Microsoft file; the scenario is refused at load")
+        mw.owe(drive.drive.id, stored.item.id, actor=Actor.PERSON)
+
+    # ------------------------------------------------------------------ NotifiesChanges
+
+    def watched(self, world: Store, clock: Clock) -> bool:
+        """Whether any drive has a live subscription."""
+        mw, now = MicrosoftWorld(world), clock.now()
+        drives = {subscriptions.drive_watch(d.drive.id) for d in mw.drives()}
+        return any(r.watches in drives and subscriptions.live(r, now) for r in mw.subscriptions())
+
+    async def notify(self, world: Store, clock: Clock) -> None:
+        """Send every live subscription on a drive a notification of each person's change it is owed."""
+        mw = MicrosoftWorld(world)
+        for ref, owed in mw.owed():
+            await subscriptions.notify(
+                mw,
+                clock,
+                subscriptions.drive_watch(owed.drive),
+                change="updated",
+                odata_type=DRIVE_ITEM_TYPE,
+                resource=f"/drives/{owed.drive}/root",
+                item=owed.item,
+            )
+            mw.paid(ref)
+
+
+def _folder(files: Files, mw: MicrosoftWorld, drive: DriveRecord, path: str, by: wire.IdentitySet) -> wire.StoredItem:
+    """The folder at `path` ('/'-separated) from the drive's root, each part made by the person if it is not there."""
+    folder = mw.item(drive.root_id)
+    assert folder is not None
+    for name in (part for part in path.split("/") if part):
+        found = next((c for c in mw.children(folder.item.id) if c.item.name.lower() == name.lower()), None)
+        if found is None:
+            found = files.new_item(drive, folder, name, folder=True, content=b"", by=by)
+            mw.write_item(found, operation=Operation.CREATE, actor=Actor.PERSON)
+        folder = found
+    return folder
 
 
 def _by(user: UserRecord) -> wire.IdentitySet:
     return wire.IdentitySet(user=wire.Identity(id=user.user.id, displayName=user.user.displayName))
 
 
-def _last(world: Store) -> WorldEvent:
-    return world.events(since=world.head() - 1)[-1]
-
-
 def build() -> MicrosoftProvider:
-    """A `Provider` that also `PushesEvents` and `PushesInteractions`; the tests hold it to all three."""
+    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `ChangesDocuments` and `NotifiesChanges`."""
     return MicrosoftProvider()

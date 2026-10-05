@@ -18,6 +18,9 @@
 | subscription              | RECORD       | `sub:<subscription id>`        | `SUBSCRIPTIONS`      |
 | declared fault            | RECORD       | `fault:<position>`             | `FAULTS`             |
 | a scenario's post key     | RECORD       | `post:<key>`                   | `POSTS`              |
+| a seeded document's item  | RECORD       | `seeded:<n>`                   | `SEEDED`             |
+| a file held open          | RECORD       | `hold:<position>`              | `HOLDS`              |
+| a person's change owed to subscriptions | RECORD | `owed:<seq>`         | `OWED`               |
 
 The prefixes keep the external ids of different records apart in one namespace; nothing reads a prefix to learn
 what a record is: every read knows the kind it asked for from the parent it listed under.
@@ -66,6 +69,9 @@ PERMISSION_PARENT = "perm:{item}"
 TOMBSTONES = "tombstones:{drive}"
 FAULTS = "faults"
 POSTS = "posts"
+SEEDED = "seeded"
+HOLDS = "holds"
+OWED = "owed"
 
 SERVICE_URL = "https://smba.trafficmanager.net/teams/"
 """The connector every activity names as its `serviceUrl`; a bot sends its answers there."""
@@ -175,6 +181,20 @@ class ActionRecord(Model):
     activity: wire.Activity
     status: int
     answer: str
+
+
+class SeededRecord(Model):
+    """Which drive item a scenario's seeded document became, by its title."""
+
+    title: str
+    item: str
+
+
+class OwedRecord(Model):
+    """A person changed an item in a drive: every live subscription on the drive is owed a notification of it."""
+
+    drive: str
+    item: str
 
 
 class PostRecord(Model):
@@ -488,6 +508,46 @@ class MicrosoftWorld:
 
     def faults(self) -> list[wire.StoredFault]:
         return self._all(wire.StoredFault, EntityKind.RECORD, FAULTS)
+
+    def holds(self) -> list[wire.StoredHold]:
+        return self._all(wire.StoredHold, EntityKind.RECORD, HOLDS)
+
+    def write_hold(self, hold: wire.StoredHold) -> WorldEvent:
+        return self.write(
+            ref(EntityKind.RECORD, f"hold:{hold.position}"),
+            hold,
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=HOLDS,
+        )
+
+    def seeded(self, title: str) -> str | None:
+        """The item a seeded document of this title became."""
+        return next((s.item for s in self._all(SeededRecord, EntityKind.RECORD, SEEDED) if s.title == title), None)
+
+    def write_seeded(self, position: int, title: str, item: str) -> WorldEvent:
+        return self.write(
+            ref(EntityKind.RECORD, f"seeded:{position}"),
+            SeededRecord(title=title, item=item),
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=SEEDED,
+        )
+
+    def owe(self, drive: str, item: str, *, actor: Actor) -> WorldEvent:
+        return self.write(
+            ref(EntityKind.RECORD, f"owed:{self.next_seq()}"),
+            OwedRecord(drive=drive, item=item),
+            operation=Operation.CREATE,
+            actor=actor,
+            parent=OWED,
+        )
+
+    def owed(self) -> list[tuple[EntityRef, OwedRecord]]:
+        return [(s.entity, wire.parse(OwedRecord, s.body)) for s in self._pages(EntityKind.RECORD, OWED)]
+
+    def paid(self, owed: EntityRef) -> WorldEvent:
+        return self.remove(owed, actor=Actor.SCENARIO, parent=OWED)
 
     def post(self, key: str) -> str | None:
         """The activity id a scenario's post key names."""

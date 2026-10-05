@@ -18,7 +18,7 @@ What Graph does and this does too:
 - `delta` lists every change since its token, with Graph's `deleted` facet for what was removed, paged by
   `@odata.nextLink` and closed by `@odata.deltaLink`. A token older than `DELTA_TOKEN_LIFETIME` on the run's clock
   is refused 410 `resyncRequired` (this fake's lifetime; Graph does not publish one).
-- A file a person holds open (`StoredItem.locked_by`) refuses every write 423.
+- A file a person holds open (a `MicrosoftSeed.holds` fault, `StoredHold`) refuses every write 423 while held.
 - A user's token reaching another user's OneDrive is refused 403 `accessDenied`; an application token reaches all.
 """
 
@@ -374,12 +374,17 @@ class Files:
             }
         )
 
-    @staticmethod
-    def refuse_locked(stored: wire.StoredItem) -> None:
-        if stored.locked_by is not None:
-            raise GraphRefusal(
-                423, "resourceLocked", f"The resource you are attempting to access is locked by {stored.locked_by}."
-            )
+    def refuse_locked(self, stored: wire.StoredItem) -> None:
+        now = int(self._clock.now().timestamp())
+        for hold in self._world.holds():
+            if (
+                hold.item == stored.item.id
+                and hold.from_time <= now
+                and (hold.until_time is None or now < hold.until_time)
+            ):
+                raise GraphRefusal(
+                    423, "resourceLocked", f"The resource you are attempting to access is locked by {hold.by}."
+                )
 
     def _free_name(self, folder: wire.StoredItem, name: str, behaviour: str) -> tuple[str, wire.StoredItem | None]:
         """The name a new item takes, and the existing item it replaces, by `@microsoft.graph.conflictBehavior`."""

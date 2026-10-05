@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import DocumentChange, Manifest, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -17,4 +17,11 @@ MANIFEST = Manifest(
     ],
     kinds=[EntityKind.MESSAGE, EntityKind.CHANNEL, EntityKind.DOCUMENT],
     pushes_events=True,
+    document_changes=[
+        DocumentChange.EDITED,
+        DocumentChange.RENAMED,
+        DocumentChange.MOVED,
+        DocumentChange.SHARED,
+        DocumentChange.TRASHED,
+    ],
 )

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, token
+from minutehand.domain.scenario import Edited
+from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, person_does, token
 
 
 def _at(tenant: Tenant, later: timedelta) -> str:
@@ -34,10 +35,12 @@ async def test_a_subscription_expires_on_the_runs_clock_and_notifies_nothing_aft
             f"{GRAPH}/subscriptions/{sub}", json={"expirationDateTime": _at(tenant, timedelta(days=2))}, headers=auth
         )
         assert renewed.status_code == 200 and renewed.json()["expirationDateTime"].startswith("2026-09-16")
-        await tenant.provider.edit_file("sofia", item, "edited once", tenant.store, tenant.clock)
+        await person_does(tenant, "sofia", "notes.txt", Edited(append="edited once"))
         assert len(webhook.notifications) == 1
+        assert webhook.notifications[0]["value"][0]["resourceData"]["id"] == item
         tenant.clock.jump(tenant.clock.now() + timedelta(days=3))
-        await tenant.provider.edit_file("sofia", item, "edited after expiry", tenant.store, tenant.clock)
+        assert not tenant.provider.watched(tenant.store, tenant.clock), "an expired subscription watches nothing"
+        await person_does(tenant, "sofia", "notes.txt", Edited(append="edited after expiry"))
         assert len(webhook.notifications) == 1
         gone = await http.get(f"{GRAPH}/subscriptions/{sub}", headers=auth)
         assert gone.status_code == 404

@@ -10,8 +10,9 @@ import io
 import docx
 
 from minutehand.adapters.providers.microsoft import docx as word
+from minutehand.domain.scenario import Renamed
 from minutehand.domain.world import Actor, DocumentSnapshot, Operation
-from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, token
+from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, person_does, token
 
 
 def paragraphs(content: bytes) -> list[str]:
@@ -90,9 +91,7 @@ async def test_document_read_versioned_renamed_notified_and_deleted(
         assert paragraphs(again.content) == ["Two vendors remain.", "Prices agreed."]
 
         before = len(webhook.notifications)
-        renamed = await tenant.provider.rename_file(
-            "sofia", plan["id"], tenant.store, tenant.clock, name="Vendor Plan (final).docx"
-        )
+        renamed = await person_does(tenant, "sofia", "Vendor Plan", Renamed(to="Vendor Plan (final)"))
         assert (renamed.actor, renamed.operation) == (Actor.PERSON, Operation.UPDATE)
         assert isinstance(renamed.after, DocumentSnapshot) and renamed.after.title == "Vendor Plan (final).docx"
         [notice] = webhook.notifications[before:]

@@ -684,7 +684,6 @@ class StoredItem(Model):
     item: DriveItem
     content_b64: str | None = None
     version: int = 1
-    locked_by: str | None = Field(default=None, description="A person's email: the file is open for editing")
 
 
 def content_of(stored: StoredItem) -> bytes:
@@ -867,6 +866,17 @@ def b64_bytes(text: str) -> bytes:
 
 
 # =========================================================================== faults
+
+
+class StoredHold(Model):
+    """Minutehand's own: a person holds a file open for editing from a moment, for a while or for good, so every
+    write to it is refused 423, as SharePoint refuses a locked file."""
+
+    position: int
+    item: str
+    by: str = Field(description="The holder's email")
+    from_time: int = Field(description="Simulated seconds since the epoch")
+    until_time: int | None = Field(default=None, description="None: held for good")
 
 
 class StoredFault(Model):

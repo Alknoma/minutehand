@@ -3,6 +3,7 @@ and subscriptions on the run's clock."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import timedelta
@@ -12,9 +13,11 @@ import httpx
 import pytest
 
 from minutehand.adapters.providers.microsoft import docx as word
-from minutehand.domain.scenario import Scenario
-from minutehand.domain.world import Actor, Operation
-from tests.providers.microsoft.tenant import GRAPH, SCENARIO, Intercepted, Tenant, bearer, seeded, token
+from minutehand.adapters.providers.microsoft.common import GraphRefusal
+from minutehand.adapters.providers.microsoft.graph_files import Files as FilesApi
+from minutehand.domain.scenario import DocumentHappening, Scenario
+from minutehand.domain.world import Actor
+from tests.providers.microsoft.tenant import GRAPH, SCENARIO, START, Intercepted, Tenant, bearer, seeded, token
 
 
 @dataclass
@@ -136,18 +139,67 @@ async def test_search_reads_a_word_files_text_and_children_page(files: Files) ->
     assert [i["name"] for i in rest["value"]] == ["f2.txt"] and "@odata.nextLink" not in rest
 
 
-async def test_a_file_a_person_holds_open_refuses_writes_with_423(files: Files) -> None:
-    plan = (await files.http.get(files.url("/root:/Plans/Vendor Plan.docx:"), headers=files.auth)).json()
-    held = files.tenant.provider.hold_file("sofia", plan["id"], files.tenant.store, files.tenant.clock, held=True)
-    assert (held.actor, held.operation) == (Actor.PERSON, Operation.UPDATE)
-    refused = await files.http.put(
-        files.url(f"/items/{plan['id']}/content"), content=word.build("mine"), headers=files.auth
+def test_a_file_held_open_is_a_declared_fault_refusing_writes_with_423_for_its_window(tmp_path: Path) -> None:
+    held = Scenario.model_validate(
+        {
+            **SCENARIO.model_dump(),
+            "provider_seeds": [
+                {"provider": "microsoft", "body": {"holds": [{"document": "Vendor Plan", "by": "sofia",
+                                                              "after": "PT1H", "lasts": "PT2H"}]}}
+            ],
+        }
+    )  # fmt: skip
+    tenant = seeded(tmp_path / "held.db", held)
+    plan = tenant.world.seeded("Vendor Plan")
+    assert plan is not None
+    stored = tenant.world.item(plan)
+    assert stored is not None
+    files = FilesApi(tenant.world, tenant.clock)
+
+    def refused() -> str | None:
+        try:
+            files.refuse_locked(stored)
+        except GraphRefusal as refusal:
+            return f"{refusal.status} {refusal.code}"
+        return None
+
+    assert refused() is None, "not held before its moment"
+    tenant.clock.jump(START + timedelta(hours=1))
+    assert refused() == "423 resourceLocked"
+    tenant.clock.jump(START + timedelta(hours=3))
+    assert refused() is None, "let go once its window is over"
+    [record] = tenant.world.holds()
+    assert record.by == "sofia@example.com"
+
+
+def test_a_hold_on_a_document_nobody_seeded_is_refused(tmp_path: Path) -> None:
+    held = Scenario.model_validate(
+        {
+            **SCENARIO.model_dump(),
+            "provider_seeds": [{"provider": "microsoft", "body": {"holds": [{"document": "Ghost", "by": "sofia"}]}}],
+        }
     )
-    assert code(refused, 423) == "resourceLocked"
-    files.tenant.provider.hold_file("sofia", plan["id"], files.tenant.store, files.tenant.clock, held=False)
-    assert (
-        await files.http.patch(files.url(f"/items/{plan['id']}"), json={"name": "Plan.docx"}, headers=files.auth)
-    ).status_code == 200
+    with pytest.raises(ValueError, match="'Ghost', which is no seeded Microsoft document"):
+        seeded(tmp_path / "ghost.db", held)
+
+
+async def test_a_held_file_refuses_the_agents_write_through_graph(tmp_path: Path, microsoft: Intercepted) -> None:
+    held = Scenario.model_validate(
+        {
+            **SCENARIO.model_dump(),
+            "provider_seeds": [
+                {"provider": "microsoft", "body": {"holds": [{"document": "Vendor Plan", "by": "sofia"}]}}
+            ],
+        }
+    )
+    tenant = seeded(tmp_path / "held.db", held)
+    microsoft.proxy.mount(tenant.store, tenant.clock, {"microsoft": tenant.provider.app(tenant.store, tenant.clock)})
+    plan = tenant.world.seeded("Vendor Plan")
+    drive = tenant.world.drives()[0].drive.id
+    async with microsoft.http() as http:
+        auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
+        put = await http.put(f"{GRAPH}/drives/{drive}/items/{plan}/content", content=word.build("mine"), headers=auth)
+        assert code(put, 423) == "resourceLocked"
 
 
 async def test_an_old_delta_token_is_refused_410_resync_required(files: Files) -> None:
@@ -244,3 +296,62 @@ async def test_declared_faults_answer_in_each_surfaces_shape_then_stop(tmp_path:
                 (await http.post(url, json={"type": "message", "text": "x"}, headers=bot)).status_code for _ in range(3)
             ]
             assert answers == [429, 429, 201]
+
+
+async def test_people_move_share_and_delete_a_seeded_file_as_themselves(files: Files) -> None:
+    from minutehand.domain.scenario import Access, AccessRole, Moved, Shared, Trashed
+    from tests.providers.microsoft.tenant import person_does
+
+    tenant = files.tenant
+    plan = tenant.world.seeded("Vendor Plan")
+    moved = await person_does(tenant, "sofia", "Vendor Plan", Moved(folder="Archive/2026"))
+    assert moved.actor is Actor.PERSON
+    archived = (await files.http.get(files.url("/root:/Archive/2026:/children"), headers=files.auth)).json()
+    assert [i["name"] for i in archived["value"]] == ["Vendor Plan.docx"]
+    assert archived["value"][0]["lastModifiedBy"]["user"]["displayName"] == "Sofia Romano"
+
+    await person_does(tenant, "sofia", "Vendor Plan", Shared(access=Access(person="dania", role=AccessRole.READER)))
+    granted = (await files.http.get(files.url(f"/items/{plan}/permissions"), headers=files.auth)).json()["value"]
+    assert any(p["roles"] == ["read"] and "Dania Kovac" in json.dumps(p) for p in granted), granted
+
+    await person_does(tenant, "owen", "Vendor Plan", Trashed())
+    assert (await files.http.get(files.url(f"/items/{plan}"), headers=files.auth)).status_code == 404
+    head = tenant.store.head()
+    tenant.provider.change(
+        DocumentHappening(person="owen", document="Vendor Plan", after=timedelta(hours=1), action=Trashed()),
+        SCENARIO,
+        tenant.store,
+        tenant.clock,
+    )
+    assert tenant.store.head() == head, "a file already gone is left alone"
+
+
+def test_a_comment_on_a_microsoft_file_is_refused_at_load() -> None:
+    from minutehand.adapters.proxy.registry import Registry
+    from minutehand.application.refusals import RunRefused, refuse_unheld
+    from minutehand.domain.scenario import Commented
+
+    happening = DocumentHappening(
+        person="sofia", document="Vendor Plan", after=timedelta(hours=1), action=Commented(text="ok")
+    )
+    manifests = {m.key: m for m in Registry.installed().manifests}
+    with pytest.raises(RunRefused, match="lands on microsoft, which has no way to show that"):
+        refuse_unheld(SCENARIO.model_copy(update={"happenings": [happening]}), manifests)
+
+
+def test_a_person_not_installed_for_has_a_chat_without_the_bot(tmp_path: Path) -> None:
+    scenario = Scenario.model_validate(
+        {
+            **SCENARIO.model_dump(),
+            "provider_seeds": [{"provider": "microsoft", "body": {"not_installed_for": ["sofia"]}}],
+        }
+    )
+    tenant = seeded(tmp_path / "w.db", scenario)
+    installed = {}
+    for key in ("sofia", "dania"):
+        person = tenant.world.person(key)
+        assert person is not None
+        chat = tenant.world.personal_with(person.user.id, tenant.directory.tenant_id)
+        assert chat is not None
+        installed[key] = chat.bot_installed
+    assert installed == {"sofia": False, "dania": True}

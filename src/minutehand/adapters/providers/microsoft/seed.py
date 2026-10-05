@@ -97,10 +97,21 @@ class FaultSeed(Model):
     only_rich: bool = Field(default=False, description="Only a connector POST: a send, a reply or a new conversation")
 
 
+class HoldSeed(Model):
+    """A person holds a seeded document open for editing, so every write to it is refused 423 `resourceLocked`
+    while they do: a failure the scenario sets up on purpose, not something they do to the document."""
+
+    document: str = Field(description="The title of a seeded Microsoft document")
+    by: str = Field(description="Person.key of whoever holds it")
+    after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="From this offset on")
+    lasts: timedelta | None = Field(default=None, gt=timedelta(0), description="None: for good")
+
+
 class MicrosoftSeed(Model):
     """What only Microsoft seeds, as the body of the scenario's `ProviderSeed` for `microsoft`."""
 
     faults: list[FaultSeed] = []
+    holds: list[HoldSeed] = []
     not_installed_for: list[str] = Field(
         default=[],
         description="Person.key of each person whose own chat with the bot does not exist yet: the bot reaches them "
@@ -420,7 +431,7 @@ def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, 
     files = Files(world, _At(scenario.starts_at))
     root = world.item(library.root_id)
     assert root is not None
-    for document in scenario.documents:
+    for position, document in enumerate(scenario.documents):
         if document.provider != MANIFEST.key:
             continue
         folder = root
@@ -433,11 +444,38 @@ def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, 
             folder = found
         name = document.title if "." in document.title else f"{document.title}.docx"
         content = docx.build(document.text) if mime_of(name) == docx.DOCX else document.text.encode()
-        files.write_content(library, folder, name, content, behaviour="replace", by=owner, actor=Actor.SCENARIO)
+        made, _ = files.write_content(
+            library, folder, name, content, behaviour="replace", by=owner, actor=Actor.SCENARIO
+        )
+        world.write_seeded(position, document.title, made.item.id)
 
 
 def _faults(world: MicrosoftWorld, scenario: Scenario) -> None:
-    write_faults(world, microsoft_seed(scenario).faults, scenario.starts_at)
+    spec = microsoft_seed(scenario)
+    write_faults(world, spec.faults, scenario.starts_at)
+    write_holds(world, spec.holds, scenario, scenario.starts_at)
+
+
+def write_holds(world: MicrosoftWorld, holds: list[HoldSeed], scenario: Scenario, starts_at: datetime) -> None:
+    """Record each hold after any already recorded; the document and the person must both be there."""
+    first = len(world.holds())
+    for position, hold in enumerate(holds, start=first):
+        item = world.seeded(hold.document)
+        if item is None:
+            raise ValueError(f"a hold names {hold.document!r}, which is no seeded Microsoft document")
+        holder = world.person(hold.by)
+        if holder is None:
+            raise ValueError(f"a hold names {hold.by}, who is no user of the tenant")
+        start = starts_at + hold.after
+        world.write_hold(
+            wire.StoredHold(
+                position=position,
+                item=item,
+                by=holder.user.mail or holder.user.userPrincipalName,
+                from_time=int(start.timestamp()),
+                until_time=int((start + hold.lasts).timestamp()) if hold.lasts is not None else None,
+            )
+        )
 
 
 def write_faults(world: MicrosoftWorld, faults: list[FaultSeed], starts_at: datetime) -> None:

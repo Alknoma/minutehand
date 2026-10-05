@@ -9,7 +9,7 @@ from typing import Any
 
 from minutehand.adapters.providers.microsoft import cards
 from minutehand.domain.people import PersonMessage, PersonReply, Press
-from minutehand.domain.scenario import FormInput
+from minutehand.domain.scenario import FormInput, PersonAddsAgent
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -51,7 +51,9 @@ async def test_install_message_card_press_and_update_round_trip(
     tenant.world.write_conversation(
         chat.model_copy(update={"bot_installed": False}), operation=Operation.UPDATE, actor=Actor.SCENARIO
     )
-    await tenant.provider.install("sofia", chat.id, bot.target(), tenant.store, tenant.clock)
+    await tenant.provider.happen(
+        PersonAddsAgent(provider="microsoft", person="sofia"), bot.target(), tenant.store, tenant.clock, secret="unused"
+    )
     installed = bot.accepted()
     assert [a["type"] for a in installed] == ["installationUpdate", "conversationUpdate"]
     reference = installed[1]

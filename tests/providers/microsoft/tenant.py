@@ -16,7 +16,7 @@ import socket
 import ssl
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +38,8 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.people import InboundTarget
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import DocumentAction, DocumentHappening, Scenario
+from minutehand.domain.world import EntityKind, WorldEvent
 
 START = datetime(2026, 9, 14, 8, 30, tzinfo=UTC)
 
@@ -95,6 +96,20 @@ def seeded(path: Path, scenario: Scenario = SCENARIO) -> Tenant:
     provider = build()
     provider.seed(scenario, store)
     return Tenant(provider=provider, store=store, clock=clock, directory=directory_of(scenario))
+
+
+async def person_does(tenant: Tenant, person: str, document: str, action: DocumentAction) -> WorldEvent:
+    """The person does `action` to a seeded document now, as a run lands it: `change`, then `notify` when anything
+    watches. Answers the change's last event on the file, or its first when the file itself is not rewritten (a
+    share writes a permission)."""
+    before = tenant.store.head()
+    happening = DocumentHappening(person=person, document=document, after=timedelta(minutes=1), action=action)
+    tenant.provider.change(happening, SCENARIO, tenant.store, tenant.clock)
+    if tenant.provider.watched(tenant.store, tenant.clock):
+        await tenant.provider.notify(tenant.store, tenant.clock)
+    written = tenant.store.events(since=before)
+    on_file = [e for e in written if e.entity.kind is EntityKind.DOCUMENT]
+    return on_file[-1] if on_file else written[0]
 
 
 @pytest.fixture
