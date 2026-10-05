@@ -312,6 +312,33 @@ class WrittenScenario(_ScenarioBody):
         return Scenario.model_validate({**self.model_dump(), "starts_at": self.starts_at or now})
 
 
+class Seed(WrittenScenario):
+    """What a standing world (`minutehand serve`) starts from: a scenario file's people, tickets, documents,
+    fates and directions, with nothing to achieve. The goal and the expectations may be left out, so a scenario
+    file without them loads, and a whole scenario file loads too: its expectations are what the checks hold the
+    world to when they are asked. The owner, when not named, is the first person; a seed names at least one,
+    since every provider writes the world as someone."""
+
+    name: str = Field(default="world", pattern=r"^[a-z][a-z0-9_]*$")
+    goal: str = Field(default="", description="Handed to nobody: a standing world has no run loop")
+    people: list[Person] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _owner_is_the_first_person(cls, written: object) -> object:
+        if not isinstance(written, dict) or "owner" in written or "people" not in written:
+            return written
+        people: object = written["people"]
+        if not isinstance(people, list) or not people:
+            return written
+        first: object = people[0]
+        if isinstance(first, Person):
+            return {**written, "owner": first.key}
+        if isinstance(first, dict) and "key" in first:
+            return {**written, "owner": first["key"]}
+        return written
+
+
 class Scenario(_ScenarioBody):
     """A scenario as a run plays it and records it: its start is an instant."""
 

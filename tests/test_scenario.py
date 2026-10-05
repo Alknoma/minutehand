@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
-from minutehand.domain.scenario import Scenario, WrittenScenario
+from minutehand.domain.scenario import Scenario, Seed, WrittenScenario
 
 BASE = {
     "name": "partner_pipeline",
@@ -90,3 +90,28 @@ def test_a_scenario_file_with_a_start_keeps_it_whenever_the_run_starts() -> None
 def test_a_played_scenario_without_its_start_is_rejected() -> None:
     with pytest.raises(ValidationError, match="starts_at"):
         Scenario.model_validate({k: v for k, v in BASE.items() if k != "starts_at"})
+
+
+def test_a_scenario_file_without_its_goal_and_expectations_loads_as_a_seed_owned_by_its_first_person() -> None:
+    seed = Seed.model_validate(
+        {
+            "people": [
+                {"key": "sofia", "name": "Sofia", "email": "sofia@example.com"},
+                {"key": "dania", "name": "Dania", "email": "dania@example.com"},
+            ],
+            "tickets": [{"provider": "asana", "project": "Launch", "title": "Pricing", "assignee": "dania"}],
+        }
+    )
+    played = seed.starting(datetime(2026, 9, 1, tzinfo=UTC))
+    assert (played.owner, played.goal, played.name) == ("sofia", "", "world")
+    assert played.starts_at == datetime(2026, 9, 1, tzinfo=UTC) and played.tickets[0].assignee == "dania"
+
+
+def test_a_whole_scenario_file_loads_as_a_seed_with_its_expectations() -> None:
+    seed = Seed.model_validate({**BASE, "expect": [{"kind": "person_asked", "person": "owner"}]})
+    assert seed.owner == "owner" and seed.goal == "Three signed agreements." and len(seed.expect) == 1
+
+
+def test_a_seed_with_nobody_in_it_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        Seed.model_validate({"people": []})
