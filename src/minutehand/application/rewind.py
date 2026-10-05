@@ -279,7 +279,10 @@ async def _ask_again(
     for event in events:
         after = event.after
         if not (
-            event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, MessageSnapshot)
+            event.actor is Actor.AGENT
+            and event.operation is Operation.CREATE
+            and isinstance(after, MessageSnapshot)
+            and after.answerable
         ):
             continue
         for email in after.recipient_emails:

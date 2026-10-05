@@ -8,6 +8,12 @@ decrypted, edited and sent on. A recorded call (`record_model_calls`) is decrypt
 on unchanged, its answer streamed back to the agent as it arrives when it is a stream, and
 kept as a span (`model_calls.span_of`); it is not an `Exchange`, and nothing from its
 headers or query string is stored.
+
+A host no provider claims that the call's world declares outbound (`domain.outbound`) is captured
+(`adapters.proxy.capture`): acknowledged with the declared answer, passed through to the real host, or answered
+from a recording, and kept as an `Exchange` carrying `Captured`. With `capture_unknown`, an undeclared one is
+passed through and kept the same way rather than refused. A pass-through answer reaches the agent chunk by chunk
+as it arrives, by the same tee a recorded model call's stream uses.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import unquote
 
@@ -23,16 +30,31 @@ from mitmproxy import http, tls
 from mitmproxy.addons import asgiapp
 from mitmproxy.net import encoding
 
-from minutehand.adapters.proxy import credentials, redact
+from minutehand.adapters.proxy import capture, credentials, redact
+from minutehand.adapters.proxy.capture import Capturing, Declaration
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.worlds import Mounted, Worlds, one_run
 from minutehand.application.restore import SeenCall
+from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, OnMiss, PassThrough
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.telemetry import SpanSource
-from minutehand.domain.world import Exchange
+from minutehand.domain.world import (
+    Actor,
+    AnsweredBy,
+    BodyKept,
+    Captured,
+    CaptureMode,
+    Change,
+    EntityKind,
+    EntityRef,
+    Exchange,
+    MessageSnapshot,
+    Operation,
+    Recipient,
+)
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp, Message, Scope
 from minutehand.ports.store import Store
@@ -64,6 +86,26 @@ def _first_header(message: http.Message, name: str) -> str | None:
     return values[0] if values else None
 
 
+TEE_LIMIT = 64 * 1024 * 1024
+"""Bytes of a passed-through answer held to be kept; past this the answer still reaches the agent whole, and
+is kept as its length only."""
+
+REPLAYED_HEADER = "x-minutehand-replayed"
+
+
+@dataclass
+class _Passing:
+    """A captured call sent on to the real host, until its answer has passed."""
+
+    world: Mounted
+    declaration: Declaration | None
+    mode: CaptureMode
+    note: str | None
+    chunks: list[bytes] = field(default_factory=lambda: list[bytes]())
+    size: int = 0
+    streamed: bool = False
+
+
 class ProxyAddon:
     def __init__(
         self,
@@ -73,11 +115,19 @@ class ProxyAddon:
         telemetry: Telemetry | None = None,
         *,
         record_model_calls: bool = False,
+        capturing: Capturing | None = None,
+        capture_unknown: bool = False,
     ) -> None:
         self.routing = routing
-        self.worlds: Worlds = one_run(store, clock, {}, scenario=None, provider=routing.registry.provider)
+        self.capturing = capturing or Capturing()
+        self.capture_unknown = capture_unknown
+        self.worlds: Worlds = one_run(
+            store, clock, {}, scenario=None, provider=routing.registry.provider, capturing=self.capturing
+        )
         self.telemetry = telemetry
         self.record_model_calls = record_model_calls
+        # Each captured call on its way to the real host, by flow id, until its answer has passed.
+        self._passing: dict[str, _Passing] = {}
         # The streamed answer of each recorded call, chunk by chunk as it passed through, by flow id.
         self._streams: dict[str, list[bytes]] = {}
         self._recorded: set[str] = set()
@@ -98,7 +148,9 @@ class ProxyAddon:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
         its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
         and seeded then with `scenario`'s people and things, unless `world` already holds anything of it."""
-        self.worlds = one_run(world, clock, apps, scenario=scenario, provider=self.routing.registry.provider)
+        self.worlds = one_run(
+            world, clock, apps, scenario=scenario, provider=self.routing.registry.provider, capturing=self.capturing
+        )
 
     def route(self, worlds: Worlds) -> None:
         """`minutehand serve`: from now on each call is answered in the world `worlds` finds for it."""
@@ -142,7 +194,12 @@ class ProxyAddon:
         if policy is HostPolicy.ANSWER and manifest is not None and world is not None:
             await self._answer(flow, host, manifest, world)
             return
-        refused = world or self.worlds.lobby
+        held = world or self.worlds.lobby
+        declaration = held.capturing.find(host) if manifest is None else None
+        if declaration is not None or (manifest is None and self.capture_unknown):
+            await self._capture(flow, host, held, declaration)
+            return
+        refused = held
         async with refused.lock:
             first = refused.store.head() + 1
             if manifest is None:
@@ -155,8 +212,11 @@ class ProxyAddon:
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """A recorded call answered as a stream reaches the agent as one: each chunk is passed on as it arrives
-        and kept beside, to be read when the stream ends."""
+        and kept beside, to be read when the stream ends. A captured call passed through is always streamed so."""
         response = flow.response
+        if flow.id in self._passing and response is not None:
+            self._tee_passing(flow.id, response)
+            return
         if flow.id not in self._recorded or response is None:
             return
         if (_first_header(response, "content-type") or "").split(";", 1)[0].strip().lower() != EVENT_STREAM:
@@ -170,6 +230,9 @@ class ProxyAddon:
         response.stream = tee
 
     def response(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._passing:
+            self._passed(flow, self._passing.pop(flow.id))
+            return
         if flow.id not in self._recorded:
             return
         self._recorded.discard(flow.id)
@@ -258,6 +321,286 @@ class ProxyAddon:
         if self.telemetry is not None and last >= first:
             for event in world.store.events(since=first - 1):
                 self.telemetry.recorded(event)
+        return exchange
+
+    # -- hosts no provider claims, captured -------------------------------------------------------------------
+
+    async def _capture(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Declaration | None) -> None:
+        """Answer a call to a host no provider claims as its world declares, or, undeclared, pass it through."""
+        if declaration is None:
+            self._passing[flow.id] = _Passing(world, None, CaptureMode.DISCOVERED, None)
+            return
+        if isinstance(declaration, Acknowledge):
+            await self._acknowledge(flow, host, world, declaration)
+            return
+        mode = CaptureMode.PASS_THROUGH if isinstance(declaration, PassThrough) else CaptureMode.REPLAY
+        plan = world.capturing.replaying[declaration.host] if declaration.host in world.capturing.replaying else None
+        if plan is None:
+            self._passing[flow.id] = _Passing(world, declaration, mode, None)
+            return
+        request = flow.request
+        whole = capture.keep(
+            request.get_content(strict=False) or b"",
+            _first_header(request, "content-type"),
+            limit=TEE_LIMIT,
+            paths=declaration.redact,
+        )
+        asked = capture.Asked(
+            method=request.method,
+            host=host,
+            path=redact.path(request.path, also=capture.query_keys(declaration)),
+            body=whole.text,
+            content_type=_first_header(request, "content-type"),
+            raw_digest=whole.body.sha256,
+        )
+        found, why = plan.recordings.answer(asked, ignore_query=plan.ignore_query, ignore_body=plan.ignore_body)
+        if found is not None:
+            recorded = found.exchange
+            assert recorded.captured is not None
+            headers = {REPLAYED_HEADER: plan.recordings.source}
+            if recorded.captured.response.content_type is not None:
+                headers["content-type"] = recorded.captured.response.content_type
+            flow.response = http.Response.make(recorded.status, (recorded.response_body or "").encode("utf-8"), headers)
+            await self._keep(
+                flow, host, world, declaration, mode, AnsweredBy.RECORDING, replayed_from=plan.recordings.source
+            )
+            return
+        if plan.on_miss is OnMiss.PASS_THROUGH:
+            self._passing[flow.id] = _Passing(world, declaration, mode, f"not replayed: {why}")
+            return
+        flow.response = _json_response(502, f"no recording answers this call: {why}", host)
+        await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
+
+    async def _acknowledge(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Acknowledge) -> None:
+        """Answer as declared; with a message reading, the send is also a message from the agent to a person."""
+        request = flow.request
+        answer = capture.canned(declaration, request.method, request.path)
+        flow.response = http.Response.make(answer.status, answer.body, answer.headers)
+        reading = declaration.message
+        if reading is None:
+            await self._keep(flow, host, world, declaration, CaptureMode.ACKNOWLEDGE, AnsweredBy.DECLARATION)
+            return
+        content_type = _first_header(request, "content-type")
+        whole = capture.keep(
+            request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=declaration.redact
+        )
+        read = capture.read_message(reading, whole.text, content_type, world.capturing.people)
+        async with world.lock:
+            first = world.store.head() + 1
+            if read.unread is None:
+                self._message(world, declaration, read, first)
+            await self._keep(
+                flow,
+                host,
+                world,
+                declaration,
+                CaptureMode.ACKNOWLEDGE,
+                AnsweredBy.DECLARATION,
+                note=f"not read as a message: {read.unread}" if read.unread is not None else None,
+                recipients=read.recipients,
+                first=first,
+                locked=True,
+            )
+
+    @staticmethod
+    def _message(world: Mounted, declaration: Acknowledge, read: capture.Read, seq: int) -> None:
+        """The send as a world event: a message from the agent to each person it reached, as their email, and to
+        each address that reaches nobody, as written. Nobody can answer it where it went."""
+        by_key = {p.key: p for p in world.capturing.people}
+        emails = [by_key[r.person].email if r.person is not None else r.address for r in read.recipients]
+        channel = "to:" + ",".join(sorted({r.address.lower() for r in read.recipients}))
+        text = f"{read.subject}\n\n{read.text}" if read.subject else read.text
+        body = json.dumps(
+            {"to": [r.address for r in read.recipients], "subject": read.subject, "text": read.text},
+            ensure_ascii=False,
+        )
+        world.store.apply(
+            Change(
+                entity=EntityRef(provider=declaration.key, kind=EntityKind.MESSAGE, external_id=str(seq)),
+                operation=Operation.CREATE,
+                actor=Actor.AGENT,
+                body=body,
+                parent=channel,
+                after=MessageSnapshot(text=text, channel=channel, recipient_emails=emails, answerable=False),
+            )
+        )
+
+    def _tee_passing(self, flow_id: str, response: http.Response) -> None:
+        passing = self._passing[flow_id]
+        kind = capture.media(_first_header(response, "content-type"))
+        passing.streamed = kind == EVENT_STREAM or _first_header(response, "content-length") is None
+
+        def tee(chunk: bytes) -> bytes:
+            passing.size += len(chunk)
+            if passing.size <= TEE_LIMIT:
+                passing.chunks.append(chunk)
+            return chunk
+
+        response.stream = tee
+
+    def _passed(self, flow: http.HTTPFlow, passing: _Passing) -> None:
+        """A passed-through call whose answer has reached the agent: kept with what of the answer was held."""
+        response = flow.response
+        assert response is not None
+        if passing.size > TEE_LIMIT:
+            raw = b""
+            note = f"its answer of {passing.size} bytes was longer than the proxy holds; kept as its length only"
+        else:
+            note = None
+            coded = b"".join(passing.chunks)
+            coding = _first_header(response, "content-encoding")
+            try:
+                decoded = encoding.decode(coded, coding) if coding else coded
+            except ValueError:
+                decoded = coded
+            raw = decoded if isinstance(decoded, bytes) else (decoded or "").encode("utf-8")
+        notes = "; ".join(n for n in (passing.note, note) if n) or None
+        self._keep_now(
+            flow,
+            flow.request.pretty_host,
+            passing.world,
+            passing.declaration,
+            passing.mode,
+            AnsweredBy.REAL_HOST,
+            note=notes,
+            answer=raw,
+            streamed=passing.streamed,
+            whole_size=passing.size,
+        )
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """A captured call whose real host could not be reached or broke off: kept, saying so."""
+        passing = self._passing.pop(flow.id, None)
+        if passing is None:
+            return
+        reason = flow.error.msg if flow.error is not None else "the connection failed"
+        if flow.response is None:
+            flow.response = _json_response(
+                502, f"the real host could not be reached: {reason}", flow.request.pretty_host
+            )
+        notes = "; ".join(n for n in (passing.note, f"the real host failed: {reason}") if n)
+        self._keep_now(
+            flow,
+            flow.request.pretty_host,
+            passing.world,
+            passing.declaration,
+            passing.mode,
+            AnsweredBy.REAL_HOST,
+            note=notes,
+            answer=b"",
+            streamed=passing.streamed,
+            whole_size=passing.size,
+        )
+
+    async def _keep(
+        self,
+        flow: http.HTTPFlow,
+        host: str,
+        world: Mounted,
+        declaration: Declaration | None,
+        mode: CaptureMode,
+        answered_by: AnsweredBy,
+        *,
+        replayed_from: str | None = None,
+        note: str | None = None,
+        recipients: list[Recipient] | None = None,
+        first: int | None = None,
+        locked: bool = False,
+    ) -> Exchange:
+        """Keep a captured call the proxy answered itself, tied to the events written for it since `first`."""
+        response = flow.response
+        assert response is not None
+        if locked:
+            return self._keep_now(
+                flow,
+                host,
+                world,
+                declaration,
+                mode,
+                answered_by,
+                replayed_from=replayed_from,
+                note=note,
+                recipients=recipients,
+                first=first,
+                answer=response.get_content(strict=False) or b"",
+                streamed=False,
+                whole_size=None,
+            )
+        async with world.lock:
+            return self._keep_now(
+                flow,
+                host,
+                world,
+                declaration,
+                mode,
+                answered_by,
+                replayed_from=replayed_from,
+                note=note,
+                recipients=recipients,
+                first=first,
+                answer=response.get_content(strict=False) or b"",
+                streamed=False,
+                whole_size=None,
+            )
+
+    def _keep_now(
+        self,
+        flow: http.HTTPFlow,
+        host: str,
+        world: Mounted,
+        declaration: Declaration | None,
+        mode: CaptureMode,
+        answered_by: AnsweredBy,
+        *,
+        answer: bytes,
+        streamed: bool,
+        whole_size: int | None,
+        replayed_from: str | None = None,
+        note: str | None = None,
+        recipients: list[Recipient] | None = None,
+        first: int | None = None,
+    ) -> Exchange:
+        request, response = flow.request, flow.response
+        assert response is not None
+        limit = declaration.body_limit if declaration is not None else BODY_LIMIT
+        paths = declaration.redact if declaration is not None else []
+        asked = capture.keep(
+            request.get_content(strict=False) or b"", _first_header(request, "content-type"), limit=limit, paths=paths
+        )
+        answered = capture.keep(answer, _first_header(response, "content-type"), limit=limit, paths=paths)
+        if whole_size is not None and whole_size > len(answer):
+            answered = capture.KeptBody(
+                None, answered.body.model_copy(update={"size": whole_size, "kept": BodyKept.BINARY})
+            )
+        keys = capture.query_keys(declaration) if declaration is not None else redact.CAPTURED_QUERY_KEYS
+        started = datetime.fromtimestamp(request.timestamp_start, UTC)
+        ended = datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC)
+        exchange = Exchange(
+            method=request.method,
+            host=host,
+            path=redact.path(request.path, also=keys),
+            status=response.status_code,
+            request_body=asked.text,
+            response_body=answered.text,
+            traceparent=_first_header(request, TRACEPARENT),
+            captured=Captured(
+                mode=mode,
+                declared_as=declaration.host if declaration is not None else None,
+                answered_by=answered_by,
+                replayed_from=replayed_from,
+                note=note,
+                started=started,
+                ended=max(started, ended),
+                request=asked.body,
+                response=answered.body,
+                streamed=streamed,
+                recipients=recipients or [],
+            ),
+        )
+        self._seen(f"{request.method} {host}{exchange.path}")
+        head = world.store.head()
+        world.store.attach(exchange, first_seq=first if first is not None else head + 1, last_seq=head)
+        self.worlds.answered(world, exchange, [])
         return exchange
 
 

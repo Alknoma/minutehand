@@ -20,8 +20,9 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
 | Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
-| World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 4 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
-| Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 37 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
+| World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 22 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 5 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
+| Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, captures declared outbound hosts, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 38 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
+| Outbound capture: `domain/outbound.py`, `adapters/proxy/capture.py`, `application/outbound.py` | Hosts that are not places the agent keeps state, declared per agent or per standing world: `acknowledge` (answered here, never sent), `pass_through` (sent on, both sides kept), `replay` (answered from a run's recording); `--capture-unknown` for a first run; a send read as a message to a person. See `docs/capture.md` | Built and tested | 41 (`tests/capture/` 28, `tests/checks/test_captured_messages.py` 5, `tests/e2e/test_capture_run.py` 3, `tests/e2e/test_example_capture.py` 1, `tests/serve/test_capture_worlds.py` 3, `tests/model/` 1) | People never reply through a captured channel, and a captured send opens no wait. Replay matches a body by its hash, so an unlisted timestamp or nonce misses. Discovery mode sends for real. |
 | Slack provider | 19 Web API methods, `response_url`, `url_private`; every Events API shape its production caller handles, plus edits, deletes, reactions and joins; buttons, person pickers, modals and slash commands pushed as interactivity payloads and the agent's answers applied; seeded channels, history, threads, files, guests, bots and deactivated accounts; scenario-declared faults including `ratelimited` with `Retry-After` | Built and tested | 115 (`tests/providers/slack/`), most through the real proxy with stock `slack_sdk` | One workspace. Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. See "Slack, against its production caller". |
 | Asana provider | 54 routes over users, teams, workspaces, projects and their members, sections, custom fields and their settings, tags, tasks, subtasks and stories, and `/-/oauth_token`; a scenario's Asana seed; a declared status source; people acting on seeded tasks | Built and tested | 102 (`tests/providers/asana/`) | With no seeded token, any bearer token acts as the agent. A bare `custom_fields` in `opt_fields` answers each field's gid and resource type, as every bare nested field does. Webhooks answer 501. No system stories (assigned, moved, completed) are written. |
 | YouTrack provider | 45 REST routes, each at `/api` and `/youtrack/api`, and 9 Hub routes at `/hub/api/rest`: issues, custom fields of every single-valued type with per-project bundles, defaults and required flags, comments, tags, links, activities read from the log, projects and their fields, the instance's fields and bundles, users, commands, `issuesGetter/count`, Hub projects, groups, permissions and OAuth tokens; the query language every shape a production client builds; people acting on seeded issues (`ActsOnTickets`) | Built and tested | 119 (`tests/providers/youtrack/`, 221 cases with parameters; most through the proxy) | Only a seeded `*.youtrack.cloud` or `*.myjetbrains.com` host is reached: a self-hosted instance's own host cannot be declared. Multi-valued fields (`enum[*]`, `user[*]`, `version[*]`), text fields, work items, attachments, saved searches, agile boards and sprints as boards are not served. Wording of 403, 429 and several 400s, the activity item `$type`s for tags, links and summary, and the default issue order are not verified against the real service. |
@@ -206,11 +207,12 @@ src/minutehand/
                       Reassigns, Comments, Deletes) | MessagingHappening (PersonPosts, PersonEdits, PersonDeletes,
                       PersonReacts, PersonJoins, PersonOpensAgent, PersonCommands)), TicketFate, Direction,
                       PersonAsked, TicketCreated, TicketDeleted, TicketInState, Relayed
-    world.py          WorldEvent, Change, Stored, Exchange, RecordedCall, EntityRef,
+    world.py          WorldEvent, Change, Stored, Exchange, Captured, Body, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, RecordSnapshot,
                       InteractionSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
                       GoalByWake, GoalByMessage, HumanAction, Inbox, StateHooks
+    outbound.py       Acknowledge, PassThrough, Replay, Answer, Route, MessageReading, InForks, OnMiss
     people.py         PersonReply, Press, PersonMessage, InboundTarget
     provider.py       Manifest, Tier
     experiment.py     Fork, CallMatch, PromptPatch, ModelSwap, PersonChange, TicketEdit, DeadlineShift
@@ -227,7 +229,8 @@ src/minutehand/
                       model_calls.py (the join)
   checks/             one module per check; runner.py, ledger.py, effectiveness.py, patterns.py, _waits.py
   adapters/
-    proxy/            server.py, addon.py, policy.py, registry.py, hosts.py, edit.py, redact.py, model_calls.py
+    proxy/            server.py, addon.py, policy.py, registry.py, hosts.py, edit.py, redact.py, model_calls.py,
+                      capture.py (outbound hosts: answering, keeping, reading a send, replay), worlds.py
     providers/<key>/  manifest.py, provider.py, app.py, wire.py, state.py, seed.py
     store/            sqlite.py
     agent/            reported.py, polled.py, command.py, reach.py
@@ -405,6 +408,7 @@ class BooksWakes(Protocol):
 | YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets` |
 | Google Drive | `google_drive` | `www.googleapis.com`, `oauth2.googleapis.com`, `docs.googleapis.com`, `slides.googleapis.com`, `iamcredentials.googleapis.com` | `ChangesDocuments`, `NotifiesChanges` |
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
+| GitHub | `github` | `api.github.com` (REST and `/graphql`; no prefix) | none: repository reads only, see its `README.md` |
 
 All five are `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. A person acting on a seeded ticket by themselves at a set moment (completing, reassigning, commenting on or deleting it) is a `TicketHappening`: the run schedules it when it seeds, `ActsOnTickets.act` lands it as actor `PERSON`, it wakes nobody, and a run whose happening names a provider that cannot act is refused before anything is seeded; a ticket already gone is left alone. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
 
@@ -552,6 +556,8 @@ What a run leaves behind (`session.py`):
 <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
 <state>/runs/<run_id>/agent.json     `AgentUnderTest`
 <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
+<state>/runs/<run_id>/captured.jsonl every call the run captured to a host no provider claims, redacted, for
+                                     a later replay (`docs/capture.md`)
 <state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks` and
                                      settled in time
 <state>/runs/<run_id>/restore.json   for a fork, or a sample after the first: each restore step with its
@@ -566,7 +572,7 @@ What a run leaves behind (`session.py`):
 - One file per root run isolates parallel runs. A fork lives in its root's file.
 - One `sqlite3` connection per store, shared across threads behind one lock: a provider served from a worker thread writes through it.
 - `span` is append-only and keyed like `exchange`: each row carries the wake it is placed in, the wake it arrived in and `after_seq`, the head of the log when it arrived. A fork sees its parent's rows placed in wakes up to the one whose checkpoint it was forked at (`run.forked_wake`), however late they arrived.
-- `SCHEMA_VERSION = 4` is stamped into `user_version`; a file with tables and another version (a version 3 file, whose spans were stamped by arrival) is refused, not guessed at.
+- `SCHEMA_VERSION = 5` is stamped into `user_version`; a file with tables and another version (a version 4 file, whose exchanges carry no `captured` and whose messages no `answerable`) is refused, not guessed at.
 
 ### One container
 
@@ -617,6 +623,9 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   directions it owes, fired only when its clock is moved past them.
 - **The record.** A world is a run (`StopReason.CLOSED` when closed), so `findings`, `view` and the MCP tools
   read it; the newest `--keep` closed worlds are kept.
+- **Outbound hosts.** `CreateWorld.outbound` declares, per world, the hosts no provider claims that it captures
+  (`docs/capture.md`); a call reaches them once it is the world's by its claims, so two worlds can declare one
+  host differently. `GET /v1/worlds/{id}/calls?captured=true` lists them.
 
 When to use which: `run` measures an agent over simulated days and gives a verdict; `serve` stands in for a set
 of emulators under an ordinary service-level suite, where the test drives and asserts.
@@ -659,11 +668,21 @@ Built and tested (`tests/proxy/`). `Routing.policy(host)` decides by host alone:
 | `TUNNEL` | A model host (`DEFAULT_MODEL_HOSTS`: `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`) with no edit for this run | Bytes pass through, never decrypted, never recorded |
 | `EDIT` | A model host the run edits | Decrypted, edited, sent on with the upstream certificate verified; recorded as a span only with `--record-model-calls`. An edit that fails answers 502 rather than sending the request unedited. |
 | `RECORD` | A model host, with no edit, in a run started with `--record-model-calls` | Decrypted, sent on unchanged with the upstream certificate verified, and kept as a span (`adapters/proxy/model_calls.py`); a streamed answer is passed to the agent chunk by chunk as it arrives |
-| `REFUSE` | Anything else | 502 and recorded with no provider; surfaces as an `unmatched_call` finding |
+| `REFUSE` | Anything else | Captured when the call's world declares the host outbound (below); else passed through and kept as `discovered` under `--capture-unknown`; else 502 and recorded with no provider, surfacing as an `unmatched_call` finding that says how to declare it |
+
+A host left to `REFUSE` is decided per world, by the declarations of the world the call belongs to (`Mounted.capturing`; `docs/capture.md`):
+
+| Declared | What happens |
+|---|---|
+| `acknowledge` | Never leaves the machine: answered with the declared status, headers and body (or a route's); kept as an `Exchange` carrying `Captured`; with a `message` reading, also a world event, a message from the agent to the person the body names |
+| `pass_through` | Sent to the real host unchanged, upstream certificate verified; the answer reaches the agent chunk by chunk through the tee `RECORD` uses, and both sides are kept |
+| `replay` | Answered from an earlier run's `captured.jsonl`, marked `x-minutehand-replayed`; a miss is passed through and kept, or refused with 502, as declared |
+
+A declared host a provider claims, or a model host, is refused when the run or world is created, naming both.
 
 A model host that overlaps a provider's claim is refused when `Routing` is built. The model-host list is a `Routing` argument; the CLI uses the default. Upstream connections open only when a request is forwarded (`connection_strategy="lazy"`) and the certificate shown to the client is minted, not copied (`upstream_cert=False`); `test_claimed_host_is_answered_without_contacting_it` and `test_unclaimed_host_is_refused_and_recorded_without_contacting_it` watch a listener receive no connection.
 
-Capture mode, which would pass the last row through and record it to measure a provider against the real API, is designed, not built.
+Capture of hosts no provider claims is built (above). Passing a host a provider claims through to the real service, to measure the provider against it, is not.
 
 ### What "right" means for a scenario
 
@@ -1050,6 +1069,7 @@ Built and tested (`tests/telemetry/test_otel_telemetry.py`). OpenTelemetry SDK, 
   | `minutehand.run` | none | `minutehand.run_id`, `minutehand.scenario`, `minutehand.seed`, simulated start; at the end `minutehand.stop`, `minutehand.wall_seconds` |
   | `minutehand.wake` | run | `minutehand.wake`, `minutehand.wake.reason`, simulated time |
   | `<provider> <operation> <kind>`, e.g. `asana create ticket`, `SpanKind.SERVER` | the caller's span; else the wake; else the run | `minutehand.seq`, `minutehand.wake`, `minutehand.entity.id`, `minutehand.actor`, simulated time; with a call, `http.request.method`, `server.address`, `url.path`, `http.response.status_code` |
+  | `<method> <host>`, one per captured call, `SpanKind.CLIENT`, at its real start and end | the caller's span; else the wake; else the run | `http.request.method`, `server.address`, `url.path`, `http.response.status_code`, `minutehand.wake`, `minutehand.capture.mode`, `minutehand.capture.answered_by`, `minutehand.capture.declared_as`, `minutehand.capture.replayed_from`, simulated time; never a body |
 
 - **Joining the agent's trace.** When the intercepted request carried a valid W3C `traceparent`, the world-event span is created as its child and linked to its wake, so what happened in the world sits in the same trace as the model call that caused it.
 - **Simulated time.** A world-event span starts and ends at its event's `wall_time`, because backends reject or misplace future timestamps. Simulated time travels as `minutehand.sim_time` (ISO 8601 string) and `minutehand.sim_time_unix_nano` (int). World-event spans are emitted when the run loop reads a wake's new events, after the wake.
@@ -1130,7 +1150,7 @@ minutehand runs [--state DIR]
 minutehand env --agent <agent.yaml> --proxy-port N [--format shell|compose] [--service NAME...] [--ca-path PATH]
 ```
 
-`run`, `fork` and `env` take `--proxy-host`, `--proxy-port`, `--agent-proxy-host`, `--no-proxy HOST` (repeated), `--telemetry-port`, `--no-receive-telemetry` and `--record-model-calls`. `env` prints the environment an agent Minutehand does not start needs, for every run on that port under that state directory: `export` lines, or a Compose override. It makes the proxy's CA if there is none yet, and refuses a port left to the system and a signing secret generated per run.
+`run`, `fork` and `env` take `--proxy-host`, `--proxy-port`, `--agent-proxy-host`, `--no-proxy HOST` (repeated), `--telemetry-port`, `--no-receive-telemetry`, `--record-model-calls`, `--capture-unknown` and `--upstream-ca FILE` (`serve` takes the last two as well). `run`, `fork` and `findings` print an "outbound calls" section, per host no provider claims, and a declaration for each host nobody declared. `env` prints the environment an agent Minutehand does not start needs, for every run on that port under that state directory: `export` lines, or a Compose override. It makes the proxy's CA if there is none yet, and refuses a port left to the system and a signing secret generated per run.
 
 `run`, `fork` and `findings` exit by the verdict (see "The verdict"): 0 passed, 1 failed, 3 not finished, and 2 when the run could not be performed. With samples: 1 when any sample failed, else 3 when any did not finish, else 0. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
 
@@ -1390,11 +1410,16 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **The agent's telemetry is received over OTLP/HTTP only.** An exporter fixed to gRPC (the `…-proto-grpc` exporters, or an SDK whose own code picks gRPC whatever `OTEL_EXPORTER_OTLP_PROTOCOL` says) sends HTTP/2 to the receiver, which answers in HTTP/1.1 (404, then 400) and closes the connection; the exporter logs export failures in the agent's own output; nothing is received and the run says "No telemetry was received". An SDK that ignores the `OTEL_EXPORTER_OTLP_*` variables, or a vendor SDK that does not speak OTLP at all, is not received either; `--record-model-calls` is the fallback for both.
 - **A span is placed by comparing two clocks.** Its start comes from the agent's SDK, a wake's window from this machine's clock. On one machine they agree; an agent in a container or on another host whose clock is off by more than the gap between wakes has spans placed in the wrong wake, or by arrival when its start falls outside every window. A span started between two wakes (the agent working after it reported it was idle) is placed by arrival.
 - **Logs and metrics the agent exports are dropped.** An instrumentation that carries prompts only as log events (older GenAI event conventions) gives a model call with no messages.
+- **A captured send is told, never asked.** People do not reply through an acknowledged email or webhook, so such a message opens no wait, even to a `Silent` person; an agent that asks by email and waits is scored as having asked nothing (`docs/capture.md`).
+- **Replay matches a body by its hash.** A timestamp, nonce, request id or signature in the query or body that is not listed in `ignore_query` or `ignore_body` makes every replay miss; a multipart or compressed body cannot have fields ignored; a body kept only in part can be matched only whole, and an answer kept only in part cannot be replayed.
+- **`--capture-unknown` sends for real.** An undeclared email API is passed through in discovery mode, and the email goes out.
+- **A fork's lookups replay its parent's by default** (`in_forks: replay`): a pass-through host is answered from the parent's recording of the same call, falling back to the real host on a miss.
 - **Out of scope:** browser OAuth flows, certificate-pinned clients, Slack Socket Mode, reading back from real providers in production, the hosted service.
 
 ## References
 
 - `docs/lints.md`: the lints of this repo, each with its five tests.
+- `docs/capture.md`: hosts no provider claims, captured by declaration: the three modes, discovery, replay, forks.
 - `docs/patterns/`: one page per pattern.
 - `docs/ci.md`: the branches, the gate, and what CI runs.
 - The adoption guide in `docs/`: how the parent repository consumes this and what must keep working.

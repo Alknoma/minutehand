@@ -239,6 +239,16 @@ def test_a_file_from_another_schema_version_is_refused(tmp_path: Path) -> None:
         SqliteStore(path, "root", RunClock(START))
 
 
+def test_a_version_4_file_is_refused_since_its_calls_carry_no_capture(tmp_path: Path) -> None:
+    """Version 5 lets an exchange carry `captured` and a message `answerable`; an older file is not guessed at."""
+    path = tmp_path / "v4.db"
+    SqliteStore(path, "root", RunClock(START))
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA user_version=4")
+    with pytest.raises(RuntimeError, match="written with store schema 4; this version reads schema 5"):
+        SqliteStore(path, "root", RunClock(START))
+
+
 def test_an_entity_moved_to_another_parent_is_listed_only_under_the_new_one(
     world: tuple[SqliteStore, RunClock],
 ) -> None:

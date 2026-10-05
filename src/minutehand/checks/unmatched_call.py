@@ -1,4 +1,5 @@
-"""The agent called a host no provider claims; the proxy refused it and nothing in the world changed.
+"""The agent called a host no provider claims and no declaration captures; the proxy refused it and nothing in
+the world changed.
 
 The run did not test what the agent would have done with that service, so its
 other findings are about a different run from the real one. Whether the service
@@ -30,7 +31,11 @@ class UnmatchedCall:
                     check=self.id,
                     severity=Severity.WARNING,
                     kind=FindingKind.REVIEW,
-                    message=f"{call.method} {call.host}{call.path} reached no provider and was answered {call.status}",
+                    message=f"{call.method} {call.host}{call.path} reached no provider and was answered "
+                    f"{call.status}. If {call.host} is not a place the agent keeps state (an email or SMS API, a "
+                    "webhook, a search, a page), declare it under `outbound` in the agent file: `acknowledge` to "
+                    "answer it here and send nothing, `pass_through` to send it on and keep it, `replay` to "
+                    "answer from an earlier run. `--capture-unknown` shows every host the agent calls",
                     pattern=self.pattern,
                 )
                 for call in view.unmatched_calls

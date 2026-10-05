@@ -36,8 +36,18 @@ from minutehand.application.run_clock import RunClock
 from minutehand.checks.patterns import pattern
 from minutehand.domain.checks import FindingKind, ObligationKind
 from minutehand.domain.experiment import Fork, PersonChange
+from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.scenario import Silent
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
+from minutehand.domain.world import (
+    Actor,
+    AnsweredBy,
+    CaptureMode,
+    Change,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+)
 from tests.e2e.support import QUESTION, SOFIA, T0, agent_under_test, answers, scenario
 
 PATHS = ("", "/wakes", "/events", "/calls", "/obligations", "/findings", "/scorecard")
@@ -198,3 +208,27 @@ async def test_every_api_path_the_page_calls_exists(tmp_path: Path, monkeypatch:
         for path in called:
             response = await c.get(path.replace("{run}", parent))
             assert response.status_code == 200, (path, response.text)
+
+
+async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_and_its_redacted_bodies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page's outbound section and lane read `/calls`: each captured call says its mode and what answered it,
+    and its bodies are the redacted ones the run kept."""
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
+    monkeypatch.setenv("MAIL_URL", "https://api.mail.test/v3/mail/send")
+    monkeypatch.setenv("MAIL_TO", SOFIA)
+    agent = launched.agent.model_copy(update={"outbound": [Acknowledge(host="api.mail.test", name="mail")]})
+    state = tmp_path / "state"
+    [outcome] = await session.play(scenario(Silent()), agent, state=state, command=launched.command)
+    async with client(state) as c:
+        calls = await read(c, f"/api/runs/{outcome.record.run_id}/calls", CallsResponse)
+    [mail] = [c for c in calls.calls if c.exchange.captured is not None]
+    assert mail.exchange.captured is not None
+    assert (mail.exchange.captured.mode, mail.exchange.captured.answered_by) == (
+        CaptureMode.ACKNOWLEDGE,
+        AnsweredBy.DECLARATION,
+    )
+    assert mail.exchange.request_body is not None and "sg-key-in-body" not in mail.exchange.request_body
+    page = _page()
+    assert '"/api/runs/{run}/calls"' in page and "Outbound calls" in page and "REPLAYED from a recording" in page

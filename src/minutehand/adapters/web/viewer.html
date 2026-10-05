@@ -91,6 +91,11 @@ svg text.jump{fill:var(--ink-2)}
 #tip b{display:block;font-weight:600}
 #tip i{font-style:normal;font-size:12px;opacity:.75;display:block;margin-top:2px}
 .note{font-size:13px;color:var(--muted)}
+ol.outbound{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+ol.outbound details{border:1px solid var(--grid);border-radius:8px;padding:8px 10px;font-size:13px;min-width:0}
+ol.outbound summary{cursor:pointer;overflow-wrap:anywhere}
+ol.outbound .replayed{font-weight:700;color:var(--fail)}
+ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
 @media (max-width:560px){h1{font-size:20px}}
 </style>
 </head>
@@ -117,7 +122,20 @@ svg text.jump{fill:var(--ink-2)}
     obligations: "/api/runs/{run}/obligations",
     findings: "/api/runs/{run}/findings",
     scorecard: "/api/runs/{run}/scorecard",
-    modelCalls: "/api/runs/{run}/model-calls"
+    modelCalls: "/api/runs/{run}/model-calls",
+    calls: "/api/runs/{run}/calls"
+  };
+  var CAPTURED_AS = {
+    acknowledge: "acknowledged here, never sent",
+    pass_through: "passed through to the real host",
+    replay: "declared to replay",
+    discovered: "passed through, undeclared (--capture-unknown)"
+  };
+  var ANSWERED_BY = {
+    declaration: "answered as declared",
+    real_host: "answered by the real host",
+    recording: "REPLAYED from a recording",
+    refusal: "refused: no recording held it"
   };
   var NS = document.getElementById("ns").namespaceURI;
   var RUNNING_REFRESH = 2000, LIST_REFRESH = 5000;
@@ -232,12 +250,13 @@ svg text.jump{fill:var(--ink-2)}
     clearTimeout(state.timer);
     Promise.all([
       get(API.run, run), get(API.wakes, run), get(API.events, run), get(API.obligations, run),
-      get(API.findings, run), get(API.scorecard, run), get(API.modelCalls, run)
+      get(API.findings, run), get(API.scorecard, run), get(API.modelCalls, run), get(API.calls, run)
     ]).then(function (parts) {
       if (state.selected !== run) { return; }
       state.view = {
         run: parts[0], wakes: parts[1].wakes, events: parts[2].events, obligations: parts[3].obligations,
-        findings: parts[4], scorecard: parts[5].scorecard, modelCalls: parts[6]
+        findings: parts[4], scorecard: parts[5].scorecard, modelCalls: parts[6],
+        outbound: parts[7].calls.filter(function (c) { return c.exchange.captured !== null || c.provider === null; })
       };
       drawRun(fresh);
       if (!state.view.run.finished) {
@@ -319,12 +338,46 @@ svg text.jump{fill:var(--ink-2)}
       "Dashed arcs are the clock jumping ahead to the next moment something was due.</p>" +
       '<div class="chart" id="chart"><div class="scroll" id="scroll"><svg id="timeline" role="img" aria-label="Timeline of the agent\'s wakes, what it waited on, and changes in the world"></svg></div>' +
       '<div class="legend" id="legend"></div><div id="tip" hidden></div></div></section>';
+    if (view.outbound.length) {
+      html += '<section><h2>Outbound calls</h2><p class="sub">Calls to hosts no fake answers: an email API, a search, a page. ' +
+        "Open one to read what was sent and answered, with credentials and declared fields redacted.</p>" +
+        '<ol class="outbound">' + view.outbound.map(outboundItem).join("") + "</ol></section>";
+    }
     var scrollLeft = fresh ? 0 : (document.getElementById("scroll") || { scrollLeft: 0 }).scrollLeft;
     document.getElementById("main").innerHTML = html;
     timeline(view);
     document.getElementById("scroll").scrollLeft = scrollLeft;
     wireFindings();
     if (state.pinned !== null) { highlight(state.pinned); }
+  }
+
+  function outboundHow(call) {
+    var c = call.exchange.captured;
+    if (c === null) { return "refused: no fake answers it and the agent file does not declare it"; }
+    return CAPTURED_AS[c.mode] + ", " + ANSWERED_BY[c.answered_by] + (c.replayed_from ? " (" + c.replayed_from + ")" : "");
+  }
+
+  function outboundBody(text, body) {
+    if (body && body.kept === "binary") { return "(" + body.size + " bytes of " + (body.content_type || "unknown type") + ", not kept)"; }
+    if (text === null || text === undefined) { return "(empty)"; }
+    return text + (body && body.kept === "truncated" ? "\n… cut at the declared size; " + body.size + " bytes in all" : "");
+  }
+
+  function outboundItem(call) {
+    var e = call.exchange, c = e.captured;
+    var replayed = c !== null && c.answered_by === "recording";
+    var head = esc(e.method + " " + e.host + e.path) + " · " + esc(String(e.status)) + " · wake " + call.wake + " · " + esc(when(call.sim_time));
+    var how = '<span class="' + (replayed ? "replayed" : "") + '">' + esc(outboundHow(call)) + "</span>";
+    var body = "";
+    if (c !== null) {
+      body += (c.note ? '<p class="note">' + esc(c.note) + "</p>" : "");
+      body += (c.recipients.length ? '<p class="note">To: ' + c.recipients.map(function (r) {
+        return esc(r.address) + (r.person ? "" : " (nobody in the scenario)");
+      }).join(", ") + "</p>" : "");
+      body += "<div>Request</div><pre>" + esc(outboundBody(e.request_body, c.request)) + "</pre>";
+      body += "<div>Answer</div><pre>" + esc(outboundBody(e.response_body, c.response)) + "</pre>";
+    }
+    return "<li><details><summary>" + head + " — " + how + "</summary>" + body + "</details></li>";
   }
 
   function findingCard(x) {
@@ -435,7 +488,8 @@ svg text.jump{fill:var(--ink-2)}
     });
     if (!present.length) { present = [rows[0]]; }
     var L1 = 40, L2 = 140, OB = 28, L3 = L2 + 22 + Math.max(1, view.obligations.length) * OB + 18, ROW = 48;
-    var H = L3 + 24 + present.length * ROW + 10;
+    var L4 = L3 + 24 + present.length * ROW + 10;
+    var H = view.outbound.length ? L4 + 24 + ROW : L4;
     svg.setAttribute("width", W); svg.setAttribute("height", H);
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
 
@@ -546,6 +600,25 @@ svg text.jump{fill:var(--ink-2)}
       mark(g, d[0], (d[1] ? "“" + d[1].slice(0, 220) + "”" : "") + " " + by + (ev.wake ? ", in wake " + ev.wake : ", at setup") + "." + call,
         when(ev.sim_time), [ev.seq], null);
     });
+
+    // lane 4: calls to hosts no fake answers, each at its simulated time; a replayed one hollow, a refused one red
+    if (view.outbound.length) {
+      el("text", { x: X0, y: L4 + 12, class: "lane" }, svg, "Outbound calls");
+      var oy = L4 + 24 + 30, used = [];
+      el("line", { x1: X0, y1: oy + 10, x2: X1, y2: oy + 10, stroke: "var(--grid)" }, svg);
+      view.outbound.forEach(function (call) {
+        var e = call.exchange, c = e.captured, cx = x(ms(call.sim_time)), level = 0;
+        while (used.some(function (u) { return u[1] === level && Math.abs(u[0] - cx) < 10; }) && level < 2) { level++; }
+        used.push([cx, level]);
+        var cy = oy - level * 11, g = el("g", {}, svg);
+        var refused = c === null || c.answered_by === "refusal", replayed = c !== null && c.answered_by === "recording";
+        var colour = refused ? "var(--fail)" : "var(--agent)";
+        el("rect", { x: cx - 10, y: cy - 10, width: 20, height: 20, fill: "transparent" }, g);
+        el("rect", { class: "ring", x: cx - 4, y: cy - 4, width: 8, height: 8, fill: replayed ? "var(--surface)" : colour, stroke: colour, "stroke-width": 1.6 }, g);
+        mark(g, e.method + " " + e.host + e.path.split("?")[0], outboundHow(call) + "; answered " + e.status + ".",
+          when(call.sim_time), call.first_seq <= call.last_seq ? [call.first_seq] : [], null);
+      });
+    }
 
     legend();
     tips(marks);

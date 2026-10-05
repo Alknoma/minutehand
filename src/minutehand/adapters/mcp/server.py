@@ -25,6 +25,8 @@ from minutehand.adapters.mcp.results import (
     ListedRun,
     NotAScenario,
     NumberedFinding,
+    OutboundCall,
+    OutboundCalls,
     PlayedRun,
     RecordedHttp,
     RunListing,
@@ -50,7 +52,8 @@ simulated people who answer late or never, then checks how well the agent follow
 
 The loop: list_scenarios to find a scenario file; run_scenario with it, the agent file and the command that
 starts the agent; list_findings for what went wrong; show_evidence for one finding's world events, HTTP calls
-and the design pattern that fixes it; change the agent's code; rerun_from a checkpoint (or run_scenario again)
+and the design pattern that fixes it; list_outbound_calls for what it called beyond the fakes (an email API, a
+search), and what to declare for a host it was refused; change the agent's code; rerun_from a checkpoint (or run_scenario again)
 to see whether the finding is gone. list_runs shows every run and which were forked from which.
 """
 
@@ -217,6 +220,33 @@ def build(state: Path) -> FastMCP:
 
     @server.tool(
         description=(
+            "What the run called beyond the faked services: every host no provider claims, with how it was "
+            "declared in the agent file (acknowledge: answered here and never sent; pass_through: sent to the real "
+            "host; replay: answered from an earlier run's recording) or that nobody declared it and it was "
+            "refused, and each captured call with its redacted request and answer. A replayed answer says so "
+            "(`captured.answered_by` recording, `replayed_from`). A send read as a message lists the events it wrote."
+        )
+    )
+    def list_outbound_calls(run_id: str) -> OutboundCalls:
+        outcome = _load(state, run_id)
+        with session.reading(state, run_id) as world:
+            recorded = [c for c in world.calls() if c.exchange.captured is not None]
+        return OutboundCalls(
+            run_id=run_id,
+            hosts=outcome.record.outbound,
+            calls=[
+                OutboundCall(
+                    wake=c.wake,
+                    at=c.sim_time,
+                    call=_http(c.exchange),
+                    events=list(range(c.first_seq, c.last_seq + 1)),
+                )
+                for c in recorded
+            ],
+        )
+
+    @server.tool(
+        description=(
             "Every finished run in the state directory, oldest first, with why it stopped, its verdict, "
             "and its parent and children: a rerun is a child of the run it was forked from."
         )
@@ -339,6 +369,7 @@ def _http(exchange: Exchange) -> RecordedHttp:
         request_body=exchange.request_body,
         response_body=exchange.response_body,
         trace_id=caller[0] if (caller := caller_of(exchange.traceparent)) is not None else None,
+        captured=exchange.captured,
     )
 
 

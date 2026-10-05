@@ -17,15 +17,23 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
-from minutehand.adapters.mcp.results import Evidence, FindingList, RunListing, RunsPlayed, ScenarioListing
+from minutehand.adapters.mcp.results import (
+    Evidence,
+    FindingList,
+    OutboundCalls,
+    RunListing,
+    RunsPlayed,
+    ScenarioListing,
+)
 from minutehand.adapters.mcp.server import build
 from minutehand.checks.patterns import pattern
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.experiment import PersonChange
+from minutehand.domain.outbound import Acknowledge, HtmlAt, MessageReading
 from minutehand.domain.run import StopReason, VerdictKind
-from minutehand.domain.scenario import Silent
-from minutehand.domain.world import Actor, MessageSnapshot
-from tests.e2e.support import QUESTION, SOFIA, Launched, agent_under_test, answers, scenario
+from minutehand.domain.scenario import PersonAsked, Silent
+from minutehand.domain.world import Actor, AnsweredBy, CaptureMode, MessageSnapshot
+from tests.e2e.support import OWNER, QUESTION, SOFIA, Launched, agent_under_test, answers, scenario
 
 CALLER_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
 
@@ -275,3 +283,47 @@ async def test_rerun_from_a_checkpoint_where_the_silent_person_answers_passes_an
     by_id = {r.run_id: r for r in listed.runs}
     assert by_id[parent.run_id].children == [child.run_id]
     assert by_id[child.run_id].parent_run == parent.run_id
+
+
+async def test_list_outbound_calls_and_show_evidence_say_how_each_host_beyond_the_fakes_was_answered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent emails the owner through a declared host and calls one nobody declared."""
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
+    monkeypatch.setenv("MAIL_URL", "https://api.mail.test/v3/mail/send")
+    monkeypatch.setenv("MAIL_TO", OWNER)
+    monkeypatch.setenv("STRAY_URL", "https://api.unclaimed.example/v1/ping")
+    reading = MessageReading(recipients=["personalizations[*].to[*].email"], text=[HtmlAt(html="content[0].value")])
+    agent = launched.agent.model_copy(
+        update={"outbound": [Acknowledge(host="api.mail.test", name="mail", message=reading)]}
+    )
+    directory = tmp_path / "scenarios"
+    directory.mkdir()
+    reported = scenario(Silent()).model_copy(update={"expect": [PersonAsked(person="owner", mentions=["report"])]})
+    (directory / "s.yaml").write_text(yaml.safe_dump(reported.model_dump(mode="json")))
+    (directory / "agent.yaml").write_text(yaml.safe_dump(agent.model_dump(mode="json")))
+    async with connected(tmp_path / "state") as client:
+        [run] = (
+            await call(
+                client,
+                "run_scenario",
+                RunsPlayed,
+                scenario=str(directory / "s.yaml"),
+                agent=str(directory / "agent.yaml"),
+                command=launched.command,
+            )
+        ).runs
+        outbound = await call(client, "list_outbound_calls", OutboundCalls, run_id=run.run_id)
+        found = await call(client, "list_findings", FindingList, run_id=run.run_id)
+        [met] = [f for f in found.findings if f.check == "expectations"]
+        evidence = await call(client, "show_evidence", Evidence, run_id=run.run_id, finding=met.number)
+
+    assert [(h.host, h.mode, h.calls, h.refused) for h in outbound.hosts] == [
+        ("api.unclaimed.example", None, 1, 1),
+        ("api.mail.test", CaptureMode.ACKNOWLEDGE, 1, 0),
+    ]
+    [mail] = outbound.calls
+    assert mail.call.captured is not None and mail.call.captured.answered_by is AnsweredBy.DECLARATION
+    assert mail.call.request_body is not None and "sg-key-in-body" not in mail.call.request_body
+    [emailed] = evidence.events
+    assert emailed.seq in mail.events and emailed.call is not None and emailed.call.captured == mail.call.captured

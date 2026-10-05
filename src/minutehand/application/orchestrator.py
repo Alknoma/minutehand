@@ -29,6 +29,7 @@ from minutehand.application.checkpoint import (
     Restorable,
     write_checkpoint,
 )
+from minutehand.application.outbound import outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import Traffic, settle
 from minutehand.application.run_clock import RunClock
@@ -231,6 +232,7 @@ class Orchestrator:
         self._commitments: list[Commitment] | None = None
         self._failure: str | None = None
         self._seen = 0
+        self._calls_seen = 0
         self._people = {p.email: p for p in scenario.people}
 
     # -- Wakes, for scheduler providers ---------------------------------------------------------------------
@@ -335,6 +337,7 @@ class Orchestrator:
         if self._telemetry is not None:
             self._telemetry.run_started(self._store.run_id, self._scenario)
         self.mount()
+        self._calls_seen = len(self._store.calls())
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))
 
@@ -351,6 +354,7 @@ class Orchestrator:
             stop=stop,
             failure=self._failure,
             providers=list(dict.fromkeys(c.provider for c in self._store.calls() if c.provider is not None)),
+            outbound=outbound_uses(self._store.calls()),
             wakes=self._wakes,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None
@@ -655,6 +659,11 @@ class Orchestrator:
         if self._telemetry is not None:
             for event in new:
                 self._telemetry.recorded(event)
+            calls = self._store.calls()
+            for call in calls[self._calls_seen :]:
+                if call.exchange.captured is not None:
+                    self._telemetry.captured(call)
+            self._calls_seen = len(calls)
         return new
 
     async def _schedule(self, new: list[WorldEvent]) -> None:
@@ -685,6 +694,8 @@ class Orchestrator:
                 self._fate(self._people[after.assignee_email], event)
         for event in sorted(shown.values(), key=lambda e: e.seq):
             assert history is not None and isinstance(event.after, MessageSnapshot)
+            if not event.after.answerable:
+                continue  # a captured send: nobody can answer where it went
             for email in event.after.recipient_emails:
                 if email not in self._people:
                     continue

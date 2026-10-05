@@ -6,9 +6,9 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.application.model_calls import JoinedBy, ModelCall
 from minutehand.domain.checks import Effectiveness, FindingKind, Pattern, Severity, Stability, WakeRecord
-from minutehand.domain.run import StopReason, Verdict
+from minutehand.domain.run import OutboundUse, StopReason, Verdict
 from minutehand.domain.scenario import Expectation, Model, Person
-from minutehand.domain.world import Actor, EntityRef, Operation, Snapshot
+from minutehand.domain.world import Actor, Captured, EntityRef, Operation, Snapshot
 from minutehand.session import ForkPoint
 
 _VERDICT = (
@@ -101,6 +101,12 @@ class RecordedHttp(Model):
     request_body: str | None = Field(description="Only when it was stored")
     response_body: str | None = Field(description="Only when it was stored")
     trace_id: str | None = Field(description="The caller's W3C trace id, when the call carried a traceparent")
+    captured: Captured | None = Field(
+        default=None,
+        description="Set for a call to a host no provider claims that the agent file declares outbound: its mode "
+        "(acknowledge, pass_through, replay, discovered), what answered it (declaration, real_host, recording, "
+        "refusal), the recording a replay came from, and its real start and end",
+    )
 
 
 class CitedEvent(Model):
@@ -151,3 +157,21 @@ class ListedRun(Model):
 
 class RunListing(Model):
     runs: list[ListedRun]
+
+
+class OutboundCall(Model):
+    """One call to a host no provider claims, as the run kept it: bodies redacted, cut at the declared size."""
+
+    wake: int
+    at: AwareDatetime = Field(description="Simulated time")
+    call: RecordedHttp
+    events: list[int] = Field(description="Seqs of the world events it wrote: a send read as a message")
+
+
+class OutboundCalls(Model):
+    run_id: str
+    hosts: list[OutboundUse] = Field(
+        description="Per host: how many calls, how it was declared (mode null: refused, nobody declares it), how "
+        "many were replayed or refused, and addresses its sends named that match no person"
+    )
+    calls: list[OutboundCall] = Field(description="Every captured call, in order; refused calls are not here")

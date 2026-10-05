@@ -23,7 +23,21 @@ from minutehand.domain.agent import WakeReason
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Person, Scenario
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Exchange, Operation, TicketSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    AnsweredBy,
+    Body,
+    BodyKept,
+    Captured,
+    CaptureMode,
+    EntityKind,
+    EntityRef,
+    Exchange,
+    Operation,
+    RecordedCall,
+    TicketSnapshot,
+    WorldEvent,
+)
 from minutehand.ports.telemetry import Telemetry
 
 START = datetime(2026, 8, 24, 10, 50, 3, tzinfo=UTC)
@@ -455,3 +469,46 @@ def test_the_factory_exports_nothing_without_the_endpoint(
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", f"{url}/v1/metrics")
     scripted_run(from_environment())
     assert paths == []
+
+
+def test_a_captured_call_is_one_client_span_in_its_callers_trace_and_never_carries_a_body() -> None:
+    """Even with bodies exported for world events: a captured call's bodies are another service's data."""
+    exported = Exported(export_bodies=True)
+    exported.telemetry.run_started("run-1", SCENARIO)
+    exported.telemetry.wake_started(1, WakeReason.START, START)
+    kept = Body(content_type="application/json", size=20, kept=BodyKept.WHOLE, sha256="0" * 64)
+    call = RecordedCall(
+        exchange=Exchange(
+            method="POST",
+            host="api.mail.test",
+            path="/v3/mail/send?key=[redacted]",
+            status=202,
+            request_body='{"text": "the pricing"}',
+            response_body='{"id": "queued"}',
+            traceparent=TRACEPARENT,
+            captured=Captured(
+                mode=CaptureMode.REPLAY,
+                declared_as="api.mail.test",
+                answered_by=AnsweredBy.RECORDING,
+                replayed_from="run abc",
+                started=WALL,
+                ended=WALL + timedelta(milliseconds=40),
+                request=kept,
+                response=kept,
+            ),
+        ),
+        provider=None,
+        first_seq=3,
+        last_seq=2,
+        wake=1,
+        sim_time=START,
+    )
+    exported.telemetry.captured(call)
+    span = exported.span("POST api.mail.test")
+    attributes = dict(span.attributes or {})
+    assert span.kind is SpanKind.CLIENT and span.context is not None and span.parent is not None
+    assert (span.context.trace_id, span.parent.span_id) == (int(CALLER_TRACE, 16), int(CALLER_SPAN, 16))
+    assert (span.end_time or 0) - (span.start_time or 0) == 40_000_000
+    assert attributes["url.path"] == "/v3/mail/send" and attributes["minutehand.capture.mode"] == "replay"
+    assert attributes["minutehand.capture.replayed_from"] == "run abc"
+    assert not any("pricing" in str(v) or "queued" in str(v) for v in attributes.values())

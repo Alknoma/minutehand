@@ -9,7 +9,7 @@
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
-                     [--agent-host NAME] [--keep N]
+                     [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
                                                  a standing proxy with a control API, for test suites (docs/serve.md)
 
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
@@ -19,7 +19,9 @@ reaches directly. Beside the proxy, on the same host, an OTLP/HTTP receiver keep
 the run: --telemetry-port (default: any free port), or --no-receive-telemetry to serve none. Spans the agent
 exports are passed on to wherever OTEL_EXPORTER_OTLP_ENDPOINT in Minutehand's own environment points.
 --record-model-calls opens the agent's calls to model APIs and keeps each as a span, for an agent that
-exports nothing.
+exports nothing. A host no provider claims is refused unless the agent file declares it under `outbound`
+(acknowledge, pass_through or replay); --capture-unknown passes every undeclared one through and keeps it, and
+the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
@@ -56,6 +58,7 @@ from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
+from minutehand.application.outbound import described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
@@ -136,6 +139,21 @@ def _parser() -> argparse.ArgumentParser:
             action="store_true",
             help="open the agent's calls to model APIs, send them on unchanged and keep each as a span",
         )
+        capture(sub)
+
+    def capture(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument(
+            "--capture-unknown",
+            action="store_true",
+            help="pass through and keep every call to a host nobody claims or declares, rather than refusing it; "
+            "the run ends with the hosts it saw and a declaration for each",
+        )
+        sub.add_argument(
+            "--upstream-ca",
+            type=Path,
+            default=None,
+            help="the CA file a real host is verified against when a call is passed through (default the system's)",
+        )
 
     run = commands.add_parser("run", help="run a scenario against an agent")
     run.add_argument("scenario", type=Path)
@@ -213,6 +231,7 @@ def _parser() -> argparse.ArgumentParser:
     served.add_argument(
         "--keep", type=int, default=standing.DEFAULT_KEEP, help="closed worlds kept; older ones are removed"
     )
+    capture(served)
     state(served)
 
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
@@ -270,6 +289,8 @@ def _listen(args: argparse.Namespace) -> session.Listen:
         telemetry_port=args.telemetry_port,
         receive_telemetry=not args.no_receive_telemetry,
         record_model_calls=args.record_model_calls,
+        capture_unknown=args.capture_unknown,
+        upstream_ca=args.upstream_ca,
     )
 
 
@@ -478,6 +499,8 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
         agent_host=args.agent_host,
         no_proxy=args.no_proxy,
         keep=args.keep,
+        capture_unknown=args.capture_unknown,
+        upstream_ca=args.upstream_ca,
     )
     try:
         asyncio.run(standing.serve_forever(state, options))
@@ -522,6 +545,14 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
     if record.failure is not None:
         lines.append(f"  {record.failure}")
     lines.append(f"  providers the agent called: {', '.join(record.providers) or 'none'}")
+    if record.outbound:
+        lines.append("\noutbound calls")
+        lines += [f"  {described(use)}" for use in record.outbound]
+        declarations = suggested(record.outbound)
+        if declarations:
+            lines.append("\nto capture the hosts nobody declared, add to the agent file (acknowledge: answered here")
+            lines.append("and never sent; pass_through: sent to the real host; replay: answered from a run):")
+            lines += [f"  {line}" for line in declarations.rstrip().splitlines()]
     for kind in _KIND_ORDER:
         found = [f for f in result.findings if f.kind is kind]
         if found:
