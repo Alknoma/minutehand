@@ -30,8 +30,18 @@ def _env(tmp_path: Path, *more: str) -> subprocess.CompletedProcess[str]:
     agent = tmp_path / "agent.yaml"
     agent.write_text(AGENT)
     return subprocess.run(
-        [str(MINUTEHAND), "env", "--agent", str(agent), "--proxy-port", "18080", "--no-receive-telemetry"]
-        + ["--state", str(tmp_path / "state"), *more],
+        [
+            str(MINUTEHAND),
+            "env",
+            "--agent",
+            str(agent),
+            "--proxy-port",
+            "18080",
+            "--no-receive-telemetry",
+            "--state",
+            str(tmp_path / "state"),
+            *more,
+        ],
         capture_output=True,
         text=True,
         env=dict(os.environ),
