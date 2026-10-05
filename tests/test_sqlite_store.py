@@ -246,7 +246,7 @@ def test_a_version_5_file_is_refused_since_its_bodies_are_inline(tmp_path: Path)
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE entity_version(run_id TEXT, seq INTEGER, body TEXT)")
         db.execute("PRAGMA user_version=5")
-    with pytest.raises(RuntimeError, match="written with store schema 5; this version reads schema 6"):
+    with pytest.raises(RuntimeError, match="written with store schema 5; this version reads schema 7"):
         SqliteStore(path, "root", RunClock(START))
 
 

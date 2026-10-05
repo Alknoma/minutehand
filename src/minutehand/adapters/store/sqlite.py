@@ -101,12 +101,14 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 """Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at.
 5: an exchange may carry `captured` and a message `answerable`, which a reader of version 4 would refuse row by
 row; refused here as a whole file instead.
 6: a body of `INLINE_LIMIT` bytes or more is a hash into `content`, and the agent's snapshots are manifests into
-the pool beside the file; a version 5 file holds every body inline and its snapshots as plain directories."""
+the pool beside the file; a version 5 file holds every body inline and its snapshots as plain directories.
+7: an exchange's body that is not UTF-8 text is kept as its bytes in `content` (`request_binary`,
+`response_binary`); a version 6 file has no such columns, and its calls with such a body were never recorded."""
 
 INLINE_LIMIT = 512
 """Bytes of UTF-8 below which a body stays in its own row. Measured on a chatty Slack run (docs/design.md, "Storage"):
@@ -156,6 +158,7 @@ CREATE TABLE IF NOT EXISTS exchange(
   run_id TEXT NOT NULL, position INTEGER NOT NULL, first_seq INTEGER NOT NULL, last_seq INTEGER NOT NULL,
   provider TEXT, wake INTEGER NOT NULL, sim_time TEXT NOT NULL, exchange TEXT NOT NULL,
   request_body TEXT, request_ref BLOB, response_body TEXT, response_ref BLOB,
+  request_binary INTEGER NOT NULL DEFAULT 0, response_binary INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (run_id, position));
 CREATE TABLE IF NOT EXISTS reply(run_id TEXT NOT NULL, position INTEGER NOT NULL, reply TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS span(
@@ -304,12 +307,21 @@ class SqliteStore:
         raw = text.encode("utf-8")
         if len(raw) < INLINE_LIMIT:
             return text, None
+        return None, self._keep_bytes(raw)
+
+    def _keep_bytes(self, raw: bytes) -> bytes:
+        """Bytes in `content`, whatever their size, under the hash of exactly those bytes."""
         digest = hashlib.sha256(raw).digest()
         if self._db.execute("SELECT 1 FROM content WHERE hash=?", (digest,)).fetchone() is None:
             packed = self._pack.compress(raw)
             codec, stored = (Codec.ZSTD, packed) if len(packed) < len(raw) else (Codec.RAW, raw)
             self._db.execute("INSERT INTO content VALUES(?,?,?,?)", (digest, len(raw), codec.value, stored))
-        return None, digest
+        return digest
+
+    def _bytes(self, codec: str | None, stored: bytes | None) -> bytes | None:
+        if stored is None:
+            return None
+        return self._unpack.decompress(stored) if Codec(codec) is Codec.ZSTD else stored
 
     def _text(self, inline: str | None, codec: str | None, stored: bytes | None) -> str | None:
         """A body as it was written, from its row or from `content`."""
@@ -472,8 +484,12 @@ class SqliteStore:
         position = self._db.execute("SELECT COUNT(*) FROM exchange WHERE run_id=?", (self.run_id,)).fetchone()[0]
         request, request_ref = self._keep(exchange.request_body)
         response, response_ref = self._keep(exchange.response_body)
+        if exchange.request_bytes is not None:
+            request_ref = self._keep_bytes(exchange.request_bytes)
+        if exchange.response_bytes is not None:
+            response_ref = self._keep_bytes(exchange.response_bytes)
         self._db.execute(
-            "INSERT INTO exchange VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO exchange VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self.run_id,
                 position,
@@ -482,11 +498,13 @@ class SqliteStore:
                 provider,
                 self._clock.wake(),
                 self._clock.now().isoformat(),
-                exchange.model_dump_json(exclude={"request_body", "response_body"}),
+                exchange.model_dump_json(exclude={"request_body", "response_body", "request_bytes", "response_bytes"}),
                 request,
                 request_ref,
                 response,
                 response_ref,
+                int(exchange.request_bytes is not None),
+                int(exchange.response_bytes is not None),
             ),
         )
         self._db.commit()
@@ -503,7 +521,8 @@ class SqliteStore:
         for depth, (run, _, call_limit, _) in enumerate(self._lineage):
             clause = (
                 f"SELECT {depth} AS depth, x.position, x.first_seq, x.last_seq, x.provider, x.wake, x.sim_time,"
-                " x.exchange, x.request_body, q.codec, q.stored, x.response_body, a.codec, a.stored"
+                " x.exchange, x.request_body, q.codec, q.stored, x.response_body, a.codec, a.stored,"
+                " x.request_binary, x.response_binary"
                 " FROM exchange x LEFT JOIN content q ON q.hash=x.request_ref"
                 " LEFT JOIN content a ON a.hash=x.response_ref WHERE x.run_id=?"
             )
@@ -520,8 +539,10 @@ class SqliteStore:
             RecordedCall(
                 exchange=Exchange.model_validate_json(r[7]).model_copy(
                     update={
-                        "request_body": self._text(r[8], r[9], r[10]),
-                        "response_body": self._text(r[11], r[12], r[13]),
+                        "request_body": None if r[14] else self._text(r[8], r[9], r[10]),
+                        "response_body": None if r[15] else self._text(r[11], r[12], r[13]),
+                        "request_bytes": self._bytes(r[9], r[10]) if r[14] else None,
+                        "response_bytes": self._bytes(r[12], r[13]) if r[15] else None,
                     }
                 ),
                 provider=r[4],

@@ -261,21 +261,24 @@ def test_the_log_is_cut_to_nothing_when_the_store_closes(tmp_path: Path) -> None
     reader.close()
 
 
-def test_a_text_body_that_did_not_decode_is_refused_as_it_was_before(
-    world: tuple[SqliteStore, RunClock], tmp_path: Path
+@pytest.mark.parametrize("size", [8, 4000], ids=["small", "past the inline limit"])
+def test_a_body_that_is_not_text_is_kept_as_its_bytes_and_read_back_identical(
+    size: int, world: tuple[SqliteStore, RunClock], tmp_path: Path
 ) -> None:
-    """mitmproxy reads a JSON body that is not UTF-8 with lone surrogates in it. Such text cannot be encoded, so
-    the call is not recorded, as before schema 6, when serialising the exchange raised instead; nothing is
-    written."""
+    """A body that is not UTF-8 (a file, JSON invalid in its charset) is kept as exactly its bytes, beside a text
+    body read back as text. Before schema 7 such a call was not recorded at all."""
     store, _ = world
-    undecodable = '{"a": "\udcff\udcfe"}'
-    long = "q" * 4000
-    with pytest.raises(UnicodeEncodeError):
-        store.attach(
-            Exchange(method="POST", host="h", path="/", status=200, request_body=long, response_body=undecodable),
-            first_seq=1,
-            last_seq=0,
-        )
+    raw = (b"PK\x03\x04\xff\xfe\x00" * size)[:size]
+    store.attach(
+        Exchange(method="GET", host="h", path="/doc", status=200, request_body="q" * 4000, response_bytes=raw),
+        first_seq=1,
+        last_seq=0,
+    )
     store.attach(Exchange(method="GET", host="h", path="/", status=200), first_seq=1, last_seq=0)
-    assert [c.exchange.method for c in store.calls()] == ["GET"]
-    assert content_rows(tmp_path / "world.db") == 0, "the half-written call left no stored body behind"
+
+    first, second = store.calls()
+    assert first.exchange.response_bytes == raw and first.exchange.response_body is None
+    assert first.exchange.request_body == "q" * 4000 and first.exchange.request_bytes is None
+    assert second.exchange.response_bytes is None
+    reopened = SqliteStore(tmp_path / "world.db", store.run_id, RunClock(datetime(2026, 8, 24, tzinfo=UTC)))
+    assert reopened.calls()[0].exchange.response_bytes == raw
