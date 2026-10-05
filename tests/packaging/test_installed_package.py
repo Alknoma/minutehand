@@ -82,7 +82,8 @@ def test_the_installed_command_passes_the_example_and_fails_the_forgetful_agent(
 ) -> None:
     passed = _example(installed, "scenario.yaml", "diligent", tmp_path / "state")
     assert passed.returncode == 0, f"{passed.stdout}\n{passed.stderr}"
-    assert "because the agent reported it was done" in passed.stdout and "no findings" in passed.stdout
+    assert "\n  Passed: no check failed, and the agent reported it was done.\n" in passed.stdout
+    assert "\nfail (" not in passed.stdout and "owen told what rosa said ('lakeside hall'): met by" in passed.stdout
 
     failed = _example(installed, "scenario_silent.yaml", "forgetful", tmp_path / "state")
     assert failed.returncode == 1, f"{failed.stdout}\n{failed.stderr}"
