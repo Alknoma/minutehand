@@ -23,6 +23,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
+from pydantic import ValidationError
+
 from minutehand.application.checkpoint import (
     Checkpoint,
     NoHooks,
@@ -80,9 +82,17 @@ def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
             if deadline_after is None:
                 raise RunRefused(f"the fork shifts the deadline of scenario {scenario.name}, which has none")
             deadline_after += override.by
-    return Scenario.model_validate(
-        {**scenario.model_dump(), "people": [p.model_dump() for p in people.values()], "deadline_after": deadline_after}
-    )
+    try:
+        return Scenario.model_validate(
+            {
+                **scenario.model_dump(),
+                "people": [p.model_dump() for p in people.values()],
+                "deadline_after": deadline_after,
+            }
+        )
+    except ValidationError as e:
+        problems = "; ".join(str(error["msg"]) for error in e.errors())
+        raise RunRefused(f"the fork's changes leave scenario {scenario.name} self-contradictory: {problems}") from e
 
 
 async def fork_run(
