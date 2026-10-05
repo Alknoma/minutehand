@@ -23,6 +23,7 @@ from minutehand.application.checkpoint import (
     PendingBooking,
     PendingDirection,
     PendingFate,
+    PendingHappening,
     PendingReply,
     PendingWake,
     Restorable,
@@ -52,7 +53,15 @@ from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation
 from minutehand.ports.agent import AgentDriver, Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
-from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ASGIApp,
+    BooksWakes,
+    EditsTickets,
+    HoldsTickets,
+    Provider,
+    PushesEvents,
+    TicketsHappen,
+)
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -184,6 +193,12 @@ class Orchestrator:
             )
         if any(isinstance(w, Booked) for w in agent.wakes) and not services.schedulers:
             raise RunRefused(f"agent {agent.name} declares Booked wakes but no provider in the run books wakes")
+        for provider in sorted({t.provider for t in scenario.tickets if t.key in _happening_tickets(scenario)}):
+            if not isinstance(services.tickets.get(provider), TicketsHappen):
+                raise RunRefused(
+                    f"the scenario has people acting on seeded {provider} tickets, and {provider} is not a provider in "
+                    "the run that lets a person act on its tickets"
+                )
         if isinstance(agent.goal, GoalByMessage):
             if agent.goal.provider not in services.pushes:
                 raise RunRefused(
@@ -252,6 +267,19 @@ class Orchestrator:
                         at=self._scenario.starts_at + direction.after, kind=DueKind.DIRECTION, ref=f"direction:{i}"
                     ),
                     text=direction.text,
+                )
+            )
+        for i, happening in enumerate(self._scenario.ticket_happenings):
+            ticket = next(t for t in self._scenario.tickets if t.key == happening.ticket)
+            self._pending.append(
+                PendingHappening(
+                    due=Due(
+                        at=self._scenario.starts_at + happening.after,
+                        kind=DueKind.TICKET_HAPPENING,
+                        ref=f"happening:{i}",
+                    ),
+                    happening=i,
+                    provider=ticket.provider,
                 )
             )
         if self._reach.every is not None:
@@ -375,7 +403,7 @@ class Orchestrator:
             fired = [p for p in self._pending if p.due in jump.firing]
             self._pending = [p for p in self._pending if p.due not in jump.firing]
             self._clock.jump(jump.now)
-            if all(isinstance(p, PendingFate) for p in fired):
+            if all(isinstance(p, PendingFate | PendingHappening) for p in fired):
                 await self._fire(fired)
                 continue
             wake = self._clock.begin_wake()
@@ -417,6 +445,12 @@ class Orchestrator:
         for item in fired:
             if isinstance(item, PendingFate):
                 self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
+            elif isinstance(item, PendingHappening):
+                happening = self._scenario.ticket_happenings[item.happening]
+                by = next(p for p in self._scenario.people if p.key == happening.by)
+                actor = self._tickets(item.provider)
+                assert isinstance(actor, TicketsHappen)
+                actor.happen(happening, by, self._store, self._clock)
         for item in fired:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
@@ -787,3 +821,8 @@ async def run_scenario(
         signing=signing,
         traffic=traffic,
     ).run()
+
+
+def _happening_tickets(scenario: Scenario) -> set[str]:
+    """The keys of the seeded tickets a person acts on during the run."""
+    return {h.ticket for h in scenario.ticket_happenings}

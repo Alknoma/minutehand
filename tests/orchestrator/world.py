@@ -27,7 +27,16 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
-from minutehand.domain.scenario import Model, ProviderKey, Scenario, TicketState
+from minutehand.domain.scenario import (
+    Model,
+    Person,
+    ProviderKey,
+    Removed,
+    Scenario,
+    StateChanged,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -226,6 +235,18 @@ class Chat:
 
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         self._rewrite(ticket, Actor.PERSON, state=to, assignee_email=None, world=world)
+
+    def happen(self, happening: TicketHappening, by: Person, world: Store, clock: Clock) -> None:
+        """A person acts on a seeded ticket: the scenario is not to hand, so the seeded ticket's ref is found by the
+        order `seed` wrote it in, which `happening.ticket` cannot say; the test seeds one CHAT ticket."""
+        ticket = EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id="seed0")
+        change = happening.change
+        if isinstance(change, StateChanged):
+            self._rewrite(ticket, Actor.PERSON, state=change.to, assignee_email=None, world=world)
+        elif isinstance(change, Removed):
+            world.apply(Change(entity=ticket, operation=Operation.DELETE, actor=Actor.PERSON, parent="P"))
+        else:
+            raise NotImplementedError(f"the test chat cannot apply a {change.kind} happening")
 
     def edit(
         self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
+from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import Booked
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import TicketState
@@ -81,3 +84,35 @@ async def test_an_agent_that_exits_non_zero_ends_the_run_agent_failed(rig: Rig) 
 
     assert record.stop is StopReason.AGENT_FAILED
     assert len(record.wakes) == 1
+
+
+LEGAL = {"key": "legal", "provider": "testchat", "project": "P", "title": "Legal review", "assignee": "tom"}
+HAPPENINGS = {
+    "tickets": [LEGAL],
+    "ticket_happenings": [
+        {"ticket": "legal", "by": "tom", "after": timedelta(days=2), "change": {"kind": "state", "to": "done"}},
+        {"ticket": "legal", "by": "dania", "after": timedelta(days=5), "change": {"kind": "delete"}},
+    ],
+}
+
+
+async def test_a_person_acts_on_a_seeded_ticket_at_its_moment_without_waking_the_agent(rig: Rig) -> None:
+    record, store, clock = await rig.run(scenario(ticket_fates=[], **HAPPENINGS), rig.agent("ask_silent"))
+
+    assert clock.jumps == [T0 + timedelta(days=2), T0 + timedelta(days=5), T0 + timedelta(days=14)]
+    assert [w.sim_time for w in record.wakes] == [T0]
+    acted = [e for e in store.events() if e.actor is Actor.PERSON and e.entity.kind is EntityKind.TICKET]
+    assert [(e.sim_time, e.operation) for e in acted] == [
+        (T0 + timedelta(days=2), Operation.UPDATE),
+        (T0 + timedelta(days=5), Operation.DELETE),
+    ]
+    assert isinstance(acted[0].after, TicketSnapshot) and acted[0].after.state is TicketState.DONE
+
+
+async def test_a_happening_on_a_provider_that_holds_no_tickets_is_refused(rig: Rig) -> None:
+    on_the_scheduler = {
+        **HAPPENINGS,
+        "tickets": [{**LEGAL, "provider": "testsched"}],
+    }
+    with pytest.raises(RunRefused, match="people acting on seeded testsched tickets"):
+        await rig.run(scenario(ticket_fates=[], **on_the_scheduler), rig.agent("ask_silent"))
