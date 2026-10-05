@@ -147,6 +147,23 @@ def test_a_read_of_the_channel_is_not_a_follow_up() -> None:
     assert "never came back to it" in finding.message
 
 
+def test_an_edit_that_leaves_the_text_as_it_was_is_not_a_follow_up() -> None:
+    log = Log()
+    ask = log.message([DANIA], 0, text="hello")
+    log.edit(ask, 70, text="hello")
+    log.message([OWNER], 100, text="status")
+    [finding] = NoFollowUp().run(view(scenario(OWNER, DANIA), log)).findings
+    assert "never came back to it" in finding.message
+
+
+def test_an_edit_that_changes_the_text_is_a_follow_up() -> None:
+    log = Log()
+    ask = log.message([DANIA], 0, text="hello")
+    log.edit(ask, 70, text="hello again: any news?")
+    log.message([OWNER], 100, text="status")
+    assert NoFollowUp().run(view(scenario(OWNER, DANIA), log)).findings == []
+
+
 def test_a_thank_you_to_someone_who_answered_is_not_an_open_wait_or_a_slow_reaction() -> None:
     away_after = person("sofia", absences=[Absence(starts_after=timedelta(hours=1.2), lasts=timedelta(days=9))])
     log = Log()

@@ -140,6 +140,12 @@ class Log:
         ref = EntityRef(provider="generated", kind=EntityKind.RECORD, external_id=f"r{len(self.events) + 1}")
         return self._add(hours, Actor.AGENT, Operation.CREATE, ref, RecordSnapshot(resource=resource, text=text), wake)
 
+    def edit(self, message: WorldEvent, hours: float, text: str, *, wake: int = 1) -> WorldEvent:
+        """The agent rewrites a message it sent, in place."""
+        assert isinstance(message.after, MessageSnapshot)
+        snapshot = message.after.model_copy(update={"text": text})
+        return self._add(hours, Actor.AGENT, Operation.UPDATE, message.entity, snapshot, wake)
+
     def read(self, entity: EntityRef, hours: float, *, wake: int = 1) -> WorldEvent:
         return self._add(hours, Actor.AGENT, Operation.READ, entity, None, wake)
 
