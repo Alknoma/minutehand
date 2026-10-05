@@ -35,5 +35,11 @@ KNOWN_FAILURES: Final[dict[str, KnownFailure]] = {
         promised="serve.md, Scoring a run you drive yourself: a step is recorded as the run loop records a wake, "
         "and the checks and scorecard read it as one",
     ),
+    "test_people.py::test_a_standing_world_lists_a_scripted_answer_still_to_land_as_owed": KnownFailure(
+        observed="Rosa is asked and her scripted answer fires 5 h later on an advance, but WorldView.owed is empty "
+        "until then, so a harness cannot learn where to move the clock",
+        promised="serve.md, the control API: GET /v1/worlds/{id} answers what the world owes; WorldView.owed is "
+        "what falls due as the clock moves",
+    ),
 }
 """Keyed by `<file>.py::<test function>`, the file relative to `tests/acceptance/`."""
