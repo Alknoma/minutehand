@@ -12,7 +12,7 @@ from typing import Protocol, runtime_checkable
 from minutehand.domain.clock import Due
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.scenario import Person, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -71,6 +71,16 @@ class EditsTickets(Protocol):
         self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
     ) -> None:
         """Change the ticket's state and/or assignee, recorded as actor SCENARIO. None leaves a field as it is."""
+        ...
+
+
+@runtime_checkable
+class TicketsHappen(Protocol):
+    """A provider on whose seeded tickets a person acts at a moment of the run: how a `TicketHappening` lands."""
+
+    def happen(self, happening: TicketHappening, by: Person, world: Store, clock: Clock) -> None:
+        """Apply the change to the seeded ticket `happening.ticket` names, recorded as actor PERSON with `by` as
+        its author, stamped from `clock`."""
         ...
 
 
