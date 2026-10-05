@@ -19,15 +19,15 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
-| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 9 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
+| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
 | World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 4 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 37 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
 | Slack provider | 15 Web API methods; message events pushed to the agent, signed with the run's secret or the agent's own | Built and tested | 74 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
-| Asana provider | 20 routes over users, workspaces, projects, sections, tasks and stories | Built and tested | 55 (`tests/providers/asana/`) | Any bearer token is accepted. |
+| Asana provider | 54 routes over users, teams, workspaces, projects and their members, sections, custom fields and their settings, tags, tasks, subtasks and stories, and `/-/oauth_token`; a scenario's Asana seed; a declared status source; people acting on seeded tasks | Built and tested | 102 (`tests/providers/asana/`) | With no seeded token, any bearer token acts as the agent. A bare `custom_fields` in `opt_fields` answers each field's gid and resource type, as every bare nested field does. Webhooks answer 501. No system stories (assigned, moved, completed) are written. |
 | YouTrack provider | 14 routes, each at `/api` and `/youtrack/api` | Built and tested | 60 (`tests/providers/youtrack/`) | Any bearer token is accepted. |
 | Google Drive provider | 14 Drive v3 routes, Docs v1 `documents.get`, Google's `/token` | Built and tested | 62 (`tests/providers/google_drive/`) | Sign-in is not verified; any bearer token is accepted. Content is capped at 5 MiB per file. |
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
-| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 71 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
 | Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step sees only `AgentReport`. An agent with no `Reported` wake source is restored unverified, and says so. Settling sees only calls through the proxy. PostgreSQL is described, not tested. |
 | Checks, ledger, scorecard, patterns: `checks/` | 12 checks, the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
@@ -200,8 +200,9 @@ Designed, not built: the same loop as MCP tools (see "What a coding agent calls"
 src/minutehand/
   domain/             pure: no I/O, no clock reads
     scenario.py       Model, Scenario, Person, Answers, Scripted, Silent, DelayRange, WorkingHours, Absence,
-                      SeededTicket, SeededDocument, TicketFate, Direction, PersonAsked, TicketCreated,
-                      TicketDeleted, TicketInState, Relayed
+                      SeededTicket, SeededDocument, ProviderSeed, TicketFate, TicketHappening (Moves,
+                      Reassigns, Comments, Deletes), Direction, PersonAsked, TicketCreated, TicketDeleted,
+                      TicketInState, Relayed
     world.py          WorldEvent, Change, Stored, Exchange, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot, DocumentSnapshot, RecordSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
@@ -214,7 +215,8 @@ src/minutehand/
     clock.py          Due, Jump, next_jump()
     run.py            RunRecord, StopReason
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
-  ports/              Store, Clock, Provider, PushesEvents, HoldsTickets, EditsTickets, BooksWakes, Wakes,
+  ports/              Store, Clock, Provider, PushesEvents, HoldsTickets, EditsTickets, ActsOnTickets,
+                      BooksWakes, Wakes,
                       AgentDriver, Reports, Replier, Telemetry
   application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (settle, restore,
                       verify), replier_scripted.py, run_clock.py, state_hooks.py, files.py, refusals.py,
@@ -319,7 +321,7 @@ class CheckReport(Model):
 
 ### The provider port
 
-Six protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
+Seven protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
 
 ```python
 class Provider(Protocol):
@@ -353,6 +355,11 @@ class EditsTickets(Protocol):
     ) -> None: ...
 
 
+@runtime_checkable
+class ActsOnTickets(Protocol):
+    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None: ...
+
+
 class Wakes(Protocol):
     def book(self, due: Due) -> None: ...
 
@@ -369,18 +376,55 @@ class BooksWakes(Protocol):
 | Provider | `Manifest.key` | Hosts (`path_prefix`) | Ports beyond `Provider` |
 |---|---|---|---|
 | Slack | `slack` | `slack.com`, `*.slack.com` | `PushesEvents` |
-| Asana | `asana` | `app.asana.com` (`/api/1.0`) | `HoldsTickets`, `EditsTickets` |
+| Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets` |
 | YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api` and `/youtrack/api`) | `HoldsTickets`, `EditsTickets` |
 | Google Drive | `google_drive` | `www.googleapis.com`, `oauth2.googleapis.com`, `docs.googleapis.com` | none |
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 
-All five are `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
+All five are `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. A person acting on a seeded ticket by themselves at a set moment (completing, reassigning, commenting on or deleting it) is a `TicketHappening`: the run schedules it when it seeds, `ActsOnTickets.act` lands it as actor `PERSON`, it wakes nobody, and a run whose happening names a provider that cannot act is refused before anything is seeded; a ticket already gone is left alone. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
+
+### A provider's own seed: Asana
+
+Built and tested (`tests/providers/asana/`). What only one service has is seeded through `Scenario.provider_seeds`: a `ProviderSeed(provider, body)` whose body is that provider's own seed model as JSON text (a scenario file writes it as structure), parsed only by that provider. Asana's is `AsanaSeed` (`adapters/providers/asana/seed.py`):
+
+```yaml
+tickets:
+  - {provider: asana, project: Backend Services, title: API timeout in production, assignee: bob}
+provider_seeds:
+  - provider: asana
+    body:
+      workspace: {name: Test Workspace, organization: true, premium: true}
+      teams: [{name: Engineering}, {name: Design, members: [alice], agent: false}]
+      custom_fields:
+        - {name: Status, kind: enum, options: [{name: Open}, {name: In Progress}, {name: Done}, {name: Cancelled}]}
+        - {name: Priority, kind: enum, options: [{name: High}, {name: Low}]}
+      tags: [production]
+      projects:
+        - {name: Backend Services, team: Engineering, custom_fields: [Status, Priority],
+           sections: [{name: Open}, {name: In Progress}, {name: Done}, {name: Cancelled}]}
+      tasks:
+        - {ticket: API timeout in production, section: In Progress, tags: [production], due_after: P3D,
+           values: [{field: Priority, option: High}, {field: Status, option: In Progress}],
+           comments: [{person: alice, text: "Seen again at 9am.", ago: PT2H}]}
+      status: {kind: custom_field, field: Status, means: {Open: open, Done: done, Cancelled: cancelled}}
+      tokens: [{token: pat-agent}, {token: pat-alice, person: alice, expires_after: PT1H}]
+      refresh_tokens: [{refresh_token: refresh-agent}]
+      rate_limits: [{after: P2D, lasts: PT90S}]
+```
+
+- **Status is one declared fact.** Asana keeps three independent facts about a task: `completed`, its section, and any status custom field. `status` names which one `TicketSnapshot.state` reads: `completed`, `section` (the default; a section says what it `means`, and an unseeded project has To do, Done and Cancelled), or `custom_field` with each option's meaning. The completed box is the floor under all three: a ticked task is never open. Completing a task through the API moves nothing else, as in Asana; a person's fate or happening moves the task by the declared source and ticks it, and a state the source cannot say (cancelled, with `completed`) raises.
+- **Who calls is the token's user.** With `tokens` or `refresh_tokens` seeded, only those and the access tokens `/-/oauth_token` mints from a refresh token (an hour of run time each) are accepted; `users/me` and `created_by` are that user. With none, any bearer token is the agent.
+- **Refusals on purpose:** 403 on a `private` project, and its tasks, to anyone not in `members`; 402 to search and custom fields when `premium: false`; 429 with `Retry-After` through each `rate_limits` stretch; 404 on a deleted task; 400 on a custom field that does not exist, is not on the task's projects, or an option the field does not have.
+- **Every name must name something.** A person, team, field, option, tag, section or ticket the seed names and does not define is refused before anything is written.
+
+The emulator this replaced answered three things differently from Asana as documented, and a client tested against it needs changing: its factory hard-coded the workspace's and the Status, Priority and Story Points fields' gids, where this provider's gids are derived from names and found through the API; it answered a bare `opt_fields=custom_fields` with each field in full, where every bare nested field here answers its gid and resource type, which is Asana's documented rule for an object named without its fields and is not verified against the live API, so a client must name `custom_fields.enum_value.name` and the like; and it had no project memberships or `addMembers`.
 
 ### Flow of one wake
 
 ```
 Orchestrator.run():
-  every provider seeds the world (actor SCENARIO); directions and the first Polled tick enter `pending`
+  every provider seeds the world (actor SCENARIO); happenings, directions and the first Polled tick
+  enter `pending`
   checkpoint (wake 0)
   START wake: by message, the owner says the goal (PushesEvents.say); otherwise WakeRequest(START, goal)
   loop:
@@ -388,7 +432,7 @@ Orchestrator.run():
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
     clock.jump(jump.now)
-    only ticket fates fired -> HoldsTickets.transition, no wake
+    only ticket fates and happenings fired -> HoldsTickets.transition, ActsOnTickets.act, no wake
     otherwise, one wake:
       fire in order: fates (transition), replies (PushesEvents.deliver), directions by message (say),
                      bookings (BooksWakes.fire), the next Polled tick
@@ -1235,7 +1279,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
-- **Every provider accepts any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana, YouTrack and Drive accept any bearer token; Drive's `/token` verifies nothing.
+- **Every provider accepts any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana accepts any bearer token as the agent unless the scenario's Asana seed declares tokens, and then only those and the ones its `/-/oauth_token` mints; YouTrack and Drive accept any bearer token; Drive's `/token` verifies nothing.
 - **No fake's wire details have been verified against the real service.**
 - **`PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run.**
 - **A booking's wake is not awaited.** A wake made only of bookings sends no request and polls no report, so the clock may move on before a `Booked` agent acts on the delivery.
