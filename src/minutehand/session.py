@@ -33,7 +33,7 @@ import secrets
 import shutil
 import sqlite3
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,6 +56,7 @@ from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import Receiver, exporter_environment
+from minutehand.application.cases import CASE, CaseKept, CaseStore
 from minutehand.application.checkpoint import (
     CHECKPOINT,
     AgentState,
@@ -84,6 +85,7 @@ from minutehand.application.restore import Progress, Restored, SeenCall, restore
 from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
+from minutehand.application.steps import steps
 from minutehand.checks.runner import RunResult, broken, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
@@ -91,7 +93,7 @@ from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
-from minutehand.domain.run import RunRecord
+from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
 from minutehand.domain.world import Actor, Operation, TicketSnapshot
@@ -422,6 +424,51 @@ def runs(state: Path) -> list[Outcome]:
     return [load(state, d.name) for d in found]
 
 
+KEPT = "world.json"
+"""In a standing world's run directory: what marks it as one (`serve.Kept`)."""
+
+
+def driven(state: Path, run_id: str) -> bool:
+    """Whether the run was driven from outside (`minutehand serve`: a standing world, or a case of them), so its
+    wakes are steps someone marked or the clock implied, not wakes Minutehand sent."""
+    directory = run_dir(state, run_id)
+    return (directory / KEPT).is_file() or (directory / CASE).is_file()
+
+
+def case_of(state: Path, run_id: str) -> CaseKept | None:
+    """The case a run directory is, when it is one (`application.cases`)."""
+    path = run_dir(state, run_id) / CASE
+    return CaseKept.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def case_members(state: Path) -> dict[str, str]:
+    """Every world that belongs to a case, with the case's id: read through its case, never listed alone."""
+    base = state / RUNS
+    found: dict[str, str] = {}
+    for path in sorted(base.glob(f"*/{CASE}")) if base.is_dir() else []:
+        kept = CaseKept.model_validate_json(path.read_text(encoding="utf-8"))
+        found.update({w: kept.case_id for w in kept.worlds})
+    return found
+
+
+def probe(outcome: Outcome) -> bool:
+    """A closed standing world no call ever reached: one a harness opened to look and left, not a run to read."""
+    record = outcome.record
+    return (
+        record.stop is StopReason.CLOSED
+        and not record.worlds
+        and not record.providers
+        and not record.outbound
+        and not record.emulators
+    )
+
+
+def listed(state: Path) -> list[Outcome]:
+    """`runs`, as a person lists them: a case once, never its worlds one by one, and no probe world."""
+    members = case_members(state)
+    return [o for o in runs(state) if o.record.run_id not in members and not probe(o)]
+
+
 def fork_points(state: Path, run_id: str) -> list[ForkPoint]:
     """Every point this run can be forked from, in order."""
     with reading(state, run_id) as world:
@@ -658,11 +705,31 @@ def reading(state: Path, run_id: str) -> Iterator[Store]:
     """A run's world opened for reading only, so a run another process is still writing can be read without
     taking its write lock; closed on leaving. A fork is read from its root run's file."""
     entry = find(state, run_id)
+    case = case_of(state, entry.root)
+    if case is not None:
+        with _reading_case(state, case) as merged:
+            yield merged
+        return
     store = _ReadOnlyStore(run_dir(state, entry.root) / WORLD, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
     try:
         yield store
     finally:
         store.close()
+
+
+@contextmanager
+def _reading_case(state: Path, case: CaseKept) -> Iterator[Store]:
+    """A case as one run: each of its worlds' files and its own, read as one log (`application.cases.CaseStore`)."""
+    epoch = RunClock(datetime.fromtimestamp(0, UTC))
+    with ExitStack() as stack:
+        parts: list[Store] = []
+        for world_id in [*case.worlds, case.case_id]:
+            path = run_dir(state, world_id) / WORLD
+            if path.is_file():
+                store = _ReadOnlyStore(path, world_id, epoch)
+                stack.callback(store.close)
+                parts.append(store)
+        yield CaseStore(case.case_id, parts)
 
 
 @contextmanager
@@ -695,6 +762,9 @@ def wakes_of(state: Path, run_id: str, world: Store) -> list[WakeRecord]:
     agent's commitments is not in the log, so those records say it did not."""
     if (run_dir(state, run_id) / RECORD).is_file():
         return load(state, run_id).record.wakes
+    stepped = steps(world)
+    if stepped:
+        return stepped  # a standing world, or a case: its steps are its wakes
     events = world.events()
     changes: dict[int, int] = {}
     for event in events:

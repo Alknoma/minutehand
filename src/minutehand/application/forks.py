@@ -341,7 +341,10 @@ def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
         ),
         ScoreLine(label="time the agent lost", value=_lost(card.time_lost)),
         ScoreLine(label="wakes", value=f"{card.wakes}, of which changed nothing: {card.idle_wakes}"),
-        ScoreLine(label="messages to people", value=str(card.messages_to_people)),
+        ScoreLine(
+            label="messages to people",
+            value=f"{card.messages_to_people}, edited in place: {card.messages_edited}, deleted: {card.messages_deleted}",
+        ),
         ScoreLine(label="failed checks", value=str(card.failed_checks)),
     ]
     if card.slowest_follow_up is not None:

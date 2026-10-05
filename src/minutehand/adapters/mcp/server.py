@@ -248,11 +248,13 @@ def build(state: Path) -> FastMCP:
     @server.tool(
         description=(
             "Every finished run in the state directory, oldest first, with why it stopped, its verdict, "
-            "and its parent and children: a rerun is a child of the run it was forked from."
+            "and its parent and children: a rerun is a child of the run it was forked from. A case (standing "
+            "worlds opened under one case label) is one run, its worlds named in `worlds`; a standing world no "
+            "call reached is not listed."
         )
     )
     def list_runs() -> RunListing:
-        finished = session.runs(state)
+        finished = session.listed(state)
         children: dict[str, list[str]] = {o.record.run_id: [] for o in finished}
         for outcome in finished:
             parent = outcome.record.parent_run
@@ -271,6 +273,7 @@ def build(state: Path) -> FastMCP:
                     forked_at=o.record.forked_at,
                     children=children[o.record.run_id],
                     fork=session.fork_account(state, o.record.run_id),
+                    worlds=o.record.worlds,
                 )
                 for o in finished
             ]

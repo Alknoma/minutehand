@@ -101,6 +101,7 @@ from minutehand.ports.provider import (
 )
 from minutehand.ports.store import Store
 from minutehand.session import (
+    KEPT,
     RECORD,
     RESULT,
     RUNS,
@@ -115,7 +116,6 @@ from minutehand.session import (
     scenario_of,
 )
 
-KEPT = "world.json"
 LOBBY = "lobby"
 RESETS = "resets"
 """Where a standing world keeps its log from before each reset, `<n>.db` for the n-th, oldest first."""
@@ -440,7 +440,7 @@ class Standing:
         directory.mkdir(parents=True)
         signing = {i.provider: i.secret or secrets.token_hex(16) for i in spec.inbound}
         now = _now()
-        case = self._case_for(spec.case, now) if spec.case is not None else None
+        case = self._case_for(spec.case, spec.seed.starting(now).starts_at) if spec.case is not None else None
         try:
             world = self._open(world_id, spec, signing, capturing, now, case=case)
         except Exception:
@@ -552,7 +552,7 @@ class Standing:
 
     # -- cases ----------------------------------------------------------------------------------------------------
 
-    def _case_for(self, label: str, now: datetime) -> Case:
+    def _case_for(self, label: str, starts: datetime) -> Case:
         """The open case of this label, or a new one: worlds opened under one label while any of them is open are
         one case; once its last world closes, the label opens a new case."""
         if label in self._labels:
@@ -560,7 +560,7 @@ class Standing:
         case_id = f"case-{self._fresh_id()}"
         directory = run_dir(self._state, case_id)
         directory.mkdir(parents=True)
-        clock = RunClock(now)
+        clock = RunClock(starts)
         store = SqliteStore(directory / WORLD, case_id, clock)
         clock.enter(FIRST_WAKE)
         store.wake_began(FIRST_WAKE)
@@ -571,7 +571,7 @@ class Standing:
             store=store,
             clock=clock,
             mounted=Mounted(store=store, clock=clock, app_for=_no_provider),
-            stepping=Stepping(store, start=now, members=lambda: list(members.values()), own=clock),
+            stepping=Stepping(store, start=starts, members=lambda: list(members.values()), own=clock),
             members=members,
         )
         self.cases[case_id] = case

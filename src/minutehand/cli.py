@@ -574,7 +574,7 @@ def _findings(args: argparse.Namespace, state: Path) -> int:
 
 
 def _runs(state: Path) -> int:
-    found = session.runs(state)
+    found = session.listed(state)
     if not found:
         print(f"no runs under {state}")
         return 0
@@ -582,6 +582,8 @@ def _runs(state: Path) -> int:
         record = outcome.record
         failed = sum(1 for f in outcome.result.findings if f.kind is FindingKind.FAIL)
         print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed")
+        if record.worlds:
+            print(f"  a case of {len(record.worlds)} worlds, scored as one run: {', '.join(record.worlds)}")
         account = session.fork_account(state, record.run_id)
         if account is not None:
             print(

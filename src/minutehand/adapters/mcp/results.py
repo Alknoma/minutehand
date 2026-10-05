@@ -166,6 +166,9 @@ class ListedRun(Model):
     forked_at: int | None
     children: list[str] = Field(description="Runs forked from this one")
     fork: ForkAccount | None = Field(description=_FORK)
+    worlds: list[str] = Field(
+        default=[], description="A case: the standing worlds it is made of, scored here as this one run"
+    )
 
 
 class RunListing(Model):
