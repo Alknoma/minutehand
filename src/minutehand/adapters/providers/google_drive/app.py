@@ -31,7 +31,7 @@ import io
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from enum import StrEnum
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from pydantic import JsonValue, ValidationError
@@ -1613,10 +1613,7 @@ def _sort_key(key: str) -> Callable[[wire.DriveFile], str | bool]:
 
 
 class HostRouter:
-    """Send each request to its host's routes, or to every route when the host is not one of Google's.
-
-    The path is matched decoded, as ASGI says it arrives: mitmproxy hands the app a percent-encoded one, which
-    turns Docs' `/v1/documents/{id}:batchUpdate` into `{id}%3AbatchUpdate`."""
+    """Send each request to its host's routes, or to every route when the host is not one of Google's."""
 
     def __init__(self, by_host: dict[str, Router], every: Router) -> None:
         self._by_host = by_host
@@ -1627,9 +1624,6 @@ class HostRouter:
         host = next((value for name, value in headers if name == b"host"), b"").decode("latin-1").lower()
         if not host.startswith("["):
             host = host.rsplit(":", 1)[0]
-        path = scope["path"] if "path" in scope else ""
-        if isinstance(path, str) and "%" in path:
-            scope = {**scope, "path": unquote(path)}
         await (self._by_host[host] if host in self._by_host else self._every)(scope, receive, send)
 
 

@@ -75,6 +75,17 @@ async def test_exact_host_is_answered_with_the_path_prefix_stripped(
     assert first > last  # a read that wrote nothing produced no event
 
 
+async def test_a_provider_is_handed_the_path_decoded_so_a_colon_custom_method_routes(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path
+) -> None:
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
+        async with client(proxy, proxy.ca_cert) as http:
+            colon = await http.get("https://ledger.example/api/v2/entries/e1:archive")
+            spaced = await http.get("https://ledger.example/api/v2/entries/two%20words:archive?x=1")
+    assert colon.status_code == 200 and colon.json() == {"entry": "e1", "action": "archive"}
+    assert spaced.status_code == 200 and spaced.json() == {"entry": "two words", "action": "archive"}
+
+
 async def test_wildcard_host_is_answered_and_its_events_recorded(
     registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path
 ) -> None:

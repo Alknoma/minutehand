@@ -55,7 +55,17 @@ class Ledger:
             seq = _entry(world, Actor.AGENT, str(payload["text"]))
             return JSONResponse({"seq": seq, "created": clock.now().isoformat()}, status_code=201)
 
-        return Starlette(routes=[Route("/whoami", whoami), Route("/entries", create, methods=["POST"])])
+        async def entry_action(request: Request) -> JSONResponse:
+            """`/entries/{id}:{action}`, Google's custom-method shape: routed only when the path arrives decoded."""
+            return JSONResponse({"entry": request.path_params["entry"], "action": request.path_params["action"]})
+
+        return Starlette(
+            routes=[
+                Route("/whoami", whoami),
+                Route("/entries", create, methods=["POST"]),
+                Route("/entries/{entry}:{action}", entry_action),
+            ]
+        )
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         for ticket in scenario.tickets:

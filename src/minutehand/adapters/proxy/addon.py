@@ -15,8 +15,9 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
+from urllib.parse import unquote
 
 from mitmproxy import http, tls
 from mitmproxy.addons import asgiapp
@@ -33,7 +34,7 @@ from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import Exchange
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp
+from minutehand.ports.provider import ASGIApp, Message, Scope
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -204,7 +205,7 @@ class ProxyAddon:
                 app = world.app_for(manifest)
                 first = world.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
                 flow.request.path = strip_prefix(original, manifest.path_prefix)
-                await asgiapp.serve(app, flow)
+                await asgiapp.serve(_path_decoded(app), flow)
             except Exception:
                 # Never let a claimed host fall through to the real service.
                 flow.response = _json_response(500, f"provider {manifest.key!r} failed to load", host)
@@ -258,3 +259,18 @@ class ProxyAddon:
             for event in world.store.events(since=first - 1):
                 self.telemetry.recorded(event)
         return exchange
+
+
+def _path_decoded(app: ASGIApp) -> ASGIApp:
+    """The app, handed `path` decoded as ASGI says it arrives: mitmproxy percent-encodes the request target into
+    it, so Docs' `/v1/documents/{id}:batchUpdate` would reach a router as `{id}%3AbatchUpdate`."""
+
+    async def decoded(
+        scope: Scope, receive: Callable[[], Awaitable[Message]], send: Callable[[Message], Awaitable[None]]
+    ) -> None:
+        raw = scope["raw_path"] if "raw_path" in scope else None
+        if isinstance(raw, str):
+            scope = {**scope, "path": unquote(raw.split("?", 1)[0])}
+        await app(scope, receive, send)
+
+    return decoded
