@@ -24,7 +24,7 @@ from typing import Protocol
 
 from minutehand import checks as package
 from minutehand.checks import judged as judged_package
-from minutehand.checks._waits import ended_at
+from minutehand.checks._waits import chases, ended_at
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
 from minutehand.checks.judged.asked_about import AskedAbout
@@ -36,6 +36,7 @@ from minutehand.domain.checks import (
     Effectiveness,
     Finding,
     FindingKind,
+    ObligationKind,
     RunView,
     Stability,
     WakeModelCalls,
@@ -43,7 +44,7 @@ from minutehand.domain.checks import (
 )
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
-from minutehand.domain.scenario import Model, PersonAsked, Scenario
+from minutehand.domain.scenario import Model, PersonAsked, Scenario, Silent
 from minutehand.domain.world import EntityRef, Exchange, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
@@ -150,7 +151,7 @@ class _Tally:
             blocked=self.blocked,
             notes=self.notes,
             effectiveness=card,
-            verdict=verdict(view, card, stop),
+            verdict=verdict(view, card, stop, self.findings, ended or ended_at(view)),
         )
 
 
@@ -164,37 +165,94 @@ _STOPPED = {
 }
 
 
-def verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Verdict:
-    """Failed when a check failed. Otherwise passed when the agent reported done, or nothing was left open;
-    unfinished when the run stopped any other way with a wait or a commitment still open."""
+def verdict(
+    view: RunView, card: Effectiveness, stop: StopReason | None, findings: list[Finding], ended: datetime
+) -> Verdict:
+    """Failed when a check failed. Otherwise passed when the agent reported done with nothing it asked left
+    abandoned, or nothing was left open; unfinished otherwise.
+
+    Two refinements of "open", both read from the world and neither from the content of any message:
+
+    - **Done, with an ask abandoned.** An agent that reports DONE while a question it asked is unanswered and it
+      never followed it up has not finished: it stopped waiting. Work handed to someone (a ticket) is not this. That is unfinished, not passed.
+    - **The owner told the result.** Once every expectation of the scenario is met, a message to an owner who
+      never answers (`Silent`), sent with or after the last of them, opens a wait nobody will settle; it is the
+      result being reported, and neither keeps a run unfinished nor counts as an ask abandoned.
+    """
     commitments = (
         None if view.commitments is None else sum(1 for c in view.commitments if c.status is CommitmentStatus.OPEN)
     )
-    open_work = card.waits_open_at_end + (commitments or 0)
+    waits = chases(view, ended)
+    still = [c for c in waits if c.obligation.settled_at is None]
+    met_by = _all_met_at(view, card, findings)
+    owner = next(p for p in view.scenario.people if p.key == view.scenario.owner)
+    told_after = [
+        c
+        for c in still
+        if met_by is not None
+        and isinstance(owner.reply, Silent)
+        and c.obligation.person == owner.key
+        and c.obligation.opened_by >= met_by
+    ]
+    abandoned = [
+        c
+        for c in still
+        if not c.follow_ups and c.obligation.kind is ObligationKind.ANSWER_FROM_PERSON and c not in told_after
+    ]
+    open_waits = len(still) - len(told_after)
+    open_work = open_waits + (commitments or 0)
     how = _STOPPED[stop] if stop is not None else "how the run stopped was not recorded"
     if card.failed_checks:
         kind = VerdictKind.FAILED
         words = f"Failed: {_count(card.failed_checks, 'check')} failed; {how}."
+    elif stop is StopReason.AGENT_DONE and abandoned:
+        kind = VerdictKind.UNFINISHED
+        people = sorted({c.obligation.person or "someone" for c in abandoned})
+        words = (
+            f"Not finished: no check failed, but the agent reported it was done with {_count(len(abandoned), 'ask')} "
+            f"it made still unanswered and never followed up ({', '.join(people)})."
+        )
     elif stop is StopReason.AGENT_DONE or open_work == 0:
         kind = VerdictKind.PASSED
-        left = "" if stop is StopReason.AGENT_DONE else ", with nothing left open"
+        if stop is StopReason.AGENT_DONE:
+            left = ""
+        elif told_after:
+            left = (
+                f", with every expectation met; {_count(len(told_after), 'message')} telling the owner, who never "
+                "answers, is not counted as open"
+            )
+        else:
+            left = ", with nothing left open"
         words = f"Passed: no check failed, and {how}{left}."
     else:
         kind = VerdictKind.UNFINISHED
-        still = [_count(card.waits_open_at_end, "wait")] if card.waits_open_at_end else []
-        still += [_count(commitments, "commitment")] if commitments else []
+        left_open = [_count(open_waits, "wait")] if open_waits else []
+        left_open += [_count(commitments, "commitment")] if commitments else []
         words = (
             f"Not finished: no check failed, but the agent never reported it was done; {how}, "
-            f"with {' and '.join(still)} still open."
+            f"with {' and '.join(left_open)} still open."
         )
     return Verdict(
         kind=kind,
         stop=stop,
         failed_checks=card.failed_checks,
-        open_waits=card.waits_open_at_end,
+        open_waits=open_waits,
         open_commitments=commitments,
         words=words,
     )
+
+
+def _all_met_at(view: RunView, card: Effectiveness, findings: list[Finding]) -> int | None:
+    """The seq of the last event that met an expectation, once every one of the scenario's is met; else None."""
+    if not view.scenario.expect or card.expectations_met < card.expectations_total:
+        return None
+    seqs = [
+        seq
+        for f in findings
+        if f.check == Expectations.id and f.kind is FindingKind.INFORMATIONAL
+        for seq in f.evidence
+    ]
+    return max(seqs) if seqs else None
 
 
 def _count(n: int, thing: str) -> str:
