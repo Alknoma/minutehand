@@ -39,16 +39,73 @@ class EntityRef(Model):
     external_id: str
 
 
+class CaptureMode(StrEnum):
+    """How a host no provider claims was declared (`domain.outbound`), or found under `--capture-unknown`."""
+
+    ACKNOWLEDGE = "acknowledge"
+    PASS_THROUGH = "pass_through"
+    REPLAY = "replay"
+    DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
+
+
+class AnsweredBy(StrEnum):
+    DECLARATION = "declaration"  # the declared answer; the call never left the machine
+    REAL_HOST = "real_host"  # the real host, reached through the proxy
+    RECORDING = "recording"  # an earlier run's recording of the same call
+    REFUSAL = "refusal"  # nobody: a replay that missed, declared to refuse
+
+
+class BodyKept(StrEnum):
+    """How much of a body the record holds."""
+
+    WHOLE = "whole"
+    TRUNCATED = "truncated"  # text, kept up to the declared limit
+    BINARY = "binary"  # its length and content type only
+    EMPTY = "empty"
+
+
+class Body(Model):
+    content_type: str | None = None
+    size: int = Field(ge=0, description="Bytes, the whole body as it crossed the wire, decoded")
+    kept: BodyKept
+    sha256: str = Field(description="Of the whole body with credentials and declared fields redacted")
+
+
+class Recipient(Model):
+    """One recipient read out of a captured send."""
+
+    address: str = Field(description="As the request named it")
+    person: str | None = Field(description="Person.key it reached; None when the scenario has nobody by it")
+
+
+class Captured(Model):
+    """A call to a host no provider claims, captured rather than refused: how, by what, and when on the real
+    clock. The run's clock and wake are on the `RecordedCall`."""
+
+    mode: CaptureMode
+    declared_as: str | None = Field(description="The declaration's host pattern; None under --capture-unknown")
+    answered_by: AnsweredBy
+    replayed_from: str | None = Field(default=None, description="The recording that answered it, when one did")
+    note: str | None = Field(default=None, description="What went other than declared: a replay's miss, a send unread")
+    started: AwareDatetime = Field(description="Real time the request began")
+    ended: AwareDatetime = Field(description="Real time the answer ended")
+    request: Body
+    response: Body
+    streamed: bool = Field(default=False, description="The answer reached the agent chunk by chunk")
+    recipients: list[Recipient] = Field(default=[], description="Read out of a send declared as a message")
+
+
 class Exchange(Model):
     """One HTTP call as it crossed the wire. Bodies are the provider's own format."""
 
     method: str
     host: str
-    path: str
+    path: str = Field(description="With its query string, credentials redacted")
     status: int
     request_body: str | None = None
     response_body: str | None = None
     traceparent: str | None = Field(default=None, description="W3C trace context the caller sent, if any")
+    captured: Captured | None = Field(default=None, description="Set for a call to a host no provider claims")
 
 
 class TicketSnapshot(Model):
@@ -66,6 +123,11 @@ class MessageSnapshot(Model):
     channel: str
     recipient_emails: list[str] = []
     thread_of: str | None = None
+    answerable: bool = Field(
+        default=True,
+        description="Whether its recipients can answer where it was sent; False for a captured send (an email "
+        "through a declared host), which nobody answers in this version",
+    )
 
 
 class DocumentSnapshot(Model):
@@ -138,8 +200,8 @@ class Stored(Model):
 class RecordedCall(Model):
     """One HTTP call the proxy saw, with the events it produced, if any.
 
-    `provider` is None when no provider claimed the host: the call was refused.
-    `first_seq > last_seq` means the call produced no event.
+    `provider` is None when no provider claimed the host: the call was captured (`exchange.captured`) or, when
+    that is None too, refused. `first_seq > last_seq` means the call produced no event.
     """
 
     exchange: Exchange
@@ -148,3 +210,8 @@ class RecordedCall(Model):
     last_seq: int
     wake: int
     sim_time: AwareDatetime
+
+    @property
+    def refused(self) -> bool:
+        """No provider claimed it and nothing captured it: it was answered 502 and reached nothing."""
+        return self.provider is None and self.exchange.captured is None
