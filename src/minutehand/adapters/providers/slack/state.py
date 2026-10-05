@@ -515,8 +515,12 @@ class SlackWorld:
             Change(entity=ref, operation=operation, actor=actor, body=wire.dump(body), parent=parent, after=after)
         )
 
-    def delete(self, ref: EntityRef, *, actor: Actor, parent: str) -> WorldEvent:
-        return self._store.apply(Change(entity=ref, operation=Operation.DELETE, actor=actor, parent=parent))
+    def delete(self, ref: EntityRef, *, actor: Actor, parent: str, before: Snapshot | None = None) -> WorldEvent:
+        """`before`: what the deleted thing was, as the checks read it (a message's text, who it reached, its
+        thread), so its deletion reads as what was deleted."""
+        return self._store.apply(
+            Change(entity=ref, operation=Operation.DELETE, actor=actor, parent=parent, after=before)
+        )
 
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""

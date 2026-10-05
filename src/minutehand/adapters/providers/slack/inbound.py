@@ -391,7 +391,17 @@ async def _deletes(
     channel, before = _posted(slack, deletes.post)
     _own(before, author, deletes.post)
     stamp = slack.next_ts(clock)
-    slack.delete(state.message_ref(before.ts), actor=Actor.PERSON, parent=channel.id)
+    slack.delete(
+        state.message_ref(before.ts),
+        actor=Actor.PERSON,
+        parent=channel.id,
+        before=MessageSnapshot(
+            text=before.text,
+            channel=channel.id,
+            recipient_emails=slack.human_emails(channel.id, besides=author),
+            thread_of=before.thread_ts,
+        ),
+    )
     if slack.is_member(channel.id, slack.bot):
         event = wire.MessageDeletedEvent(
             channel=channel.id,

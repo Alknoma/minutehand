@@ -379,7 +379,12 @@ class People:
         conversation, current = self.located(activity_id)
         if current.sender.id != user.mri:
             raise ValueError(f"{user.person_key} can delete only their own message")
-        self.world.remove(message_ref(activity_id), actor=Actor.PERSON, parent=conversation.id)
+        self.world.remove(
+            message_ref(activity_id),
+            actor=Actor.PERSON,
+            parent=conversation.id,
+            before=snapshot(self.world, conversation, current, user.user.id),
+        )
         gone = self._activity(
             wire.ActivityType.MESSAGE_DELETE,
             user,

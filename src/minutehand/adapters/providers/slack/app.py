@@ -609,7 +609,12 @@ class SlackApi:
             raise wire.Refusal("message_not_found")
         if message.user != self._world.bot:
             raise wire.Refusal("cant_delete_message")
-        self._world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel.id)
+        self._world.delete(
+            state.message_ref(message.ts),
+            actor=Actor.AGENT,
+            parent=channel.id,
+            before=self._snapshot(channel.id, message),
+        )
         return wire.Deleted(channel=channel.id, ts=message.ts)
 
     def reactions_add(self, presented: wire.Presented) -> wire.Ok:
@@ -852,7 +857,12 @@ class SlackApi:
                 return JSONResponse({"ok": False, "error": "message_not_found"}, status_code=404)
             channel, message = original
             if body.delete_original:
-                world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel)
+                world.delete(
+                    state.message_ref(message.ts),
+                    actor=Actor.AGENT,
+                    parent=channel,
+                    before=self._snapshot_in(world, channel, message),
+                )
                 return JSONResponse({"ok": True})
             replaced = message.model_copy(
                 update={
