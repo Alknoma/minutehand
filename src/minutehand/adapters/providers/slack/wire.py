@@ -322,6 +322,14 @@ class SlackAway(Model):
     stretches: list[SlackAwayStretch]
 
 
+class SlackUnlistedEmail(Model):
+    """Minutehand's own: the email of a member whose profile shows none, so the world still knows whom a message
+    reached."""
+
+    user: str
+    email: str
+
+
 class SlackFault(Model):
     """Minutehand's own: a call the scenario fails on purpose, and how many more times."""
 

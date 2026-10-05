@@ -15,8 +15,8 @@ import pytest
 from tests.providers.youtrack.caller_world import scenario_with, seeded
 from tests.providers.youtrack.youtrack_instance import Instance, entities, entity, named, proxied, refusal
 
-LAUNCH, OPS, CREATED = "0-0", "0-1", "0-2"
-AGENT, IRIS, TOMAS, VENDOR = "1-0", "1-1", "1-2", "1-4"
+LAUNCH, OPS, CREATED = "0-1000", "0-1001", "0-1002"
+AGENT, IRIS, TOMAS, VENDOR = "1-0", "1-1", "1-2", "1-10000"
 UPDATE_PROJECT = "jetbrains.jetpass.project-update"
 READ_PROJECT = "jetbrains.jetpass.project-read-basic"
 TEMPLATE_FIELDS = {"Priority", "Type", "State", "Assignee"}
@@ -130,7 +130,7 @@ async def test_a_stock_template_is_accepted_and_carries_no_due_date(yt: httpx.As
     assert "Due Date" not in await project_field_names(yt, CREATED)
 
 
-@pytest.mark.parametrize("template", ["0-1", "OPS", "0-99", "agile"])
+@pytest.mark.parametrize("template", ["0-1001", "OPS", "0-99", "agile"])
 async def test_a_template_that_is_not_a_stock_one_is_refused_400_and_creates_nothing(
     yt: httpx.AsyncClient, team: Instance, template: str
 ) -> None:

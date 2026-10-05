@@ -17,14 +17,21 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import date, timedelta
-from typing import Self
+from typing import ClassVar, Self
 
 from pydantic import Field, JsonValue, model_validator
 
 from minutehand.adapters.providers.jira import wire
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
-from minutehand.adapters.providers.jira.state import JiraWorld
+from minutehand.adapters.providers.jira.state import (
+    JiraWorld,
+    seeded_issue_id,
+    seeded_link_id,
+    seeded_project_id,
+    ticket_project_id,
+)
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
@@ -37,8 +44,10 @@ _CLOUD = uuid.UUID("c41f0f6a-0b7e-4c1e-9d8f-3a5e2b6c7d18")
 _KEY = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 
-class SeededAccount(Model):
+class SeededAccount(Model, Keyed):
     """An account that is not one of the scenario's people: an app, someone who left, a portal customer."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("key",)
 
     key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     name: str
@@ -108,13 +117,15 @@ class SeededSprint(Model):
     lasts: timedelta | None = None
 
 
-class SeededBoard(Model):
+class SeededBoard(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str
     type: str = "scrum"
     sprints: list[SeededSprint] = []
 
 
-class SeededProject(Model):
+class SeededProject(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str = Field(description="As the scenario's tickets name it")
     key: str | None = Field(default=None, description="2-10 capitals and digits; derived from the name if absent")
     description: str = ""
@@ -136,7 +147,8 @@ class SeededProject(Model):
         return self
 
 
-class SeededField(Model):
+class SeededField(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("id",)
     id: str = Field(pattern=r"^customfield_\d+$")
     name: str
     kind: wire.CustomFieldType
@@ -170,8 +182,10 @@ class SeededLink(Model):
     outward: bool = Field(default=True, description="This issue does the outward act: it blocks `to`")
 
 
-class SeededIssue(Model):
+class SeededIssue(Model, Keyed):
     """What one seeded Jira ticket carries beyond the scenario's title, body, assignee, state, labels and comments."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("ticket",)
 
     ticket: str = Field(description="The key (`SeededTicket.key`) of the scenario's Jira ticket it describes")
     issue_type: str = "Task"
@@ -477,11 +491,13 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     everyone = [a.accountId for a in accounts.values() if a.active and a.accountType is wire.AccountType.ATLASSIAN]
     seeded_tickets = [t for t in scenario.tickets if t.provider == MANIFEST.key]
-    wanted = [p.name for p in spec.projects]
-    wanted += [t.project for t in seeded_tickets if t.project not in wanted]
+    declared = [p.name for p in spec.projects]
+    named = list(dict.fromkeys(t.project for t in seeded_tickets if t.project not in declared))
+    wanted = [(name, seeded_project_id(n)) for n, name in enumerate(declared)]
+    wanted += [(name, ticket_project_id(n)) for n, name in enumerate(named)]
     projects: dict[str, wire.StoredProject] = {}
     taken: set[str] = set()
-    for name in wanted:
+    for name, project_id in wanted:
         given = next((p for p in spec.projects if p.name == name), SeededProject(name=name))
         key = given.key or project_key(name, taken)
         if key in taken:
@@ -494,7 +510,7 @@ def seed(scenario: Scenario, world: Store) -> None:
         made = project_from(
             site,
             given,
-            jira.next_id(),
+            project_id,
             key,
             lead=lead,
             members=[who(m) for m in given.members] if given.members is not None else everyone,
@@ -532,22 +548,26 @@ def seed(scenario: Scenario, world: Store) -> None:
         if detail.ticket not in keys:
             raise ValueError(f"the Jira seed describes {detail.ticket!r}, which is the key of no seeded Jira ticket")
     by_key: dict[str, wire.StoredIssue] = {}
+    commented: dict[str, int] = {}
     for position, ticket in enumerate(scenario.tickets):
         if ticket.provider != MANIFEST.key:
             continue
         found = next((i for i in spec.issues if i.ticket == ticket.key), None) if ticket.key is not None else None
         detail = found or SeededIssue(ticket=ticket.key or "")
         made = _issue(desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position)
-        for comment in ticket.comments:
+        for n, comment in enumerate(ticket.comments):
             desk.comment(made, wire.adf_from_text(comment.text), by=who(comment.by), at=scenario.starts_at,
-                         actor=Actor.SCENARIO)  # fmt: skip
+                         actor=Actor.SCENARIO, seeded=n)  # fmt: skip
+        commented[made.id] = len(ticket.comments)
         if ticket.key is not None:
             by_key[ticket.key] = made
+    linked = 0
     for detail in spec.issues:
         issue = by_key[detail.ticket]
         for comment in detail.comments:
             desk.comment(issue, wire.adf_from_text(comment.text), by=who(comment.by), at=scenario.starts_at + comment.at,
-                         actor=Actor.SCENARIO)  # fmt: skip
+                         actor=Actor.SCENARIO, seeded=commented[issue.id])  # fmt: skip
+            commented[issue.id] += 1
         for link in detail.links:
             other = by_key.get(link.to)
             if other is None:
@@ -557,9 +577,12 @@ def seed(scenario: Scenario, world: Store) -> None:
                 raise ValueError(f"no issue link type is called {link.type!r}")
             source, destination = (issue, other) if link.outward else (other, issue)
             jira.write_link(
-                wire.StoredLink(id=jira.next_id(), type=link_type.id, source=source.id, destination=destination.id),
+                wire.StoredLink(
+                    id=seeded_link_id(linked), type=link_type.id, source=source.id, destination=destination.id
+                ),
                 actor=Actor.SCENARIO,
             )
+            linked += 1
 
 
 def _issue(
@@ -624,7 +647,7 @@ def _issue(
     ]
     number = jira.next_number(project.id)
     issue = wire.StoredIssue(
-        id=jira.next_id(),
+        id=seeded_issue_id(position),
         key=f"{project.key}-{number}",
         project=project.id,
         issuetype=issue_type.id,

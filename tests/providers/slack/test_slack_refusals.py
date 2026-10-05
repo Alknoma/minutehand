@@ -255,7 +255,12 @@ async def test_conversations_list_lists_the_dms_only_when_asked(
 async def test_users_list_pages(client: httpx.AsyncClient) -> None:
     first = await form(client, "users.list", limit="3")
     rest = await form(client, "users.list", limit="3", cursor=_cursor(first))
-    assert len(_ids(first, "members")) == 3 and len(_ids(rest, "members")) == 1 and _cursor(rest) == ""
+    assert (
+        len(_ids(first, "members")) == 3
+        and _ids(rest, "members")[-1] == "USLACKBOT"
+        and len(_ids(rest, "members")) == 2
+        and _cursor(rest) == ""
+    )
 
 
 async def test_archived_channels_are_excluded_on_request(workspace: Workspace, client: httpx.AsyncClient) -> None:

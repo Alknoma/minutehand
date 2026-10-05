@@ -229,13 +229,20 @@ def _history(
     users: dict[str, UserRecord],
     start: datetime,
     thread: str | None,
+    seconds: dict[int, int],
 ) -> None:
+    """Each post and its replies; `seconds` counts the seeded messages already given each second, so a message's id
+    is its second and its place among the scenario's posts of that second: the same wherever seeding starts in the
+    log, and unmoved by anything seeded after it. A seeded post is before the start, so no minted id (the start or
+    later) can be one of these."""
     for post in posts:
         author = users[post.by]
         at = start - post.ago
+        second = int(at.timestamp())
+        seconds[second] = seconds[second] + 1 if second in seconds else 1
         activity = wire.Activity(
             type=wire.ActivityType.MESSAGE,
-            id=f"{int(at.timestamp())}{world.next_seq():06d}",
+            id=f"{second}{seconds[second]:06d}",
             timestamp=graph_time(at),
             serviceUrl=SERVICE_URL,
             sender=wire.ChannelAccount(id=author.mri, name=author.user.displayName, aadObjectId=author.user.id),
@@ -276,9 +283,9 @@ def _history(
                 parent=POSTS,
             )
         if conversation.type is wire.ConversationType.CHANNEL:
-            _history(world, conversation, post.replies, users, start, activity.id)
+            _history(world, conversation, post.replies, users, start, activity.id, seconds)
         else:
-            _history(world, conversation, post.replies, users, start, None)
+            _history(world, conversation, post.replies, users, start, None, seconds)
 
 
 def _channel(
@@ -398,6 +405,7 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
         created=stamp,
     )
     world.write_conversation(general, operation=Operation.CREATE, actor=Actor.SCENARIO)
+    seconds: dict[int, int] = {}
     for seeded in scenario.channels:
         if seeded.provider != MANIFEST.key:
             continue
@@ -407,7 +415,7 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
             world.write_conversation(
                 conversation, operation=Operation.UPDATE if exists else Operation.CREATE, actor=Actor.SCENARIO
             )
-        _history(world, conversation, seeded.history, users, scenario.starts_at, None)
+        _history(world, conversation, seeded.history, users, scenario.starts_at, None, seconds)
 
     site_id = f"{directory.sharepoint_host},{derived_uuid(directory.tenant_id, 'site')},{derived_uuid(directory.tenant_id, 'web')}"
     site_url = f"https://{directory.sharepoint_host}/sites/{team.display_name.replace(' ', '')}"
@@ -459,7 +467,7 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
 
 
 def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, owner: wire.IdentitySet) -> None:
-    files = Files(world, _At(scenario.starts_at))
+    files = Files(world, _At(scenario.starts_at), seeding=True)
     root = world.item(library.root_id)
     assert root is not None
     for position, document in enumerate(scenario.documents):
@@ -512,9 +520,17 @@ def write_holds(world: MicrosoftWorld, holds: list[HoldSeed], starts_at: datetim
         world.write_hold(hold)
 
 
-def write_faults(world: MicrosoftWorld, faults: list[FaultSeed], starts_at: datetime) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(
+    world: MicrosoftWorld, faults: list[FaultSeed], starts_at: datetime, *, declared: bool = False
+) -> None:
     """Record declared faults after any already recorded, each from `starts_at` plus its own offset."""
-    first = len(world.faults())
+    first = (DECLARED if declared else 0) + len(world.faults())
     for position, fault in enumerate(faults, start=first):
         answer = fault.answer
         limited = isinstance(answer, RateLimited)

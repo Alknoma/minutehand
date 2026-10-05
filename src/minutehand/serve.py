@@ -25,6 +25,7 @@ Each world is a run in the state directory, so `minutehand findings`, `view` and
     <state>/runs/<world_id>/world.json     `Kept`: its name and claims, which marks it as a standing world
     <state>/runs/<world_id>/record.json    once closed: `RunRecord`, stopped CLOSED
     <state>/runs/<world_id>/result.json    once closed: the checks over it as it was closed
+    <state>/runs/<world_id>/resets/<n>.db  its log before its n-th reset, kept: a reset never discards the record
     <state>/runs/<lobby_id>/world.db       the calls no world claimed, and spans of traces none carried
 
 Closing a world keeps the last `keep` closed worlds and removes the directories of older ones, then sweeps every
@@ -43,14 +44,14 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
 from pydantic import Field
 from starlette.applications import Starlette
 
-from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView
+from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -96,11 +97,15 @@ from minutehand.session import (
 
 KEPT = "world.json"
 LOBBY = "lobby"
+RESETS = "resets"
+"""Where a standing world keeps its log from before each reset, `<n>.db` for the n-th, oldest first."""
 
 DEFAULT_PROXY_PORT = 8080
 DEFAULT_CONTROL_PORT = 8081
 DEFAULT_TELEMETRY_PORT = 4318
 DEFAULT_KEEP = 100
+QUIET_POLL = 0.02
+"""Seconds between two looks at whether a world has gone quiet."""
 
 
 class Kept(Model):
@@ -159,10 +164,30 @@ class World:
     open: bool = True
     signing: dict[ProviderKey, str] = field(default_factory=dict)
     capturing: Capturing = field(default_factory=Capturing)
+    resets: int = 0
 
 
 def _nothing_relayed(world: Mounted) -> None:
     """Before a proxy routes to the worlds, no tunnel is relayed into any of them."""
+
+
+def _nothing_in(world: Mounted) -> tuple[float | None, list[str]]:
+    """Before a proxy routes to the worlds, no call has been seen in any of them."""
+    return None, []
+
+
+CLOSED_REMEMBERED = 1000
+"""How many closed worlds' claims the server remembers, to tell a late call for one of them from a stray one."""
+
+
+@dataclass(frozen=True)
+class _Closed:
+    """What a closed world claimed, so a call that comes for it after it closed is recorded as its late call."""
+
+    world_id: str
+    tokens: frozenset[str]
+    hosts: frozenset[str]
+    keys: frozenset[str]
 
 
 class Standing:
@@ -192,6 +217,10 @@ class Standing:
         self.flush_in: Callable[[Mounted], None] = _nothing_relayed
         """What records the calls still in progress in a world before it is closed or reset: the proxy's
         `ProxyAddon.flush_in`, once it routes to these worlds."""
+        self.activity_in: Callable[[Mounted], tuple[float | None, list[str]]] = _nothing_in
+        """When a call routed to a world was last seen and which are still in progress: the proxy's
+        `ProxyAddon.activity_in`, once it routes to these worlds."""
+        self._closed: list[_Closed] = []
 
     def shared(self, host: str) -> bool:
         """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
@@ -223,6 +252,14 @@ class Standing:
     @property
     def lobby(self) -> Mounted:
         return self._lobby
+
+    def late_for(self, host: str, credentials: Sequence[str], keys: Sequence[str]) -> str | None:
+        """The most recently closed world whose host, world key or credential the call carries."""
+        lowered = {k.lower() for k in keys}
+        for closed in reversed(self._closed):
+            if host.lower() in closed.hosts or lowered & closed.keys or set(credentials) & closed.tokens:
+                return closed.world_id
+        return None
 
     def answered(self, world: Mounted, exchange: Exchange, minted: Sequence[str]) -> None:
         owner = next((w for w in self.worlds.values() if w.mounted is world), None)
@@ -376,21 +413,35 @@ class Standing:
     def reset(self, world_id: str) -> World:
         """The world back to the seed it was opened with, in place: the same id, the same claims, the same inbound
         targets and secrets, its clock back at its start, the faults it was opened with armed again, and nothing
-        the agent, a person or the test did since. Its log so far is discarded, and tokens its fakes minted are
-        no longer claimed: the world that minted them is gone."""
+        the agent, a person or the test did since in what it holds. Its record is not discarded: the log so far
+        is kept as the stretch before this reset (`RESETS`), read again with `since_reset=false`. Tokens its fakes
+        minted are no longer claimed: the world that minted them is gone."""
         old = self.get(world_id)
         self.flush_in(old.mounted)
         old.store.close()
         old.open = False
+        directory = run_dir(self._state, world_id)
+        kept = directory / RESETS / f"{len(self.stretches(world_id)) + 1}.db"
+        kept.parent.mkdir(exist_ok=True)
         for suffix in ("", "-wal", "-shm"):
-            (run_dir(self._state, world_id) / f"{WORLD}{suffix}").unlink(missing_ok=True)
+            found = directory / f"{WORLD}{suffix}"
+            if found.exists():
+                found.rename(kept.with_name(kept.name + suffix))
         world = self._open(world_id, old.spec, old.signing, old.capturing, old.standing.scenario.starts_at)
+        world.resets = old.resets + 1
         self.worlds[world_id] = world
         claimed = set(old.spec.claims.tokens)
         self._tokens = {t: w for t, w in self._tokens.items() if w != world_id or t in claimed}
         for trace in old.traces:
             del self._traces[trace]
         return world
+
+    def stretches(self, world_id: str) -> list[Path]:
+        """The world's log before each of its resets, oldest first: each a world file of its own."""
+        kept = run_dir(self._state, world_id) / RESETS
+        if not kept.is_dir():
+            return []
+        return sorted(kept.glob("*.db"), key=lambda p: int(p.stem))
 
     def extend(self, world_id: str, added: FurtherSeed) -> dict[ProviderKey, int]:
         """`StandingWorld.extend`, with a scratch store beside the world's own."""
@@ -447,9 +498,30 @@ class Standing:
             raise LookupError(f"no open world {world_id}")
         return self.worlds[world_id]
 
-    async def close(self, world_id: str) -> RunResult:
-        """Score the world as it stands, write its record, release its claims and its file, and remove the
-        oldest closed worlds beyond `keep`."""
+    async def quiet(self, world_id: str, ask: Quiet) -> Quieted:
+        """Wait until no call routed to the world has been seen for `ask.quiet_for` and no delivery to the service
+        still awaits its answer, or until `ask.at_most` has passed; say which."""
+        world = self.get(world_id)
+        began = time.monotonic()
+        while True:
+            seen, busy = self.activity_in(world.mounted)
+            busy = [*busy, *world.standing.delivering()]
+            now = time.monotonic()
+            if not busy and (seen is None or now - seen >= ask.quiet_for.total_seconds()):
+                return Quieted(quiet=True, waited=timedelta(seconds=now - began), last_call=world.mounted.last)
+            if now - began >= ask.at_most.total_seconds():
+                if not busy and seen is not None:
+                    busy = [f"a call {now - seen:.3f}s before the wait gave up: {world.mounted.last}"]
+                return Quieted(
+                    quiet=False, waited=timedelta(seconds=now - began), busy=busy, last_call=world.mounted.last
+                )
+            await asyncio.sleep(QUIET_POLL)
+
+    async def close(self, world_id: str, *, quiet: Quiet | None = None) -> tuple[RunResult, Quieted | None]:
+        """Wait for the world to go quiet when `quiet` says to, then score it as it stands, write its record,
+        release its claims and its file, and remove the oldest closed worlds beyond `keep`. A call that comes for
+        it afterwards is refused into the lobby as its late call (`Exchange.late_for`)."""
+        quieted = await self.quiet(world_id, quiet) if quiet is not None else None
         world = self.get(world_id)
         self.flush_in(world.mounted)
         result = await world.standing.checks(stop=StopReason.CLOSED)
@@ -473,6 +545,15 @@ class Standing:
         world.store.close()
         world.open = False
         del self.worlds[world_id]
+        self._closed.append(
+            _Closed(
+                world_id=world_id,
+                tokens=frozenset(t for t, w in self._tokens.items() if w == world_id),
+                hosts=frozenset(h for h, w in self._hosts.items() if w == world_id),
+                keys=frozenset(k for k, w in self._keys.items() if w == world_id),
+            )
+        )
+        del self._closed[:-CLOSED_REMEMBERED]
         self._tokens = {t: w for t, w in self._tokens.items() if w != world_id}
         self._hosts = {h: w for h, w in self._hosts.items() if w != world_id}
         self._keys = {k: w for k, w in self._keys.items() if w != world_id}
@@ -482,7 +563,7 @@ class Standing:
         if self._default == world_id:
             self._default = None
         self._retain()
-        return result
+        return result, quieted
 
     async def close_all(self) -> None:
         for world_id in list(self.worlds):
@@ -627,6 +708,7 @@ async def serving(state: Path, options: ServeOptions) -> AsyncIterator[Serving]:
         ) as proxy:
             proxy.addon.route(standing)
             standing.flush_in = proxy.addon.flush_in
+            standing.activity_in = proxy.addon.activity_in
             async with _receiver(standing, options) as receiver:
                 serving_ = Serving(standing, proxy, receiver, options.control_port, options)
                 async with _control(create_app(serving_), options.host, options.control_port) as port:

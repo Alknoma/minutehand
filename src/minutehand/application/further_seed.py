@@ -9,11 +9,14 @@ addition means for that provider, and that is what the world is given, as actor 
 provider the world holds nothing of yet is seeded from the merged scenario the first time it is had, as any
 provider is.
 
-What is refused, with nothing written, because the addition would contradict what is there:
+Every provider names what it seeds by what the thing is (its key, name, parent and kind), never by where seeding
+reached in the log, so the same thing seeded from the grown scenario has the id it has in the world, and an addition
+is what the grown scenario writes that the world's seed did not. What is refused, with nothing written, because the
+addition contradicts what is there:
 
 - the merged scenario is not a scenario (a person's key taken, a title seeded twice, an unknown person named);
-- the addition would take away something seeded, or renumber it: some provider number what they seed by position
-  in the log, and an addition seeded ahead of something already there moves it;
+- the grown scenario no longer seeds something the world's seed did (the addition gives an existing key other
+  content);
 - it would rewrite something that has changed since it was seeded (by the agent, a person or the test): the world
   no longer says what the seed said, so the seed has no standing to say it again;
 - it would create something under an id the world already uses.
@@ -32,7 +35,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, Snapshot
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import Provider
+from minutehand.ports.provider import PlacesAdditions, Provider
 from minutehand.ports.store import Store
 
 Scratch = Callable[[Path, Clock], AbstractContextManager[Store]]
@@ -41,9 +44,6 @@ Scratch = Callable[[Path, Clock], AbstractContextManager[Store]]
 PADDING = "padding"
 """The provider key of the events a scratch store is padded with, so a provider seeded there starts at the same
 position in the log as it did in the world."""
-
-PROBE = 1_000
-"""How much further on a second scratch seeding starts, to find a provider whose ids follow the log's position."""
 
 
 class AdditionRefused(ValueError):
@@ -102,38 +102,33 @@ def additions(
     try:
         was = _seeded(provider, before, at, room, scratch)
         will = _seeded(provider, after, at, room, scratch)
-        probe = _seeded(provider, after, at + PROBE, room, scratch)
     finally:
         shutil.rmtree(room, ignore_errors=True)
-    gone = sorted(r.external_id for r in was if r not in will)
+    gone = sorted((r for r in was if r not in will), key=lambda r: was[r].order)
     if gone:
+        named = ", ".join(f"{r.kind.value} {r.external_id}" for r in gone[:3])
         raise AdditionRefused(
-            f"{key} would no longer hold {len(gone)} thing(s) it seeded ({', '.join(gone[:3])}): it numbers what it "
-            "seeds by position, and this addition lands ahead of what is there; open a world with it instead"
+            f"with this addition {key} would no longer seed {len(gone)} thing(s) its seed holds ({named}): the "
+            "addition gives something already seeded other content"
         )
-    by_position = set(will) != set(probe)
-    newest = max((w.order for w in will.values() if w.entity in was), default=0)
+    ordered = sorted(will.values(), key=lambda w: w.order)
+    placed = _placed(provider, [w for w in ordered if w.entity not in was], world)
     found: list[Written] = []
-    for written in sorted(will.values(), key=lambda w: w.order):
+    for written in ordered:
         ref = written.entity
         if ref not in was:
-            if by_position and written.order < newest:
-                raise AdditionRefused(
-                    f"{key} numbers what it seeds by position, and this addition would be seeded ahead of what is "
-                    "there; open a world with it instead"
-                )
+            written = placed.pop(0)
+            ref = written.entity
             if world.get(ref) is not None or world.versions(ref):
-                raise AdditionRefused(f"{key} would create {ref.kind.value} {ref.external_id}, an id the world uses")
+                raise AdditionRefused(
+                    f"{key} would seed {ref.kind.value} {ref.external_id}, an id something made in this world since it "
+                    "opened already has"
+                )
             found.append(written)
             continue
         previous = was[ref]
         if (written.body, written.parent) == (previous.body, previous.parent):
             continue
-        if ref in probe and probe[ref].body != written.body:
-            raise AdditionRefused(
-                f"{key} writes the log's position into {ref.kind.value} {ref.external_id}, and this addition would "
-                "move it: it numbers what it seeds by position; open a world with it instead"
-            )
         current = world.get(ref)
         if current is None or (current.body, current.parent) != (previous.body, previous.parent):
             raise AdditionRefused(
@@ -142,6 +137,32 @@ def additions(
             )
         found.append(written)
     return found
+
+
+def _placed(provider: Provider, new: list[Written], world: Store) -> list[Written]:
+    """The new entities as the provider places them among what the world holds (`PlacesAdditions`): a number the
+    world has handed out since it was seeded moved to the next free one. Unchanged for a provider that numbers
+    nothing within a container."""
+    if not new or not isinstance(provider, PlacesAdditions):
+        return new
+    asked = [
+        Change(
+            entity=w.entity,
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            body=w.body,
+            parent=w.parent,
+            after=w.after,
+        )
+        for w in new
+    ]
+    try:
+        answered = provider.place(asked, world)
+    except ValueError as e:
+        raise AdditionRefused(f"{provider.manifest.key} cannot place this addition: {e}") from e
+    if len(answered) != len(asked):
+        raise AdditionRefused(f"{provider.manifest.key} placed {len(answered)} of {len(asked)} new things")
+    return [Written(c.entity, c.body or "", c.parent, c.after, w.order) for c, w in zip(answered, new, strict=True)]
 
 
 def land(

@@ -31,10 +31,10 @@ from google.oauth2 import credentials as user_credentials
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as discover
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaInMemoryUpload
+from googleapiclient.http import MediaInMemoryUpload, MediaUpload
 
 from minutehand.adapters.providers.google_drive import state
-from minutehand.domain.world import Actor, DocumentSnapshot, Operation
+from minutehand.domain.world import Actor, DocumentSnapshot, EntityRef, Operation
 from tests.providers.google_drive.drive_world import DOC, LATER, OWNER, Drive
 
 T = TypeVar("T")
@@ -110,6 +110,7 @@ class Google:
 
     def http(self, credentials: Any) -> google_auth_httplib2.AuthorizedHttp:
         http = httplib2.Http(ca_certs=str(self.ca), proxy_info=None)
+        http.redirect_codes = http.redirect_codes - {308}  # as `googleapiclient.http.build_http` sets it
         self.opened.append(http)
         return google_auth_httplib2.AuthorizedHttp(credentials, http=http)
 
@@ -292,3 +293,86 @@ async def test_each_refusal_is_raised_as_an_http_error_with_drives_reason(google
         403,
         "fieldNotWritable",
     )
+
+
+class _Unmeasured(MediaUpload):
+    """A stream whose length nobody knows until it ends: `googleapiclient` begins its resumable upload without
+    `X-Upload-Content-Length`, sends each chunk as `bytes a-b/*`, and names the total only on the short read."""
+
+    def __init__(self, payload: bytes, chunk: int) -> None:
+        self._payload = payload
+        self._chunk = chunk
+
+    def chunksize(self) -> int:
+        return self._chunk
+
+    def size(self) -> None:
+        return None
+
+    def resumable(self) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride] — the base answers a literal False
+        return True
+
+    def getbytes(self, begin: int, end: int) -> bytes:
+        """`end` is a length, as the library's own docstring says beneath its parameter's name."""
+        return self._payload[begin : begin + end]
+
+
+CHUNK = 256 * 1024
+
+
+@pytest.mark.parametrize("size", [CHUNK * 2 + 17, CHUNK * 2], ids=["short-last-chunk", "exact-chunks"])
+async def test_a_resumable_upload_of_unknown_length_arrives_whole(drive: Drive, google: Google, size: int) -> None:
+    """Google's guide: `X-Upload-Content-Length` is optional
+    (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resumable); the total arrives with the
+    last chunk."""
+    files = google.drive(google.service_account()).files()
+    payload = bytes((i * 7) % 251 for i in range(size))
+
+    def upload() -> tuple[list[int | None], dict[str, str]]:
+        request = files.create(body={"name": "stream.bin"}, media_body=_Unmeasured(payload, CHUNK), fields="id,size")
+        progress: list[int | None] = []
+        answer = None
+        while answer is None:
+            status, answer = request.next_chunk()
+            progress.append(None if status is None else status.resumable_progress)
+        return progress, answer
+
+    progress, made = await off_loop(upload)
+    downloaded = await off_loop(lambda: files.get_media(fileId=made["id"]).execute())
+    assert made["size"] == str(size) and downloaded == payload
+    assert progress[:2] == [CHUNK, CHUNK * 2] and progress[-1] is None
+    begun = [s for s in drive.store.versions(next(iter(_sessions(drive))))]
+    assert '"total"' not in begun[0].body, "the session began knowing its length"
+
+
+async def test_an_interrupted_upload_of_unknown_length_asks_where_it_stands_and_resumes(
+    drive: Drive, google: Google
+) -> None:
+    """After a failed chunk the client asks `Content-Range: bytes */*` and resumes from the `Range` answered
+    (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload)."""
+    files = google.drive(google.service_account()).files()
+    payload = bytes((i * 13) % 251 for i in range(CHUNK * 2 + 5))
+
+    def upload() -> dict[str, str]:
+        request = files.create(body={"name": "resumed.bin"}, media_body=_Unmeasured(payload, CHUNK), fields="id,size")
+        request.next_chunk()
+        request.resumable_progress = 0
+        request._in_error_state = True  # what the client sets when a chunk's answer is lost
+        answer = None
+        while answer is None:
+            _, answer = request.next_chunk()
+        return answer
+
+    made = await off_loop(upload)
+    downloaded = await off_loop(lambda: files.get_media(fileId=made["id"]).execute())
+    assert downloaded == payload
+
+
+def _sessions(drive: Drive) -> list[EntityRef]:
+    """Every resumable upload session the world holds: the records kept under `uploads`."""
+    found: list[EntityRef] = []
+    for event in drive.store.events():
+        stored = drive.store.get(event.entity)
+        if stored is not None and stored.parent == state.UPLOADS and event.entity not in found:
+            found.append(event.entity)
+    return found

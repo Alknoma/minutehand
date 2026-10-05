@@ -9,7 +9,7 @@ is in the first workspace every one of its members and authors belongs to."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
@@ -17,6 +17,7 @@ from pydantic import Field, model_validator
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import (
     AbsenceTrigger,
     Account,
@@ -53,8 +54,10 @@ class FaultSeed(Model):
     )
 
 
-class WorkspaceSeed(Model):
+class WorkspaceSeed(Model, Keyed):
     """One workspace the agent's app is installed in: who it is there, the bot tokens that are its, and who is in it."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("team_id",)
 
     team_id: str = Field(default=state.TEAM_ID, pattern=r"^T[A-Z0-9]+$")
     name: str = state.TEAM_NAME
@@ -70,10 +73,26 @@ class WorkspaceSeed(Model):
     oauth_code: str | None = Field(default=None, description="The install code `oauth.v2.access` answers it for")
 
 
+class Joined(Model):
+    """A person who is a member of a declared workspace beyond its `members`: how an open world grows one."""
+
+    team_id: str = Field(pattern=r"^T[A-Z0-9]+$", description="WorkspaceSeed.team_id")
+    person: str = Field(description="Person.key")
+
+
 class SlackSeed(Model):
     """What only Slack seeds, as the body of the scenario's `ProviderSeed` for `slack`."""
 
     workspaces: list[WorkspaceSeed] = Field(default=[], description="None given: the one default workspace")
+    joined: list[Joined] = Field(default=[], description="More members of declared workspaces")
+    without_email: list[str] = Field(
+        default=[],
+        description="Person.key of each member whose profile carries no email, as Slack serves one when the app "
+        "lacks `users:read.email` or the member has none; `users.lookupByEmail` does not find them",
+    )
+    single_channel_guests: list[str] = Field(
+        default=[], description="Person.key of each guest (account `guest`) who is a single-channel guest"
+    )
     faults: list[FaultSeed] = []
 
     @model_validator(mode="after")
@@ -95,14 +114,30 @@ def slack_seed(scenario: Scenario) -> SlackSeed:
 
 def workspaces_of(scenario: Scenario) -> list[tuple[wire.SlackWorkspace, list[Person]]]:
     """Each workspace the scenario's Slack holds, with its people, in order."""
-    given = slack_seed(scenario).workspaces or [WorkspaceSeed()]
+    spec = slack_seed(scenario)
+    given = spec.workspaces or [WorkspaceSeed()]
     keys = {p.key for p in scenario.people}
+    teams = {w.team_id for w in spec.workspaces}
+    for join in spec.joined:
+        if join.team_id not in teams:
+            raise ValueError(f"{join.person} joins workspace {join.team_id}, which the Slack seed does not declare")
+    for named in (spec.without_email, spec.single_channel_guests, [j.person for j in spec.joined]):
+        unknown = sorted(set(named) - keys)
+        if unknown:
+            raise ValueError(f"the Slack seed names no such person: {', '.join(unknown)}")
+    guests = {p.key for p in scenario.people if p.account is Account.GUEST}
+    not_guests = sorted(set(spec.single_channel_guests) - guests)
+    if not_guests:
+        raise ValueError(f"a single-channel guest is a guest, and {', '.join(not_guests)} is not one")
     found: list[tuple[wire.SlackWorkspace, list[Person]]] = []
     for position, w in enumerate(given):
         unknown = sorted(set(w.members or []) - keys)
         if unknown:
             raise ValueError(f"workspace {w.team_id} names no such person: {', '.join(unknown)}")
-        people = [p for p in scenario.people if w.members is None or p.key in w.members]
+        members = (
+            None if w.members is None else {*w.members, *(j.person for j in spec.joined if j.team_id == w.team_id)}
+        )
+        people = [p for p in scenario.people if members is None or p.key in members]
         workspace = wire.SlackWorkspace(
             id=w.team_id,
             name=w.name,
@@ -123,7 +158,7 @@ REACHABLE = (Account.MEMBER, Account.GUEST)
 """Who the agent can open a DM with: a bot cannot be DMed and a deactivated account cannot be reached."""
 
 
-def _member(person: Person, at: datetime, team: str) -> wire.SlackUser:
+def _member(person: Person, at: datetime, team: str, spec: SlackSeed) -> wire.SlackUser:
     tz = person.working_hours.timezone if person.working_hours is not None else "UTC"
     offset = ZoneInfo(tz).utcoffset(at)
     bot = person.account is Account.BOT
@@ -134,13 +169,14 @@ def _member(person: Person, at: datetime, team: str) -> wire.SlackUser:
         real_name=person.name,
         deleted=person.account is Account.DEACTIVATED,
         is_restricted=person.account is Account.GUEST,
+        is_ultra_restricted=person.key in spec.single_channel_guests,
         is_bot=bot,
         tz=tz,
         tz_offset=int(offset.total_seconds()) if offset is not None else 0,
         profile=wire.SlackProfile(
             real_name=person.name,
             display_name=person.name,
-            email=None if bot else person.email,
+            email=None if bot or person.key in spec.without_email else person.email,
             title=person.title or "",
             bot_id=state.other_bot_id(person.key) if bot else None,
         ),
@@ -196,9 +232,19 @@ def _workspace(
             actor=Actor.SCENARIO,
             parent=state.WORKSPACES,
         )
-    users = [_bot(workspace), *(_member(p, scenario.starts_at, team) for p in people)]
+    spec = slack_seed(scenario)
+    users = [_bot(workspace), *(_member(p, scenario.starts_at, team, spec) for p in people)]
     for user in users:
         slack.write(state.user_ref(user.id), user, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=team)
+    for person in (p for p in people if p.key in spec.without_email and p.account is not Account.BOT):
+        user = state.user_id(person.key, team)
+        slack.write(
+            state.unlisted_email_ref(user),
+            wire.SlackUnlistedEmail(user=user, email=person.email),
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=state.EMAILS,
+        )
     installer = next((p for p in people if p.key == scenario.owner), people[0] if people else None)
     slack.write(
         state.install_ref(team),
@@ -259,9 +305,15 @@ def write_away(slack: SlackWorld, person: Person, start: datetime, team: str) ->
     )
 
 
-def write_faults(slack: SlackWorld, faults: list[FaultSeed], start: datetime) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(slack: SlackWorld, faults: list[FaultSeed], start: datetime, *, declared: bool = False) -> None:
     """Record each fault after those already recorded, from `start` plus its own offset."""
-    first = len(slack.bodies(EntityKind.RECORD, state.FAULTS, wire.SlackFault))
+    first = (DECLARED if declared else 0) + len(slack.bodies(EntityKind.RECORD, state.FAULTS, wire.SlackFault))
     for position, fault in enumerate(faults, start=first):
         answer = fault.answer
         limited = answer if isinstance(answer, RateLimited) else None
@@ -319,21 +371,32 @@ def _channel(slack: SlackWorld, seeded: SeededChannel, scenario: Scenario, creat
         slack.write(state.channel_ref(cid), channel, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=team)
         for member in sorted(set(members + ([bot] if seeded.agent_member else []))):
             _join(slack, cid, member)
+    seconds: dict[int, int] = {}
     for post in sorted(seeded.history, key=lambda p: p.ago, reverse=True):
-        root = _post(slack, cid, post, scenario, None)
+        root = _post(slack, cid, post, scenario, None, seconds)
         for reply in sorted(post.replies, key=lambda p: p.ago, reverse=True):
-            _post(slack, cid, reply, scenario, root)
+            _post(slack, cid, reply, scenario, root, seconds)
 
 
-def _post(slack: SlackWorld, channel: str, post: SeededPost, scenario: Scenario, thread_ts: str | None) -> str:
-    """A seeded message, as its author wrote it before the run began, with its files."""
+def _post(
+    slack: SlackWorld,
+    channel: str,
+    post: SeededPost,
+    scenario: Scenario,
+    thread_ts: str | None,
+    seconds: dict[int, int],
+) -> str:
+    """A seeded message, as its author wrote it before the run began, with its files. Its `ts` is its second and
+    its order among the channel's seeded messages in that second (`SlackWorld.seeded_ts`)."""
     at = int((scenario.starts_at - post.ago).timestamp())
+    seconds[at] = (seconds[at] if at in seconds else 0) + 1
+    stamp = slack.seeded_ts(channel, at, seconds[at])
     author = state.user_id(post.by, slack.team.id)
     files = [
         write_file(slack, f, author, at, seed=f"{channel}|{post.ago}|{i}", actor=Actor.SCENARIO)
         for i, f in enumerate(post.files)
     ]
-    ts = write_post(slack, channel, author, post.text, thread_ts, files, at=at, actor=Actor.SCENARIO)
+    ts = write_post(slack, channel, author, post.text, thread_ts, files, at=at, actor=Actor.SCENARIO, ts=stamp)
     if post.key is not None:
         remember_post(slack, post.key, channel, ts, actor=Actor.SCENARIO)
     return ts
@@ -349,9 +412,11 @@ def write_post(
     *,
     at: int,
     actor: Actor,
+    ts: str | None = None,
 ) -> str:
-    """A person's message in the store, as Slack keeps it, recorded as reaching the channel's other humans."""
-    ts = slack.ts_at(at)
+    """A person's message in the store, as Slack keeps it, recorded as reaching the channel's other humans; at the
+    `ts` given (a seeded message's), or the next free one at `at`."""
+    ts = ts if ts is not None else slack.ts_at(at)
     slack.write(
         state.message_ref(ts),
         person_message(ts, author, text, thread_ts, files, slack.team.id),

@@ -3,7 +3,7 @@
 | Drive thing                       | `EntityKind` | external id                  | parent                  |
 |-----------------------------------|--------------|------------------------------|-------------------------|
 | a My Drive or a shared drive root | DOCUMENT     | `root_id(email)`, the drive id | None                  |
-| file or folder                    | DOCUMENT     | minted from its event seq    | its one parent folder   |
+| file or folder                    | DOCUMENT     | minted from its event seq; a seeded one from its order and what it is | its one parent folder |
 | comment                           | COMMENT      | minted from its event seq    | the file                |
 | permission granted                | RECORD       | `<file id>.<permission id>`  | the file                |
 | user                              | RECORD       | the user's permission id     | `USERS`                 |
@@ -91,6 +91,29 @@ def _minted(prefix: str, seq: int) -> str:
 def file_id(seq: int) -> str:
     """The id of the file written by event `seq`: ordered by creation, the same in every run that reaches it."""
     return _minted("1F", seq)
+
+
+SEEDED_VERSION = 1
+SEEDED_FOLDER_DEPTH = 99
+"""How many seeded ordinals each seeded document has for the folders it names; the document takes the next."""
+"""The version of everything seeded: below every version a later change mints (the event's sequence, at least 1)."""
+
+
+def seeded_file_id(ordinal: int, *what: str) -> str:
+    """The id of a file or folder the scenario seeds: its ordinal (the order seeding makes it in, from its document's
+    place in the scenario's list, which only grows at its end) and what it is. Where a minted id carries the event's
+    sequence it carries eight zeros, a sequence no event has, so the two never meet; seeded files still list before
+    everything made later, in the order seeding made them."""
+    if not 0 <= ordinal <= 999_999:
+        raise OverflowError(f"seeded file {ordinal} no longer fits the six digits of a seeded id")
+    return f"1F{0:08d}{ordinal:06d}{_digest('seeded file', *what)[:14]}"
+
+
+def seeded_drive_id(ordinal: int, name: str) -> str:
+    """A seeded shared drive's id, from its place among the scenario's spaces and its name; never a minted one."""
+    if not 0 <= ordinal <= 9999:
+        raise OverflowError(f"seeded shared drive {ordinal} no longer fits the four digits of a seeded id")
+    return f"0AD{0:08d}{ordinal:04d}{_digest('seeded drive', name)[:4]}"
 
 
 def comment_id(seq: int) -> str:
@@ -466,11 +489,6 @@ class DriveWorld:
     ) -> WorldEvent:
         return self._keep(upload, UPLOADS, session, operation=operation, actor=actor)
 
-    def end_upload(self, upload: str) -> WorldEvent:
-        return self._store.apply(
-            Change(entity=record_ref(upload), operation=Operation.DELETE, actor=Actor.AGENT, parent=UPLOADS)
-        )
-
     # ------------------------------------------------------------------ the scenario's own names
 
     def keep_seeded(self, title: str, file: str) -> WorldEvent:
@@ -557,24 +575,41 @@ def folder_file(
 
 
 def ensure_folder(
-    drive: DriveWorld, root: wire.StoredFile, path: str | None, owner: wire.DriveUser, stamp: str, actor: Actor
+    drive: DriveWorld,
+    root: wire.StoredFile,
+    path: str | None,
+    owner: wire.DriveUser,
+    stamp: str,
+    actor: Actor,
+    *,
+    seeded: int | None = None,
 ) -> wire.StoredFile:
-    """The folder at `path` under `root`, made, part by part, where it is not there yet."""
+    """The folder at `path` under `root`, made, part by part, where it is not there yet. `seeded` is the ordinal of
+    the seeded document that names the path: the folders seeding makes for it are named from it and their path,
+    never from the log's position."""
     here = root
-    for name in [part.strip() for part in (path or "").split("/") if part.strip()]:
+    parts = [part.strip() for part in (path or "").split("/") if part.strip()]
+    for depth, name in enumerate(parts):
         found = next(
             (c for c in drive.children(here.file.id) if c.file.mimeType == wire.FOLDER and c.file.name == name), None
         )
         if found is None:
-            seq = drive.next_seq()
+            if seeded is None:
+                seq = drive.next_seq()
+                made, version = file_id(seq), seq
+            else:
+                if depth >= SEEDED_FOLDER_DEPTH:
+                    raise ValueError(f"a seeded folder path is at most {SEEDED_FOLDER_DEPTH} folders deep: {path}")
+                made = seeded_file_id(seeded + depth, root.file.id, *parts[: depth + 1])
+                version = SEEDED_VERSION
             found = folder_file(
-                file_id(seq),
+                made,
                 name,
                 parent=here.file.id,
                 owner=owner,
                 drive_id=root.file.driveId,
                 stamp=stamp,
-                version=seq,
+                version=version,
             )
             drive.write_file(found, operation=Operation.CREATE, actor=actor)
         here = found

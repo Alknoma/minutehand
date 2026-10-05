@@ -21,13 +21,14 @@ import hashlib
 import math
 from datetime import datetime, timedelta
 from itertools import pairwise
-from typing import Self
+from typing import ClassVar, Self
 
 from pydantic import Field, model_validator
 
 from minutehand.adapters.providers.github import wire
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import Person, Scenario
 from minutehand.ports.store import Store
 
@@ -36,20 +37,24 @@ LOGIN = r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$"
 REPOSITORY_NAME = r"^[A-Za-z0-9._-]{1,100}$"
 
 
-class SeedUser(wire.Wire):
+class SeedUser(wire.Wire, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("login",)
     login: str = Field(pattern=LOGIN)
     person: str | None = Field(default=None, description="Person.key: the account's name and email are theirs")
     name: str | None = Field(default=None, description="When no person is named")
 
 
-class SeedOrganization(wire.Wire):
+class SeedOrganization(wire.Wire, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("login",)
     login: str = Field(pattern=LOGIN)
     name: str | None = None
     members: list[str] = Field(default=[], description="Logins of seeded users")
 
 
-class SeedToken(wire.Wire):
+class SeedToken(wire.Wire, Keyed):
     """A personal access token and the user it acts as. Its prefix must be the one GitHub writes on its kind."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("token",)
 
     token: str
     kind: wire.TokenKind
@@ -71,8 +76,10 @@ class SeedToken(wire.Wire):
         return self
 
 
-class SeedFile(wire.Wire):
+class SeedFile(wire.Wire, Keyed):
     """A file at the head of every branch: text, or bytes as base64 for a binary file."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("path",)
 
     path: str = Field(pattern=r"^[^/].*[^/]$|^[^/]$")
     text: str | None = None
@@ -103,7 +110,11 @@ class SeedCommit(wire.Wire):
     paths: list[str] = Field(default=[], description="The paths it changed; what `commits?path=` filters on")
 
 
-class SeedRepository(wire.Wire):
+class SeedRepository(wire.Wire, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = (
+        "owner",
+        "name",
+    )
     owner: str = Field(description="Login of a seeded user or organization")
     name: str = Field(pattern=REPOSITORY_NAME)
     private: bool = False
@@ -358,9 +369,15 @@ def github_seed(scenario: Scenario) -> GitHubSeed:
     return GitHubSeed() if found is None else GitHubSeed.model_validate_json(found.body)
 
 
-def write_faults(github: GitHubWorld, faults: list[wire.Fault]) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(github: GitHubWorld, faults: list[wire.Fault], *, declared: bool = False) -> None:
     """Arm each fault after those already armed."""
-    first = len(github.faults())
+    first = (DECLARED if declared else 0) + len(github.faults())
     for position, fault in enumerate(faults, start=first):
         github.arm(position, wire.StoredFault(fault=fault))
 

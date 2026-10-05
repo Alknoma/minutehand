@@ -7,6 +7,7 @@ world per test, and does nothing until told. That is `minutehand serve`.
 ```
 minutehand serve [--state DIR] [--host 127.0.0.1] [--proxy-port 8080] [--control-port 8081]
                  [--telemetry-port 4318] [--no-receive-telemetry] [--agent-host NAME] [--no-proxy HOST]... [--keep 100]
+                 [--model-host HOST]... [--record-model-calls] [--capture-unknown] [--upstream-ca PEM]
 ```
 
 One process: the proxy, the OTLP receiver and the control API (HTTP and JSON, under `/v1`). Every installed
@@ -47,7 +48,10 @@ Tests run in parallel against one stack, so the proxy decides per call. In order
    `access_token` and `refresh_token` are claimed by that world from then on. A Google service account claimed
    by its email signs in and its Drive calls follow it (`test_a_service_account_signs_in_and_its_minted_token_is_routed_to_the_same_world`).
 5. **The default world**, when one is open (`claims.default: true`; at most one).
-6. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`.
+6. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`. A call that
+   carries a claim of a world already closed (one of the last 1,000 closed) is kept there as that world's late
+   call: `Exchange.late_for` names the world, its 502 says the world was closed before it came, and
+   `GET /v1/unmatched?late_for=<world_id>` (`OpenWorld.late_calls()`, usable after the close) reads them.
 
 A token, key or host is claimed by one open world at a time; a second claim is refused (409).
 
@@ -80,7 +84,8 @@ Per provider, given only what a client sends:
 Every request and answer is a model in `src/minutehand/adapters/control/wire.py`: frozen, and an unknown field
 is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open, 409 for what a world
 cannot do (with `"kind": "unsupported"` when the provider cannot do it in any world; the client raises
-`Unsupported`), 422 for a body that is not the model, 502 when the service an event was pushed to refused it.
+`Unsupported`), 422 for a body that is not the model or a query parameter that is not what its route takes (a
+`since` that is no number, a `kind` that names no kind), 502 when the service an event was pushed to refused it.
 
 | Route | Body → answer | What it does |
 |---|---|---|
@@ -90,12 +95,13 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `GET /v1/worlds` | → `WorldList` | Every open world |
 | `POST /v1/worlds` | `CreateWorld` → 201 `WorldView` | Open a world from a seed, with its claims, inbound targets, faults, outbound hosts, and whether scripted people speak |
 | `GET /v1/worlds/{id}` | → `WorldView` | Its clock, its head, what it owes |
-| `DELETE /v1/worlds/{id}` | → `Checked` | Close it: the checks as it stood, its record written, its claims released |
-| `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since` | → `EventsPage` | The log, filtered; `since` is a seq |
+| `DELETE /v1/worlds/{id}[?quiet=false][&quiet_for=S][&quiet_at_most=S]` | → `Checked` | Close it once it is quiet (below; `Checked.quiet` says how the wait ended): the checks as it stood, its record written, its claims released |
+| `POST /v1/worlds/{id}/quiet` | `Quiet` → `Quieted` | Wait until no call routed to the world has been seen for `quiet_for` and nothing pushed to the service still awaits its answer, or `at_most` has passed |
+| `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since[&since_reset=false]` | → `EventsPage` | The log, filtered; `since` is a seq |
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
-| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
-| `GET /v1/worlds/{id}/spans` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
-| `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
+| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true][?since_reset=false]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
+| `GET /v1/worlds/{id}/spans[?since_reset=false]` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
+| `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `delete_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
 | `POST /v1/worlds/{id}/clock` | `Advance` → `Advanced` | Move the clock `by` or `to`, firing what falls due |
 | `POST /v1/worlds/{id}/faults` | `Fault` → `WorldView` | Answer the next matching calls with a status and body of the caller's |
@@ -104,14 +110,14 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `POST /v1/worlds/{id}/people` | `ChangePerson` → `Acted` | A person's account removed, deactivated or reactivated in one provider |
 | `POST /v1/worlds/{id}/permissions` | `Permit` → `Acted` | A named permission granted or withheld for a person on a project |
 | `POST /v1/worlds/{id}/inbound-credential` | `MintInbound` → `Minted` | The headers a provider's service would send with a request the test builds itself |
-| `POST /v1/worlds/{id}/reset` | → `WorldView` | Back to the seed it was opened with, in place: the same id, claims, inbound targets and secrets |
+| `POST /v1/worlds/{id}/reset` | → `WorldView` | Back to the seed it was opened with, in place: the same id, claims, inbound targets and secrets; its record kept |
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
-| `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
+| `GET /v1/unmatched?since=N[&late_for=W]` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
 
-A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
-opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A
+A provider the seed names (its tickets', documents', channels', provider seeds' and inbound targets' providers) is
+seeded when the world opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A
 `?provider=` that names one of the world's outbound declarations reads the messages its sends wrote.
 
 ### Outbound hosts
@@ -209,17 +215,22 @@ says what the test did and when.
 - **A further seed** (`POST /seed`, `FurtherSeed`; `OpenWorld.seed()`, `.add_person()`): more people, tickets,
   documents, spaces, sign-ins, channels, or a fragment of a provider's own seed, in the same models a world is
   opened with. Each provider the world already holds is seeded twice in a scratch store, from the scenario before
-  and after the addition, starting at the position in the log it was first seeded at, and the world is given what
-  the second wrote that the first did not (`application/further_seed.py`). A provider fragment is merged into
-  the provider's seed: a list grows, an object merges field by field, a value it sets must agree, and the whole
-  is validated by the provider's model. `Seeded.written` says how many things each provider was given. Refused
-  with 409 and nothing written when the grown scenario is not one (a key or title taken), when a value
-  contradicts the seed, when the addition would renumber what is there, when it would rewrite something that has
-  changed since it was seeded, or when it would take an id in use. Jira, YouTrack, Drive, Notion and Microsoft put
-  the log's position into the ids of what they seed (an issue, a file, a page's blocks), so a person added to one
-  of them while it holds seeded issues, files or pages is refused (open the world with them), as is a ticket added
-  to Jira; tickets added to YouTrack and Asana, documents added to Drive, Notion and Microsoft, and people added to
-  Slack and Asana land.
+  and after the addition, and the world is given what the second wrote that the first did not
+  (`application/further_seed.py`). That works because every provider names what it seeds by what the thing is (its
+  key, name, parent and kind, with a deterministic count for true duplicates), never by where seeding reached in the
+  log: the same seed seeded a thousand events later writes the same ids (`tests/serve/test_further_seed_every_provider.py`
+  holds all eight seeding providers to that). So one more person, channel, ticket, document, page, project or
+  membership lands on every provider, whatever the world already holds; a ticket added to a Jira or YouTrack
+  project the agent has since filed issues in takes the project's next number. A provider fragment is merged into
+  the provider's seed: a list grows, except that an item naming the identity of one the seed holds (its model's
+  `IDENTITY`: a Notion workspace's key, a GitHub repository's owner and name, a Jira project's name) is merged into
+  that item, so a page joins a workspace already there; an object merges field by field; a value it sets must agree,
+  or the addition is refused naming where; and the whole is validated by the provider's model. Faults a fragment
+  adds are armed after those `provider-faults` declared while the world was open. `Seeded.written` says how many things each provider was given. Refused with
+  409 and nothing written only for a real contradiction: the grown scenario is not one (a key or title taken, an
+  unknown person named), the addition gives something already seeded other content (named: "would no longer seed
+  ..."), it would rewrite something that has changed since it was seeded (named), or it would take an id something
+  made in the world since it opened already has (named).
 - **A person's account** (`POST /people`, `ChangePerson`; `OpenWorld.remove_person()`, `.deactivate_person()`,
   `.reactivate_person()`): what each provider can show is its `Manifest.people_changes`; anything else is 409
   with `kind: unsupported`, and the client raises `Unsupported`.
@@ -231,8 +242,13 @@ says what the test did and when.
 - **Switches** the emulators exposed (a page size, a tree cut short, a send answered without an id) are typed
   faults and settings of the provider's own seed, declared through `provider-faults` like any fault.
 - **Reset** (`POST /reset`; `OpenWorld.reset()`): back to the seed the world was opened with, in place: the same
-  id, claims, inbound targets and secrets, its clock at its start, the faults it was opened with armed again,
-  and its log so far discarded. Tokens its fakes minted are no longer claimed, and further seeds are gone.
+  id, claims, inbound targets and secrets, its clock at its start, the faults it was opened with armed again.
+  Tokens its fakes minted are no longer claimed, and further seeds are gone. Its STATE goes back; its RECORD
+  does not: the log so far is kept beside the world (`resets/<n>.db`) and never discarded. `events`, `calls`
+  and `spans` read since the last reset, as they always have, and with `?since_reset=false`
+  (`OpenWorld.calls(since_reset=False)`, `.events(...)`, `.spans(...)`) read the whole record, the stretch before
+  each reset first, with `resets` on the page giving, for each reset, the index of the first item after it. Each
+  stretch numbers its events from 1. `WorldView.resets` counts the resets.
 - **Raw state** (`GET /state?provider=P`; `OpenWorld.raw_state()`): every version of every entity the provider
   holds, deleted ones too, in its own JSON. For a person debugging; its shape is the provider's and changes with
   it, so a test asserts on `events`, `entities` or the vendor API instead.
@@ -259,6 +275,7 @@ A world is a run in the state directory, named by its `world_id`:
 <state>/runs/<world_id>/world.json     its name and claims (marks it a standing world)
 <state>/runs/<world_id>/record.json    once closed: stop `closed`
 <state>/runs/<world_id>/result.json    once closed: the checks as it stood
+<state>/runs/<world_id>/resets/<n>.db  its log before its n-th reset
 <state>/runs/lobby-<id>/world.db       calls no world claimed
 ```
 
@@ -296,10 +313,22 @@ def test_the_reminder_reaches_sofia(minutehand_world, gateway):
 |---|---|---|
 | `minutehand` | session | `MinutehandClient` to `$MINUTEHAND_URL`, or to a server started in this process |
 | `minutehand_spec` | test | The suite defines it; the default fails with how to |
-| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `raw_state()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
+| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `spans()` (each since the last reset, or `since_reset=False`), `late_calls()`, `raw_state()`; `quiet()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
 
 A failed `assert_*` prints the world's latest changes. `AsyncMinutehandClient` is the same client for an async
 suite.
+
+### Closing a world while a turn is still running
+
+A service may still be working when the test is done with it: a turn that answers an event at once and goes on
+calling the fakes afterwards. Its calls would land in the lobby once the world closed. So closing a world waits for
+it to go **quiet** first: no call routed to it seen for `quiet_for` (default 250 ms) and no delivery from
+Minutehand to the service (an event, a reply, a press, a happening, a Notion webhook, a Drive channel notification)
+still awaiting the service's answer, for at most `at_most` (default 5 s), then closes it either way;
+`Checked.quiet` says whether it went quiet and, if not, what was still going on. A world no call ever reached is
+quiet at once. `close_world(id, quiet=False)` closes at once; `quiet=Quiet(...)` sets both bounds; `OpenWorld.quiet()`
+waits without closing. A turn that is silent for longer than `quiet_for` between two calls (waiting on a model, say)
+needs a longer `quiet_for`; what still comes after the close is kept as the world's late call, never lost.
 
 ## One container in a stack
 
@@ -358,8 +387,10 @@ script over the same code:
 - **A channel archived** by a person: no act.
 - **Retries of a pushed event or webhook.** Slack's retries are sent; Notion's and Graph's deliveries are sent
   once.
-- **Fixed ids the emulators used** (`U001`, `C001GENERAL`, a fixed Asana gid): ids here derive from names and
-  positions, so a test reads them back from the world (`entities`) or the vendor API after the world opens.
+- **Fixed ids the emulators used** (`U001`, `C001GENERAL`, a fixed Asana gid): ids here derive from what each
+  seeded thing is (its key or name, its parent, its place among things of its kind in the seed), so they are stable
+  for a seed and under additions, but not chosen by the test; a test reads them back from the world (`entities`)
+  or the vendor API after the world opens.
 - **AWS per world by credential.** A SigV4 request carries its access key id in a scheme the OAuth standards do
   not define, and the router reads no provider's own format; AWS calls reach a world by a host it claims or the
   default world.

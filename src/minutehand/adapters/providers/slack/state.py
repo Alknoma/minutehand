@@ -19,6 +19,7 @@
 | a workspace the app is in | RECORD | `workspace.<team>` | `workspaces` |
 | a person's absences | RECORD | `away.<user>`            | `away` |
 | a declared sign-in | RECORD | `sign_in.<digest of the token>` | `sign_ins` |
+| the email of a member whose profile shows none | RECORD | `email.<user>` | `emails` |
 
 A world holds one workspace or several (`SlackSeed.workspaces`). Users, channels and files are listed under their
 workspace's team id; a channel's messages and members under the channel, whose id differs per workspace. Every
@@ -38,6 +39,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from minutehand.adapters.providers.slack import wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
@@ -176,6 +178,10 @@ def fault_ref(position: int) -> EntityRef:
     return _ref(EntityKind.RECORD, f"fault.{position}")
 
 
+def unlisted_email_ref(user: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"email.{user}")
+
+
 def sign_in_ref(token: str) -> EntityRef:
     """Where a token the scenario declares is kept: under its digest, never the token itself."""
     return _ref(EntityKind.RECORD, "sign_in." + hashlib.sha256(f"token|{token}".encode()).hexdigest())
@@ -185,6 +191,7 @@ SIGN_INS = "sign_ins"
 
 
 FILES = "files"
+EMAILS = "emails"
 POSTS = "posts"
 VIEWS = "views"
 TRIGGERS = "triggers"
@@ -207,6 +214,24 @@ DEFAULT_WORKSPACE = wire.SlackWorkspace(
 )
 """The workspace a world is when its seed names none: any xoxb- or xoxp- token is its bot."""
 TOKEN_KINDS = ("xoxb-", "xoxp-")
+
+SLACKBOT_ID = "USLACKBOT"
+SLACKBOT_TZ = "America/Los_Angeles"
+
+
+def slackbot(team: str, at: datetime) -> wire.SlackUser:
+    """Slackbot, as `users.list` and `users.info` serve it in every workspace: the same id everywhere, not a bot
+    (`is_bot` is false for it), and no email. Nobody seeds it and it is never stored: every workspace has it."""
+    offset = ZoneInfo(SLACKBOT_TZ).utcoffset(at)
+    return wire.SlackUser(
+        id=SLACKBOT_ID,
+        team_id=team,
+        name="slackbot",
+        real_name="Slackbot",
+        tz=SLACKBOT_TZ,
+        tz_offset=int(offset.total_seconds()) if offset is not None else 0,
+        profile=wire.SlackProfile(real_name="Slackbot", display_name="Slackbot"),
+    )
 
 
 def file_id(seed: str) -> str:
@@ -363,10 +388,20 @@ class SlackWorld:
         emails: list[str] = []
         for member in self.every_member(channel):
             user = self.user(member)
-            if user is None or user.is_bot or member == besides or user.profile.email is None:
-                continue
-            emails.append(user.profile.email)
+            email = self.email_of(user) if user is not None and member != besides else None
+            if email is not None:
+                emails.append(email)
         return emails
+
+    def email_of(self, user: wire.SlackUser) -> str | None:
+        """Whom a message to this member reaches: the person's email, whether or not their profile shows it (the
+        world keeps one it hides beside the profile); None for a bot."""
+        if user.is_bot:
+            return None
+        if user.profile.email is not None:
+            return user.profile.email
+        found = self.body(unlisted_email_ref(user.id), wire.SlackUnlistedEmail)
+        return None if found is None else found.email
 
     def messages(self, channel: str) -> list[wire.SlackMessage]:
         """Every live message in the channel that anyone can list, roots and replies, oldest first: an
@@ -398,11 +433,28 @@ class SlackWorld:
         return self.ts_at(int(clock.now().timestamp()))
 
     def ts_at(self, second: int) -> str:
-        """A `ts` at `second` (a seeded message's past moment), unique by the next event's sequence."""
+        """A `ts` at `second`, unique by the next event's sequence; one a seeded message already holds is passed
+        over for the next free one, since seeded stamps are not numbered by the log (`seeded_ts`)."""
         seq = self.next_seq()
-        if seq > _MAX_SEQ_IN_TS:
-            raise OverflowError(f"event {seq} no longer fits the six digits of a Slack ts")
-        return f"{second}.{seq:06d}"
+        while True:
+            if seq > _MAX_SEQ_IN_TS:
+                raise OverflowError(f"event {seq} no longer fits the six digits of a Slack ts")
+            ts = f"{second}.{seq:06d}"
+            if self._store.get(message_ref(ts)) is None and not self._store.versions(message_ref(ts)):
+                return ts
+            seq += 1
+
+    def seeded_ts(self, channel: str, second: int, nth: int) -> str:
+        """The `ts` of the `nth` (from 1) message seeded in `channel` at `second`: named by the channel and its order
+        there, never by the log's position, so the same seed gives the same stamps however far into a world it is
+        written. The channel's own three digits keep two channels' messages in one second apart; when two channels'
+        digits meet, the later-seeded message takes the next free stamp."""
+        slot = int(hashlib.sha256(f"seeded|{self.team.id}|{channel}".encode()).hexdigest(), 16) % 1000
+        for n in range(nth, 1000):
+            ts = f"{second}.{slot * 1000 + n:06d}"
+            if self._store.get(message_ref(ts)) is None and not self._store.versions(message_ref(ts)):
+                return ts
+        raise OverflowError(f"more than 999 messages are seeded in {channel} at the second {second}")
 
     def next_seq(self) -> int:
         return self._store.head() + 1

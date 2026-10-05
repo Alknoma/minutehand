@@ -70,7 +70,7 @@ async def test_the_sdk_posts_to_a_dm_it_opened_and_reads_it_back(sdk: WebClient,
 
 async def test_the_sdk_follows_cursors_to_the_last_page(sdk: WebClient) -> None:
     pages = await off_loop(lambda: [page.get("members") for page in sdk.users_list(limit=1)])
-    assert len(pages) == 4 and all(isinstance(p, list) and len(p) == 1 for p in pages)
+    assert len(pages) == 5 and all(isinstance(p, list) and len(p) == 1 for p in pages)
 
 
 async def test_the_sdk_threads_a_reply_and_reads_the_thread(sdk: WebClient) -> None:

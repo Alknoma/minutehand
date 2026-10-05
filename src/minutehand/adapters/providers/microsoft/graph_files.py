@@ -87,6 +87,14 @@ def item_id(drive: str, seq: int) -> str:
     return f"01{seq:08d}{digest}"
 
 
+def seeded_item_id(drive: str, parent: str, name: str) -> str:
+    """A seeded item's id: Graph's 34-character shape, named by where it is (its drive, its folder, its name) rather
+    than by when seeding reached it, so seeding more into an open world moves no item. Its eight-digit run is zero,
+    as no minted item's is, so a seeded item never takes a minted id and lists before every minted one."""
+    digest = base64.b32encode(hashlib.sha256(f"seeded\x1f{drive}\x1f{parent}\x1f{name}".encode()).digest()).decode()
+    return f"01{0:08d}{digest[:24]}"
+
+
 def mime_of(name: str) -> str:
     lower = name.lower()
     for ending, mime in (
@@ -133,9 +141,11 @@ class Address:
 
 
 class Files:
-    def __init__(self, world: MicrosoftWorld, clock: Clock) -> None:
+    def __init__(self, world: MicrosoftWorld, clock: Clock, *, seeding: bool = False) -> None:
+        """`seeding`: the items made are a scenario's, named by where they are (`seeded_item_id`), not minted."""
         self._world = world
         self._clock = clock
+        self._seeding = seeding
 
     # ================================================================== addressing
 
@@ -313,8 +323,11 @@ class Files:
         content: bytes,
         by: wire.IdentitySet,
     ) -> wire.StoredItem:
-        seq = self._world.next_seq()
-        made = item_id(drive.drive.id, seq)
+        made = (
+            seeded_item_id(drive.drive.id, parent.item.id, name)
+            if self._seeding
+            else item_id(drive.drive.id, self._world.next_seq())
+        )
         stamp = self._stamp()
         digest = hashlib.sha256(content).hexdigest().upper()
         item = wire.DriveItem(
@@ -815,7 +828,7 @@ class Files:
             assert found_parent is not None
             parent, name = found_parent, existing.item.name
         expires = graph_time(self._clock.now() + timedelta(days=1))
-        session = tokens.derived_trace(f"upload {self._world.next_seq()} {self._world.store.run_id}")
+        session = tokens.derived_trace(f"upload {self._world.next_seq()}")
         record = wire.StoredUploadSession(
             session=session,
             drive=address.drive.drive.id,

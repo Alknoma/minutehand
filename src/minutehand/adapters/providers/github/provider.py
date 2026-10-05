@@ -34,7 +34,7 @@ class GitHubProvider:
         directory limits, on a world already open."""
         found = fault_fragment(GitHubSeed, faults, frozenset({"faults", "limits"}))
         github = GitHubWorld(world)
-        write_faults(github, found.faults)
+        write_faults(github, found.faults, declared=True)
         write_limits(github, found.limits)
         del clock
 

@@ -14,9 +14,15 @@
 | issue                                     | TICKET | its id             | the project's id |
 | comment                                   | COMMENT | its id            | the issue's id |
 
-An id Jira hands out (an issue's, a comment's, a project's) is `10000` plus the sequence of the event that
-writes the thing, so ids are deterministic, numeric strings as Jira's are, and never repeat within what a run
-can see. A key's record is never deleted, so a project never hands a number out twice. An issue's changelog
+An id Jira hands out while the world runs (an issue's, a comment's, a project's, a link's) is `10000` plus the
+sequence of the event that writes the thing, so ids are deterministic, numeric strings as Jira's are, and never
+repeat within what a run can see. An id the seed gives is named by what the thing is, never by where seeding
+reached in the log, so seeding more into an open world moves nothing already there: a project by its place among
+the seed's declared projects (`100 + n`) or among the projects only its tickets name (`500 + n`), an issue by its
+ticket's place in `Scenario.tickets` (`1000 + n`), a link by its place among the seeded links (`1000 + n`), and a
+comment by its issue and its place among that issue's seeded comments. Every seeded id is below `10000` or above
+`1000000000`, where a minted one never reaches; a seeded comment carries its place (`seededFrom`), so an issue's
+seeded comments read first, in the seed's order, and every later one after them. A key's record is never deleted, so a project never hands a number out twice. An issue's changelog
 is carried on the issue itself, one history entry per change.
 
 Nothing here is held between calls: every read is a query of the store.
@@ -24,7 +30,7 @@ Nothing here is held between calls: every read is a query of the store.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from minutehand.adapters.providers.jira import wire
 from minutehand.adapters.providers.jira.manifest import MANIFEST
@@ -51,6 +57,45 @@ LINKS = "links"
 FAULTS = "faults"
 
 _SCAN = 1000
+
+SEEDED_PROJECTS = 100
+"""A project the Jira seed declares is `100 + n`, n its place in `JiraSeed.projects`."""
+TICKET_PROJECTS = 500
+"""A project only seeded tickets name is `500 + n`, n its place among those names, first named first."""
+SEEDED_ISSUES = 1000
+"""An issue seeded from `Scenario.tickets[n]` is `1000 + n`."""
+SEEDED_LINKS = 1000
+"""The n-th link the seed's issues declare is `1000 + n`."""
+SEEDED_COMMENTS = 1_000_000_000
+"""A seeded comment is this plus its issue's id times 1000 plus its place among the issue's seeded comments."""
+
+
+def _bounded(base: int, n: int, room: int, what: str) -> str:
+    if not 0 <= n < room:
+        raise ValueError(f"a Jira seed holds at most {room} {what}")
+    return str(base + n)
+
+
+def seeded_project_id(n: int) -> str:
+    return _bounded(SEEDED_PROJECTS, n, TICKET_PROJECTS - SEEDED_PROJECTS, "declared projects")
+
+
+def ticket_project_id(n: int) -> str:
+    return _bounded(TICKET_PROJECTS, n, SEEDED_ISSUES - TICKET_PROJECTS, "projects named only by tickets")
+
+
+def seeded_issue_id(position: int) -> str:
+    return _bounded(SEEDED_ISSUES, position, 9000, "tickets")
+
+
+def seeded_link_id(n: int) -> str:
+    return _bounded(SEEDED_LINKS, n, 9000, "links")
+
+
+def seeded_comment_id(issue: str, n: int) -> str:
+    if not 0 <= n < 1000:
+        raise ValueError("a seeded Jira issue holds at most 1000 comments")
+    return str(SEEDED_COMMENTS + int(issue) * 1000 + n)
 
 
 def _ref(kind: EntityKind, external_id: str) -> EntityRef:
@@ -89,8 +134,11 @@ def link_ref(link: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"link:{link}")
 
 
-def fault_ref(index: int) -> EntityRef:
+def fault_ref(index: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"fault:{index}")
+
+
+DECLARED_LIMITS = _ref(EntityKind.RECORD, "declared-limits")
 
 
 def issue_ref(issue: str) -> EntityRef:
@@ -200,8 +248,9 @@ class JiraWorld:
         ]
 
     def comments(self, issue: str) -> list[wire.StoredComment]:
+        """Its seeded comments in the seed's order, then every later one in the order it was written."""
         found = [wire.parse(wire.StoredComment, s.body) for s in self._all(EntityKind.COMMENT, issue)]
-        return sorted(found, key=lambda c: int(c.id))
+        return sorted(found, key=lambda c: (c.seededFrom is None, c.seededFrom or 0, int(c.id)))
 
     def links(self) -> list[wire.StoredLink]:
         found = [wire.parse(wire.StoredLink, s.body) for s in self._all(EntityKind.RECORD, LINKS)]
@@ -211,7 +260,27 @@ class JiraWorld:
         stored = self._store.get(link_ref(link))
         return None if stored is None else wire.parse(wire.StoredLink, stored.body)
 
-    def fault_use(self, index: int) -> int:
+    def rate_limits(self) -> list[tuple[str, wire.StoredRateLimit]]:
+        """Every rate limit with the key its uses are counted under: the site's seeded ones in order, then those
+        declared on the open world in theirs."""
+        stored = self._store.get(DECLARED_LIMITS)
+        declared = [] if stored is None else wire.parse(wire.StoredDeclaredLimits, stored.body).limits
+        return [(str(n), x) for n, x in enumerate(self.site().rateLimits)] + [
+            (f"declared-{n}", x) for n, x in enumerate(declared)
+        ]
+
+    def declare_limits(self, limits: list[wire.StoredRateLimit]) -> WorldEvent:
+        stored = self._store.get(DECLARED_LIMITS)
+        held = [] if stored is None else wire.parse(wire.StoredDeclaredLimits, stored.body).limits
+        return self._write(
+            DECLARED_LIMITS,
+            wire.StoredDeclaredLimits(limits=[*held, *limits]),
+            FAULTS,
+            actor=Actor.SCENARIO,
+            create=stored is None,
+        )
+
+    def fault_use(self, index: str) -> int:
         stored = self._store.get(fault_ref(index))
         return 0 if stored is None else wire.parse(wire.StoredFaultUse, stored.body).used
 
@@ -271,7 +340,7 @@ class JiraWorld:
     def write_sprint(self, sprint: wire.StoredSprint, *, actor: Actor) -> WorldEvent:
         return self._write(sprint_ref(sprint.id), sprint, SPRINTS, actor=actor, create=True)
 
-    def spend_fault(self, index: int, used: int) -> WorldEvent:
+    def spend_fault(self, index: str, used: int) -> WorldEvent:
         return self._write(
             fault_ref(index), wire.StoredFaultUse(used=used), FAULTS, actor=Actor.AGENT, create=used == 1
         )
@@ -339,3 +408,34 @@ class JiraWorld:
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
         return self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
+
+
+def placed(additions: Sequence[Change], world: Store) -> list[Change]:
+    """`PlacesAdditions`: each issue a further seed adds to a project the world holds takes the project's next
+    number, as the agent's next issue there would, so one the agent has filed since the world was seeded keeps its
+    key. The key record and the issue it names are renamed together."""
+    jira = JiraWorld(world)
+    found = list(additions)
+    issues = {c.entity.external_id: n for n, c in enumerate(found) if c.entity.kind is EntityKind.TICKET}
+    following: dict[str, int] = {}
+    for n, change in enumerate(found):
+        if change.entity.kind is not EntityKind.RECORD or change.parent is None or change.body is None:
+            continue
+        project = jira.project(change.parent)
+        if project is None:
+            continue  # a project the addition itself brings: nothing in the world is numbered in it
+        alias = wire.parse(wire.StoredAlias, change.body)
+        if alias.issue not in issues:
+            raise ValueError(
+                f"the key record {change.entity.external_id} names issue {alias.issue}, which is not added"
+            )
+        number = following[change.parent] if change.parent in following else jira.next_number(change.parent)
+        following[change.parent] = number + 1
+        key = f"{project.key}-{number}"
+        held = found[issues[alias.issue]]
+        issue = wire.parse(wire.StoredIssue, held.body or "")
+        if issue.key == key:
+            continue
+        found[n] = change.model_copy(update={"entity": key_ref(key)})
+        found[issues[alias.issue]] = held.model_copy(update={"body": wire.dump(issue.model_copy(update={"key": key}))})
+    return found

@@ -7,11 +7,16 @@ Every surface that shows a fork (`minutehand findings` and `runs`, the viewer, t
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.application.checkpoint import CHECKPOINT
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Restorable
+from minutehand.application.model_calls import is_model_call, model_call
 from minutehand.application.restore import Restored, Verification
 from minutehand.checks.runner import RunResult
 from minutehand.domain.checks import Effectiveness, Finding
@@ -36,6 +41,7 @@ from minutehand.domain.scenario import (
     Scripted,
     Silent,
 )
+from minutehand.domain.telemetry import StoredSpan
 from minutehand.domain.world import (
     Actor,
     DocumentSnapshot,
@@ -43,6 +49,7 @@ from minutehand.domain.world import (
     InteractionSnapshot,
     MessageSnapshot,
     Operation,
+    RecordedCall,
     RecordSnapshot,
     TicketSnapshot,
     WorldEvent,
@@ -65,21 +72,47 @@ class ScoreDifference(Model):
     fork: str
 
 
-class DivergentEvent(Model):
-    """One change in the world on one side of a fork, in words."""
+class DivergenceKind(StrEnum):
+    """What a run's record holds after a fork point, each compared between a fork and its parent."""
 
-    seq: int
+    CHANGE = "change"  # a change in the world: who did what to which entity, and what it then said
+    CALL = "call"  # a call the agent made, captured and tunnelled ones too: where to, what it sent and was answered
+    REPORT = "report"  # what the agent reported at the end of a wake: its status, next wake and commitments
+    MODEL_CALL = "model_call"  # a model call the run received or recorded: what the model was asked and answered
+
+
+KIND_WORDS = {
+    DivergenceKind.CHANGE: ("change in the world", "changes in the world"),
+    DivergenceKind.CALL: ("call", "calls"),
+    DivergenceKind.REPORT: ("report of the agent's", "reports of the agent's"),
+    DivergenceKind.MODEL_CALL: ("model call", "model calls"),
+}
+
+
+class DivergentEvent(Model):
+    """One thing in the record on one side of a fork, in words: a change, a call, a report or a model call."""
+
+    kind: DivergenceKind
+    seq: int = Field(
+        description="Where in the log: the change's or report's seq, the seq a call began at, the head a "
+        "model call arrived at"
+    )
     wake: int
     at: AwareDatetime = Field(description="Simulated time")
     words: str
 
 
 class FirstDivergence(Model):
-    """The first change in the world, after the fork point, at which the two records part."""
+    """The first thing in the record, after the fork point, at which the two records part: a change in the world,
+    a call, a report of the agent's or a model call, whichever comes first."""
 
-    parent: DivergentEvent | None = Field(description="None: the parent's record has no change left there")
-    fork: DivergentEvent | None = Field(description="None: the fork's record has no change left there")
-    shared: int = Field(ge=0, description="Changes after the fork point both records made alike before this one")
+    kind: DivergenceKind = Field(description="The kind of thing that differed first")
+    parent: DivergentEvent | None = Field(description="None: the parent's record has nothing more of it there")
+    fork: DivergentEvent | None = Field(description="None: the fork's record has nothing more of it there")
+    shared: int = Field(
+        ge=0, description="Things of the record after the fork point both made alike before this one, of this kind"
+    )
+    differs: str = Field(description="What about it differs, in words")
 
 
 class ChangedFinding(Model):
@@ -374,53 +407,174 @@ def event_words(event: WorldEvent, scenario: Scenario) -> str:
     return f"wake {event.wake}, {_moment(event.sim_time)}: {what}"
 
 
-def _changes_after(events: list[WorldEvent], at_seq: int) -> list[WorldEvent]:
-    return [
-        e
-        for e in events
-        if e.seq > at_seq and e.entity != CHECKPOINT and e.operation not in (Operation.READ, Operation.SEARCH)
-    ]
+@dataclass(frozen=True)
+class Record:
+    """A run's record from a fork point on, as compared: its changes in the world, its calls, its checkpoints (the
+    agent's reports) and the model calls it received, each as the store holds it."""
+
+    events: list[WorldEvent]
+    calls: list[RecordedCall] = field(default_factory=lambda: list[RecordedCall]())
+    spans: list[StoredSpan] = field(default_factory=lambda: list[StoredSpan]())
+    checkpoints: dict[int, Checkpoint] = field(default_factory=lambda: dict[int, Checkpoint]())
 
 
-def _same(a: WorldEvent, b: WorldEvent) -> bool:
-    return (
-        a.actor is b.actor
-        and a.operation is b.operation
-        and a.entity == b.entity
-        and a.after == b.after
-        and a.sim_time == b.sim_time
+@dataclass(frozen=True)
+class _Item:
+    kind: DivergenceKind
+    wake: int
+    seq: int
+    rank: int
+    at: datetime
+    key: tuple[object, ...]
+    words: str
+
+
+def _digest(text: str | None, raw: bytes | None) -> str:
+    return hashlib.sha256(raw if raw is not None else (text or "").encode("utf-8")).hexdigest()
+
+
+def _call_words(call: RecordedCall) -> str:
+    x = call.exchange
+    if x.tunnelled is not None:
+        return f"the agent's tunnel to {x.path} carried a call, never opened"
+    sent = f", sending {_quoted(x.request_body, 100)}" if x.request_body else ""
+    answered = f"; answered {x.status} {_quoted(x.response_body, 100)}" if x.response_body else f"; answered {x.status}"
+    return f"the agent called {x.method} {x.host}{x.path.split('?', 1)[0]}{sent}{answered}"
+
+
+def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> list[_Item]:
+    """The record after the fork point in log order: each call where it began, ahead of the changes it made; each
+    change; each checkpoint as the agent's report at the end of its wake. Reads and searches are not compared."""
+    found: list[_Item] = []
+    for e in record.events:
+        if e.seq <= at_seq or e.operation in (Operation.READ, Operation.SEARCH):
+            continue
+        if e.entity == CHECKPOINT:
+            continue
+        key = (e.actor, e.operation, e.entity, e.after, e.sim_time)
+        found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))
+    for seq, checkpoint in ((q, c) for q, c in record.checkpoints.items() if q > at_seq):
+        report = checkpoint.agent.report if isinstance(checkpoint.agent, Restorable) else None
+        key = (checkpoint.wake, json.dumps([c.model_dump(mode="json") for c in checkpoint.commitments or []]),
+               report.model_dump_json() if report is not None else None)  # fmt: skip
+        status = f"{report.status.value}" if report is not None else "nothing of its status"
+        held = len(checkpoint.commitments or [])
+        words = (
+            f"wake {checkpoint.wake}, {_moment(checkpoint.now)}: the agent reported {status}, "
+            f"with {held} commitment{'s' if held != 1 else ''} open"
+            + (f", next wake {_moment(report.next_wake)}" if report is not None and report.next_wake else "")
+        )
+        found.append(_Item(DivergenceKind.REPORT, checkpoint.wake, seq, 2, checkpoint.now, key, words))
+    for call in record.calls:
+        if call.first_seq <= at_seq:
+            continue
+        x = call.exchange
+        key = (
+            (x.method, x.host, x.path)
+            if x.tunnelled is not None
+            else (x.method, x.host, x.path, x.status, _digest(x.request_body, x.request_bytes),
+                  _digest(x.response_body, x.response_bytes))
+        )  # fmt: skip
+        words = f"wake {call.wake}, {_moment(call.sim_time)}: {_call_words(call)}"
+        found.append(_Item(DivergenceKind.CALL, call.wake, call.first_seq, 0, call.sim_time, key, words))
+    found.sort(key=lambda i: (i.seq, i.rank))
+    models = sorted(
+        (s for s in record.spans if s.wake > after_wake and is_model_call(s)), key=lambda s: (s.wake, s.span.start)
     )
+    for stored in models:
+        asked = model_call(stored)
+        key = (asked.model, asked.system_instructions, asked.input_messages, asked.output_messages)
+        words = (
+            f"wake {stored.wake}, {_moment(stored.sim_time)}: the agent asked {asked.model or 'a model'} "
+            f"{_quoted(asked.input_messages or '', 100)} and was answered {_quoted(asked.output_messages or '', 100)}"
+        )
+        found.append(_Item(DivergenceKind.MODEL_CALL, stored.wake, stored.after_seq, 3, stored.sim_time, key, words))
+    return found
 
 
-def first_divergence(
-    parent: list[WorldEvent], fork: list[WorldEvent], at_seq: int, scenario: Scenario, fork_scenario: Scenario
-) -> FirstDivergence | None:
-    """Where the two records part: the first change in the world after `at_seq`, in order, that the other record
-    did not make at the same moment. Reads and searches are not compared; the run loop's checkpoints are not
-    changes."""
-    ours, theirs = _changes_after(parent, at_seq), _changes_after(fork, at_seq)
+def _parted(ours: list[_Item], theirs: list[_Item]) -> tuple[int, _Item | None, _Item | None] | None:
     shared = 0
-    while shared < len(ours) and shared < len(theirs) and _same(ours[shared], theirs[shared]):
+    while (
+        shared < len(ours)
+        and shared < len(theirs)
+        and ours[shared].kind is theirs[shared].kind
+        and (ours[shared].key == theirs[shared].key)
+    ):
         shared += 1
     if shared == len(ours) and shared == len(theirs):
         return None
+    return (
+        shared,
+        ours[shared] if shared < len(ours) else None,
+        theirs[shared] if shared < len(theirs) else None,
+    )
 
-    def told(events: list[WorldEvent], words_in: Scenario) -> DivergentEvent | None:
-        if shared >= len(events):
+
+def _differs(ours: _Item | None, theirs: _Item | None) -> str:
+    if ours is None or theirs is None:
+        left = theirs if ours is None else ours
+        assert left is not None
+        return f"the {'parent' if ours is None else 'fork'}'s record has no more {KIND_WORDS[left.kind][1]} there"
+    if ours.kind is not theirs.kind:
+        return f"the parent has a {KIND_WORDS[ours.kind][0]} where the fork has a {KIND_WORDS[theirs.kind][0]}"
+    if ours.kind is DivergenceKind.CALL and len(ours.key) == len(theirs.key) == 6:
+        if ours.key[:3] != theirs.key[:3]:
+            return "a different call was made"
+        if ours.key[4] != theirs.key[4]:
+            return "the same call sent something different"
+        return "the same call was answered differently"
+    if ours.kind is DivergenceKind.MODEL_CALL:
+        return "the model was asked or answered differently"
+    if ours.kind is DivergenceKind.REPORT:
+        return "the agent reported differently"
+    return "a different change was made, or the same one at another moment"
+
+
+def first_divergence(
+    parent: Record, fork: Record, at_seq: int, scenario: Scenario, fork_scenario: Scenario, *, after_wake: int = 0
+) -> FirstDivergence | None:
+    """Where the two records part: the first thing after `at_seq` that the other record did not do alike. The
+    changes, calls and reports are compared in log order, where each sits; the model calls (whose spans arrive when
+    the agent exports them, not where in the log they happened) in their own order; the earlier parting of the
+    two, by wake and then by log position, is the first. Reads and searches are not changes, and the run loop's
+    checkpoints are compared as the agent's reports."""
+    ours, theirs = _items(parent, at_seq, after_wake, scenario), _items(fork, at_seq, after_wake, fork_scenario)
+    logged = _parted(
+        [i for i in ours if i.kind is not DivergenceKind.MODEL_CALL],
+        [i for i in theirs if i.kind is not DivergenceKind.MODEL_CALL],
+    )
+    modelled = _parted(
+        [i for i in ours if i.kind is DivergenceKind.MODEL_CALL],
+        [i for i in theirs if i.kind is DivergenceKind.MODEL_CALL],
+    )
+
+    def where(parted: tuple[int, _Item | None, _Item | None]) -> tuple[int, int]:
+        return min((i.wake, i.seq) for i in parted[1:] if i is not None)
+
+    found = [p for p in (logged, modelled) if p is not None]
+    if not found:
+        return None
+    shared, mine, yours = min(found, key=where)
+    first = min((i for i in (mine, yours) if i is not None), key=lambda i: (i.wake, i.seq, i.rank))
+
+    def told(item: _Item | None) -> DivergentEvent | None:
+        if item is None:
             return None
-        e = events[shared]
-        return DivergentEvent(seq=e.seq, wake=e.wake, at=e.sim_time, words=event_words(e, words_in))
+        return DivergentEvent(kind=item.kind, seq=item.seq, wake=item.wake, at=item.at, words=item.words)
 
-    return FirstDivergence(parent=told(ours, scenario), fork=told(theirs, fork_scenario), shared=shared)
+    return FirstDivergence(
+        kind=first.kind, parent=told(mine), fork=told(yours), shared=shared, differs=_differs(mine, yours)
+    )
 
 
 def outcomes(
     parent: RunResult,
     fork: RunResult,
     *,
-    parent_events: list[WorldEvent],
-    fork_events: list[WorldEvent],
+    parent_record: Record,
+    fork_record: Record,
     at_seq: int,
+    after_wake: int,
     scenario: Scenario,
     fork_scenario: Scenario,
 ) -> Outcomes:
@@ -441,7 +595,9 @@ def outcomes(
         findings_gained=gained,
         findings_lost=lost,
         findings_changed=changed,
-        first_divergence=first_divergence(parent_events, fork_events, at_seq, scenario, fork_scenario),
+        first_divergence=first_divergence(
+            parent_record, fork_record, at_seq, scenario, fork_scenario, after_wake=after_wake
+        ),
     )
 
 
@@ -477,14 +633,17 @@ def described(account: ForkAccount) -> list[str]:
     ]
     split = outcome.first_divergence
     if split is None:
-        lines.append("  the records make the same changes at the same moments: nothing diverged")
-    else:
-        where = (
-            "at the first change in the world after the split"
-            if split.shared == 0
-            else f"after {split.shared} change{'s' if split.shared != 1 else ''} in the world made alike"
+        lines.append(
+            "  the records make the same changes and calls, report alike and ask their models alike: nothing diverged"
         )
-        lines.append(f"  the records part {where}:")
+    else:
+        one = KIND_WORDS[split.kind][0]
+        where = (
+            f"at the first {one} after the split"
+            if split.shared == 0
+            else f"at a {one}, after {split.shared} thing{'s' if split.shared != 1 else ''} made alike"
+        )
+        lines.append(f"  the records part {where}: {split.differs}")
         lines.append(f"    parent: {split.parent.words if split.parent else 'nothing more'}")
         lines.append(f"    fork:   {split.fork.words if split.fork else 'nothing more'}")
     return lines

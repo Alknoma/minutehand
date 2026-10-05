@@ -393,11 +393,7 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
         bot_profile=state.bot_profile(int(clock.now().timestamp()), slack.team),
         ephemeral_to=None if in_channel else author,
     )
-    seen = (
-        slack.human_emails(channel.id, besides=slack.bot)
-        if in_channel
-        else ([user.profile.email] if user.profile.email else [])
-    )
+    seen = slack.human_emails(channel.id, besides=slack.bot) if in_channel else [e for e in [slack.email_of(user)] if e]
     slack.write(
         state.message_ref(ts),
         message,

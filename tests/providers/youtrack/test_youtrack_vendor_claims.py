@@ -10,8 +10,8 @@ import pytest
 
 from tests.providers.youtrack.youtrack_instance import Instance, entities, entity, named, refusal
 
-LAUNCH = "0-0"
-VENDOR = "1-4"
+LAUNCH = "0-1000"
+VENDOR = "1-10000"
 ISSUE_FIELDS = "idReadable,customFields(name,value(name))"
 
 

@@ -40,7 +40,12 @@ class GoogleDriveProvider:
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`DriveSeed.faults`, on a world already open."""
-        write_faults(DriveWorld(world), fault_fragment(DriveSeed, faults, frozenset({"faults"})).faults, clock.now())
+        write_faults(
+            DriveWorld(world),
+            fault_fragment(DriveSeed, faults, frozenset({"faults"})).faults,
+            clock.now(),
+            declared=True,
+        )
 
 
 def build() -> GoogleDriveProvider:

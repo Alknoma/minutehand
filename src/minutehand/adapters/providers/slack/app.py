@@ -266,9 +266,13 @@ class SlackApi:
         )
 
     def users_list(self, presented: wire.Presented) -> wire.Ok:
+        """Every member, Slackbot among them in its place by id: it is in every workspace, though nobody seeds it."""
         args = wire.read_args(wire.ListArgs, presented)
         limit = wire.page_size(args.limit)
-        page = self._world.users(after=wire.decode_cursor(args.cursor), limit=limit + 1)
+        after = wire.decode_cursor(args.cursor)
+        page = self._world.users(after=after, limit=limit + 1)
+        if after is None or after < state.SLACKBOT_ID:
+            page = sorted([*page, state.slackbot(self._world.team.id, self._clock.now())], key=lambda u: u.id)
         more = len(page) > limit
         page = page[:limit]
         self._world.saw(state.team_ref(self._world.team.id), Operation.SEARCH)
@@ -278,7 +282,11 @@ class SlackApi:
         )
 
     def users_info(self, presented: wire.Presented) -> wire.Ok:
-        user = self._user(wire.read_args(wire.UserArgs, presented).user)
+        named = wire.read_args(wire.UserArgs, presented).user
+        if named == state.SLACKBOT_ID:
+            self._world.saw(state.team_ref(self._world.team.id), Operation.READ)
+            return wire.OneUser(user=state.slackbot(self._world.team.id, self._clock.now()))
+        user = self._user(named)
         self._world.saw(state.user_ref(user.id), Operation.READ)
         return wire.OneUser(user=self._shown(user))
 
@@ -533,7 +541,7 @@ class SlackApi:
     def _write_ephemeral_in(
         self, world: SlackWorld, channel: str, message: wire.SlackMessage, user: wire.SlackUser
     ) -> None:
-        seen_by = [user.profile.email] if not user.is_bot and user.profile.email is not None else []
+        seen_by = [e for e in [world.email_of(user)] if e is not None]
         world.write(
             state.message_ref(message.ts),
             message,
@@ -887,7 +895,8 @@ class SlackApi:
 
     def _emails_in(self, world: SlackWorld, users: list[str]) -> list[str]:
         found = [world.user(u) for u in users]
-        return [u.profile.email for u in found if u is not None and not u.is_bot and u.profile.email is not None]
+        emails = [world.email_of(u) for u in found if u is not None]
+        return [e for e in emails if e is not None]
 
 
 _SIGN_IN = (

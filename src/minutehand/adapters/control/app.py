@@ -7,14 +7,20 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     GET    /v1/worlds                                  `WorldList`
     POST   /v1/worlds                                  `CreateWorld` -> 201 `WorldView`
     GET    /v1/worlds/{id}                             `WorldView`
-    DELETE /v1/worlds/{id}                             close it: `Checked`, as it stood when closed
-    GET    /v1/worlds/{id}/events?provider&kind&actor&operation&since    `EventsPage`
+    DELETE /v1/worlds/{id}[?quiet=false][&quiet_for=S][&quiet_at_most=S]
+                                                close it once it is quiet (`Quiet`, its defaults unless the
+                                                query says otherwise): `Checked`, as it stood when closed
+    POST   /v1/worlds/{id}/quiet                       `Quiet` -> `Quieted`: wait until the world goes quiet
+    GET    /v1/worlds/{id}/events?provider&kind&actor&operation&since&since_reset    `EventsPage`
     GET    /v1/worlds/{id}/entities?provider&kind      `EntitiesPage`: each entity's latest version
-    GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true]
+    GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true][?since_reset=false]
                                                 `CallsPage`: every call; those refused because nobody claims or
                                                 declares their host; those captured (`Exchange.captured`); or
                                                 those relayed unopened on a tunnel (`Exchange.tunnelled`)
-    GET    /v1/worlds/{id}/spans                       `SpansPage`
+    GET    /v1/worlds/{id}/spans[?since_reset=false]   `SpansPage`
+
+`events`, `calls` and `spans` read since the world's last reset; `since_reset=false` reads its whole record, every
+stretch before each reset first, and says in `resets` where each reset falls.
     POST   /v1/worlds/{id}/act                         `ActRequest` -> `Acted`
     GET    /v1/worlds/{id}/clock                       `WorldView` (its `now` and `owed`)
     POST   /v1/worlds/{id}/clock                       `Advance` -> `Advanced`
@@ -28,16 +34,20 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
     GET    /v1/worlds/{id}/checks                      `Checked`
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
-    GET    /v1/unmatched?since=N                       `Unmatched`: calls no open world claimed, tunnels among them
+    GET    /v1/unmatched?since=N[&late_for=W]          `Unmatched`: calls no open world claimed, tunnels among them;
+                                                `late_for`: only those that came for world W after it closed
 
 A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
-`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model, 502 when the
-service an event was pushed to refused it.
+`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a query
+parameter that is not what its route takes, 502 when the service an event was pushed to refused it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import timedelta
+from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -48,6 +58,8 @@ from starlette.routing import Route
 
 from minutehand.adapters.control.wire import (
     API,
+    QUIET_AT_MOST,
+    QUIET_FOR,
     Acted,
     ActRequest,
     Advance,
@@ -73,6 +85,7 @@ from minutehand.adapters.control.wire import (
     Permit,
     PressControl,
     ProvidersView,
+    Quiet,
     RawEntity,
     RawState,
     Refusal,
@@ -88,7 +101,9 @@ from minutehand.adapters.control.wire import (
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.standing import Unsupported
 from minutehand.domain.scenario import Model
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, Stored, WorldEvent
+from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordedCall, Stored, WorldEvent
+from minutehand.ports.store import Store
+from minutehand.session import reading_file
 
 if TYPE_CHECKING:
     from minutehand.serve import Serving, World
@@ -109,6 +124,8 @@ def _guarded(handler: Handler) -> Handler:
         try:
             return await handler(request)
         except ValidationError as e:
+            return _refused(422, str(e))
+        except _BadQuery as e:
             return _refused(422, str(e))
         except LookupError as e:
             return _refused(404, str(e.args[0]) if e.args else str(e))
@@ -132,6 +149,7 @@ def _view(world: World) -> WorldView:
         now=standing.clock.now(),
         head=world.store.head(),
         owed=[OwedView(at=at, what=what) for at, what in standing.owed()],
+        resets=world.resets,
     )
 
 
@@ -139,11 +157,76 @@ def _query(request: Request, name: str) -> str | None:
     return request.query_params[name] if name in request.query_params else None
 
 
+class _BadQuery(Exception):
+    """A query parameter that is not what its route takes: refused 422, as a body that is not the model is."""
+
+
+def _flag(request: Request, name: str, *, default: bool) -> bool:
+    """A `true`/`false` query parameter; anything else is refused."""
+    given = _query(request, name)
+    if given is None:
+        return default
+    if given not in ("true", "false"):
+        raise _BadQuery(f"?{name}= is true or false, not {given!r}")
+    return given == "true"
+
+
+def _count(request: Request, name: str) -> int:
+    """A query parameter that is a whole number at least 0; 0 when it is not given."""
+    given = _query(request, name)
+    if given is None:
+        return 0
+    if not given.isdigit():
+        raise _BadQuery(f"?{name}= is a whole number at least 0, not {given!r}")
+    return int(given)
+
+
+def _member[E: StrEnum](request: Request, name: str, kind: type[E]) -> E | None:
+    """A query parameter that names a member of `kind`, or None when it is not given."""
+    given = _query(request, name)
+    if given is None:
+        return None
+    try:
+        return kind(given)
+    except ValueError:
+        raise _BadQuery(f"?{name}= is one of {', '.join(m.value for m in kind)}, not {given!r}") from None
+
+
+def _seconds(request: Request, name: str, default: timedelta) -> timedelta:
+    """A query parameter in seconds, a number at least 0."""
+    given = _query(request, name)
+    if given is None:
+        return default
+    try:
+        found = float(given)
+    except ValueError:
+        raise _BadQuery(f"?{name}= is a number of seconds, not {given!r}") from None
+    if found < 0:
+        raise _BadQuery(f"?{name}= is at least 0 seconds, not {given}")
+    return timedelta(seconds=found)
+
+
+def _across[T](stretches: Sequence[Path], world: World, read: Callable[[Store], list[T]]) -> tuple[list[T], list[int]]:
+    """What `read` finds in each stretch of the world's record before a reset, oldest first, then in the world as
+    it stands; and, for each reset, the index of the first item after it."""
+    found: list[T] = []
+    resets: list[int] = []
+    for path in stretches:
+        with reading_file(path, world.world_id) as before:
+            found += read(before)
+        resets.append(len(found))
+    return found + read(world.store), resets
+
+
 def create_app(serving: Serving) -> Starlette:
     standing = serving.standing
 
     def world_of(request: Request) -> World:
         return standing.get(request.path_params["world_id"])
+
+    def earlier(request: Request, world: World) -> list[Path]:
+        """The stretches of the world's record before its resets, when the read asks for them (`since_reset=false`)."""
+        return [] if _flag(request, "since_reset", default=True) else standing.stretches(world.world_id)
 
     def provider_of(request: Request, world: World) -> str | None:
         """The provider a read names, seeded into the world first if nothing has called it yet: the world a
@@ -176,16 +259,29 @@ def create_app(serving: Serving) -> Starlette:
         return _json(_view(world_of(request)))
 
     async def close(request: Request) -> Response:
-        return _json(Checked(result=await standing.close(world_of(request).world_id)))
+        found = world_of(request)
+        quiet: Quiet | None = None
+        if _flag(request, "quiet", default=True):
+            quiet = Quiet(
+                quiet_for=_seconds(request, "quiet_for", QUIET_FOR),
+                at_most=_seconds(request, "quiet_at_most", QUIET_AT_MOST),
+            )
+        result, quieted = await standing.close(found.world_id, quiet=quiet)
+        return _json(Checked(result=result, quiet=quieted))
+
+    async def quiet(request: Request) -> Response:
+        found = world_of(request)
+        body = await request.body()
+        asked = Quiet.model_validate_json(body) if body.strip() else Quiet()
+        return _json(await standing.quiet(found.world_id, asked))
 
     async def events(request: Request) -> Response:
         found = world_of(request)
-        since = int(_query(request, "since") or 0)
-        provider, kind = provider_of(request, found), _query(request, "kind")
-        actor, operation = _query(request, "actor"), _query(request, "operation")
-        wanted_kind = EntityKind(kind) if kind is not None else None
-        wanted_actor = Actor(actor) if actor is not None else None
-        wanted_operation = Operation(operation) if operation is not None else None
+        since = _count(request, "since")
+        provider = provider_of(request, found)
+        wanted_kind = _member(request, "kind", EntityKind)
+        wanted_actor = _member(request, "actor", Actor)
+        wanted_operation = _member(request, "operation", Operation)
 
         def keep(e: WorldEvent) -> bool:
             return (
@@ -195,13 +291,16 @@ def create_app(serving: Serving) -> Starlette:
                 and (wanted_operation is None or e.operation is wanted_operation)
             )
 
-        found_events = [e for e in found.store.events(since=since) if keep(e)]
-        return _json(EventsPage(events=found_events, head=found.store.head()))
+        def read(store: Store) -> list[WorldEvent]:
+            return [e for e in store.events(since=since if store is found.store else 0) if keep(e)]
+
+        found_events, resets = _across(earlier(request, found), found, read)
+        return _json(EventsPage(events=found_events, head=found.store.head(), resets=resets))
 
     async def entities(request: Request) -> Response:
         found = world_of(request)
-        provider, kind = provider_of(request, found), _query(request, "kind")
-        wanted_kind = EntityKind(kind) if kind is not None else None
+        provider = provider_of(request, found)
+        wanted_kind = _member(request, "kind", EntityKind)
         refs: dict[EntityRef, None] = {}
         for event in found.store.events():
             ref = event.entity
@@ -212,17 +311,26 @@ def create_app(serving: Serving) -> Starlette:
 
     async def calls(request: Request) -> Response:
         found = world_of(request)
-        recorded = found.store.calls()
-        if _query(request, "unmatched") == "true":
-            recorded = [c for c in recorded if c.refused]
-        if _query(request, "captured") == "true":
-            recorded = [c for c in recorded if c.exchange.captured is not None]
-        if _query(request, "tunnelled") == "true":
-            recorded = [c for c in recorded if c.exchange.tunnelled is not None]
-        return _json(CallsPage(calls=recorded))
+        unmatched_only = _query(request, "unmatched") == "true"
+        captured_only = _query(request, "captured") == "true"
+        tunnelled_only = _query(request, "tunnelled") == "true"
+
+        def read(store: Store) -> list[RecordedCall]:
+            return [
+                c
+                for c in store.calls()
+                if (not unmatched_only or c.refused)
+                and (not captured_only or c.exchange.captured is not None)
+                and (not tunnelled_only or c.exchange.tunnelled is not None)
+            ]
+
+        recorded, resets = _across(earlier(request, found), found, read)
+        return _json(CallsPage(calls=recorded, resets=resets))
 
     async def spans(request: Request) -> Response:
-        return _json(SpansPage(spans=world_of(request).store.spans()))
+        found = world_of(request)
+        kept, resets = _across(earlier(request, found), found, lambda store: store.spans())
+        return _json(SpansPage(spans=kept, resets=resets))
 
     async def act(request: Request) -> Response:
         found = world_of(request)
@@ -322,11 +430,15 @@ def create_app(serving: Serving) -> Starlette:
         return _json(Checked(result=await world_of(request).standing.checks(stop=None)))
 
     async def unmatched(request: Request) -> Response:
-        since = int(_query(request, "since") or 0)
+        since = _count(request, "since")
+        late_for = _query(request, "late_for")
         recorded = standing.lobby_store.calls()
-        return _json(
-            Unmatched(calls=[c for c in recorded[since:] if not standing.shared(c.exchange.host)], head=len(recorded))
-        )
+        kept = [
+            c
+            for c in recorded[since:]
+            if not standing.shared(c.exchange.host) and (late_for is None or c.exchange.late_for == late_for)
+        ]
+        return _json(Unmatched(calls=kept, head=len(recorded)))
 
     def route(path: str, handler: Handler, methods: list[str]) -> Route:
         return Route(f"{API}{path}", _guarded(handler), methods=methods)
@@ -340,6 +452,7 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds", create, ["POST"]),
             route("/worlds/{world_id}", world, ["GET"]),
             route("/worlds/{world_id}", close, ["DELETE"]),
+            route("/worlds/{world_id}/quiet", quiet, ["POST"]),
             route("/worlds/{world_id}/events", events, ["GET"]),
             route("/worlds/{world_id}/entities", entities, ["GET"]),
             route("/worlds/{world_id}/calls", calls, ["GET"]),

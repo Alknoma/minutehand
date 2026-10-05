@@ -12,7 +12,7 @@ from datetime import date, datetime
 from pydantic import JsonValue
 
 from minutehand.adapters.providers.jira import wire
-from minutehand.adapters.providers.jira.state import JiraWorld
+from minutehand.adapters.providers.jira.state import JiraWorld, seeded_comment_id
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
@@ -375,10 +375,19 @@ class Desk:
         return stamped
 
     def comment(
-        self, issue: wire.StoredIssue, body: JsonValue, *, by: str, at: datetime, actor: Actor
+        self,
+        issue: wire.StoredIssue,
+        body: JsonValue,
+        *,
+        by: str,
+        at: datetime,
+        actor: Actor,
+        seeded: int | None = None,
     ) -> wire.StoredComment:
+        """A comment on the issue; `seeded` is its place among the issue's seeded comments, which names it."""
         comment = wire.StoredComment(
-            id=self.world.next_id(),
+            id=self.world.next_id() if seeded is None else seeded_comment_id(issue.id, seeded),
+            seededFrom=seeded,
             issue=issue.id,
             author=by,
             body=body,

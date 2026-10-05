@@ -5,10 +5,10 @@
 | user                         | RECORD  | database id, `1-<n>`              | `users` |
 | custom field of the instance | RECORD  | database id, `58-<n>`             | `customFields` |
 | project, with its fields     | RECORD  | database id, `0-<n>`              | `projects` |
-| issue                        | TICKET  | database id, `2-<seq>`            | the project's id |
+| issue                        | TICKET  | database id, `2-<n>`              | the project's id |
 | readable id (`DEMO-12`)      | RECORD  | the readable id                   | the project's id |
-| comment                      | COMMENT | database id, `4-<seq>`            | the issue's id |
-| tag                          | RECORD  | database id, `6-<seq>`            | `tags` |
+| comment                      | COMMENT | database id, `4-<n>`              | the issue's id |
+| tag                          | RECORD  | database id, `6-<n>`              | `tags` |
 | link type                    | RECORD  | database id, `106-<n>`            | `linkTypes` |
 | link                         | RECORD  | `link:<source>:<type>:<target>`   | `links` |
 | token                        | RECORD  | `token:<sha256 of the token>`     | `tokens` |
@@ -17,8 +17,14 @@
 | fault                        | RECORD  | `fault:<n>`                       | `faults` |
 | the instance's settings      | RECORD  | `settings`                        | `instance` |
 
-An issue's, a comment's and a tag's number is the sequence of the first event written for it, so ids are
-deterministic and never repeat within what a run can see. A readable id is never deleted, so a project never hands
+An issue, a comment or a tag the agent or a person makes is numbered by the sequence of the first event written for
+it, so ids are deterministic and never repeat within what a run can see. One the scenario seeds is numbered by what
+it is (`seeded_id`: its ticket's position, its title, its index on its issue, its name), in a range of its own above
+every sequence a run reaches, so seeding the same thing later in the log, or after an addition, gives it the same id;
+such a thing carries `seededFrom`, and it is listed before anything made in the run, in the order it was seeded.
+A user the YouTrack seed adds is numbered from `EXTRA_USERS` on, so a person added to the scenario moves none, and a
+project the YouTrack seed describes from `DESCRIBED_PROJECTS` on, its fields from a range of its own, so a project
+only seeded tickets name (numbered from 0, in the order the tickets name them) moves none, and is moved by none. A readable id is never deleted, so a project never hands
 out a number twice. A link is deleted when it is removed, and is read from both of its ends.
 
 Nothing here is held between calls: every read is a query of the store, so a new app over the same store sees the
@@ -28,7 +34,7 @@ same instance, and a fork sees it as of the fork.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 
 from minutehand.adapters.providers.youtrack import wire
@@ -60,6 +66,44 @@ STATE_FIELD = "State"
 ASSIGNEE_FIELD = "Assignee"
 
 _SCAN = 1000
+
+SEEDED = 100_000_000
+"""Where a seeded issue's, comment's or tag's number starts: above every sequence number a run reaches."""
+_SEEDED_SPAN = 900_000_000
+EXTRA_USERS = 10_000
+"""The number of the first user the YouTrack seed adds beyond the agent and the scenario's people."""
+DESCRIBED_PROJECTS = 1_000
+"""The number of the first project the YouTrack seed describes; a project only seeded tickets name counts from 0."""
+DESCRIBED_FIELDS = 1_000_000
+FIELDS_PER_PROJECT = 10_000
+"""A described project's fields, bundles and values are numbered from `DESCRIBED_FIELDS` plus this per project."""
+
+
+def seeded_id(prefix: int, *identity: str, taken: Callable[[str], bool]) -> str:
+    """A seeded thing's database id from what it is: the same `identity` gives the same id wherever in the log it is
+    seeded. `taken` says whether an id is in use; a clash with another seeded thing moves on to the next number."""
+    digest = int(hashlib.sha256("\x1f".join((str(prefix), *identity)).encode()).hexdigest()[:12], 16)
+    number = digest % _SEEDED_SPAN
+    while taken(f"{prefix}-{SEEDED + number}"):
+        number = (number + 1) % _SEEDED_SPAN
+    return f"{prefix}-{SEEDED + number}"
+
+
+def issue_rank(issue: wire.StoredIssue) -> float:
+    """`seeded_order` as one number, for a sort by issue id: seeded issues first, in the order they were seeded."""
+    order = seeded_order(issue.seededFrom, issue.id)
+    return float(order[1]) if order[0] == 0 else float(_RUN_RANK + order[2])
+
+
+_RUN_RANK = 2**40
+
+
+def seeded_order(seeded_from: int | None, entity_id: str) -> tuple[int, int, int]:
+    """The order a client sees: what was seeded first, in the order it was seeded, then what the run made, by id."""
+    if seeded_from is not None:
+        return 0, seeded_from, 0
+    kind, number = ordinal(entity_id)
+    return 1, kind, number
 
 
 def millis(at: datetime) -> int:
@@ -243,11 +287,11 @@ class YouTrackWorld:
 
     def comments(self, issue: str) -> list[wire.StoredComment]:
         found = [wire.parse(wire.StoredComment, s.body) for s in self._all(EntityKind.COMMENT, issue)]
-        return sorted(found, key=lambda c: ordinal(c.id))
+        return sorted(found, key=lambda c: seeded_order(c.seededFrom, c.id))
 
     def tags(self) -> list[wire.StoredTag]:
         found = [wire.parse(wire.StoredTag, s.body) for s in self._all(EntityKind.RECORD, TAGS)]
-        return sorted(found, key=lambda t: ordinal(t.id))
+        return sorted(found, key=lambda t: seeded_order(t.seededFrom, t.id))
 
     def tag(self, tag: str) -> wire.StoredTag | None:
         stored = self._one(tag, TAGS)
@@ -266,8 +310,10 @@ class YouTrackWorld:
         return [link for link in self.every_link() if link.removed is None]
 
     def every_link(self) -> list[wire.StoredLink]:
-        """Every link ever made, those since removed too: what a link's history is read from."""
-        return [wire.parse(wire.StoredLink, s.body) for s in self._all(EntityKind.RECORD, LINKS)]
+        """Every link ever made, those since removed too, in the order they were made: what a link's history is read
+        from."""
+        found = [(s.seq, wire.parse(wire.StoredLink, s.body)) for s in self._all(EntityKind.RECORD, LINKS)]
+        return [link for _, link in sorted(found, key=lambda pair: (pair[1].created, pair[0]))]
 
     def link_history(self, link: wire.StoredLink) -> list[tuple[int, wire.StoredLink]]:
         """Every version of one link with the seq that wrote it, oldest first."""
@@ -298,6 +344,13 @@ class YouTrackWorld:
     def next_number(self, project: str) -> int:
         """The number the project's next issue takes: one past every number it has handed out."""
         return sum(1 for _ in self._all(EntityKind.RECORD, project)) + 1
+
+    def taken(self, entity_id: str) -> bool:
+        """Whether an issue, a comment or a tag already has this id."""
+        return any(
+            self._store.get(_ref(kind, entity_id)) is not None
+            for kind in (EntityKind.TICKET, EntityKind.COMMENT, EntityKind.RECORD)
+        )
 
     def next_id(self, prefix: int) -> str:
         """A database id from the sequence of the event about to be written."""
@@ -520,3 +573,35 @@ class YouTrackWorld:
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
         return self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
+
+
+def placed(additions: Sequence[Change], world: Store) -> list[Change]:
+    """`PlacesAdditions`: each issue a further seed adds to a project the world holds takes the project's next
+    number, as the agent's next issue there would, so one the agent has filed since the world was seeded keeps its
+    readable id. The readable-id record and the issue it names are renamed together."""
+    youtrack = YouTrackWorld(world)
+    found = list(additions)
+    issues = {c.entity.external_id: n for n, c in enumerate(found) if c.entity.kind is EntityKind.TICKET}
+    following: dict[str, int] = {}
+    for n, change in enumerate(found):
+        if change.entity.kind is not EntityKind.RECORD or change.parent is None or change.body is None:
+            continue
+        project = youtrack.project(change.parent)
+        if project is None:
+            continue  # a project the addition itself brings: nothing in the world is numbered in it
+        alias = wire.parse(wire.StoredAlias, change.body)
+        if alias.issue not in issues:
+            raise ValueError(
+                f"the readable-id record {change.entity.external_id} names issue {alias.issue}, which is not added"
+            )
+        number = following[change.parent] if change.parent in following else youtrack.next_number(change.parent)
+        following[change.parent] = number + 1
+        readable = f"{project.shortName}-{number}"
+        held = found[issues[alias.issue]]
+        issue = wire.parse(wire.StoredIssue, held.body or "")
+        if issue.idReadable == readable:
+            continue
+        found[n] = change.model_copy(update={"entity": alias_ref(readable)})
+        renumbered = issue.model_copy(update={"idReadable": readable, "numberInProject": number})
+        found[issues[alias.issue]] = held.model_copy(update={"body": wire.dump(renumbered)})
+    return found

@@ -180,11 +180,38 @@ class ProxyAddon:
         # bytes tell of whether the agent awaits an answer on it (`tunnel.Tunnel`).
         self._sent_on: dict[str, str] = {}
         self._tunnels: dict[str, _Relayed] = {}
+        # Each call routed to a world and not yet answered, by flow id, with the world and what it is.
+        self._in: dict[str, tuple[Mounted, str]] = {}
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
         can wait until the agent has been quiet. A tunnel the proxy does not open is seen as its bytes move."""
         self.last_seen = SeenCall(at=time.monotonic(), what=what)
+
+    def _routed(self, flow_id: str, world: Mounted, what: str) -> None:
+        """A call routed to `world` begins: it is busy with it until it ends (`_ended`)."""
+        self._in[flow_id] = (world, what)
+        world.seen, world.last = time.monotonic(), what
+
+    def _ended(self, flow_id: str) -> None:
+        found = self._in.pop(flow_id, None)
+        if found is not None:
+            world, what = found
+            world.seen, world.last = time.monotonic(), what
+
+    def activity_in(self, world: Mounted) -> tuple[float | None, list[str]]:
+        """When a call routed to `world` was last seen, and each one still in progress there: a call not yet
+        answered, a tunnel whose bytes there say a request awaits its answer. What `serve` waits on to call a world
+        quiet."""
+        busy = [what for (found, what) in self._in.values() if found is world]
+        busy += [
+            awaiting
+            for relayed in self._tunnels.values()
+            if relayed.burst is not None
+            and relayed.burst.world is world
+            and (awaiting := relayed.tunnel.awaiting()) is not None
+        ]
+        return world.seen, busy
 
     def waiting(self) -> list[str]:
         """What the agent sent and has not had answered: a call sent on to a real host, and a tunnel on which a
@@ -412,16 +439,17 @@ class ProxyAddon:
             return
         request = flow.request
         manifest = self.routing.claimant(host)
-        world = self.worlds.world_for(
-            host,
-            credentials.presented(
-                authorization=_first_header(request, "authorization"),
-                path=request.path,
-                content_type=_first_header(request, "content-type") or "",
-                body=request.get_content(strict=False) or b"",
-            ),
-            world_keys(manifest, host, request.path) if manifest is not None else [],
+        presented = credentials.presented(
+            authorization=_first_header(request, "authorization"),
+            path=request.path,
+            content_type=_first_header(request, "content-type") or "",
+            body=request.get_content(strict=False) or b"",
         )
+        world = self.worlds.world_for(
+            host, presented, world_keys(manifest, host, request.path) if manifest is not None else []
+        )
+        if world is not None and world is not self.worlds.lobby:
+            self._routed(flow.id, world, f"{request.method} {host}{redact.path(request.path)}")
         if policy is HostPolicy.ANSWER and manifest is not None and world is not None:
             await self._answer(flow, host, manifest, world)
             return
@@ -431,15 +459,24 @@ class ProxyAddon:
             await self._capture(flow, host, held, declaration)
             return
         refused = held
+        late = None
+        if world is None:
+            late = self.worlds.late_for(host, presented, world_keys(manifest, host, request.path) if manifest else [])
         async with refused.lock:
             first = refused.store.head() + 1
             if manifest is None:
                 flow.response = _json_response(502, "no provider claims this host", host)
+            elif late is not None:
+                flow.response = _json_response(
+                    502, f"this call is for world {late}, which was closed before it came", host
+                )
             else:
                 flow.response = _json_response(
                     502, "no world claims this call: none holds its credentials or host", host
                 )
-            self._record(refused, flow, host, flow.request.path, first, manifest.key if manifest else None)
+            self._record(
+                refused, flow, host, flow.request.path, first, manifest.key if manifest else None, late_for=late
+            )
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """A recorded call answered as a stream reaches the agent as one: each chunk is passed on as it arrives
@@ -462,6 +499,7 @@ class ProxyAddon:
 
     def response(self, flow: http.HTTPFlow) -> None:
         self._sent_on.pop(flow.id, None)
+        self._ended(flow.id)
         if flow.id in self._passing:
             self._passed(flow, self._passing.pop(flow.id))
             return
@@ -533,7 +571,15 @@ class ProxyAddon:
             flow.request.content = edited
 
     def _record(
-        self, world: Mounted, flow: http.HTTPFlow, host: str, path: str, first: int, provider: str | None
+        self,
+        world: Mounted,
+        flow: http.HTTPFlow,
+        host: str,
+        path: str,
+        first: int,
+        provider: str | None,
+        *,
+        late_for: str | None = None,
     ) -> Exchange:
         request, response = flow.request, flow.response
         assert response is not None
@@ -553,6 +599,7 @@ class ProxyAddon:
             request_bytes=asked_bytes,
             response_bytes=answered_bytes,
             traceparent=_first_header(request, TRACEPARENT),
+            late_for=late_for,
         )
         self._seen(f"{request.method} {host}{exchange.path}")
         last = world.store.head()
@@ -722,6 +769,7 @@ class ProxyAddon:
     def error(self, flow: http.HTTPFlow) -> None:
         """A captured call whose real host could not be reached or broke off: kept, saying so."""
         self._sent_on.pop(flow.id, None)
+        self._ended(flow.id)
         passing = self._passing.pop(flow.id, None)
         if passing is None:
             return

@@ -452,29 +452,23 @@ def test_a_press_goes_to_the_worlds_interactivity_url_when_it_declares_one(serve
 
 
 ADDITIONS = [
-    (
-        "youtrack",
-        {"tickets": [{"provider": "youtrack", "project": "Launch", "title": "Second", "assignee": "owen"}]},
-        True,
-    ),
-    ("google_drive", {"documents": [{"provider": "google_drive", "title": "Second doc", "text": "x"}]}, True),
-    ("notion", {"documents": [{"provider": "notion", "title": "Second doc", "text": "x"}]}, True),
-    ("notion", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}, False),
-    ("jira", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}, False),
-    ("youtrack", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}, False),
-    ("google_drive", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}, False),
+    ("youtrack", {"tickets": [{"provider": "youtrack", "project": "Launch", "title": "Second", "assignee": "owen"}]}),
+    ("jira", {"tickets": [{"provider": "jira", "project": "Launch", "title": "Second", "assignee": "owen"}]}),
+    ("google_drive", {"documents": [{"provider": "google_drive", "title": "Second doc", "text": "x"}]}),
+    ("notion", {"documents": [{"provider": "notion", "title": "Second doc", "text": "x"}]}),
+    ("notion", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
+    ("jira", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
+    ("youtrack", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
+    ("google_drive", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
 ]
 
 
-@pytest.mark.parametrize(
-    ("provider", "added", "lands"), ADDITIONS, ids=[f"{a[0]}-{next(iter(a[1]))}" for a in ADDITIONS]
-)
-def test_an_addition_lands_unless_the_provider_would_renumber_what_it_seeded(
-    served: Served, provider: str, added: dict[str, object], lands: bool
+@pytest.mark.parametrize(("provider", "added"), ADDITIONS, ids=[f"{a[0]}-{next(iter(a[1]))}" for a in ADDITIONS])
+def test_an_addition_lands_beside_what_a_provider_seeded_and_moves_none_of_it(
+    served: Served, provider: str, added: dict[str, object]
 ) -> None:
-    """Jira, YouTrack, Drive and Notion put the log's position into the ids of what they seed (an issue, a file, a
-    page's blocks): a person seeded ahead of one would move it, so that addition is refused; anything seeded after
-    all of it lands."""
+    """Every provider names what it seeds by what it is, so a person seeded ahead of an issue, a file or a page
+    in the seed's order no longer moves it: the addition lands, and every id the world held is still there."""
     seed = Seed.model_validate(
         {
             "starts_at": START.isoformat(),
@@ -489,13 +483,9 @@ def test_an_addition_lands_unless_the_provider_would_renumber_what_it_seeded(
         served.client, served.client.create_world(CreateWorld(seed=seed, claims=Claims(tokens=[f"add-{provider}"])))
     )
     try:
-        head = served.client.world(world.world_id).head
-        if lands:
-            assert world.seed(added).written[provider] > 0
-        else:
-            with pytest.raises(Refused) as refused:
-                world.seed(added)
-            assert refused.value.status == 409 and "by position" in refused.value.error
-            assert served.client.world(world.world_id).head == head
+        held = {(s.entity.kind, s.entity.external_id): s.body for s in world.entities(provider=provider)}
+        assert world.seed(added).written[provider] > 0
+        now = {(s.entity.kind, s.entity.external_id) for s in world.entities(provider=provider)}
+        assert set(held) <= now
     finally:
         served.client.close_world(world.world_id)

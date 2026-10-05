@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import re
 from enum import StrEnum
-from typing import Self
+from types import UnionType
+from typing import Annotated, ClassVar, Self, Union, get_args, get_origin
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityKind
@@ -147,24 +148,72 @@ def fault_fragment[M: Model](seed: type[M], text: str, fields: frozenset[str]) -
     return fragment
 
 
+class Keyed:
+    """A seed model whose items of a list are told apart by `IDENTITY`, the names of the fields that say which thing
+    an item is (a workspace's `key`, a repository's `owner` and `name`). A fragment's item naming the same identity
+    as one the seed holds is merged into it, rather than added beside it as a second of the same thing."""
+
+    IDENTITY: ClassVar[tuple[str, ...]]
+
+
 def merged_seed[M: Model](seed: type[M], held: str | None, added: str) -> str:
     """A provider's own seed with a further fragment of it merged in: a list the fragment sets grows by what it lists,
-    an object it sets is merged field by field, and any other value it sets must be what the world's seed already
-    says. The fragment may name what only the whole seed holds (a repository's owner), so it is read as the merge's
-    input and the whole is validated through the provider's model, which refuses what it cannot read."""
+    except that an item of a `Keyed` model naming the identity of an item held is merged into that item; an object
+    it sets is merged field by field, and any other value it sets must be what the world's seed already says. The
+    fragment may name what only the whole seed holds (a repository's owner), so it is read as the merge's input and
+    the whole is validated through the provider's model, which refuses what it cannot read."""
     fragment: JsonValue = json.loads(added)
     whole: JsonValue = json.loads(held) if held is not None else {}
-    return seed.model_validate(_merged(whole, fragment, seed.__name__)).model_dump_json(exclude_unset=True)
+    return seed.model_validate(_merged(whole, fragment, seed.__name__, seed)).model_dump_json(exclude_unset=True)
 
 
-def _merged(held: JsonValue, added: JsonValue, where: str) -> JsonValue:
+def _model_in(annotation: object) -> type[BaseModel] | None:
+    """The one model a field holds, through `list[...]`, `X | None` and `Annotated`; None for anything else."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    if get_origin(annotation) is Annotated:
+        return _model_in(get_args(annotation)[0])
+    inner = [a for a in get_args(annotation) if a is not type(None)]
+    if get_origin(annotation) is list or (len(inner) == 1 and get_origin(annotation) in (Union, UnionType)):
+        return _model_in(inner[0]) if len(inner) == 1 else None
+    return None
+
+
+def _field_model(model: type[BaseModel] | None, name: str) -> type[BaseModel] | None:
+    if model is None:
+        return None
+    for field_name, info in model.model_fields.items():
+        if name in (field_name, info.alias):
+            return _model_in(info.annotation)
+    return None
+
+
+def _identity(item: JsonValue, keyed: type[Keyed]) -> tuple[JsonValue, ...] | None:
+    if not isinstance(item, dict) or any(k not in item for k in keyed.IDENTITY):
+        return None
+    return tuple(item[k] for k in keyed.IDENTITY)
+
+
+def _merged(held: JsonValue, added: JsonValue, where: str, model: type[BaseModel] | None) -> JsonValue:
     if isinstance(held, dict) and isinstance(added, dict):
         out = dict(held)
         for name, value in added.items():
-            out[name] = _merged(held[name], value, f"{where}.{name}") if name in held else value
+            inner = _field_model(model, name)
+            out[name] = _merged(held[name], value, f"{where}.{name}", inner) if name in held else value
         return out
     if isinstance(held, list) and isinstance(added, list):
-        return [*held, *added]
+        if model is None or not issubclass(model, Keyed):
+            return [*held, *added]
+        out_list = list(held)
+        for item in added:
+            named = _identity(item, model)
+            at = next((n for n, h in enumerate(out_list) if named is not None and _identity(h, model) == named), None)
+            if at is None:
+                out_list.append(item)
+            else:
+                label = ", ".join(f"{k}={v!r}" for k, v in zip(model.IDENTITY, named or (), strict=True))
+                out_list[at] = _merged(out_list[at], item, f"{where}[{label}]", model)
+        return out_list
     if held != added:
         raise ValueError(f"{where} is {held!r} in this world's seed, and the addition says {added!r}")
     return held

@@ -434,14 +434,15 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       ? '<ul class="found">' + found.map(function (x) { return '<li><span class="chip ' + x[0] + '">' + x[1] + "</span><span>" + esc(x[2]) + "</span></li>"; }).join("") + "</ul>"
       : '<p class="note">The same findings in both.</p>';
     var split = o.first_divergence;
+    var kinds = {change: "change in the world", call: "call", report: "report of the agent's", model_call: "model call"};
     if (!split) {
-      html += '<p class="note">From the split on, both records made the same changes in the world at the same moments.</p>';
+      html += '<p class="note">From the split on, both records made the same changes and calls at the same moments, the agent reported alike and its models were asked and answered alike.</p>';
     } else {
       html += '<div class="part"><b>First difference</b><span>' + (split.shared
-        ? "after " + plural(split.shared, "change", "changes") + " in the world both made alike"
-        : "at the very first change in the world after the split") + "</span>" +
-        "<b>The parent</b><span>" + esc(split.parent ? split.parent.words : "made no further change") + "</span>" +
-        "<b>This fork</b><span>" + esc(split.fork ? split.fork.words : "made no further change") + "</span></div>";
+        ? "a " + kinds[split.kind] + ", after " + plural(split.shared, "thing", "things") + " both did alike"
+        : "the very first " + kinds[split.kind] + " after the split") + ": " + esc(split.differs) + "</span>" +
+        "<b>The parent</b><span>" + esc(split.parent ? split.parent.words : "had nothing more of it") + "</span>" +
+        "<b>This fork</b><span>" + esc(split.fork ? split.fork.words : "had nothing more of it") + "</span></div>";
     }
     return html + "</section>";
   }

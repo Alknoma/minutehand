@@ -22,12 +22,19 @@ from minutehand.ports.clock import Clock
 class Editor:
     """Changes made in one workspace by one kind of actor, stamped from `clock`."""
 
-    def __init__(self, world: NotionWorld, workspace: str, clock: Clock, *, actor: Actor) -> None:
+    def __init__(
+        self, world: NotionWorld, workspace: str, clock: Clock, *, actor: Actor, seeding: bool = False
+    ) -> None:
+        """`seeding` names what it makes by what it is (the page it is in, its kind, its place among that page's
+        own), never by where the log has reached, so the same seed makes the same ids however much the world
+        already holds; everything else mints from the event about to be written."""
         self.world = world
         self.workspace = workspace
         self._clock = clock
         self._actor = actor
+        self._seeding = seeding
         self._minted = 0
+        self._within: dict[tuple[str, str], int] = {}
 
     # ------------------------------------------------------------------ lookups
 
@@ -44,7 +51,12 @@ class Editor:
     def is_member(self, user_id: str) -> bool:
         return self.user_name(user_id) is not None
 
-    def mint(self, what: str) -> str:
+    def mint(self, what: str, *, within: str) -> str:
+        """A new object's id; `within` is the page or database it is made in (or under)."""
+        if self._seeding:
+            n = self._within[(within, what)] + 1 if (within, what) in self._within else 1
+            self._within[(within, what)] = n
+            return wire.minted_id("seed", self.workspace, within, what, str(n))
         self._minted += 1
         return self.world.mint(what, str(self._minted))
 
@@ -93,7 +105,11 @@ class Editor:
             )
             for item in items:
                 block = wire.StoredBlock(
-                    id=self.mint("block"), type=item.type, content=item.content, parent=parent, stamps=stamps
+                    id=self.mint("block", within=page.id),
+                    type=item.type,
+                    content=item.content,
+                    parent=parent,
+                    stamps=stamps,
                 )
                 blocks[block.id] = block
                 listed = children.setdefault(into, [])
@@ -444,9 +460,9 @@ class Editor:
     def comment(self, page_id: str, discussion: str | None, text: list[JsonValue], *, by: str) -> wire.StoredComment:
         page = self.page(page_id)
         found = wire.StoredComment(
-            id=self.mint("comment"),
+            id=self.mint("comment", within=page.id),
             page=page.id,
-            discussion_id=discussion or self.mint("discussion"),
+            discussion_id=discussion or self.mint("discussion", within=page.id),
             created_time=wire.stamp(self.now()),
             created_by=by,
             rich_text=text,

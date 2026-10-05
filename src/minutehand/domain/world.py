@@ -151,6 +151,11 @@ class Exchange(Model):
         description="Set for a burst on a tunnel the proxy never opened: `method` is CONNECT, `path` its "
         "host:port, `status` the 200 the proxy answered the CONNECT with, and no body is kept",
     )
+    late_for: str | None = Field(
+        default=None,
+        description="Set for a call refused into the lobby of `minutehand serve` that carried a claim of a world "
+        "already closed: the id of the world it would have belonged to, had it come before that world closed",
+    )
 
 
 class TicketSnapshot(Model):

@@ -21,7 +21,7 @@ Everything is written as actor SCENARIO, stamped with the scenario's start.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 
 from pydantic import Field, JsonValue, model_validator
 
@@ -29,6 +29,7 @@ from minutehand.adapters.providers.notion import wire
 from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.manifest import MANIFEST
 from minutehand.adapters.providers.notion.state import NotionWorld
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import Model, Person, Scenario, SeededDocument
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
@@ -60,7 +61,8 @@ class SeedBlock(Model):
         return self
 
 
-class SeedPage(Model):
+class SeedPage(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("key",)
     key: str
     title: str
     document: str | None = Field(
@@ -82,7 +84,8 @@ class SeedProperty(Model):
     relates_to: str | None = Field(default=None, description="For a relation: the key of the related database")
 
 
-class SeedRow(Model):
+class SeedRow(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("key",)
     key: str
     document: str | None = Field(
         default=None,
@@ -94,7 +97,8 @@ class SeedRow(Model):
     created_by: str | None = None
 
 
-class SeedDatabase(Model):
+class SeedDatabase(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("key",)
     key: str
     title: str
     parent: str = Field(description="The key of the page it sits in")
@@ -116,7 +120,8 @@ class SeedAuthorization(Model):
     redirect_uri: str | None = None
 
 
-class SeedIntegration(Model):
+class SeedIntegration(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("key",)
     key: str
     name: str
     type: wire.IntegrationKind = wire.IntegrationKind.INTERNAL
@@ -159,7 +164,8 @@ class SeedWebhook(Model):
     )
 
 
-class SeedWorkspace(Model):
+class SeedWorkspace(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("key",)
     key: str
     name: str
     members: list[str] | None = Field(default=None, description="Person keys; every person when None")
@@ -389,7 +395,7 @@ def _seed_workspace(
         notion.write_user(
             wire.StoredUser(id=bot, workspace=ws, type=wire.UserType.BOT, name=integration.name, integration=bot)
         )
-    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO)
+    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
     ids: dict[str, str] = {}
     for page in workspace.pages:
         ids[page.key] = object_id(workspace.key, page.key)
@@ -592,7 +598,7 @@ def _seed_documents(
     if not documents:
         return
     ws = object_id(workspace.key, workspace.key)
-    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO)
+    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
     users = notion.users(ws)
     by = next((u.id for u in users if u.email == owner.email), users[0].id if users else ws)
     made: list[str] = []

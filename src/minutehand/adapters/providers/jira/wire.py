@@ -508,6 +508,10 @@ class StoredComment(Wire):
     created: datetime
     updated: datetime
     updateAuthor: str
+    seededFrom: int | None = Field(
+        default=None,
+        description="Minutehand's own: its place among its issue's seeded comments, which read first; never served",
+    )
 
 
 class StoredLink(Wire):
@@ -534,6 +538,13 @@ class StoredFaultUse(Wire):
     used: int
 
 
+class StoredDeclaredLimits(Wire):
+    """Rate limits declared on an open world (`provider-faults`), kept apart from the site's seeded ones, so a later
+    seed fragment that adds to the site's never rewrites what was declared."""
+
+    limits: list[StoredRateLimit] = []
+
+
 StoredModel = TypeVar(
     "StoredModel",
     StoredSite,
@@ -547,6 +558,7 @@ StoredModel = TypeVar(
     StoredLink,
     StoredAlias,
     StoredFaultUse,
+    StoredDeclaredLimits,
 )
 
 

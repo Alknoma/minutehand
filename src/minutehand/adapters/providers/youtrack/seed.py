@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
 from minutehand.adapters.providers.youtrack import fields, state, wire
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
@@ -59,30 +61,37 @@ LINK_TYPES = [
 Login = str
 
 
-class UserSeed(Model):
+class UserSeed(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("login",)
     login: Login = Field(pattern=r"^[A-Za-z0-9._-]+$")
     name: str
     email: str | None = None
     banned: bool = False
 
 
-class TokenSeed(Model):
+class TokenSeed(Model, Keyed):
     """A permanent token (`perm:…`) that acts as a user. Once any is seeded, only these and issued ones are let in."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("token",)
 
     token: str = Field(min_length=1)
     login: Login
 
 
-class ServiceSeed(Model):
+class ServiceSeed(Model, Keyed):
     """A Hub service that may ask `/hub/api/rest/oauth2/token` for a token with its secret, and acts as a user."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("client_id",)
 
     client_id: str = Field(min_length=1)
     secret: str = Field(min_length=1)
     login: Login
 
 
-class FieldSeed(Model):
+class FieldSeed(Model, Keyed):
     """A field the instance defines beyond the standard set."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
 
     name: str
     type: wire.FieldType
@@ -107,7 +116,8 @@ class ProjectFieldSeed(Model):
     default: str | None = None
 
 
-class ProjectSeed(Model):
+class ProjectSeed(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str = Field(description="The project a seeded ticket names, or a project no ticket is in yet")
     short_name: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     description: str = ""
@@ -141,7 +151,8 @@ class HistorySeed(Model):
     fields: list[FieldValueSeed]
 
 
-class IssueSeed(Model):
+class IssueSeed(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("ticket",)
     ticket: str = Field(description="SeededTicket.key")
     fields: list[FieldValueSeed] = []
     links: list[LinkSeed] = []
@@ -188,6 +199,14 @@ class YouTrackSeed(Model):
     grants: list[GrantSeed] = []
     faults: list[FaultSeed] = []
     count_unknown: bool = Field(default=False, description="issuesGetter/count answers -1, as while it still counts")
+
+    @model_validator(mode="after")
+    def _one_project_per_name(self) -> YouTrackSeed:
+        names = [p.name for p in self.projects]
+        twice = sorted({n for n in names if names.count(n) > 1})
+        if twice:
+            raise ValueError(f"two YouTrack projects are named {', '.join(twice)}")
+        return self
 
 
 def youtrack_seed(scenario: Scenario) -> YouTrackSeed:
@@ -318,7 +337,7 @@ def seed(scenario: Scenario, world: Store) -> None:
     accounts = [agent]
     accounts += [user(f"1-{n + 1}", p.key, p.name, p.email) for n, p in enumerate(scenario.people)]
     accounts += [
-        user(f"1-{len(accounts) + n}", u.login, u.name, u.email, banned=u.banned) for n, u in enumerate(extra.users)
+        user(f"1-{state.EXTRA_USERS + n}", u.login, u.name, u.email, banned=u.banned) for n, u in enumerate(extra.users)
     ]
     logins = [a.login.lower() for a in accounts]
     if len(logins) != len(set(logins)):
@@ -353,12 +372,21 @@ def seed(scenario: Scenario, world: Store) -> None:
         youtrack.write_link_type(link_type, actor=Actor.SCENARIO)
 
     seeded = [t for t in scenario.tickets if t.provider == MANIFEST.key]
-    named = list(dict.fromkeys([*(p.name for p in extra.projects), *(t.project for t in seeded)]))
     described = {p.name: p for p in extra.projects}
+    plain = [name for name in dict.fromkeys(t.project for t in seeded) if name not in described]
     everyone = [a.id for a in accounts]
     projects: dict[str, wire.StoredProject] = {}
-    ids = fields.Ids([])
-    for name in named:
+    shared = fields.Ids([])
+    numbered = [(name, n, shared) for n, name in enumerate(plain)]
+    numbered += [
+        (
+            p.name,
+            state.DESCRIBED_PROJECTS + n,
+            fields.Ids([], start=state.DESCRIBED_FIELDS + n * state.FIELDS_PER_PROJECT),
+        )
+        for n, p in enumerate(extra.projects)
+    ]
+    for name, number, ids in numbered:
         detail = described.get(name, ProjectSeed(name=name))
         taken = {p.shortName for p in projects.values()}
         key = detail.short_name or short_name(name, taken)
@@ -367,7 +395,7 @@ def seed(scenario: Scenario, world: Store) -> None:
         team = everyone if detail.team is None else [login(m).id for m in detail.team]
         leader = agent if detail.leader is None else login(detail.leader)
         made = new_project(
-            len(projects),
+            number,
             name,
             key,
             leader=leader.id,
@@ -410,11 +438,14 @@ def seed(scenario: Scenario, world: Store) -> None:
     people = {p.key: by_login[p.key] for p in scenario.people}
     reporter = people[scenario.owner]
     made_issues: dict[str, wire.StoredIssue] = {}
+    labels = list(dict.fromkeys(label.lower() for t in seeded for label in t.labels))
     for position, ticket in enumerate(scenario.tickets):
         if ticket.provider != MANIFEST.key:
             continue
         detail = details.get(ticket.key or "", IssueSeed(ticket=ticket.key or "-"))
-        issue = _seed_issue(youtrack, projects[ticket.project], ticket, position, detail, reporter, people, start)
+        issue = _seed_issue(
+            youtrack, projects[ticket.project], ticket, position, detail, reporter, people, start, labels
+        )
         if ticket.key is not None:
             made_issues[ticket.key] = issue
     for detail in extra.issues:
@@ -469,7 +500,10 @@ def _seed_issue(
     reporter: wire.StoredUser,
     people: dict[str, wire.StoredUser],
     start: datetime,
+    labels: list[str],
 ) -> wire.StoredIssue:
+    """The issue seeded from `Scenario.tickets[position]`: its id from its position and title, its tags' from their
+    names, its comments' from its id and their place on it, so none moves when more is seeded."""
     at = state.millis(start - detail.created_ago)
     number = youtrack.next_number(home.id)
     values: dict[str, wire.FieldValue] = {f.id: f.defaultValue for f in home.fields if f.defaultValue is not None}
@@ -491,11 +525,16 @@ def _seed_issue(
     for label in dict.fromkeys(ticket.labels):
         tag = youtrack.tag_named(label)
         if tag is None:
-            tag = wire.StoredTag(id=youtrack.next_id(6), name=label, owner=reporter.id)
+            tag = wire.StoredTag(
+                id=state.seeded_id(6, label.lower(), taken=youtrack.taken),
+                name=label,
+                owner=reporter.id,
+                seededFrom=labels.index(label.lower()),
+            )
             youtrack.write_tag(tag, actor=Actor.SCENARIO)
         tags.append(tag.id)
     issue = wire.StoredIssue(
-        id=youtrack.next_id(2),
+        id=state.seeded_id(2, str(position), home.name, ticket.title, taken=youtrack.taken),
         idReadable=f"{home.shortName}-{number}",
         numberInProject=number,
         project=home.id,
@@ -511,14 +550,15 @@ def _seed_issue(
     )
     issue = issue.model_copy(update={"resolved": at if youtrack.is_resolved(home, issue) else None})
     youtrack.create_issue(issue, actor=Actor.SCENARIO)
-    for comment in ticket.comments:
+    for n, comment in enumerate(ticket.comments):
         youtrack.write_comment(
             wire.StoredComment(
-                id=youtrack.next_id(4),
+                id=state.seeded_id(4, issue.id, str(n), taken=youtrack.taken),
                 issue=issue.id,
                 text=comment.text,
                 author=people[comment.by].id,
                 created=state.millis(start),
+                seededFrom=n,
             ),
             actor=Actor.SCENARIO,
         )
@@ -577,9 +617,15 @@ def _seed_history(youtrack: YouTrackWorld, issue: wire.StoredIssue, detail: Issu
         current = changed
 
 
-def write_faults(youtrack: YouTrackWorld, faults: list[FaultSeed], start: datetime) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(youtrack: YouTrackWorld, faults: list[FaultSeed], start: datetime, *, declared: bool = False) -> None:
     """Record each fault after those already recorded, from `start` plus its own offset."""
-    first = len(youtrack.faults())
+    first = (DECLARED if declared else 0) + len(youtrack.faults())
     for number, fault in enumerate(faults, start=first):
         youtrack.write_fault(
             number,

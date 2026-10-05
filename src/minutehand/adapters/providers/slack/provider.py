@@ -103,7 +103,9 @@ class SlackProvider:
 
 
 def _declare(faults: str, world: Store, clock: Clock) -> None:
-    write_faults(SlackWorld(world), fault_fragment(SlackSeed, faults, frozenset({"faults"})).faults, clock.now())
+    write_faults(
+        SlackWorld(world), fault_fragment(SlackSeed, faults, frozenset({"faults"})).faults, clock.now(), declared=True
+    )
 
 
 def build() -> SlackProvider:

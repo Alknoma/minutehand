@@ -203,6 +203,10 @@ class DriveApi:
         self._clock = clock
         self._background: set[asyncio.Task[bool]] = set()
 
+    def delivering(self) -> int:
+        """Notifications pushed to a channel's address that have not had its answer yet."""
+        return len(self._background)
+
     @property
     def drive(self) -> DriveWorld:
         return self._drive
@@ -513,11 +517,19 @@ class DriveApi:
         return Response(b"", status_code=200, headers={"Location": location, "X-GUploader-UploadID": upload_id})
 
     async def upload_put(self, request: Request, call: wire.CallQuery, caller: Caller) -> Response:
-        """A chunk of a resumable upload, or a question about how much has arrived (`bytes */total`)."""
+        """A chunk of a resumable upload, or a question about how much has arrived (an empty `PUT` with
+        `Content-Range: */total`, or `*/*` while the total is unknown). The total need not be known when the upload
+        begins: `X-Upload-Content-Length` is optional, and the chunk that names the total (`bytes a-b/total`) is the
+        last. Until then each chunk (`bytes a-b/*`) is answered 308 with the `Range` received; once complete, the
+        session answers the file to every request."""
         upload_id = call.upload_id
         session = self._drive.upload(upload_id) if upload_id else None
         if upload_id is None or session is None or session.email != caller.email:
             raise wire.drive_refusal(404, "notFound", "The upload session was not found.", location="upload_id")
+        first_call = wire.read_query(session.query)
+        if session.done is not None:
+            made = self._file(session.done, caller, first_call, need="reader")
+            return _json(self._served(made), wire.selection(first_call.fields, wire.DriveFile, wire.FILE_DEFAULT))
         received = wire.blob_bytes(wire.Blob(base64=session.received))
         raw = await request.body()
         spelled = request.headers["content-range"] if "content-range" in request.headers else None
@@ -525,6 +537,10 @@ class DriveApi:
         if first is not None and first != len(received):
             raise wire.drive_refusal(
                 400, "badContent", f"The chunk starts at {first}; {len(received)} bytes have arrived."
+            )
+        if total is not None and session.total is not None and total != session.total:
+            raise wire.drive_refusal(
+                400, "badContent", f"The upload said it carries {session.total} bytes, and this chunk says {total}."
             )
         received += raw
         _check_size(len(received))
@@ -537,8 +553,6 @@ class DriveApi:
             return Response(b"", status_code=308, headers=headers)
         if len(received) > known_total:
             raise wire.drive_refusal(400, "badContent", "More bytes arrived than the upload said it would carry.")
-        self._drive.end_upload(upload_id)
-        first_call = wire.read_query(session.query)
         found = wire.read_object(session.metadata.encode())
         if session.file_id is None:
             stored = self._created(found, caller, first_call, media=received, media_type=session.media_type)
@@ -546,6 +560,9 @@ class DriveApi:
             target = self._file(session.file_id, caller, first_call, need="writer")
             content = self._content(target.file.mimeType, received, session.media_type, caller)
             stored = self._updated(target, found, first_call, caller, content=content)
+        self._drive.keep_upload(
+            upload_id, session.model_copy(update={"received": "", "total": known_total, "done": stored.file.id})
+        )
         return _json(self._served(stored), wire.selection(first_call.fields, wire.DriveFile, wire.FILE_DEFAULT))
 
     def _created(
@@ -1534,12 +1551,14 @@ def _check_size(size: int) -> None:
 
 
 def _content_range(spelled: str | None, length: int, total: int | None) -> tuple[int | None, int | None]:
-    """`Content-Range: bytes first-last/total`, `bytes */total`, or none (the whole body is the upload)."""
+    """`Content-Range: bytes first-last/total` (`/*` while the total is unknown), a status query `*/total` or `*/*`
+    (as Google's guide spells it, and with the `bytes` unit as clients send it), or none (the whole body is the
+    upload). The first byte the request carries, or None for a status query; and the total, or None when unknown."""
     if spelled is None:
         return 0, total if total is not None else length
-    unit, _, rest = spelled.partition(" ")
+    unit, _, rest = spelled.strip().rpartition(" ")
     span, _, size = rest.partition("/")
-    if unit != "bytes" or not size:
+    if unit not in ("bytes", "") or (unit == "" and span != "*") or not size:
         raise wire.invalid("Content-Range")
     whole = None if size == "*" else int(size) if size.isdigit() else -1
     if whole == -1:
@@ -1627,11 +1646,16 @@ def _sort_key(key: str) -> Callable[[wire.DriveFile], str | bool]:
 
 
 class HostRouter:
-    """Send each request to its host's routes, or to every route when the host is not one of Google's."""
+    """Send each request to its host's routes, or to every route when the host is not one of Google's.
+    `DeliversInBackground`: a channel's notifications are pushed after the call that set them off is answered."""
 
-    def __init__(self, by_host: dict[str, Router], every: Router) -> None:
+    def __init__(self, by_host: dict[str, Router], every: Router, api: DriveApi) -> None:
         self._by_host = by_host
         self._every = every
+        self._api = api
+
+    def delivering(self) -> int:
+        return self._api.delivering()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         headers: list[tuple[bytes, bytes]] = scope["headers"] if "headers" in scope else []
@@ -1729,4 +1753,5 @@ def build_app(api: DriveApi) -> HostRouter:
             IAM_HOST: Router(routes=iam),
         },
         Router(routes=[*routes, *oauth, *documents, *presentations, *iam]),
+        api,
     )

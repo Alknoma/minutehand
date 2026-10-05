@@ -63,7 +63,15 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
-from minutehand.application.forks import ForkAccount, Outcomes, change_words, outcomes, restore_account, summary
+from minutehand.application.forks import (
+    ForkAccount,
+    Outcomes,
+    Record,
+    change_words,
+    outcomes,
+    restore_account,
+    summary,
+)
 from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused, refuse_unheld
@@ -445,12 +453,20 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
         checkpoint = held[at_seq]
         ran_on = any(seq < at_seq and earlier.wake == checkpoint.wake for seq, earlier in held.items())
         parent_events = parent_world.events()
+        parent_record = Record(
+            events=parent_events, calls=parent_world.calls(), spans=parent_world.spans(), checkpoints=held
+        )
         calls = [model_call(s).model for s in parent_world.spans() if is_model_call(s)]
         after = [model_call(s).model for s in parent_world.spans() if s.wake > checkpoint.wake and is_model_call(s)]
         # The models the parent asked for after the split; when it made no call after it, those it asked for at all.
         models = list(dict.fromkeys(m for m in (after or calls) if m is not None))
     with reading(state, run_id) as fork_world:
-        fork_events = fork_world.events()
+        fork_record = Record(
+            events=fork_world.events(),
+            calls=fork_world.calls(),
+            spans=fork_world.spans(),
+            checkpoints=checkpoints(fork_world),
+        )
 
     def ticket_before(override: Override) -> TicketSnapshot | None:
         if not isinstance(override, TicketEdit):
@@ -468,9 +484,10 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
         outcome = outcomes(
             load(state, entry.parent_run).result,
             load(state, run_id).result,
-            parent_events=parent_events,
-            fork_events=fork_events,
+            parent_record=parent_record,
+            fork_record=fork_record,
             at_seq=at_seq,
+            after_wake=checkpoint.wake,
             scenario=parent_scenario,
             fork_scenario=scenario_of(state, run_id),
         )
@@ -626,6 +643,17 @@ def reading(state: Path, run_id: str) -> Iterator[Store]:
     taking its write lock; closed on leaving. A fork is read from its root run's file."""
     entry = find(state, run_id)
     store = _ReadOnlyStore(run_dir(state, entry.root) / WORLD, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+@contextmanager
+def reading_file(path: Path, run_id: str) -> Iterator[Store]:
+    """One run of a world file at `path` opened for reading only, closed on leaving: a standing world's stretch
+    before a reset, kept beside it (`serve.RESETS`)."""
+    store = _ReadOnlyStore(path, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
     try:
         yield store
     finally:

@@ -79,7 +79,7 @@ class NotionApi:
     # ------------------------------------------------------------------ the gate
 
     def request_id(self, request: Request) -> str:
-        return wire.request_id(f"{self._store.run_id}:{self._store.head()}:{request.method}:{request.url.path}")
+        return wire.request_id(f"{self._store.head()}:{request.method}:{request.url.path}")
 
     def refused(self, request: Request, refusal: wire.Refusal) -> Response:
         return Response(
@@ -126,7 +126,7 @@ class NotionApi:
 
     def _faults(self, request: Request, call: Call) -> None:
         path = request.url.path
-        for n, fault in enumerate(self._world.schedule().faults):
+        for n, fault in self._world.armed():
             if fault.integration is not None and fault.integration != call.bot:
                 continue
             if fault.kind is wire.FaultKind.CONFLICT:
@@ -445,7 +445,7 @@ class NotionApi:
         children = wire.as_list(body["children"], "body.children") if "children" in body else []
         editor = self._editor(call)
         page = editor.create_page(
-            editor.mint("page"),
+            editor.mint("page", within=parent.id or call.workspace),
             parent,
             properties,
             children,
@@ -657,7 +657,7 @@ class NotionApi:
             raise wire.invalid("body.parent and body.properties should be defined.")
         parent = self._parent(call, wire.as_object(body["parent"], "body.parent"))
         editor = self._editor(call)
-        database_id = editor.mint("database")
+        database_id = editor.mint("database", within=parent.id or call.workspace)
         schema: dict[str, wire.Json] = {}
         for name, raw in wire.as_object(body["properties"], "body.properties").items():
             made = wire.schema_from_request(
@@ -880,6 +880,10 @@ class NotionApp:
     async def _deliver(self) -> None:
         async with self._one_at_a_time:
             await webhooks.deliver(self._world, self._clock)
+
+    def delivering(self) -> int:
+        """`DeliversInBackground`: webhook deliveries started and not yet answered."""
+        return len(self._sending)
 
     async def settled(self) -> None:
         """Wait for every delivery already started."""

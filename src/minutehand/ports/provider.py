@@ -6,7 +6,7 @@ pushes events or books wakes to the port it claims, and refuse it loudly when it
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from typing import Protocol, runtime_checkable
 
 from minutehand.domain.clock import Due
@@ -28,7 +28,7 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import EntityRef
+from minutehand.domain.world import Change, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -204,6 +204,31 @@ class NotifiesChanges(Protocol):
 
     async def notify(self, world: Store, clock: Clock) -> None:
         """Tell the agent, the way the real service would, of every change it has not been told of."""
+        ...
+
+
+@runtime_checkable
+class PlacesAdditions(Protocol):
+    """A provider whose seeding numbers things within a container the world may have added to since it was seeded:
+    a Jira or YouTrack project's issue numbers (`LAUNCH-3`). A further seed of an open world works out what the
+    grown scenario seeds from the scenario alone, so a ticket added to a project the agent has filed in since would
+    take a number the world has already handed out; the provider moves it to the next free one."""
+
+    def place(self, additions: Sequence[Change], world: Store) -> list[Change]:
+        """`additions`, in the order seeding wrote them, renumbered so none takes a number `world` has handed out,
+        and everything among them that names a renumbered thing renamed with it. Raises ValueError for what it
+        cannot place."""
+        ...
+
+
+@runtime_checkable
+class DeliversInBackground(Protocol):
+    """A provider's app (the object `Provider.app` answers) that pushes to the agent after the call that set it
+    off has been answered: Notion's webhooks, Drive's channel notifications. A standing world is not quiet while
+    one of these still awaits the agent's answer."""
+
+    def delivering(self) -> int:
+        """How many deliveries it has started whose answer from the agent has not come back yet."""
         ...
 
 
