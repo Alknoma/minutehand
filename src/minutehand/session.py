@@ -31,7 +31,6 @@ import os
 import secrets
 import shutil
 import sqlite3
-import threading
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -469,11 +468,7 @@ class _ReadOnlyStore(SqliteStore):
     and a run still being written in WAL mode is read as of its last commit. Any write raises."""
 
     def __init__(self, path: Path, run_id: str, clock: Clock) -> None:
-        self.run_id = run_id
-        self._path = path
-        self._clock = clock
-        self._lock = threading.RLock()
-        self._db = _read_only(path)
+        self._attach(path, run_id, clock, _read_only(path))
         found = self._db.execute("PRAGMA user_version").fetchone()[0]
         if found != SCHEMA_VERSION:
             self._db.close()

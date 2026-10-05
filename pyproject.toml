@@ -21,6 +21,7 @@ dependencies = [
     "protobuf>=5",
     "uvicorn>=0.30",
     "mcp>=1.2,<2",
+    "zstandard>=0.23",
 ]
 
 [project.scripts]
