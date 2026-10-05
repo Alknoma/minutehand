@@ -16,6 +16,7 @@ from pydantic import AwareDatetime, Field, field_validator, model_validator
 from minutehand.application.steps import StepEdge
 from minutehand.checks.runner import RunResult
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
+from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundCredential, InboundCredentialAsk, InboundTarget, PermissionGrant, Press
 from minutehand.domain.provider import PersonChange
@@ -147,6 +148,12 @@ class CreateWorld(Model):
         description="External emulators this world's `forward` hosts go to: one per server shared by every world "
         "that declares it the same, unless it says `per_world`",
     )
+    inboxes: list[HttpInbox] = Field(
+        default=[],
+        description="Where work waits on a person in the service's own product, read and decided as each person "
+        "(`domain.inboxes`, as an agent file declares them); a person's `credential` is read from the server's "
+        "environment",
+    )
     case: str | None = Field(
         default=None,
         min_length=1,
@@ -157,6 +164,7 @@ class CreateWorld(Model):
     @model_validator(mode="after")
     def _one_declaration_per_host(self) -> Self:
         refuse_repeats(self.outbound)
+        refuse_repeated_inboxes(self.inboxes)
         refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
         hosts = [m.host for m in self.model_hosts]
         repeated = sorted({h for h in hosts if hosts.count(h) > 1})
@@ -532,3 +540,54 @@ class RawState(Model):
 
     provider: ProviderKey
     entities: list[RawEntity]
+
+
+class PendingItemView(Model):
+    """One item waiting on a person in the service's own product, as the world last read it."""
+
+    inbox: ProviderKey
+    item: EntityRef = Field(description="How the world names it: the inbox, and the product's own id")
+    person: str | None = Field(description="Person.key it waits on")
+    summary: str
+    decisions: list[str]
+    gates: str | None = None
+    seen_at: AwareDatetime = Field(description="When it was first seen, simulated")
+
+
+class DueDecisionView(Model):
+    """A decision one of the world's people has made and will carry out at `at`, simulated."""
+
+    at: AwareDatetime
+    inbox: ProviderKey
+    item: EntityRef
+    person: str
+    decision: str
+    inputs: dict[str, str] = {}
+
+
+class InboxesView(Model):
+    """What waits on people now, and what they have decided and when they will do it: a harness that keeps its own
+    clock jumps to the earliest `due`."""
+
+    pending: list[PendingItemView]
+    due: list[DueDecisionView]
+    unread: list[str] = Field(default=[], description="Each inbox a person's list could not be read in, and why")
+
+
+class DecideNow(Model):
+    """A person decides an item now, with a decision and its inputs, as the product's page would send it."""
+
+    person: str = Field(description="Person.key")
+    item: EntityRef
+    decision: str
+    inputs: dict[str, str] = {}
+
+
+class DecisionView(Model):
+    event: WorldEvent = Field(description="The person's change: decided, or still pending with the product's refusal")
+    accepted: bool
+    refused: str | None = Field(default=None, description="The product's answer when it did not take it")
+
+
+class DecisionsDone(Model):
+    decisions: list[DecisionView]

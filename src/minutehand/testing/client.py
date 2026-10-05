@@ -22,12 +22,16 @@ from minutehand.adapters.control.wire import (
     ChangePerson,
     Checked,
     CreateWorld,
+    DecideNow,
+    DecisionsDone,
+    DecisionView,
     DeclareFaults,
     EntitiesPage,
     Environment,
     EventsPage,
     Fault,
     FurtherSeed,
+    InboxesView,
     LobbyKind,
     MarkStep,
     Minted,
@@ -317,6 +321,19 @@ class MinutehandClient:
         """The world's checks as it stands; for a world of a case, the case's."""
         return self._get(f"/worlds/{world_id}/checks", Checked)
 
+    def read_inboxes(self, world_id: str) -> InboxesView:
+        """Read the world's inboxes now, as each person: what waits on people, and what they have decided and when
+        each falls due (the earliest `due` is the next moment a harness with its own clock jumps to)."""
+        return self._post(f"/worlds/{world_id}/inboxes/read", "{}", InboxesView)
+
+    def perform_due_decisions(self, world_id: str) -> DecisionsDone:
+        """Have every decision due at the world's clock made, as its person; the clock does not move."""
+        return self._post(f"/worlds/{world_id}/inboxes/due", "{}", DecisionsDone)
+
+    def decide(self, world_id: str, decision: DecideNow) -> DecisionView:
+        """A person decides an item now, with the decision and inputs given, whatever their script says."""
+        return self._post(f"/worlds/{world_id}/inboxes/decide", decision.model_dump_json(), DecisionView)
+
     def begin_step(self, world_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
         """A step of the agent begins in the world (in every world of its case, for a world of one), at `at`
         (simulated; the latest moment reached when None), ending the one in progress. The clock is not moved."""
@@ -475,6 +492,15 @@ class AsyncMinutehandClient:
 
     async def checks(self, world_id: str) -> Checked:
         return await self._get(f"/worlds/{world_id}/checks", Checked)
+
+    async def read_inboxes(self, world_id: str) -> InboxesView:
+        return await self._post(f"/worlds/{world_id}/inboxes/read", "{}", InboxesView)
+
+    async def perform_due_decisions(self, world_id: str) -> DecisionsDone:
+        return await self._post(f"/worlds/{world_id}/inboxes/due", "{}", DecisionsDone)
+
+    async def decide(self, world_id: str, decision: DecideNow) -> DecisionView:
+        return await self._post(f"/worlds/{world_id}/inboxes/decide", decision.model_dump_json(), DecisionView)
 
     async def begin_step(self, world_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
         return await self._post(f"/worlds/{world_id}/steps", _began(at, reason), StepView)

@@ -23,13 +23,15 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from minutehand.application.further_seed import Scratch, land
+from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_undecided
 from minutehand.application.model_calls import per_wake
 from minutehand.application.refusals import RunRefused, refuse_unheld
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier_scripted import ScriptedReplier, decision_text
 from minutehand.application.run_clock import RunClock
 from minutehand.application.steps import STEP, steps
 from minutehand.checks.runner import RunResult, broken, evaluate, view_of
 from minutehand.domain.people import (
+    Decides,
     InboundCredential,
     InboundCredentialAsk,
     InboundTarget,
@@ -59,6 +61,8 @@ from minutehand.domain.scenario import (
 from minutehand.domain.world import (
     Actor,
     EntityRef,
+    InboxItemSnapshot,
+    ItemStatus,
     MessageSnapshot,
     Operation,
     TicketSnapshot,
@@ -155,6 +159,7 @@ class StandingWorld:
         inbound: Sequence[InboundTarget],
         signing: Mapping[ProviderKey, str],
         scripted: bool,
+        inboxes: Inboxes | None = None,
     ) -> None:
         """`provider` builds a provider by key; it is seeded into this world the first time it is had.
         `signing` is the secret each inbound target's events are signed with. `scripted` lets the scenario's
@@ -168,6 +173,13 @@ class StandingWorld:
                     "model (reply kind 'answers', the default): give each `reply: {kind: scripted, ...}` or "
                     "`{kind: silent}`, or open the world with scripted people off"
                 )
+        if inboxes is not None:
+            try:
+                if scripted:
+                    refuse_undecided(scenario, list(inboxes.reaches.values()))
+                refuse_clashing(list(inboxes.reaches.values()), [t.provider for t in inbound])
+            except RunRefused as e:
+                raise WorldRefused(str(e)) from e
         unsigned = sorted({t.provider for t in inbound} - set(signing))
         if unsigned:
             raise WorldRefused(f"no signing secret for the inbound target on {', '.join(unsigned)}")
@@ -188,6 +200,7 @@ class StandingWorld:
         self._acted: list[Happening] = []
         self._pushing: dict[int, str] = {}
         self._ended: set[int] = set()
+        self.inboxes = inboxes
 
     # -- the world as the proxy answers it --------------------------------------------------------------------
 
@@ -269,7 +282,7 @@ class StandingWorld:
             raise WorldRefused(
                 f"the clock only moves forward: {to.isoformat()} is before {self.clock.now().isoformat()}"
             )
-        await self.observe()
+        await self.look()
         fired: list[Fired] = []
         while True:
             due = sorted((o for o in self._owed if o.at <= to), key=lambda o: o.at)
@@ -285,13 +298,99 @@ class StandingWorld:
             fired.append(
                 Fired(at=self.clock.now(), what=owed.what, events=list(range(before + 1, self.store.head() + 1)))
             )
-            await self.observe()
+            await self.look()
         self.clock.jump(to)
         return fired
 
     def owed(self) -> list[tuple[datetime, str]]:
         """What will fall due as the clock moves, earliest first."""
         return [(o.at, o.what) for o in sorted(self._owed, key=lambda o: o.at)]
+
+    async def look(self) -> Looked:
+        """Read every inbox of the agent's own product as each person (`application.inboxes`), withdraw a decision
+        owed on an item gone undecided, then observe what the agent did."""
+        looked = Looked()
+        if self.inboxes is not None:
+            looked = await self.inboxes.look(self.store, self.clock)
+            self._owed = [
+                o for o in self._owed if not (o.reply is not None and o.reply.in_reply_to in looked.withdrawn)
+            ]
+        await self.observe()
+        return looked
+
+    def pending_items(self) -> list[tuple[EntityRef, InboxItemSnapshot, datetime]]:
+        """Every item still waiting on a person, with the moment it was first seen, in the order seen."""
+        events = self.store.events()
+        held = items_in(events)
+        first = {
+            e.entity: e.sim_time
+            for e in reversed(events)
+            if isinstance(e.after, InboxItemSnapshot) and e.operation is Operation.CREATE
+        }
+        return [
+            (ref, item, first[ref]) for ref, item in held.items() if item.status is ItemStatus.PENDING and ref in first
+        ]
+
+    def due_decisions(self) -> list[tuple[datetime, PersonReply]]:
+        """Every decision people owe, earliest first, with when it falls due."""
+        owed = sorted((o for o in self._owed if o.reply is not None and o.reply.decides), key=lambda o: o.at)
+        return [(o.at, o.reply) for o in owed if o.reply is not None]
+
+    async def perform_due(self) -> list[WorldEvent]:
+        """Read the inboxes, then make every decision due at the world's clock, as its person, earliest first; the
+        clock does not move."""
+        await self.look()
+        done: list[WorldEvent] = []
+        for owed in sorted(self._owed, key=lambda o: o.at):
+            if owed.reply is None or owed.reply.decides is None or owed.at > self.clock.now():
+                continue
+            self._owed.remove(owed)
+            async with self._push(owed.what):
+                made = await self._decide(owed.reply)
+            if made is not None:
+                done.append(made)
+        await self.look()
+        return done
+
+    async def decide_now(self, person: str, item: EntityRef, decides: Decides) -> WorldEvent:
+        """`person` makes `decides` on `item` now, as the product's own page would send it: recorded as theirs,
+        refused with nothing called when the item is not pending on them or the decision is not offered on it."""
+        found = self._person(person)
+        if self.inboxes is None or not self.inboxes.holds(item):
+            raise NotFound(f"this world declares no inbox {item.provider}")
+        held = items_in(self.store.events())
+        if item not in held:
+            raise NotFound(f"no item {item.external_id} was seen in inbox {item.provider}")
+        snapshot = held[item]
+        if snapshot.status is not ItemStatus.PENDING or snapshot.person != found.key:
+            raise WorldRefused(
+                f"item {item.external_id} is {snapshot.status.value} and waits on {snapshot.person or snapshot.waits_on}"
+            )
+        decision = self.inboxes.declared(item.provider).decision(decides.decision)
+        if decision is None or decides.decision not in snapshot.decisions:
+            raise WorldRefused(f"{decides.decision!r} is not offered on item {item.external_id}: {snapshot.decisions}")
+        try:
+            decision.refuse_inputs(decides.inputs, person)
+        except ValueError as e:
+            raise WorldRefused(str(e)) from e
+        answer = PersonReply(
+            person=person,
+            in_reply_to=item,
+            text=decision_text(decides.decision, decides.inputs),
+            at=self.clock.now(),
+            decides=decides,
+        )
+        self.store.remember(answer)
+        self._owed = [o for o in self._owed if not (o.reply is not None and o.reply.in_reply_to == item)]
+        async with self._push(f"{person} decides {decides.decision} on {item.external_id}"):
+            made = await self._decide(answer)
+        assert made is not None
+        return made
+
+    async def _decide(self, reply: PersonReply) -> WorldEvent | None:
+        assert self.inboxes is not None
+        with _refusing():
+            return await self.inboxes.decide(reply, self.store, self.clock)
 
     async def observe(self) -> None:
         """Read what the agent did since the last look and schedule what the world owes back: a scripted reply
@@ -309,6 +408,11 @@ class StandingWorld:
             after = event.after
             if isinstance(after, TicketSnapshot) and after.assignee_email in self._people:
                 self._fate(self._people[after.assignee_email], event)
+            if event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot) and after.person:
+                history = history if history is not None else self.store.events()
+                asked = next((p for p in self.scenario.people if p.key == after.person), None)
+                if asked is not None:
+                    await self._ask(asked, event, [h for h in history if h.seq <= event.seq])
             if event.operation is Operation.CREATE and isinstance(after, MessageSnapshot):
                 history = history if history is not None else self.store.events()
                 for email in after.recipient_emails:
@@ -321,7 +425,12 @@ class StandingWorld:
         if reply is None:
             return
         self.store.remember(reply)
-        self._owed.append(_Owed(at=reply.at, what=f"{person.key}'s scripted reply", reply=reply))
+        what = (
+            f"{person.key} decides {reply.decides.decision} on {asked.entity.provider} item {asked.entity.external_id}"
+            if reply.decides is not None
+            else f"{person.key}'s scripted reply"
+        )
+        self._owed.append(_Owed(at=reply.at, what=what, reply=reply))
 
     def _fate(self, person: Person, assigned: WorldEvent) -> None:
         fate = next((f for f in self.scenario.ticket_fates if f.assignee == person.key), None)
@@ -344,6 +453,8 @@ class StandingWorld:
     async def _fire(self, owed: _Owed) -> None:
         if owed.happening is not None:
             await self._happen(owed.happening)
+        elif owed.reply is not None and owed.reply.decides is not None:
+            await self._decide(owed.reply)
         elif owed.reply is not None:
             provider = owed.reply.in_reply_to.provider
             await self._pushes(provider).deliver(
@@ -606,7 +717,7 @@ class StandingWorld:
 
     async def checks(self, *, stop: StopReason | None) -> RunResult:
         """Every deterministic check and the scorecard over the world as it stands now."""
-        await self.observe()
+        await self.look()
         return score(self.scenario, self.store, stop=stop, ended=self.clock.now())
 
     # -- lookups that refuse loudly -----------------------------------------------------------------------------
