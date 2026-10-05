@@ -139,6 +139,8 @@ def test_a_harness_with_its_own_clock_jumps_to_the_decision_due_and_has_it_perfo
     minutehand_world: OpenWorld, agent: int
 ) -> None:
     answered = _until_approval(minutehand_world, agent)
+    asked = [e for e in minutehand_world.events() if isinstance(e.after, InboxItemSnapshot)]
+    assert [(e.actor, e.sim_time) for e in asked] == [(Actor.AGENT, answered)]  # read when the step ended
 
     view = minutehand_world.inboxes()
     assert [(p.person, p.decisions) for p in view.pending] == [("nadia", ["approve", "reject"])]

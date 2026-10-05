@@ -41,8 +41,9 @@ def agent(product: Product, *, at_once: bool = False, send_anyway: bool = False)
                     return None, True
                 return request.now + timedelta(days=1), False
             state = product.state("a1")
-            if state == "approved" or (send_anyway and state == "rejected"):
+            if n == 2 and (state == "approved" or (send_anyway and state == "rejected")):
                 sends(store, OWEN, "Booked: LH-2291", operation="tell-1")
+                return request.now + timedelta(days=2), False  # the run goes on: the send must be the reaction
             return None, True
 
         return Agent(plan=plan)

@@ -229,9 +229,9 @@ nothing.
 A harness with its own clock uses three calls. On the plugin's `minutehand_world` (`OpenWorld`) or an `OpenCase`:
 
 ```python
-view = world.inboxes()        # POST /v1/worlds/{id}/inboxes/read   -> InboxesView: pending items, decisions due (when)
-done = world.perform_due()    # POST /v1/worlds/{id}/inboxes/due    -> the decisions due by the world's, case's or
-                              #                                         latest step's moment, each made as its person
+view = world.inboxes()  # POST /v1/worlds/{id}/inboxes/read   -> InboxesView: pending items, decisions due (when)
+done = world.perform_due()  # POST /v1/worlds/{id}/inboxes/due    -> the decisions due by the world's, case's or
+#                                         latest step's moment, each made as its person
 made = world.decide("nadia", item, "reject", {"reason": "..."})  # POST /v1/worlds/{id}/inboxes/decide -> DecisionView
 ```
 

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.checkpoint import read_checkpoint
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import WakeReason, WakeRequest
 from minutehand.domain.run import VerdictKind
@@ -203,6 +204,8 @@ async def test_an_item_taken_back_undecided_is_withdrawn_and_its_decision_never_
     ]
     assert not [s for s in product.sent if s.method == "POST"]
     assert played.result.effectiveness.waits_open_at_end == 0
+    kept = read_checkpoint(played.store)
+    assert kept is not None and kept.withdrawn == [0]  # her decision, on its way, never reached anyone
 
 
 async def test_a_list_of_everyones_items_keeps_each_for_whom_it_waits_on(tmp_path: Path, product: Product) -> None:
