@@ -165,3 +165,11 @@ class NotifiesChanges(Protocol):
     async def notify(self, world: Store, clock: Clock) -> None:
         """Tell the agent, the way the real service would, of every change it has not been told of."""
         ...
+
+
+@runtime_checkable
+class ConfirmsDelivery(Protocol):
+    """A scheduler that can tell whether the agent has taken what a booking delivered (an SQS message received, a
+    queued job claimed): the run waits for that before it moves past the booking's wake."""
+
+    def taken(self, ref: str, world: Store) -> bool: ...

@@ -118,6 +118,12 @@ class Booked(Model):
     """
 
     kind: Literal["booked"] = "booked"
+    take_limit: timedelta = Field(
+        default=timedelta(seconds=30),
+        gt=timedelta(0),
+        description="How long, in real time, the run waits for the agent to take a booking's delivery from its own "
+        "queue before it moves on, when the scheduler can tell (`ConfirmsDelivery`)",
+    )
 
 
 class Polled(Model):
