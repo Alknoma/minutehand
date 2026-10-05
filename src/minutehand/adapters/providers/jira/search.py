@@ -113,7 +113,7 @@ def _clause(clause: Clause, context: Context) -> Test:
             }
             return _set_clause(clause, context, ids, pick[name])
         case "priority":
-            ids = _named(clause, "priority", [(p.id, p.name) for p in site.priorities])
+            ids = _named(clause, "priority", [(p.id, p.name) for p in site.priorities], ordered=True)
             return _set_clause(clause, context, ids, lambda i: [i.priority], ordered=_priority_rank(site))
         case "issuetype" | "type":
             ids = _named(clause, "issuetype", [(t.id, t.name) for t in site.issueTypes])
@@ -198,9 +198,9 @@ def _texts_of(clause: Clause, field: str) -> list[str]:
     return found
 
 
-def _named(clause: Clause, field: str, known: list[tuple[str, str]]) -> set[str]:
+def _named(clause: Clause, field: str, known: list[tuple[str, str]], *, ordered: bool = False) -> set[str]:
     """The ids a clause's values name, by id or by name in any case; a value naming nothing is a 400."""
-    if clause.op not in _EQUALITY:
+    if clause.op not in (_ORDERED if ordered else _EQUALITY):
         raise _bad_op(clause.op, field)
     ids: set[str] = set()
     for text in _texts_of(clause, field):

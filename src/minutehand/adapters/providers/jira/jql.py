@@ -270,6 +270,8 @@ def _field(reader: _Reader) -> str:
 def _clause(reader: _Reader) -> Clause:
     field = _field(reader)
     op = _operator(reader)
+    if op in (Op.IN, Op.NOT_IN) and reader.peek().kind is TokenKind.WORD:
+        return Clause(field=field, op=op, values=[_value(reader)])
     if op in (Op.IN, Op.NOT_IN):
         reader.expect(TokenKind.OPEN, "'(' to start a list")
         values = [_value(reader)]

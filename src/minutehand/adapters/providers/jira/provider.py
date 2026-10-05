@@ -111,21 +111,42 @@ class JiraProvider:
         del clock
 
     def _move(self, desk: Desk, issue: wire.StoredIssue, to: TicketState, *, by: str, clock: Clock) -> None:
+        """Walk the fewest transitions that end in a status meaning `to`, each its own changelog entry, skipping
+        any whose screen requires a field a person would have to fill."""
         project = _project(desk, issue)
         site = desk.site()
         if site.status(issue.status).outcome is to:
             return
-        transition = next(
-            (t for t in desk.transitions(issue, project) if site.status(t.to).outcome is to and not t.required),
-            None,
-        )
-        if transition is None:
+        route = _route(desk, issue, project, to)
+        if route is None:
             raise LookupError(
-                f"no transition from {site.status(issue.status).name} in {project.key} leads to a status that is "
+                f"no transitions lead from {site.status(issue.status).name} in {project.key} to a status that is "
                 f"{to.value} without a screen to fill"
             )
-        moved = desk.moved(issue, site.status(transition.to))
-        desk.write(issue, moved, by=by, at=clock.now(), actor=Actor.PERSON)
+        current = issue
+        for transition in route:
+            moved = desk.moved(current, site.status(transition.to))
+            current = desk.write(current, moved, by=by, at=clock.now(), actor=Actor.PERSON)
+
+
+def _route(
+    desk: Desk, issue: wire.StoredIssue, project: wire.StoredProject, to: TicketState
+) -> list[wire.StoredTransition] | None:
+    site = desk.site()
+    seen = {issue.status}
+    frontier: list[tuple[str, list[wire.StoredTransition]]] = [(issue.status, [])]
+    while frontier:
+        status, path = frontier.pop(0)
+        here = issue.model_copy(update={"status": status})
+        for transition in desk.transitions(here, project):
+            if transition.required or transition.to in seen:
+                continue
+            route = [*path, transition]
+            if site.status(transition.to).outcome is to:
+                return route
+            seen.add(transition.to)
+            frontier.append((transition.to, route))
+    return None
 
 
 def _located(desk: Desk, ticket: EntityRef) -> wire.StoredIssue | None:
