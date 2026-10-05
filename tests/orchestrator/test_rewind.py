@@ -10,6 +10,7 @@ from datetime import timedelta
 
 import pytest
 
+from minutehand import session
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.application.checkpoint import NotRestorable, Restorable, checkpoint_seqs, checkpoints
 from minutehand.application.refusals import RunRefused
@@ -275,3 +276,38 @@ async def test_a_fork_of_an_agent_that_cannot_be_asked_for_its_report_says_it_wa
     restored = Restored.model_validate_json((rig.tmp / "state" / child.run_id / RESTORE_RECORD).read_text())
     assert not restored.verified and restored.unverified is not None
     assert "no report endpoint" in restored.unverified
+
+
+async def test_a_run_keeps_its_snapshots_in_the_store_and_leaves_no_snapshot_directory(rig: Rig) -> None:
+    agent = rig.agent("ask_and_file", hooks=True)
+    _, store, _ = await rig.run(two_replies(), agent)
+    restorable = [c.agent for c in checkpoints(store).values() if isinstance(c.agent, Restorable)]
+    assert [s.wake for s in store.snapshots()] == [r.wake for r in restorable] and len(restorable) >= 3
+    assert not any(s.pruned for s in store.snapshots()) and store.snapshots()[-1].files == 1
+    assert not list((rig.tmp / "state" / "root").glob("wake-*"))
+
+
+async def test_a_fork_from_a_checkpoint_whose_snapshot_was_pruned_is_refused(rig: Rig) -> None:
+    hooked = rig.agent("ask_and_file", hooks=True)
+    assert hooked.state is not None
+    agent = hooked.model_copy(update={"state": hooked.state.model_copy(update={"keep": 1})})
+    scn = two_replies()
+    parent, store, _ = await rig.run(scn, agent)
+
+    kept = {s.wake: s.pruned for s in store.snapshots()}
+    found = checkpoints(store)
+    newest = max(kept)
+    assert kept[0] is False and kept[newest] is False, "the start and the newest are kept"
+    assert [w for w, pruned in kept.items() if pruned] == [w for w in sorted(kept) if w not in (0, newest)]
+    pruned_seq = next(seq for seq, c in found.items() if isinstance(c.agent, Restorable) and kept[c.agent.wake] is True)
+    points = {p.seq: p.agent for p in session.points_in(store)}
+    assert points[pruned_seq] == NotRestorable(reason="its snapshot was pruned")
+
+    with pytest.raises(
+        RunRefused, match=rf"checkpoint at seq {pruned_seq} of run root is not restorable: its snapshot was pruned"
+    ):
+        await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=pruned_seq))
+    assert runs(rig) == ["root"]
+    newest_seq = next(seq for seq, c in found.items() if isinstance(c.agent, Restorable) and c.agent.wake == newest)
+    [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=newest_seq))
+    assert child.parent_run == "root"

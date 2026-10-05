@@ -157,3 +157,64 @@ def test_the_command_line_shows_restorable_checkpoints_and_names_each_restore_st
         [str(MINUTEHAND), "runs", "--state", str(state)], capture_output=True, text=True, env=env, timeout=30
     )
     assert listed.stdout.count("  restorable at seq ") == 2, listed.stdout
+
+
+def test_a_run_that_keeps_one_snapshot_lists_the_pruned_as_not_restorable_and_refuses_a_fork_from_one(
+    tmp_path: Path, port: int
+) -> None:
+    state = tmp_path / "state"
+    agent = recipe_agent(port)
+    assert agent.state is not None
+    agent_file = tmp_path / "agent.yaml"
+    agent_file.write_text(
+        agent.model_copy(update={"state": agent.state.model_copy(update={"keep": 1})}).model_dump_json()
+    )
+    env = dict(os.environ)
+
+    def cli(*args: str, agent_command: bool = False) -> subprocess.CompletedProcess[str]:
+        tail = ["--", *command()] if agent_command else []
+        return subprocess.run(
+            [str(MINUTEHAND), *args, "--state", str(state), *tail], capture_output=True, text=True, env=env, timeout=50
+        )
+
+    ran = cli("run", str(RECIPE / "scenario_silent.yaml"), "--agent", str(agent_file), agent_command=True)
+    assert ran.returncode == 1, ran.stderr
+    found = re.search(r"^run ([0-9a-f]+):", ran.stdout, re.MULTILINE)
+    assert found is not None
+    run_id = found.group(1)
+    assert not list(session.run_dir(state, run_id).glob("wake-*")), "the snapshot directories were kept and removed"
+
+    listed = cli("checkpoints", run_id)
+    assert listed.returncode == 0, listed.stderr
+    lines = listed.stdout.splitlines()
+    assert re.fullmatch(r"seq \d+, after wake 0: restorable; snapshot of 1 files, .*", lines[0]), lines
+    assert all(line.endswith("not restorable: its snapshot was pruned") for line in lines[1:3]), lines
+    assert re.fullmatch(r"seq \d+, after wake 3: restorable; snapshot of 1 files, .*", lines[-1]), lines
+    pruned_seq = re.match(r"seq (\d+)", lines[1])
+    assert pruned_seq is not None
+
+    refused = cli("pin", run_id, pruned_seq.group(1))
+    assert refused.returncode == 2 and "already pruned" in refused.stderr
+    forked = cli(
+        "fork",
+        run_id,
+        "--at",
+        pruned_seq.group(1),
+        "--changes",
+        str(RECIPE / "fork_rosa_answers.yaml"),
+        agent_command=True,
+    )
+    assert forked.returncode == 2 and "is not restorable: its snapshot was pruned" in forked.stderr, forked.stderr
+
+    first_seq = re.match(r"seq (\d+)", lines[0])
+    assert first_seq is not None
+    pinned = cli("pin", run_id, first_seq.group(1))
+    assert pinned.returncode == 0 and "pinned: pruning keeps it" in pinned.stdout
+    assert cli("checkpoints", run_id).stdout.splitlines()[0].endswith("; pinned")
+
+    runs = cli("runs")
+    assert re.search(r"on disk: .* of rows, .* of bodies it alone holds, .* of snapshots it alone holds", runs.stdout)
+    collected = cli("gc")
+    assert collected.returncode == 0 and re.fullmatch(
+        r"freed 0 stored bodies \(0 bytes\) and 0 snapshot files \(0 bytes\) across 1 world files\n", collected.stdout
+    ), collected.stdout

@@ -33,7 +33,7 @@ from minutehand.application.outbound import outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import Traffic, settle
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import run_hook, wake_dir
+from minutehand.application.state_hooks import take_snapshot
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import (
     AgentReport,
@@ -793,11 +793,7 @@ class Orchestrator:
         settled = await settle(hooks, self._traffic, main if isinstance(main, Reports) else None, self._last_report)
         if isinstance(settled, NotRestorable):
             return settled
-        await run_hook(
-            hooks.snapshot,
-            wake_dir(self._state_dir, self._store.run_id, wake),
-            limit=hooks.step_limit.total_seconds(),
-        )
+        await take_snapshot(hooks, self._store, self._state_dir, wake)
         return Restorable(snapshot_of=self._store.run_id, wake=wake, report=settled.report)
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
