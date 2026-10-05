@@ -33,10 +33,16 @@ manifest, and because the tenant, its bot and its users are one directory every 
 - **A seeded document is a real `.docx`** (`docx.py`), so a reader such as `python-docx` opens it; search reads its
   paragraphs.
 - **Subscriptions** are validated by calling `notificationUrl` with `validationToken` and requiring it echoed, and
-  expire on the run's clock. A drive's root is notified of every change to an item in it, whether the agent or a
-  person made it; a chat's or channel's messages of every new message.
-- **Faults** a scenario declares for `microsoft` are answered in front of the surface the `call` names (`"METHOD
-  /path prefix"` or `"/path prefix"`), in that surface's error shape, with `Retry-After` for a rate limit.
+  expire on the run's clock. A drive's root is notified of every change to an item in it: an agent's change as
+  its call is answered, a person's when the run tells watchers (`NotifiesChanges.notify`), through the same
+  `subscriptions.notify`; a chat's or channel's messages of every new message.
+- **Faults** are `MicrosoftSeed.faults` in the scenario's Microsoft `ProviderSeed`, answered in front of the surface
+  the `call` names (`"METHOD /path prefix"` or `"/path prefix"`), in that surface's error shape, with `Retry-After`
+  for a rate limit. **A held file** is `MicrosoftSeed.holds` (a seeded document, the person holding it, from an
+  offset, for a while or for good): every write to it is refused 423 `resourceLocked` in that window. Both can be
+  declared on an open standing world (`DeclaresFaults`).
+- **World keys** (`Manifest.world_keys`): the tenant in a sign-in path and the label of a SharePoint host, so
+  `minutehand serve` routes a sign-in, its metadata and a pre-authenticated download to the tenant's world.
 
 ## People
 
@@ -44,9 +50,12 @@ Through the shared ports: `say`, `deliver`, `happen` (posts, edits, deletes, rea
 message), `press` (a card button: `invoke` `adaptiveCard/action` for `Action.Execute`, a `message` with `value`
 for `Action.Submit`; the card's inputs filled from `Press.form`, a person picked into its first choice set).
 
-This provider's own, until a shared port exists: `install(person, conversation, target, world, clock)`,
-`edit_file`, `rename_file(…, name=, folder=)`, `delete_file`, `share_file(person, item, with_email, roles, …)`,
-`hold_file(…, held=)`.
+A person installing the bot is `PersonAddsAgent` through `happen`: in a named channel or chat, or with none in their
+own chat, which `MicrosoftSeed.not_installed_for` leaves without the bot until then; Teams sends
+`installationUpdate` then `conversationUpdate`. A person's change to a seeded document is `ChangesDocuments.change`:
+`Edited` appends a paragraph, `Renamed` keeps the extension, `Moved` makes the folder path, `Shared` grants Graph's
+role (a commenter reads), `Trashed` deletes. `Commented` and `FieldSet` are refused at load: Graph `v1.0` has no
+file comments and a file is no record.
 
 ## What it does not do
 

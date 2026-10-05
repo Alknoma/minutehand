@@ -46,12 +46,16 @@ as the create does. Read from the documentation; not verified against a live sit
 Permissions are project roles (Administrators, Member, Viewer): no role, and an issue or project is a 404; a
 viewer who writes gets a 403. Site administration does not grant reading a project's issues.
 
-Seeding: `seed.JiraSeed`, the scenario's `provider_seeds` entry for `jira`. Faults declared there: a rate limit
-on a method and path prefix answers 429 with `Retry-After` the given number of times.
+Seeding: `seed.JiraSeed`, the scenario's `provider_seeds` entry for `jira`, naming a seeded ticket by its `key`
+(`SeededIssue.ticket`, `SeededLink.to`, `parent`). The ticket's own labels and comments are the issue's
+(`Manifest.ticket_fields` holds key, labels and comments); the seed adds comments by the agent or other accounts,
+or at a moment of their own. Faults declared there (`rate_limits`), or on an open standing world through
+`DeclaresFaults`: a rate limit on a method and path prefix answers 429 with `Retry-After` the given number of
+times. World keys: `<site>.atlassian.net` and `/ex/jira/{cloudId}/`.
 
-A person's acts (`provider.py`): `moves` (the fewest transitions with no required screen), `reassigns`,
-`comments`, `deletes`, each by a named person at the run clock's time, recorded as actor PERSON with that person
-as the changelog's or comment's author.
+A person's acts are `TicketHappening`s through `ActsOnTickets.act`: `Moves` (the fewest transitions with no
+required screen), `Reassigns` (to someone or nobody), `Comments`, `Deletes`, each by the happening's person at the
+run clock's time, recorded as actor PERSON with that person as the changelog's or comment's author.
 
 ## What it does not do
 

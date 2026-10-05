@@ -39,7 +39,8 @@ last_edited_by are read-only.
 lies below them. Everything else is `object_not_found`, and search leaves it out. A
 missing capability is `restricted_resource`.
 
-**Faults:** declared in the seed (`NotionSeed.faults`):
+**Faults:** declared in the seed (`NotionSeed.faults`), or on an open standing world through
+`DeclaresFaults` (the same `faults` fragment, an integration named by its seed key):
 - `rate_limited`: 429 with `Retry-After`. `notion-client` 2.2.1 does not retry; it raises `APIResponseError`.
 - `conflict`: 409 `conflict_error` on block edits.
 
@@ -51,10 +52,42 @@ and key. A created object's id is derived from the event that made it.
 **Timestamps:** taken from the run's clock and rounded down to the minute, as the API
 serves them.
 
-**People acting without the agent:** `NotionProvider.person_edits`, `person_sets_property`,
-`person_comments` and `person_archives`. Each is recorded as actor `PERSON`, at the
-clock's time, and is visible to the API through `last_edited_by` and `last_edited_time`.
-Neither the run loop nor the standing mode calls them yet.
+**People acting without the agent:** a `DocumentHappening` through `ChangesDocuments.change`,
+on the page or row its seeded document was written as. A scenario's Notion document is a
+page in the first workspace, or a seed's own page or row whose `document` names its title.
+`Edited` appends paragraphs, `Renamed` sets the title (a row's title property), `Trashed`
+archives, `Commented` writes a comment, `FieldSet` sets a row's property from text (a
+number, `true`/`false`, option names, comma-separated names or person keys for a property
+holding several). `Moved` and `Shared` are refused at load: the manifest does not list them.
+Each is recorded as actor `PERSON` at the clock's time.
+
+## Webhooks
+
+Integration webhooks (`webhooks.py`, `NotifiesChanges`), written from Notion's webhook reference
+(https://developers.notion.com/reference/webhooks) by reading it. **Unverified against the live
+service**: the signature, the verification request and the payloads are this reading of the
+documentation.
+
+- **A subscription is seeded** (`NotionSeed.webhooks`: the integration's key, the URL, the
+  verification token, the event types, whether it is already verified), as one is set up in an
+  integration's settings; the API has no endpoint for it.
+- **Verification.** An unverified subscription is first sent `{"verification_token": ...}`. At
+  Notion a person pastes the token back into the settings; here it counts as verified once the
+  endpoint answers 2xx. Until then nothing else is sent, and what it was owed is dropped.
+- **Signature.** `X-Notion-Signature: sha256=<hex>`, the HMAC-SHA256 of the exact body bytes keyed
+  with the verification token.
+- **Events.** `page.created`, `page.content_updated` (`data.updated_blocks`),
+  `page.properties_updated` (`data.updated_properties`, property ids), `page.deleted`,
+  `page.undeleted`, `comment.created` (`data.page_id`), each with `id`, `timestamp`,
+  `workspace_id`, `workspace_name`, `subscription_id`, `integration_id`, `type`, `authors`,
+  `attempt_number`, `entity` and `data.parent`. Only the types a subscription asked for, and only
+  for what its integration can see.
+- **Whose changes.** A person's, and the integration's own (authored by its bot): the reference
+  excludes neither, and a subscriber that must ignore its own writes compares `authors` with its
+  bot's id. A person's change is sent when the run tells watchers (`notify`); the integration's
+  own as soon as the call that made it is answered.
+- **Not reproduced:** aggregation of frequent events, delivery delay and out-of-order delivery,
+  retries (each event is sent once), `page.moved`, `page.locked`, data-source events.
 
 ## In the world log
 
@@ -74,7 +107,7 @@ Reads and searches are recorded as `READ` and `SEARCH` events.
 
 **Endpoints and protocol**
 - Data sources (`2025-09-03`).
-- Webhooks: neither subscriptions nor signed deliveries.
+- Webhook subscriptions made or listed through the API (there is no such API; they are seeded).
 - File uploads, file, pdf, video and audio blocks.
 - Page move and markdown endpoints.
 - OAuth introspect and revoke.

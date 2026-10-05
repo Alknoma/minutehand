@@ -28,17 +28,28 @@ provider is available and built on its first call. There is no scenario, no run 
 Tests run in parallel against one stack, so the proxy decides per call. In order:
 
 1. **The host**, when a world claims it (`claims.hosts`: a self-hosted tracker's `acme.youtrack.cloud`).
-2. **A credential the call carries**, when a world claims it (`claims.tokens`). Read only where the OAuth
-   standards put one (`adapters/proxy/credentials.py`): `Authorization: Bearer`, the password of
-   `Authorization: Basic`, `access_token` in the query or a form body, a token request's `refresh_token`, and a
-   JWT-bearer assertion's `iss` and `sub` (a service account's email). No provider's own format is read.
-3. **Minted credentials.** When a call of a world is answered with an OAuth token answer (RFC 6749 §5.1), its
+2. **A world key its URL names**, when a world claims it (`claims.keys`). Each provider's manifest declares
+   where a request names its world without a credential (`Manifest.world_keys`, a host with `{key}` for one
+   label or a path prefix with `{key}` for one segment); the router reads those and knows no vendor. Microsoft:
+   the tenant id or domain in `/{tenant}/oauth2/v2.0/…`, `/{tenant}/v2.0/.well-known/…` and
+   `/{tenant}/discovery/…`, and `<label>.sharepoint.com` / `<label>-my.sharepoint.com` (pre-authenticated
+   downloads and upload sessions). Jira: `<site>.atlassian.net` and `/ex/jira/{cloudId}/`. YouTrack:
+   `<name>.youtrack.cloud` and `<name>.myjetbrains.com`. This is what lets two Microsoft tenants sign in at once
+   in two worlds (`tests/serve/test_world_keys.py`); before, the second tenant's sign-in reached the first's
+   world and was refused 400.
+3. **A credential the call carries**, when a world claims it (`claims.tokens`). Read only where the OAuth
+   standards put one (`adapters/proxy/credentials.py`): `Authorization: Bearer`, the user and password of
+   `Authorization: Basic`, `access_token` in the query or a form body, Slack's legacy `token` form argument, and
+   a token request's `refresh_token`, `code`, `client_id`, `client_secret` (RFC 6749 §2.3.1) and its `assertion`'s
+   or `client_assertion`'s `iss` and `sub`, whether the request is a form or a JSON object (Atlassian's and
+   Notion's token endpoints take JSON). No provider's own format is read.
+4. **Minted credentials.** When a call of a world is answered with an OAuth token answer (RFC 6749 §5.1), its
    `access_token` and `refresh_token` are claimed by that world from then on. A Google service account claimed
    by its email signs in and its Drive calls follow it (`test_a_service_account_signs_in_and_its_minted_token_is_routed_to_the_same_world`).
-4. **The default world**, when one is open (`claims.default: true`; at most one).
-5. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`.
+5. **The default world**, when one is open (`claims.default: true`; at most one).
+6. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`.
 
-A token or host is claimed by one open world at a time; a second claim is refused (409).
+A token, key or host is claimed by one open world at a time; a second claim is refused (409).
 
 Why not the other two options. *One current world with a reset between tests* breaks the moment two tests run
 at once. *A header naming the world* needs the service under test to send it, which means changing its code.
@@ -47,9 +58,8 @@ at once. *A header naming the world* needs the service under test to send it, wh
 fixed token for a provider (one Slack bot token in the environment) sends every test's calls with the same
 token; two worlds cannot both claim it, so such tests share one world (`default: true`, or that token) and must
 run one at a time against it. A service that keeps a credential per tenant (an installation token per Slack
-workspace, a Personal Access Token per account) isolates per test once each test's world claims its own.
-Slack's legacy `token` form argument is not read: a call that carries its token only there matches by host or
-default only.
+workspace, a Personal Access Token per account, a tenant per Microsoft directory) isolates per test once each
+test's world claims its own.
 
 ## The control API
 
@@ -70,10 +80,11 @@ cannot do, 422 for a body that is not the model, 502 when the service an event w
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
 | `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts |
 | `GET /v1/worlds/{id}/spans` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
-| `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket` |
+| `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
 | `POST /v1/worlds/{id}/clock` | `Advance` → `Advanced` | Move the clock `by` or `to`, firing what falls due |
 | `POST /v1/worlds/{id}/faults` | `Fault` → `WorldView` | Answer the next matching calls with a status and body of the caller's |
+| `POST /v1/worlds/{id}/provider-faults` | `DeclareFaults` → `WorldView` | A provider's own typed faults, as a fragment of its seed model |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
 | `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed; `head` is the position to read on from |
 
@@ -128,6 +139,12 @@ The clock of a world stands still. Nothing fires on its own.
   delay, each ticket handed to a person with a `TicketFate` meets it, and the owner's directions are said, each
   only when the clock passes its moment. A message is answered as it read when it was first seen; an edit is not
   put to the person again. A person whose replies a model writes is refused: a standing world has no model.
+- **`happen`** lands one happening of any family now, as the clock lands a scheduled one: checked first as a
+  scenario's would be (its person, its ticket, document, channel or post, the port its provider has, and the
+  document changes its manifest allows), refused 409 with nothing written otherwise. **`press`** has a person use
+  a control on a message (a button, a person picked, a form filled from `press.form`), pushed to the world's
+  inbound target as an interactivity payload. `MinutehandClient.act`, and `OpenWorld.happen` / `.press` on the
+  plugin's `minutehand_world`, send them.
 - **Booked wakes** (a scheduler provider such as AWS) are recorded in the log and never fired: a booking
   becomes a wake only in the run loop.
 
@@ -137,8 +154,12 @@ A fault armed through this route is answered by the server in front of the provi
 the world to `provider` whose method matches and whose path, as the provider's app sees it (Asana's `/api/1.0`
 removed), starts with `path` get `status`, `body` and an optional `Retry-After`. The body is the caller's to write
 in the service's error shape. A provider's own typed faults (Slack's `ratelimited` with `only_rich`, Drive's
-`FaultKind`s, YouTrack's path faults, Asana's rate-limit stretches) are declared in that provider's seed, the
-seed's `provider_seeds`, when the world is created; arming one of those after creation is pending.
+`FaultKind`s, YouTrack's path faults, Asana's rate-limit stretches, Jira's rate limits, Notion's rate limits and
+conflicts, Microsoft's error codes and held files) are declared in that provider's seed when the world is
+created, or on an open world with `provider-faults`: `{"provider": "slack", "seed": {"faults": [...]}}`, a
+fragment of the provider's seed model setting only its fault fields. The provider validates it (409 naming what
+else it sets or what it names that the world does not hold) and records it as seeding does, its offsets counted
+from the world's now. `OpenWorld.declare_faults(provider, fragment)` sends it.
 
 ## Each world is a run
 
@@ -248,9 +269,16 @@ script over the same code:
 
 - **Base-URL mode.** A service that reaches a fake by a base URL it is configured with (`SLACK_API_URL`) rather
   than through a proxy is not served: every call must go through the proxy.
-- **Inbound shapes beyond a message.** A person can DM the agent and answer a message. A top-level message in a
-  channel, an app mention, a slash command, a button click (`block_actions`) or a modal submission has no port.
-- **Person acts beyond a ticket's state and assignee.** A comment, a ticket deleted by a person, a document
-  edited by a person, a user deactivated: no port.
-- **Provider-rendered faults** (above).
-- **Platforms with no provider**: Teams, Microsoft Graph, Notion, Jira and GitHub.
+- **A modal submitted on its own, a user deactivated, a channel archived** by a person: no act. (A form a press
+  opens is filled and submitted by `press`.)
+- **Retries of a pushed event or webhook.** Slack's retries are sent; Notion's and Graph's deliveries are sent
+  once.
+- **A binary response is not recorded.** The call is answered, but a body the proxy cannot keep as text (a
+  `.docx` download) leaves the call out of the world's `calls` (`docs/design.md`, Known issues).
+- **What the parent repository's emulators' admin endpoints did beyond this API**: adding, removing or
+  deactivating a user, and seeding tasks, documents, projects or team members into a world already open
+  (Asana, Jira, YouTrack, Drive: here the seed is fixed at creation); granting or withholding a YouTrack
+  permission at runtime (a seed fact here); resetting or reloading a world in place (close it and open another);
+  Teams' "answer the next send without an id" and GitHub's truncated-tree and wide-directory switches, which no
+  provider's fault model types yet; and dumping a fake's raw state (`/debug/state`), where here the log and
+  `entities` are what is read.
