@@ -13,7 +13,8 @@ import httpx
 import pytest
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
-from minutehand.domain.scenario import Seed
+from minutehand.domain.scenario import Seed, TicketState
+from minutehand.domain.world import Actor, EntityKind
 from minutehand.testing.background import serve_in_background
 from minutehand.testing.client import MinutehandClient
 from minutehand.testing.world import OpenWorld
@@ -82,7 +83,7 @@ def test_two_worlds_each_see_only_their_own_site(served: tuple[MinutehandClient,
             assert made.status_code == 201, made.text
             assert _summaries(a, "acme") == ["Acme task", "Only at Acme"]
             assert _summaries(g, "globex") == ["Globex task"]
-            crossed = g.get("https://acme.atlassian.net/rest/api/3/issue/OPS-2")
+            crossed = g.get("https://acme.atlassian.net/rest/api/3/issue/OPS-1")
             assert crossed.status_code == 404, "globex's token reaches globex's world, which holds no acme site"
         acme_titles = {
             e.after.title for e in acme.events(provider="jira") if e.after is not None and e.after.kind == "ticket"
@@ -133,3 +134,30 @@ def test_an_oauth_refresh_in_a_form_follows_its_world_and_one_in_json_does_not(
             assert resources.status_code == 200 and resources.json()[0]["name"] == "initech"
     finally:
         client.close_world(world.view.world_id)
+
+
+def test_a_person_finishes_a_jira_issue_and_the_scenario_reassigns_it_through_the_control_api(
+    served: tuple[MinutehandClient, dict[str, str]],
+) -> None:
+    client, environment = served
+    seeded = Seed.model_validate(
+        {
+            **_seed("umbrella", "umbrella-token", "Legal review").model_dump(),
+            "people": [
+                {"key": "owen", "name": "Owen Owner", "email": "owen@example.com"},
+                {"key": "dania", "name": "Dania Kovac", "email": "dania@example.com"},
+            ],
+        }
+    )
+    world = OpenWorld(client, client.create_world(CreateWorld(seed=seeded, claims=Claims(tokens=["umbrella-token"]))))
+    try:
+        ticket = world.entities(provider="jira", kind=EntityKind.TICKET)[0].entity
+        assert world.move_ticket(ticket, TicketState.DONE).actor is Actor.PERSON
+        world.assert_ticket(titled="legal review", state=TicketState.DONE, assignee="owen@example.com")
+        assert world.edit_ticket(ticket, assignee="dania").actor is Actor.SCENARIO
+        world.assert_ticket(titled="legal review", assignee="dania@example.com")
+        with _client(environment, "umbrella", "umbrella-token") as http:
+            read = http.get("https://umbrella.atlassian.net/rest/api/3/issue/OPS-1", params={"fields": "status"})
+            assert read.json()["fields"]["status"]["name"] == "Done"
+    finally:
+        client.close_world(world.world_id)

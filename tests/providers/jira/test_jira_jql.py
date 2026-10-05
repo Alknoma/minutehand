@@ -43,6 +43,11 @@ async def test_assignee_is_empty(site: Site) -> None:
     assert sorted(await keys(site, "assignee is not EMPTY")) == ["LAUNCH-1", "LAUNCH-2"]
 
 
+async def test_not_equals_never_matches_an_empty_field(site: Site) -> None:
+    assert await keys(site, f'assignee != "{TOMAS}"') == ["LAUNCH-2"], "FIELD-1 has no assignee, so it is left out"
+    assert await keys(site, "labels not in (docs)") == []
+
+
 async def test_assignee_equals_current_user(site: Site) -> None:
     assert await keys(site, "assignee = currentUser()") == []
     await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": site.jira.site().agent})

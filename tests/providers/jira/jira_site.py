@@ -116,9 +116,9 @@ JIRA_SEED: dict[str, Any] = {
             "history": [{"by": "iris", "at": "-P2D", "field": "priority", "from": "Medium", "to": "High"}],
             "links": [{"type": "Blocks", "to": "Book the venue"}],
         },
-        {"title": "Book the venue", "status": "Done", "created": "-P3D"},
+        {"title": "Book the venue", "created": "-P3D"},
         {"title": "Ship the demo kits", "issue_type": "Bug", "priority": "Lowest"},
-        {"title": "Rotate the vault keys"},
+        {"title": "Rotate the vault keys", "status": "In Progress"},
     ],
     "rate_limits": [{"method": "POST", "path": "/rest/api/3/issue/LAUNCH-2/comment", "times": 1, "retry_after": 7}],
 }

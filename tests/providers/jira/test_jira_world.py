@@ -47,6 +47,8 @@ def test_seeding_writes_the_site_as_the_scenario_with_each_tickets_meaning(site:
         TicketSnapshot(title="Ship the demo kits", project="FIELD"),
         TicketSnapshot(title="Rotate the vault keys", project="VAULT", assignee_email="iris@example.com"),
     ]
+    vault = site.jira.find_issue("VAULT-1")
+    assert vault is not None and site.jira.site().status(vault.status).name == "In Progress", "a seed's own status"
     comments = [e.after for e in events if e.entity.kind is EntityKind.COMMENT]
     assert [c.text for c in comments if isinstance(c, MessageSnapshot)] == ["Draft is in the shared folder."]
 
