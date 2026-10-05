@@ -2,8 +2,8 @@
 
 The child shares the parent's log up to the checkpoint (`Store.fork`), so the world, the clock and the
 pending set come back by reading the log. Replies the parent's people had already decided are copied, not
-asked for again, except where a `PersonChange` makes someone answer who had decided not to: each message
-to them still unanswered at the fork is put to them again under their new behaviour.
+asked for again, except for a person a `PersonChange` changes: each message to them not answered by the fork
+(no reply decided, or one decided that had not landed yet) is put to them again under their new behaviour.
 
 The agent's own state comes back through the restore sequence in `application.restore`, and is verified there
 against the report recorded at the checkpoint. Without hooks the fork is refused, because a world rewound under
@@ -336,16 +336,25 @@ async def _ask_again(
     replier: Replier,
     clock: Clock,
 ) -> Checkpoint:
-    """Put every message to a changed person that has no reply decided to them again, under their new behaviour.
+    """Put every message to a changed person that they have not answered by the fork again, under their new
+    behaviour.
 
-    A reply decided before the fork stays as it was: a `PersonChange` does not withdraw what was already said.
-    A reply that would have landed before the fork lands at the fork instead, since the past is shared.
+    A reply that landed before the fork stays as it was: a `PersonChange` does not withdraw what was already said.
+    A reply decided before the fork that had not landed by it was never said: it is withdrawn, as an edited
+    message's is, and the person is asked again as they now are. A reply that would have landed before the fork
+    lands at the fork instead, since the past is shared.
     """
     events = child.events()
     replies = child.replies()
-    answered = {(r.in_reply_to, r.person) for i, r in enumerate(replies) if i not in checkpoint.withdrawn}
+    unsaid = [
+        p.reply
+        for p in checkpoint.pending
+        if isinstance(p, PendingReply) and replies[p.reply].person in people and p.reply not in checkpoint.withdrawn
+    ]
+    withdrawn = [*checkpoint.withdrawn, *unsaid]
+    answered = {(r.in_reply_to, r.person) for i, r in enumerate(replies) if i not in withdrawn}
     changed = {p.email: p for p in scenario.people if p.key in people}
-    pending = list(checkpoint.pending)
+    pending = [p for p in checkpoint.pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
     count = len(replies)
     for event in events:
         after = event.after
@@ -368,4 +377,4 @@ async def _ask_again(
                 PendingReply(due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count)
             )
             count += 1
-    return checkpoint.model_copy(update={"pending": pending, "replies": count})
+    return checkpoint.model_copy(update={"pending": pending, "replies": count, "withdrawn": withdrawn})

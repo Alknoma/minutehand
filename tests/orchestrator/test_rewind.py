@@ -81,7 +81,9 @@ def runs(rig: Rig) -> list[str]:
         db.close()
 
 
-async def test_a_fork_replays_earlier_replies_applies_a_person_change_and_leaves_the_parent_alone(rig: Rig) -> None:
+async def test_a_fork_applies_a_person_change_to_a_reply_decided_but_not_yet_landed_and_leaves_the_parent_alone(
+    rig: Rig,
+) -> None:
     scn = two_replies()
     agent = rig.agent("ask_and_file", hooks=True)
     parent, parent_store, _ = await rig.run(scn, agent)
@@ -96,18 +98,19 @@ async def test_a_fork_replays_earlier_replies_applies_a_person_change_and_leaves
 
     assert child.stop is StopReason.AGENT_DONE
     assert child.parent_run == "root" and child.forked_at == after_start
-    # The reply sofia had already decided before the fork lands unchanged at +36h; her next answer is the new one.
+    # The reply sofia had decided before the fork, due at +36h, had not been said by it: it is withdrawn and she
+    # is asked again as she now is, answering 12 hours on.
     landed = [json.loads(p)["text"] for p in rig.chat.pushed]
-    assert landed == ["Yes, 40k.", "CHANGED two"]
+    assert landed == ["CHANGED one", "CHANGED two"]
     assert [w.sim_time for w in child.wakes] == [
         T0,
-        T0 + timedelta(hours=36),
-        T0 + timedelta(hours=48),
+        T0 + timedelta(hours=12),
+        T0 + timedelta(hours=24),
         T0 + timedelta(days=4),
     ]
     # The agent's own state was restored to the end of wake 1, not carried on from the parent's end.
     assert state(rig)["reasons"] == ["start", "person_replied", "person_replied", "due"]
-    assert state(rig)["heard"] == ["Yes, 40k.", "CHANGED two"]
+    assert state(rig)["heard"] == ["CHANGED one", "CHANGED two"]
     reopened = rig.open("root", RecordingClock(T0))
     assert [e.model_dump() for e in reopened.events()] == before
     assert [r.text for r in reopened.replies()] == ["Yes, 40k.", "Signing Friday."]
