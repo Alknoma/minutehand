@@ -93,7 +93,7 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `DELETE /v1/worlds/{id}` | → `Checked` | Close it: the checks as it stood, its record written, its claims released |
 | `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since` | → `EventsPage` | The log, filtered; `since` is a seq |
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
-| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts |
+| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
 | `GET /v1/worlds/{id}/spans` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
 | `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
@@ -108,7 +108,7 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
-| `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed; `head` is the position to read on from |
+| `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
 
 A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
 opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A

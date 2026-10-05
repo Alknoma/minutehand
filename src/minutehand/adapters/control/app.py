@@ -10,9 +10,10 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     DELETE /v1/worlds/{id}                             close it: `Checked`, as it stood when closed
     GET    /v1/worlds/{id}/events?provider&kind&actor&operation&since    `EventsPage`
     GET    /v1/worlds/{id}/entities?provider&kind      `EntitiesPage`: each entity's latest version
-    GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true]
+    GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true]
                                                 `CallsPage`: every call; those refused because nobody claims or
-                                                declares their host; or those captured (`Exchange.captured`)
+                                                declares their host; those captured (`Exchange.captured`); or
+                                                those relayed unopened on a tunnel (`Exchange.tunnelled`)
     GET    /v1/worlds/{id}/spans                       `SpansPage`
     POST   /v1/worlds/{id}/act                         `ActRequest` -> `Acted`
     GET    /v1/worlds/{id}/clock                       `WorldView` (its `now` and `owed`)
@@ -27,7 +28,7 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
     GET    /v1/worlds/{id}/checks                      `Checked`
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
-    GET    /v1/unmatched?since=N                       `Unmatched`: calls no open world claimed
+    GET    /v1/unmatched?since=N                       `Unmatched`: calls no open world claimed, tunnels among them
 
 A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
 `unsupported` when the provider cannot do it in any world), 422 for a body that is not the model, 502 when the
@@ -216,6 +217,8 @@ def create_app(serving: Serving) -> Starlette:
             recorded = [c for c in recorded if c.refused]
         if _query(request, "captured") == "true":
             recorded = [c for c in recorded if c.exchange.captured is not None]
+        if _query(request, "tunnelled") == "true":
+            recorded = [c for c in recorded if c.exchange.tunnelled is not None]
         return _json(CallsPage(calls=recorded))
 
     async def spans(request: Request) -> Response:

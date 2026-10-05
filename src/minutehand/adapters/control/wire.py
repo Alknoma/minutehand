@@ -188,7 +188,8 @@ class SpansPage(Model):
 
 
 class Unmatched(Model):
-    """Calls no open world claimed, refused with 502, oldest first. `since` and `head` count every call the lobby
+    """Calls no open world claimed, oldest first: refused with 502, or bursts on a tunnel to a model host no world
+    declared, relayed unopened (`Exchange.tunnelled`, route `none`). `since` and `head` count every call the lobby
     kept across the life of the server (a call to a provider's shared host, answered there and not listed here,
     among them), so `since` reads only what is new."""
 

@@ -161,6 +161,10 @@ class World:
     capturing: Capturing = field(default_factory=Capturing)
 
 
+def _nothing_relayed(world: Mounted) -> None:
+    """Before a proxy routes to the worlds, no tunnel is relayed into any of them."""
+
+
 class Standing:
     """Every world the server holds, and which one each call belongs to: `adapters.proxy.worlds.Worlds`."""
 
@@ -185,6 +189,9 @@ class Standing:
         self._shared = {h.lower(): m for m in registry.manifests for h in m.shared_hosts}
         self._shared_apps: dict[ProviderKey, ASGIApp] = {}
         self._lobby = Mounted(store=self.lobby_store, clock=self._lobby_clock, app_for=self._shared_app)
+        self.flush_in: Callable[[Mounted], None] = _nothing_relayed
+        """What records the calls still in progress in a world before it is closed or reset: the proxy's
+        `ProxyAddon.flush_in`, once it routes to these worlds."""
 
     def shared(self, host: str) -> bool:
         """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
@@ -372,6 +379,7 @@ class Standing:
         the agent, a person or the test did since. Its log so far is discarded, and tokens its fakes minted are
         no longer claimed: the world that minted them is gone."""
         old = self.get(world_id)
+        self.flush_in(old.mounted)
         old.store.close()
         old.open = False
         for suffix in ("", "-wal", "-shm"):
@@ -443,6 +451,7 @@ class Standing:
         """Score the world as it stands, write its record, release its claims and its file, and remove the
         oldest closed worlds beyond `keep`."""
         world = self.get(world_id)
+        self.flush_in(world.mounted)
         result = await world.standing.checks(stop=StopReason.CLOSED)
         world.standing.close()
         record = RunRecord(
@@ -617,6 +626,7 @@ async def serving(state: Path, options: ServeOptions) -> AsyncIterator[Serving]:
             record_model_calls=options.record_model_calls,
         ) as proxy:
             proxy.addon.route(standing)
+            standing.flush_in = proxy.addon.flush_in
             async with _receiver(standing, options) as receiver:
                 serving_ = Serving(standing, proxy, receiver, options.control_port, options)
                 async with _control(create_app(serving_), options.host, options.control_port) as port:
