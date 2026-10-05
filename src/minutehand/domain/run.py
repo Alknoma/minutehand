@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import WakeRecord
+from minutehand.domain.errors import Failure
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import CaptureMode
 
@@ -24,11 +25,31 @@ class VerdictKind(StrEnum):
     PASSED = "passed"  # no check failed, and the agent finished: it reported done, or nothing was left open
     UNFINISHED = "unfinished"  # no check failed, but the agent never reported done and work was still open
     FAILED = "failed"  # a check failed
+    TOOL_ERROR = "tool_error"  # Minutehand failed while answering a call: the run says nothing about the agent
 
 
-EXIT_CODES = {VerdictKind.PASSED: 0, VerdictKind.FAILED: 1, VerdictKind.UNFINISHED: 3}
-"""What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is a run that could not be
-performed, which has no verdict."""
+class ExitCode(IntEnum):
+    """What every command exits with. One table, so a script reads one meaning per number.
+
+    Policy: a run in which Minutehand failed (`TOOL_ERROR`) is scored neither passed nor failed, whatever its checks
+    found, because the agent was answered by a bug and not by the world; it exits `TOOL_ERROR`, never `FAILED`."""
+
+    PASSED = 0  # the run passed, or a command that is not a run succeeded
+    FAILED = 1  # the agent failed the scenario: a check failed
+    USAGE = 2  # the run could not be performed as asked: the scenario, the agent file or the command line is wrong
+    UNFINISHED = 3  # no check failed, and the agent did not finish
+    TOOL_ERROR = 4  # Minutehand's own error: while answering a call, or anywhere else; a traceback was kept
+    ENVIRONMENT = 5  # the machine failed: a port in use, a command that would not start, a host not reachable
+    INTERRUPTED = 130  # stopped by Ctrl-C (SIGINT)
+
+
+EXIT_CODES = {
+    VerdictKind.PASSED: ExitCode.PASSED,
+    VerdictKind.FAILED: ExitCode.FAILED,
+    VerdictKind.UNFINISHED: ExitCode.UNFINISHED,
+    VerdictKind.TOOL_ERROR: ExitCode.TOOL_ERROR,
+}
+"""What `minutehand run`, `fork` and `findings` exit with for each verdict (`ExitCode`)."""
 
 
 class Verdict(Model):
@@ -86,7 +107,7 @@ class RunRecord(Model):
     ended_at: AwareDatetime = Field(description="Simulated")
     wall_seconds: float = Field(ge=0)
     stop: StopReason
-    failure: str | None = Field(default=None, description="Why, when the run stopped AGENT_FAILED")
+    failure: Failure | None = Field(default=None, description="Why, when the run stopped AGENT_FAILED")
     providers: list[ProviderKey] = Field(
         default=[], description="Every provider the agent called, in the order of its first call"
     )

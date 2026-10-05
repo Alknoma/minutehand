@@ -25,11 +25,13 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Annotated, Literal, TypeVar
 from urllib.parse import parse_qsl
 
 from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, TypeAdapter, model_serializer
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 API_BASE = "https://app.asana.com/api/1.0"
@@ -49,14 +51,21 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TAG = re.compile(r"<[^>]+>")
 
 
-class Refusal(Exception):
-    """Asana answered with an error. `status` and `message` are Asana's own."""
+CONTENT_TYPE = "application/json; charset=utf-8"
+"""What every Asana answer, an error too, is sent as."""
 
-    def __init__(self, status: int, message: str, *, retry_after: int | None = None) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
+
+class Refusal(ServiceRefusal):
+    """Asana refuses the request. `status` and `message` are Asana's own; Asana's envelope carries no error code,
+    so `code` is the status's own name (`bad_request`, `not_found`, `too_many_requests`)."""
+
+    def __init__(self, status: int, message: str, *, retry_after: int | None = None, deliberate: bool = False) -> None:
+        super().__init__(HTTPStatus(status).name.lower(), message, status=status, deliberate=deliberate)
         self.retry_after = retry_after
+
+    def render(self) -> Rendered:
+        headers = [("retry-after", str(self.retry_after))] if self.retry_after is not None else []
+        return Rendered(status=self.status, content_type=CONTENT_TYPE, body=failed(self.message), headers=headers)
 
 
 def bad(message: str) -> Refusal:
@@ -81,9 +90,9 @@ SEARCH_IS_PREMIUM = "Search is only available to premium Asana workspaces."
 FIELDS_ARE_PREMIUM = "Custom fields are only available to premium Asana workspaces."
 
 
-def unsupported(name: str) -> Refusal:
-    """Something real Asana has and this provider does not. Never ignored in silence."""
-    return Refusal(501, f"{name}: Not supported by this simulation of Asana")
+def unsupported(name: str) -> NotImplementedError:
+    """Something real Asana has and this provider does not. Never ignored in silence: answered 501 by the guard."""
+    return NotImplementedError(f"{name}: Not supported by this simulation of Asana")
 
 
 def is_gid(value: str) -> bool:
@@ -761,13 +770,16 @@ def _enum_option(definition: AsanaCustomField, gid: str, where: str) -> str:
     return gid
 
 
-class OAuthRefusal(Exception):
-    """The OAuth endpoint's own error shape (RFC 6749), not the API's envelope."""
+class OAuthRefusal(ServiceRefusal):
+    """The OAuth endpoint refuses the grant, in its own error shape (RFC 6749), not the API's envelope."""
 
     def __init__(self, error: str, description: str) -> None:
-        super().__init__(description)
+        super().__init__(error, description, status=400)
         self.error = error
         self.description = description
+
+    def render(self) -> Rendered:
+        return Rendered(status=self.status, content_type=CONTENT_TYPE, body=oauth_failed(self))
 
 
 class TokenGrant(Model):

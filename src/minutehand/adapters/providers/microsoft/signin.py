@@ -26,6 +26,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route, Router
 
 from minutehand.adapters.providers.microsoft import keys, tokens, wire
+from minutehand.adapters.providers.microsoft.common import MicrosoftRefusal
 from minutehand.adapters.providers.microsoft.state import (
     AppRecord,
     MicrosoftWorld,
@@ -35,6 +36,7 @@ from minutehand.adapters.providers.microsoft.state import (
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
+from minutehand.domain.errors import Rendered
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -61,31 +63,38 @@ APPLICATION_ROLES = [
 ]
 
 
-class SignInRefused(Exception):
-    def __init__(self, status: int, error: str, code: int, description: str) -> None:
-        super().__init__(description)
-        self.status = status
+class SignInRefused(MicrosoftRefusal):
+    """The identity platform refused: an OAuth `error` (the code), and the `AADSTS` number and description its
+    `error_description` carries, in the platform's own `TokenError` shape."""
+
+    def __init__(self, status: int, error: str, aadsts: int, description: str) -> None:
+        super().__init__(error, f"AADSTS{aadsts}: {description}", status=status)
         self.error = error
-        self.code = code
+        self.aadsts = aadsts
         self.description = description
+        self.timestamp: str | None = None
+
+    def answered(self, clock: Clock, request: Request) -> None:
+        del request
+        self.timestamp = clock.now().strftime("%Y-%m-%d %H:%M:%SZ")
+
+    def render(self) -> Rendered:
+        assert self.timestamp is not None, f"sign-in's {self.error} left the app without being answered"
+        answer = wire.TokenError(
+            error=self.error,
+            error_description=self.message,
+            error_codes=[self.aadsts],
+            timestamp=self.timestamp,
+            trace_id=tokens.derived_trace(self.description),
+            correlation_id=tokens.derived_trace(self.error),
+        )
+        return Rendered(status=self.status, content_type=JSON, body=wire.dump(answer).encode())
 
 
 def _refuse_disabled(user: UserRecord) -> None:
     """A user an administrator disabled cannot sign in, as Entra refuses them."""
     if user.user.accountEnabled is False:
         raise SignInRefused(400, "invalid_grant", 50057, "The user account is disabled.")
-
-
-def _refused(refusal: SignInRefused, clock: Clock) -> Response:
-    answer = wire.TokenError(
-        error=refusal.error,
-        error_description=f"AADSTS{refusal.code}: {refusal.description}",
-        error_codes=[refusal.code],
-        timestamp=clock.now().strftime("%Y-%m-%d %H:%M:%SZ"),
-        trace_id=tokens.derived_trace(refusal.description),
-        correlation_id=tokens.derived_trace(refusal.error),
-    )
-    return Response(wire.dump(answer), status_code=refusal.status, media_type=JSON)
 
 
 class SignIn:
@@ -173,25 +182,22 @@ class SignIn:
     # ------------------------------------------------------------------ token
 
     async def token(self, request: Request) -> Response:
-        try:
-            authority = request.path_params["tenant"]
-            tenant = self._tenant(authority)
-            asked = wire.read_form(wire.TokenRequest, await request.body())
-            if asked.grant_type == "client_credentials":
-                answer = self._client_credentials(asked, tenant, authority)
-            elif asked.grant_type == "authorization_code":
-                answer = self._code(asked, tenant)
-            elif asked.grant_type == "refresh_token":
-                answer = self._refresh(asked, tenant)
-            else:
-                raise SignInRefused(
-                    400,
-                    "unsupported_grant_type",
-                    70003,
-                    f"The app requested an unsupported grant type '{asked.grant_type}'.",
-                )
-        except SignInRefused as refusal:
-            return _refused(refusal, self._clock)
+        authority = request.path_params["tenant"]
+        tenant = self._tenant(authority)
+        asked = wire.read_form(wire.TokenRequest, await request.body())
+        if asked.grant_type == "client_credentials":
+            answer = self._client_credentials(asked, tenant, authority)
+        elif asked.grant_type == "authorization_code":
+            answer = self._code(asked, tenant)
+        elif asked.grant_type == "refresh_token":
+            answer = self._refresh(asked, tenant)
+        else:
+            raise SignInRefused(
+                400,
+                "unsupported_grant_type",
+                70003,
+                f"The app requested an unsupported grant type '{asked.grant_type}'.",
+            )
         return Response(wire.dump(answer), media_type=JSON, headers={"Cache-Control": "no-store, no-cache"})
 
     def _client_credentials(
@@ -313,29 +319,26 @@ class SignIn:
 
     async def authorize(self, request: Request) -> Response:
         query = request.query_params
-        try:
-            tenant = self._tenant(request.path_params["tenant"])
-            client = query["client_id"] if "client_id" in query else ""
-            app = self._world.app(client)
-            if app is None:
-                raise SignInRefused(
-                    400, "unauthorized_client", 700016, f"Application with identifier '{client}' was not found."
-                )
-            redirect = query["redirect_uri"] if "redirect_uri" in query else ""
-            hint = query["login_hint"] if "login_hint" in query else ""
-            user = self._world.user_by(hint) if hint else None
-            if not redirect or user is None:
-                raise SignInRefused(
-                    400,
-                    "invalid_request",
-                    900144,
-                    "This sign-in has no browser: name the user who signs in with login_hint, and a redirect_uri.",
-                )
-            if tenant is not None and user.tenant_id != tenant.id:
-                raise SignInRefused(400, "invalid_request", 50020, f"User account '{hint}' does not exist in tenant.")
-            _refuse_disabled(user)
-        except SignInRefused as refusal:
-            return _refused(refusal, self._clock)
+        tenant = self._tenant(request.path_params["tenant"])
+        client = query["client_id"] if "client_id" in query else ""
+        app = self._world.app(client)
+        if app is None:
+            raise SignInRefused(
+                400, "unauthorized_client", 700016, f"Application with identifier '{client}' was not found."
+            )
+        redirect = query["redirect_uri"] if "redirect_uri" in query else ""
+        hint = query["login_hint"] if "login_hint" in query else ""
+        user = self._world.user_by(hint) if hint else None
+        if not redirect or user is None:
+            raise SignInRefused(
+                400,
+                "invalid_request",
+                900144,
+                "This sign-in has no browser: name the user who signs in with login_hint, and a redirect_uri.",
+            )
+        if tenant is not None and user.tenant_id != tenant.id:
+            raise SignInRefused(400, "invalid_request", 50020, f"User account '{hint}' does not exist in tenant.")
+        _refuse_disabled(user)
         code, _ = tokens.issued(
             use=TokenUse.CODE,
             issuer=tokens.issuer_for(user.tenant_id),
@@ -358,10 +361,7 @@ class SignIn:
 
     async def openid_configuration(self, request: Request) -> Response:
         authority = request.path_params["tenant"]
-        try:
-            tenant = self._tenant(authority)
-        except SignInRefused as refusal:
-            return _refused(refusal, self._clock)
+        tenant = self._tenant(authority)
         named = tenant.id if tenant is not None else "{tenantid}"
         base = f"{tokens.AAD}/{authority}"
         answer = wire.OpenIdConfiguration(

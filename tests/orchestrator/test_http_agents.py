@@ -255,8 +255,8 @@ async def test_a_wake_still_working_past_its_limit_stops_the_run_agent_failed_na
         took = time.monotonic() - started
 
     assert record.stop is StopReason.AGENT_FAILED
-    assert record.failure is not None and "still answered WORKING 0.4 s" in record.failure
-    assert "working_limit" in record.failure
+    assert record.failure is not None and "still answered WORKING 0.4 s" in record.failure.message
+    assert "working_limit" in record.failure.message
     assert took < 5
 
 
@@ -268,8 +268,8 @@ async def test_a_wake_call_slower_than_its_timeout_stops_the_run_agent_failed_na
         )
 
     assert record.stop is StopReason.AGENT_FAILED
-    assert record.failure is not None and "did not answer within 0.2 s" in record.failure
-    assert "wake_timeout" in record.failure
+    assert record.failure is not None and "did not answer within 0.2 s" in record.failure.message
+    assert "wake_timeout" in record.failure.message
 
 
 async def test_a_wake_call_inside_its_timeout_is_waited_for(rig: Rig) -> None:

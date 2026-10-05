@@ -9,7 +9,8 @@ Four families live here:
 - **Requests** — one model per body the API takes. Free-form slots (`fields`, a custom field's value) are read
   here and nowhere else.
 - **Answers** — the resources as the REST API returns them, built as JSON trees by the `*_out` functions.
-- **Errors** — `Refusal`, answered as `{"errorMessages": [...], "errors": {field: message}}`.
+- **Errors** — `Refusal`, answered as `{"errorMessages": [...], "errors": {field: message}}`; `GatewayRefusal`
+  (`api.atlassian.com`'s own `{"code", "message"}`) and `OAuthRefusal` (`auth.atlassian.com`'s OAuth error).
 
 Every timestamp is written the way Jira Cloud writes one: `2026-08-24T10:50:03.000+0000`.
 """
@@ -21,10 +22,12 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 Json = dict[str, JsonValue]
@@ -39,8 +42,14 @@ class Wire(Model):
 # --------------------------------------------------------------------------- errors
 
 
-class Refusal(Exception):
-    """Jira answered with an error status: `messages` are its `errorMessages`, `fields` its `errors` map."""
+JSON = "application/json;charset=UTF-8"
+"""The content type every Jira, gateway and OAuth answer, refusals included, carries."""
+
+
+class Refusal(ServiceRefusal):
+    """Jira answered with an error status: `messages` are its `errorMessages`, `fields` its `errors` map. Jira's
+    body has no error code, so `code` is the status's reason phrase. A 401 carries Jira's `WWW-Authenticate`;
+    `retry_after` is the `Retry-After` a rate limit answers with."""
 
     def __init__(
         self,
@@ -49,16 +58,53 @@ class Refusal(Exception):
         fields: dict[str, str] | None = None,
         *,
         retry_after: int | None = None,
+        deliberate: bool = False,
     ) -> None:
-        super().__init__("; ".join([*messages, *(f"{k}: {v}" for k, v in (fields or {}).items())]))
-        self.status = status
+        super().__init__(
+            code=HTTPStatus(status).phrase,
+            message="; ".join([*messages, *(f"{k}: {v}" for k, v in (fields or {}).items())]),
+            status=status,
+            deliberate=deliberate,
+        )
         self.messages = list(messages)
         self.fields = dict(fields or {})
         self.retry_after = retry_after
 
+    def render(self) -> Rendered:
+        headers: list[tuple[str, str]] = []
+        if self.status == 401:
+            headers = [("www-authenticate", 'Basic realm="protected-area"')]
+        elif self.retry_after is not None:
+            headers = [("retry-after", str(self.retry_after))]
+        body = json.dumps({"errorMessages": self.messages, "errors": self.fields}).encode()
+        return Rendered(status=self.status, content_type=JSON, body=body, headers=headers)
 
-def error_body(refusal: Refusal) -> bytes:
-    return json.dumps({"errorMessages": refusal.messages, "errors": refusal.fields}).encode()
+
+class GatewayRefusal(ServiceRefusal):
+    """`api.atlassian.com` answered with an error status of its own, as `{"code": status, "message": ...}`."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(code=HTTPStatus(status).phrase, message=message, status=status)
+
+    def render(self) -> Rendered:
+        body = json.dumps({"code": self.status, "message": self.message}).encode()
+        return Rendered(status=self.status, content_type=JSON, body=body)
+
+
+class OAuthRefusal(ServiceRefusal):
+    """`auth.atlassian.com` refused a token request, in OAuth's `{"error": ..., "error_description": ...}`."""
+
+    def __init__(self, status: int, error: str, description: str) -> None:
+        super().__init__(code=error, message=description, status=status)
+
+    def render(self) -> Rendered:
+        body = json.dumps({"error": self.code, "error_description": self.message}).encode()
+        return Rendered(status=self.status, content_type=JSON, body=body)
+
+
+def error_answer(status: int, message: str) -> Rendered:
+    """An error of Minutehand's own (501, 500) in Jira's shape, which its clients read as they read a refusal."""
+    return Refusal(status, [message]).render()
 
 
 def unauthenticated() -> Refusal:
@@ -98,7 +144,8 @@ def jql_error(message: str) -> Refusal:
 
 
 def rate_limited(retry_after: int) -> Refusal:
-    return Refusal(429, ["Too many requests: wait before you try again."], retry_after=retry_after)
+    """A rate limit a seed or `DeclaresFaults` declared: a fault armed on purpose."""
+    return Refusal(429, ["Too many requests: wait before you try again."], retry_after=retry_after, deliberate=True)
 
 
 # --------------------------------------------------------------------------- time

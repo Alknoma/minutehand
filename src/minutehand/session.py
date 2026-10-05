@@ -80,9 +80,10 @@ from minutehand.application.restore import Progress, Restored, SeenCall, restore
 from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
-from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
+from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, failed_calls, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
+from minutehand.domain.errors import EnvironmentFailure
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
@@ -752,6 +753,7 @@ class _Judge:
             withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in world.calls() if call.refused],
+            failed_calls=failed_calls(world.calls()),
             model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
         )
         result = (
@@ -1199,7 +1201,11 @@ class _Program:
                     stderr=out,
                 )
             except OSError as e:
-                raise RunRefused(f"the agent's command {self._command[0]} could not be started: {e}") from e
+                raise EnvironmentFailure(
+                    f"the agent's command {self._command[0]}",
+                    f"it could not be started: {e}",
+                    "check it is installed and on PATH, or give its full path after --",
+                ) from e
         url = _listens_on(self._agent)
         if url is not None:
             await _until_listening(self._process, url, self._log)

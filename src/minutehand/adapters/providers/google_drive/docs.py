@@ -30,7 +30,11 @@ from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, ValidationError
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
+
+JSON = "application/json; charset=UTF-8"
+"""What Google's APIs answer JSON as, refusals included."""
 
 # --------------------------------------------------------------------------- styles, as Docs spells them
 
@@ -593,14 +597,27 @@ class BatchUpdateAnswer(Model):
     writeControl: WriteControlAnswer
 
 
-class Refused(Exception):
-    """A request Docs refuses: the status, Docs' status word, and its message."""
+class StatusError(Model):
+    code: int
+    message: str
+    status: str
 
-    def __init__(self, code: int, status: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.status = status
-        self.message = message
+
+class StatusErrorAnswer(Model):
+    """The error envelope Docs and Slides answer in: `code`, `message` and the status word, no `errors` list."""
+
+    error: StatusError
+
+
+class Refused(ServiceRefusal):
+    """A request Docs or Slides refuses: the HTTP status, the status word (the refusal's `code`), and its message."""
+
+    def __init__(self, status: int, word: str, message: str) -> None:
+        super().__init__(code=word, message=message, status=status)
+
+    def render(self) -> Rendered:
+        answer = StatusErrorAnswer(error=StatusError(code=self.status, message=self.message, status=self.code))
+        return Rendered(status=self.status, content_type=JSON, body=answer.model_dump_json().encode())
 
 
 def _invalid(message: str) -> Refused:
@@ -756,7 +773,7 @@ class Editor:
 
     def _check_segment(self, segment_id: str | None, tab_id: str | None) -> None:
         if segment_id:
-            raise Refused(501, "UNIMPLEMENTED", f"{self._where}: this simulation has no headers, footers or footnotes")
+            raise NotImplementedError(f"{self._where}: this simulation has no headers, footers or footnotes")
         if tab_id and tab_id != FIRST_TAB:
             raise _invalid(f"{self._where}: The tab with ID {tab_id} was not found.")
 
@@ -1007,7 +1024,7 @@ class Editor:
         index = self._insertion(asked.location, asked.endOfSegmentLocation)
         spot = self._paragraph_spot(index)
         if spot.in_table:
-            raise Refused(501, "UNIMPLEMENTED", f"{self._where}: this simulation does not nest a table in a table")
+            raise NotImplementedError(f"{self._where}: this simulation does not nest a table in a table")
         closing = self._closing(spot.segment, spot.position)
         style = self._inherited(spot.segment, spot.position)
         cell_newline = Unit(
@@ -1044,7 +1061,7 @@ class Editor:
         if not needle:
             raise _invalid(f"{self._where}: The search text must not be empty.")
         if asked.containsText.searchByRegex:
-            raise Refused(501, "UNIMPLEMENTED", f"{self._where}: this simulation does not search by regular expression")
+            raise NotImplementedError(f"{self._where}: this simulation does not search by regular expression")
         changed = 0
         for segment, base in list(self._segments()):
             changed += self._replace_in(segment, base, needle, asked.replaceText, asked.containsText.matchCase)
@@ -1223,9 +1240,7 @@ def read_batch(raw: bytes) -> BatchUpdate:
         for problem in error.errors():
             location = [str(part) for part in problem["loc"]]
             if len(location) >= 3 and location[0] == "requests" and location[2] in NOT_BUILT:
-                raise Refused(
-                    501, "UNIMPLEMENTED", f"this simulation does not build the Docs request {location[2]}"
-                ) from error
+                raise NotImplementedError(f"this simulation does not build the Docs request {location[2]}") from error
         first = error.errors()[0]
         where = ".".join(str(part) for part in first["loc"])
         raise _invalid(f"Invalid JSON payload received. Unknown name or bad value at '{where}'") from error

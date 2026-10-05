@@ -61,10 +61,11 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import Receiver
 from minutehand.application.outbound import outbound_uses
-from minutehand.application.refusals import RunRefused, refuse_unheld
+from minutehand.application.refusals import NotFound, RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import StandingWorld, Unsupported, WorldRefused
 from minutehand.checks.runner import RunResult
+from minutehand.domain.errors import EnvironmentFailure, Rendered, ServiceRefusal
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Model, ProviderKey
@@ -506,8 +507,8 @@ class Standing:
     def get(self, world_id: str) -> World:
         if world_id not in self.worlds:
             if world_id in self._handed:
-                raise LookupError(f"world {world_id} is closed, and a closed world is never open again")
-            raise LookupError(f"no open world {world_id}")
+                raise NotFound(f"world {world_id} is closed, and a closed world is never open again")
+            raise NotFound(f"no open world {world_id}")
         return self.worlds[world_id]
 
     async def quiet(self, world_id: str, ask: Quiet) -> Quieted:
@@ -626,16 +627,27 @@ class Standing:
                 await app(scope, receive, send)
                 return
             armed.left -= 1
-            fault = armed.fault
-            headers = [(b"content-type", fault.content_type.encode())]
-            if fault.retry_after is not None:
-                headers.append((b"retry-after", str(fault.retry_after).encode()))
-            start: Message = {"type": "http.response.start", "status": fault.status, "headers": headers}
-            body: Message = {"type": "http.response.body", "body": fault.body.encode()}
-            await send(start)
-            await send(body)
+            raise ArmedFault(armed.fault)
 
         return answer
+
+
+class ArmedFault(ServiceRefusal):
+    """A call answered by a fault the control API armed (`Fault`): the caller's status and body, sent as given, and
+    recorded as a fault injected on purpose."""
+
+    def __init__(self, fault: Fault) -> None:
+        super().__init__(code=f"armed_fault_{fault.status}", message=fault.body, status=fault.status, deliberate=True)
+        self.fault = fault
+
+    def render(self) -> Rendered:
+        headers = [("retry-after", str(self.fault.retry_after))] if self.fault.retry_after is not None else []
+        return Rendered(
+            status=self.fault.status,
+            content_type=self.fault.content_type,
+            body=self.fault.body.encode(),
+            headers=headers,
+        )
 
 
 @contextmanager
@@ -757,7 +769,9 @@ async def _control(app: Starlette, host: str, port: int) -> AsyncIterator[int]:
         listener.bind((host, port))
     except OSError as e:
         listener.close()
-        raise OSError(f"the control API could not listen on {host}:{port}: {e}") from e
+        raise EnvironmentFailure(
+            f"port {port} on {host}", f"the control API could not listen on it: {e}", "free it or give --control-port"
+        ) from e
     listener.listen(256)
     listener.setblocking(False)
     config = uvicorn.Config(app, lifespan="off", http="h11", log_config=None, access_log=False)

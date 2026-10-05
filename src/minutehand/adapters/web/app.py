@@ -21,6 +21,7 @@ read as of its last commit, and the viewer can never change or lock a run.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from minutehand.adapters.web.responses import (
     ModelCallsResponse,
     ObligationsResponse,
     Refusal,
+    RefusalCode,
     RunResponse,
     RunRow,
     RunsResponse,
@@ -62,8 +64,32 @@ PAGE = Path(__file__).with_name("viewer.html")
 HOST = "127.0.0.1"
 
 
+logger = logging.getLogger(__name__)
+
+
 def _json(model: Model, status: int = 200) -> Response:
     return Response(model.model_dump_json(), status_code=status, media_type="application/json")
+
+
+def refusal_for(error: Exception) -> Response:
+    """THE viewer API's converter: a run that is not there or cannot be read is 404; anything else is Minutehand's
+    own error, 500, logged with its traceback, so a bug never reads as a missing run."""
+    if isinstance(error, RunRefused):
+        return _json(Refusal(error=str(error), code=RefusalCode.NOT_FOUND), status=404)
+    logger.error("viewer internal error: %s: %s", type(error).__name__, error, exc_info=error)
+    return _json(
+        Refusal(error=f"internal error: {type(error).__name__}: {error}", code=RefusalCode.INTERNAL_ERROR), status=500
+    )
+
+
+def _guarded(handler: Callable[[Request], Response]) -> Callable[[Request], Response]:
+    def endpoint(request: Request) -> Response:
+        try:
+            return handler(request)
+        except Exception as error:
+            return refusal_for(error)
+
+    return endpoint
 
 
 def create_app(state: Path) -> Starlette:
@@ -187,36 +213,30 @@ def create_app(state: Path) -> Starlette:
     def trace(request: Request) -> Response:
         run_id, trace_id = request.path_params["run_id"], request.path_params["trace_id"]
         assert isinstance(run_id, str) and isinstance(trace_id, str)
-        try:
-            with session.reading(state, run_id) as world:
-                return _json(TraceResponse(trace_id=trace_id, spans=world.spans(trace_id=trace_id.lower())))
-        except RunRefused as e:
-            return _json(Refusal(error=str(e)), status=404)
+        with session.reading(state, run_id) as world:
+            return _json(TraceResponse(trace_id=trace_id, spans=world.spans(trace_id=trace_id.lower())))
 
     def one_run(handler: Callable[[str], Response]) -> Callable[[Request], Response]:
         def endpoint(request: Request) -> Response:
             run_id = request.path_params["run_id"]
             assert isinstance(run_id, str)
-            try:
-                return handler(run_id)
-            except RunRefused as e:
-                return _json(Refusal(error=str(e)), status=404)
+            return handler(run_id)
 
         return endpoint
 
     return Starlette(
         routes=[
-            Route("/", page),
-            Route("/api/runs", runs),
-            Route("/api/runs/{run_id}", one_run(run)),
-            Route("/api/runs/{run_id}/wakes", one_run(wakes)),
-            Route("/api/runs/{run_id}/events", one_run(events)),
-            Route("/api/runs/{run_id}/calls", one_run(calls)),
-            Route("/api/runs/{run_id}/obligations", one_run(obligations)),
-            Route("/api/runs/{run_id}/findings", one_run(findings)),
-            Route("/api/runs/{run_id}/scorecard", one_run(scorecard)),
-            Route("/api/runs/{run_id}/model-calls", one_run(model_calls)),
-            Route("/api/runs/{run_id}/traces/{trace_id}", trace),
+            Route("/", _guarded(page)),
+            Route("/api/runs", _guarded(runs)),
+            Route("/api/runs/{run_id}", _guarded(one_run(run))),
+            Route("/api/runs/{run_id}/wakes", _guarded(one_run(wakes))),
+            Route("/api/runs/{run_id}/events", _guarded(one_run(events))),
+            Route("/api/runs/{run_id}/calls", _guarded(one_run(calls))),
+            Route("/api/runs/{run_id}/obligations", _guarded(one_run(obligations))),
+            Route("/api/runs/{run_id}/findings", _guarded(one_run(findings))),
+            Route("/api/runs/{run_id}/scorecard", _guarded(one_run(scorecard))),
+            Route("/api/runs/{run_id}/model-calls", _guarded(one_run(model_calls))),
+            Route("/api/runs/{run_id}/traces/{trace_id}", _guarded(trace)),
         ]
     )
 

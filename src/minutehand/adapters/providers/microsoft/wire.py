@@ -395,7 +395,7 @@ class InnerError(Aliased):
 class GraphErrorBody(Aliased):
     code: str
     message: str
-    innerError: InnerError
+    innerError: InnerError | None = None
 
 
 class GraphError(Model):

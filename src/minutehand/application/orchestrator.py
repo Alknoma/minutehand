@@ -48,6 +48,7 @@ from minutehand.domain.agent import (
 )
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
+from minutehand.domain.errors import Failure, FailureKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
@@ -252,7 +253,7 @@ class Orchestrator:
         self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
         self._commitments: list[Commitment] | None = None
-        self._failure: str | None = None
+        self._failure: Failure | None = None
         self._seen = 0
         self._calls_seen = 0
 
@@ -305,7 +306,7 @@ class Orchestrator:
         try:
             await self._checkpoint()
         except AgentFailed as e:
-            self._failure = str(e)
+            self._failure = agent_failure(e, "the checkpoint before the first wake")
             return await self._end(StopReason.AGENT_FAILED, started)
         stop = await self._start()
         if stop is None:
@@ -645,7 +646,7 @@ class Orchestrator:
                     commitments_changed = self._adopt(report)
         except AgentFailed as e:
             failed = True
-            self._failure = str(e)
+            self._failure = agent_failure(e, f"wake {wake}")
         settled = None if failed else await self._settled(wake)
         if isinstance(settled, Settled) and settled.report is not None and isinstance(self._reach.main, Reports):
             # The wake is over when the agent's background work is: what it reports now replaces what it said when
@@ -672,7 +673,7 @@ class Orchestrator:
         try:
             await self._checkpoint(settled)
         except AgentFailed as e:
-            self._failure = str(e)
+            self._failure = agent_failure(e, f"the checkpoint after wake {wake}")
             return StopReason.AGENT_FAILED
         if done:
             return StopReason.AGENT_DONE
@@ -1026,3 +1027,8 @@ async def run_scenario(
         traffic=traffic,
         channels=channels,
     ).run()
+
+
+def agent_failure(error: AgentFailed, step: str) -> Failure:
+    """Why the run stopped AGENT_FAILED, as the run keeps it."""
+    return Failure.of(error, kind=FailureKind.AGENT, code="agent_failed", message=str(error), where=step)

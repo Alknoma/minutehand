@@ -30,13 +30,14 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters.answering import unrouted
 from minutehand.adapters.providers.jira import jql, search, state, wire
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
-_JSON = "application/json;charset=UTF-8"
+_JSON = wire.JSON
 API_HOST = "api.atlassian.com"
 AUTH_HOST = "auth.atlassian.com"
 SCOPES = ["read:jira-work", "write:jira-work", "read:jira-user", "manage:jira-project", "offline_access"]
@@ -89,54 +90,53 @@ class JiraApi:
         self._world = self._desk.world
         self._clock = clock
         self._routes: list[tuple[str, re.Pattern[str], Handler]] = []
+        self._served: list[str] = ["POST /oauth/token", "GET /oauth/token/accessible-resources"]
+        """Every operation the fake answers, as `METHOD /path`, for naming the closest to one it does not."""
 
     # ------------------------------------------------------------------ routing
 
     def route(self, method: str, pattern: str, handler: Handler) -> None:
         regex = re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", pattern)
         self._routes.append((method, re.compile(f"^{regex}/?$"), handler))
+        self._served.append(f"{method} {pattern}")
 
     async def answer(self, request: Request) -> Response:
+        """The answer to `request`; a refusal, or an operation no route serves, leaves as the exception the guard
+        renders (`adapters.answering`)."""
         host = (request.url.hostname or "").lower()
         path = request.url.path
-        try:
-            if host == AUTH_HOST:
-                return await self._token(request, path)
-            if host == API_HOST and path == "/oauth/token/accessible-resources":
-                return self._accessible(request)
-            site = self._world.site()
-            if host == API_HOST:
-                shape = _EX.match(path)
-                if shape is None:
-                    return _json(404, {"code": 404, "message": "Not Found"})
-                if shape.group(1) != site.cloudId:
-                    return _json(404, {"code": 404, "message": "No site has that cloud id"})
-                path = shape.group(2)
-                base = f"https://{API_HOST}/ex/jira/{site.cloudId}"
-                account = self._bearer(request)
-            elif host == site.host:
-                base = f"https://{site.host}"
-                account = self._basic(request)
-            else:
-                return _json(404, {"errorMessages": [f"There is no Jira site at {host}."], "errors": {}})
-            for method, pattern, handler in self._routes:
-                shape = pattern.match(path)
-                if shape is None or method != request.method:
-                    continue
-                self._throttle(site, request.method, path)
-                call = Call(request, await request.body(), path, shape.groupdict(), account, base)
-                status, tree = handler(call)
-                if status == 204 or tree is None:
-                    return Response(status_code=status)
-                return Response(wire.render(tree), status_code=status, media_type=_JSON)
-            if any(pattern.match(path) for _, pattern, _ in self._routes):
-                raise wire.Refusal(405, [f"{request.method} is not allowed on {path}."])
-            raise wire.Refusal(404, [f"There is no resource at {path}."])
-        except wire.Refusal as refusal:
-            headers = {"Retry-After": str(refusal.retry_after)} if refusal.retry_after is not None else None
-            if refusal.status == 401:
-                headers = {"WWW-Authenticate": 'Basic realm="protected-area"'}
-            return Response(wire.error_body(refusal), status_code=refusal.status, media_type=_JSON, headers=headers)
+        if host == AUTH_HOST:
+            return await self._token(request, path)
+        if host == API_HOST and path == "/oauth/token/accessible-resources":
+            return self._accessible(request)
+        ex = _EX.match(path) if host == API_HOST else None
+        if host == API_HOST and ex is None:
+            raise unrouted(request.method, path, self._served)
+        if not self._world.seeded():
+            raise wire.Refusal(404, [f"There is no Jira site at {host}."])
+        site = self._world.site()
+        if ex is not None:
+            if ex.group(1) != site.cloudId:
+                raise wire.GatewayRefusal(404, "No site has that cloud id")
+            path = ex.group(2)
+            base = f"https://{API_HOST}/ex/jira/{site.cloudId}"
+            account = self._bearer(request)
+        elif host == site.host:
+            base = f"https://{site.host}"
+            account = self._basic(request)
+        else:
+            raise wire.Refusal(404, [f"There is no Jira site at {host}."])
+        for method, pattern, handler in self._routes:
+            shape = pattern.match(path)
+            if shape is None or method != request.method:
+                continue
+            self._throttle(site, request.method, path)
+            call = Call(request, await request.body(), path, shape.groupdict(), account, base)
+            status, tree = handler(call)
+            if status == 204 or tree is None:
+                return Response(status_code=status)
+            return Response(wire.render(tree), status_code=status, media_type=_JSON)
+        raise unrouted(request.method, path, self._served)
 
     # ------------------------------------------------------------------ sign-in
 
@@ -182,7 +182,7 @@ class JiraApi:
 
     def _accessible(self, request: Request) -> Response:
         if not self._world.seeded() or self._oauth(request) is None:
-            return _json(401, {"code": 401, "message": "Unauthorized"})
+            raise wire.GatewayRefusal(401, "Unauthorized")
         site = self._world.site()
         return _json(
             200,
@@ -199,7 +199,7 @@ class JiraApi:
 
     async def _token(self, request: Request, path: str) -> Response:
         if path != "/oauth/token" or request.method != "POST":
-            return _json(404, {"error": "not_found", "error_description": f"Nothing is served at {path}."})
+            raise unrouted(request.method, path, self._served)
         raw = await request.body()
         content_type = request.headers["content-type"] if "content-type" in request.headers else ""
         if content_type.split(";")[0].strip().lower() == "application/x-www-form-urlencoded":
@@ -208,14 +208,14 @@ class JiraApi:
         else:
             try:
                 body = wire.read_body(wire.TokenIn, raw)
-            except wire.Refusal:
-                return _json(400, {"error": "invalid_request", "error_description": "The body cannot be read."})
+            except wire.Refusal as refusal:
+                raise wire.OAuthRefusal(400, "invalid_request", "The body cannot be read.") from refusal
         if body.grant_type == "authorization_code":
-            return _json(403, {"error": "invalid_grant", "error_description": "That authorization code is unknown."})
+            raise wire.OAuthRefusal(403, "invalid_grant", "That authorization code is unknown.")
         if body.grant_type != "refresh_token":
-            return _json(400, {"error": "unsupported_grant_type", "error_description": "Use refresh_token."})
+            raise wire.OAuthRefusal(400, "unsupported_grant_type", "Use refresh_token.")
         if not self._world.seeded():
-            return _json(403, {"error": "invalid_grant", "error_description": "Unknown or invalid refresh token."})
+            raise wire.OAuthRefusal(403, "invalid_grant", "Unknown or invalid refresh token.")
         found = next(
             (
                 c
@@ -225,9 +225,9 @@ class JiraApi:
             None,
         )
         if found is None:
-            return _json(403, {"error": "invalid_grant", "error_description": "Unknown or invalid refresh token."})
+            raise wire.OAuthRefusal(403, "invalid_grant", "Unknown or invalid refresh token.")
         if found.clientId != body.client_id or found.clientSecret != body.client_secret:
-            return _json(401, {"error": "access_denied", "error_description": "The client is not who it says."})
+            raise wire.OAuthRefusal(401, "access_denied", "The client is not who it says.")
         head = self._world.next_id()
         site = self._world.site()
         rotated = found.model_copy(

@@ -221,7 +221,9 @@ async def test_webhooks_are_said_to_be_unserved(agent: httpx.AsyncClient) -> Non
     refused = await agent.post(
         "/webhooks", json={"data": {"resource": INCIDENT, "target": "https://agent.example/hook"}}
     )
-    assert error(refused, 501) == "webhooks: Not supported by this simulation of Asana"
+    assert "does not implement this operation: POST app.asana.com/webhooks (webhooks: Not supported" in (
+        error(refused, 501)
+    )
 
 
 @pytest.fixture

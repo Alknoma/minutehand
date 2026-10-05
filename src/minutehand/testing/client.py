@@ -36,6 +36,7 @@ from minutehand.adapters.control.wire import (
     Quieted,
     RawState,
     Refusal,
+    RefusalCode,
     RefusalKind,
     Seeded,
     SpansPage,
@@ -53,10 +54,12 @@ class Refused(Exception):
     """The server refused a request: 404 no such open world, 409 what the world cannot do, 422 a body that is
     not the model, 502 the service an event was pushed to refused it."""
 
-    def __init__(self, status: int, error: str) -> None:
+    def __init__(self, status: int, error: str, code: RefusalCode | None = None) -> None:
         super().__init__(f"{status}: {error}")
         self.status = status
         self.error = error
+        self.code = code
+        """What went wrong, for a machine; None when the answer was not a `Refusal` body."""
 
 
 def _query(
@@ -82,6 +85,11 @@ def _query(
     return found
 
 
+class InternalError(Refused):
+    """The server failed with its own error (500 `internal_error`): a bug in Minutehand, not a refusal of the
+    request. Its traceback is in the server's log."""
+
+
 class Unsupported(Refused):
     """The provider cannot do what was asked in any world: a capability it does not have (`GET /v1/providers` says
     which it has)."""
@@ -95,8 +103,10 @@ def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
     except ValueError:
         raise Refused(answered.status_code, answered.text) from None
     if refusal.kind is RefusalKind.UNSUPPORTED:
-        raise Unsupported(answered.status_code, refusal.error)
-    raise Refused(answered.status_code, refusal.error)
+        raise Unsupported(answered.status_code, refusal.error, refusal.code)
+    if refusal.code is RefusalCode.INTERNAL_ERROR:
+        raise InternalError(answered.status_code, refusal.error, refusal.code)
+    raise Refused(answered.status_code, refusal.error, refusal.code)
 
 
 def _environment_query(ca_path: str | None, no_proxy: Sequence[str]) -> httpx.QueryParams:

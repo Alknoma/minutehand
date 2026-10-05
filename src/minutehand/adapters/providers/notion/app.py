@@ -32,9 +32,10 @@ from urllib.parse import parse_qs, unquote
 from pydantic import JsonValue
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.routing import Match, Route, Router
+from starlette.routing import Match, Route, Router, compile_path
 from starlette.types import Receive, Scope, Send
 
+from minutehand.adapters.answering import unrouted
 from minutehand.adapters.providers.notion import query as notion_query
 from minutehand.adapters.providers.notion import webhooks, wire
 from minutehand.adapters.providers.notion.edits import Editor
@@ -43,8 +44,30 @@ from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
-JSON = "application/json; charset=utf-8"
+JSON = wire.JSON
 EDITS_BLOCKS = ("PATCH", "DELETE")
+
+NOT_BUILT = [
+    (method, compile_path(path)[0])
+    for method, path in (
+        ("POST", "/v1/oauth/introspect"),
+        ("POST", "/v1/oauth/revoke"),
+        ("POST", "/v1/file_uploads"),
+        ("GET", "/v1/file_uploads"),
+        ("GET", "/v1/file_uploads/{file_upload_id}"),
+        ("POST", "/v1/file_uploads/{file_upload_id}/send"),
+        ("POST", "/v1/file_uploads/{file_upload_id}/complete"),
+        ("POST", "/v1/data_sources"),
+        ("GET", "/v1/data_sources/{data_source_id}"),
+        ("PATCH", "/v1/data_sources/{data_source_id}"),
+        ("POST", "/v1/data_sources/{data_source_id}/query"),
+        ("GET", "/v1/data_sources/{data_source_id}/templates"),
+        ("POST", "/v1/pages/{page_id}/move"),
+        ("GET", "/v1/comments/{comment_id}"),
+    )
+]
+"""Endpoints Notion's API reference has and this fake does not build (README, "Not built"): answered as not
+implemented, never as Notion's `invalid_request_url`, which would tell the caller Notion has no such endpoint."""
 
 
 @dataclass
@@ -81,33 +104,22 @@ class NotionApi:
     def request_id(self, request: Request) -> str:
         return wire.request_id(f"{self._store.head()}:{request.method}:{request.url.path}")
 
-    def refused(self, request: Request, refusal: wire.Refusal) -> Response:
-        return Response(
-            refusal.body(self.request_id(request)),
-            status_code=refusal.status,
-            media_type=JSON,
-            headers=refusal.headers,
-        )
-
     def guarded(self, handler: Handler, need: wire.Capability | None) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
-            try:
-                call = self._signed_in(request)
-                if "notion-version" not in request.headers:
-                    raise wire.Refusal(
-                        wire.ErrorCode.MISSING_VERSION, "The Notion-Version header is required and was not sent."
-                    )
-                version = request.headers["notion-version"]
-                if version != wire.API_VERSION:
-                    raise wire.invalid(
-                        f"Notion-Version {version} is not served by this simulation; it answers {wire.API_VERSION}."
-                    )
-                if need is not None and need not in call.integration.capabilities:
-                    raise wire.restricted(need.value)
-                self._faults(request, call)
-                return await handler(request, call)
-            except wire.Refusal as refusal:
-                return self.refused(request, refusal)
+            call = self._signed_in(request)
+            if "notion-version" not in request.headers:
+                raise wire.Refusal(
+                    wire.ErrorCode.MISSING_VERSION, "The Notion-Version header is required and was not sent."
+                )
+            version = request.headers["notion-version"]
+            if version != wire.API_VERSION:
+                raise wire.invalid(
+                    f"Notion-Version {version} is not served by this simulation; it answers {wire.API_VERSION}."
+                )
+            if need is not None and need not in call.integration.capabilities:
+                raise wire.restricted(need.value)
+            self._faults(request, call)
+            return await handler(request, call)
 
         return endpoint
 
@@ -141,7 +153,11 @@ class NotionApi:
             if fired >= fault.times:
                 continue
             self._world.count_fault(n, fired + 1)
-            raise wire.rate_limited(fault.retry_after) if fault.kind is wire.FaultKind.RATE_LIMITED else wire.conflict()
+            raise (
+                wire.rate_limited(fault.retry_after, deliberate=True)
+                if fault.kind is wire.FaultKind.RATE_LIMITED
+                else wire.conflict(deliberate=True)
+            )
 
     def _editor(self, call: Call) -> Editor:
         return Editor(self._world, call.workspace, self._clock, actor=Actor.AGENT)
@@ -772,26 +788,19 @@ class NotionApi:
 
     async def token(self, request: Request) -> Response:
         """The token endpoint of a public integration: an authorization code, or a refresh token, for tokens."""
-        try:
-            integration = self._client(request)
-            if integration is None:
-                return Response(
-                    wire.oauth_error("invalid_client", "The client id and secret do not name a public integration."),
-                    status_code=401,
-                    media_type=JSON,
-                )
-            asked = wire.read_token_request(await self._body(request))
-        except wire.Refusal as refusal:
-            return self.refused(request, refusal)
+        integration = self._client(request)
+        if integration is None:
+            raise wire.OAuthRefusal(
+                "invalid_client", "The client id and secret do not name a public integration.", status=401
+            )
+        asked = wire.read_token_request(await self._body(request))
         if asked.grant_type == wire.GrantType.AUTHORIZATION_CODE:
             presented, kind = asked.code, wire.TokenKind.CODE
         elif asked.grant_type == wire.GrantType.REFRESH_TOKEN:
             presented, kind = asked.refresh_token, wire.TokenKind.REFRESH
         else:
-            return Response(
-                wire.oauth_error("unsupported_grant_type", f"grant_type {asked.grant_type} is not taken here."),
-                status_code=400,
-                media_type=JSON,
+            raise wire.OAuthRefusal(
+                "unsupported_grant_type", f"grant_type {asked.grant_type} is not taken here.", status=400
             )
         held = self._world.token(presented) if presented else None
         if (
@@ -801,16 +810,12 @@ class NotionApi:
             or held.used
             or held.integration != integration.id
         ):
-            return Response(
-                wire.oauth_error("invalid_grant", "The code or refresh token is unknown, used, or another client's."),
-                status_code=400,
-                media_type=JSON,
+            raise wire.OAuthRefusal(
+                "invalid_grant", "The code or refresh token is unknown, used, or another client's.", status=400
             )
         if kind is wire.TokenKind.CODE and held.redirect_uri is not None and asked.redirect_uri != held.redirect_uri:
-            return Response(
-                wire.oauth_error("invalid_grant", "redirect_uri does not match the one the code was issued for."),
-                status_code=400,
-                media_type=JSON,
+            raise wire.OAuthRefusal(
+                "invalid_grant", "redirect_uri does not match the one the code was issued for.", status=400
             )
         seq = str(self._world.next_seq())
         access = "ntn_" + wire.digest(f"access\x1f{presented}\x1f{seq}")[:46]
@@ -890,20 +895,44 @@ class NotionApp:
         while self._sending:
             await asyncio.gather(*list(self._sending))
 
+    def served(self) -> list[str]:
+        """Every operation a route answers, as `METHOD /path`."""
+        return [
+            f"{method} {route.path}"
+            for route in self._routes
+            for method in sorted(route.methods or ())
+            if method != "HEAD"
+        ]
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            matched = [r.matches(scope)[0] for r in self._routes]
-            if Match.FULL not in matched:
-                request = Request(scope, receive)
-                refusal = (
-                    wire.Refusal(wire.ErrorCode.INVALID_REQUEST, f"{request.method} is not taken at this path.")
-                    if Match.PARTIAL in matched
-                    else wire.Refusal(wire.ErrorCode.INVALID_REQUEST_URL, "There is no endpoint at this path.")
-                )
-                await self._api.refused(request, refusal)(scope, receive, send)
-                return
-        await self._router(scope, receive, send)
-        if scope["type"] == "http" and scope["method"] != "GET" and webhooks.watching(self._world):
+        if scope["type"] != "http":
+            await self._router(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        try:
+            self._route(request, scope)
+            await self._router(scope, receive, send)
+        except wire.Refusal as refusal:
+            refusal.answered_as(self._api.request_id(request))
+            self._after(request)
+            raise
+        self._after(request)
+
+    def _route(self, request: Request, scope: Scope) -> None:
+        """Nothing, when a route answers the call. Otherwise: an endpoint Notion has and this fake does not build
+        (`NOT_BUILT`) is not implemented; anything else is Notion's own refusal of a path it has no endpoint at, or
+        of a method a path does not take."""
+        matched = [r.matches(scope)[0] for r in self._routes]
+        if Match.FULL in matched:
+            return
+        if any(method == request.method and pattern.fullmatch(request.url.path) for method, pattern in NOT_BUILT):
+            raise unrouted(request.method, request.url.path, self.served())
+        if Match.PARTIAL in matched:
+            raise wire.Refusal(wire.ErrorCode.INVALID_REQUEST, f"{request.method} is not taken at this path.")
+        raise wire.Refusal(wire.ErrorCode.INVALID_REQUEST_URL, "There is no endpoint at this path.")
+
+    def _after(self, request: Request) -> None:
+        if request.method != "GET" and webhooks.watching(self._world):
             task = asyncio.create_task(self._deliver())
             self._sending.add(task)
             task.add_done_callback(self._sending.discard)

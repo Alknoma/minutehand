@@ -13,9 +13,11 @@ issued identifies its user for an hour of simulated time, so a token used after 
 401 and the client's refresh path runs. `POST /revoke` revokes a token and the grant it came from.
 
 **Errors** are Google's: Drive's classic envelope (`code`, `message`, one `errors` entry with `domain` and
-`reason`), and Docs' and Slides' (`code`, `message`, `status`). A real behaviour this fake does not
-reproduce answers 501 (`notImplemented` in domain `minutehand` for Drive, `UNIMPLEMENTED` for Docs and
-Slides), never a made-up success. A fault Drive's own seed declares answers its refusal in the same shapes.
+`reason`), and Docs' and Slides' (`code`, `message`, `status`), each raised as a `ServiceRefusal` and answered
+by the guard (`adapters.answering`). A real behaviour this fake does not reproduce, and a call no route answers,
+raises `NotImplementedError`: 501 in one envelope for every API (`errors` entry `notImplemented` in domain
+`minutehand`, and status `UNIMPLEMENTED`), marked `x-minutehand-answer`, never a made-up success. A fault Drive's
+own seed declares answers its refusal in the same shapes, recorded as an injected fault.
 
 **Content.** A binary file's bytes are kept once as their own entity, up to `wire.MAX_CONTENT_BYTES`
 (5 MiB) per file; a larger upload is refused with 413 `uploadTooLarge`, a limit of this fake's, not Drive's.
@@ -37,11 +39,13 @@ import httpx
 from pydantic import JsonValue, ValidationError
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.routing import Route, Router
+from starlette.routing import Match, Route, Router
 from starlette.types import Receive, Scope, Send
 
+from minutehand.adapters.answering import unrouted
 from minutehand.adapters.providers.google_drive import docs, slides, state, wire
 from minutehand.adapters.providers.google_drive import query as drive_query
+from minutehand.adapters.providers.google_drive.docs import JSON
 from minutehand.adapters.providers.google_drive.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
 from minutehand.domain.scenario import Commented, DocumentHappening, Edited, FieldSet, Model, Moved, Renamed, Shared
 from minutehand.domain.world import Actor, Operation
@@ -54,7 +58,6 @@ DOCS_HOST = "docs.googleapis.com"
 SLIDES_HOST = "slides.googleapis.com"
 IAM_HOST = "iamcredentials.googleapis.com"
 
-JSON = "application/json; charset=UTF-8"
 CONVERTS_TO_DOC = frozenset({"text/plain", "text/markdown"})
 """Media this fake converts into a Google Doc. Drive converts more (HTML, Word); those are refused loudly."""
 EXPORTS_NOT_BUILT = frozenset(
@@ -107,12 +110,8 @@ class Caller(Model):
     user: wire.DriveUser
 
 
-def _json(answer: Model, mask: wire.Mask | None = None, status: int = 200) -> Response:
-    return Response(wire.respond(answer, mask), status_code=status, media_type=JSON)
-
-
-def _refused(refusal: wire.Refusal) -> Response:
-    return Response(wire.error_body(refusal), status_code=refusal.code, media_type=JSON, headers=refusal.headers)
+def _json(answer: Model, mask: wire.Mask | None = None) -> Response:
+    return Response(wire.respond(answer, mask), media_type=JSON)
 
 
 def _bearer(request: Request, call: wire.CallQuery) -> str | None:
@@ -219,24 +218,25 @@ class DriveApi:
         api: Api,
         operation: str,
     ) -> Handler:
-        """Read the query, know the caller by their token, play any fault due, and answer refusals in Google's
-        shape for `api`."""
+        """Read the query, know the caller by their token, and play any fault due; a refusal leaves in Google's
+        shape for `api`, for the guard (`adapters.answering`) to answer."""
 
         async def endpoint(request: Request) -> Response:
             try:
-                try:
-                    call = wire.read_query(request.url.query)
-                    caller = self._caller(_bearer(request, call), api)
-                    self._fault(operation, api, request)
-                    return await handler(request, call, caller)
-                except docs.Refused as refused:
-                    raise _status_refusal(refused.code, refused.status, refused.message) from refused
-                except slides.Refused as refused:
-                    raise _status_refusal(refused.code, refused.status, refused.message) from refused
+                call = wire.read_query(request.url.query)
+                caller = self._caller(_bearer(request, call), api)
+                self._fault(operation, api, request)
+                return await handler(request, call, caller)
             except wire.Refusal as refusal:
                 if api in (Api.DOCS, Api.SLIDES, Api.USERINFO) and refusal.answer.error.status is None:
-                    refusal = _status_refusal(refusal.code, _STATUS[refusal.code], refusal.answer.error.message)
-                return _refused(refusal)
+                    word = wire.STATUS_WORDS[refusal.status]
+                    raise wire.Refusal(
+                        wire.GoogleError(
+                            error=wire.ErrorBody(code=refusal.status, message=refusal.message, status=word)
+                        ),
+                        deliberate=refusal.deliberate,
+                    ) from refusal
+                raise
 
         return endpoint
 
@@ -258,7 +258,7 @@ class DriveApi:
                 continue
             self._drive.keep_fault(key, fault.model_copy(update={"remaining": fault.remaining - 1}))
             ids = [v for k, v in request.path_params.items() if isinstance(v, str) and k.endswith("_id")]
-            raise _fault_refusal(api, fault.kind, ids[0] if ids else None)
+            raise _fault_refusal(api, fault.kind, ids[0] if ids else None).armed()
 
     # ------------------------------------------------------------------ lookups
 
@@ -334,7 +334,7 @@ class DriveApi:
     def _roots_for(self, caller: Caller, call: wire.CallQuery) -> list[str]:
         corpora = call.corpora or ("drive" if call.driveId else "user")
         if corpora == "domain":
-            raise wire.not_implemented("searching a whole domain (corpora=domain)")
+            raise NotImplementedError("searching a whole domain (corpora=domain)")
         if corpora not in ("user", "drive", "allDrives"):
             raise wire.invalid("corpora")
         if (corpora == "drive") != (call.driveId is not None):
@@ -372,14 +372,12 @@ class DriveApi:
     async def files_list(self, request: Request, call: wire.CallQuery, caller: Caller) -> Response:
         if call.spaces != "drive":
             if "appDataFolder" in call.spaces.split(","):
-                raise wire.not_implemented("the appDataFolder space")
+                raise NotImplementedError("the appDataFolder space")
             raise wire.invalid("spaces")
         try:
             parsed = drive_query.parse(call.q)
         except drive_query.QueryError as error:
             raise wire.invalid("q", f"Invalid Value: {error}") from error
-        except drive_query.QueryNotSupported as error:
-            raise wire.not_implemented(str(error)) from error
         parsed = drive_query.resolved(parsed, ROOT_ALIAS, self._root(caller))
         size = wire.page_size(call.pageSize, default=100, most=1000)
         offset = wire.decode_page(call.pageToken)
@@ -442,10 +440,10 @@ class DriveApi:
         if source not in EXPORTS:
             if source == wire.FOLDER or not source.startswith(wire.GOOGLE_APPS):
                 raise wire.forbidden("fileNotExportable", "Export only supports Docs Editors files.")
-            raise wire.not_implemented(f"exporting {source}")
+            raise NotImplementedError(f"exporting {source}")
         if call.mimeType not in EXPORTS[source]:
             if call.mimeType in EXPORTS_NOT_BUILT:
-                raise wire.not_implemented(f"this simulation does not render {source} as {call.mimeType}")
+                raise NotImplementedError(f"this simulation does not render {source} as {call.mimeType}")
             raise wire.drive_refusal(
                 400,
                 "badRequest",
@@ -629,18 +627,18 @@ class DriveApi:
                 raise wire.bad_request("The media is not UTF-8 text.") from error
             if target == wire.SPREADSHEET:
                 if media_type not in ("text/csv", "text/tab-separated-values"):
-                    raise wire.not_implemented(f"converting {media_type} into a Google Sheet; upload text/csv")
+                    raise NotImplementedError(f"converting {media_type} into a Google Sheet; upload text/csv")
                 delimiter = "," if media_type == "text/csv" else "\t"
                 return wire.Sheet(rows=[list(row) for row in csv.reader(io.StringIO(text), delimiter=delimiter)])
             if media_type not in CONVERTS_TO_DOC:
-                raise wire.not_implemented(
+                raise NotImplementedError(
                     f"converting {media_type} into a Google Doc; upload text/plain or text/markdown"
                 )
             return docs.from_markdown(document_id, text) if media_type == "text/markdown" else docs.from_text(text)
         if target == wire.FOLDER:
             raise wire.bad_request("A folder has no content.")
         if target.startswith(wire.GOOGLE_APPS):
-            raise wire.not_implemented(f"converting media into {target}")
+            raise NotImplementedError(f"converting media into {target}")
         return self._drive.keep_blob(media, actor=Actor.AGENT)
 
     # ------------------------------------------------------------------ files.update
@@ -741,9 +739,7 @@ class DriveApi:
                     location_type="parameter",
                 )
             if folder.file.driveId != stored.file.driveId:
-                raise wire.not_implemented(
-                    "moving a file between My Drive and a shared drive, or between shared drives"
-                )
+                raise NotImplementedError("moving a file between My Drive and a shared drive, or between shared drives")
             if folder.file.id not in parents:
                 parents.append(folder.file.id)
         if len(parents) > 1:
@@ -751,7 +747,7 @@ class DriveApi:
                 raise wire.forbidden("teamDrivesParentLimit", "A shared drive item must have exactly one parent.")
             raise wire.forbidden("cannotAddParent", "Increasing the number of parents is not allowed.")
         if not parents:
-            raise wire.not_implemented("a file left with no parent; move it with addParents and removeParents together")
+            raise NotImplementedError("a file left with no parent; move it with addParents and removeParents together")
         return parents
 
     # ------------------------------------------------------------------ files.delete, files.copy
@@ -775,7 +771,7 @@ class DriveApi:
             raise _not_writable(refused)
         meta = wire.read_body(wire.FileWrite, found)
         if meta.mimeType is not None and meta.mimeType != source.file.mimeType:
-            raise wire.not_implemented("converting a file while copying it")
+            raise NotImplementedError("converting a file while copying it")
         requested = meta.parents
         if not requested and source.file.parents:
             above = self._drive.file(source.file.parents[0])
@@ -922,7 +918,7 @@ class DriveApi:
                     "forbidden",
                     "The transferOwnership parameter must be enabled when the permission role is 'owner'.",
                 )
-            raise wire.not_implemented("transferring ownership")
+            raise NotImplementedError("transferring ownership")
         if asked.emailAddress:
             person = self._drive.user(asked.emailAddress)
             return wire.Permission(
@@ -1000,7 +996,7 @@ class DriveApi:
 
     async def drives_list(self, request: Request, call: wire.CallQuery, caller: Caller) -> Response:
         if call.q:
-            raise wire.not_implemented("searching shared drives with q")
+            raise NotImplementedError("searching shared drives with q")
         size = wire.page_size(call.pageSize, default=10, most=100)
         offset = wire.decode_page(call.pageToken)
         mask = wire.selection(call.fields, wire.DriveList, wire.DRIVE_LIST_DEFAULT)
@@ -1308,7 +1304,7 @@ class DriveApi:
         try:
             stored = self._file(document_id, caller, wire.CallQuery(), need=need, all_drives=True)
         except wire.Refusal as refusal:
-            if refusal.code == 403:
+            if refusal.status == 403:
                 raise _status_refusal(403, "PERMISSION_DENIED", "The caller does not have permission") from refusal
             raise _status_refusal(404, "NOT_FOUND", "Requested entity was not found.") from refusal
         if stored.file.mimeType != wire.DOCUMENT or not isinstance(stored.content, docs.DocBody):
@@ -1379,7 +1375,7 @@ class DriveApi:
         try:
             stored = self._file(presentation_id, caller, wire.CallQuery(), need=need, all_drives=True)
         except wire.Refusal as refusal:
-            if refusal.code == 403:
+            if refusal.status == 403:
                 raise _status_refusal(403, "PERMISSION_DENIED", "The caller does not have permission") from refusal
             raise _status_refusal(404, "NOT_FOUND", "Requested entity was not found.") from refusal
         if stored.file.mimeType != wire.PRESENTATION or not isinstance(stored.content, slides.Deck):
@@ -1449,39 +1445,40 @@ class DriveApi:
         try:
             self._fault("token", Api.OAUTH, request)
         except wire.Refusal as refusal:
-            return _oauth_failed(
-                "invalid_grant" if refusal.code == 401 else "temporarily_unavailable",
-                "Token has been expired or revoked." if refusal.code == 401 else refusal.answer.error.message,
-                401 if refusal.code == 401 else 503,
-            )
+            raise wire.OAuthRefusal(
+                "invalid_grant" if refusal.status == 401 else "temporarily_unavailable",
+                "Token has been expired or revoked." if refusal.status == 401 else refusal.message,
+                401 if refusal.status == 401 else 503,
+                deliberate=True,
+            ) from refusal
         if asked.grant_type == wire.JWT_BEARER:
             if not asked.assertion:
-                return _oauth_failed("invalid_request", "Missing required parameter: assertion")
+                raise wire.OAuthRefusal("invalid_request", "Missing required parameter: assertion")
             claims = wire.jwt_claims(asked.assertion)
             if claims is None:
-                return _oauth_failed(
+                raise wire.OAuthRefusal(
                     "invalid_grant", "Invalid JWT: Token must be a short-lived token and in a reasonable timeframe"
                 )
             secret, acting, scope = claims.iss, claims.sub, None
         elif asked.grant_type == wire.REFRESH_TOKEN:
             if not asked.refresh_token:
-                return _oauth_failed("invalid_request", "Missing required parameter: refresh_token")
+                raise wire.OAuthRefusal("invalid_request", "Missing required parameter: refresh_token")
             secret, acting, scope = asked.refresh_token, None, asked.scope
         elif asked.grant_type == wire.AUTHORIZATION_CODE:
-            return _oauth_failed("invalid_grant", "Malformed auth code.")
+            raise wire.OAuthRefusal("invalid_grant", "Malformed auth code.")
         else:
-            return _oauth_failed("unsupported_grant_type", f"Invalid grant_type: {asked.grant_type}")
+            raise wire.OAuthRefusal("unsupported_grant_type", f"Invalid grant_type: {asked.grant_type}")
         credential = self._drive.credential(secret)
         if credential is None:
             if asked.grant_type == wire.JWT_BEARER:
-                return _oauth_failed("invalid_grant", "Invalid grant: account not found")
-            return _oauth_failed("invalid_grant", "Bad Request")
+                raise wire.OAuthRefusal("invalid_grant", "Invalid grant: account not found")
+            raise wire.OAuthRefusal("invalid_grant", "Bad Request")
         if credential.revoked:
-            return _oauth_failed("invalid_grant", "Token has been expired or revoked.")
+            raise wire.OAuthRefusal("invalid_grant", "Token has been expired or revoked.")
         email = credential.email
         if acting is not None and acting != email:
             if self._drive.user(acting) is None:
-                return _oauth_failed("invalid_grant", "Invalid email or User ID")
+                raise wire.OAuthRefusal("invalid_grant", "Invalid email or User ID")
             email = acting
         key = self._drive.credential_key(secret)
         if key == state.ANY_CREDENTIAL:
@@ -1503,17 +1500,17 @@ class DriveApi:
         query = wire.read_query(request.url.query)
         spelled = query.token or (form["token"] if "token" in form else None)
         if not spelled:
-            return _oauth_failed("invalid_request", "Missing required parameter: token")
+            raise wire.OAuthRefusal("invalid_request", "Missing required parameter: token")
         issued = self._drive.token(spelled)
         if issued is not None:
             if issued.revoked:
-                return _oauth_failed("invalid_token", "Token expired or revoked")
+                raise wire.OAuthRefusal("invalid_token", "Token expired or revoked")
             key = issued.credential
         else:
             key = state.secret_digest(spelled)
             known = self._drive.credential_by_key(key)
             if known is None or known.revoked or known.service_account:
-                return _oauth_failed("invalid_token", "Token expired or revoked")
+                raise wire.OAuthRefusal("invalid_token", "Token expired or revoked")
         credential = self._drive.credential_by_key(key)
         if credential is not None and not credential.service_account and key != state.ANY_CREDENTIAL:
             self._drive.keep_credential(key, credential.model_copy(update={"revoked": True}))
@@ -1526,25 +1523,7 @@ class DriveApi:
         return _json(wire.AllowedLocations())
 
 
-_STATUS = {
-    400: "INVALID_ARGUMENT",
-    401: "UNAUTHENTICATED",
-    403: "PERMISSION_DENIED",
-    404: "NOT_FOUND",
-    409: "ABORTED",
-    410: "FAILED_PRECONDITION",
-    413: "INVALID_ARGUMENT",
-    429: "RESOURCE_EXHAUSTED",
-    501: "UNIMPLEMENTED",
-    503: "UNAVAILABLE",
-}
-
-
 # ---------------------------------------------------------------------- helpers
-
-
-def _oauth_failed(error: str, description: str, status: int = 400) -> Response:
-    return _json(wire.OAuthError(error=error, error_description=description), status=status)
 
 
 def _check_size(size: int) -> None:
@@ -1589,7 +1568,7 @@ def _exported(content: wire.Content | None, mime_type: str) -> bytes:
         writer = csv.writer(out, delimiter="," if mime_type == "text/csv" else "\t", lineterminator="\r\n")
         writer.writerows(content.rows)
         return out.getvalue().encode("utf-8")
-    raise wire.not_implemented(f"exporting this file as {mime_type}")
+    raise NotImplementedError(f"exporting this file as {mime_type}")
 
 
 def _sharing_refused(why: str) -> wire.Refusal:
@@ -1611,7 +1590,7 @@ def _empty(mime: str, file_id: str) -> wire.Content | None:
     if mime == wire.SPREADSHEET:
         return wire.Sheet()
     if mime.startswith(wire.GOOGLE_APPS) and mime != wire.FOLDER:
-        raise wire.not_implemented(f"creating a {mime}")
+        raise NotImplementedError(f"creating a {mime}")
     return None
 
 
@@ -1632,7 +1611,7 @@ def _order(spelled: str | None) -> list[tuple[str, bool]]:
         if not words or len(words) > 2 or (len(words) == 2 and words[1] != "desc"):
             raise wire.invalid("orderBy")
         if words[0] in ORDER_KEYS_NOT_BUILT:
-            raise wire.not_implemented(f"ordering by {words[0]}")
+            raise NotImplementedError(f"ordering by {words[0]}")
         if words[0] not in ORDER_KEYS:
             raise wire.invalid("orderBy", f"Invalid Value: sorting is not supported for '{words[0]}'")
         order.append((words[0], len(words) == 2))
@@ -1653,7 +1632,11 @@ def _sort_key(key: str) -> Callable[[wire.DriveFile], str | bool]:
 
 class HostRouter:
     """Send each request to its host's routes, or to every route when the host is not one of Google's.
-    `DeliversInBackground`: a channel's notifications are pushed after the call that set them off is answered."""
+    `DeliversInBackground`: a channel's notifications are pushed after the call that set them off is answered.
+
+    A request no route of its host answers is an operation this fake does not implement (`unrouted`, answered 501
+    naming the closest route it has), except a path that belongs to ANOTHER of Google's hosts here (`/token` on
+    `www.googleapis.com`): Google has no such path on that host either, and answers 404, as this does."""
 
     def __init__(self, by_host: dict[str, Router], every: Router, api: DriveApi) -> None:
         self._by_host = by_host
@@ -1668,7 +1651,28 @@ class HostRouter:
         host = next((value for name, value in headers if name == b"host"), b"").decode("latin-1").lower()
         if not host.startswith("["):
             host = host.rsplit(":", 1)[0]
-        await (self._by_host[host] if host in self._by_host else self._every)(scope, receive, send)
+        router = self._by_host[host] if host in self._by_host else self._every
+        if scope["type"] == "http" and not _answers(router, scope, Match.FULL):
+            elsewhere = router is not self._every and any(_answers(other, scope) for other in self._by_host.values())
+            if not elsewhere:
+                raise unrouted(str(scope["method"]), str(scope["path"]), _routes(router))
+        await router(scope, receive, send)
+
+
+def _answers(router: Router, scope: Scope, *matches: Match) -> bool:
+    """Whether a route of `router` matches the request: as `matches` says, or at least by its path."""
+    wanted = matches or (Match.FULL, Match.PARTIAL)
+    return any(route.matches(scope)[0] in wanted for route in router.routes)
+
+
+def _routes(router: Router) -> list[str]:
+    """Every operation `router` answers, as `METHOD /path`."""
+    return [
+        f"{method} {route.path}"
+        for route in router.routes
+        if isinstance(route, Route)
+        for method in sorted((route.methods or set()) - {"HEAD"})
+    ]
 
 
 def build_app(api: DriveApi) -> HostRouter:

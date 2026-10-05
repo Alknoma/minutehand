@@ -2,8 +2,9 @@
 
 Four families live here:
 
-- **Errors** — `Refusal`, raised anywhere and answered as Notion's error object
-  (`object`, `status`, `code`, `message`, `request_id`).
+- **Errors** — `Refusal`, the `ServiceRefusal` raised anywhere and answered as Notion's error
+  object (`object`, `status`, `code`, `message`, `request_id`); `OAuthRefusal`, the token
+  endpoint's; `error_answer`, the same object for what Minutehand answers in Notion's place.
 - **Stored** — what each entity's body holds in the store: `StoredPage` (a page or a
   database row, with its whole block tree inside it), `StoredDatabase`, `StoredUser`,
   `StoredIntegration`, `StoredToken`, `StoredComment`, and the provider's own schedule.
@@ -28,6 +29,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 API_VERSION = "2022-06-28"
@@ -38,6 +40,7 @@ MAX_NESTING = 2
 MAX_TEXT = 2000
 MAX_RICH_TEXT_ITEMS = 100
 MAX_EQUATION = 1000
+JSON = "application/json; charset=utf-8"
 
 Json = dict[str, JsonValue]
 _OBJECT: TypeAdapter[Json] = TypeAdapter(Json)
@@ -57,6 +60,7 @@ class ErrorCode(StrEnum):
     VALIDATION_ERROR = "validation_error"
     MISSING_VERSION = "missing_version"
     CONFLICT_ERROR = "conflict_error"
+    INTERNAL_SERVER_ERROR = "internal_server_error"
 
 
 _STATUS = {
@@ -70,32 +74,65 @@ _STATUS = {
     ErrorCode.VALIDATION_ERROR: 400,
     ErrorCode.MISSING_VERSION: 400,
     ErrorCode.CONFLICT_ERROR: 409,
+    ErrorCode.INTERNAL_SERVER_ERROR: 500,
 }
 
 
-class Refusal(Exception):
-    """Notion answered with an error object."""
+class Refusal(ServiceRefusal):
+    """Notion answered with an error object: `object`, `status`, `code`, `message`, `request_id`.
 
-    def __init__(self, code: ErrorCode, message: str, headers: dict[str, str] | None = None) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+    The request id is the call's (`NotionApp` stamps it on the way out, `answered_as`); one raised where no call
+    stamped it renders an id minted from its code and message."""
+
+    def __init__(
+        self, code: ErrorCode, message: str, headers: dict[str, str] | None = None, *, deliberate: bool = False
+    ) -> None:
+        super().__init__(code.value, message, status=_STATUS[code], deliberate=deliberate)
+        self.error_code = code
         self.headers = headers or {}
+        self.request_id: str | None = None
 
-    @property
-    def status(self) -> int:
-        return _STATUS[self.code]
+    def answered_as(self, request_id: str) -> None:
+        self.request_id = request_id
 
     def body(self, request_id: str) -> str:
-        return json.dumps(
-            {
-                "object": "error",
-                "status": self.status,
-                "code": self.code.value,
-                "message": self.message,
-                "request_id": request_id,
-            }
+        return error_body(self.status, self.code, self.message, request_id)
+
+    def render(self) -> Rendered:
+        found = self.request_id if self.request_id is not None else request_id(f"{self.code}:{self.message}")
+        return Rendered(
+            status=self.status,
+            content_type=JSON,
+            body=self.body(found).encode(),
+            headers=[(name.lower(), value) for name, value in self.headers.items()],
         )
+
+
+class OAuthRefusal(ServiceRefusal):
+    """The token endpoint's refusal, in OAuth's own shape: `{"error": ..., "error_description": ...}`."""
+
+    def __init__(self, error: str, description: str, *, status: int) -> None:
+        super().__init__(error, description, status=status)
+
+    def render(self) -> Rendered:
+        return Rendered(status=self.status, content_type=JSON, body=oauth_error(self.code, self.message).encode())
+
+
+def error_body(status: int, code: str, message: str, request_id: str) -> str:
+    """Notion's error object."""
+    return json.dumps({"object": "error", "status": status, "code": code, "message": message, "request_id": request_id})
+
+
+def error_answer(status: int, message: str) -> Rendered:
+    """An answer Minutehand makes in place of Notion's, in Notion's error object, with the code `notion-client`
+    raises `APIResponseError` for: `invalid_request` ("this request is not supported") for an operation the fake does
+    not implement, `internal_server_error` for anything else."""
+    code = ErrorCode.INVALID_REQUEST if status == 501 else ErrorCode.INTERNAL_SERVER_ERROR
+    return Rendered(
+        status=status,
+        content_type=JSON,
+        body=error_body(status, code.value, message, request_id(f"{status}:{message}")).encode(),
+    )
 
 
 def invalid(message: str) -> Refusal:
@@ -131,16 +168,21 @@ def restricted(capability: str) -> Refusal:
     )
 
 
-def rate_limited(retry_after: int) -> Refusal:
+def rate_limited(retry_after: int, *, deliberate: bool = False) -> Refusal:
     return Refusal(
         ErrorCode.RATE_LIMITED,
         "This integration has sent too many requests. Wait before trying again.",
         headers={"Retry-After": str(retry_after)},
+        deliberate=deliberate,
     )
 
 
-def conflict() -> Refusal:
-    return Refusal(ErrorCode.CONFLICT_ERROR, "Another change to the same content was saved first. Try again.")
+def conflict(*, deliberate: bool = False) -> Refusal:
+    return Refusal(
+        ErrorCode.CONFLICT_ERROR,
+        "Another change to the same content was saved first. Try again.",
+        deliberate=deliberate,
+    )
 
 
 def archived(what: str) -> Refusal:

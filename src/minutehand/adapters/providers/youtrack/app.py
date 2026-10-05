@@ -2,8 +2,10 @@
 
 Every YouTrack route answers at `/api/...` (YouTrack Cloud on `*.youtrack.cloud`) and at `/youtrack/api/...` (the
 `*.myjetbrains.com` instances); Hub answers at `/hub/api/rest/...` on the same host. Every YouTrack answer is
-narrowed by `fields=`, every collection is paged by `$skip`/`$top`, and every refusal is YouTrack's own
-`{"error": …, "error_description": …}` with its status code.
+narrowed by `fields=`, every collection is paged by `$skip`/`$top`, and every refusal is a `wire.Refusal` raised out
+of the app, which the guard (`adapters.answering`) renders as YouTrack's own `{"error": …, "error_description": …}`
+with its status code. A path no route has is an operation the fake does not implement (501); a method a routed path
+does not take is YouTrack's own 405.
 
 Each request acts as the user its token names (`access.Access`), and is refused 403 where that user lacks the
 permission. A fault the scenario seeded answers in place of the route while it lasts.
@@ -15,11 +17,11 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 
 from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters.answering import unrouted
 from minutehand.adapters.providers.youtrack import fields, state, wire
 from minutehand.adapters.providers.youtrack.access import Access, fault_for
 from minutehand.adapters.providers.youtrack.activities import Feed, categories
@@ -35,7 +37,6 @@ from minutehand.ports.store import Store
 
 PREFIXES = ("/api", "/youtrack/api")
 HUB = "/hub/api/rest"
-JSON = "application/json;charset=UTF-8"
 _ENTITY_ID = re.compile(r"\d+-\d+")
 """YouTrack's database id. A short name or a readable id in an `{"id": …}` slot is refused before any lookup."""
 _SHORT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
@@ -94,17 +95,13 @@ class YouTrackApi:
         self, handler: Handler, *, fault_path: Callable[[Request], str], open_route: bool = False
     ) -> Callable[[Request], Awaitable[Response]]:
         async def answer(request: Request) -> Response:
-            try:
-                now = self.now()
-                fault = fault_for(self.world, request.method, fault_path(request), now)
-                if fault is not None:
-                    raise fault
-                caller = None if open_route else self.access.caller(header(request, "authorization"), now)
-                status, payload = handler(Call(request, await request.body(), caller, now))
-            except wire.Refusal as refusal:
-                headers = {} if refusal.retry_after is None else {"Retry-After": str(refusal.retry_after)}
-                return Response(wire.error_body(refusal), status_code=refusal.status, media_type=JSON, headers=headers)
-            return Response(payload, status_code=status, media_type=JSON)
+            now = self.now()
+            fault = fault_for(self.world, request.method, fault_path(request), now)
+            if fault is not None:
+                raise fault
+            caller = None if open_route else self.access.caller(header(request, "authorization"), now)
+            status, payload = handler(Call(request, await request.body(), caller, now))
+            return Response(payload, status_code=status, media_type=wire.JSON)
 
         return answer
 
@@ -963,6 +960,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/commands", "POST", api.command),
     ]
     routes: list[Route] = []
+    served: list[str] = []
     for prefix in PREFIXES:
 
         def youtrack_path(request: Request, prefix: str = prefix) -> str:
@@ -970,23 +968,21 @@ def build_app(store: Store, clock: Clock) -> Starlette:
 
         for path, methods in _by_path(table).items():
             answers = {m: api.endpoint(h, fault_path=youtrack_path) for m, h in methods.items()}
-            routes.append(Route(prefix + path, _dispatch(answers), methods=list(methods)))
+            routes.append(Route(prefix + path, _dispatch(answers), methods=list(_EVERY_METHOD)))
+            served += [f"{m} {prefix}{path}" for m in methods]
     for path, methods, open_route in hub_routes(api):
         answers = {
             m: api.endpoint(h, fault_path=lambda r: r.url.path, open_route=open_route) for m, h in methods.items()
         }
-        routes.append(Route(HUB + path, _dispatch(answers), methods=list(methods)))
+        routes.append(Route(HUB + path, _dispatch(answers), methods=list(_EVERY_METHOD)))
+        served += [f"{m} {HUB}{path}" for m in methods]
 
-    async def refused(request: Request, error: Exception) -> Response:
-        status = error.status_code if isinstance(error, HTTPException) else 500
-        reason = "Not Found" if status == 404 else "Method Not Allowed" if status == 405 else "Server Error"
-        return Response(
-            wire.error_body(wire.Refusal(status, reason, f"{request.method} {request.url.path} is not served")),
-            status_code=status,
-            media_type=JSON,
-        )
+    async def unserved(request: Request) -> Response:
+        """A path no route of the fake has: the real YouTrack may well serve it (`/api/agiles`), so it is answered as
+        an operation the fake does not implement, never as YouTrack's 404."""
+        raise unrouted(request.method, request.url.path, served)
 
-    return Starlette(routes=routes, exception_handlers={404: refused, 405: refused})
+    return Starlette(routes=[*routes, Route("/{anything:path}", unserved, methods=list(_EVERY_METHOD))])
 
 
 def _by_path(table: list[tuple[str, str, Handler]]) -> dict[str, dict[str, Handler]]:
@@ -996,8 +992,17 @@ def _by_path(table: list[tuple[str, str, Handler]]) -> dict[str, dict[str, Handl
     return by_path
 
 
+_EVERY_METHOD = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+
+
 def _dispatch(answers: dict[str, Callable[[Request], Awaitable[Response]]]) -> Callable[[Request], Awaitable[Response]]:
+    """The path's handler for the request's method; a method the path does not take is YouTrack's own 405, as the
+    real service answers one on a resource it has (`PUT /api/issues/{id}`)."""
+
     async def route(request: Request) -> Response:
-        return await answers["GET" if request.method == "HEAD" else request.method](request)
+        method = "GET" if request.method == "HEAD" else request.method
+        if method not in answers:
+            raise wire.Refusal(405, "Method Not Allowed", f"{request.method} {request.url.path} is not served")
+        return await answers[method](request)
 
     return route

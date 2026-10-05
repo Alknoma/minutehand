@@ -8,10 +8,13 @@ notifications do.
 
 from __future__ import annotations
 
+from minutehand.adapters.answering import guarded
+from minutehand.adapters.providers.google_drive import wire
 from minutehand.adapters.providers.google_drive.app import DriveApi, build_app
 from minutehand.adapters.providers.google_drive.manifest import MANIFEST
 from minutehand.adapters.providers.google_drive.seed import DriveSeed, seed, write_faults
 from minutehand.adapters.providers.google_drive.state import DriveWorld
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import DocumentHappening, Scenario
 from minutehand.ports.clock import Clock
@@ -24,7 +27,12 @@ class GoogleDriveProvider:
     seed_model = DriveSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(DriveApi(world, clock))
+        app = build_app(DriveApi(world, clock))
+        return guarded(app, self, provider=self.manifest.key)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """Google's envelope, read the same by every Google API client: see `wire.minutehand_error`."""
+        return wire.minutehand_error(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

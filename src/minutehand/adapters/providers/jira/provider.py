@@ -14,12 +14,14 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue
 
+from minutehand.adapters.answering import guarded
 from minutehand.adapters.providers.jira import wire
 from minutehand.adapters.providers.jira.app import build_app
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.seed import JiraSeed, seed
 from minutehand.adapters.providers.jira.state import placed
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
     Comments,
@@ -42,7 +44,13 @@ class JiraProvider:
     seed_model = JiraSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(world, clock)
+        return guarded(build_app(world, clock), self, provider=self.manifest.key)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """Minutehand's own 501 or 500 in Jira's `{"errorMessages": [message], "errors": {}}`, the body every Jira
+        client reads a failure from; Jira's body has no code, so `code` stays on the recorded call."""
+        del code
+        return wire.error_answer(status, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

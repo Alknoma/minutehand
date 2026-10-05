@@ -29,6 +29,7 @@ CHECKS = {
     "no_follow_up",
     "repeated_message",
     "slow_to_react",
+    "unimplemented_operation",
     "unmatched_call",
 }
 
@@ -86,6 +87,7 @@ def test_the_reference_capture_fails_with_the_known_findings_and_names_what_did_
         "nagged",
         "no_follow_up",
         "slow_to_react",
+        "unimplemented_operation",
         "unmatched_call",
     }
 

@@ -25,6 +25,7 @@ from starlette.routing import Route
 from minutehand.application.restore import SeenCall
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Holds, Manifest, Tier
 from minutehand.domain.scenario import (
@@ -181,6 +182,13 @@ class Chat:
                 Route("/tickets/{id}", get_ticket, methods=["GET"]),
                 Route("/pushed", pushed, methods=["POST"]),
             ]
+        )
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return Rendered(
+            status=status,
+            content_type="application/json",
+            body=json.dumps({"error": code, "message": message}).encode(),
         )
 
     def seed(self, scenario: Scenario, world: Store) -> None:
@@ -364,6 +372,13 @@ class Scheduler:
     def taken(self, ref: str, world: Store) -> bool:
         """`ConfirmsDelivery`: the agent's poll has picked this booking's delivery up."""
         return ref in self.taken_refs
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return Rendered(
+            status=status,
+            content_type="application/json",
+            body=json.dumps({"error": code, "message": message}).encode(),
+        )
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scheduler starts with no bookings: a scenario has nothing to seed here."""

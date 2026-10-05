@@ -12,8 +12,10 @@ through. A file held open is not something a person does here: it is a fault the
 
 from __future__ import annotations
 
+from minutehand.adapters.answering import guarded
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
+from minutehand.adapters.providers.microsoft.common import JSON
 from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of
 from minutehand.adapters.providers.microsoft.inbound import People, activity_token
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
@@ -25,6 +27,7 @@ from minutehand.adapters.providers.microsoft.state import (
     item_text,
     user_ref,
 )
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
     InboundCredential,
@@ -56,7 +59,13 @@ class MicrosoftProvider:
     seed_model = seed.MicrosoftSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(world, clock)
+        return guarded(build_app(world, clock), self, provider=self.manifest.key)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """Graph's error shape, `{"error": {"code", "message"}}`: what a Graph client reads a failure from, and
+        what the connector answers in too."""
+        body = wire.GraphError(error=wire.GraphErrorBody(code=code, message=message))
+        return Rendered(status=status, content_type=JSON, body=wire.dump(body).encode())
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed.seed(scenario, MicrosoftWorld(world))

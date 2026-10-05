@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from minutehand.domain.errors import Rendered
 from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
@@ -65,6 +66,13 @@ class Ledger:
                 Route("/entries", create, methods=["POST"]),
                 Route("/entries/{entry}:{action}", entry_action),
             ]
+        )
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return Rendered(
+            status=status,
+            content_type="application/json",
+            body=json.dumps({"error": code, "message": message}).encode(),
         )
 
     def seed(self, scenario: Scenario, world: Store) -> None:

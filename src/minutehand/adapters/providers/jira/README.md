@@ -88,6 +88,12 @@ run clock's time, recorded as actor PERSON with that person as the changelog's o
 
 ## What it does not do
 
+A request to one of its hosts that no route below serves (an endpoint listed here, another method on a path it
+reads, `api.atlassian.com` outside `/ex/jira/` and the accessible resources, `auth.atlassian.com` outside
+`POST /oauth/token`) is answered 501 in Jira's `{"errorMessages": [...], "errors": {}}`, naming the operation and
+the closest one it serves, with `x-minutehand-answer: not_implemented`; Minutehand's own failure is a 500 in the
+same shape whose message begins "minutehand internal error while answering". JQL it cannot read stays Jira's 400.
+
 - API v2 (`/rest/api/2`), the old `/rest/api/3/search` (answered 410, `CLAIMS.md`), bulk create, webhooks, watchers, votes, worklogs,
   attachments, components and versions (empty lists), issue security, groups, filters, dashboards.
 - Writing `timetracking`, ranking, epics' own endpoints, sprint create or edit, board configuration.

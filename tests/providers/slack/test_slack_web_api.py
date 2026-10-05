@@ -162,8 +162,10 @@ async def test_a_token_that_is_not_a_slack_token_is_refused_invalid_auth(client:
     assert await form(client, "auth.test", token="sk-not-slack") == {"ok": False, "error": "invalid_auth"}
 
 
-async def test_an_unknown_method_is_refused(client: httpx.AsyncClient) -> None:
-    assert await form(client, "views.push") == {"ok": False, "error": "unknown_method"}
+async def test_a_method_the_fake_does_not_answer_is_not_implemented(client: httpx.AsyncClient) -> None:
+    """`views.push` is Slack's; answering `unknown_method` for it would say Slack has no such method."""
+    response = await client.post("/api/views.push", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == 501 and response.json()["error"] == "minutehand_not_implemented"
 
 
 async def test_lookup_by_email_finds_the_seeded_person(client: httpx.AsyncClient) -> None:

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from minutehand.adapters.answering import guarded
 from minutehand.adapters.providers.youtrack import wire
 from minutehand.adapters.providers.youtrack.app import build_app
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.seed import YouTrackSeed, seed, write_faults
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld, millis, placed
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import PermissionGrant
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
@@ -32,7 +34,12 @@ class YouTrackProvider:
     seed_model = YouTrackSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(world, clock)
+        return guarded(build_app(world, clock), self, provider=self.manifest.key)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """Minutehand's own error in YouTrack's `{"error": …, "error_description": …}`, which youtrack clients read
+        as they read YouTrack's refusals."""
+        return wire.error_answer(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

@@ -42,10 +42,11 @@ from minutehand.domain.checks import (
     WakeModelCalls,
     WakeRecord,
 )
+from minutehand.domain.errors import AnswerKind
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, PersonAsked, Scenario, Silent
-from minutehand.domain.world import EntityRef, Exchange, WorldEvent
+from minutehand.domain.world import EntityRef, Exchange, RecordedCall, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
 
@@ -202,7 +203,17 @@ def verdict(
     open_waits = len(still) - len(told_after)
     open_work = open_waits + (commitments or 0)
     how = _STOPPED[stop] if stop is not None else "how the run stopped was not recorded"
-    if card.failed_checks:
+    broken = [c for c in view.failed_calls or [] if c.answer is AnswerKind.INTERNAL_ERROR]
+    if broken:
+        first = broken[0]
+        said = first.failure.message if first.failure is not None else f"answered {first.status}"
+        kind = VerdictKind.TOOL_ERROR
+        words = (
+            f"Tool error: Minutehand failed while answering {_count(len(broken), 'call')}, the first "
+            f"{first.method} {first.host}{first.path.split('?', 1)[0]} ({said}); the run is not scored against the "
+            f"agent; {how}."
+        )
+    elif card.failed_checks:
         kind = VerdictKind.FAILED
         words = f"Failed: {_count(card.failed_checks, 'check')} failed; {how}."
     elif stop is StopReason.AGENT_DONE and abandoned:
@@ -315,6 +326,7 @@ def evaluate_run(
     withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
+    failed_calls: list[Exchange] | None = None,
     ended: datetime | None = None,
 ) -> RunResult:
     """Build the obligations ledger from the world and the replies, then run every deterministic check."""
@@ -326,6 +338,7 @@ def evaluate_run(
         withdrawn=withdrawn,
         commitments=commitments,
         unmatched_calls=unmatched_calls,
+        failed_calls=failed_calls,
     )
     return evaluate(view, stop=stop, ended=ended)
 
@@ -339,6 +352,7 @@ def view_of(
     withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
+    failed_calls: list[Exchange] | None = None,
     model_calls: list[WakeModelCalls] | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
@@ -351,8 +365,17 @@ def view_of(
         replies=[r for i, r in enumerate(replies) if i not in withdrawn],
         commitments=commitments,
         unmatched_calls=unmatched_calls,
+        failed_calls=failed_calls,
         model_calls=model_calls,
     )
+
+
+FAILED_ANSWERS = frozenset({AnswerKind.NOT_IMPLEMENTED, AnswerKind.INTERNAL_ERROR})
+
+
+def failed_calls(calls: list[RecordedCall]) -> list[Exchange]:
+    """The calls a fake did not answer: an operation it does not implement, or Minutehand's own error."""
+    return [c.exchange for c in calls if c.exchange.answer in FAILED_ANSWERS]
 
 
 def stability(results: list[RunResult]) -> Stability:
@@ -363,7 +386,11 @@ def stability(results: list[RunResult]) -> Stability:
 
 
 def exit_code(results: list[RunResult]) -> int:
-    """Over several samples: 1 when any failed, else 3 when any did not finish, else 0."""
+    """Over several samples, the worst (`domain.run.ExitCode`): a tool error before a failure, a failure before an
+    unfinished run, and passed only when every sample passed."""
     kinds = {r.verdict.kind for r in results}
-    worst = next((k for k in (VerdictKind.FAILED, VerdictKind.UNFINISHED) if k in kinds), VerdictKind.PASSED)
+    worst = next(
+        (k for k in (VerdictKind.TOOL_ERROR, VerdictKind.FAILED, VerdictKind.UNFINISHED) if k in kinds),
+        VerdictKind.PASSED,
+    )
     return EXIT_CODES[worst]

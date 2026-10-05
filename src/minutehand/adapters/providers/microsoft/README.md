@@ -45,6 +45,14 @@ manifest, and because the tenant, its bot and its users are one directory every 
   is `{"call": "POST /teams/v3/conversations", "answer": {"kind": "refused", "error": "generalException"}}`; failing
   the next Graph reads is `{"call": "GET /v1.0/teams", "answer": {"kind": "refused", "error":
   "InvalidAuthenticationToken"}}`.
+- **What the fake does not serve** is answered 501 `minutehand_not_implemented` in Graph's `{"error": {"code",
+  "message"}}` on every host, the message naming the call and the closest route the fake has, with
+  `x-minutehand-answer: not_implemented`: a Graph segment or version it has not (`/v1.0/groups`, `/beta`), a
+  connector or sign-in path or method it has not (`GET /v3/conversations`), a SharePoint address it hands out
+  nothing at, writes to users and sites, and listing teams. Minutehand's own failure is 500
+  `minutehand_internal_error` in the same shape. A method Graph itself does not allow on a path the fake serves
+  (a subscription, a drive, an item) stays Graph's 405, and an unsupported segment below an item stays 400
+  `invalidRequest`.
 - **Documents** say who created them (`DocumentSnapshot.owner`: a person's email or the app's name) and, in a team's
   library, the site they are in (`space`; None in a person's OneDrive). Access given (`invite`, `createLink`, a
   person's `Shared`) is a `GrantSnapshot`: Graph's `read`, `write`, `owner` as reader, writer, organizer; a link's

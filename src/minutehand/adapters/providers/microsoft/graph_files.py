@@ -388,7 +388,10 @@ class Files:
                 and (hold.until_time is None or now < hold.until_time)
             ):
                 raise GraphRefusal(
-                    423, "resourceLocked", f"The resource you are attempting to access is locked by {hold.by}."
+                    423,
+                    "resourceLocked",
+                    f"The resource you are attempting to access is locked by {hold.by}.",
+                    deliberate=True,
                 )
 
     def _free_name(self, folder: wire.StoredItem, name: str, behaviour: str) -> tuple[str, wire.StoredItem | None]:
@@ -1094,7 +1097,7 @@ class Files:
             body = wire.with_context(wire.dump(site.site), f"{GRAPH}/$metadata#sites/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
         if request.method != "GET":
-            raise GraphRefusal(405, "methodNotAllowed", "Sites are read only here.")
+            raise NotImplementedError(f"{request.method} on a site: sites are read only here")
         if rest == ["drives"]:
             drives = [d.drive for d in self._world.drives() if d.site_id == site.site.id]
             body = wire.dump(wire.Page[wire.Drive](context=f"{GRAPH}/$metadata#drives", value=drives))

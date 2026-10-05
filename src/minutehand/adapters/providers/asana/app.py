@@ -32,7 +32,6 @@ from minutehand.ports.store import Store
 
 Handler = Callable[[Request, wire.AsanaUser], Awaitable[Response]]
 
-_JSON = "application/json; charset=utf-8"
 _SEARCH = (
     "text",
     "completed",
@@ -104,7 +103,7 @@ _NOT_ORGANIZATION = "organization: Not an organization"
 
 
 def _answer(body: bytes, status: int = 200, headers: dict[str, str] | None = None) -> Response:
-    return Response(body, status_code=status, media_type=_JSON, headers=headers)
+    return Response(body, status_code=status, media_type=wire.CONTENT_TYPE, headers=headers)
 
 
 def _at(value: str) -> datetime:
@@ -509,19 +508,16 @@ class AsanaApi:
         for window in self._world.home().rate_limits:
             if _at(window.start) <= now < _at(window.end):
                 wait = math.ceil((_at(window.end) - now) / timedelta(seconds=1))
-                raise wire.Refusal(429, wire.RATE_LIMITED, retry_after=max(wait, 1))
+                raise wire.Refusal(429, wire.RATE_LIMITED, retry_after=max(wait, 1), deliberate=True)
 
-    def guarded(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
-        """Authenticate, throttle, then answer; a refusal becomes Asana's error envelope and records nothing."""
+    def signed_in(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
+        """Authenticate, throttle, then answer. A refusal leaves the app, before anything is recorded, and the
+        guard around it (`adapters.answering.guarded`) renders it in Asana's envelope."""
 
         async def endpoint(request: Request) -> Response:
-            try:
-                caller = self._caller(request)
-                self._throttle()
-                return await handler(request, caller)
-            except wire.Refusal as refusal:
-                headers = {"Retry-After": str(refusal.retry_after)} if refusal.retry_after is not None else None
-                return _answer(wire.failed(refusal.message), refusal.status, headers)
+            caller = self._caller(request)
+            self._throttle()
+            return await handler(request, caller)
 
         return endpoint
 
@@ -533,17 +529,14 @@ class AsanaApi:
     async def oauth_token(self, request: Request) -> Response:
         """A refresh: the refresh token the scenario seeded buys a new access token for its user, valid for an
         hour of the run's time. The code grant needs a browser and is not served."""
-        try:
-            grant = wire.token_grant(await request.body())
-            if grant.grant_type != "refresh_token":
-                raise wire.OAuthRefusal(
-                    "unsupported_grant_type", f"The grant type {grant.grant_type} is not served by this simulation."
-                )
-            refresh = self._world.credential(grant.refresh_token or "")
-            if refresh is None or refresh.kind is not wire.CredentialKind.REFRESH:
-                raise wire.OAuthRefusal("invalid_grant", "The refresh token is invalid or has been revoked.")
-        except wire.OAuthRefusal as refusal:
-            return _answer(wire.oauth_failed(refusal), 400)
+        grant = wire.token_grant(await request.body())
+        if grant.grant_type != "refresh_token":
+            raise wire.OAuthRefusal(
+                "unsupported_grant_type", f"The grant type {grant.grant_type} is not served by this simulation."
+            )
+        refresh = self._world.credential(grant.refresh_token or "")
+        if refresh is None or refresh.kind is not wire.CredentialKind.REFRESH:
+            raise wire.OAuthRefusal("invalid_grant", "The refresh token is invalid or has been revoked.")
         user = _held(self._world.user(refresh.user), refresh.user)
         token = f"1/{user.gid}:{self._world.next_gid()}"
         expires = self._clock.now() + timedelta(seconds=wire.TOKEN_LIFETIME_SECONDS)
@@ -1216,13 +1209,17 @@ class AsanaApi:
 
 
 def build_app(store: Store, clock: Clock) -> Starlette:
+    """The API, unguarded: the provider's `app()` wraps it in the guard that renders what it lets out."""
     api = AsanaApi(store, clock)
-    g = api.guarded
+    g = api.signed_in
 
     async def no_route(request: Request, exc: Exception) -> Response:
+        """A path or method Asana has no route for, answered as Asana answers it. The routes Asana has and this
+        fake does not serve (attachments, user task lists, portfolios, goals) are answered the same way, as the
+        manifest says."""
         if isinstance(exc, HTTPException) and exc.status_code == 405:
-            return _answer(wire.failed("Method not allowed"), 405)
-        return _answer(wire.failed("No matching route for request"), 404)
+            raise wire.Refusal(405, "Method not allowed")
+        raise wire.Refusal(404, "No matching route for request")
 
     return Starlette(
         routes=[

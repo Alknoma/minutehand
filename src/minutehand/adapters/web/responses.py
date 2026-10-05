@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import AwareDatetime, Field
 
 from minutehand.application.forks import ForkAccount
@@ -123,8 +125,16 @@ class ModelCallsResponse(Model):
     )
 
 
+class RefusalCode(StrEnum):
+    NOT_FOUND = "not_found"  # 404: no such run, or it cannot be read
+    INTERNAL_ERROR = "internal_error"  # 500: Minutehand's own error, never the request's fault
+
+
 class Refusal(Model):
+    """Every answer the viewer API gives in place of what was asked: `code` for a machine, `error` for a person."""
+
     error: str
+    code: RefusalCode = RefusalCode.NOT_FOUND
 
 
 def explained(result: RunResult) -> list[ExplainedFinding]:

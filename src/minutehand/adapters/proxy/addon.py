@@ -33,6 +33,7 @@ from mitmproxy.net import encoding
 from mitmproxy.proxy import layer, layers
 from mitmproxy.proxy.layers import modes
 
+from minutehand.adapters.answering import OUTCOME, PLAIN, Outcome, guarded
 from minutehand.adapters.proxy import capture, connect, credentials, redact
 from minutehand.adapters.proxy.capture import Capturing, Declaration
 from minutehand.adapters.proxy.edit import apply_edits
@@ -42,6 +43,7 @@ from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.application.restore import SeenCall
+from minutehand.domain.errors import AnswerKind
 from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, OnMiss, PassThrough
 from minutehand.domain.provider import Manifest, world_keys
 from minutehand.domain.scenario import ProviderKey, Scenario
@@ -64,7 +66,7 @@ from minutehand.domain.world import (
     TunnelRoute,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Message, Scope
+from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -81,6 +83,14 @@ def strip_prefix(path: str, prefix: str) -> str:
         return path
     rest = path[len(prefix) :]
     return rest if rest.startswith("/") else "/" + rest
+
+
+def answered_as(outcome: Outcome | None, status: int) -> AnswerKind:
+    """How a call was answered: as the guard recorded it when an exception became the answer; otherwise refused when
+    its status is 400 or more, and answered when not."""
+    if outcome is not None and outcome.failure is not None:
+        return outcome.kind
+    return AnswerKind.REFUSED if status >= 400 else AnswerKind.ANSWERED
 
 
 def _json_response(status: int, message: str, host: str) -> http.Response:
@@ -533,22 +543,29 @@ class ProxyAddon:
         kept_in.store.receive([span], source=SpanSource.WIRE)
 
     async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> None:
+        """Answer from the provider's app, guarded (`adapters.answering`): whatever the app or building it lets out
+        becomes the agent's answer, and how it was answered is recorded on the call."""
         async with world.lock:
-            first = world.store.head() + 1
             original = flow.request.path
-            exchange: Exchange | None = None
-            try:
+            first = world.store.head() + 1
+            outcome = Outcome()
+
+            async def built(
+                scope: Scope, receive: Callable[[], Awaitable[Message]], send: Callable[[Message], Awaitable[None]]
+            ) -> None:
+                nonlocal first
                 app = world.app_for(manifest)
                 first = world.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
+                await _path_decoded(app)(scope, receive, send)
+
+            token = OUTCOME.set(outcome)
+            try:
                 flow.request.path = strip_prefix(original, manifest.path_prefix)
-                await asgiapp.serve(_path_decoded(app), flow)
-            except Exception:
-                # Never let a claimed host fall through to the real service.
-                flow.response = _json_response(500, f"provider {manifest.key!r} failed to load", host)
-                raise
+                await asgiapp.serve(guarded(built, self._renderer(manifest), provider=manifest.key), flow)
             finally:
+                OUTCOME.reset(token)
                 flow.request.path = original
-                exchange = self._record(world, flow, host, original, first, manifest.key)
+            exchange = self._record(world, flow, host, original, first, manifest.key, outcome=outcome)
         response = flow.response
         minted = (
             credentials.minted(
@@ -559,6 +576,14 @@ class ProxyAddon:
             else []
         )
         self.worlds.answered(world, exchange, minted)
+
+    def _renderer(self, manifest: Manifest) -> RendersErrors:
+        """The provider's error shape; the plain one when the provider cannot be built, which is itself answered
+        as Minutehand's internal error once the guard runs the app."""
+        try:
+            return self.routing.registry.provider(manifest)
+        except Exception:
+            return PLAIN
 
     def _edit(self, flow: http.HTTPFlow, host: str) -> None:
         try:
@@ -580,6 +605,7 @@ class ProxyAddon:
         provider: str | None,
         *,
         late_for: str | None = None,
+        outcome: Outcome | None = None,
     ) -> Exchange:
         request, response = flow.request, flow.response
         assert response is not None
@@ -600,6 +626,8 @@ class ProxyAddon:
             response_bytes=answered_bytes,
             traceparent=_first_header(request, TRACEPARENT),
             late_for=late_for,
+            answer=answered_as(outcome, response.status_code),
+            failure=outcome.failure if outcome is not None else None,
         )
         self._seen(f"{request.method} {host}{exchange.path}")
         last = world.store.head()
@@ -890,6 +918,7 @@ class ProxyAddon:
             request_bytes=asked.raw,
             response_bytes=answered.raw,
             traceparent=_first_header(request, TRACEPARENT),
+            answer=answered_as(None, response.status_code),
             captured=Captured(
                 mode=mode,
                 declared_as=declaration.host if declaration is not None else None,

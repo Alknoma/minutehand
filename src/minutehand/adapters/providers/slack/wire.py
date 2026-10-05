@@ -10,6 +10,8 @@ Three families of model live here:
   keeps is validated.
 - **Responses** — the `ok` envelope, error codes, cursors, and the Events API
   `event_callback` a pushed message arrives in.
+- **Errors** — `Refusal` (and `HookRefusal`, `PageNotFound`), the `ServiceRefusal`s
+  Slack answers with, and `error_answer`, Minutehand's own errors in the Web API's shape.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from urllib.parse import parse_qsl, urlencode
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 TRUNCATED_AT = 40_000
@@ -37,12 +40,58 @@ PAGE_DEFAULT = 100
 PAGE_MAX = 1000
 
 
-class Refusal(Exception):
-    """Slack answered `ok: false`. `error` is Slack's own code."""
+JSON = "application/json; charset=utf-8"
+"""The content type of every Web API answer, refusals included."""
 
-    def __init__(self, error: str) -> None:
-        super().__init__(error)
-        self.error = error
+
+class Refusal(ServiceRefusal):
+    """Slack answered `{"ok": false, "error": …}`: `code` is Slack's own error, the whole of what it says. HTTP 200,
+    as the Web API refuses, unless `status` says otherwise; `retry_after` is the `Retry-After` a `ratelimited` 429
+    carries."""
+
+    content_type = JSON
+
+    def __init__(
+        self, error: str, *, status: int = 200, retry_after: int | None = None, deliberate: bool = False
+    ) -> None:
+        super().__init__(code=error, message="", status=status, deliberate=deliberate)
+        self.retry_after = retry_after
+
+    def render(self) -> Rendered:
+        return Rendered(
+            status=self.status,
+            content_type=self.content_type,
+            body=respond(Failed(error=self.code)),
+            headers=[] if self.retry_after is None else [("Retry-After", str(self.retry_after))],
+        )
+
+
+class HookRefusal(Refusal):
+    """`hooks.slack.com` refused a `response_url` post: the same `{"ok": false, "error": …}`, with its own status
+    (404 for a hook it does not take, 400 for a body it cannot read) and a bare `application/json`."""
+
+    content_type = "application/json"
+
+
+class PageNotFound(ServiceRefusal):
+    """`files.slack.com` has no file at the path asked for, for this token: its HTML not-found page."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(code="not_found", message=f"no file at {path}", status=404)
+
+    def render(self) -> Rendered:
+        return Rendered(status=self.status, content_type="text/html; charset=utf-8", body=NOT_FOUND_PAGE.encode())
+
+
+NOT_FOUND_PAGE = "<!DOCTYPE html><html><head><title>Not found | Slack</title></head><body></body></html>"
+
+
+def error_answer(status: int, code: str, message: str) -> Rendered:
+    """Minutehand's own error (501, 500) as the Web API words an error: `error` the code, and `message` in
+    `response_metadata.messages`, where Slack puts what it says about an error beside the code. `slack_sdk` raises
+    `SlackApiError` for it, with the whole body in its text and on `.response`."""
+    body = ErrorAnswer(error=code, response_metadata=ErrorMessages(messages=[message]))
+    return Rendered(status=status, content_type=JSON, body=respond(body))
 
 
 # --------------------------------------------------------------------------- stored
@@ -1007,10 +1056,14 @@ class OAuthAccess(Ok):
     is_enterprise_install: bool = False
 
 
-class RateLimitedAnswer(Failed):
-    """`ratelimited`, which Slack answers with HTTP 429 and `Retry-After`, not 200."""
+class ErrorMessages(Model):
+    messages: list[str]
 
-    retry_after: int = Field(exclude=True)
+
+class ErrorAnswer(Failed):
+    """An error with words beside its code, as Slack sends `invalid_arguments` with what was wrong."""
+
+    response_metadata: ErrorMessages
 
 
 Response = Ok | Failed

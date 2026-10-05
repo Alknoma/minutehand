@@ -1,12 +1,15 @@
-"""What every surface of the provider shares: reading the bearer token a call carries, and Graph's error shape."""
+"""What every surface of the provider shares: reading the bearer token a call carries, the refusal every surface's
+own refuses as, and Graph's error shape."""
 
 from __future__ import annotations
 
+from abc import ABC
+
 from starlette.requests import Request
-from starlette.responses import Response
 
 from minutehand.adapters.providers.microsoft import tokens, wire
 from minutehand.adapters.providers.microsoft.wire import TokenUse
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.ports.clock import Clock
 
 JSON = "application/json; charset=utf-8"
@@ -27,32 +30,39 @@ def bearer(request: Request) -> str | None:
     return token.strip() if scheme.lower() == "bearer" and token.strip() else None
 
 
-class GraphRefusal(Exception):
-    """Graph answered an error: `status`, Graph's `code` and a message of this provider's own wording."""
+class MicrosoftRefusal(ServiceRefusal, ABC):
+    """A refusal by one of the provider's surfaces. `answered` stamps it with what its answer names of the moment
+    and the call it refuses (Graph's `innerError`, the identity platform's `timestamp`), once, as it leaves the app."""
 
-    def __init__(self, status: int, code: str, message: str, *, retry_after: int | None = None) -> None:
-        super().__init__(message)
-        self.status = status
-        self.code = code
-        self.message = message
+    def answered(self, clock: Clock, request: Request) -> None:
+        """Nothing, for a shape that names neither the moment nor the call."""
+        del clock, request
+
+
+class GraphRefusal(MicrosoftRefusal):
+    """Graph answered an error: `status`, Graph's `code` and a message of this provider's own wording, in Graph's
+    `{"error": {"code", "message", "innerError"}}`, with `Retry-After` when it says when to try again."""
+
+    def __init__(
+        self, status: int, code: str, message: str, *, retry_after: int | None = None, deliberate: bool = False
+    ) -> None:
+        super().__init__(code, message, status=status, deliberate=deliberate)
         self.retry_after = retry_after
+        self.inner: wire.InnerError | None = None
 
-
-def graph_error(refusal: GraphRefusal, clock: Clock, request: Request) -> Response:
-    client_request = header(request, "client-request-id") or tokens.derived_trace(f"{request.url.path}{refusal.code}")
-    body = wire.GraphError(
-        error=wire.GraphErrorBody(
-            code=refusal.code,
-            message=refusal.message,
-            innerError=wire.InnerError(
-                date=clock.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                request_id=tokens.derived_trace(f"{request.url}{clock.now().isoformat()}"),
-                client_request_id=client_request,
-            ),
+    def answered(self, clock: Clock, request: Request) -> None:
+        client_request = header(request, "client-request-id") or tokens.derived_trace(f"{request.url.path}{self.code}")
+        self.inner = wire.InnerError(
+            date=clock.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            request_id=tokens.derived_trace(f"{request.url}{clock.now().isoformat()}"),
+            client_request_id=client_request,
         )
-    )
-    headers = {"Retry-After": str(refusal.retry_after)} if refusal.retry_after is not None else None
-    return Response(wire.dump(body), status_code=refusal.status, media_type=JSON, headers=headers)
+
+    def render(self) -> Rendered:
+        assert self.inner is not None, f"Graph's {self.code} left the app without being answered"
+        body = wire.GraphError(error=wire.GraphErrorBody(code=self.code, message=self.message, innerError=self.inner))
+        headers = [("retry-after", str(self.retry_after))] if self.retry_after is not None else []
+        return Rendered(status=self.status, content_type=JSON, body=wire.dump(body).encode(), headers=headers)
 
 
 def not_found(what: str) -> GraphRefusal:

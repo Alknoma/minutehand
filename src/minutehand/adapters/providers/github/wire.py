@@ -7,20 +7,24 @@ Four families live here:
 - **Faults** — `RateLimited`, `SecondaryRateLimited`, `ServerError`: what a scenario arms, typed, and answered
   in GitHub's own shapes.
 - **Answers** — the resources as the REST API returns them, in GitHub's snake_case.
-- **Errors** — `Refusal`, answered as `{"message": …, "documentation_url": …, "status": …}` with `errors` when
-  a validation failed.
+- **Errors** — `Refused`, the `ServiceRefusal` GitHub's refusals are: `Refusal` on REST, answered as
+  `{"message": …, "documentation_url": …, "status": …}` with `errors` when a validation failed; `GraphRefusal`, a
+  200 whose `errors` say why; `ServerFailure`, `{"message": "Server Error"}`.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
+from abc import abstractmethod
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 API = "https://api.github.com"
@@ -143,8 +147,33 @@ class FieldError(Wire):
     message: str | None = None
 
 
-class Refusal(Exception):
-    """GitHub answered with an error status. `message` is the answer's own `message`."""
+class Refused(ServiceRefusal):
+    """GitHub refused the call. `headers` are the refusal's own (`Retry-After`, a spent budget's
+    `X-RateLimit-*`); the gate adds the ones every answer carries before the refusal leaves the app."""
+
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        *,
+        code: str,
+        headers: dict[str, str] | None = None,
+        deliberate: bool = False,
+    ) -> None:
+        super().__init__(code, message, status=status, deliberate=deliberate)
+        self.headers = headers or {}
+
+    @abstractmethod
+    def body(self) -> bytes:
+        """The answer's body, exactly as GitHub sends it."""
+
+    def render(self) -> Rendered:
+        return Rendered(status=self.status, content_type=JSON, body=self.body(), headers=list(self.headers.items()))
+
+
+class Refusal(Refused):
+    """A REST refusal: `{"message": …, "documentation_url": …, "status": …}`, with `errors` when a validation
+    failed. GitHub's REST errors carry no code of their own, so the message is the code."""
 
     def __init__(
         self,
@@ -154,13 +183,35 @@ class Refusal(Exception):
         section: str = "",
         errors: list[FieldError] | None = None,
         headers: dict[str, str] | None = None,
+        deliberate: bool = False,
     ) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
+        super().__init__(status, message, code=message, headers=headers, deliberate=deliberate)
         self.section = section
         self.errors = errors
-        self.headers = headers or {}
+
+    def body(self) -> bytes:
+        return error_body(self.status, self.message, section=self.section, errors=self.errors)
+
+
+class GraphRefusal(Refused):
+    """A GraphQL refusal: GitHub answers it 200, its `errors` saying why (`RATE_LIMITED`)."""
+
+    def __init__(self, error: GraphError, *, headers: dict[str, str] | None = None, deliberate: bool = False) -> None:
+        super().__init__(200, error.message, code=error.type or error.message, headers=headers, deliberate=deliberate)
+        self.error = error
+
+    def body(self) -> bytes:
+        return GraphErrorsOut(errors=[self.error]).model_dump_json(exclude_none=True).encode()
+
+
+class ServerFailure(Refused):
+    """GitHub failing on its own side: `{"message": "Server Error"}` and nothing else."""
+
+    def __init__(self, status: int, *, deliberate: bool = False) -> None:
+        super().__init__(status, "Server Error", code="Server Error", deliberate=deliberate)
+
+    def body(self) -> bytes:
+        return json.dumps({"message": self.message}).encode()
 
 
 class ErrorOut(Wire):
@@ -170,13 +221,8 @@ class ErrorOut(Wire):
     status: str
 
 
-def error_body(refusal: Refusal) -> bytes:
-    answer = ErrorOut(
-        message=refusal.message,
-        errors=refusal.errors,
-        documentation_url=DOCS + refusal.section,
-        status=str(refusal.status),
-    )
+def error_body(status: int, message: str, *, section: str = "", errors: list[FieldError] | None = None) -> bytes:
+    answer = ErrorOut(message=message, errors=errors, documentation_url=DOCS + section, status=str(status))
     return answer.model_dump_json(exclude_none=True).encode()
 
 

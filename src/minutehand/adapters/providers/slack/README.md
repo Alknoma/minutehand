@@ -91,3 +91,8 @@ agent's first message to them) shows while it lasts: `status_text` (its reason, 
   API ("recorded nothing").
 - No user tokens of their own: an `xoxp-` token acts as the bot.
 - No `chat.scheduleMessage`, `conversations.create`, `files.upload`, `users.setPresence`, `dnd.setSnooze`.
+- A Web API method not in the table above, and any path or HTTP method the fake does not serve, is answered 501 with
+  `x-minutehand-answer: not_implemented` and `{"ok": false, "error": "minutehand_not_implemented",
+  "response_metadata": {"messages": [...]}}` naming the call and the closest route the fake has, never Slack's
+  `unknown_method`: the fake cannot tell a method Slack lacks from one it lacks itself. Minutehand's own error is the
+  same shape at 500, `minutehand_internal_error`. `slack_sdk` raises `SlackApiError` for both.

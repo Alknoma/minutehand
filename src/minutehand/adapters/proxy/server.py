@@ -31,6 +31,7 @@ from minutehand.adapters.proxy.capture import Capturing
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
 from minutehand.application.restore import SeenCall
+from minutehand.domain.errors import EnvironmentFailure
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -140,11 +141,19 @@ class Proxy:
         server = master.addons.get("proxyserver")
         assert isinstance(server, Proxyserver)
         if not await server.setup_servers():
-            raise OSError(f"the proxy could not listen on {self._listen[0]}:{self._listen[1]}")
+            raise EnvironmentFailure(
+                f"port {self._listen[1]} on {self._listen[0]}",
+                "the proxy could not listen on it",
+                "free the port, or give --proxy-port another (0 picks any free one)",
+            )
         await master.running()
         bound = server.listen_addrs()
         if not bound:
-            raise OSError("the proxy started but reports no listening address")
+            raise EnvironmentFailure(
+                f"the proxy on {self._listen[0]}:{self._listen[1]}",
+                "it started but reports no listening address",
+                "run `minutehand doctor` to check this machine's network",
+            )
         self.host, self.port = bound[0][0], bound[0][1]
         self._master = master
         _running.append(self)

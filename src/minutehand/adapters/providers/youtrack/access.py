@@ -75,6 +75,7 @@ def fault_for(world: YouTrackWorld, method: str, path: str, now: int) -> wire.Re
             _REASONS.get(fault.status, "Error"),
             _DESCRIPTIONS.get(fault.status, "The request failed"),
             retry_after=retry,
+            deliberate=True,
         )
     return None
 

@@ -10,8 +10,12 @@ time: a second `run_scenario` or `rerun_from` while one plays is refused, not qu
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import functools
+import inspect
+import logging
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -40,9 +44,12 @@ from minutehand.application.refusals import RunRefused
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult, stability
 from minutehand.domain.checks import FindingKind
+from minutehand.domain.errors import EnvironmentFailure
 from minutehand.domain.experiment import Fork, Override
 from minutehand.domain.world import Exchange, WorldEvent
 from minutehand.session import Outcome
+
+logger = logging.getLogger(__name__)
 
 SCENARIO_SUFFIXES = (".yaml", ".yml", ".json")
 
@@ -76,6 +83,52 @@ class OneRunAtATime:
         self._playing = None
 
 
+def refusal_of(tool: str, refused: str, error: Exception) -> ToolError:
+    """THE MCP tools' converter: what a tool let out, as the error its client reads. A refusal of what was asked
+    (`RunRefused`, `FileRefused`, a tool's own `ToolError`) keeps its words; the machine failing names what and what
+    to do; anything else is Minutehand's own error, named as one and logged with its traceback, so a client never
+    reads a bug as its request being wrong."""
+    if isinstance(error, ToolError):
+        return error
+    if isinstance(error, RunRefused | FileRefused | OSError):
+        return ToolError(f"{refused}: {error}")
+    if isinstance(error, EnvironmentFailure):
+        logger.error("MCP %s: %s", tool, error)
+        return ToolError(f"{refused}: the machine failed: {error}")
+    logger.error("MCP %s internal error: %s: %s", tool, type(error).__name__, error, exc_info=error)
+    return ToolError(
+        f"minutehand internal error in {tool}: {type(error).__name__}: {error} (a bug in minutehand, not in the "
+        "request; the traceback is in the server's log)"
+    )
+
+
+def converted[**P, R](tool: str, refused: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """The tool, with whatever it lets out turned into a `ToolError` by `refusal_of`."""
+
+    def wrap(fn: Callable[P, R]) -> Callable[P, R]:
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def awaited(*args: P.args, **kwargs: P.kwargs) -> object:
+                try:
+                    return await fn(*args, **kwargs)
+                except Exception as error:
+                    raise refusal_of(tool, refused, error) from error
+
+            return cast("Callable[P, R]", awaited)
+
+        @functools.wraps(fn)
+        def called(*args: P.args, **kwargs: P.kwargs) -> R:
+            try:
+                return fn(*args, **kwargs)
+            except Exception as error:
+                raise refusal_of(tool, refused, error) from error
+
+        return called
+
+    return wrap
+
+
 def build(state: Path) -> FastMCP:
     """The MCP server over one state directory."""
     server = FastMCP("minutehand", instructions=INSTRUCTIONS)
@@ -89,6 +142,7 @@ def build(state: Path) -> FastMCP:
             "separately with the reason. Relative paths are resolved from the server's working directory."
         )
     )
+    @converted("list_scenarios", "the scenarios could not be listed")
     def list_scenarios(directory: str) -> ScenarioListing:
         root = Path(directory)
         if not root.is_dir():
@@ -124,14 +178,13 @@ def build(state: Path) -> FastMCP:
             "restart it from. Takes seconds to minutes; only one run plays at a time."
         )
     )
+    @converted("run_scenario", "the run could not be performed")
     async def run_scenario(scenario: str, agent: str, command: list[str] | None = None, samples: int = 1) -> RunsPlayed:
         runs.claim(f"scenario {scenario}")
         try:
             loaded = load_scenario(Path(scenario))
             agent_file = load_agent(Path(agent))
             outcomes = await session.play(loaded, agent_file, state=state, samples=samples, command=command)
-        except (RunRefused, FileRefused, OSError) as e:
-            raise ToolError(f"the run could not be performed: {e}") from e
         finally:
             runs.release()
         return _played(state, outcomes, sampled=samples > 1)
@@ -143,6 +196,7 @@ def build(state: Path) -> FastMCP:
             "failure of proactive agents it is an instance of. `blocked` lists checks that could not run."
         )
     )
+    @converted("list_findings", "the findings could not be read")
     def list_findings(run_id: str) -> FindingList:
         outcome = _load(state, run_id)
         return FindingList(
@@ -163,6 +217,7 @@ def build(state: Path) -> FastMCP:
             "proactive agent uses to avoid it. Use the pattern's design as the fix to make in the agent."
         )
     )
+    @converted("show_evidence", "the evidence could not be read")
     def show_evidence(run_id: str, finding: int) -> Evidence:
         outcome = _load(state, run_id)
         numbered = _numbered(outcome.result)
@@ -196,6 +251,7 @@ def build(state: Path) -> FastMCP:
             "run_scenario."
         )
     )
+    @converted("rerun_from", "the rerun could not be performed")
     async def rerun_from(
         run_id: str,
         at_seq: int,
@@ -212,8 +268,6 @@ def build(state: Path) -> FastMCP:
         try:
             fork = Fork(parent_run=run_id, at_seq=at_seq, overrides=changes, samples=samples)
             outcomes = await session.fork(run_id, fork, state=state, command=command)
-        except (RunRefused, OSError) as e:
-            raise ToolError(f"the rerun could not be performed: {e}") from e
         finally:
             runs.release()
         return _played(state, outcomes, sampled=samples > 1)
@@ -227,6 +281,7 @@ def build(state: Path) -> FastMCP:
             "(`captured.answered_by` recording, `replayed_from`). A send read as a message lists the events it wrote."
         )
     )
+    @converted("list_outbound_calls", "the outbound calls could not be read")
     def list_outbound_calls(run_id: str) -> OutboundCalls:
         outcome = _load(state, run_id)
         with session.reading(state, run_id) as world:
@@ -251,6 +306,7 @@ def build(state: Path) -> FastMCP:
             "and its parent and children: a rerun is a child of the run it was forked from."
         )
     )
+    @converted("list_runs", "the runs could not be listed")
     def list_runs() -> RunListing:
         finished = session.runs(state)
         children: dict[str, list[str]] = {o.record.run_id: [] for o in finished}

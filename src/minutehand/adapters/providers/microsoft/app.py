@@ -9,8 +9,10 @@
 | `*.sharepoint.com` | pre-authenticated downloads, upload sessions and copy monitors handed out by Graph |
 
 A path's repeated slashes are folded into one before routing: a bot that joins `serviceUrl` (which ends in `/`)
-to `/v3/…` sends `//v3`, and the connector answers it. A fault the scenario declares is answered in front of the
-surface it names, in that surface's own error shape, and used up one call at a time.
+to `/v3/…` sends `//v3`, and the connector answers it. A fault the scenario declares is raised in front of the
+surface it names, as that surface's own refusal made on purpose, and used up one call at a time. A refusal leaves
+the app stamped with the moment and the call it answers (`MicrosoftRefusal.answered`), and the guard renders it; a
+call no route of the fake takes is an operation it does not implement (`unrouted`).
 """
 
 from __future__ import annotations
@@ -23,12 +25,13 @@ from urllib.parse import unquote
 
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.routing import Router
+from starlette.routing import Match, Route, Router
 from starlette.types import Message, Receive, Scope, Send
 
+from minutehand.adapters.answering import unrouted
 from minutehand.adapters.providers.microsoft import tokens, wire
-from minutehand.adapters.providers.microsoft.common import JSON, GraphRefusal, graph_error
-from minutehand.adapters.providers.microsoft.connector import connector_router
+from minutehand.adapters.providers.microsoft.common import GraphRefusal, MicrosoftRefusal
+from minutehand.adapters.providers.microsoft.connector import ConnectorRefusal, connector_router
 from minutehand.adapters.providers.microsoft.graph_files import Caller, Files
 from minutehand.adapters.providers.microsoft.graph_teams import TeamsGraph
 from minutehand.adapters.providers.microsoft.signin import bot_framework_router, login_router
@@ -63,7 +66,6 @@ class GraphApp:
 
     def __init__(self, store: Store, clock: Clock) -> None:
         self._world = MicrosoftWorld(store)
-        self._clock = clock
         self.files = Files(self._world, clock)
         self._teams = TeamsGraph(self._world, clock)
         self._subscriptions = Subscriptions(self._world, clock, self._watchable)
@@ -98,20 +100,14 @@ class GraphApp:
         raise GraphRefusal(400, "ExtensionError", f"Subscriptions to '{resource}' are not supported.")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        request = Request(scope, receive)
-        try:
-            response = await self._route(request)
-        except GraphRefusal as refusal:
-            response = graph_error(refusal, self._clock, request)
+        response = await self._route(Request(scope, receive))
         await response(scope, receive, send)
 
     async def _route(self, request: Request) -> Response:
         path = request.url.path
-        if not path.startswith("/v1.0/"):
-            raise GraphRefusal(400, "BadRequest", "Invalid version: only v1.0 is served.")
-        parts = [p for p in path.removeprefix("/v1.0/").split("/") if p]
+        parts = [p for p in path.removeprefix("/v1.0/").split("/") if p] if path.startswith("/v1.0/") else []
         if not parts:
-            raise GraphRefusal(400, "BadRequest", "Invalid request")
+            raise unrouted(request.method, path, GRAPH_ROUTES)
         head = parts[0]
         if head == "subscriptions":
             return await self._subscription(request, parts)
@@ -129,7 +125,7 @@ class GraphApp:
             return await self._teams.chats(request, parts)
         if head == "communications":
             return await self._teams.communications(request, parts)
-        raise GraphRefusal(400, "BadRequest", f"Resource not found for the segment '{head}'.")
+        raise unrouted(request.method, path, GRAPH_ROUTES)
 
     async def _subscription(self, request: Request, parts: list[str]) -> Response:
         method = request.method
@@ -145,6 +141,8 @@ class GraphApp:
                 return await self._subscriptions.renew(request)
             if method == "DELETE":  # enum-lint: exempt HTTP's method name
                 return await self._subscriptions.delete(request)
+        if len(parts) > 2:
+            raise unrouted(method, request.url.path, GRAPH_ROUTES)
         raise GraphRefusal(405, "BadRequest", f"{method} is not allowed on subscriptions.")
 
 
@@ -152,16 +150,11 @@ class SharePointHost:
     """What Graph hands out on the site's own host: a download, an upload session, a copy's monitor. Each URL
     carries its own credential (`tempauth`), as SharePoint's do."""
 
-    def __init__(self, graph: GraphApp, clock: Clock) -> None:
+    def __init__(self, graph: GraphApp) -> None:
         self._files = graph.files
-        self._clock = clock
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        request = Request(scope, receive)
-        try:
-            response = await self._route(request)
-        except GraphRefusal as refusal:
-            response = graph_error(refusal, self._clock, request)
+        response = await self._route(Request(scope, receive))
         await response(scope, receive, send)
 
     def _authorised(self, request: Request, audience: str) -> None:
@@ -187,20 +180,20 @@ class SharePointHost:
             guid = (request.query_params["guid"] if "guid" in request.query_params else "").strip("'")
             self._authorised(request, f"upload {guid}")
             return await self._files.upload_fragment(request, guid)
-        raise GraphRefusal(404, "itemNotFound", "Nothing is served at this address.")
+        raise unrouted(request.method, path, SHAREPOINT_ROUTES)
 
 
 class MicrosoftApp:
     def __init__(self, store: Store, clock: Clock) -> None:
         self._world = MicrosoftWorld(store)
         self._clock = clock
-        self._login = login_router(store, clock)
-        self._bot_login = bot_framework_router()
-        self._connector = connector_router(store, clock)
+        routers = login_router(store, clock), bot_framework_router(), connector_router(store, clock)
+        self._login, self._bot_login, self._connector = (answering(r) for r in routers)
+        self._routes = [*(route for r in routers for route in served(r)), *GRAPH_ROUTES, *SHAREPOINT_ROUTES]
         self._graph = GraphApp(store, clock)
-        self._sharepoint = SharePointHost(self._graph, clock)
+        self._sharepoint = SharePointHost(self._graph)
 
-    def _surface(self, host: str) -> tuple[str, ASGI | Router] | None:
+    def _surface(self, host: str) -> tuple[str, ASGI] | None:
         if host == LOGIN_HOST:
             return "login", self._login
         if host == BOT_LOGIN_HOST:
@@ -219,24 +212,28 @@ class MicrosoftApp:
         headers = dict(scope["headers"])
         host = headers[b"host"].decode().split(":")[0].lower() if b"host" in headers else ""
         scope["path"] = re.sub(r"/{2,}", "/", _decoded_path(scope))
+        try:
+            await self._answer(host, scope, receive, send)
+        except MicrosoftRefusal as refusal:
+            refusal.answered(self._clock, Request(scope))
+            raise
+
+    async def _answer(self, host: str, scope: Scope, receive: Receive, send: Send) -> None:
         found = self._surface(host)
         if found is None:
-            await Response("No Microsoft service answers at this host.", status_code=404)(scope, receive, send)
-            return
+            raise unrouted(scope["method"], scope["path"], self._routes)
         surface, app = found
-        faulted = self._fault(surface, scope)
-        if faulted is WITHOUT_ID:
+        if self._fault(surface, scope):
             await app(scope, receive, _without_id(send))
-            return
-        if isinstance(faulted, Response):
-            await faulted(scope, receive, send)
             return
         await app(scope, receive, send)
 
-    def _fault(self, surface: str, scope: Scope) -> Response | object | None:
-        """The first fault the scenario declares for this call that still has calls to fail, used up by one."""
+    def _fault(self, surface: str, scope: Scope) -> bool:
+        """The first fault the scenario declares for this call that still has calls to fail, used up by one: raised
+        as the surface's refusal, made on purpose; True when it lets the call through, to be answered without its
+        id."""
         if surface == "login":
-            return None
+            return False
         method, path = scope["method"], scope["path"]
         now = int(self._clock.now().timestamp())
         for fault in self._world.faults():
@@ -263,22 +260,88 @@ class MicrosoftApp:
                 ),
             )
             if fault.without_id:
-                return WITHOUT_ID
-            headers = {"Retry-After": str(fault.retry_after)} if fault.retry_after is not None else None
-            if surface == "connector":
-                body = wire.ConnectorError(
-                    error=wire.ConnectorErrorBody(code=fault.error, message="Failed on purpose by the scenario.")
-                )
-                return Response(wire.dump(body), status_code=fault.status, media_type=JSON, headers=headers)
-            refusal = GraphRefusal(
-                fault.status, fault.error, "Failed on purpose by the scenario.", retry_after=fault.retry_after
-            )
-            return graph_error(refusal, self._clock, Request(scope))
-        return None
+                return True
+            refused = ConnectorRefusal if surface == "connector" else GraphRefusal
+            raise refused(fault.status, fault.error, FAULTED, retry_after=fault.retry_after, deliberate=True)
+        return False
 
 
-WITHOUT_ID = object()
-"""What `_fault` answers for a send to be carried out and answered without its id."""
+FAULTED = "Failed on purpose by the scenario."
+
+GRAPH_ROUTES = (
+    "GET /v1.0/users",
+    "GET /v1.0/users/{id}",
+    "GET /v1.0/me",
+    "GET /v1.0/users/{id}/presence",
+    "GET /v1.0/users/{id}/mailboxSettings",
+    "GET /v1.0/communications/presences/{id}",
+    "POST /v1.0/communications/getPresencesByUserId",
+    "GET /v1.0/teams/{team}",
+    "GET /v1.0/teams/{team}/channels",
+    "GET /v1.0/teams/{team}/channels/{channel}/messages",
+    "GET /v1.0/teams/{team}/members",
+    "GET /v1.0/chats/{chat}",
+    "GET /v1.0/chats/{chat}/messages",
+    "GET /v1.0/chats/{chat}/members",
+    "GET /v1.0/sites/{site}",
+    "GET /v1.0/sites/{site}/drive",
+    "GET /v1.0/drives/{drive}",
+    "GET /v1.0/drives/{drive}/items/{item}",
+    "PATCH /v1.0/drives/{drive}/items/{item}",
+    "DELETE /v1.0/drives/{drive}/items/{item}",
+    "GET /v1.0/drives/{drive}/items/{item}/children",
+    "POST /v1.0/drives/{drive}/items/{item}/children",
+    "GET /v1.0/drives/{drive}/items/{item}/content",
+    "PUT /v1.0/drives/{drive}/items/{item}/content",
+    "GET /v1.0/drives/{drive}/root/delta",
+    "POST /v1.0/drives/{drive}/items/{item}/createUploadSession",
+    "POST /v1.0/drives/{drive}/items/{item}/copy",
+    "POST /v1.0/drives/{drive}/items/{item}/invite",
+    "POST /v1.0/drives/{drive}/items/{item}/createLink",
+    "GET /v1.0/drives/{drive}/items/{item}/permissions",
+    "POST /v1.0/subscriptions",
+    "GET /v1.0/subscriptions",
+    "GET /v1.0/subscriptions/{id}",
+    "PATCH /v1.0/subscriptions/{id}",
+    "DELETE /v1.0/subscriptions/{id}",
+)
+"""What the fake serves of Graph, as `METHOD /path`: `GraphApp` dispatches by hand, so these are written out, to name
+the closest one to an operation it does not implement."""
+
+SHAREPOINT_ROUTES = (
+    "GET /_layouts/15/download.aspx",
+    "GET /_api/v2.0/monitor/{id}",
+    "PUT /_api/v2.0/drives/{drive}/items/{item}/uploadSession",
+)
+
+
+def served(router: Router) -> list[str]:
+    """The routes of `router`, as `METHOD /path`."""
+    return [
+        f"{method} {route.path}"
+        for route in router.routes
+        if isinstance(route, Route)
+        for method in sorted(route.methods or ())
+        if method != "HEAD"
+    ]
+
+
+def answering(router: Router) -> ASGI:
+    """`router`, answering a call none of its routes takes (a path it has not, or a method it has not on a path it
+    has) as an operation the fake does not implement, never Starlette's bare 404 or 405."""
+    routes = served(router)
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        for route in router.routes:
+            match, child = route.matches(scope)
+            if match is Match.FULL:
+                scope.update(child)
+                await route.handle(scope, receive, send)
+                return
+        raise unrouted(scope["method"], scope["path"], routes)
+
+    return app
+
 
 _IDS = ("id", "activityId")
 

@@ -34,8 +34,8 @@ class QueryError(ValueError):
     """Not a Drive query: real Drive answers 400 `invalid`."""
 
 
-class QueryNotSupported(ValueError):
-    """A real Drive term this fake does not evaluate."""
+class QueryNotSupported(NotImplementedError):
+    """A real Drive term this fake does not evaluate: answered 501 by the guard (`adapters.answering`)."""
 
 
 class Term(StrEnum):

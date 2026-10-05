@@ -18,27 +18,35 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, ValidationError
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 
-class Refusal(Exception):
-    """A request AWS itself would refuse. Answered as AWS answers it, without reaching moto."""
+class Refusal(ServiceRefusal):
+    """A request AWS itself would refuse. Answered as AWS answers it, without reaching moto: the error type in
+    `x-amzn-errortype`, the message in a JSON body."""
 
-    def __init__(self, error_type: str, message: str, status: int = 400) -> None:
-        super().__init__(message)
-        self.error_type = error_type
-        self.message = message
-        self.status = status
+    def __init__(self, code: str, message: str, status: int = 400) -> None:
+        super().__init__(code=code, message=message, status=status)
 
-    def body(self) -> bytes:
-        return json.dumps({"message": self.message}).encode()
+    def render(self) -> Rendered:
+        return Rendered(
+            status=self.status,
+            content_type="application/json",
+            body=json.dumps({"message": self.message}).encode(),
+            headers=[("x-amzn-errortype", self.code)],
+        )
 
 
-class NotImplementedByProvider(Refusal):
-    """Something real AWS accepts that this provider does not reproduce. Loud, never a silent approximation."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__("NotImplemented", f"minutehand's aws provider does not implement {message}", status=501)
+def error(status: int, code: str, message: str) -> Rendered:
+    """AWS's JSON-protocol error (awsJson and restJson, what SQS and EventBridge Scheduler speak): the type in
+    `x-amzn-errortype` and in `__type`, the message in `message`, so botocore raises `ClientError` with both."""
+    return Rendered(
+        status=status,
+        content_type="application/json",
+        body=json.dumps({"__type": code, "message": message}).encode(),
+        headers=[("x-amzn-errortype", code)],
+    )
 
 
 class _Wire(Model):
@@ -231,7 +239,7 @@ def _cron(text: str, fields: list[str]) -> Cron:
 
 def _field(text: str, field: str, low: int, high: int, names: dict[str, int]) -> frozenset[int]:
     if re.search(r"[LW#]", field):
-        raise NotImplementedByProvider(f"the L, W or # cron operators (in {text})")
+        raise NotImplementedError(f"the L, W or # cron operators (in {text})")
     values: set[int] = set()
     for part in field.split(","):
         span, _, step_text = part.partition("/")
@@ -271,8 +279,9 @@ class SqsQueue(Model):
         return f"arn:aws:sqs:{self.region}:{self.account}:{self.queue}"
 
 
-class UnsupportedTarget(Exception):
-    """The schedule's target is a service whose delivery is not implemented. Raised, never dropped."""
+class UnsupportedTarget(NotImplementedError):
+    """The schedule's target is a service whose delivery is not implemented: AWS delivers to it, the fake does not.
+    Raised, never dropped."""
 
     def __init__(self, service: str, arn: str) -> None:
         super().__init__(f"cannot deliver to a {service} target ({arn}): only SQS targets are implemented")

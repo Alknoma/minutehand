@@ -17,11 +17,11 @@ from urllib.parse import urlencode
 
 from pydantic import ValidationError
 from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.github import content, graphql, search, state, wire
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.world import Operation
@@ -32,6 +32,48 @@ PAGE_DEFAULT = 30
 PAGE_MAX = 100
 SEARCH_CEILING = 1000
 """Search serves the first thousand results and no more."""
+REST_ROOTS = frozenset(
+    {
+        "advisories",
+        "app",
+        "app-manifests",
+        "applications",
+        "apps",
+        "assignments",
+        "classrooms",
+        "codes_of_conduct",
+        "emojis",
+        "enterprises",
+        "events",
+        "feeds",
+        "gists",
+        "gitignore",
+        "graphql",
+        "installation",
+        "issues",
+        "licenses",
+        "markdown",
+        "marketplace_listing",
+        "meta",
+        "networks",
+        "notifications",
+        "octocat",
+        "organizations",
+        "orgs",
+        "projects",
+        "rate_limit",
+        "repos",
+        "repositories",
+        "search",
+        "teams",
+        "user",
+        "users",
+        "versions",
+        "zen",
+    }
+)
+"""The first path segment of every operation in GitHub's REST reference, and `/graphql`. A call no route answers
+under one of these is GitHub's and not this fake's (501); under anything else GitHub has nothing (404)."""
 TEXT_MATCH = "application/vnd.github.text-match+json"
 """The media type that asks search for `text_matches`."""
 
@@ -70,14 +112,6 @@ def _json(entity: wire.Wire | list[wire.Wire], status: int = 200, headers: dict[
     return Answered(status, body, headers or {})
 
 
-class _Exhausted(Exception):
-    """A call refused because its budget is spent; it carries its whole answer, headers and all."""
-
-    def __init__(self, answered: Answered) -> None:
-        super().__init__("rate limit exceeded")
-        self.answered = answered
-
-
 def _login(caller: Caller | None) -> str | None:
     return caller.account.login if caller is not None and caller.account is not None else None
 
@@ -91,6 +125,23 @@ def _budget_headers(budget: wire.StoredBudget, resource: wire.Resource) -> dict[
         "X-RateLimit-Reset": str(budget.reset),
         "X-RateLimit-Resource": resource.value,
     }
+
+
+def _answer_headers(
+    budget: wire.StoredBudget,
+    resource: wire.Resource,
+    caller: Caller | None,
+    version: str | None,
+    own: dict[str, str],
+) -> dict[str, str]:
+    """The headers on every GitHub answer, refusals too: the media type, the budget the call spent, the answer's
+    `own`, the classic token's scopes and the API version selected."""
+    headers = {"X-GitHub-Media-Type": "github.v3; format=json", **_budget_headers(budget, resource), **own}
+    if caller is not None and caller.token is not None and caller.token.kind is wire.TokenKind.CLASSIC:
+        headers["X-OAuth-Scopes"] = ", ".join(caller.token.scopes)
+    if version is not None and version in wire.API_VERSIONS:
+        headers["X-GitHub-Api-Version-Selected"] = version
+    return headers
 
 
 def _budget_out(budget: wire.StoredBudget, resource: wire.Resource) -> wire.BudgetOut:
@@ -133,25 +184,17 @@ class GitHubApi:
                 budget = self._window(caller, resource)
                 if spends and budget.limit > 0:
                     if budget.remaining == 0:
-                        raise self._exhausted(budget, resource, caller)
+                        raise self._rate_limited(403, resource, caller, _budget_headers(budget, resource))
                     budget = budget.model_copy(update={"used": budget.used + 1})
                     self._world.write_budget(_login(caller), resource, budget)
-                answered = self._fault(request, caller) or await handler(request, caller)
-            except wire.Refusal as refusal:
-                answered = Answered(refusal.status, wire.error_body(refusal), refusal.headers)
-            except _Exhausted as exhausted:
-                answered = exhausted.answered
-            if budget is None:
-                budget = self._window(caller, resource)
-            headers = {
-                "X-GitHub-Media-Type": "github.v3; format=json",
-                **_budget_headers(budget, resource),
-                **answered.headers,
-            }
-            if caller is not None and caller.token is not None and caller.token.kind is wire.TokenKind.CLASSIC:
-                headers["X-OAuth-Scopes"] = ", ".join(caller.token.scopes)
-            if version is not None and version in wire.API_VERSIONS:
-                headers["X-GitHub-Api-Version-Selected"] = version
+                self._fault(request, caller)
+                answered = await handler(request, caller)
+            except wire.Refused as refused:
+                # The refusal leaves the app for the guard to render; it carries what every GitHub answer does.
+                spent = budget if budget is not None else self._window(caller, resource)
+                refused.headers = _answer_headers(spent, resource, caller, version, refused.headers)
+                raise
+            headers = _answer_headers(budget, resource, caller, version, answered.headers)
             return Response(answered.body, status_code=answered.status, media_type=wire.JSON, headers=headers)
 
         return answer
@@ -168,10 +211,6 @@ class GitHubApi:
         if stored is not None and now < stored.reset:
             return stored
         return wire.StoredBudget(limit=limit, used=0, reset=math.ceil(now) + wire.WINDOW_SECONDS[resource])
-
-    def _exhausted(self, budget: wire.StoredBudget, resource: wire.Resource, caller: Caller) -> _Exhausted:
-        """The call after the last one the budget allows: GitHub's primary-limit refusal, which spends nothing."""
-        return _Exhausted(self._rate_limited(403, resource, caller, _budget_headers(budget, resource)))
 
     async def rate_limit(self, request: Request, caller: Caller) -> Answered:
         """`GET /rate_limit`: every budget of the caller as it stands, `rate` being the core one. Reading it
@@ -194,40 +233,55 @@ class GitHubApi:
             raise LookupError(f"a token acts as {token.login}, who is not in this GitHub")
         return Caller(account=account, token=token)
 
-    def _fault(self, request: Request, caller: Caller) -> Answered | None:
+    def _fault(self, request: Request, caller: Caller) -> None:
+        """The first armed fault this call meets, spent and raised as the refusal it is answered with."""
         resource = resource_of(request.url.path)
         for ref, armed in self._world.faults():
             fault = armed.fault
             if armed.answered >= fault.times or (fault.resource is not None and fault.resource is not resource):
                 continue
             self._world.spend(ref, armed)
-            return self._faulted(fault, resource, caller)
-        return None
+            raise self._faulted(fault, resource, caller)
 
-    def _faulted(self, fault: wire.Fault, resource: wire.Resource, caller: Caller) -> Answered:
+    def _faulted(self, fault: wire.Fault, resource: wire.Resource, caller: Caller) -> wire.Refused:
         if isinstance(fault, wire.ServerError):
-            return Answered(fault.status, json.dumps({"message": "Server Error"}).encode())
+            return wire.ServerFailure(fault.status, deliberate=True)
         if isinstance(fault, wire.SecondaryRateLimited):
-            refusal = wire.Refusal(
+            return wire.Refusal(
                 fault.status,
                 "You have exceeded a secondary rate limit. Wait before you try again.",
                 section="/using-the-rest-api/rate-limits-for-the-rest-api",
+                headers={"Retry-After": str(fault.retry_after)},
+                deliberate=True,
             )
-            return Answered(fault.status, wire.error_body(refusal), {"Retry-After": str(fault.retry_after)})
         reset = math.ceil(self._clock.now().timestamp()) + wire.WINDOW_SECONDS[resource]
         limit = wire.LIMITS[resource]
         spent = wire.StoredBudget(limit=limit, used=limit, reset=reset)
-        return self._rate_limited(fault.status, resource, caller, _budget_headers(spent, resource))
+        return self._rate_limited(fault.status, resource, caller, _budget_headers(spent, resource), deliberate=True)
 
-    def _rate_limited(self, status: int, resource: wire.Resource, caller: Caller, headers: dict[str, str]) -> Answered:
-        """The primary limit's refusal: a 403 (or 429) on REST, a 200 whose `errors` say RATE_LIMITED on GraphQL."""
+    def _rate_limited(
+        self,
+        status: int,
+        resource: wire.Resource,
+        caller: Caller,
+        headers: dict[str, str],
+        *,
+        deliberate: bool = False,
+    ) -> wire.Refused:
+        """The primary limit's refusal: a 403 (or 429) on REST, a 200 whose `errors` say RATE_LIMITED on GraphQL.
+        Spent by the budget, it spends nothing more; armed by the scenario, it is `deliberate`."""
         who = f"user ID {caller.account.id}" if caller.account is not None else "this address"
         message = f"API rate limit exceeded for {who}."
         if resource is wire.Resource.GRAPHQL:
-            errors = wire.GraphErrorsOut(errors=[wire.GraphError(type="RATE_LIMITED", message=message)])
-            return Answered(200, errors.model_dump_json(exclude_none=True).encode(), headers)
-        refusal = wire.Refusal(status, message, section="/using-the-rest-api/rate-limits-for-the-rest-api")
-        return Answered(status, wire.error_body(refusal), headers)
+            error = wire.GraphError(type="RATE_LIMITED", message=message)
+            return wire.GraphRefusal(error, headers=headers, deliberate=deliberate)
+        return wire.Refusal(
+            status,
+            message,
+            section="/using-the-rest-api/rate-limits-for-the-rest-api",
+            headers=headers,
+            deliberate=deliberate,
+        )
 
     # ------------------------------------------------------------------ who may see what
 
@@ -781,11 +835,16 @@ def build_app(store: Store, clock: Clock) -> Starlette:
     ]
     routes = [Route(path, api.endpoint(handler), methods=[method]) for path, method, handler in table]
     routes.append(Route("/rate_limit", api.endpoint(api.rate_limit, spends=False), methods=["GET"]))
+    served = [
+        f"{method} {route.path}" for route in routes for method in sorted(route.methods or ()) if method != "HEAD"
+    ]
 
-    async def refused(request: Request, error: Exception) -> Response:
-        status = error.status_code if isinstance(error, HTTPException) else 500
-        message = "Not Found" if status == 404 else "Method Not Allowed" if status == 405 else "Server Error"
-        refusal = wire.Refusal(status, message)
-        return Response(wire.error_body(refusal), status_code=status, media_type=wire.JSON)
+    async def unrouted(request: Request, error: Exception) -> Response:
+        """No route answers this. Under a root GitHub's REST API has, it is an operation GitHub serves and this fake
+        does not: 501, naming the closest route. Under any other root GitHub has nothing, and answers 404."""
+        root = request.url.path.strip("/").split("/", 1)[0]
+        if root not in REST_ROOTS:
+            raise wire.not_found()
+        raise answering.unrouted(request.method, request.url.path, served)
 
-    return Starlette(routes=routes, exception_handlers={404: refused, 405: refused})
+    return Starlette(routes=routes, exception_handlers={404: unrouted, 405: unrouted})

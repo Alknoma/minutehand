@@ -29,8 +29,9 @@ from urllib.parse import parse_qsl
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
-from minutehand.adapters.providers.google_drive.docs import DocBody
+from minutehand.adapters.providers.google_drive.docs import JSON, DocBody
 from minutehand.adapters.providers.google_drive.slides import Deck
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 FOLDER = "application/vnd.google-apps.folder"
@@ -72,17 +73,57 @@ class GoogleError(Model):
     error: ErrorBody
 
 
-class Refusal(Exception):
-    """Google answered with an error. `answer` is the envelope it sent, `code` its HTTP status."""
+class Refusal(ServiceRefusal):
+    """Google answered with an error. `answer` is the envelope it sent; the refusal's `code` is the `reason` of its
+    first `errors` entry (Drive's classic envelope) or its status word (Docs'), and its `status` the HTTP status."""
 
-    def __init__(self, answer: GoogleError, headers: dict[str, str] | None = None) -> None:
-        super().__init__(answer.error.message)
+    def __init__(self, answer: GoogleError, headers: dict[str, str] | None = None, *, deliberate: bool = False) -> None:
+        error = answer.error
+        code = error.errors[0].reason if error.errors else error.status or str(error.code)
+        super().__init__(code=code, message=error.message, status=error.code, deliberate=deliberate)
         self.answer = answer
         self.headers = headers or {}
 
-    @property
-    def code(self) -> int:
-        return self.answer.error.code
+    def armed(self) -> Refusal:
+        """The same refusal, as a fault a scenario or a test declared."""
+        return Refusal(self.answer, dict(self.headers), deliberate=True)
+
+    def render(self) -> Rendered:
+        return Rendered(
+            status=self.status,
+            content_type=JSON,
+            body=self.answer.model_dump_json(exclude_none=True).encode(),
+            headers=list(self.headers.items()),
+        )
+
+
+STATUS_WORDS = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHENTICATED",
+    403: "PERMISSION_DENIED",
+    404: "NOT_FOUND",
+    409: "ABORTED",
+    410: "FAILED_PRECONDITION",
+    413: "INVALID_ARGUMENT",
+    429: "RESOURCE_EXHAUSTED",
+    500: "INTERNAL",
+    501: "UNIMPLEMENTED",
+    503: "UNAVAILABLE",
+}
+"""The status word Docs and Slides answer each HTTP status with."""
+
+MINUTEHAND_REASONS = {500: "internalError", 501: "notImplemented"}
+"""The `reason` of an answer Minutehand makes in Google's place, by its status."""
+
+
+def minutehand_error(status: int, code: str, message: str) -> Rendered:
+    """An answer Minutehand makes in Google's place (an operation it does not implement, or its own error), in the
+    envelope every Google API client reads: Drive's `errors` entry, in domain `minutehand`, and Docs' status word,
+    so `googleapiclient` raises its `HttpError` with `message` as its reason whichever API was called."""
+    reason = MINUTEHAND_REASONS[status] if status in MINUTEHAND_REASONS else code
+    word = STATUS_WORDS[status] if status in STATUS_WORDS else "UNKNOWN"
+    item = ErrorItem(domain="minutehand", reason=reason, message=message)
+    return Refusal(GoogleError(error=ErrorBody(code=status, message=message, errors=[item], status=word))).render()
 
 
 def drive_refusal(
@@ -127,11 +168,6 @@ def bad_request(message: str) -> Refusal:
 
 def forbidden(reason: str, message: str) -> Refusal:
     return drive_refusal(403, reason, message)
-
-
-def not_implemented(message: str) -> Refusal:
-    """Something real Drive does that this fake does not. Loud, and never mistaken for Google's own answer."""
-    return drive_refusal(501, "notImplemented", message, domain="minutehand")
 
 
 def login_required() -> Refusal:
@@ -181,10 +217,6 @@ def docs_login_required() -> Refusal:
     )
     refusal.headers["WWW-Authenticate"] = 'Bearer realm="https://accounts.google.com/"'
     return refusal
-
-
-def error_body(refusal: Refusal) -> bytes:
-    return refusal.answer.model_dump_json(exclude_none=True).encode()
 
 
 # --------------------------------------------------------------------------- stored
@@ -732,6 +764,17 @@ class OAuthError(Model):
 
     error: str
     error_description: str
+
+
+class OAuthRefusal(ServiceRefusal):
+    """The token or revoke endpoint refused: RFC 6749's `error` (the refusal's `code`) and `error_description`."""
+
+    def __init__(self, error: str, description: str, status: int = 400, *, deliberate: bool = False) -> None:
+        super().__init__(code=error, message=description, status=status, deliberate=deliberate)
+
+    def render(self) -> Rendered:
+        answer = OAuthError(error=self.code, error_description=self.message)
+        return Rendered(status=self.status, content_type=JSON, body=respond(answer, None))
 
 
 def read_token_request(form: dict[str, str]) -> TokenRequest:

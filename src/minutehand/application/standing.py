@@ -14,18 +14,18 @@ only in the run loop.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from minutehand.application.further_seed import Scratch, land
 from minutehand.application.model_calls import per_wake
-from minutehand.application.refusals import RunRefused, refuse_unheld
+from minutehand.application.refusals import NotFound, RunRefused, refuse_unheld
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
-from minutehand.checks.runner import RunResult, evaluate, view_of
+from minutehand.checks.runner import RunResult, evaluate, failed_calls, view_of
 from minutehand.domain.people import (
     InboundCredential,
     InboundCredentialAsk,
@@ -195,7 +195,8 @@ class StandingWorld:
         token = object()
         self._pushing[id(token)] = what
         try:
-            yield
+            with refusing():
+                yield
         finally:
             del self._pushing[id(token)]
 
@@ -520,7 +521,8 @@ class StandingWorld:
     def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
         """The ticket's assignee moves it, as actor PERSON."""
         before = self.store.head()
-        self._holds(ticket.provider).transition(ticket, to, self.store, self.clock)
+        with refusing():
+            self._holds(ticket.provider).transition(ticket, to, self.store, self.clock)
         return self._written(before)
 
     def edit_ticket(self, ticket: EntityRef, *, state: TicketState | None, assignee: str | None) -> WorldEvent:
@@ -547,6 +549,7 @@ class StandingWorld:
             [],
             self.store.replies(),
             unmatched_calls=[c.exchange for c in self.store.calls() if c.refused],
+            failed_calls=failed_calls(self.store.calls()),
             model_calls=per_wake(self.store.spans(), [STANDING_WAKE]),
         )
         return evaluate(view, stop=stop, ended=self.clock.now())
@@ -610,6 +613,19 @@ class StandingWorld:
         if not isinstance(found, HoldsTickets):
             raise WorldRefused(f"{provider} holds no tickets a person can move")
         return found
+
+
+@contextmanager
+def refusing() -> Iterator[None]:
+    """A port method refusing what a person was asked to do, as the refusal the world answers with: `LookupError`
+    (what it names is not there) as `NotFound`, `ValueError` (it cannot be done) as `WorldRefused`, each with the
+    port's own words."""
+    try:
+        yield
+    except LookupError as e:
+        raise NotFound(str(e.args[0]) if e.args else str(e)) from e
+    except ValueError as e:
+        raise WorldRefused(str(e)) from e
 
 
 def _doing(happening: Happening) -> str:

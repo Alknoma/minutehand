@@ -384,9 +384,25 @@ class RefusalKind(StrEnum):
     """The provider cannot do what was asked at all, in any world: a capability it does not have."""
 
 
+class RefusalCode(StrEnum):
+    """What went wrong, for a machine: stable, one per answer the control API gives in place of what was asked."""
+
+    INVALID = "invalid"  # 422: a body that is not the model, a query parameter that is not what its route takes
+    NOT_FOUND = "not_found"  # 404: a world that is not open, or something it does not hold
+    REFUSED = "refused"  # 409: what the world cannot do
+    UNSUPPORTED = "unsupported"  # 409: what the provider cannot do in any world
+    AGENT_REFUSED = "agent_refused"  # 502: the service an event was pushed to refused it
+    ENVIRONMENT = "environment"  # 503: the machine failed (a port, a process, a host)
+    INTERNAL_ERROR = "internal_error"  # 500: Minutehand's own error; never the request's fault
+
+
 class Refusal(Model):
+    """Every answer the control API gives in place of what was asked, whatever the route: `code` for a machine,
+    `error` for a person."""
+
     error: str
     kind: RefusalKind | None = Field(default=None, description="Set when the refusal is of a known kind")
+    code: RefusalCode = Field(default=RefusalCode.REFUSED, description="What went wrong, stable for a machine")
 
 
 class FurtherSeed(Model):

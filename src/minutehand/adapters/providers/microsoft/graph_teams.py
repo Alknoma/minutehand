@@ -213,7 +213,7 @@ class TeamsGraph:
                 raise bad_request("/me request is only valid with delegated authentication flow.")
             parts = ["users", claims.oid, *parts[1:]]
         if request.method != "GET":
-            raise GraphRefusal(405, "Request_BadRequest", "Users are read only here.")
+            raise NotImplementedError(f"{request.method} on a user: users are read only here")
         if len(parts) == 1:
             self._refuse_options(request, {"$filter", "$count"})
             clause = query(request, "$filter")
@@ -327,7 +327,7 @@ class TeamsGraph:
     async def teams(self, request: Request, parts: list[str]) -> Response:
         graph_caller(request)
         if len(parts) < 2:
-            raise bad_request("Listing teams is not supported; name a team.")
+            raise NotImplementedError("listing teams; name a team")
         team = self._team(parts[1])
         rest = parts[2:]
         if not rest and request.method == "GET":

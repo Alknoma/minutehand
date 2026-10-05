@@ -39,13 +39,16 @@ stretch before each reset first, and says in `resets` where each reset falls.
                                                 (`model_host`, `pass_through`); `late_for`: those for world W after
                                                 it closed
 
-A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
-`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a query
-parameter that is not what its route takes, 502 when the service an event was pushed to refused it.
+Anything but the answer asked for is `Refusal`, with `code` (`RefusalCode`) for a machine: 404 for a world that is
+not open, 409 for what a world cannot do (with `kind` `unsupported` when the provider cannot do it in any world), 422
+for a body that is not the model or a query parameter that is not what its route takes, 502 when the service an event
+was pushed to refused it, 503 when the machine failed, and 500 `internal_error` for Minutehand's own error, never
+the request's fault. One converter decides which (`refusal_for`).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from enum import StrEnum
@@ -92,6 +95,7 @@ from minutehand.adapters.control.wire import (
     RawEntity,
     RawState,
     Refusal,
+    RefusalCode,
     RefusalKind,
     Reply,
     Say,
@@ -102,8 +106,9 @@ from minutehand.adapters.control.wire import (
     WorldView,
     lobby_kind,
 )
-from minutehand.application.refusals import AgentFailed, RunRefused
+from minutehand.application.refusals import AgentFailed, NotFound, RunRefused
 from minutehand.application.standing import Unsupported
+from minutehand.domain.errors import EnvironmentFailure
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordedCall, Stored, WorldEvent
 from minutehand.ports.store import Store
@@ -114,31 +119,44 @@ if TYPE_CHECKING:
 
 Handler = Callable[[Request], Awaitable[Response]]
 
+logger = logging.getLogger(__name__)
+
 
 def _json(model: Model, status: int = 200) -> Response:
     return Response(model.model_dump_json(), status_code=status, media_type="application/json")
 
 
-def _refused(status: int, error: str, kind: RefusalKind | None = None) -> Response:
-    return _json(Refusal(error=error, kind=kind), status)
+def _refused(status: int, error: str, code: RefusalCode, kind: RefusalKind | None = None) -> Response:
+    return _json(Refusal(error=error, kind=kind, code=code), status)
+
+
+def refusal_for(error: Exception) -> Response:
+    """THE control API's converter: an exception a route let out, as the one `Refusal` body. A refusal of what was
+    asked keeps its status; anything else is Minutehand's own error, answered 500 and logged with its traceback,
+    so a bug is never reported as the request being refused."""
+    if isinstance(error, ValidationError | _BadQuery):
+        return _refused(422, str(error), RefusalCode.INVALID)
+    if isinstance(error, NotFound):
+        return _refused(404, str(error), RefusalCode.NOT_FOUND)
+    if isinstance(error, AgentFailed):
+        return _refused(502, str(error), RefusalCode.AGENT_REFUSED)
+    if isinstance(error, Unsupported):
+        return _refused(409, str(error), RefusalCode.UNSUPPORTED, RefusalKind.UNSUPPORTED)
+    if isinstance(error, RunRefused):
+        return _refused(409, str(error), RefusalCode.REFUSED)
+    if isinstance(error, EnvironmentFailure):
+        logger.error("control API: %s", error)
+        return _refused(503, str(error), RefusalCode.ENVIRONMENT)
+    logger.error("control API internal error: %s: %s", type(error).__name__, error, exc_info=error)
+    return _refused(500, f"internal error: {type(error).__name__}: {error}", RefusalCode.INTERNAL_ERROR)
 
 
 def _guarded(handler: Handler) -> Handler:
     async def guarded(request: Request) -> Response:
         try:
             return await handler(request)
-        except ValidationError as e:
-            return _refused(422, str(e))
-        except _BadQuery as e:
-            return _refused(422, str(e))
-        except LookupError as e:
-            return _refused(404, str(e.args[0]) if e.args else str(e))
-        except AgentFailed as e:
-            return _refused(502, str(e))
-        except Unsupported as e:
-            return _refused(409, str(e), RefusalKind.UNSUPPORTED)
-        except (RunRefused, ValueError) as e:
-            return _refused(409, str(e))
+        except Exception as error:
+            return refusal_for(error)
 
     return guarded
 
@@ -387,7 +405,7 @@ def create_app(serving: Serving) -> Starlette:
         found = world_of(request)
         provider = provider_of(request, found)
         if provider is None:
-            return _refused(422, "name the provider whose state to read: ?provider=")
+            return _refused(422, "name the provider whose state to read: ?provider=", RefusalCode.INVALID)
         refs: dict[EntityRef, None] = {}
         for event in found.store.events():
             if event.entity.provider == provider and event.operation not in (Operation.READ, Operation.SEARCH):

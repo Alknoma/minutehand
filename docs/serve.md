@@ -82,10 +82,25 @@ Per provider, given only what a client sends:
 ## The control API
 
 Every request and answer is a model in `src/minutehand/adapters/control/wire.py`: frozen, and an unknown field
-is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open, 409 for what a world
-cannot do (with `"kind": "unsupported"` when the provider cannot do it in any world; the client raises
-`Unsupported`), 422 for a body that is not the model or a query parameter that is not what its route takes (a
-`since` that is no number, a `kind` that names no kind), 502 when the service an event was pushed to refused it.
+is refused with 422. Anything but the answer asked for is one body, `{"error": "...", "kind": null, "code": "..."}`, from
+one converter (`control.app.refusal_for`); `code` (`RefusalCode`) is stable for a machine: 404 `not_found` for a world
+that is not open, 409 `refused` for what a world cannot do (`unsupported`, with `"kind": "unsupported"`, when the
+provider cannot do it in any world; the client raises `Unsupported`), 422 `invalid` for a body that is not the model
+or a query parameter that is not what its route takes (a `since` that is no number, a `kind` that names no kind), 502
+`agent_refused` when the service an event was pushed to refused it, 503 `environment` when the machine failed, and
+500 `internal_error`, `"error": "internal error: <Type>: <message>"`, for Minutehand's own error, logged at error with
+its traceback. Only a typed refusal is reported as the request being refused: a bare `ValueError` or `LookupError`
+escaping a route is a bug, answered 500, and the client raises `InternalError`.
+
+Every recorded call (`GET /v1/worlds/{id}/calls`, `Exchange`) says how it was answered in `answer`: `answered`,
+`refused` (as the real service refuses; any answer of status 400 or more counts), `injected_fault` (a fault armed by
+`faults`, `provider-faults` or the seed), `not_implemented` (the fake has no answer for that operation: 501 in the
+vendor's error shape, naming it and the closest route the fake has) or `internal_error` (500 in the vendor's error
+shape, its message beginning "minutehand internal error while answering"). When an exception became the answer,
+`failure` keeps it as a structure: `kind`, `code`, `message`, `where` (`METHOD path`), and for an internal error its
+`traceback` and `causes`. An answer Minutehand made in place of the service's carries the header
+`x-minutehand-answer`; set `MINUTEHAND_DEBUG=1` in the server's environment to put an internal error's traceback in
+the body the agent gets as well.
 
 | Route | Body → answer | What it does |
 |---|---|---|

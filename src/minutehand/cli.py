@@ -54,6 +54,8 @@ import copy
 import os
 import shlex
 import sys
+import tempfile
+import traceback
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -76,7 +78,8 @@ from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import exit_code, stability
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
-from minutehand.domain.run import StopReason
+from minutehand.domain.errors import EnvironmentFailure
+from minutehand.domain.run import ExitCode, StopReason
 from minutehand.domain.scenario import Model
 from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
@@ -100,6 +103,10 @@ _STOPPED = {
     StopReason.CLOSED: "the standing world was closed by whoever opened it",
 }
 _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
+
+
+ERRORS = "errors"
+"""Where, under the state directory, the traceback of Minutehand's own error is written."""
 
 
 class EnvFormat(StrEnum):
@@ -286,11 +293,62 @@ def _parser() -> argparse.ArgumentParser:
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
     state(view)
+    debug = "on Minutehand's own error, print its traceback too (it is always written to <state>/errors/)"
+    parser.add_argument("--debug", action="store_true", help=debug)
+    for sub in commands.choices.values():
+        sub.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help=debug)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """THE CLI's converter: every command's outcome as one exit code (`domain.run.ExitCode`). A refusal of what was
+    asked is one line and `USAGE`; the machine failing is one line naming what and what to do, `ENVIRONMENT`; Ctrl-C
+    is `INTERRUPTED`; anything else is Minutehand's own error: one line naming it and where its traceback was
+    written, `TOOL_ERROR`, with the traceback on screen too under --debug."""
     args_in = list(sys.argv[1:] if argv is None else argv)
+    debug = "--debug" in args_in[: args_in.index("--") if "--" in args_in else len(args_in)]
+    try:
+        return _main(args_in)
+    except EnvironmentFailure as e:
+        print(f"minutehand: {e}", file=sys.stderr)
+        return ExitCode.ENVIRONMENT
+    except KeyboardInterrupt:
+        print("minutehand: interrupted", file=sys.stderr)
+        return ExitCode.INTERRUPTED
+    except Exception as e:
+        written = _keep_traceback(e, args_in)
+        first = str(e).strip().splitlines()[0] if str(e).strip() else ""
+        print(
+            f"minutehand: internal error: {type(e).__name__}: {first} (a bug in minutehand; the traceback is in "
+            f"{written})",
+            file=sys.stderr,
+        )
+        if debug:
+            traceback.print_exception(e, file=sys.stderr)
+        return ExitCode.TOOL_ERROR
+
+
+def _keep_traceback(error: Exception, args_in: Sequence[str]) -> Path:
+    """Write `error`'s traceback beside the runs (`<state>/errors/`), or to a temporary file when that cannot be
+    written, and answer where."""
+    state = Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
+    if "--state" in args_in and args_in.index("--state") + 1 < len(args_in):
+        state = Path(args_in[args_in.index("--state") + 1])
+    text = f"minutehand {' '.join(args_in)}\n\n" + "".join(traceback.format_exception(error))
+    for directory in (state / ERRORS, Path(tempfile.gettempdir())):
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w", dir=directory, prefix="internal-error-", suffix=".txt", delete=False, encoding="utf-8"
+            ) as kept:
+                kept.write(text)
+                return Path(kept.name)
+        except OSError:
+            continue
+    return Path("(nowhere: neither the state directory nor the temporary directory could be written)")
+
+
+def _main(args_in: list[str]) -> int:
     command: list[str] | None = None
     if "--" in args_in:
         split = args_in.index("--")
@@ -690,7 +748,7 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
         lines += [f"  {line}" for line in fork_described(account)]
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
     if record.failure is not None:
-        lines.append(f"  {record.failure}")
+        lines.append(f"  {record.failure.where}: {record.failure.message}")
     lines.append(f"  providers the agent called: {', '.join(record.providers) or 'none'}")
     if record.outbound:
         lines.append("\noutbound calls")

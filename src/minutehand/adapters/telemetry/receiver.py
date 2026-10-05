@@ -50,6 +50,7 @@ from starlette.routing import Route
 
 from minutehand.adapters.telemetry import otlp
 from minutehand.adapters.telemetry.forward import ENDPOINT, Forwarding, forward, signal_variable
+from minutehand.domain.errors import EnvironmentFailure
 from minutehand.domain.telemetry import ReceivedSpan, Signal, SpanSource
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -200,7 +201,11 @@ class Receiver:
             listener.bind((self.host, self.port))
         except OSError as e:
             listener.close()
-            raise OSError(f"the telemetry receiver could not listen on {self.host}:{self.port}: {e}") from e
+            raise EnvironmentFailure(
+                f"port {self.port} on {self.host}",
+                f"the telemetry receiver could not listen on it: {e}",
+                "free it, give --telemetry-port another, or --no-receive-telemetry",
+            ) from e
         listener.listen(128)
         listener.setblocking(False)
         self.port = listener.getsockname()[1]

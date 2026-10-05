@@ -10,7 +10,8 @@ Five families live here:
 - **Answers** — the entities as the REST API returns them, every one carrying its `$type`. `render` narrows an
   answer to what `fields=` named.
 - **Hub** — Hub's paged collections, its permission cache, and its OAuth token answer.
-- **Errors** — `Refusal`, answered as `{"error": …, "error_description": …}`.
+- **Errors** — `Refusal`, the `ServiceRefusal` YouTrack and Hub answer as `{"error": …, "error_description": …}`,
+  and `error_answer`, Minutehand's own errors in the same shape.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
+from minutehand.domain.errors import Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 PAGE_DEFAULT = 42
@@ -39,8 +41,13 @@ class Wire(Model):
 # --------------------------------------------------------------------------- errors
 
 
-class Refusal(Exception):
-    """YouTrack answered with an error status. `error` and `description` are its own words."""
+JSON = "application/json;charset=UTF-8"
+"""The content type every YouTrack and Hub answer, refusals included, carries."""
+
+
+class Refusal(ServiceRefusal):
+    """YouTrack answered with an error status. `code` (its `error`) and `message` (its `error_description`) are its
+    own words; `retry_after` is the `Retry-After` a fault that will end answers with."""
 
     def __init__(
         self,
@@ -51,14 +58,26 @@ class Refusal(Exception):
         developer_message: str | None = None,
         field: str | None = None,
         retry_after: int | None = None,
+        deliberate: bool = False,
     ) -> None:
-        super().__init__(description)
-        self.status = status
-        self.error = error
-        self.description = description
+        super().__init__(code=error, message=description, status=status, deliberate=deliberate)
         self.developer_message = developer_message
         self.field = field
         self.retry_after = retry_after
+
+    def render(self) -> Rendered:
+        answer = ErrorOut(
+            error=self.code,
+            error_description=self.message,
+            error_developer_message=self.developer_message,
+            error_field=self.field,
+        )
+        return Rendered(
+            status=self.status,
+            content_type=JSON,
+            body=answer.model_dump_json(exclude_none=True).encode(),
+            headers=[] if self.retry_after is None else [("Retry-After", str(self.retry_after))],
+        )
 
 
 class ErrorOut(Wire):
@@ -68,14 +87,10 @@ class ErrorOut(Wire):
     error_field: str | None = None
 
 
-def error_body(refusal: Refusal) -> bytes:
-    answer = ErrorOut(
-        error=refusal.error,
-        error_description=refusal.description,
-        error_developer_message=refusal.developer_message,
-        error_field=refusal.field,
-    )
-    return answer.model_dump_json(exclude_none=True).encode()
+def error_answer(status: int, code: str, message: str) -> Rendered:
+    """An error of Minutehand's own (501, 500) in YouTrack's shape, which its clients read as they read a refusal."""
+    body = ErrorOut(error=code, error_description=message).model_dump_json(exclude_none=True).encode()
+    return Rendered(status=status, content_type=JSON, body=body)
 
 
 def not_found(what: str) -> Refusal:

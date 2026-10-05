@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from typing import Protocol, runtime_checkable
 
 from minutehand.domain.clock import Due
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     InboundCredential,
     InboundCredentialAsk,
@@ -38,11 +39,23 @@ ASGIApp = Callable[[Scope, Callable[[], Awaitable[Message]], Callable[[Message],
 """The fake API, as an ASGI application. A WSGI app is wrapped with asgiref's WsgiToAsgi."""
 
 
-class Provider(Protocol):
+class RendersErrors(Protocol):
+    """How a provider's service says something went wrong, for the answers its own refusals do not render: an
+    operation the fake does not implement (501) and Minutehand's own error (500). Rendered in the vendor's error
+    shape, so the agent's client library raises its own error type with `message` intact."""
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """The vendor's error body for `status`, carrying `code` and `message` where its clients read them."""
+        ...
+
+
+class Provider(RendersErrors, Protocol):
     manifest: Manifest
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        """The service's API. It reads and writes only through `world` and stamps only from `clock`."""
+        """The service's API, guarded (`adapters.answering.guarded`): it reads and writes only through `world`,
+        stamps only from `clock`, and lets out only a `ServiceRefusal`, a `NotImplementedError`, or Minutehand's own
+        error, each turned into an answer by the guard."""
         ...
 
     def seed(self, scenario: Scenario, world: Store) -> None:

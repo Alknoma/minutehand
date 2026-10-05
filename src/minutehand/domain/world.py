@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 
+from minutehand.domain.errors import AnswerKind, Failure
 from minutehand.domain.scenario import AccessRole, Model, Person, ProviderKey, TicketState
 
 
@@ -156,6 +157,16 @@ class Exchange(Model):
         default=None,
         description="Set for a call refused into the lobby of `minutehand serve` that carried a claim of a world "
         "already closed: the id of the world it would have belonged to, had it come before that world closed",
+    )
+    answer: AnswerKind = Field(
+        default=AnswerKind.ANSWERED,
+        description="How it was answered: by the fake, refused as the real service refuses, failed by a fault armed "
+        "on purpose, not implemented by the fake, or failed by Minutehand's own error",
+    )
+    failure: Failure | None = Field(
+        default=None,
+        description="Set when an exception was turned into the answer: the refusal, the operation the fake does not "
+        "implement, or Minutehand's own error with its traceback",
     )
 
 

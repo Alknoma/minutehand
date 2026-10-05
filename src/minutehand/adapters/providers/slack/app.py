@@ -2,8 +2,11 @@
 
 Every Web API method answers at `/api/<method>`, by GET or POST, with its arguments in the
 query string, a form-encoded body or a JSON body, exactly as Slack accepts them. Every
-refusal is Slack's own `{"ok": false, "error": ...}` with HTTP 200, except `ratelimited`,
-which is HTTP 429 with `Retry-After`, as Slack sends it.
+refusal is raised as a `wire.Refusal` and rendered by the guard (`adapters.answering.guarded`) as
+Slack's own `{"ok": false, "error": ...}` with HTTP 200, except `ratelimited`, which is HTTP 429
+with `Retry-After`, as Slack sends it. A method the fake does not answer, and any path it does not
+serve, is an operation it does not implement (501), never Slack's `unknown_method`: the fake cannot
+tell a method Slack lacks from one it lacks itself.
 
 Beside the Web API, on the hosts Slack serves them from (`*.slack.com`, so the same app):
 `files.slack.com/files-pri/...`, a file's `url_private` and `url_private_download`, served to a
@@ -22,6 +25,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from minutehand.adapters.answering import unrouted
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.world import (
@@ -88,33 +92,28 @@ class SlackApi:
 
     async def endpoint(self, request: Request) -> Response:
         method = request.path_params["method"]
-        try:
-            if method not in self._methods:
-                raise wire.Refusal("unknown_method")
-            presented = wire.read_call(
-                request.url.query,
-                _header(request, "content-type") or "",
-                await request.body(),
-                _header(request, "authorization"),
-            )
-            self._world = SlackWorld(self._store)
-            if method not in _UNAUTHENTICATED:
-                self._world = self._authenticate(presented)
-            faulted = self._fault(method, presented)
-            answer: wire.Response = faulted if faulted is not None else self._methods[method](presented)
-        except wire.Refusal as refusal:
-            answer = wire.Failed(error=refusal.error)
-        if isinstance(answer, wire.RateLimitedAnswer):
-            return Response(
-                wire.respond(answer),
-                status_code=429,
-                headers={"Retry-After": str(answer.retry_after)},
-                media_type="application/json; charset=utf-8",
-            )
-        return Response(wire.respond(answer), media_type="application/json; charset=utf-8")
+        if method not in self._methods:
+            raise unrouted(request.method, request.url.path, self.routes())
+        presented = wire.read_call(
+            request.url.query,
+            _header(request, "content-type") or "",
+            await request.body(),
+            _header(request, "authorization"),
+        )
+        self._world = SlackWorld(self._store)  # state-lint: exempt the calling team's view of the store
+        if method not in _UNAUTHENTICATED:
+            self._world = self._authenticate(presented)  # state-lint: exempt the calling team's view of the store
+        self._fault(method, presented)
+        return Response(wire.respond(self._methods[method](presented)), media_type=wire.JSON)
 
-    def _fault(self, method: str, presented: wire.Presented) -> wire.Failed | None:
-        """The first fault the scenario declares for this call that still has calls to fail, used up by one."""
+    def routes(self) -> list[str]:
+        """Every Web API method the fake answers, as `METHOD /api/<method>`, and the rest of what it serves."""
+        web_api = [f"{verb} /api/{name}" for name in self._methods for verb in ("GET", "POST")]
+        return [*web_api, *_OTHER_ROUTES]
+
+    def _fault(self, method: str, presented: wire.Presented) -> None:
+        """The first fault the scenario declares for this call that still has calls to fail, used up by one, and
+        raised as Slack refuses: deliberately."""
         now = int(self._clock.now().timestamp())
         for fault in self._world.bodies(EntityKind.RECORD, state.FAULTS, wire.SlackFault):
             if fault.call is not None and fault.call != method:
@@ -132,10 +131,12 @@ class SlackApi:
                 parent=state.FAULTS,
                 after=RecordSnapshot(resource="faults", text=f"{method} failed on purpose: {fault.error}"),
             )
-            if fault.retry_after is not None:
-                return wire.RateLimitedAnswer(error=fault.error, retry_after=fault.retry_after)
-            return wire.Failed(error=fault.error)
-        return None
+            raise wire.Refusal(
+                fault.error,
+                status=200 if fault.retry_after is None else 429,
+                retry_after=fault.retry_after,
+                deliberate=True,
+            )
 
     def _authenticate(self, presented: wire.Presented) -> SlackWorld:
         """The workspace the token is for. A workspace that declares its bot tokens takes those and what its install
@@ -769,7 +770,9 @@ class SlackApi:
         if not client.client_secret:
             raise wire.Refusal("bad_client_secret")
         every = self._world.workspaces()
-        self._world = self._world.as_team(next((w for w in every if w.oauth_code == args.code), every[0]))
+        self._world = self._world.as_team(
+            next((w for w in every if w.oauth_code == args.code), every[0])
+        )  # state-lint: exempt narrows the call's view of the store to the installing team
         install = self._world.body(state.install_ref(self._world.team.id), wire.SlackInstall)
         if not args.code or install is None or args.code in install.exchanged:
             raise wire.Refusal("invalid_code")
@@ -807,7 +810,7 @@ class SlackApi:
         found = world.file(file_id) if team == world.team.id else None
         content = world.body(state.content_ref(file_id), wire.SlackFileContent) if found is not None else None
         if found is None or content is None or request.path_params["name"] != found.name:
-            return HTMLResponse(_NOT_FOUND, status_code=404)
+            raise wire.PageNotFound(request.url.path)
         world.saw(state.file_ref(found.id), Operation.READ)
         headers = (
             {"Content-Disposition": f'attachment; filename="{found.name}"'}
@@ -828,16 +831,16 @@ class SlackApi:
         found_team = SlackWorld(self._store).team_of(request.path_params["team"])
         hook = found_team.body(state.hook_ref(request.path_params["hook"]), wire.SlackHook) if found_team else None
         if found_team is None or hook is None or hook.secret != request.path_params["secret"]:
-            return JSONResponse({"ok": False, "error": "invalid_token"}, status_code=404)
+            raise wire.HookRefusal("invalid_token", status=404)
         if int(self._clock.now().timestamp()) > hook.issued + HOOK_LIFETIME:
-            return JSONResponse({"ok": False, "error": "expired_url"}, status_code=404)
+            raise wire.HookRefusal("expired_url", status=404)
         if hook.used >= HOOK_USES:
-            return JSONResponse({"ok": False, "error": "used_url"}, status_code=404)
+            raise wire.HookRefusal("used_url", status=404)
         world = found_team
         try:
             body = wire.ResponseUrlBody.model_validate_json(await request.body())
-        except ValueError:
-            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        except ValueError as error:
+            raise wire.HookRefusal("invalid_payload", status=400) from error
         world.write(
             state.hook_ref(hook.id),
             hook.model_copy(update={"used": hook.used + 1}),
@@ -848,7 +851,7 @@ class SlackApi:
         original = world.located(hook.message) if hook.message is not None else None
         if body.delete_original or body.replace_original:
             if original is None:
-                return JSONResponse({"ok": False, "error": "message_not_found"}, status_code=404)
+                raise wire.HookRefusal("message_not_found", status=404)
             channel, message = original
             if body.delete_original:
                 world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel)
@@ -893,7 +896,7 @@ class SlackApi:
             return JSONResponse({"ok": True})
         user = world.user(hook.user)
         if user is None:
-            return JSONResponse({"ok": False, "error": "user_not_found"}, status_code=404)
+            raise wire.HookRefusal("user_not_found", status=404)
         message = self._from_bot_in(world, body.text, body.blocks, body.attachments, thread_ts, ephemeral_to=user.id)
         self._write_ephemeral_in(world, hook.channel, message, user)
         return JSONResponse({"ok": True})
@@ -913,7 +916,6 @@ _SIGN_IN = (
     "<!DOCTYPE html><html><head><title>Sign in | Slack</title></head>"
     "<body><h1>Sign in to Simulated Workspace</h1></body></html>"
 )
-_NOT_FOUND = "<!DOCTYPE html><html><head><title>Not found | Slack</title></head><body></body></html>"
 
 
 def message_actions(message: wire.SlackMessage) -> list[MessageAction]:
@@ -951,9 +953,26 @@ def _within(ts: Decimal, *, oldest: Decimal | None, latest: Decimal | None, incl
     return not (latest is not None and (ts > latest if inclusive else ts >= latest))
 
 
+_OTHER_ROUTES = (
+    "GET /files-pri/{key}/{name}",
+    "GET /files-pri/{key}/download/{name}",
+    "POST /actions/{team}/{hook}/{secret}",
+    "POST /commands/{team}/{hook}/{secret}",
+    "GET /",
+)
+"""What the fake serves beside the Web API, as `METHOD /path`: the routes `build_app` mounts after `/api/{method}`."""
+_EVERY_METHOD = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+
+
 def build_app(store: Store, clock: Clock) -> Starlette:
     api = SlackApi(store, clock)
     endpoint: Callable[[Request], Awaitable[Response]] = api.endpoint
+
+    async def unserved(request: Request) -> Response:
+        """A path no route of the fake has, on a host Slack serves much more from (`/api/...` is every method, but
+        `slack.com/oauth/v2/authorize`, `/apps/...` are real too): an operation the fake does not implement."""
+        raise unrouted(request.method, request.url.path, api.routes())
+
     return Starlette(
         routes=[
             Route("/api/{method}", endpoint, methods=["GET", "POST"]),
@@ -962,5 +981,6 @@ def build_app(store: Store, clock: Clock) -> Starlette:
             Route("/actions/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
             Route("/commands/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
             Route("/", api.sign_in, methods=["GET"]),
+            Route("/{anything:path}", unserved, methods=list(_EVERY_METHOD)),
         ]
     )

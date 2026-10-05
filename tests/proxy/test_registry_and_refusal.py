@@ -18,6 +18,7 @@ from minutehand.adapters.proxy.registry import ENTRY_POINT_GROUP, ProviderConfli
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Holds, Manifest, Tier
 from minutehand.domain.scenario import Scenario
 from minutehand.ports.clock import Clock
@@ -37,6 +38,13 @@ class Loopback:
             return PlainTextResponse("answered by loopback")
 
         return Starlette(routes=[Route("/", hello)])
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return Rendered(
+            status=status,
+            content_type="application/json",
+            body=json.dumps({"error": code, "message": message}).encode(),
+        )
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """Loopback keeps nothing a scenario could seed."""

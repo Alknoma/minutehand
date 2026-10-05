@@ -252,6 +252,5 @@ async def test_a_malformed_paging_or_fields_parameter_is_refused_400(
     refusal(await client.get("/api/issues", params=params), 400)
 
 
-async def test_a_route_youtrack_does_not_serve_is_refused_404_in_its_shape(client: httpx.AsyncClient) -> None:
-    refusal(await client.get("/api/agiles"), 404)
+async def test_a_method_an_issue_does_not_take_is_refused_405_in_its_shape(client: httpx.AsyncClient) -> None:
     refusal(await client.put("/api/issues/LAUNCH-1", json={}), 405)

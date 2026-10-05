@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pydantic import JsonValue
 
+from minutehand.adapters.answering import guarded
 from minutehand.adapters.providers.notion import webhooks, wire
 from minutehand.adapters.providers.notion.app import build_app
 from minutehand.adapters.providers.notion.edits import Editor
@@ -27,6 +28,7 @@ from minutehand.adapters.providers.notion.seed import (
     value_request,
 )
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
     Commented,
@@ -51,7 +53,14 @@ class NotionProvider:
     seed_model = NotionSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(world, clock)
+        return guarded(build_app(world, clock), self, provider=self.manifest.key)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """Notion's error object, coded so `notion-client` raises `APIResponseError` with `message` as its text;
+        `code`, Minutehand's own, is not one of Notion's codes, and the answer's `x-minutehand-answer` header says
+        what it was instead."""
+        del code
+        return wire.error_answer(status, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

@@ -36,6 +36,10 @@ class RunRefused(Exception):
     """The run cannot start or continue as configured: a missing provider, an unsupported person, no state hooks."""
 
 
+class NotFound(RunRefused):
+    """What was asked for is not there: a world that is not open, a message or ticket the world does not hold."""
+
+
 def refuse_unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest]) -> None:
     """Whatever the seed declares that its provider cannot hold is refused, naming it: a ticket, document, space,
     sign-in or channel on a provider without them, a fact of one its provider does not keep, a person's account entry

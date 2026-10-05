@@ -156,6 +156,6 @@ async def test_a_binary_file_reads_as_its_bytes(hub: Hub) -> None:
     assert isinstance(encoded, str) and base64.b64decode(encoded.replace("\n", "")) == LOGO
 
 
-async def test_an_unserved_path_is_github_s_404(hub: Hub) -> None:
+async def test_a_path_github_does_not_have_is_refused_with_github_s_404(hub: Hub) -> None:
     async with hub.client() as http:
-        refusal(await http.get("/repos/lanternworks/ledger/pulls"), 404, "Not Found")
+        refusal(await http.get("/pull-requests/lanternworks/ledger"), 404, "Not Found")

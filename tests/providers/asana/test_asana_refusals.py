@@ -152,9 +152,11 @@ async def test_moving_a_task_between_projects_or_workspaces_by_put_is_refused(cl
         assert error(refused, 400) == f"{name}: Cannot write this property"
 
 
-async def test_a_field_this_simulation_does_not_serve_is_refused_by_name(client: httpx.AsyncClient) -> None:
-    refused = await client.post("/tasks", json={"data": {"workspace": WS, "followers": ["me"]}})
-    assert error(refused, 501) == "followers: Not supported by this simulation of Asana"
+async def test_a_field_this_simulation_does_not_serve_is_answered_501_by_name(client: httpx.AsyncClient) -> None:
+    unserved = await client.post("/tasks", json={"data": {"workspace": WS, "followers": ["me"]}})
+    assert "does not implement this operation: POST app.asana.com/tasks (followers: Not supported" in (
+        error(unserved, 501)
+    )
 
 
 async def test_a_comment_with_nothing_to_say_is_refused(client: httpx.AsyncClient) -> None:
@@ -185,8 +187,8 @@ async def test_search_rejects_what_it_does_not_know_and_its_limit(client: httpx.
         "assignee.any: Not a Recognized ID"
     )
     assert error(await client.get(search, params={"completed": "maybe"}), 400) == "completed: Not a boolean"
-    assert error(await client.get(search, params={"due_on.before": "2026-01-01"}), 501) == (
-        "due_on.before: Not supported by this simulation of Asana"
+    assert "(due_on.before: Not supported by this simulation of Asana)" in error(
+        await client.get(search, params={"due_on.before": "2026-01-01"}), 501
     )
 
 

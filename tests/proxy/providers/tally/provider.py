@@ -7,11 +7,14 @@ GET /mislabel   JSON that says it is UTF-8 and holds bytes that are not
 
 from __future__ import annotations
 
+import json
+
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from minutehand.domain.errors import Rendered
 from minutehand.domain.scenario import Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -38,6 +41,13 @@ class Tally:
             return Response(MISLABELLED, media_type="application/json; charset=utf-8")
 
         return Starlette(routes=[Route("/", count), Route("/file", file), Route("/mislabel", mislabel)])
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return Rendered(
+            status=status,
+            content_type="application/json",
+            body=json.dumps({"error": code, "message": message}).encode(),
+        )
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """Tally holds nothing a scenario can seed; every call reads the run's head."""

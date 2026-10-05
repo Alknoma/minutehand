@@ -205,6 +205,11 @@ class RunView(Model):
         default=None,
         description="Calls to hosts no provider claims, which produced no event; None when nobody could say",
     )
+    failed_calls: list[Exchange] | None = Field(
+        default=None,
+        description="Calls to a provider the fake did not answer: an operation it does not implement, or Minutehand's "
+        "own error (`Exchange.answer`); None when nobody could say",
+    )
 
 
 class Check(Protocol):

@@ -131,6 +131,14 @@ Reads and searches are recorded as `READ` and `SEARCH` events.
 
 ## Not built
 
+A call to one of the endpoints below that Notion's reference has (`NOT_BUILT` in `app.py`: OAuth introspect and
+revoke, file uploads, data sources, page move, comment retrieve) answers 501 in Notion's error object, code
+`invalid_request`, its message naming the call and the closest endpoint this fake has, marked
+`x-minutehand-answer: not_implemented`. A path Notion has no endpoint at answers Notion's own 400
+`invalid_request_url`, and a method a path does not take 400 `invalid_request`. Minutehand's own failure answers
+500 `internal_server_error`, marked `x-minutehand-answer: internal_error`. `notion-client` raises
+`APIResponseError` for each, with the message as its text.
+
 **Endpoints and protocol**
 - Data sources (`2025-09-03`).
 - Webhook subscriptions made or listed through the API (there is no such API; they are seeded).

@@ -191,7 +191,7 @@ The agent stopped after one wake; the clock ran on to the deadline (seq 19 is th
 Built, on the command line:
 
 ```
-minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1 or 3 by the verdict
+minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1, 3 or 4 by the verdict
 minutehand findings <run_id>                                   -> the same report, read back from the state directory
 minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
 minutehand runs
@@ -464,6 +464,22 @@ That file plays in one run in `tests/providers/test_every_happening_family.py`; 
 ### Deliberate failures
 
 A fault is typed by the provider that can produce it and declared in that provider's own seed (`ProviderSeed.body`); there is no shared `Scenario.faults`, because no one shape holds every provider's failures without carrying knobs the others would ignore: Slack's `SlackSeed.faults` (any Slack error code or `ratelimited` with `Retry-After`, every call or N, `only_rich`), Drive's `DriveSeed.faults` (N calls of a Google operation answered one of seven `wire.FaultKind`s), YouTrack's `YouTrackSeed.faults` (a method and path glob answered any HTTP status over a window), Asana's `AsanaSeed.rate_limits` (throttled stretches), Jira's `JiraSeed.rate_limits` (N calls to a path answered 429), Notion's `NotionSeed.faults` (rate limits and edit conflicts, per integration), Microsoft's `MicrosoftSeed.faults` (a Graph or connector error code, or a rate limit) and `MicrosoftSeed.holds` (a seeded file held open by a person over a window, every write refused 423 `resourceLocked`), and GitHub's `GitHubSeed.faults` (rate limits, secondary limits, server errors) and `GitHubSeed.limits` (a repository's truncated-tree and directory-listing thresholds). Each of those providers is `DeclaresFaults`: the standing mode's `POST /v1/worlds/{id}/provider-faults` hands it a fragment of its own seed model that sets only these fields, and it records them as seeding does, counted from the world's now. The control API also keeps its own `faults` route, whose caller writes the status and body.
+
+### What can go wrong, and the one place each becomes an answer
+
+Copied from LocalStack's `ServiceException` and moto's: a fake's request handler lets out only three kinds of exception, and each boundary has exactly one converter that turns what reaches it into an answer.
+
+| Kind (`domain.errors`) | Means | The agent gets | Logged | Recorded (`Exchange.answer`) |
+|---|---|---|---|---|
+| `ServiceRefusal` subclass, one per wire shape | the real service would refuse this | `render()`: exactly the real service's status, headers and body | debug | `refused`, or `injected_fault` when `deliberate` (a fault a scenario or a test armed) |
+| `NotImplementedError` (`NotImplementedByFake` names the closest route) | the real service has this and the fake does not | 501 in the vendor's error shape (`RendersErrors.error`), naming `METHOD host path`, the closest route and where the fake's coverage is, header `x-minutehand-answer: not_implemented` | info | `not_implemented`; the `unimplemented_operation` check names each operation once with its count |
+| anything else | Minutehand's own bug | 500 in the vendor's error shape, message "minutehand internal error while answering <provider> <METHOD> <path>: <Type>: <message>", header `x-minutehand-answer: internal_error`, the traceback in the body only under `MINUTEHAND_DEBUG=1` | error, with traceback | `internal_error`, `failure.traceback` kept; the verdict is `tool_error` (exit 4), never the agent's failure |
+
+The provider boundary is `adapters.answering.guarded`: it wraps the provider's ASGI app, holds back what the app sends, and when the app raises, throws that away and sends the converted answer (mitmproxy's `asgiapp.serve` would answer a bare "ASGI Error." 500 and Starlette sends its own 500 before re-raising). Every provider's `app()` returns its app guarded, and the proxy guards each call again for what fails outside the app (a provider that cannot be built, a control-API fault, which raises `serve.ArmedFault`); whichever converts records the kind on the call. A call nothing routes is not the vendor's 404 unless the real service answers 404 there too: each provider decides by its CLAIMS, and answers the rest `unrouted` (501).
+
+Seeding and the port methods a run or a standing world calls (`seed`, `deliver`, `say`, `press`, `happen`, `change`, `change_person`, `permit`, `declare`, `transition`, `delete_ticket`, `edit`) are not request handling: there `ValueError` and `LookupError` stay, and `application.standing.refusing` turns them into `WorldRefused` and `NotFound`.
+
+The other boundaries, one converter each: the control API's `refusal_for` (one `Refusal` body with a stable `code`; 500 `internal_error` for anything untyped, see docs/serve.md), the CLI's `main` (`ExitCode`), the MCP tools' `refusal_of` (a refusal keeps its words; anything else is "minutehand internal error in <tool>"), the viewer API's `refusal_for` (404 `not_found`, 500 `internal_error`). `EnvironmentFailure` names the resource and the next step (a port the proxy, the control API or the telemetry receiver cannot listen on; an agent command that would not start). `RunRecord.failure` and `Exchange.failure` are `Failure`s, never strings.
 
 ### A provider's own seed: Asana
 
@@ -1010,6 +1026,7 @@ Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `test
 
 | `VerdictKind` | When | Exit |
 |---|---|---|
+| `TOOL_ERROR` | Minutehand failed while answering a call (`Exchange.answer` is `internal_error`), whatever the checks found: the agent was answered by a bug, not by the world, so the run is scored neither passed nor failed; the sentence names the first such call. This policy lives in `checks/runner.verdict` and `domain.run.ExitCode` and nowhere else | 4 |
 | `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
 | `PASSED` | No check failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
 | `UNFINISHED` | No check failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
@@ -1356,7 +1373,7 @@ minutehand env --agent <agent.yaml> --proxy-port N [--format shell|compose] [--s
 
 `run`, `fork` and `env` take `--proxy-host`, `--proxy-port`, `--agent-proxy-host`, `--no-proxy HOST` (repeated), `--telemetry-port`, `--no-receive-telemetry`, `--record-model-calls`, `--capture-unknown` and `--upstream-ca FILE` (`serve` takes the last two as well). `run`, `fork` and `findings` print an "outbound calls" section, per host no provider claims, and a declaration for each host nobody declared. `env` prints the environment an agent Minutehand does not start needs, for every run on that port under that state directory: `export` lines, or a Compose override. It makes the proxy's CA if there is none yet, and refuses a port left to the system and a signing secret generated per run.
 
-`run`, `fork` and `findings` exit by the verdict (see "The verdict"): 0 passed, 1 failed, 3 not finished, and 2 when the run could not be performed. With samples: 1 when any sample failed, else 3 when any did not finish, else 0. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
+Every command exits by one table, `domain.run.ExitCode`: 0 passed, 1 failed (a check failed), 2 the run could not be performed as asked (usage: the scenario, the agent file or the command line), 3 not finished, 4 tool error (Minutehand's own error, in the run or anywhere else), 5 environment (a port in use, a command that would not start), 130 interrupted. With samples: 4 when any sample hit a tool error, else 1 when any failed, else 3 when any did not finish, else 0. A refusal or an environment failure is one line; Minutehand's own error is one line naming it and the file under `<state>/errors/` its traceback was written to, with the traceback on screen too under `--debug`. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
 
 ### Distribution: a tool beside the codebase, never a dependency of it
 

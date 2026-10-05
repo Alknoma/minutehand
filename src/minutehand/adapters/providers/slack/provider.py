@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.slack import inbound, interactive, state
+from minutehand.adapters.answering import guarded
+from minutehand.adapters.providers.slack import inbound, interactive, state, wire
 from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.seed import SlackSeed, seed, write_faults
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
     InboundCredential,
@@ -28,7 +30,12 @@ class SlackProvider:
     seed_model = SlackSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(world, clock)
+        return guarded(build_app(world, clock), self, provider=self.manifest.key)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """Minutehand's own error as the Web API words one (`wire.error_answer`): `slack_sdk` raises `SlackApiError`
+        for it as it does for Slack's refusals."""
+        return wire.error_answer(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

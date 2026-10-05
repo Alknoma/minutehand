@@ -56,6 +56,10 @@ names an account is checked when seeding, beside the scenario's people.
 
 ## What it does not do
 
+A call no route here answers is 501 in GitHub's error shape, its `message` saying the fake does not implement it and
+naming the closest route it has, with `x-minutehand-answer: not_implemented`; a path under no root GitHub's REST
+reference has (`/repos`, `/user`, `/search`, … in `app.REST_ROOTS`) is GitHub's own 404 `Not Found`.
+
 - Issues, pull requests, comments, labels, webhooks, OAuth web flow, GitHub App installation tokens.
 - A GraphQL query costs one point, whatever its size; GitHub prices a query by the nodes it may return.
 - Every branch and commit shows the head's files; history is a list of commits, not a sequence of trees.

@@ -24,7 +24,7 @@ from starlette.responses import Response
 from starlette.routing import Route, Router
 
 from minutehand.adapters.providers.microsoft import cards, tokens, wire
-from minutehand.adapters.providers.microsoft.common import JSON, bearer, query
+from minutehand.adapters.providers.microsoft.common import JSON, MicrosoftRefusal, bearer, query
 from minutehand.adapters.providers.microsoft.state import (
     SERVICE_URL,
     AppRecord,
@@ -37,6 +37,7 @@ from minutehand.adapters.providers.microsoft.state import (
     message_ref,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
+from minutehand.domain.errors import Rendered
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -47,20 +48,35 @@ MAX_ACTIVITY_UTF16_BYTES = 100 * 1024
 PAGE_DEFAULT = 200
 PAGE_MIN = 50
 PAGE_MAX = 500
-DENIED = '{"message":"Authorization has been denied for this request."}'
+DENIED_MESSAGE = "Authorization has been denied for this request."
+DENIED = f'{{"message":"{DENIED_MESSAGE}"}}'
 
 
-class ConnectorRefusal(Exception):
-    def __init__(self, status: int, code: str, message: str) -> None:
-        super().__init__(message)
-        self.status = status
-        self.code = code
-        self.message = message
+class ConnectorRefusal(MicrosoftRefusal):
+    """The connector refused, in its `{"error": {"code", "message"}}`, with `Retry-After` when it says when to try
+    again."""
+
+    def __init__(
+        self, status: int, code: str, message: str, *, retry_after: int | None = None, deliberate: bool = False
+    ) -> None:
+        super().__init__(code, message, status=status, deliberate=deliberate)
+        self.retry_after = retry_after
+
+    def render(self) -> Rendered:
+        body = wire.ConnectorError(error=wire.ConnectorErrorBody(code=self.code, message=self.message))
+        headers = [("retry-after", str(self.retry_after))] if self.retry_after is not None else []
+        return Rendered(status=self.status, content_type=JSON, body=wire.dump(body).encode(), headers=headers)
 
 
-def _refused(refusal: ConnectorRefusal) -> Response:
-    body = wire.ConnectorError(error=wire.ConnectorErrorBody(code=refusal.code, message=refusal.message))
-    return Response(wire.dump(body), status_code=refusal.status, media_type=JSON)
+class Denied(MicrosoftRefusal):
+    """The call carries no token the connector accepts: 401, in the body ASP.NET's authorization filter writes,
+    which names no code."""
+
+    def __init__(self) -> None:
+        super().__init__("Unauthorized", DENIED_MESSAGE, status=401)
+
+    def render(self) -> Rendered:
+        return Rendered(status=401, content_type=JSON, body=DENIED.encode())
 
 
 def split_conversation(conversation: str) -> tuple[str, str | None]:
@@ -130,14 +146,14 @@ class Connector:
     def _bot(self, request: Request) -> AppRecord:
         token = bearer(request)
         if token is None:
-            raise _Denied()
+            raise Denied()
         try:
             claims = tokens.decode(token, use=TokenUse.ACCESS)
         except tokens.TokenRefused as e:
-            raise _Denied() from e
+            raise Denied() from e
         app = self._world.app(claims.appid)
         if claims.aud != tokens.BOT_FRAMEWORK_AUDIENCE or app is None:
-            raise _Denied()
+            raise Denied()
         return app
 
     def _conversation(self, conversation: str, app: AppRecord) -> ConversationRecord:
@@ -167,9 +183,6 @@ class Connector:
     # ------------------------------------------------------------------ send, reply
 
     async def send(self, request: Request) -> Response:
-        return await self._answer(request, self._send)
-
-    async def _send(self, request: Request) -> Response:
         app = self._bot(request)
         base, root = split_conversation(request.path_params["conversation"])
         conversation = self._conversation(base, app)
@@ -223,9 +236,6 @@ class Connector:
     # ------------------------------------------------------------------ update, delete
 
     async def update(self, request: Request) -> Response:
-        return await self._answer(request, self._update)
-
-    async def _update(self, request: Request) -> Response:
         app = self._bot(request)
         base, _ = split_conversation(request.path_params["conversation"])
         conversation = self._conversation(base, app)
@@ -255,9 +265,6 @@ class Connector:
         return Response(wire.dump(wire.ResourceResponse(id=updated.id)), media_type=JSON)
 
     async def delete(self, request: Request) -> Response:
-        return await self._answer(request, self._delete)
-
-    async def _delete(self, request: Request) -> Response:
         app = self._bot(request)
         base, _ = split_conversation(request.path_params["conversation"])
         conversation = self._conversation(base, app)
@@ -272,9 +279,6 @@ class Connector:
     # ------------------------------------------------------------------ create conversation
 
     async def create(self, request: Request) -> Response:
-        return await self._answer(request, self._create)
-
-    async def _create(self, request: Request) -> Response:
         app = self._bot(request)
         try:
             asked = wire.read(wire.SentConversation, await request.body())
@@ -314,9 +318,6 @@ class Connector:
         return [member_of(u) for u in found if u is not None]
 
     async def members(self, request: Request) -> Response:
-        return await self._answer(request, self._list_members)
-
-    async def _list_members(self, request: Request) -> Response:
         app = self._bot(request)
         conversation = self._conversation(split_conversation(request.path_params["conversation"])[0], app)
         self._world.saw(conversation_ref(conversation.id), Operation.READ)
@@ -324,9 +325,6 @@ class Connector:
         return Response(body, media_type=JSON)
 
     async def paged_members(self, request: Request) -> Response:
-        return await self._answer(request, self._paged)
-
-    async def _paged(self, request: Request) -> Response:
         app = self._bot(request)
         conversation = self._conversation(split_conversation(request.path_params["conversation"])[0], app)
         size_text = query(request, "pageSize")
@@ -345,9 +343,6 @@ class Connector:
         return Response(wire.dump(wire.PagedMembers(members=page, continuationToken=following)), media_type=JSON)
 
     async def member(self, request: Request) -> Response:
-        return await self._answer(request, self._member)
-
-    async def _member(self, request: Request) -> Response:
         app = self._bot(request)
         conversation = self._conversation(split_conversation(request.path_params["conversation"])[0], app)
         wanted = request.path_params["member"]
@@ -359,9 +354,6 @@ class Connector:
 
     # ------------------------------------------------------------------ teams
 
-    async def team(self, request: Request) -> Response:
-        return await self._answer(request, self._team)
-
     def _team_record(self, request: Request, app: AppRecord) -> tuple[str, ConversationRecord]:
         thread = request.path_params["team"]
         team = self._world.team_by_thread(thread) or self._world.team(thread)
@@ -370,7 +362,7 @@ class Connector:
         general = self._conversation(team.general_channel_id, app)
         return team.id, general
 
-    async def _team(self, request: Request) -> Response:
+    async def team(self, request: Request) -> Response:
         app = self._bot(request)
         team_id, general = self._team_record(request, app)
         team = self._world.team(team_id)
@@ -380,9 +372,6 @@ class Connector:
         return Response(wire.dump(answer), media_type=JSON)
 
     async def team_conversations(self, request: Request) -> Response:
-        return await self._answer(request, self._team_conversations)
-
-    async def _team_conversations(self, request: Request) -> Response:
         app = self._bot(request)
         team_id, general = self._team_record(request, app)
         channels = self._world.channels_of(team_id)
@@ -394,21 +383,6 @@ class Connector:
         )
         # Written with its nulls: General's `name` is null on the wire, which `wire.dump` would drop.
         return Response(answer.model_dump_json(by_alias=True), media_type=JSON)
-
-    # ------------------------------------------------------------------ answering
-
-    @staticmethod
-    async def _answer(request: Request, handler) -> Response:
-        try:
-            return await handler(request)
-        except _Denied:
-            return Response(DENIED, status_code=401, media_type=JSON)
-        except ConnectorRefusal as refusal:
-            return _refused(refusal)
-
-
-class _Denied(Exception):
-    """The call carries no token the connector accepts."""
 
 
 def connector_router(store: Store, clock: Clock) -> Router:

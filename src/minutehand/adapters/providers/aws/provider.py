@@ -47,27 +47,31 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
+from wsgiref.types import StartResponse, WSGIEnvironment
 
 from asgiref.wsgi import WsgiToAsgi
 from moto.moto_server.werkzeug_app import DomainDispatcherApplication, create_backend_app
 from moto.scheduler.models import scheduler_backends
 from moto.sqs.models import Queue, sqs_backends
+from werkzeug.exceptions import MethodNotAllowed, NotFound
 
+from minutehand.adapters.answering import guarded, unrouted
 from minutehand.adapters.providers.aws.manifest import MANIFEST
 from minutehand.adapters.providers.aws.schedule import ScheduleRecord
 from minutehand.adapters.providers.aws.wire import (
     ActionAfterCompletion,
     CallKind,
-    Refusal,
     ScheduleCall,
     SqsDelete,
+    error,
     schedule_arn,
     schedule_call,
     sqs_delete,
     sqs_target,
 )
 from minutehand.domain.clock import Due, DueKind
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, RecordSnapshot
@@ -126,7 +130,7 @@ class AwsProvider:
             AWS_EC2_METADATA_DISABLED="true",
         )
         os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-        moto: ASGIApp = WsgiToAsgi(DomainDispatcherApplication(create_backend_app))
+        moto: ASGIApp = WsgiToAsgi(_Routed(create_backend_app))
         account = self._account.encode()
 
         async def serve(scope: Scope, receive: Receive, send: Send) -> None:
@@ -134,22 +138,9 @@ class AwsProvider:
                 raise NotImplementedError(f"the aws provider serves HTTP only, not {scope['type']}")
             body = await _read_body(receive)
             headers = _headers(scope)
-            try:
-                call = schedule_call(
-                    str(scope["method"]),
-                    _header(headers, b"host"),
-                    str(scope["path"]),
-                    _query(scope),
-                    body,
-                )
-            except Refusal as refused:
-                await _respond(
-                    send,
-                    refused.status,
-                    [(b"x-amzn-errortype", refused.error_type.encode()), (b"content-type", b"application/json")],
-                    refused.body(),
-                )
-                return
+            call = schedule_call(
+                str(scope["method"]), _header(headers, b"host"), str(scope["path"]), _query(scope), body
+            )
             deleting = sqs_delete(_header(headers, b"host"), _header(headers, b"x-amz-target"), body)
             deliveries = self._deliveries(deleting, world) if deleting is not None else []
             forwarded = dict(scope)
@@ -163,7 +154,10 @@ class AwsProvider:
                 self._taken(deleting, deliveries, world)
             await _respond(send, status, response_headers, response_body)
 
-        return serve
+        return guarded(serve, self, provider=self.manifest.key)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return error(status, code, message)
 
     def _record(self, call: ScheduleCall, world: Store, clock: Clock) -> None:
         wakes = self._bound()
@@ -286,6 +280,22 @@ class AwsProvider:
         if self._wakes is None:
             raise RuntimeError("the aws provider books wakes, and bind() was not called before the run")
         return self._wakes
+
+
+class _Routed(DomainDispatcherApplication):
+    """moto's dispatcher, which finds the service a request is for, refusing loudly what none of that service's
+    routes answers: Flask would answer it a bare HTML 404 that no AWS client reads as an error of AWS's."""
+
+    def __call__(self, environ: WSGIEnvironment, start_response: StartResponse) -> Iterable[bytes]:
+        app = self.get_application(environ)
+        try:
+            app.url_map.bind_to_environ(environ).match()
+        except (NotFound, MethodNotAllowed) as missed:
+            routes = [
+                f"{method} {rule.rule}" for rule in app.url_map.iter_rules() for method in sorted(rule.methods or [])
+            ]
+            raise unrouted(str(environ["REQUEST_METHOD"]), str(environ["PATH_INFO"]), routes) from missed
+        return app(environ, start_response)
 
 
 def build() -> AwsProvider:
