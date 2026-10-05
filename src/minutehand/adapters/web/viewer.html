@@ -446,7 +446,12 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   }
 
   function outboundHow(call) {
-    var c = call.exchange.captured;
+    var c = call.exchange.captured, t = call.exchange.tunnelled;
+    if (t) {
+      return "relayed on a tunnel and never opened: " + t.bytes_sent + " bytes sent, " + t.bytes_received +
+        " received (call " + t.burst + " on its connection" + (t.closed ? ", which then closed" : "") + ")" +
+        (t.route === "none" ? "; no world claims this host" : "");
+    }
     if (c === null) { return "refused: no fake answers it and the agent file does not declare it"; }
     return CAPTURED_AS[c.mode] + ", " + ANSWERED_BY[c.answered_by] + (c.replayed_from ? " (" + c.replayed_from + ")" : "");
   }
@@ -460,7 +465,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   function outboundItem(call) {
     var e = call.exchange, c = e.captured;
     var replayed = c !== null && c.answered_by === "recording";
-    var head = esc(e.method + " " + e.host + e.path) + " · " + esc(String(e.status)) + " · wake " + call.wake + " · " + esc(when(call.sim_time));
+    var head = esc(e.method + " " + (e.tunnelled ? e.path : e.host + e.path)) + " · " + esc(String(e.status)) + " · wake " + call.wake + " · " + esc(when(call.sim_time));
     var how = '<span class="' + (replayed ? "replayed" : "") + '">' + esc(outboundHow(call)) + "</span>";
     var body = "";
     if (c !== null) {
@@ -470,6 +475,10 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       }).join(", ") + "</p>" : "");
       body += "<div>Request</div><pre>" + esc(outboundBody(e.request_body, c.request)) + "</pre>";
       body += "<div>Answer</div><pre>" + esc(outboundBody(e.response_body, c.response)) + "</pre>";
+    }
+    if (e.tunnelled) {
+      body += '<p class="note">Its request and answer were not opened: the proxy relays this host\'s bytes ' +
+        "encrypted, so only that the call happened, when, and its size are kept.</p>";
     }
     return "<li><details><summary>" + head + " — " + how + "</summary>" + body + "</details></li>";
   }
@@ -749,11 +758,11 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
         while (used.some(function (u) { return u[1] === level && Math.abs(u[0] - cx) < 10; }) && level < 2) { level++; }
         used.push([cx, level]);
         var cy = oy - level * 11, g = el("g", {}, svg);
-        var refused = c === null || c.answered_by === "refusal", replayed = c !== null && c.answered_by === "recording";
+        var refused = (c === null && !e.tunnelled) || (c !== null && c.answered_by === "refusal"), replayed = c !== null && c.answered_by === "recording";
         var colour = refused ? "var(--fail)" : "var(--agent)";
         el("rect", { x: cx - 10, y: cy - 10, width: 20, height: 20, fill: "transparent" }, g);
         el("rect", { class: "ring", x: cx - 4, y: cy - 4, width: 8, height: 8, fill: replayed ? "var(--surface)" : colour, stroke: colour, "stroke-width": 1.6 }, g);
-        mark(g, e.method + " " + e.host + e.path.split("?")[0], outboundHow(call) + "; answered " + e.status + ".",
+        mark(g, e.method + " " + (e.tunnelled ? e.path : e.host + e.path.split("?")[0]), outboundHow(call) + "; answered " + e.status + ".",
           when(call.sim_time), call.first_seq <= call.last_seq ? [call.first_seq] : [], null);
       });
     }
