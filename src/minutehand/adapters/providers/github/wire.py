@@ -257,6 +257,7 @@ class StoredRepository(Wire):
     stargazers_count: int
     forks_count: int
     tree_entry_limit: int
+    directory_entry_limit: int = 1000
     created_at: str
 
     @property

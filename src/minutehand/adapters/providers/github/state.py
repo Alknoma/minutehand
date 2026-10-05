@@ -127,6 +127,10 @@ class GitHubWorld:
         ref = repository_ref(repository.owner, repository.name)
         return self._write(ref, repository, REPOSITORIES, Operation.CREATE, Actor.SCENARIO)
 
+    def update_repository(self, repository: wire.StoredRepository) -> WorldEvent:
+        ref = repository_ref(repository.owner, repository.name)
+        return self._write(ref, repository, REPOSITORIES, Operation.UPDATE, Actor.SCENARIO)
+
     def write_file(self, repository: wire.StoredRepository, file: wire.StoredFile) -> WorldEvent:
         parent = repository_id(repository.owner, repository.name)
         return self._write(file_ref(repository, file.path), file, parent, Operation.CREATE, Actor.SCENARIO)
