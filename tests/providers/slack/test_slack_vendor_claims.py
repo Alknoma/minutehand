@@ -17,8 +17,8 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
 from minutehand.adapters.providers.slack import state, wire
-from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID
 from minutehand.adapters.providers.slack.provider import build
+from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Scenario
