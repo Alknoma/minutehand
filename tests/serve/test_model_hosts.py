@@ -1,7 +1,7 @@
 """Model APIs in the standing mode: a self-hosted one given to `minutehand serve` with `--model-host`, and one a
 world declares, each treated as a model host (tunnelled, or opened and kept as a span) and never refused.
 
-The model API is a local HTTPS server with its own CA (`tests/proxy/upstream.py`), at `localhost`. Each test runs
+The model API is a local HTTPS server with its own CA (`tests/proxy/upstream.py`), at `model.localhost`. Each test runs
 its own server, since the model hosts are the server's.
 """
 
@@ -24,7 +24,7 @@ from minutehand.testing.client import MinutehandClient, Refused
 from tests.proxy.upstream import Answer, Authority, make_authority, model_api
 from tests.serve.support import spec
 
-MODEL_HOST = "localhost"
+MODEL_HOST = "model.localhost"  # not `localhost`, which the proxy forwards untouched once no world claims it
 TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
 ANSWER = {
     "object": "chat.completion",
