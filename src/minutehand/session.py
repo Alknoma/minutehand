@@ -44,6 +44,7 @@ from pydantic import Field
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
@@ -202,7 +203,7 @@ async def play(
             signing = signing_for(agent)
             env = agent_environment(
                 listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-            )
+            ) | base_url_environment(agent, listen.proxy_url(proxy.port))
             reach = reach_for(agent, env=env)
             async with _agent_process(command, env, agent, directory / AGENT_LOG) as own:
                 if sample > 0 and agent.state is not None:
@@ -321,7 +322,7 @@ async def fork(
         scorer.receiver = proxy.receiver
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-        )
+        ) | base_url_environment(agent, listen.proxy_url(proxy.port))
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1036,7 +1037,16 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
         )
     bundle = write_bundle(state / "ca")
     telemetry_port = listen.telemetry_port if listen.receive_telemetry else None
-    return agent_environment(listen, listen.port, ca_bundle or str(bundle.resolve()), {}, telemetry_port=telemetry_port)
+    handed = agent_environment(
+        listen, listen.port, ca_bundle or str(bundle.resolve()), {}, telemetry_port=telemetry_port
+    )
+    return handed | base_url_environment(agent, listen.proxy_url(listen.port))
+
+
+def base_url_environment(agent: AgentUnderTest, proxy: str) -> dict[str, str]:
+    """Each base URL the agent file declares (`AgentUnderTest.base_urls`), in its variable, against the proxy as the
+    agent reaches it (`adapters.proxy.base_url`)."""
+    return {declared.env: base_url(proxy, declared.host) + declared.path for declared in agent.base_urls}
 
 
 @dataclass(frozen=True)
