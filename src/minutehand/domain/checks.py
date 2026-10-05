@@ -224,6 +224,11 @@ class RunView(Model):
         default=None,
         description="Calls to hosts no provider claims, which produced no event; None when nobody could say",
     )
+    contract_breaks: list[Exchange] = Field(
+        default=[],
+        description="Calls Minutehand made as a person to the agent's own product whose answer departed from the "
+        "agent's own API description (`InboxCall.contract`): the agent's contract changed",
+    )
     broken_calls: list[Exchange] = Field(
         default=[],
         description="Calls Minutehand failed to answer (`CallOutcome.INTERNAL_ERROR`): the run says nothing about the "

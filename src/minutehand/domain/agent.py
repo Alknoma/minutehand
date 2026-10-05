@@ -246,10 +246,18 @@ class BaseUrl(Model):
     )
 
 
+AGENT_FILE_VERSION = 1
+"""The version of the agent file this Minutehand reads. A file may say which it was written for (`version`); one
+naming a later version is refused, since it may hold what this one would misread. Absent: this one."""
+
+
 class AgentUnderTest(Model):
     """How the monitor reaches the agent. Replies and pushed events always wake it;
     `wakes` lists every other way it comes back to work, and may be empty when the goal is sent as a message."""
 
+    version: int | None = Field(
+        default=None, ge=1, description="The agent file version it is written for; absent: the current one"
+    )
     name: str
     goal: GoalSource = GoalByWake()
     wakes: list[WakeSource] = []
@@ -272,6 +280,11 @@ class AgentUnderTest(Model):
 
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
+        if self.version is not None and self.version > AGENT_FILE_VERSION:
+            raise ValueError(
+                f"this agent file is written for version {self.version} of the agent file, and this Minutehand reads "
+                f"up to version {AGENT_FILE_VERSION}: upgrade Minutehand to run it"
+            )
         refuse_repeats(self.outbound)
         refuse_repeated_inboxes(self.inboxes)
         clash = sorted({i.name for i in self.inboxes} & {d.key for d in self.outbound})

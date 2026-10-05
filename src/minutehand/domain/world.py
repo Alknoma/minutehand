@@ -177,6 +177,11 @@ class InboxCall(Model):
     inbox: ProviderKey = Field(description="The inbox's `name`")
     person: str = Field(description="Person.key it acted as")
     act: InboxAct
+    contract: str | None = Field(
+        default=None,
+        description="Set when the answer departed from the agent's own API description (`OperationRequest`): the "
+        "agent's contract changed, and this says how, naming the field",
+    )
 
 
 class Exchange(Model):
