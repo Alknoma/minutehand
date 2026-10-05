@@ -16,7 +16,7 @@ from minutehand.adapters.providers.microsoft import docx as word
 from minutehand.adapters.providers.microsoft.common import GraphRefusal
 from minutehand.adapters.providers.microsoft.graph_files import Files as FilesApi
 from minutehand.domain.scenario import DocumentHappening, Scenario
-from minutehand.domain.world import Actor
+from minutehand.domain.world import Actor, DocumentSnapshot
 from tests.providers.microsoft.tenant import GRAPH, SCENARIO, START, Intercepted, Tenant, bearer, seeded, token
 
 
@@ -305,7 +305,9 @@ async def test_people_move_share_and_delete_a_seeded_file_as_themselves(files: F
     tenant = files.tenant
     plan = tenant.world.seeded("Vendor Plan")
     moved = await person_does(tenant, "sofia", "Vendor Plan", Moved(folder="Archive/2026"))
-    assert moved.actor is Actor.PERSON
+    assert moved.actor is Actor.PERSON and isinstance(moved.after, DocumentSnapshot)
+    assert moved.after.last_edited_by == "sofia@example.com" and moved.after.text is not None
+    assert moved.after.text == "Three vendors remain.\nPrices due Friday."
     archived = (await files.http.get(files.url("/root:/Archive/2026:/children"), headers=files.auth)).json()
     assert [i["name"] for i in archived["value"]] == ["Vendor Plan.docx"]
     assert archived["value"][0]["lastModifiedBy"]["user"]["displayName"] == "Sofia Romano"

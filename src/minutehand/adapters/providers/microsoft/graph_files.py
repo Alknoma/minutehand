@@ -60,6 +60,7 @@ from minutehand.adapters.providers.microsoft.state import (
     drive_ref,
     graph_time,
     item_ref,
+    item_text,
     permission_ref,
     site_ref,
     tombstone_ref,
@@ -102,18 +103,6 @@ def mime_of(name: str) -> str:
         if lower.endswith(ending):
             return mime
     return "application/octet-stream"
-
-
-def readable_text(stored: wire.StoredItem) -> str:
-    """What a search reads of a file: a Word document's paragraphs, a text file's bytes; nothing else."""
-    if stored.item.file is None:
-        return ""
-    content = wire.content_of(stored)
-    if stored.item.file.mimeType == docx.DOCX:
-        return docx.text_of(content) or ""
-    if stored.item.file.mimeType.startswith("text/"):
-        return content.decode("utf-8", errors="replace")
-    return ""
 
 
 @dataclass(frozen=True)
@@ -787,7 +776,7 @@ class Files:
             for child in self._world.children(folder.item.id):
                 if child.item.folder is not None:
                     pending.append(child)
-                if wanted and (wanted in child.item.name.lower() or wanted in readable_text(child).lower()):
+                if wanted and (wanted in child.item.name.lower() or wanted in item_text(child).lower()):
                     found.append(self.served(child, address.drive, download=False))
         found.sort(key=lambda i: i.id)
         self._world.saw(drive_ref(address.drive.drive.id), Operation.SEARCH)

@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
-from minutehand.adapters.providers.microsoft import wire
+from minutehand.adapters.providers.microsoft import docx, wire
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import (
@@ -303,6 +303,18 @@ def subscription_ref(subscription: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"sub:{subscription}")
 
 
+def item_text(stored: wire.StoredItem) -> str:
+    """What can be read of a file as text: a Word document's paragraphs, a text file's bytes; nothing else."""
+    if stored.item.file is None:
+        return ""
+    content = wire.content_of(stored)
+    if stored.item.file.mimeType == docx.DOCX:
+        return docx.text_of(content) or ""
+    if stored.item.file.mimeType.startswith("text/"):
+        return content.decode("utf-8", errors="replace")
+    return ""
+
+
 def graph_time(at: datetime) -> str:
     """Graph's timestamps: UTC, milliseconds, `Z`."""
     utc = at.astimezone(UTC)
@@ -486,7 +498,11 @@ class MicrosoftWorld:
 
     def write_item(self, stored: wire.StoredItem, *, operation: Operation, actor: Actor) -> WorldEvent:
         snapshot = DocumentSnapshot(
-            title=stored.item.name, mime_type=stored.item.file.mimeType if stored.item.file is not None else None
+            title=stored.item.name,
+            mime_type=stored.item.file.mimeType if stored.item.file is not None else None,
+            text=item_text(stored) or None,
+            last_edited_by=self._editor(stored.item.lastModifiedBy),
+            last_edited_at=datetime.fromisoformat(stored.item.lastModifiedDateTime.replace("Z", "+00:00")),
         )
         return self.write(
             item_ref(stored.item.id),
@@ -496,6 +512,13 @@ class MicrosoftWorld:
             parent=stored.item.parentReference.id,
             after=snapshot,
         )
+
+    def _editor(self, by: wire.IdentitySet) -> str | None:
+        """Who last changed an item as every document provider names them: a person's email, or the app's name."""
+        if by.user is not None:
+            found = self.user(by.user.id)
+            return (found.user.mail if found is not None else None) or by.user.displayName
+        return by.application.displayName if by.application is not None else None
 
     def permissions(self, item: str) -> list[wire.Permission]:
         return self._all(wire.Permission, EntityKind.RECORD, PERMISSION_PARENT.format(item=item))

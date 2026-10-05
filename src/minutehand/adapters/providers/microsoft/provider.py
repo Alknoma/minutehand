@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
-from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of, readable_text
+from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of
 from minutehand.adapters.providers.microsoft.inbound import People
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
-from minutehand.adapters.providers.microsoft.state import DriveRecord, MicrosoftWorld, UserRecord
+from minutehand.adapters.providers.microsoft.state import DriveRecord, MicrosoftWorld, UserRecord, item_text
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import (
@@ -95,7 +95,7 @@ class MicrosoftProvider:
         assert drive is not None
         files, by, action = Files(mw, clock), _by(user), happening.action
         if isinstance(action, Edited):
-            text = readable_text(stored)
+            text = item_text(stored)
             joined = f"{text}\n{action.append}" if text else action.append
             content = docx.build(joined) if mime_of(stored.item.name) == docx.DOCX else joined.encode()
             files.replace_content(stored, content, by=by, actor=Actor.PERSON)

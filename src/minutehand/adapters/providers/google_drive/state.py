@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
+from datetime import datetime
 
 from minutehand.adapters.providers.google_drive import docs, slides, wire
 from minutehand.adapters.providers.google_drive.manifest import MANIFEST
@@ -141,7 +142,16 @@ def record_ref(external_id: str) -> EntityRef:
 
 
 def snapshot(stored: wire.StoredFile) -> DocumentSnapshot:
-    return DocumentSnapshot(title=stored.file.name, mime_type=stored.file.mimeType)
+    """The file as every document provider tells it: title, type, its text where Drive holds it as text (a Doc, a
+    deck, a sheet), and who last changed it, by email."""
+    editor = stored.file.lastModifyingUser
+    return DocumentSnapshot(
+        title=stored.file.name,
+        mime_type=stored.file.mimeType,
+        text=readable_text(stored) or None,
+        last_edited_by=(editor.emailAddress or editor.displayName) if editor is not None else None,
+        last_edited_at=datetime.fromisoformat(stored.file.modifiedTime.replace("Z", "+00:00")),
+    )
 
 
 def readable_text(stored: wire.StoredFile, blob: bytes | None = None) -> str:
