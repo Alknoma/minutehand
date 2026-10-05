@@ -36,13 +36,15 @@ def _in_container(image: str, scenario: str, behaviour: str) -> subprocess.Compl
     )
 
 
-def test_the_image_runs_minutehand_as_a_user_other_than_root(image: str) -> None:
-    helped = run(tool("docker"), "run", "--rm", image)
+def test_the_image_runs_minutehand_as_a_user_other_than_root_and_serves_by_default(image: str) -> None:
+    helped = run(tool("docker"), "run", "--rm", image, "--help")
     assert helped.returncode == 0, helped.stderr
     assert "usage: minutehand" in helped.stdout
 
     inspected = json.loads(checked(tool("docker"), "image", "inspect", image).stdout)[0]["Config"]
     assert inspected["Entrypoint"] == ["minutehand"]
+    assert inspected["Cmd"] == ["serve", "--host", "0.0.0.0"]
+    assert set(inspected["ExposedPorts"]) == {"8080/tcp", "8081/tcp", "4318/tcp"}
     assert inspected["User"] not in ("", "root", "0")
     assert "/var/lib/minutehand" in inspected["Volumes"]
 

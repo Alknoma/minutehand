@@ -1,4 +1,5 @@
-# Minutehand as one image: `docker run <image> run scenario.yaml --agent agent.yaml -- <agent command>`.
+# Minutehand as one image: `docker run <image>` serves (`minutehand serve`); `docker run <image> run
+# scenario.yaml --agent agent.yaml -- <agent command>` plays a scenario.
 #
 # The package is installed from the wheel this file builds, never from the source tree, with the
 # dependency versions in uv.lock. It lives in its own environment under /opt/minutehand; `python` on
@@ -28,8 +29,8 @@ RUN uv build --out-dir /dist \
 # -- base: the runtime every target below shares -------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS base
 RUN useradd --system --uid 10001 --create-home --home-dir /home/minutehand minutehand \
- && mkdir -p /var/lib/minutehand \
- && chown minutehand:minutehand /var/lib/minutehand
+ && mkdir -p /var/lib/minutehand/ca \
+ && chown -R minutehand:minutehand /var/lib/minutehand
 COPY --from=build /opt/minutehand /opt/minutehand
 RUN ln -s /opt/minutehand/bin/minutehand /usr/local/bin/minutehand
 # Runs, the world of each, and the proxy's CA are kept here.
@@ -37,8 +38,11 @@ ENV MINUTEHAND_STATE=/var/lib/minutehand PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFE
 VOLUME /var/lib/minutehand
 USER minutehand
 WORKDIR /home/minutehand
+# The standing mode a stack's services use (docs/serve.md): proxy 8080, control API 8081, OTLP 4318.
+# `docker run <image> run scenario.yaml ...` still plays a scenario instead.
+EXPOSE 8080 8081 4318
 ENTRYPOINT ["minutehand"]
-CMD ["--help"]
+CMD ["serve", "--host", "0.0.0.0"]
 
 # -- example: the base image plus the one library examples/follow_up/agent.py needs -----------------------
 FROM base AS example

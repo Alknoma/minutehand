@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import os
 import shlex
 import sys
@@ -66,6 +67,10 @@ from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
 
 DEFAULT_STATE = Path(".minutehand")
+SERVE_IMAGE = "minutehand"
+SERVE_CA_VOLUME = "minutehand-ca"
+SERVE_CA_DIR = "/etc/minutehand"
+IMAGE_STATE = "/var/lib/minutehand"
 COMPOSE_CA_PATH = "/etc/minutehand/ca-bundle.pem"
 DOCKER_HOST = "host.docker.internal"
 VIEW_PORT = 8081
@@ -158,7 +163,17 @@ def _parser() -> argparse.ArgumentParser:
     env = commands.add_parser(
         "env", help="print the environment an agent needs when Minutehand does not start it, then run without --"
     )
-    env.add_argument("--agent", type=Path, required=True)
+    env.add_argument("--agent", type=Path, default=None, help="the agent file (not needed with --serve-as)")
+    env.add_argument(
+        "--serve-as",
+        default=None,
+        metavar="NAME",
+        help="--format compose: the services reach a `minutehand serve` container of this Compose service name, "
+        "which the override adds, and download nothing: its CA is shared through a volume",
+    )
+    env.add_argument(
+        "--image", default=SERVE_IMAGE, help=f"with --serve-as: the image the service runs (default {SERVE_IMAGE})"
+    )
     env.add_argument("--format", choices=[f.value for f in EnvFormat], default=EnvFormat.SHELL.value)
     env.add_argument(
         "--service",
@@ -259,6 +274,21 @@ def _listen(args: argparse.Namespace) -> session.Listen:
 
 
 def _env(args: argparse.Namespace, state: Path) -> int:
+    if args.serve_as is not None:
+        if EnvFormat(args.format) is not EnvFormat.COMPOSE or not args.service:
+            print(
+                "minutehand env: --serve-as writes a Compose override: give --format compose and --service",
+                file=sys.stderr,
+            )
+            return 2
+        print(yaml.safe_dump(_standing_compose(args), sort_keys=False), end="")
+        return 0
+    if args.agent is None:
+        print(
+            "minutehand env: --agent is needed unless the services use a `minutehand serve` (--serve-as)",
+            file=sys.stderr,
+        )
+        return 2
     agent = load_agent(args.agent)
     listen = _listen(args)
     if EnvFormat(args.format) is EnvFormat.SHELL:
@@ -291,6 +321,50 @@ def _compose(
     if listen.agent_host == DOCKER_HOST:
         service["extra_hosts"] = [f"{DOCKER_HOST}:host-gateway"]
     return {"services": {name: service for name in services}}
+
+
+def _standing_compose(args: argparse.Namespace) -> dict[str, object]:
+    """A Compose override for a stack whose services reach a `minutehand serve` container by service name: the
+    container, sharing its CA directory through a named volume and healthy once its control API answers, and
+    every named service given the variables, the CA read-only, and a wait for it."""
+    name: str = args.serve_as
+    listen = session.Listen(
+        host="0.0.0.0",
+        port=standing.DEFAULT_PROXY_PORT,
+        agent_host=name,
+        no_proxy=[*args.service, *args.no_proxy],
+        telemetry_port=standing.DEFAULT_TELEMETRY_PORT,
+        receive_telemetry=not args.no_receive_telemetry,
+    )
+    bundle = f"{SERVE_CA_DIR}/{BUNDLE}"
+    telemetry = standing.DEFAULT_TELEMETRY_PORT if listen.receive_telemetry else None
+    variables = session.agent_environment(listen, standing.DEFAULT_PROXY_PORT, bundle, {}, telemetry_port=telemetry)
+    health = f"http://127.0.0.1:{standing.DEFAULT_CONTROL_PORT}/v1/health"
+    server: dict[str, object] = {
+        "image": args.image,
+        "command": ["serve", "--host", "0.0.0.0", "--agent-host", name],
+        "volumes": [f"{SERVE_CA_VOLUME}:{IMAGE_STATE}/ca"],
+        "healthcheck": {
+            "test": [
+                "CMD",
+                "/opt/minutehand/bin/python",
+                "-c",
+                f"import urllib.request; urllib.request.urlopen({health!r})",
+            ],
+            "interval": "1s",
+            "timeout": "2s",
+            "retries": 30,
+        },
+    }
+    service: dict[str, object] = {
+        "environment": variables,
+        "volumes": [f"{SERVE_CA_VOLUME}:{SERVE_CA_DIR}:ro"],
+        "depends_on": {name: {"condition": "service_healthy"}},
+    }
+    return {
+        "services": {name: server, **{s: copy.deepcopy(service) for s in args.service}},
+        "volumes": {SERVE_CA_VOLUME: {}},
+    }
 
 
 def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
