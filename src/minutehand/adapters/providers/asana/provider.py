@@ -1,14 +1,14 @@
-"""The Asana provider: the REST API, the seeded workspace, and tickets people finish."""
+"""The Asana provider: the REST API, the seeded workspace, and tickets people finish, move and talk about."""
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.asana import wire
+from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
-from minutehand.adapters.providers.asana.seed import seed
+from minutehand.adapters.providers.asana.seed import seed, seeded_gid
 from minutehand.adapters.providers.asana.state import AsanaWorld
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -25,7 +25,8 @@ class AsanaProvider:
         seed(scenario, world)
 
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
-        """The assignee ticks the task done, or moves it to Cancelled and closes it."""
+        """The assignee moves the task to `to` the way the workspace's status source says it: ticks it done,
+        or moves it to the section, or sets the status field, that means `to`."""
         asana = AsanaWorld(world)
         task = _task(asana, ticket)
         asana.put_task(asana.moved(task, to, now=clock.now()), operation=Operation.UPDATE, actor=Actor.PERSON)
@@ -44,6 +45,44 @@ class AsanaProvider:
             task = task.model_copy(update={"assignee": user.gid, "modified_at": wire.stamp(clock.now())})
         asana.put_task(task, operation=Operation.UPDATE, actor=Actor.SCENARIO)
 
+    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        """The person does what the happening says to the seeded task, as themself. A task no longer there
+        (the agent deleted it) is left alone: there is nothing for them to act on, and nothing is written."""
+        seeded = scenario.happening_ticket(happening)
+        asana = AsanaWorld(world)
+        task = asana.task(seeded_gid(scenario, seeded))
+        if task is None:
+            return
+        person = state.user_gid(happening.person)
+        now = wire.stamp(clock.now())
+        match happening.action:
+            case Moves():
+                asana.put_task(
+                    asana.moved(task, happening.action.to, now=clock.now()),
+                    operation=Operation.UPDATE,
+                    actor=Actor.PERSON,
+                )
+            case Reassigns():
+                to = state.user_gid(happening.action.to) if happening.action.to is not None else None
+                asana.put_task(
+                    task.model_copy(update={"assignee": to, "modified_at": now}),
+                    operation=Operation.UPDATE,
+                    actor=Actor.PERSON,
+                )
+            case Comments():
+                asana.put_story(
+                    wire.AsanaStory(
+                        gid=asana.next_gid(),
+                        text=happening.action.text,
+                        task=task.gid,
+                        created_by=person,
+                        created_at=now,
+                    ),
+                    actor=Actor.PERSON,
+                )
+            case Deletes():
+                asana.delete_task(task, actor=Actor.PERSON)
+
 
 def _task(asana: AsanaWorld, ticket: EntityRef) -> wire.AsanaTask:
     if ticket.provider != MANIFEST.key or ticket.kind is not EntityKind.TICKET:
@@ -55,5 +94,5 @@ def _task(asana: AsanaWorld, ticket: EntityRef) -> wire.AsanaTask:
 
 
 def build() -> AsanaProvider:
-    """A `Provider` that also `HoldsTickets` and `EditsTickets`; the tests hold it to all three."""
+    """A `Provider` that also `HoldsTickets`, `EditsTickets` and `ActsOnTickets`; the tests hold it to all four."""
     return AsanaProvider()

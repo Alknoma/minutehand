@@ -19,7 +19,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
-from minutehand.ports.provider import EditsTickets, HoldsTickets, Provider
+from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
 from tests.providers.asana.asana_workspace import (
     CATERING,
     SCENARIO,
@@ -164,9 +164,7 @@ async def test_a_person_cancels_a_task(workspace: Workspace, client: httpx.Async
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.CANCELLED
     read = data(await client.get(f"/tasks/{made['gid']}", params={"opt_fields": "completed,memberships.section.name"}))
     assert read["completed"] is True
-    assert read["memberships"] == [
-        {"section": {"gid": state.section_gid(VENUE, state.wire.SectionRole.CANCELLED), "name": "Cancelled"}}
-    ]
+    assert read["memberships"] == [{"section": {"gid": state.section_gid(VENUE, "Cancelled"), "name": "Cancelled"}}]
 
 
 async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, client: httpx.AsyncClient) -> None:
@@ -207,8 +205,9 @@ def test_moving_a_task_that_is_not_there_is_refused(workspace: Workspace) -> Non
 
 def test_the_provider_holds_every_port_it_claims() -> None:
     provider = build()
-    held: tuple[Provider, HoldsTickets, EditsTickets] = (provider, provider, provider)
+    held: tuple[Provider, HoldsTickets, EditsTickets, ActsOnTickets] = (provider, provider, provider, provider)
     assert all(p is provider for p in held)
+    assert isinstance(provider, ActsOnTickets), "the run finds the port by isinstance, so it must be checkable"
 
 
 def test_the_manifest_claims_asana_and_imports_nothing_else_of_the_provider() -> None:
