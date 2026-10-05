@@ -16,4 +16,4 @@ A reference agent runs every outgoing question past a judge that compares it wit
 
 - Is there one place that knows every open ask per person, or does each part of the agent keep its own?
 - When a reply arrives, what marks the ask as answered?
-- `repeated_message` flags, for review, two messages to the same place minutes apart that share the wording particular to an ask (template wording the agent uses everywhere is discounted). `duplicate_ticket` fails the same title filed twice in one project while the first is open. `kept_chasing_after_done` flags a message threaded under an answered ask, or naming a finished ticket.
+- `repeated_message` flags, for review, two messages to the same place minutes apart on the run's clock that share the wording particular to an ask (template wording the agent uses everywhere is discounted). `duplicate_ticket` fails the same title filed twice in one project while the first is open. `kept_chasing_after_done` flags a message threaded under an answered ask, or naming a finished ticket.

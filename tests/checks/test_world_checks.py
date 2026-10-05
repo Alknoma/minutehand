@@ -6,10 +6,13 @@ from datetime import timedelta
 
 from minutehand.checks.acted_after_deadline import ActedAfterDeadline
 from minutehand.checks.duplicate_ticket import DuplicateTicket
+from minutehand.checks.expectations import Expectations
 from minutehand.checks.idle_wake import IdleWake
+from minutehand.checks.near_miss_name import NearMissName
 from minutehand.checks.repeated_message import RepeatedMessage
 from minutehand.checks.unmatched_call import UnmatchedCall
 from minutehand.domain.checks import FindingKind, WakeRecord
+from minutehand.domain.scenario import TicketInState
 from minutehand.domain.world import Actor, Exchange, Operation, TicketState
 from tests.checks.world import Log, at, person, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
@@ -96,15 +99,24 @@ def test_no_unmatched_calls_is_clean_and_an_unknown_list_is_blocked() -> None:
 
 def test_the_same_ask_sent_twice_seconds_apart_is_a_repeat() -> None:
     log = Log()
+    log.message([OWNER], 0, text="Could you send me the signed contract for Northwind?")
+    log.message([OWNER], 20 / 3600, text="Could you send me the signed contract for Northwind please?")
+    [finding] = RepeatedMessage().run(view(scenario(OWNER), log)).findings
+    assert finding.evidence == [1, 2] and "20 seconds apart" in finding.message
+
+
+def test_the_same_ask_days_apart_on_the_run_clock_is_not_a_repeat_however_close_in_real_time() -> None:
+    # Until the window was measured on the simulated clock: a fortnight plays in seconds, so these two
+    # messages, two simulated days apart, were twenty real seconds apart and flagged.
+    log = Log()
     log.message([OWNER], 0, text="Could you send me the signed contract for Northwind?", wall=at(0))
     log.message(
         [OWNER],
-        0,
+        48,
         text="Could you send me the signed contract for Northwind please?",
         wall=at(0) + timedelta(seconds=20),
     )
-    [finding] = RepeatedMessage().run(view(scenario(OWNER), log)).findings
-    assert finding.evidence == [1, 2] and "20 seconds apart" in finding.message
+    assert RepeatedMessage().run(view(scenario(OWNER), log)).findings == []
 
 
 def test_two_asks_written_from_one_template_about_different_things_are_not_a_repeat() -> None:
@@ -124,3 +136,25 @@ def test_an_agent_message_after_a_reply_in_the_channel_is_not_a_repeat() -> None
     log.message([], 0, text="Sending now", actor=Actor.PERSON, wall=at(0) + timedelta(seconds=10))
     log.message([OWNER], 0, text="Could you send me the signed contract?", wall=at(0) + timedelta(seconds=20))
     assert RepeatedMessage().run(view(scenario(OWNER), log)).findings == []
+
+
+def test_a_ticket_written_twice_in_the_expected_state_is_one_ticket() -> None:
+    # Until tickets, not events, were counted: the second write of the same done ticket made two, and
+    # `at_most: 1` failed on a world holding one done ticket.
+    log = Log()
+    log.ticket("Review the contract", SOFIA, 0, external_id="T1")
+    log.ticket("Review the contract", SOFIA, 5, operation=Operation.UPDATE, state=TicketState.DONE, external_id="T1")
+    log.ticket("Review the contract", SOFIA, 6, operation=Operation.UPDATE, state=TicketState.DONE, external_id="T1")
+    one = TicketInState(assignee="sofia", state=TicketState.DONE, at_most=1)
+    assert Expectations().run(view(scenario(OWNER, SOFIA, expect=[one]), log)).findings == []
+    log.ticket("Review the budget", SOFIA, 7, state=TicketState.DONE, external_id="T2")
+    [finding] = Expectations().run(view(scenario(OWNER, SOFIA, expect=[one]), log)).findings
+    assert finding.message == "ticket for sofia in state done: wanted at most 1, found 2"
+
+
+def test_a_protected_name_misspelled_in_a_record_is_found() -> None:
+    log = Log()
+    log.record("invoices", "Invoice for Aiven, net 30", 1)
+    world = view(scenario(OWNER).model_copy(update={"protected_names": ["Ayven"]}), log)
+    [finding] = NearMissName().run(world).findings
+    assert finding.message == 'wrote "Aiven" where the scenario says "Ayven"' and finding.evidence == [1]

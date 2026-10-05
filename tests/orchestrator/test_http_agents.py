@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -16,9 +17,19 @@ from starlette.routing import Route
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.replier_scripted import ScriptedReplier
-from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Polled, Reported, WakeReason, WakeRequest
+from minutehand.domain.agent import (
+    AgentReport,
+    AgentStatus,
+    AgentUnderTest,
+    Booked,
+    Polled,
+    Reported,
+    WakeReason,
+    WakeRequest,
+)
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Scenario
+from minutehand.domain.world import Actor, EntityKind
 from tests.orchestrator.rig import T0, Rig, scenario
 from tests.orchestrator.world import RecordingClock, serving
 
@@ -168,6 +179,37 @@ class SlowAgent:
         return Starlette(routes=[Route("/wake", wake, methods=["POST"]), Route("/report", report, methods=["GET"])])
 
 
+class BookingAgent:
+    """Books a wake five hours out on START. When the scheduler has delivered it, works for two polls, tells the
+    owner, and is done: the delivery is its wake, and nothing else would make it act."""
+
+    def __init__(self, rig: Rig) -> None:
+        self.rig = rig
+        self.polls_after_delivery = 0
+
+    def app(self) -> Starlette:
+        async def wake(request: Request) -> Response:
+            got = WakeRequest.model_validate_json(await request.body())
+            if got.reason is WakeReason.START:
+                async with httpx.AsyncClient() as client:
+                    booked = {"ref": "nudge", "at": (got.now + timedelta(hours=5)).isoformat()}
+                    await client.post(f"{self.rig.base}/testsched/schedules", json=booked)
+            return JSONResponse({"ok": True})
+
+        async def report(request: Request) -> Response:
+            if not self.rig.sched.fired:
+                return Response(AgentReport(status=AgentStatus.IDLE).model_dump_json())
+            self.polls_after_delivery += 1
+            if self.polls_after_delivery <= 2:
+                return Response(AgentReport(status=AgentStatus.WORKING).model_dump_json())
+            async with httpx.AsyncClient() as client:
+                said = {"to": "owner@example.com", "text": "The nudge came; acting on it."}
+                await client.post(f"{self.rig.base}/testchat/messages", json=said)
+            return Response(AgentReport(status=AgentStatus.DONE).model_dump_json())
+
+        return Starlette(routes=[Route("/wake", wake, methods=["POST"]), Route("/report", report, methods=["GET"])])
+
+
 def _reported(base: str, **limits: timedelta) -> AgentUnderTest:
     source = Reported.model_validate({"wake_url": f"{base}/wake", "report_url": f"{base}/report", **limits})
     return AgentUnderTest(name="slow", wakes=[source])
@@ -238,3 +280,41 @@ async def test_a_wake_call_inside_its_timeout_is_waited_for(rig: Rig) -> None:
         )
 
     assert record.stop is StopReason.AGENT_DONE, record.failure
+
+
+async def test_a_wake_made_only_of_a_booking_waits_for_the_agent_to_act_on_the_delivery(rig: Rig) -> None:
+    # Until a delivery was a wake the loop waited on: the booking fired, no report was asked for, and the clock
+    # ran on to the deadline before the agent had done anything with what the scheduler delivered.
+    agent = BookingAgent(rig)
+    scn = scenario(ticket_fates=[])
+    async with serving(agent.app()) as base:
+        under_test = AgentUnderTest(
+            name="booker",
+            wakes=[
+                Reported(
+                    wake_url=f"{base}/wake",
+                    report_url=f"{base}/report",
+                    report_first_after=timedelta(milliseconds=1),
+                    report_at_most_every=timedelta(milliseconds=5),
+                ),
+                Booked(),
+            ],
+        )
+        clock = RecordingClock(scn.starts_at)
+        store = rig.open("booked", clock)
+        record = await run_scenario(
+            scenario=scn,
+            agent=under_test,
+            reach=reach_for(under_test),
+            store=store,
+            clock=clock,
+            services=rig.services(),
+            replier=ScriptedReplier(scn),
+            mounts=rig.board,
+        )
+
+    assert record.stop is StopReason.AGENT_DONE
+    assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=5)]
+    [acted] = [e for e in store.events() if e.actor is Actor.AGENT and e.entity.kind is EntityKind.MESSAGE]
+    assert acted.wake == 2 and acted.sim_time == T0 + timedelta(hours=5)
+    assert record.wakes[1].world_changes == 1

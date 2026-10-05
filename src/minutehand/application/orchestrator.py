@@ -333,7 +333,8 @@ class Orchestrator:
             if provider is not None:
                 await self._say(provider, self._scenario.goal)
 
-        return await self._wake(wake, WakeReason.START, say_goal, [(driver, request)] if driver is not None else [])
+        requests = [(driver, request)] if driver is not None else []
+        return await self._wake(wake, WakeReason.START, say_goal, requests, [d for d, _ in requests])
 
     async def _loop(self) -> StopReason:
         deadline = self._scenario.deadline
@@ -353,11 +354,12 @@ class Orchestrator:
                 continue
             wake = self._clock.begin_wake()
             requests, reason = self._requests(fired)
+            settle = [d for d, _ in requests] or self._delivered_to(fired)
 
             async def fire(due: list[Pending] = fired) -> None:
                 await self._fire(due)
 
-            stop = await self._wake(wake, reason, fire, requests)
+            stop = await self._wake(wake, reason, fire, requests, settle)
             if stop is not None:
                 return stop
 
@@ -405,6 +407,13 @@ class Orchestrator:
             if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
                 self._schedule_tick()
 
+    def _delivered_to(self, fired: list[Pending]) -> list[AgentDriver]:
+        """A wake made only of bookings sends no request, since the scheduler's delivery is the wake, but the agent
+        still acts on what was delivered: the loop waits on its main driver until it is no longer working."""
+        if self._reach.main is None or not any(isinstance(p, PendingBooking) for p in fired):
+            return []
+        return [self._reach.main]
+
     def _requests(self, fired: list[Pending]) -> tuple[list[tuple[AgentDriver, WakeRequest]], WakeReason]:
         """One request per driver that must hear of this wake, and the reason the wake carries. A wake made only
         of bookings sends none: the scheduler's own delivery is the wake. Nor does one that reaches an agent
@@ -449,9 +458,11 @@ class Orchestrator:
         reason: WakeReason,
         fire: Callable[[], Awaitable[None]],
         requests: list[tuple[AgentDriver, WakeRequest]],
+        settle: list[AgentDriver],
     ) -> StopReason | None:
-        """Change the world for what is due, send the wake, wait until the agent stops working, read what it did,
-        and checkpoint. An agent that refuses a pushed event fails the wake as one that refuses the wake does."""
+        """Change the world for what is due, send the wake, wait until each driver in `settle` stops working, read
+        what the agent did, and checkpoint. An agent that refuses a pushed event fails the wake as one that refuses
+        the wake does."""
         if self._telemetry is not None:
             self._telemetry.wake_started(wake, reason, self._clock.now())
         failed = False
@@ -461,7 +472,7 @@ class Orchestrator:
             await fire()
             for driver, request in requests:
                 await driver.wake(request)
-            for driver, _ in requests:
+            for driver in settle:
                 report = await driver.settled()
                 done = done or report.status is AgentStatus.DONE
                 if driver is self._reach.main:

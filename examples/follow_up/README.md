@@ -12,7 +12,7 @@ says how well it carried the job.
 |---|---|
 | `agent.py` | The agent. `AGENT_BEHAVIOUR=forgetful` makes it ask once and never follow up. |
 | `agent.yaml` | Where Minutehand reaches it: the wake and report endpoints, and where Slack pushes messages. |
-| `scenario.yaml` | Rosa answers 36 hours after she is asked. |
+| `scenario.yaml` | Rosa answers 36 hours after she is asked. Owen is told the outcome and owes no answer. |
 | `scenario_silent.yaml` | Rosa never answers. |
 
 The agent needs `slack_sdk` in the Python that runs it (`pip install slack_sdk`). Minutehand needs nothing
@@ -39,7 +39,8 @@ scorecard
   ...
 ```
 
-The command exits 0: nothing failed.
+The command exits 0: nothing failed. The scorecard counts one wait, Rosa's answer, and none open at the end:
+the thank-you to Rosa and the note to Owen asked nothing, because nobody would answer them.
 
 ## 2. Rosa never answers, and the agent forgets
 

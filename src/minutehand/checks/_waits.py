@@ -5,19 +5,22 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.scenario import Model
+from minutehand.domain.world import Operation, WorldEvent
 
 GRACE = timedelta(hours=1)
 """How long after the moment it should act the agent may take before the time counts against it."""
 
+VISIBLE = frozenset({Operation.CREATE, Operation.UPDATE, Operation.DELETE})
+"""What a person can see the agent did: a read or a search tells them nothing."""
 
-class FollowUp(Model):
-    """A wait that passed its expected date while still open, and what the agent did about it."""
 
-    obligation: Obligation
+class Expiry(Model):
+    """One moment a wait fell due while still open, and the first follow-up at or after it."""
+
     expired: AwareDatetime
     closes: AwareDatetime
     touch: int | None
@@ -25,12 +28,64 @@ class FollowUp(Model):
 
     @property
     def gap(self) -> timedelta:
-        """From the expiry to the follow-up, or to the close when there was none."""
+        """From falling due to the follow-up, or to the close when there was none."""
         return (self.touched_at or self.closes) - self.expired
 
     @property
     def late(self) -> bool:
         return self.touch is None or self.gap > GRACE
+
+
+class Chase(Model):
+    """A wait read for follow-ups: every one the agent made, and every moment one fell due.
+
+    A follow-up is an agent write the person could see (a message to them or their delegate, a change to the
+    ticket or the thread) while the wait is open, whether it came before the wait fell due or after. A read is
+    not one: looking at the channel tells nobody anything. The wait falls due at its `expected_by`; a follow-up
+    gives the person its `patience` again from the moment it was sent, so it falls due again then. Without a
+    patience (work, which has its own pace) the first follow-up after the date answers it for good.
+    """
+
+    obligation: Obligation
+    follow_ups: list[int] = Field(description="WorldEvent.seq of each follow-up, in order")
+    follow_up_times: list[AwareDatetime]
+    expiries: list[Expiry]
+
+    @property
+    def abandoned(self) -> Expiry | None:
+        """The last moment due, when nothing followed it before the wait closed."""
+        return self.expiries[-1] if self.expiries and self.expiries[-1].touch is None else None
+
+
+def chase(o: Obligation, events: dict[int, WorldEvent], ended: datetime) -> Chase:
+    """Every follow-up on `o` and every moment it fell due before it settled or the run ended."""
+    closes = o.settled_at or ended
+    seen = sorted(
+        (events[s].sim_time, s)
+        for s in o.agent_touches
+        if s in events
+        and events[s].operation in VISIBLE
+        and (o.settled_at is None or events[s].sim_time < o.settled_at)  # only while the wait is open
+    )
+    due = max(o.expected_by, o.opened_at) if o.expected_by is not None and o.kind is not ObligationKind.DATE else None
+    expiries: list[Expiry] = []
+    for touched_at, seq in seen:
+        if due is None or due >= closes:
+            break
+        if touched_at < due:
+            if o.patience is not None:
+                due = max(due, touched_at + o.patience)
+            continue
+        expiries.append(Expiry(expired=due, closes=closes, touch=seq, touched_at=touched_at))
+        due = touched_at + o.patience if o.patience is not None else None
+    if due is not None and due < closes:
+        expiries.append(Expiry(expired=due, closes=closes, touch=None, touched_at=None))
+    return Chase(
+        obligation=o,
+        follow_ups=[s for _, s in seen],
+        follow_up_times=[t for t, _ in seen],
+        expiries=expiries,
+    )
 
 
 class Reaction(Model):
@@ -55,23 +110,6 @@ def ended_at(view: RunView) -> datetime:
     """The last moment the run reached: its last event or its last wake, whichever is later."""
     moments = [e.sim_time for e in view.events] + [w.sim_time for w in view.wakes]
     return max(moments, default=view.scenario.starts_at)
-
-
-def follow_up(o: Obligation, when: dict[int, datetime], ended: datetime) -> FollowUp | None:
-    """None when the wait settled, or the run ended, before it was due."""
-    closes = o.settled_at or ended
-    if o.expected_by is None or o.expected_by >= closes:
-        return None
-    expired = max(o.expected_by, o.opened_at)
-    after = sorted((when[s], s) for s in o.agent_touches if s in when and when[s] >= expired)
-    first = after[0] if after else None
-    return FollowUp(
-        obligation=o,
-        expired=expired,
-        closes=closes,
-        touch=first[1] if first else None,
-        touched_at=first[0] if first else None,
-    )
 
 
 def reaction(o: Obligation, when: dict[int, datetime], ended: datetime) -> Reaction | None:
@@ -104,3 +142,13 @@ def blocked(view: RunView, needs: frozenset[Needs], check: str) -> list[str]:
     if Needs.CALLS in needs and view.unmatched_calls is None:
         missing.append(f"{check}: nobody recorded which calls reached no provider")
     return missing
+
+
+def span(delta: timedelta) -> str:
+    """A stretch of simulated time in days and hours, the way the findings say it."""
+    hours = round(delta.total_seconds() / 3600)
+    days, hours = divmod(hours, 24)
+    parts = [f"{days} day{'s' if days != 1 else ''}"] if days else []
+    if hours or not days:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    return " ".join(parts)

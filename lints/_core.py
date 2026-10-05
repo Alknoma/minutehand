@@ -1,6 +1,6 @@
 """What every lint here shares, so that no lint carries its own copy.
 
-Ported from alknoma-cloud's `research-services/lints/_core.py`, where fifteen
+Ported from the parent repository's lint core, where fifteen
 lints had grown fifteen ways of walking the tree, printing, and — the one that
 mattered — parsing the escape hatch. Seven documented that the reason is
 required; one enforced it. Here the decisions are made once:

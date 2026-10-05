@@ -1,4 +1,4 @@
-"""What a check answers with. The shape follows alknoma-cloud's `lints/_core.py`:
+"""What a check answers with. The shape follows the parent repository's lint core:
 severity is how loud, kind is what the reader must do, and a check that could not
 read its input did not run, which is `blocked` and never a finding."""
 
@@ -91,6 +91,11 @@ class Obligation(Model):
     expected_by: AwareDatetime | None = Field(
         default=None, description="After this, silence is the agent's to act on; None means no date applies"
     )
+    patience: timedelta | None = Field(
+        default=None,
+        description="How long the person may take over each message on this wait: a follow-up gives them this long "
+        "again from the moment it was sent. None: a follow-up does not move the date (work has its own pace)",
+    )
     settled_at: AwareDatetime | None = Field(default=None, description="When the answer landed or the work was done")
     agent_touches: list[int] = Field(default=[], description="Agent events on the same person or entity while open")
     first_touch_after_settled: int | None = None
@@ -124,11 +129,22 @@ class Effectiveness(Model):
 
     expectations_met: int = Field(ge=0)
     expectations_total: int = Field(ge=0)
-    waits_opened: int = Field(ge=0)
-    waits_open_at_end: int = Field(ge=0)
-    follow_ups_due: int = Field(ge=0, description="Waits that passed their expected date while still open")
-    follow_ups_made: int = Field(ge=0)
-    follow_ups_late: int = Field(ge=0)
+    waits_opened: int = Field(
+        ge=0,
+        description="Asks and hand-offs the agent is owed an answer or work on; the scenario's deadline is not one",
+    )
+    waits_open_at_end: int = Field(ge=0, description="Of those, the ones the world had not settled when the run ended")
+    follow_ups_due: int = Field(
+        ge=0,
+        description="Moments a wait fell due while still open: its expected date, and again its patience after "
+        "each follow-up",
+    )
+    follow_ups_made: int = Field(
+        ge=0, description="Agent writes the person could see on a wait still open, whether before or after it fell due"
+    )
+    follow_ups_late: int = Field(
+        ge=0, description="Of the moments due, those followed up more than the grace after, or never"
+    )
     time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
     slowest_follow_up: timedelta | None = None
     reactions_due: int = Field(

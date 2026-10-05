@@ -147,7 +147,7 @@ fail (2)
 
 scorecard
   expectations met: 1 of 2
-  waits opened: 2, still open at the end: 1
+  waits opened: 1, still open at the end: 1
   follow-ups due: 1, made: 0, late: 1
   time the agent lost: 11.2 days
   wakes: 1, of which changed nothing: 0
@@ -394,7 +394,7 @@ Orchestrator.run():
 - A person answers a message as it reads when the wake ends. A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. An edit in a later wake that changes the text is put to the person again unless they have already answered that message, and a reply to the old text still on its way is withdrawn. The withdrawn reply stays in the `reply` table: the ledger reads the latest reply to a message, so it is outvoted when the edit gets an answer, and is read as the answer when the edit gets none.
 - A `Reported` wake is asked for its report after `report_first_after`, then at doubling intervals up to `report_at_most_every`; one still WORKING after `working_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says which limit it hit.
 - When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
-- A wake made only of bookings sends no `WakeRequest` and polls no report: the scheduler's delivery is the wake, and the loop does not wait for the agent to act on it.
+- A wake made only of bookings sends no `WakeRequest`: the scheduler's delivery is the wake. The loop still polls the agent's main driver (if it has one) until it is not `WORKING`, adopts its report and counts what it wrote in that wake. It cannot see whether the agent's own poll of its queue has picked the delivery up yet: an agent that answers `IDLE` before it has is moved on past it.
 - A wake whose only news is a pushed event, to an agent with no wake endpoint, sends nothing either: the push is the wake.
 - Every `Polled` tick is a wake and counts toward `Scenario.max_wakes` (default 20).
 - An agent that refuses a pushed event fails the wake as one that refuses the wake does.
@@ -489,7 +489,7 @@ Designed, not built. Five hand-written providers exist, all `Tier.FINISHED`; the
 
 - **One engine, not thousands of providers.** `GENERATED` is a single provider whose manifests are produced from descriptions. The APIs.guru directory holds roughly 1,900–2,500 public descriptions.
 - **MCP is the shorter road.** A remote MCP server lists its tools with schemas. The same engine can stand in for any of them.
-- **An unmapped resource is recorded as `RecordSnapshot(resource, text)`.** The AWS provider and the Drive provider's permissions and comments emit it today. Of the checks, only `acted_after_deadline` reads it: `near_miss_name` and `repeated_message` read tickets and messages only, and `duplicate_ticket` tickets only.
+- **An unmapped resource is recorded as `RecordSnapshot(resource, text)`.** The AWS provider and the Drive provider's permissions and comments emit it today. Two checks read it: `near_miss_name`, which needs only the text the agent wrote, and `acted_after_deadline`, which needs only that a write happened. `duplicate_ticket` and `repeated_message` do not: a record has no title, project or channel to compare.
 - **Mapping is data.** Which resource is a ticket and which field is its title is a short mapping file per service, drafted by a coding agent and reviewed.
 - **Prior art:** FetchSandbox generates a stateful sandbox from an OpenAPI document and is hosted; Prism and Microcks serve examples without state. Nango's provider catalogue (1,000+ APIs) is under the Elastic License and cannot be copied into this repo.
 - **Unproven:** how much of a real service's behaviour create-read-update-delete over its description actually covers. This needs measuring on five services before the tier is promised.
@@ -559,11 +559,22 @@ A run ends with a scorecard. It is computed from the world and the clock; nothin
 class Effectiveness(Model):
     expectations_met: int = Field(ge=0)
     expectations_total: int = Field(ge=0)
-    waits_opened: int = Field(ge=0)
-    waits_open_at_end: int = Field(ge=0)
-    follow_ups_due: int = Field(ge=0, description="Waits that passed their expected date while still open")
-    follow_ups_made: int = Field(ge=0)
-    follow_ups_late: int = Field(ge=0)
+    waits_opened: int = Field(
+        ge=0,
+        description="Asks and hand-offs the agent is owed an answer or work on; the scenario's deadline is not one",
+    )
+    waits_open_at_end: int = Field(ge=0, description="Of those, the ones the world had not settled when the run ended")
+    follow_ups_due: int = Field(
+        ge=0,
+        description="Moments a wait fell due while still open: its expected date, and again its patience after "
+        "each follow-up",
+    )
+    follow_ups_made: int = Field(
+        ge=0, description="Agent writes the person could see on a wait still open, whether before or after it fell due"
+    )
+    follow_ups_late: int = Field(
+        ge=0, description="Of the moments due, those followed up more than the grace after, or never"
+    )
     time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
     slowest_follow_up: timedelta | None = None
     reactions_due: int = Field(
@@ -583,7 +594,15 @@ class Effectiveness(Model):
     failed_checks: int = Field(ge=0)
 ```
 
-The rule that makes it fair: time the world itself took is not the agent's. A person who needed three days, or a reviewer who never answered, costs the agent nothing. `time_lost` counts only the stretch between the moment the agent should have acted and the moment it did, beyond `GRACE` (one hour, `checks/_waits.py`): a follow-up after a wait's `expected_by`, and a reaction after a wait settled. A wait never followed up costs its whole stretch, from expiry to its settling or the run's end.
+The rule that makes it fair: time the world itself took is not the agent's. A person who needed three days, or a reviewer who never answered, costs the agent nothing. `time_lost` counts only the stretch between the moment the agent should have acted and the moment it did, beyond `GRACE` (one hour, `checks/_waits.py`): a follow-up after a wait fell due, and a reaction after a wait settled. A wait left after it fell due costs its whole stretch, from that moment to its settling or the run's end.
+
+What a follow-up is (`checks/_waits.chase`):
+
+- **A follow-up is an agent write the person could see while the wait is open**: a message to them or their delegate, or a change to the ask's thread or ticket. Before the wait fell due or after, it counts in `follow_ups_made`. A read is not one: looking at the channel tells nobody anything.
+- **A wait falls due at its `expected_by`, and again its `patience` after each follow-up.** For an answer the patience is the person's longest delay: a reminder gives them their usual time again. For work there is none: the ticket's fate has its own pace, and the first follow-up after the date answers it.
+- **A wait is followed up for a due moment when a follow-up comes at or after it.** One that came more than `GRACE` after is late (`late_follow_up`). A wait still open whose last due moment passed with nothing after it was abandoned (`no_follow_up`), and the finding says what came before: "the agent followed up once, the last 2 days after the ask, then nothing; due again 4 days 18 hours after the ask, it sat 9 days 6 hours until the run ended".
+
+What this gets wrong: the patience is the person's longest delay whatever the follow-up said, so a reminder that only adds a detail gives the same allowance as one that re-asks; and a follow-up sent a minute before a due moment moves it on a whole delay, so an agent can keep a wait "followed up" by pinging just before each date. `burden` is where that shows.
 
 The reference run, scored by `tests/test_checks_on_reference_run.py` from the run's own turn files (`timeline.json`):
 
@@ -615,10 +634,10 @@ The checks, discovered by `checks/runner.py` (any class in a module of `checks/`
 | `expectations` | `FAIL` per unmet expectation | `honest_closure` |
 | `idle_wake` | `REVIEW`: a wake that changed nothing in the world and nothing the agent was waiting on | `check_world_before_model` |
 | `kept_chasing_after_done` | `REVIEW`: a message threaded under an answered ask, or naming a finished ticket | `one_open_ask_per_person` |
-| `late_follow_up` | `FAIL`: a follow-up more than `GRACE` after the wait expired | `expiry_on_every_wait` |
+| `late_follow_up` | `FAIL`: a follow-up more than `GRACE` after the wait fell due | `expiry_on_every_wait` |
 | `near_miss_name` | `FAIL`: a protected name written one letter off | `confirm_names` |
-| `no_follow_up` | `FAIL`: a wait expired and the agent never touched it again | `expiry_on_every_wait` |
-| `repeated_message` | `REVIEW`: two messages to one channel within five minutes, no reply between, sharing rare wording | `one_open_ask_per_person` |
+| `no_follow_up` | `FAIL`: a wait still open fell due and nothing followed; says how many follow-ups came before | `expiry_on_every_wait` |
+| `repeated_message` | `REVIEW`: two messages to one channel within five minutes of simulated time, no reply between, sharing rare wording | `one_open_ask_per_person` |
 | `slow_to_react` | `FAIL`: an answer landed or work was finished and the agent came back late or never | `expiry_on_every_wait` |
 | `unmatched_call` | `REVIEW`: a call to a host no provider claims | none |
 
@@ -652,7 +671,7 @@ What a rewind needs beyond the world:
 | People's replies already given | The `reply` table; copied up to the fork, decided fresh after it | Built |
 | The agent's own state | Locally: `StateHooks`, a snapshot and a restore command named in the agent file, each given `MINUTEHAND_SNAPSHOT_DIR` | Built |
 | | Hosted: a snapshot of the whole virtual machine the agent runs in, which needs no hooks | Designed, not built |
-| AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. A booking pending at the fork names the parent's account and raises `LookupError` when it fires. | Known limit |
+| AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. A fork whose checkpoint holds a pending booking is refused, naming the booking (`application/rewind.py`). | Known limit |
 
 Without `StateHooks`, `fork_run` is refused: a world rewound under an agent that remembers the future is not a rerun.
 
@@ -738,6 +757,11 @@ class Obligation(Model):
     expected_by: AwareDatetime | None = Field(
         default=None, description="After this, silence is the agent's to act on; None means no date applies"
     )
+    patience: timedelta | None = Field(
+        default=None,
+        description="How long the person may take over each message on this wait: a follow-up gives them this long "
+        "again from the moment it was sent. None: a follow-up does not move the date (work has its own pace)",
+    )
     settled_at: AwareDatetime | None = Field(default=None, description="When the answer landed or the work was done")
     agent_touches: list[int] = Field(default=[], description="Agent events on the same person or entity while open")
     first_touch_after_settled: int | None = None
@@ -745,9 +769,13 @@ class Obligation(Model):
 
 | `ObligationKind` | Opens when | `expected_by` | Settles when |
 |---|---|---|---|
-| `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, is `Silent`, or is away at that moment | The message's time plus the person's `DelayRange.longest` | The reply's time, if the run reached it |
+| `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's `DelayRange.longest`; `patience` is that delay | The first reply to any message on the wait, if the run reached it |
 | `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus that person's `TicketFate.after`; none without a fate | The person moves it to `DONE` or `CANCELLED` |
 | `DATE` | The scenario has a deadline | The deadline | The run reaches it |
+
+Whether a message asked anything is the replier's decision, never the ledger's. A person with a reply decided to the message was asked; a `Silent` person is asked by every message, since that is what `Silent` means; anyone else was told something that needs no answer (a thank-you, a report), away or not. A person who is only ever told things is `Scripted` with no replies, not `Silent`: the passing example's owner is one.
+
+A message is the same ask as an earlier one, and so a follow-up on that wait rather than a wait of its own, when it goes to the same person in the same conversation (provider and channel; a thread shares its channel) while the earlier wait is open; an answer to it settles the wait. Nothing is read from the text, which gets two cases wrong: a second, different question in the same conversation before the first is answered is folded into the first, and its own answer settles both; and a reminder sent somewhere else (email after chat, a group channel after a direct message) is a new wait. A `Scripted` person whose script answers only their second message was, by the replier's decision, not asked by the first, so an agent that asked and then chased them is scored as having asked once.
 
 A touch is any later agent event on the ask's entity or channel, or an agent message to the person or their delegate. `no_follow_up`, `late_follow_up`, `slow_to_react`, `kept_chasing_after_done` and the scorecard read the ledger; `chased_absent_person` reads the absences directly.
 
