@@ -11,8 +11,9 @@ directory under the state directory, written by the models, so a later process c
     <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
     <state>/runs/<run_id>/agent.json     `AgentUnderTest`
     <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
-    <state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks` and
-                                         settled in time
+    <state>/runs/<run_id>/world.pool/    the agent's snapshots, each file once, for a root run and its forks
+                                         (`adapters.store.sqlite`); `wake-<n>/` is where the snapshot command
+                                         writes until the store has kept it, `restoring/` where a restore reads
     <state>/runs/<run_id>/restore.json   for a fork, or a sample after the first: every step of the restore that
                                          started it, with each command's output, and whether it was verified
 

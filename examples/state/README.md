@@ -12,6 +12,20 @@ agent's to save and put back, through four commands in its agent file (`state:`)
   same status, the same next wake, the same commitments by key and status. If not, the fork is refused with
   the difference, field by field.
 
+## How the snapshots are kept
+
+The snapshot command fills a fresh directory. Once it exits, the run's store keeps what it wrote, each file
+once across every snapshot of the run and its forks (a file identical to one already kept costs nothing), and
+the directory is removed. The `restore` command is handed the snapshot written back out as a plain directory:
+the same paths, bytes and modes, never the directory `snapshot` wrote into, and removed once the restore is
+over. Only regular files and directories can be kept; a snapshot holding a link or a socket fails the
+checkpoint.
+
+`keep: N` under `state:` keeps the newest N snapshots restorable and prunes older ones, except the run's
+start, one a fork was taken from, and one pinned with `minutehand pin <run> <seq>`. A pruned checkpoint is
+listed as "not restorable: its snapshot was pruned", and a fork from it is refused. `minutehand checkpoints
+<run>` lists each checkpoint with its snapshot's size; `minutehand gc` frees what nothing refers to any more.
+
 | Recipe | State | Tested |
 |---|---|---|
 | [`sqlite/`](sqlite/) | a SQLite file; snapshot and restore by SQLite's online backup | in the default suite |

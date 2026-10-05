@@ -97,8 +97,14 @@ neither text, JSON, XML nor a form is kept as its length and type only (`binary`
 are. Query parameters named as credentials (`redact.CREDENTIAL_KEYS`, plus `key`, `api_key`, `signature`,
 `sig`, `x-amz-*` credentials and the rest of `redact.CAPTURED_QUERY_KEYS` on a captured host) and body fields
 so named are `[redacted]`, and so is every body field the declaration lists in `redact` (and, when it is a
-plain name, the query parameter of that name). `test_no_secret_reaches_the_store_from_headers_query_or_bodies`
-searches the bytes of the world file, its write-ahead log and `captured.jsonl` for each.
+plain name, the query parameter of that name). Redaction happens before the store sees a body, so before it is
+hashed and kept once (`docs/design.md`, "Bytes kept once"). `test_no_secret_reaches_the_store_from_headers_query_or_bodies`
+searches the bytes of the world file, its write-ahead log, `captured.jsonl`, and every stored body and snapshot
+file decompressed, for each.
+
+Keeping a body once changes nothing above: the limits, what is kept of a binary or a cut body, and the bytes
+read back are what they were. A body the run sees many times (the same listing, the same upload) costs its
+bytes once per world file.
 
 ## A send as a message to a person
 
