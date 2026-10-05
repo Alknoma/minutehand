@@ -632,6 +632,17 @@ def reading(state: Path, run_id: str) -> Iterator[Store]:
         store.close()
 
 
+@contextmanager
+def reading_file(path: Path, run_id: str) -> Iterator[Store]:
+    """One run of a world file at `path` opened for reading only, closed on leaving: a standing world's stretch
+    before a reset, kept beside it (`serve.RESETS`)."""
+    store = _ReadOnlyStore(path, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
+    try:
+        yield store
+    finally:
+        store.close()
+
+
 def scenario_of(state: Path, run_id: str) -> Scenario:
     """The scenario as this run played it. A fork still running has not written its own yet, so it answers
     the scenario of the run it was forked from, before the fork's changes."""

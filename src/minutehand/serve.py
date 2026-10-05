@@ -25,6 +25,7 @@ Each world is a run in the state directory, so `minutehand findings`, `view` and
     <state>/runs/<world_id>/world.json     `Kept`: its name and claims, which marks it as a standing world
     <state>/runs/<world_id>/record.json    once closed: `RunRecord`, stopped CLOSED
     <state>/runs/<world_id>/result.json    once closed: the checks over it as it was closed
+    <state>/runs/<world_id>/resets/<n>.db  its log before its n-th reset, kept: a reset never discards the record
     <state>/runs/<lobby_id>/world.db       the calls no world claimed, and spans of traces none carried
 
 Closing a world keeps the last `keep` closed worlds and removes the directories of older ones, then sweeps every
@@ -96,6 +97,8 @@ from minutehand.session import (
 
 KEPT = "world.json"
 LOBBY = "lobby"
+RESETS = "resets"
+"""Where a standing world keeps its log from before each reset, `<n>.db` for the n-th, oldest first."""
 
 DEFAULT_PROXY_PORT = 8080
 DEFAULT_CONTROL_PORT = 8081
@@ -159,6 +162,7 @@ class World:
     open: bool = True
     signing: dict[ProviderKey, str] = field(default_factory=dict)
     capturing: Capturing = field(default_factory=Capturing)
+    resets: int = 0
 
 
 def _nothing_relayed(world: Mounted) -> None:
@@ -376,21 +380,35 @@ class Standing:
     def reset(self, world_id: str) -> World:
         """The world back to the seed it was opened with, in place: the same id, the same claims, the same inbound
         targets and secrets, its clock back at its start, the faults it was opened with armed again, and nothing
-        the agent, a person or the test did since. Its log so far is discarded, and tokens its fakes minted are
-        no longer claimed: the world that minted them is gone."""
+        the agent, a person or the test did since in what it holds. Its record is not discarded: the log so far
+        is kept as the stretch before this reset (`RESETS`), read again with `since_reset=false`. Tokens its fakes
+        minted are no longer claimed: the world that minted them is gone."""
         old = self.get(world_id)
         self.flush_in(old.mounted)
         old.store.close()
         old.open = False
+        directory = run_dir(self._state, world_id)
+        kept = directory / RESETS / f"{len(self.stretches(world_id)) + 1}.db"
+        kept.parent.mkdir(exist_ok=True)
         for suffix in ("", "-wal", "-shm"):
-            (run_dir(self._state, world_id) / f"{WORLD}{suffix}").unlink(missing_ok=True)
+            found = directory / f"{WORLD}{suffix}"
+            if found.exists():
+                found.rename(kept.with_name(kept.name + suffix))
         world = self._open(world_id, old.spec, old.signing, old.capturing, old.standing.scenario.starts_at)
+        world.resets = old.resets + 1
         self.worlds[world_id] = world
         claimed = set(old.spec.claims.tokens)
         self._tokens = {t: w for t, w in self._tokens.items() if w != world_id or t in claimed}
         for trace in old.traces:
             del self._traces[trace]
         return world
+
+    def stretches(self, world_id: str) -> list[Path]:
+        """The world's log before each of its resets, oldest first: each a world file of its own."""
+        kept = run_dir(self._state, world_id) / RESETS
+        if not kept.is_dir():
+            return []
+        return sorted(kept.glob("*.db"), key=lambda p: int(p.stem))
 
     def extend(self, world_id: str, added: FurtherSeed) -> dict[ProviderKey, int]:
         """`StandingWorld.extend`, with a scratch store beside the world's own."""

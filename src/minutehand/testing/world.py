@@ -29,6 +29,7 @@ from minutehand.adapters.control.wire import (
 from minutehand.domain.people import InboundCredential, InboundCredentialAsk, PermissionGrant, Press
 from minutehand.domain.provider import PersonChange
 from minutehand.domain.scenario import Happening, Person, TicketState
+from minutehand.domain.telemetry import StoredSpan
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -76,25 +77,40 @@ class OpenWorld:
         actor: Actor | None = None,
         operation: Operation | None = None,
         since: int | None = None,
+        since_reset: bool = True,
     ) -> list[WorldEvent]:
+        """Since the last reset; with `since_reset` False, every event the world has recorded, the stretch before
+        each reset first (`EventsPage.resets` on the client's page says where each falls)."""
         page = self.client.events(
-            self.world_id, provider=provider, kind=kind, actor=actor, operation=operation, since=since
+            self.world_id,
+            provider=provider,
+            kind=kind,
+            actor=actor,
+            operation=operation,
+            since=since,
+            since_reset=since_reset,
         )
         return page.events
 
     def entities(self, *, provider: str | None = None, kind: EntityKind | None = None) -> list[Stored]:
         return self.client.entities(self.world_id, provider=provider, kind=kind).entities
 
-    def calls(self) -> list[RecordedCall]:
-        return self.client.calls(self.world_id).calls
+    def calls(self, *, since_reset: bool = True) -> list[RecordedCall]:
+        """Every call of this world since its last reset; with `since_reset` False, every call it has had, so a test
+        can count the calls made before a reset."""
+        return self.client.calls(self.world_id, since_reset=since_reset).calls
 
-    def unmatched_calls(self) -> list[RecordedCall]:
+    def unmatched_calls(self, *, since_reset: bool = True) -> list[RecordedCall]:
         """This world's calls to hosts no provider claims and no declaration captures, refused with 502."""
-        return self.client.calls(self.world_id, unmatched=True).calls
+        return self.client.calls(self.world_id, unmatched=True, since_reset=since_reset).calls
 
-    def captured_calls(self) -> list[RecordedCall]:
+    def captured_calls(self, *, since_reset: bool = True) -> list[RecordedCall]:
         """This world's calls to hosts declared as outbound (`CreateWorld.outbound`), captured and not refused."""
-        return self.client.calls(self.world_id, captured=True).calls
+        return self.client.calls(self.world_id, captured=True, since_reset=since_reset).calls
+
+    def spans(self, *, since_reset: bool = True) -> list[StoredSpan]:
+        """Spans the services exported in traces this world's calls carried, and model calls it recorded."""
+        return self.client.spans(self.world_id, since_reset=since_reset).spans
 
     def now(self) -> datetime:
         return self.client.world(self.world_id).now

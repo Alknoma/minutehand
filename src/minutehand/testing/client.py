@@ -63,8 +63,9 @@ def _query(
     actor: Actor | None = None,
     operation: Operation | None = None,
     since: int | None = None,
+    since_reset: bool = True,
 ) -> dict[str, str]:
-    found: dict[str, str] = {}
+    found: dict[str, str] = {} if since_reset else {"since_reset": "false"}
     if provider is not None:
         found["provider"] = provider
     if kind is not None:
@@ -104,12 +105,20 @@ def _advance(by: timedelta | None, to: datetime | None) -> str:
     return Advance(by=by, to=to).model_dump_json(exclude_none=True)
 
 
-def _calls_query(*, unmatched: bool, captured: bool, tunnelled: bool = False) -> dict[str, str] | None:
+def _calls_query(
+    *, unmatched: bool, captured: bool, tunnelled: bool = False, since_reset: bool = True
+) -> dict[str, str] | None:
     """`GET /calls`'s filters: refused calls, captured calls, calls on tunnels relayed unopened, or with none of
-    them every call."""
+    them every call; since the world's last reset, or, with `since_reset` False, across its whole record."""
     wanted_by = (("unmatched", unmatched), ("captured", captured), ("tunnelled", tunnelled))
     asked = {name: "true" for name, wanted in wanted_by if wanted}
+    if not since_reset:
+        asked["since_reset"] = "false"
     return asked or None
+
+
+def _spans_query(since_reset: bool) -> dict[str, str] | None:
+    return None if since_reset else {"since_reset": "false"}
 
 
 class MinutehandClient:
@@ -169,24 +178,35 @@ class MinutehandClient:
         actor: Actor | None = None,
         operation: Operation | None = None,
         since: int | None = None,
+        since_reset: bool = True,
     ) -> EventsPage:
-        params = _query(provider=provider, kind=kind, actor=actor, operation=operation, since=since)
+        """The log, filtered; since the world's last reset, or, with `since_reset` False, across its whole record
+        (`EventsPage.resets` says where each reset falls)."""
+        params = _query(
+            provider=provider, kind=kind, actor=actor, operation=operation, since=since, since_reset=since_reset
+        )
         return self._get(f"/worlds/{world_id}/events", EventsPage, params)
 
     def entities(self, world_id: str, *, provider: str | None = None, kind: EntityKind | None = None) -> EntitiesPage:
         return self._get(f"/worlds/{world_id}/entities", EntitiesPage, _query(provider=provider, kind=kind))
 
     def calls(
-        self, world_id: str, *, unmatched: bool = False, captured: bool = False, tunnelled: bool = False
+        self,
+        world_id: str,
+        *,
+        unmatched: bool = False,
+        captured: bool = False,
+        tunnelled: bool = False,
+        since_reset: bool = True,
     ) -> CallsPage:
         return self._get(
             f"/worlds/{world_id}/calls",
             CallsPage,
-            _calls_query(unmatched=unmatched, captured=captured, tunnelled=tunnelled),
+            _calls_query(unmatched=unmatched, captured=captured, tunnelled=tunnelled, since_reset=since_reset),
         )
 
-    def spans(self, world_id: str) -> SpansPage:
-        return self._get(f"/worlds/{world_id}/spans", SpansPage)
+    def spans(self, world_id: str, *, since_reset: bool = True) -> SpansPage:
+        return self._get(f"/worlds/{world_id}/spans", SpansPage, _spans_query(since_reset))
 
     def act(self, world_id: str, act: Act) -> Acted:
         return self._post(f"/worlds/{world_id}/act", ActRequest(act=act).model_dump_json(), Acted)
@@ -277,8 +297,13 @@ class AsyncMinutehandClient:
         actor: Actor | None = None,
         operation: Operation | None = None,
         since: int | None = None,
+        since_reset: bool = True,
     ) -> EventsPage:
-        params = _query(provider=provider, kind=kind, actor=actor, operation=operation, since=since)
+        """The log, filtered; since the world's last reset, or, with `since_reset` False, across its whole record
+        (`EventsPage.resets` says where each reset falls)."""
+        params = _query(
+            provider=provider, kind=kind, actor=actor, operation=operation, since=since, since_reset=since_reset
+        )
         return await self._get(f"/worlds/{world_id}/events", EventsPage, params)
 
     async def entities(
@@ -287,16 +312,22 @@ class AsyncMinutehandClient:
         return await self._get(f"/worlds/{world_id}/entities", EntitiesPage, _query(provider=provider, kind=kind))
 
     async def calls(
-        self, world_id: str, *, unmatched: bool = False, captured: bool = False, tunnelled: bool = False
+        self,
+        world_id: str,
+        *,
+        unmatched: bool = False,
+        captured: bool = False,
+        tunnelled: bool = False,
+        since_reset: bool = True,
     ) -> CallsPage:
         return await self._get(
             f"/worlds/{world_id}/calls",
             CallsPage,
-            _calls_query(unmatched=unmatched, captured=captured, tunnelled=tunnelled),
+            _calls_query(unmatched=unmatched, captured=captured, tunnelled=tunnelled, since_reset=since_reset),
         )
 
-    async def spans(self, world_id: str) -> SpansPage:
-        return await self._get(f"/worlds/{world_id}/spans", SpansPage)
+    async def spans(self, world_id: str, *, since_reset: bool = True) -> SpansPage:
+        return await self._get(f"/worlds/{world_id}/spans", SpansPage, _spans_query(since_reset))
 
     async def act(self, world_id: str, act: Act) -> Acted:
         return await self._post(f"/worlds/{world_id}/act", ActRequest(act=act).model_dump_json(), Acted)

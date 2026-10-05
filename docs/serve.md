@@ -91,10 +91,10 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `POST /v1/worlds` | `CreateWorld` → 201 `WorldView` | Open a world from a seed, with its claims, inbound targets, faults, outbound hosts, and whether scripted people speak |
 | `GET /v1/worlds/{id}` | → `WorldView` | Its clock, its head, what it owes |
 | `DELETE /v1/worlds/{id}` | → `Checked` | Close it: the checks as it stood, its record written, its claims released |
-| `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since` | → `EventsPage` | The log, filtered; `since` is a seq |
+| `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since[&since_reset=false]` | → `EventsPage` | The log, filtered; `since` is a seq |
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
-| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
-| `GET /v1/worlds/{id}/spans` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
+| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true][?since_reset=false]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
+| `GET /v1/worlds/{id}/spans[?since_reset=false]` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
 | `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
 | `POST /v1/worlds/{id}/clock` | `Advance` → `Advanced` | Move the clock `by` or `to`, firing what falls due |
@@ -104,7 +104,7 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `POST /v1/worlds/{id}/people` | `ChangePerson` → `Acted` | A person's account removed, deactivated or reactivated in one provider |
 | `POST /v1/worlds/{id}/permissions` | `Permit` → `Acted` | A named permission granted or withheld for a person on a project |
 | `POST /v1/worlds/{id}/inbound-credential` | `MintInbound` → `Minted` | The headers a provider's service would send with a request the test builds itself |
-| `POST /v1/worlds/{id}/reset` | → `WorldView` | Back to the seed it was opened with, in place: the same id, claims, inbound targets and secrets |
+| `POST /v1/worlds/{id}/reset` | → `WorldView` | Back to the seed it was opened with, in place: the same id, claims, inbound targets and secrets; its record kept |
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
@@ -231,8 +231,13 @@ says what the test did and when.
 - **Switches** the emulators exposed (a page size, a tree cut short, a send answered without an id) are typed
   faults and settings of the provider's own seed, declared through `provider-faults` like any fault.
 - **Reset** (`POST /reset`; `OpenWorld.reset()`): back to the seed the world was opened with, in place: the same
-  id, claims, inbound targets and secrets, its clock at its start, the faults it was opened with armed again,
-  and its log so far discarded. Tokens its fakes minted are no longer claimed, and further seeds are gone.
+  id, claims, inbound targets and secrets, its clock at its start, the faults it was opened with armed again.
+  Tokens its fakes minted are no longer claimed, and further seeds are gone. Its STATE goes back; its RECORD
+  does not: the log so far is kept beside the world (`resets/<n>.db`) and never discarded. `events`, `calls`
+  and `spans` read since the last reset, as they always have, and with `?since_reset=false`
+  (`OpenWorld.calls(since_reset=False)`, `.events(...)`, `.spans(...)`) read the whole record, the stretch before
+  each reset first, with `resets` on the page giving, for each reset, the index of the first item after it. Each
+  stretch numbers its events from 1. `WorldView.resets` counts the resets.
 - **Raw state** (`GET /state?provider=P`; `OpenWorld.raw_state()`): every version of every entity the provider
   holds, deleted ones too, in its own JSON. For a person debugging; its shape is the provider's and changes with
   it, so a test asserts on `events`, `entities` or the vendor API instead.
@@ -259,6 +264,7 @@ A world is a run in the state directory, named by its `world_id`:
 <state>/runs/<world_id>/world.json     its name and claims (marks it a standing world)
 <state>/runs/<world_id>/record.json    once closed: stop `closed`
 <state>/runs/<world_id>/result.json    once closed: the checks as it stood
+<state>/runs/<world_id>/resets/<n>.db  its log before its n-th reset
 <state>/runs/lobby-<id>/world.db       calls no world claimed
 ```
 

@@ -8,13 +8,16 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     POST   /v1/worlds                                  `CreateWorld` -> 201 `WorldView`
     GET    /v1/worlds/{id}                             `WorldView`
     DELETE /v1/worlds/{id}                             close it: `Checked`, as it stood when closed
-    GET    /v1/worlds/{id}/events?provider&kind&actor&operation&since    `EventsPage`
+    GET    /v1/worlds/{id}/events?provider&kind&actor&operation&since&since_reset    `EventsPage`
     GET    /v1/worlds/{id}/entities?provider&kind      `EntitiesPage`: each entity's latest version
-    GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true]
+    GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true][?since_reset=false]
                                                 `CallsPage`: every call; those refused because nobody claims or
                                                 declares their host; those captured (`Exchange.captured`); or
                                                 those relayed unopened on a tunnel (`Exchange.tunnelled`)
-    GET    /v1/worlds/{id}/spans                       `SpansPage`
+    GET    /v1/worlds/{id}/spans[?since_reset=false]   `SpansPage`
+
+`events`, `calls` and `spans` read since the world's last reset; `since_reset=false` reads its whole record, every
+stretch before each reset first, and says in `resets` where each reset falls.
     POST   /v1/worlds/{id}/act                         `ActRequest` -> `Acted`
     GET    /v1/worlds/{id}/clock                       `WorldView` (its `now` and `owed`)
     POST   /v1/worlds/{id}/clock                       `Advance` -> `Advanced`
@@ -37,7 +40,8 @@ service an event was pushed to refused it.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -88,7 +92,9 @@ from minutehand.adapters.control.wire import (
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.standing import Unsupported
 from minutehand.domain.scenario import Model
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, Stored, WorldEvent
+from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordedCall, Stored, WorldEvent
+from minutehand.ports.store import Store
+from minutehand.session import reading_file
 
 if TYPE_CHECKING:
     from minutehand.serve import Serving, World
@@ -109,6 +115,8 @@ def _guarded(handler: Handler) -> Handler:
         try:
             return await handler(request)
         except ValidationError as e:
+            return _refused(422, str(e))
+        except _BadQuery as e:
             return _refused(422, str(e))
         except LookupError as e:
             return _refused(404, str(e.args[0]) if e.args else str(e))
@@ -132,6 +140,7 @@ def _view(world: World) -> WorldView:
         now=standing.clock.now(),
         head=world.store.head(),
         owed=[OwedView(at=at, what=what) for at, what in standing.owed()],
+        resets=world.resets,
     )
 
 
@@ -139,11 +148,41 @@ def _query(request: Request, name: str) -> str | None:
     return request.query_params[name] if name in request.query_params else None
 
 
+class _BadQuery(Exception):
+    """A query parameter that is not what its route takes: refused 422, as a body that is not the model is."""
+
+
+def _flag(request: Request, name: str, *, default: bool) -> bool:
+    """A `true`/`false` query parameter; anything else is refused."""
+    given = _query(request, name)
+    if given is None:
+        return default
+    if given not in ("true", "false"):
+        raise _BadQuery(f"?{name}= is true or false, not {given!r}")
+    return given == "true"
+
+
+def _across[T](stretches: Sequence[Path], world: World, read: Callable[[Store], list[T]]) -> tuple[list[T], list[int]]:
+    """What `read` finds in each stretch of the world's record before a reset, oldest first, then in the world as
+    it stands; and, for each reset, the index of the first item after it."""
+    found: list[T] = []
+    resets: list[int] = []
+    for path in stretches:
+        with reading_file(path, world.world_id) as before:
+            found += read(before)
+        resets.append(len(found))
+    return found + read(world.store), resets
+
+
 def create_app(serving: Serving) -> Starlette:
     standing = serving.standing
 
     def world_of(request: Request) -> World:
         return standing.get(request.path_params["world_id"])
+
+    def earlier(request: Request, world: World) -> list[Path]:
+        """The stretches of the world's record before its resets, when the read asks for them (`since_reset=false`)."""
+        return [] if _flag(request, "since_reset", default=True) else standing.stretches(world.world_id)
 
     def provider_of(request: Request, world: World) -> str | None:
         """The provider a read names, seeded into the world first if nothing has called it yet: the world a
@@ -195,8 +234,11 @@ def create_app(serving: Serving) -> Starlette:
                 and (wanted_operation is None or e.operation is wanted_operation)
             )
 
-        found_events = [e for e in found.store.events(since=since) if keep(e)]
-        return _json(EventsPage(events=found_events, head=found.store.head()))
+        def read(store: Store) -> list[WorldEvent]:
+            return [e for e in store.events(since=since if store is found.store else 0) if keep(e)]
+
+        found_events, resets = _across(earlier(request, found), found, read)
+        return _json(EventsPage(events=found_events, head=found.store.head(), resets=resets))
 
     async def entities(request: Request) -> Response:
         found = world_of(request)
@@ -212,17 +254,26 @@ def create_app(serving: Serving) -> Starlette:
 
     async def calls(request: Request) -> Response:
         found = world_of(request)
-        recorded = found.store.calls()
-        if _query(request, "unmatched") == "true":
-            recorded = [c for c in recorded if c.refused]
-        if _query(request, "captured") == "true":
-            recorded = [c for c in recorded if c.exchange.captured is not None]
-        if _query(request, "tunnelled") == "true":
-            recorded = [c for c in recorded if c.exchange.tunnelled is not None]
-        return _json(CallsPage(calls=recorded))
+        unmatched_only = _query(request, "unmatched") == "true"
+        captured_only = _query(request, "captured") == "true"
+        tunnelled_only = _query(request, "tunnelled") == "true"
+
+        def read(store: Store) -> list[RecordedCall]:
+            return [
+                c
+                for c in store.calls()
+                if (not unmatched_only or c.refused)
+                and (not captured_only or c.exchange.captured is not None)
+                and (not tunnelled_only or c.exchange.tunnelled is not None)
+            ]
+
+        recorded, resets = _across(earlier(request, found), found, read)
+        return _json(CallsPage(calls=recorded, resets=resets))
 
     async def spans(request: Request) -> Response:
-        return _json(SpansPage(spans=world_of(request).store.spans()))
+        found = world_of(request)
+        kept, resets = _across(earlier(request, found), found, lambda store: store.spans())
+        return _json(SpansPage(spans=kept, resets=resets))
 
     async def act(request: Request) -> Response:
         found = world_of(request)
