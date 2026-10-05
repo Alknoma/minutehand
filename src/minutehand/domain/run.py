@@ -16,6 +16,7 @@ class StopReason(StrEnum):
     DEADLINE_PASSED = "deadline_passed"  # the clock passed the scenario's deadline
     NOTHING_PENDING = "nothing_pending"  # nothing is due and the agent named no next wake: it is stuck
     AGENT_FAILED = "agent_failed"  # the agent could not be reached or answered with an error
+    CLOSED = "closed"  # a standing world (`minutehand serve`) was closed by whoever opened it
 
 
 class VerdictKind(StrEnum):

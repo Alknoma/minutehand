@@ -30,7 +30,9 @@ def _commitment(status: CommitmentStatus) -> Commitment:
     )
 
 
-@pytest.mark.parametrize("stop", [StopReason.WAKE_LIMIT, StopReason.DEADLINE_PASSED, StopReason.NOTHING_PENDING])
+@pytest.mark.parametrize(
+    "stop", [StopReason.WAKE_LIMIT, StopReason.DEADLINE_PASSED, StopReason.NOTHING_PENDING, StopReason.CLOSED]
+)
 def test_a_stop_without_done_while_a_wait_is_open_is_not_finished_and_exits_3(stop: StopReason) -> None:
     world = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]), _asked_and_waiting())
 
