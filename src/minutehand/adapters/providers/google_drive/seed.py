@@ -79,15 +79,16 @@ def _seed_document(
     modifier: wire.DriveUser,
     stamp: str,
     changed: str,
+    position: int,
 ) -> wire.StoredFile:
-    parent = ensure_folder(drive, root, document.folder, owner, stamp, Actor.SCENARIO)
+    ordinal = position * (state.SEEDED_FOLDER_DEPTH + 1)
+    parent = ensure_folder(drive, root, document.folder, owner, stamp, Actor.SCENARIO, seeded=ordinal)
     blob = (
         drive.keep_blob(document.text.encode("utf-8"), actor=Actor.SCENARIO)
         if document.kind is DocumentKind.FILE
         else None
     )
-    seq = drive.next_seq()
-    file_id = state.file_id(seq)
+    file_id = state.seeded_file_id(ordinal + state.SEEDED_FOLDER_DEPTH, parent.file.id, document.title)
     content: wire.Content | None
     if document.kind is DocumentKind.DOCUMENT:
         mime, content = wire.DOCUMENT, docs.from_markdown(file_id, document.text)
@@ -106,7 +107,7 @@ def _seed_document(
             owners=[owner] if root.file.driveId is None else None,
             createdTime=changed,
             modifiedTime=changed,
-            version=str(seq),
+            version=str(state.SEEDED_VERSION),
             webViewLink=wire.web_view_link(file_id, mime),
             size=str(blob.size) if blob is not None else None,
             md5Checksum=blob.md5 if blob is not None else None,
@@ -141,7 +142,7 @@ def seed(scenario: Scenario, world: Store) -> None:
             owner=user,
             drive_id=None,
             stamp=stamp,
-            version=drive.next_seq(),
+            version=state.SEEDED_VERSION,
         )
         drive.write_file(root, operation=Operation.CREATE, actor=Actor.SCENARIO)
 
@@ -154,19 +155,20 @@ def seed(scenario: Scenario, world: Store) -> None:
         drive.keep_credential(state.secret_digest(sign_in.credential), credential, operation=Operation.CREATE)
 
     spaces: dict[str, wire.StoredFile] = {}
-    for space in scenario.spaces:
+    for position, space in enumerate(scenario.spaces):
         if space.provider != MANIFEST.key:
             continue
-        seq = drive.next_seq()
-        drive_id = state.drive_id(seq)
+        drive_id = state.seeded_drive_id(position, space.name)
         drive.write_drive(wire.SharedDrive(id=drive_id, name=space.name, createdTime=stamp), actor=Actor.SCENARIO)
-        root = folder_file(drive_id, space.name, parent=None, owner=None, drive_id=drive_id, stamp=stamp, version=seq)
+        root = folder_file(
+            drive_id, space.name, parent=None, owner=None, drive_id=drive_id, stamp=stamp, version=state.SEEDED_VERSION
+        )
         drive.write_file(root, operation=Operation.CREATE, actor=Actor.SCENARIO)
         for member in space.members:
             grant(drive, root, users[member.person], ROLES[member.role], actor=Actor.SCENARIO)
         spaces[space.name] = root
 
-    for document in scenario.documents:
+    for position, document in enumerate(scenario.documents):
         if document.provider != MANIFEST.key:
             continue
         owner = users[document.owner or scenario.owner]
@@ -181,6 +183,7 @@ def seed(scenario: Scenario, world: Store) -> None:
             modifier=users[document.modified_by] if document.modified_by else owner,
             stamp=stamp,
             changed=wire.rfc3339(start - document.modified_before_start),
+            position=position,
         )
         drive.keep_seeded(document.title, made.file.id)
         for access in document.shared_with:
