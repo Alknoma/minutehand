@@ -15,22 +15,22 @@ It is one process: it intercepts the agent's outbound API calls, owns the clock,
 
 ## What exists
 
-Tests are `def test_` functions counted per directory: 465 in all, 592 cases once parametrised. `uv run pytest -q -n auto` runs every one with sockets disabled except to `127.0.0.1`, `::1` and `localhost`.
+Tests are `def test_` functions counted per directory: 562 in all, 695 cases once parametrised. `uv run pytest -q -n auto` runs every one with sockets disabled except to `127.0.0.1`, `::1` and `localhost`.
 
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
 | Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 9 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
 | World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls and replies; forks share it | Built and tested | 16 (`tests/test_sqlite_store.py`) | The file carries schema version 2 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
-| Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels or edits model APIs, refuses the rest | Built and tested | 27 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are never recorded. |
-| Slack provider | 14 Web API methods; message events pushed to the agent, signed | Built and tested | 69 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
+| Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels or edits model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA) | Built and tested | 31 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are never recorded. |
+| Slack provider | 15 Web API methods; message events pushed to the agent, signed with the run's secret or the agent's own | Built and tested | 74 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
 | Asana provider | 20 routes over users, workspaces, projects, sections, tasks and stories | Built and tested | 55 (`tests/providers/asana/`) | Any bearer token is accepted. |
 | YouTrack provider | 14 routes, each at `/api` and `/youtrack/api` | Built and tested | 60 (`tests/providers/youtrack/`) | Any bearer token is accepted. |
 | Google Drive provider | 14 Drive v3 routes, Docs v1 `documents.get`, Google's `/token` | Built and tested | 62 (`tests/providers/google_drive/`) | Sign-in is not verified; any bearer token is accepted. Content is capped at 5 MiB per file. |
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
-| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 36 (`tests/orchestrator/`) | A fork starts only at a checkpoint (the end of a wake). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 47 (`tests/orchestrator/`) | A fork starts only at a checkpoint (the end of a wake). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
 | Checks, ledger, scorecard, patterns: `checks/` | 12 checks, the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/`) | World-event spans are emitted when a wake ends, not as calls arrive. |
-| Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`; starts the agent's own command | Built and tested | 9 (`tests/e2e/`) | Whole runs are tested with the Slack provider only. Samples without `StateHooks` are not independent. |
+| Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers is untested. Samples without `StateHooks` are not independent. |
 | Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
 | MCP tools, control API and viewer, container image, model-written people, judged checks, generated providers, human actions, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
@@ -112,8 +112,23 @@ name: forgetful_agent
 wakes:
   - {kind: reported, wake_url: "http://127.0.0.1:8765/wake", report_url: "http://127.0.0.1:8765/report"}
 inbound:
-  - {provider: slack, url: "http://127.0.0.1:8765/slack/events", secret_env: AGENT_SLACK_SIGNING_SECRET}
+  - {provider: slack, url: "http://127.0.0.1:8765/slack/events",
+     secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}}
 ```
+
+`secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
+
+```yaml
+  - kind: reported
+    wake_url: http://platform:8025/minutehand/wake
+    report_url: http://platform:8025/minutehand/report
+    wake_timeout: PT2M            # one call to wake_url or report_url (default 2 minutes)
+    report_first_after: PT0.1S    # the first ask for the report; each wait doubles from here
+    report_at_most_every: PT10S   # up to this
+    working_limit: PT30M          # a wake still WORKING after this stops the run AGENT_FAILED, saying so
+```
+
+A scenario file may leave `starts_at` out: the run then starts at the moment it is started, taken once to the second and recorded in the run's `scenario.json` and `RunRecord.started_at`, so every sample and fork of it plays the same instant. The file is read as a `WrittenScenario`; what a run plays and every reader sees is a `Scenario`, whose `starts_at` is always an instant.
 
 ### A whole run
 
@@ -306,9 +321,13 @@ class Provider(Protocol):
 
 @runtime_checkable
 class PushesEvents(Protocol):
-    async def deliver(self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock) -> None: ...
+    async def deliver(
+        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None: ...
 
-    async def say(self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock) -> None: ...
+    async def say(
+        self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -362,8 +381,9 @@ Orchestrator.run():
     otherwise, one wake:
       fire in order: fates (transition), replies (PushesEvents.deliver), directions by message (say),
                      bookings (BooksWakes.fire), the next Polled tick
-      WakeRequest to each driver that must hear of it; poll AgentDriver.report() until not WORKING
-      read the new events: an agent message to a person -> Replier.decide -> a pending reply
+      WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
+      read the new events: an agent message to a person, as its text reads when the wake ends
+                           -> Replier.decide -> a pending reply
                            an agent ticket assigned to a person with a TicketFate -> a pending fate
       AgentReport.next_wake replaces the agent's previous DUE wake
       checkpoint: StateHooks.snapshot, then a Checkpoint row in the log
@@ -371,6 +391,8 @@ Orchestrator.run():
   RunRecord -> Scorer (every check) -> Telemetry.found, Telemetry.run_ended
 ```
 
+- A person answers a message as it reads when the wake ends. A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. An edit in a later wake that changes the text is put to the person again unless they have already answered that message, and a reply to the old text still on its way is withdrawn. The withdrawn reply stays in the `reply` table: the ledger reads the latest reply to a message, so it is outvoted when the edit gets an answer, and is read as the answer when the edit gets none.
+- A `Reported` wake is asked for its report after `report_first_after`, then at doubling intervals up to `report_at_most_every`; one still WORKING after `working_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says which limit it hit.
 - When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
 - A wake made only of bookings sends no `WakeRequest` and polls no report: the scheduler's delivery is the wake, and the loop does not wait for the agent to act on it.
 - A wake whose only news is a pushed event, to an agent with no wake endpoint, sends nothing either: the push is the wake.
@@ -414,7 +436,7 @@ What a run leaves behind (`session.py`):
 
 ### One container
 
-Designed, not built. Today Minutehand runs as one Python process: `Proxy` listens on `127.0.0.1` on a port the system picks, and `minutehand run … -- <command>` starts the agent's own process beside it.
+Designed, not built. Today Minutehand runs as one Python process. `Proxy` listens on `127.0.0.1` on a port the system picks unless `--proxy-host` and `--proxy-port` say otherwise; `minutehand run … -- <command>` starts the agent's own process beside it, or, with no command, wakes an agent that is already running. An agent in containers is given the proxy as `--agent-proxy-host` names this machine (`host.docker.internal`), and `minutehand env --format compose --service <name>…` prints a Compose override that sets the variables below in each named service and mounts the CA bundle read-only.
 
 The design: one image, one process, two ports.
 
@@ -432,16 +454,16 @@ services:
     environment:
       HTTPS_PROXY: http://minutehand:8080
       NO_PROXY: localhost,firestore
-      SSL_CERT_FILE: /ca/ca.pem          # httpx, requests, slack_sdk
-      REQUESTS_CA_BUNDLE: /ca/ca.pem
-      HTTPLIB2_CA_CERTS: /ca/ca.pem      # googleapiclient
-      NODE_EXTRA_CA_CERTS: /ca/ca.pem
+      SSL_CERT_FILE: /ca/minutehand-ca-bundle.pem          # httpx, requests, slack_sdk
+      REQUESTS_CA_BUNDLE: /ca/minutehand-ca-bundle.pem
+      HTTPLIB2_CA_CERTS: /ca/minutehand-ca-bundle.pem      # googleapiclient
+      NODE_EXTRA_CA_CERTS: /ca/minutehand-ca-bundle.pem
     volumes: ["minutehand-ca:/ca:ro"]
 ```
 
 Three limits of the design:
 - **The agent's own database is not a SaaS fake.** Firebase's emulator suite is Google's and stays a separate container.
-- **The agent's container must trust the CA.** One environment variable per HTTP library, as above.
+- **The agent's container must trust the CA.** One environment variable per HTTP library, as above, each naming the bundle: certifi's public roots and then the proxy's CA. A file holding the proxy's CA alone replaces a library's roots, and every call the proxy tunnels to a real host, a model API, fails verification.
 - **A client that ignores proxy settings** would use the `/p/<provider>/` base URL instead, which is a configuration change in the agent. That base-URL mode is not built.
 
 ### Lazy loading
@@ -450,7 +472,7 @@ Built and tested (`test_provider_module_is_imported_on_its_first_request`).
 
 - A provider is a package with `manifest.py` (`MANIFEST: Manifest`, data only) and `provider.py` (`build() -> Provider`). `Registry.installed()` imports every manifest; nothing else.
 - Built-in providers are found by walking `minutehand.adapters.providers`. An installed package names itself under the entry-point group `minutehand.providers`, with its package as the value; an entry point whose name differs from its manifest's key is refused.
-- The proxy maps a request's host to a manifest and builds that provider on the first call (`Registry.provider`). `session.play` builds the providers the scenario and the agent name before the run, because it seeds them and holds them to their ports; any other installed provider is still built on its first call, unseeded.
+- The proxy maps a request's host to a manifest and builds that provider on the first call (`Registry.provider`). `session.play` builds the providers the scenario and the agent name before the run, because it seeds them and holds them to their ports; any other installed provider is built on its first call and seeded then with the scenario, unless the world already holds anything of it (a fork of a run that seeded it); the seed's events are not tied to that call. `RunRecord.providers` lists every provider the agent called.
 - Host patterns are an exact lower-case host or `*.` and a domain; a wildcard does not claim its own apex. Two providers claiming overlapping hosts, or one key, are refused when registered.
 - Hosts a scenario declares (a self-hosted YouTrack) are designed, not built.
 
@@ -742,7 +764,7 @@ From least to most invasive; the fakes are on Minutehand's clock in every case.
 What follows from that spike:
 
 - **A run under option 3 must start at the real date and stay inside the real certificates' lifetime,** about two months ahead, unless model-API traffic is terminated at the proxy and re-sent from the real clock. Terminating it means the proxy decrypts prompts it otherwise only tunnels.
-- **A scenario with a fixed past `starts_at` cannot use option 3.** `Scenario.starts_at` is required and fixed in the scenario file today.
+- **A scenario with a fixed past `starts_at` cannot use option 3.** A scenario file that leaves `starts_at` out starts at the moment its run does, which is what an agent reading the real clock needs.
 - **An agent that polls on a short real-time loop works under option 3:** after a jump its next poll reads the new time. The cost is one real poll interval per jump.
 - **An agent that sleeps until a far-off moment does not wake.** It needs `Booked` or `Reported`.
 - **The monitor still cannot see when an in-process scheduler next wants to run.** Jumping straight to the next reply would skip a follow-up the agent meant to send in between, and the run would blame the agent for lateness the jump caused. Such an agent is `Polled` at a declared rhythm, or `Reported`.
@@ -788,7 +810,10 @@ minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] 
 minutehand findings <run_id> [--state DIR] [--json]
 minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--json] [-- <command...>]
 minutehand runs [--state DIR]
+minutehand env --agent <agent.yaml> --proxy-port N [--format shell|compose] [--service NAME...] [--ca-path PATH]
 ```
+
+`run`, `fork` and `env` take `--proxy-host`, `--proxy-port`, `--agent-proxy-host` and `--no-proxy HOST` (repeated). `env` prints the environment an agent Minutehand does not start needs, for every run on that port under that state directory: `export` lines, or a Compose override. It makes the proxy's CA if there is none yet, and refuses a port left to the system and a signing secret generated per run.
 
 Exit 0 when no finding is `FindingKind.FAIL`, 1 when any is (with samples, when any sample failed), 2 when the run could not be performed. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
 
@@ -812,9 +837,9 @@ minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 
 | What the run needs | How it gets there with no code change | State |
 |---|---|---|
-| Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=localhost,127.0.0.1`, and the CA in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE` | Built. A client that pins certificates is out of reach. Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; unverified. For Compose, an override file passed with `-f` is designed, not built. |
+| Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=localhost,127.0.0.1` (each in lower case too), and the CA bundle in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE`. An agent Minutehand does not start gets the same from `minutehand env` | Built. A client that pins certificates is out of reach. Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; unverified. The Compose override is tested as text; no container has been run with it. |
 | The agent is up before the run starts | Minutehand waits up to 30 seconds for its wake URL, or else its first inbound URL, to accept connections, and fails the run if the command exits first; its output goes to `agent.log` | Built |
-| Pushed events reach the agent | The agent's event URL and the name of its signing-secret variable are in the agent file; a secret is generated per run and set in both processes | Built |
+| Pushed events reach the agent | The agent's event URL and where its signing secret comes from are in the agent file: generated per run and handed to the command, or the agent's own, read from a variable of Minutehand's | Built |
 | The agent wakes at the right moments | Replies, pushed events and `Booked` wake-ups need nothing. `Polled` needs a URL in the agent file. | Built. `Reported` needs an endpoint or an adapter, which is code, though it can live outside the project. |
 | The agent agrees on what time it is | `WakeRequest.now`; `libfaketime` preloaded through the same wrapper | `WakeRequest.now` built; `libfaketime` not built |
 | Scenarios and the agent file | Plain YAML or JSON files, in the project or anywhere else | Built |

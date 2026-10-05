@@ -73,6 +73,22 @@ minutehand runs                 # every run, one line each
 minutehand findings <run_id>    # a run's findings again, and the checkpoints it can be forked from
 ```
 
+## An agent that is already running
+
+Minutehand need not start the agent. Leave `-- python agent.py` out, put the proxy on a fixed port, and
+give the agent the environment `minutehand env` prints before the run:
+
+```bash
+minutehand env --agent agent.yaml --proxy-port 18080 > minutehand.env    # export lines; source them
+minutehand run scenario.yaml --agent agent.yaml --proxy-port 18080       # the agent is already up
+```
+
+An agent started on its own cannot be handed a secret made for each run, so its `agent.yaml` says
+`secret: {kind: from_env, env: <variable>}` and Minutehand reads the agent's own signing secret from that
+variable. For an agent in containers, `--proxy-host 0.0.0.0 --agent-proxy-host host.docker.internal
+--format compose --service <name>` prints a Compose override that sets the same variables in each named
+service and mounts the CA bundle into it.
+
 ## In the container
 
 The image runs the same commands; mount this folder and start the agent inside it. The image built with
