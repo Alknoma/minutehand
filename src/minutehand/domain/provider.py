@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from enum import StrEnum
 from typing import Self
@@ -108,6 +109,12 @@ class Manifest(Model):
         description="What a person can do to its seeded documents; a scenario whose document happening does any "
         "other is refused at load, since the provider could not show it",
     )
+    shared_hosts: list[str] = Field(
+        default=[],
+        description="Hosts whose answers are the same in every world and need no world's state (published signing "
+        "keys and their metadata): under `minutehand serve`, a call to one that no world claims is answered "
+        "rather than refused",
+    )
     people_changes: list[PersonChange] = Field(
         default=[],
         description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "
@@ -135,11 +142,12 @@ def fault_fragment[M: Model](seed: type[M], text: str, fields: frozenset[str]) -
 
 
 def merged_seed[M: Model](seed: type[M], held: str | None, added: str) -> str:
-    """A provider's own seed with a further fragment of it merged in, each read through the provider's model: a list
-    the fragment sets grows by what it lists, a model it sets is merged field by field, and any other value it sets
-    must be what the world's seed already says. The result is validated again before it is returned, as JSON text."""
-    fragment = seed.model_validate_json(added).model_dump(mode="json", exclude_unset=True)
-    whole = seed.model_validate_json(held).model_dump(mode="json", exclude_unset=True) if held is not None else {}
+    """A provider's own seed with a further fragment of it merged in: a list the fragment sets grows by what it lists,
+    an object it sets is merged field by field, and any other value it sets must be what the world's seed already
+    says. The fragment may name what only the whole seed holds (a repository's owner), so it is read as the merge's
+    input and the whole is validated through the provider's model, which refuses what it cannot read."""
+    fragment: JsonValue = json.loads(added)
+    whole: JsonValue = json.loads(held) if held is not None else {}
     return seed.model_validate(_merged(whole, fragment, seed.__name__)).model_dump_json(exclude_unset=True)
 
 
