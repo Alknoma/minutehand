@@ -247,6 +247,36 @@ async def test_an_update_with_text_and_no_blocks_drops_the_old_blocks(slack: Int
     assert "blocks" not in shown or shown["blocks"] == []
 
 
+async def test_a_message_past_forty_thousand_characters_is_posted_and_truncated(slack: Intercepted) -> None:
+    """DOCUMENTED: `chat.postMessage` does not refuse a long `text`; Slack truncates a message past 40,000
+    characters, and its error list has no `msg_too_long`. https://docs.slack.dev/reference/methods/chat.postMessage"""
+    sdk = slack.asynchronous()
+    ledger = "".join(f"line {n:05d} reconciled\n" for n in range(2_000))
+    assert len(ledger) > 40_000
+
+    sent = data(await sdk.chat_postMessage(channel=GENERAL, text=ledger))
+    shown = data(await sdk.conversations_history(channel=GENERAL, limit=1))["messages"][0]
+
+    assert shown["ts"] == sent["ts"]
+    assert shown["text"] == ledger[:40_000] and sent["message"]["text"] == ledger[:40_000]
+
+
+async def test_an_update_past_four_thousand_characters_is_refused_msg_too_long(slack: Intercepted) -> None:
+    """DOCUMENTED: `chat.update` lists `msg_too_long` — its `text` cannot exceed 4,000 characters — and the message
+    keeps its old text. https://docs.slack.dev/reference/methods/chat.update"""
+    sdk = slack.asynchronous()
+    sent = data(await sdk.chat_postMessage(channel=GENERAL, text="Quarter close is on track"))
+
+    answer = await refusal(sdk.chat_update(channel=GENERAL, ts=sent["ts"], text="q" * 4_001))
+    shown_before = data(await sdk.conversations_history(channel=GENERAL, limit=1))["messages"][0]
+    data(await sdk.chat_update(channel=GENERAL, ts=sent["ts"], text="r" * 4_000))
+    shown = data(await sdk.conversations_history(channel=GENERAL, limit=1))["messages"][0]
+
+    assert answer["error"] == "msg_too_long"
+    assert shown_before["text"] == "Quarter close is on track"
+    assert shown["text"] == "r" * 4_000
+
+
 # ---------------------------------------------------------------------- history and threads
 
 

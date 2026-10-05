@@ -23,6 +23,9 @@ reference says it, at the page given; **observed** means someone saw Slack do it
 | `as_user=1` from a bot token leaves the app as the author, with its `bot_id` | observed | `test_as_user_true_leaves_the_app_as_the_author` | — |
 | An update with `blocks` draws those blocks; `text` is written as given | documented | `test_an_update_draws_the_blocks_it_is_given` | https://docs.slack.dev/reference/methods/chat.update |
 | An update with `text` and no `blocks` drops the old blocks | documented | `test_an_update_with_text_and_no_blocks_drops_the_old_blocks` | https://docs.slack.dev/reference/methods/chat.update |
+| `chat.postMessage` past 40,000 characters is posted and truncated, never refused | documented | `test_a_message_past_forty_thousand_characters_is_posted_and_truncated` | https://docs.slack.dev/reference/methods/chat.postMessage |
+| `chat.update` with `text` past 4,000 characters is `msg_too_long`, and the message keeps its text | documented | `test_an_update_past_four_thousand_characters_is_refused_msg_too_long` | https://docs.slack.dev/reference/methods/chat.update |
+| `missing_scope` and `token_revoked` reach the caller as Slack sends them, as declared faults (`SlackSeed.faults`, `Refused`) | documented | `test_slack_through_the_proxy.py::test_a_declared_refusal_reaches_the_sdk_as_slack_sends_it_once` (a declared fault; the fake keeps no scopes or revocations of its own) | https://docs.slack.dev/reference/methods/conversations.list, https://docs.slack.dev/reference/methods/auth.test |
 | A thread parent in history carries `reply_count`, `reply_users`, `latest_reply` | documented | `test_a_thread_parent_carries_its_reply_summary` | https://docs.slack.dev/messaging/retrieving-messages |
 | History holds the roots; thread replies come from `conversations.replies` | observed | `test_history_holds_thread_roots_and_replies_come_from_conversations_replies` | — |
 | `inclusive` includes the message at `latest` | documented | `test_history_honours_inclusive_at_latest` | https://docs.slack.dev/reference/methods/conversations.history |
@@ -38,10 +41,10 @@ reference says it, at the page given; **observed** means someone saw Slack do it
 - **A view past 100 blocks.** The emulator answered `invalid_blocks`; `views.publish` documents no such code, and
   this fake answers `invalid_arguments`.
 - **Text past 40,000 characters.** The emulator refused `msg_too_long` on `chat.postMessage`. Slack's reference for
-  that method says such a message is truncated, and lists no `msg_too_long`. This fake still refuses, because
-  `test_slack_refusals.py::test_text_past_forty_thousand_chars_is_refused_msg_too_long` pins the refusal; the two
-  are left in conflict until someone decides. (`chat.update` does document `msg_too_long`, at 4,000 characters of
-  `text`, which neither the emulator nor this fake enforces.)
+  that method says such a message is truncated, and lists no `msg_too_long`; this fake keeps the first 40,000
+  characters. `msg_too_long` is answered only where a method lists it: `chat.update` past 4,000 characters
+  (https://docs.slack.dev/reference/methods/chat.update), and `chat.postEphemeral`, whose page lists the code but
+  names no figure (https://docs.slack.dev/reference/methods/chat.postEphemeral) — there the 40,000 ceiling stands.
 - **A member id as `channel`.** The `chat.postMessage` page says three things: that it opens the bot's 1:1 DM, that
   it lands in the person's App Home, and that it lands in their DM with Slackbot. This fake does the first.
 
@@ -49,10 +52,10 @@ reference says it, at the page given; **observed** means someone saw Slack do it
 
 | Old emulator behaviour | Why |
 |---|---|
-| `missing_scope` naming `needed` and `provided` for a token without `groups:read` | Documented, but this fake keeps no token registry: any `xoxb-`/`xoxp-` token acts as the installed bot (`docs/design.md`), and every existing test calls with a token nobody issued. Scopes would need tokens to be state. |
+| `missing_scope` naming `needed` and `provided` for a token without `groups:read` | Covered as a declared fault (row above); a declared `Refused` carries the code only, not `needed`/`provided`. No token carries scopes here. |
 | `email` served only with `users:read.email` | Same: no token carries scopes here. |
-| `token_revoked` for one fixed token string | A fixed credential is the emulator's own; the code reaches a caller through a declared fault (`test_a_declared_refusal_reaches_the_sdk_as_slack_sends_it_once`). |
-| `invalid_auth` for an `xoxb-` token nobody issued | Same as scopes: the shape is checked, not the issuance. |
+| `token_revoked` for one fixed token string | A fixed credential is the emulator's own; the code is covered as a declared fault (row above). |
+| `invalid_auth` for an `xoxb-` token nobody issued | Not yet default: only the token's shape is checked. Refusing a token the world does not know needs the scenario's `sign_ins` for `slack` written to the world at seed time (as `google_drive/seed.py` does) and checked in `_authenticate`; `seed.py` is outside this change. |
 | A fixed CI token that lists private channels | A credential of the emulator's own. |
 | `_post_as`, a body field that sets the author | The emulator's private dialect; a person's message here is a scenario happening. |
 | `/health` | The emulator's own route. |
