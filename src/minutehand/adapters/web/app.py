@@ -11,6 +11,8 @@
     GET /api/runs/{run_id}/obligations      what the world was waiting on (`checks.ledger`)
     GET /api/runs/{run_id}/findings         each with its pattern, once the run is checked
     GET /api/runs/{run_id}/scorecard
+    GET /api/runs/{run_id}/model-calls      for each event a finding cites: the agent's spans and model call
+    GET /api/runs/{run_id}/traces/{trace_id}   the agent's spans of one trace, as the run received them
 
 Every world file is opened read-only (`session.reading`), so a run another process is still writing is
 read as of its last commit, and the viewer can never change or lock a run.
@@ -32,16 +34,19 @@ from minutehand.adapters.web.responses import (
     CallsResponse,
     EventsResponse,
     FindingsResponse,
+    ModelCallsResponse,
     ObligationsResponse,
     Refusal,
     RunResponse,
     RunRow,
     RunsResponse,
     ScorecardResponse,
+    TraceResponse,
     WakesResponse,
     explained,
 )
 from minutehand.application.checkpoint import CHECKPOINT
+from minutehand.application.model_calls import trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.checks.ledger import build
 from minutehand.domain.checks import FindingKind
@@ -126,6 +131,30 @@ def create_app(state: Path) -> Starlette:
             return _json(ScorecardResponse(scorecard=None))
         return _json(ScorecardResponse(scorecard=session.load(state, run_id).result.effectiveness))
 
+    def model_calls(run_id: str) -> Response:
+        cited = (
+            {seq for f in session.load(state, run_id).result.findings for seq in f.evidence}
+            if session.find(state, run_id).finished
+            else set()
+        )
+        with session.reading(state, run_id) as world:
+            return _json(
+                ModelCallsResponse(
+                    received=len(world.spans()),
+                    forward_failures=world.forward_failures(),
+                    events=[trace_of(e, world) for e in world.events() if e.seq in cited],
+                )
+            )
+
+    def trace(request: Request) -> Response:
+        run_id, trace_id = request.path_params["run_id"], request.path_params["trace_id"]
+        assert isinstance(run_id, str) and isinstance(trace_id, str)
+        try:
+            with session.reading(state, run_id) as world:
+                return _json(TraceResponse(trace_id=trace_id, spans=world.spans(trace_id=trace_id.lower())))
+        except RunRefused as e:
+            return _json(Refusal(error=str(e)), status=404)
+
     def one_run(handler: Callable[[str], Response]) -> Callable[[Request], Response]:
         def endpoint(request: Request) -> Response:
             run_id = request.path_params["run_id"]
@@ -148,6 +177,8 @@ def create_app(state: Path) -> Starlette:
             Route("/api/runs/{run_id}/obligations", one_run(obligations)),
             Route("/api/runs/{run_id}/findings", one_run(findings)),
             Route("/api/runs/{run_id}/scorecard", one_run(scorecard)),
+            Route("/api/runs/{run_id}/model-calls", one_run(model_calls)),
+            Route("/api/runs/{run_id}/traces/{trace_id}", trace),
         ]
     )
 

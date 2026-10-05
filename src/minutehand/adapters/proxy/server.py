@@ -56,10 +56,12 @@ class Proxy:
         upstream_ca: Path | None = None,
         public_roots: str | None = None,
         telemetry: Telemetry | None = None,
+        record_model_calls: bool = False,
     ) -> None:
-        """`upstream_ca` replaces the system trust store when verifying the hosts an edited call is sent on to.
-        `public_roots` replaces certifi's roots in the bundle the agent is handed (`ca_bundle`)."""
-        self.addon = ProxyAddon(routing, store, clock, telemetry)
+        """`upstream_ca` replaces the system trust store when verifying the hosts an edited or recorded call is
+        sent on to. `public_roots` replaces certifi's roots in the bundle the agent is handed (`ca_bundle`).
+        `record_model_calls` opens the agent's calls to model APIs and keeps each as a span."""
+        self.addon = ProxyAddon(routing, store, clock, telemetry, record_model_calls=record_model_calls)
         self._confdir = confdir
         self._listen = (host, port)
         self._upstream_ca = upstream_ca

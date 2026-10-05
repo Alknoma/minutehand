@@ -65,6 +65,10 @@ ol.findings{list-style:none;margin:0;padding:0;display:grid;grid-template-column
 .finding h3{margin:0;font-size:15px;font-weight:600;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .finding p{font-size:14px;color:var(--ink-2);overflow-wrap:anywhere}
 .finding .design{border-left:2px solid var(--wait);padding-left:10px;color:var(--ink)}
+.finding .asked{border-left:2px solid var(--agent);padding-left:10px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.finding .asked b{font-size:14px;font-weight:600}
+.finding .asked details{font-size:13px;color:var(--ink-2);min-width:0}
+.finding .asked pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
 .chip{font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:1px 7px;border-radius:3px;font-weight:600;white-space:nowrap}
 .chip.fail{background:var(--fail-wash);color:var(--fail)}
 .chip.review{background:var(--review-wash);color:var(--review)}
@@ -112,7 +116,8 @@ svg text.jump{fill:var(--ink-2)}
     events: "/api/runs/{run}/events",
     obligations: "/api/runs/{run}/obligations",
     findings: "/api/runs/{run}/findings",
-    scorecard: "/api/runs/{run}/scorecard"
+    scorecard: "/api/runs/{run}/scorecard",
+    modelCalls: "/api/runs/{run}/model-calls"
   };
   var NS = document.getElementById("ns").namespaceURI;
   var RUNNING_REFRESH = 2000, LIST_REFRESH = 5000;
@@ -233,12 +238,12 @@ svg text.jump{fill:var(--ink-2)}
     clearTimeout(state.timer);
     Promise.all([
       get(API.run, run), get(API.wakes, run), get(API.events, run), get(API.obligations, run),
-      get(API.findings, run), get(API.scorecard, run)
+      get(API.findings, run), get(API.scorecard, run), get(API.modelCalls, run)
     ]).then(function (parts) {
       if (state.selected !== run) { return; }
       state.view = {
         run: parts[0], wakes: parts[1].wakes, events: parts[2].events, obligations: parts[3].obligations,
-        findings: parts[4], scorecard: parts[5].scorecard
+        findings: parts[4], scorecard: parts[5].scorecard, modelCalls: parts[6]
       };
       drawRun(fresh);
       if (!state.view.run.finished) {
@@ -336,8 +341,49 @@ svg text.jump{fill:var(--ink-2)}
     return '<li class="finding" tabindex="0" data-number="' + x.number + '">' +
       '<h3><span class="chip ' + f.kind + '">' + KIND_LABEL[f.kind] + "</span>" + esc(title) + "</h3>" +
       "<p>" + esc(f.message) + (place.length ? " (" + esc(place.join(", ")) + ")" : "") + "</p>" +
-      (p ? '<p class="design"><b>What stops it:</b> ' + esc(p.design) + "</p>" : "") +
+      (p ? '<p class="design"><b>What stops it:</b> ' + esc(p.design) + "</p>" : "") + asked(f) +
       (!f.evidence.length && f.wake === null ? '<p class="note">It is about the run as a whole, so nothing on the timeline lights up.</p>' : "") + "</li>";
+  }
+
+  /* ---------- the agent's side: the model call behind the evidence ---------- */
+
+  function messages(text) {
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return text; }
+    if (!Array.isArray(parsed)) { return text; }
+    return parsed.map(function (m) {
+      var parts = (m.parts || []).map(function (part) {
+        if (part.type === "text") { return part.content; }
+        if (part.type === "tool_call") { return "[calls " + part.name + "]"; }
+        return "[" + part.type + "]";
+      });
+      return (m.role ? m.role + ": " : "") + parts.join(" ");
+    }).join("\n\n");
+  }
+
+  function asked(f) {
+    var known = state.view.modelCalls;
+    if (!f.evidence.length) { return ""; }
+    if (known.received === 0) {
+      return '<p class="note">No telemetry was received from the agent in this run, so what its model was asked and answered is not known.</p>';
+    }
+    var calls = known.events.filter(function (t) { return f.evidence.indexOf(t.seq) >= 0 && t.model_call; });
+    if (!calls.length) {
+      return '<p class="note">The agent\'s telemetry was received, and no model call in it led to this evidence.</p>';
+    }
+    return calls.map(function (t) {
+      var c = t.model_call, about = [];
+      if (c.model) { about.push(c.model); }
+      if (c.input_tokens !== null || c.output_tokens !== null) {
+        about.push((c.input_tokens === null ? "?" : c.input_tokens) + " tokens in, " + (c.output_tokens === null ? "?" : c.output_tokens) + " out");
+      }
+      if (t.joined_by === "wake") { about.push("the nearest model call in the same wake, not joined by a trace"); }
+      return '<div class="asked"><b>What the model was asked and answered</b>' +
+        (about.length ? "<span>" + esc(about.join(" · ")) + "</span>" : "") +
+        (c.input_messages ? "<details><summary>Asked</summary><pre>" + esc(messages(c.input_messages)) + "</pre></details>" : "<span>The span does not carry what it was asked.</span>") +
+        (c.output_messages ? "<details><summary>Answered</summary><pre>" + esc(messages(c.output_messages)) + "</pre></details>" : "<span>The span does not carry what it answered.</span>") +
+        "</div>";
+    }).join("");
   }
 
   /* ---------- the timeline ---------- */
