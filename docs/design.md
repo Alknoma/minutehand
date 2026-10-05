@@ -1098,6 +1098,18 @@ class Fork(Model):
 - Patching means the proxy opens model traffic it otherwise only tunnels, so it sees prompts and the API key. Locally that stays on the developer's machine. Hosted, it is a trust decision for the customer.
 - `Routing.apply` sets the edits for the run about to play; one run plays at a time through one proxy.
 
+A fork is told the same way on every surface (`application/forks.py`, `ForkAccount`; `minutehand findings` and
+`runs`, the viewer's `GET /api/runs/{run_id}` as `fork` and its run list as `changed`, and MCP `list_runs` and the
+run results as `fork`): the checkpoint it split from, after which wake and at what simulated moment; each override
+in words, from what to what (the `Fork` is kept as `fork.json` beside `restore.json`); whether the restore was
+verified and by what (`Restored.verified_by`: the report, the fingerprint) or why not; and, once both runs have
+finished, the two verdicts, each scorecard line that differs, findings gained, lost and changed, and the first
+change in the world after the split at which the two records part (`tests/web/test_fork_account.py`). The viewer
+shades the parent's shared record left of the split, fades its marks, and draws what the parent did after the
+split in a lane of its own. `scripts/screenshot.py` screenshots a viewer page with headless Edge or Chrome
+(`?open` opens every collapsed section) and ends the browser itself: on a profile of its own, headless Edge
+writes the file and never exits, on any page.
+
 The parent repository's nearest equivalent restores one captured model step (its inputs and message history) and reruns that step under the current prompt. It restores nothing in Slack or the trackers.
 
 ### Hosted
@@ -1560,7 +1572,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; curl and Node are checked by their documented `NO_PROXY` rules, not run.
 - **An agent elsewhere (a container) is handed `localhost` by name,** since the proxy cannot forward to its loopback: `requests`, `urllib`, `aiohttp` and `curl` send every `*.localhost` host it declares direct. `minutehand doctor --agent-host` names each. A name given with `--no-proxy` is read the same way.
 - **httpx cannot reach an IPv6 literal through any proxy** (its CONNECT omits the brackets): the proxy answers 400 saying so, and `minutehand doctor` names each declared IPv6 literal.
-- **A fork's page in the viewer does not say what the fork changed,** where it diverges from its parent, or whether its restore was verified; two forks from one checkpoint read the same in the run list.
+- **A fork's first difference from its parent is found among changes in the world only,** compared in order by actor, operation, entity, snapshot and simulated time: a fork whose agent read or searched differently and changed nothing differently reads as not diverged. Findings are paired by check and kind, so two findings of one check are matched in order.
 - **A base-URL mode (`http://<minutehand>/_host/<host>/…`) is designed, not built.** It would be a second mitmproxy listener in reverse mode whose request hook rewrites the host from the path before routing; not built in this pass.
 - **Out of scope:** browser OAuth flows, certificate-pinned clients, Slack Socket Mode, reading back from real providers in production, the hosted service.
 
