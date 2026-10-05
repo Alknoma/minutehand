@@ -107,7 +107,7 @@ async def test_a_finished_run_answers_every_path_with_its_shape(
     [asked] = [e for e in events.events if isinstance(e.after, MessageSnapshot) and e.actor is Actor.AGENT]
     assert isinstance(asked.after, MessageSnapshot) and asked.after.text == QUESTION
     assert calls.calls and {c.exchange.host for c in calls.calls} == {"slack.com"}
-    [wait] = [o for o in obligations.obligations if o.kind is ObligationKind.ANSWER_FROM_PERSON]
+    [wait] = [w.obligation for w in obligations.obligations if w.obligation.kind is ObligationKind.ANSWER_FROM_PERSON]
     assert (wait.person, wait.opened_by, wait.settled_at) == ("sofia", asked.seq, None)
     assert findings.finished
     [silence] = [x for x in findings.findings if x.finding.check == "no_follow_up"]
@@ -169,7 +169,7 @@ async def test_a_run_still_being_written_is_read_as_of_its_last_commit(tmp_path:
     assert (run.finished, run.record, run.reached) == (False, None, T0)
     assert [(w.index, w.world_changes) for w in wakes.wakes] == [(1, 1)]
     assert [e.seq for e in events.events] == [asked.seq]
-    [wait] = [o for o in obligations.obligations if o.kind is ObligationKind.ANSWER_FROM_PERSON]
+    [wait] = [w.obligation for w in obligations.obligations if w.obligation.kind is ObligationKind.ANSWER_FROM_PERSON]
     assert wait.opened_by == asked.seq and wait.settled_at is None
     assert (findings.finished, findings.findings) == (False, [])
     assert scorecard.scorecard is None

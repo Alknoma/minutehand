@@ -617,6 +617,8 @@ What a follow-up is (`checks/_waits.chase`):
 - **A wait falls due at its `expected_by`, and again its `patience` after each follow-up.** For an answer the patience is the person's longest delay: a reminder gives them their usual time again. For work there is none: the ticket's fate has its own pace, and the first follow-up after the date answers it.
 - **A wait is followed up for a due moment when a follow-up comes at or after it.** One that came more than `GRACE` after is late (`late_follow_up`). A wait still open whose last due moment passed with nothing after it was abandoned (`no_follow_up`), and the finding says what came before: "the agent followed up once, the last 2 days after the ask, then nothing; due again 4 days 18 hours after the ask, it sat 9 days 6 hours until the run ended".
 
+One reading serves every surface: `checks/_waits.chases` reads each wait of the ledger for these moments, the scorecard counts them, and the viewer's `/obligations` answers them per wait (`fell_due`), so the page draws a wait overdue only where the scorecard counts it due. The page once drew "overdue" from a wait's first `expected_by` by itself, and a silent owner the agent kept reporting to showed overdue while the scorecard said no wait fell due (`tests/web/test_viewer_waits.py`).
+
 What this gets wrong: the patience is the person's longest delay whatever the follow-up said, so a reminder that only adds a detail gives the same allowance as one that re-asks; and a follow-up sent a minute before a due moment moves it on a whole delay, so an agent can keep a wait "followed up" by pinging just before each date. `burden` is where that shows.
 
 The reference run, scored by `tests/test_checks_on_reference_run.py` from the run's own turn files (`timeline.json`):

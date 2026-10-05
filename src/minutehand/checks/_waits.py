@@ -89,6 +89,13 @@ def chase(o: Obligation, events: dict[int, WorldEvent], ended: datetime) -> Chas
     )
 
 
+def chases(view: RunView, ended: datetime) -> list[Chase]:
+    """Every wait in the view read for follow-ups, in ledger order, up to `ended`: the one reading the scorecard
+    counts and the viewer draws. The scenario's deadline is not a wait."""
+    by_seq = {e.seq: e for e in view.events}
+    return [chase(o, by_seq, ended) for o in view.obligations if o.kind is not ObligationKind.DATE]
+
+
 def _unchanged(event: WorldEvent, events: dict[int, WorldEvent]) -> bool:
     """An update that leaves the entity as it was: an edit nobody can see, so not a follow-up."""
     if event.operation is not Operation.UPDATE:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from minutehand.checks._waits import chase, reaction
+from minutehand.checks._waits import chases, reaction
 from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
 from minutehand.domain.world import Actor, Operation
@@ -12,14 +12,12 @@ from minutehand.domain.world import Actor, Operation
 
 def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime) -> Effectiveness:
     when = {e.seq: e.sim_time for e in view.events}
-    by_seq = {e.seq: e for e in view.events}
     waits = [o for o in view.obligations if o.kind is not ObligationKind.DATE]
     due = late = 0
     made: set[int] = set()
     lost = timedelta(0)
     slowest: timedelta | None = None
-    for o in waits:
-        chased = chase(o, by_seq, ended_at)
+    for chased in chases(view, ended_at):
         made.update(chased.follow_ups)  # one message chasing two waits is one follow-up
         for expiry in chased.expiries:
             due += 1
