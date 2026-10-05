@@ -11,7 +11,7 @@
     minutehand pin <run_id> <seq> [--state DIR]  keep a checkpoint's snapshot whatever `state: keep` says
     minutehand unpin <run_id> <seq> [--state DIR]
     minutehand gc [--state DIR]                  remove stored bodies and snapshot files nothing refers to
-    minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--json] -- <command...>
+    minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--agent-host H] [--no-proxy H]... [--json] -- <command...>
                                                  which HTTP clients in the agent's interpreter would go around the
                                                  proxy, and which declared hosts NO_PROXY would send directly
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
@@ -275,6 +275,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--agent", type=Path, default=None, help="the agent file: its outbound hosts are checked too")
     doctor.add_argument("--model-host", action="append", default=[], metavar="HOST")
+    doctor.add_argument(
+        "--agent-host", default=None, help="the name the agent uses for this machine, as the run will be given it"
+    )
+    doctor.add_argument(
+        "--no-proxy", action="append", default=[], metavar="HOST", help="a host the run will send direct, as given it"
+    )
     doctor.add_argument("--json", action="store_true")
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
@@ -596,7 +602,8 @@ def _doctor(args: argparse.Namespace, command: list[str]) -> int:
 
     agent = load_agent(args.agent) if args.agent is not None else None
     hosts = list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host]))
-    found = asyncio.run(doctor.diagnose(command, agent, hosts))
+    listen = session.Listen(agent_host=args.agent_host, no_proxy=args.no_proxy)
+    found = asyncio.run(doctor.diagnose(command, agent, hosts, listen))
     print(found.model_dump_json(indent=2) if args.json else doctor.described(found))
     return 1 if found.bypasses else 0
 

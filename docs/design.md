@@ -795,6 +795,36 @@ A model host that overlaps a provider's claim is refused when `Routing` is built
 
 Capture of hosts no provider claims is built (above). Passing a host a provider claims through to the real service, to measure the provider against it, is not.
 
+### What the agent reaches directly
+
+The agent's `NO_PROXY` (also `no_proxy` and `no_grpc_proxy`) is `Listen.direct()`: `127.0.0.1`, the hosts named with
+`--no-proxy`, the receiver's host when the agent reaches it by another name, and `localhost` only for an agent
+that runs elsewhere (`--agent-host` a name that is not this machine's, as in a container). The rule is that an
+entry is an address, never a name, wherever that can be:
+
+| Client | How it reads a `NO_PROXY` entry |
+|---|---|
+| `requests` | An IPv4 host against an address or CIDR exactly; any other host (a name, an IPv6 literal) as a plain suffix: `localhost` covers `search.localhost`, `::1` covers `2001:db8::1` |
+| `urllib`, `aiohttp` (`proxy_bypass_environment`) | The host, or any name ending in `.` and the entry: `localhost` covers every name under it |
+| `curl` | The host, or a domain it is under; an address as an address |
+| `httpx` | The host exactly (`*.` and a domain for names under it) |
+| Node: undici's `EnvHttpProxyAgent`, `proxy-from-env` (axios) | The host exactly, unless the entry starts with `.` or `*`; Node's built-in `fetch` reads the proxy only with `NODE_USE_ENV_PROXY=1` |
+
+`127.0.0.1` is read exactly by every one of them, so no host beyond this machine is sent direct
+(`tests/proxy/test_what_goes_direct.py`, with each library's own code, and with `curl` itself). `localhost` itself
+then reaches the proxy, which forwards it, plain or tunnelled, to this machine untouched, unrecorded and unseen by
+settling, as if it had gone direct (`ProxyAddon.forwarded`), unless a provider, a model host or a declaration claims
+it; a name under `localhost` is a host like any other. An agent elsewhere cannot be forwarded to: its `localhost` is
+its own, so it is handed `localhost` by name, and every `*.localhost` host it declares goes direct under the suffix
+readers. `minutehand doctor --agent agent.yaml [--agent-host H] [--no-proxy H]` checks each declared and model host
+against the `NO_PROXY` that run would hand out, by each library's own code in the agent's interpreter (requests,
+urllib, httpx, aiohttp) and by the documented rules above (curl, Node), and names each that would go direct.
+
+httpx asks a proxy for a tunnel to an IPv6 literal without its brackets (`CONNECT ::1:8443`), which no proxy can
+parse. mitmproxy refuses the request line with a bare 400 before any hook sees a flow; the proxy's `next_layer` hook
+sees the connection's first bytes and answers it instead, a 400 naming the address and the cause
+(`adapters/proxy/connect.py`). `minutehand doctor` names each declared IPv6 literal when httpx is installed.
+
 ### What "right" means for a scenario
 
 Built and tested. A scenario states what must be true of the world, in macro terms: a person was asked, a ticket was created, deleted, or reached a state. Each is a typed selector with a count (`Bound.at_least`, default 1; `at_most`) and an optional time bound (`by`, an offset from `starts_at`).
@@ -1287,7 +1317,7 @@ minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 
 | What the run needs | How it gets there with no code change | State |
 |---|---|---|
-| Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=localhost,127.0.0.1` (each in lower case too), and the CA bundle in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE`. An agent Minutehand does not start gets the same from `minutehand env` | Built. A client that pins certificates is out of reach. `httplib2`, which `googleapiclient` uses, reads `HTTPS_PROXY` only when PySocks is importable and otherwise connects to Google directly, in silence: an agent on `googleapiclient` needs `pysocks` installed (`tests/providers/google_drive/test_drive_through_proxy.py` runs with it; its `offline/` guard is what turns the silent bypass into a failure). Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; unverified. The Compose override is tested as text; no container has been run with it. |
+| Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=127.0.0.1` (each in lower case too; "What the agent reaches directly"), and the CA bundle in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE`. An agent Minutehand does not start gets the same from `minutehand env` | Built. A client that pins certificates is out of reach. `httplib2`, which `googleapiclient` uses, reads `HTTPS_PROXY` only when PySocks is importable and otherwise connects to Google directly, in silence: an agent on `googleapiclient` needs `pysocks` installed (`tests/providers/google_drive/test_drive_through_proxy.py` runs with it; its `offline/` guard is what turns the silent bypass into a failure). Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; unverified. The Compose override is tested as text; no container has been run with it. |
 | The agent is up before the run starts | Minutehand waits up to 30 seconds for its wake URL, or else its first inbound URL, to accept connections, and fails the run if the command exits first; its output goes to `agent.log` | Built |
 | Pushed events reach the agent | The agent's event URL and where its signing secret comes from are in the agent file: generated per run and handed to the command, or the agent's own, read from a variable of Minutehand's | Built |
 | The agent wakes at the right moments | Replies, pushed events and `Booked` wake-ups need nothing. `Polled` needs a URL in the agent file. | Built. `Reported` needs an endpoint or an adapter, which is code, though it can live outside the project. |
@@ -1527,9 +1557,9 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A restore is proven by what the report and the fingerprint cover.** A `fingerprint` that digests only the database misses a process left running with another moment in memory; the reference agent's covers each process's memory digest too (`examples/reference_agent/hooks.py`).
 - **Settling cannot see work the proxy cannot see unless the agent says so.** Writes to a database on this machine, or computation, are seen only through the report's WORKING and the `busy` command; a checkpoint settled without `busy` is marked unconfirmed. On a tunnel, server bytes are read as an answer by their TLS record headers alone: a TLS 1.3 server that sends its session tickets in two writes, or an HTTP/2 server's preface, still reads as answering the first request on a new connection (`adapters/proxy/tunnel.py`).
 - **A booked delivery is taken only when everything its schedule delivered is deleted.** A recurring schedule whose earlier delivery the agent never deleted holds each later wake until `Booked.take_limit`.
-- **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; Node's `fetch` is only mentioned.
-- **The handed-out `NO_PROXY` names `localhost`,** which `requests` and `urllib` read as covering every name under it: a real `*.localhost` host is sent direct. `minutehand doctor --agent` reports each such declared host.
-- **httpx cannot reach an IPv6 literal through a proxy** (its CONNECT omits the brackets; mitmproxy answers 400).
+- **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; curl and Node are checked by their documented `NO_PROXY` rules, not run.
+- **An agent elsewhere (a container) is handed `localhost` by name,** since the proxy cannot forward to its loopback: `requests`, `urllib`, `aiohttp` and `curl` send every `*.localhost` host it declares direct. `minutehand doctor --agent-host` names each. A name given with `--no-proxy` is read the same way.
+- **httpx cannot reach an IPv6 literal through any proxy** (its CONNECT omits the brackets): the proxy answers 400 saying so, and `minutehand doctor` names each declared IPv6 literal.
 - **A fork's page in the viewer does not say what the fork changed,** where it diverges from its parent, or whether its restore was verified; two forks from one checkpoint read the same in the run list.
 - **A base-URL mode (`http://<minutehand>/_host/<host>/…`) is designed, not built.** It would be a second mitmproxy listener in reverse mode whose request hook rewrites the host from the path before routing; not built in this pass.
 - **Out of scope:** browser OAuth flows, certificate-pinned clients, Slack Socket Mode, reading back from real providers in production, the hosted service.

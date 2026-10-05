@@ -30,10 +30,12 @@ from mitmproxy import http, tcp, tls
 from mitmproxy.addons import asgiapp
 from mitmproxy.net import encoding
 from mitmproxy.proxy import layer, layers
+from mitmproxy.proxy.layers import modes
 
-from minutehand.adapters.proxy import capture, credentials, redact
+from minutehand.adapters.proxy import capture, connect, credentials, redact
 from minutehand.adapters.proxy.capture import Capturing, Declaration
 from minutehand.adapters.proxy.edit import apply_edits
+from minutehand.adapters.proxy.hosts import loopback_name
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.tunnel import Tunnel
@@ -152,7 +154,19 @@ class ProxyAddon:
         tunnels = [awaiting for tunnel in self._tunnels.values() if (awaiting := tunnel.awaiting()) is not None]
         return sent + tunnels
 
+    def forwarded(self, host: str) -> bool:
+        """`localhost` itself, which nothing claims or declares: the agent's environment no longer sends it direct
+        (`session.Listen.direct`), so the proxy sends it on to this machine untouched, unrecorded and unseen, as
+        if it had gone direct. A name under `localhost` is a host like any other."""
+        return (
+            loopback_name(host)
+            and self.routing.policy(host) is HostPolicy.REFUSE
+            and self.worlds.lobby.capturing.find(host) is None
+        )
+
     def http_connect(self, flow: http.HTTPFlow) -> None:
+        if self.forwarded(flow.request.pretty_host):
+            return
         self._seen(f"CONNECT {flow.request.pretty_host}:{flow.request.port}")
 
     def next_layer(self, nextlayer: layer.NextLayer) -> None:
@@ -161,11 +175,24 @@ class ProxyAddon:
         on a tunnel that was already open is activity like any other call. mitmproxy's own NextLayer addon has
         chosen first; this replaces its choice for those hosts only."""
         context = nextlayer.context
+        chosen = nextlayer.layer
+        if isinstance(chosen, layers.HttpLayer) and context.layers[-2:] == [context.layers[0], chosen]:
+            # The client's own connection to the proxy, about to be read as HTTP: mitmproxy would refuse a CONNECT
+            # it cannot parse with a bare 400, before any hook sees a flow.
+            address6 = connect.unbracketed_ipv6(nextlayer.data_client())
+            if address6 is not None and isinstance(context.layers[0], modes.HttpProxy):
+                self._seen(f"CONNECT {address6} without brackets, refused")
+                context.layers.remove(chosen)
+                nextlayer.layer = connect.Refused(context, connect.refusal(address6))
+            return
         address = context.server.address
         if context.client.transport_protocol != "tcp" or address is None:
             return
         if not any(isinstance(lay, layers.HttpLayer) for lay in context.layers):
             return  # not the inside of a CONNECT
+        if self.forwarded(str(address[0])):
+            nextlayer.layer = layers.TCPLayer(context, ignore=True)
+            return
         if isinstance(nextlayer.layer, layers.TCPLayer) or self.policy(str(address[0])) is not HostPolicy.TUNNEL:
             return
         nextlayer.layer = layers.TCPLayer(context)
@@ -224,6 +251,8 @@ class ProxyAddon:
         if flow.response is not None:
             return  # answered as its headers arrived: a base-URL request that names no host (`base_url`)
         host = flow.request.pretty_host
+        if self.forwarded(host):
+            return
         self._seen(f"{flow.request.method} {host}{redact.path(flow.request.path)}")
         policy = self.policy(host)
         if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._records(host):

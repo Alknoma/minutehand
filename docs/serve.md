@@ -326,7 +326,7 @@ services:
   platform:
     environment:
       HTTPS_PROXY: http://minutehand:8080
-      NO_PROXY: localhost,127.0.0.1,platform,worker,firestore,minutehand
+      NO_PROXY: 127.0.0.1,platform,worker,firestore,minutehand,localhost
       SSL_CERT_FILE: /etc/minutehand/minutehand-ca-bundle.pem
       REQUESTS_CA_BUNDLE: /etc/minutehand/minutehand-ca-bundle.pem
       OTEL_EXPORTER_OTLP_ENDPOINT: http://minutehand:4318

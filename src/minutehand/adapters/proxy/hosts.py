@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 
 WILDCARD = "*."
@@ -39,3 +40,22 @@ class HostPattern:
             return self.matches(other.domain) or other.matches(self.domain) or self.domain == other.domain
         exact, wild = (other, self) if self.is_wildcard else (self, other)
         return wild.matches(exact.domain)
+
+
+LOOPBACK_NAME = "localhost"
+"""This machine by name: the one name the agent's environment no longer sends direct, and the proxy forwards."""
+
+
+def loopback_name(host: str) -> bool:
+    """`localhost` itself, in any case and with or without its root dot; never a name under it."""
+    return host.lower().removesuffix(".") == LOOPBACK_NAME
+
+
+def loopback(host: str) -> bool:
+    """This machine: `localhost` itself, or a loopback address (`127.0.0.0/8`, `::1`)."""
+    if loopback_name(host):
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False

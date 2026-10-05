@@ -11,8 +11,8 @@ five identical answers. `stream: true` is answered as server-sent events, one ch
 The search is reached as `search.localhost`, a host the agent file declares `pass_through`.
 
 Both listen on 127.0.0.1. A name under `localhost` reaches this machine and is still a host of its own: an agent
-configured by Minutehand reaches `localhost` itself directly, and these through the proxy (with `httpx`;
-`requests` and `urllib` read NO_PROXY=localhost as covering every name under it, and would go direct).
+configured by Minutehand reaches these through the proxy with every client library, since its NO_PROXY names this
+machine only by address (docs/design.md, "What the agent reaches directly").
 
 `MODEL_DELAY` (seconds, default 0) holds every model answer back that long: a model call in flight for a while.
 """

@@ -45,6 +45,7 @@ from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
+from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -891,17 +892,29 @@ class Listen(Model):
         """The telemetry receiver as the agent reaches it."""
         return f"http://{self._reached_at()}:{port}"
 
+    def elsewhere(self) -> bool:
+        """Whether the agent runs on another machine than the proxy (a container): its `localhost` is then not the
+        proxy's, and the proxy cannot forward a call to it."""
+        return self.agent_host is not None and not loopback(self.agent_host)
+
     def direct(self) -> list[str]:
-        """The hosts the agent reaches directly: itself, those named, and this machine when the receiver is on,
-        whose OTLP endpoint is not reached through the proxy."""
+        """The hosts the agent reaches directly (`NO_PROXY`): this machine by its loopback ADDRESS, those named, and
+        the receiver's host when it is on, whose OTLP endpoint is not reached through the proxy. `localhost` is
+        named only for an agent `elsewhere`: on this machine the proxy forwards it (`ProxyAddon.forwarded`), and
+        named it would send every `*.localhost` host direct under requests, urllib, aiohttp and curl."""
         hosts = [*DIRECT, *self.no_proxy]
-        if self.receive_telemetry:
+        if self.receive_telemetry and not loopback(self._reached_at()):
             hosts.append(self._reached_at())
+        if self.elsewhere():
+            hosts.append(LOOPBACK_NAME)
         return list(dict.fromkeys(hosts))
 
 
-DIRECT = ("localhost", "127.0.0.1")
-"""Hosts every agent reaches directly: itself, and Minutehand's own calls to it never go through the proxy."""
+DIRECT = ("127.0.0.1",)
+"""What every agent reaches directly: this machine by address. Never a name, which requests, urllib, aiohttp and curl
+read as covering every name under it, and never `::1`, which requests reads as a suffix of any IPv6 literal
+(`2001:db8::1`). An IPv4 address is matched exactly by every client (docs/design.md, "What the agent reaches
+directly")."""
 
 
 def agent_environment(
