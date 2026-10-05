@@ -19,15 +19,15 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
-| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 9 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
+| Contracts: `domain/`, `ports/` | The models and protocols every other part is written against | Built and tested | 16 (`tests/test_scenario.py`, `tests/test_clock.py`) | `HumanAction` and `Inbox` are models nothing reads. No check declares `Needs.COMMITMENTS`. |
 | World store: `adapters/store/sqlite.py` | Append-only log of events, entity versions, calls, replies and the agent's spans; forks share it; a refused fork is discarded | Built and tested | 21 (`tests/test_sqlite_store.py`, `tests/test_store_spans.py`) | The file carries schema version 4 in `user_version` and refuses any other. Bodies are stored inline; there is no blob store and no catalog of runs. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling | Built and tested | 37 (`tests/proxy/`) | One proxy per process. No base-URL mode for clients that ignore proxy settings. No capture mode. Model API calls are recorded only with `--record-model-calls`, as spans. A request on a tunnel that is already open is never seen. |
 | Slack provider | 15 Web API methods; message events pushed to the agent, signed with the run's secret or the agent's own | Built and tested | 74 (`tests/providers/slack/`) | Any `xoxb-` or `xoxp-` token acts as the bot. `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. |
 | Asana provider | 20 routes over users, workspaces, projects, sections, tasks and stories | Built and tested | 55 (`tests/providers/asana/`) | Any bearer token is accepted. |
-| YouTrack provider | 14 routes, each at `/api` and `/youtrack/api` | Built and tested | 60 (`tests/providers/youtrack/`) | Any bearer token is accepted. |
+| YouTrack provider | 45 REST routes, each at `/api` and `/youtrack/api`, and 9 Hub routes at `/hub/api/rest`: issues, custom fields of every single-valued type with per-project bundles, defaults and required flags, comments, tags, links, activities read from the log, projects and their fields, the instance's fields and bundles, users, commands, `issuesGetter/count`, Hub projects, groups, permissions and OAuth tokens; the query language every shape a production client builds; people acting on seeded issues (`TicketsHappen`) | Built and tested | 119 (`tests/providers/youtrack/`, 221 cases with parameters; most through the proxy) | Only a seeded `*.youtrack.cloud` or `*.myjetbrains.com` host is reached: a self-hosted instance's own host cannot be declared. Multi-valued fields (`enum[*]`, `user[*]`, `version[*]`), text fields, work items, attachments, saved searches, agile boards and sprints as boards are not served. Wording of 403, 429 and several 400s, the activity item `$type`s for tags, links and summary, and the default issue order are not verified against the real service. |
 | Google Drive provider | 14 Drive v3 routes, Docs v1 `documents.get`, Google's `/token` | Built and tested | 62 (`tests/providers/google_drive/`) | Sign-in is not verified; any bearer token is accepted. Content is capped at 5 MiB per file. |
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
-| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock; forks a finished run from a checkpoint | Built and tested | 71 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run. Only `Scripted` and `Silent` people: `Answers` is refused. |
 | Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step sees only `AgentReport`. An agent with no `Reported` wake source is restored unverified, and says so. Settling sees only calls through the proxy. PostgreSQL is described, not tested. |
 | Checks, ledger, scorecard, patterns: `checks/` | 12 checks, the obligations ledger, `Effectiveness`, 9 patterns | Built and tested | 60 (`tests/checks/` 53, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
@@ -200,7 +200,8 @@ Designed, not built: the same loop as MCP tools (see "What a coding agent calls"
 src/minutehand/
   domain/             pure: no I/O, no clock reads
     scenario.py       Model, Scenario, Person, Answers, Scripted, Silent, DelayRange, WorkingHours, Absence,
-                      SeededTicket, SeededDocument, TicketFate, Direction, PersonAsked, TicketCreated,
+                      SeededTicket, SeededComment, SeededDocument, ProviderSeed, TicketFate, TicketHappening,
+                      StateChanged, Reassigned, Commented, Removed, Direction, PersonAsked, TicketCreated,
                       TicketDeleted, TicketInState, Relayed
     world.py          WorldEvent, Change, Stored, Exchange, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot, DocumentSnapshot, RecordSnapshot
@@ -214,7 +215,7 @@ src/minutehand/
     clock.py          Due, Jump, next_jump()
     run.py            RunRecord, StopReason
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
-  ports/              Store, Clock, Provider, PushesEvents, HoldsTickets, EditsTickets, BooksWakes, Wakes,
+  ports/              Store, Clock, Provider, PushesEvents, HoldsTickets, EditsTickets, TicketsHappen, BooksWakes, Wakes,
                       AgentDriver, Reports, Replier, Telemetry
   application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (settle, restore,
                       verify), replier_scripted.py, run_clock.py, state_hooks.py, files.py, refusals.py,
@@ -319,7 +320,7 @@ class CheckReport(Model):
 
 ### The provider port
 
-Six protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
+Seven protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
 
 ```python
 class Provider(Protocol):
@@ -353,6 +354,11 @@ class EditsTickets(Protocol):
     ) -> None: ...
 
 
+@runtime_checkable
+class TicketsHappen(Protocol):
+    def happen(self, happening: TicketHappening, by: Person, world: Store, clock: Clock) -> None: ...
+
+
 class Wakes(Protocol):
     def book(self, due: Due) -> None: ...
 
@@ -370,11 +376,30 @@ class BooksWakes(Protocol):
 |---|---|---|---|
 | Slack | `slack` | `slack.com`, `*.slack.com` | `PushesEvents` |
 | Asana | `asana` | `app.asana.com` (`/api/1.0`) | `HoldsTickets`, `EditsTickets` |
-| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api` and `/youtrack/api`) | `HoldsTickets`, `EditsTickets` |
+| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `HoldsTickets`, `EditsTickets`, `TicketsHappen` |
 | Google Drive | `google_drive` | `www.googleapis.com`, `oauth2.googleapis.com`, `docs.googleapis.com` | none |
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 
 All five are `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
+
+What people do to seeded tickets whatever the agent does is a `TicketHappening`: a seeded ticket's `key`, the person, an offset, and a change (`state`, `assignee`, `comment` or `delete`). Each is pending from the start and fires through the ticket provider's `TicketsHappen.happen`, as actor `PERSON` with that person as the author and the run's clock as the time, without a wake; a run whose happenings land on a provider without the port is refused. What one provider needs beyond the provider-neutral people, tickets and documents is a `ProviderSeed`: the provider's key and its own seed as JSON text, parsed only by that provider.
+
+```yaml
+tickets:
+  - {key: notes, provider: youtrack, project: Launch, title: Write the release notes, assignee: tomas,
+     labels: [docs], comments: [{by: iris, text: Due before the partner call}]}
+ticket_happenings:
+  - {ticket: notes, by: tomas, after: P2D, change: {kind: state, to: done}}
+provider_seeds:
+  - provider: youtrack
+    text: '{"tokens": [{"token": "perm:…", "login": "agent-bot"}],
+            "projects": [{"name": "Launch", "fields": [{"name": "State"}, {"name": "Assignee"}, {"name": "Due Date"}]}],
+            "issues": [{"ticket": "notes", "fields": [{"field": "Due Date", "value": "2026-08-26"}]}],
+            "grants": [{"login": "tomas", "permission": "jetbrains.youtrack.updateIssue", "project": "Launch", "held": false}],
+            "faults": [{"method": "POST", "path": "/issues/*/customFields/*", "status": 429, "after": "PT1H", "lasts": "PT30M"}]}'
+```
+
+The YouTrack seed (`adapters/providers/youtrack/seed.py`, `YouTrackSeed`) declares users beyond the people, tokens and Hub services that act as them (once a token is seeded, any other is a 401), instance fields, projects with their own field sets, bundles, resolved flags, defaults, required flags, teams and leaders, any field value on a seeded issue, links between seeded issues, an issue's history before the run, permissions given or taken (403), refusals put in the way of one path for a while (`Retry-After`), and `issuesGetter/count` answering -1. A project made through `POST /admin/projects` carries YouTrack's default template (no Due Date), has no Hub project, and nobody holds Update Project on it, as measured on a live instance. `issuesGetter/count` answers the exact count at once unless the seed says `count_unknown`.
 
 ### Flow of one wake
 
@@ -388,9 +413,9 @@ Orchestrator.run():
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
     clock.jump(jump.now)
-    only ticket fates fired -> HoldsTickets.transition, no wake
+    only ticket fates and happenings fired -> HoldsTickets.transition / TicketsHappen.happen, no wake
     otherwise, one wake:
-      fire in order: fates (transition), replies (PushesEvents.deliver), directions by message (say),
+      fire in order: fates (transition) and happenings (happen), replies (PushesEvents.deliver), directions by message (say),
                      bookings (BooksWakes.fire), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
       read the new events: an agent message to a person, as its text reads when the wake ends
@@ -1177,7 +1202,7 @@ FSL-1.1-ALv2 for the tool from its first commit; `LICENSE.md` carries it today. 
 
 - `uv run pytest -q -n auto`: every test, hermetic. Sockets are refused except to `127.0.0.1`, `::1` and `localhost`, each test fails at 60 seconds, the order is random every run, and a warning raised against our own code is an error (`pyproject.toml`). `.github/workflows/nightly.yml` repeats the suite five times and runs it against the newest release of every client library.
 - A check is tested on a hand-built world whose obligations come from the real ledger (`tests/checks/world.py`). The checks written for the captured run are tested on it, including that `near_miss_name` goes clean when the defect is removed from the run (`tests/test_checks_on_reference_run.py`).
-- A provider is tested over its ASGI app, against the store as its only state, through its refusals (`test_*_refusals.py`; AWS's are in `test_aws_provider.py`), and through the service's own client library over a real socket (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`; YouTrack over plain HTTP). Response validation against a provider's OpenAPI document is not built.
+- A provider is tested over its ASGI app, against the store as its only state, through its refusals (`test_*_refusals.py`; AWS's are in `test_aws_provider.py`), and through the service's own client library over a real socket (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`; YouTrack, which has no client library, with `httpx` through the run's proxy over TLS, one test per call a production YouTrack client makes and per query shape it builds). Response validation against a provider's OpenAPI document is not built.
 - Whole runs start a real agent process (`tests/e2e/agents/slack_agent.py`) through `session.play`, `session.fork` and the `minutehand` command.
 - `uv run python -m lints` runs every lint in `lints/`. See `docs/lints.md`.
 - Conformance against the real APIs needs real accounts and is a scheduled job, not a lint. Not built.
@@ -1235,7 +1260,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
-- **Every provider accepts any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana, YouTrack and Drive accept any bearer token; Drive's `/token` verifies nothing.
+- **Most providers accept any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana and Drive accept any bearer token; Drive's `/token` verifies nothing. YouTrack accepts any bearer token as the agent unless its seed names tokens, and then only those and the ones its Hub issued.
 - **No fake's wire details have been verified against the real service.**
 - **`PromptPatch` and `ModelSwap` are tested at the proxy, not through a whole run.**
 - **A booking's wake is not awaited.** A wake made only of bookings sends no request and polls no report, so the clock may move on before a `Booked` agent acts on the delivery.
