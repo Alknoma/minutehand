@@ -259,6 +259,21 @@ class GoalByMessage(Model):
 GoalSource = Annotated[GoalByWake | GoalByMessage, Field(discriminator="kind")]
 
 
+class BaseUrl(Model):
+    """A host the agent reaches by a base URL it is handed rather than through the proxy, for a client that cannot be
+    given a proxy: `env` is set to `http://<minutehand>/_host/<host><path>`, which the proxy answers exactly as a call
+    to `https://<host><path>` made through it."""
+
+    host: str = Field(
+        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$",
+        description="The real host, with a port when it is not 443",
+    )
+    env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", description="The variable the agent reads its base URL from")
+    path: str = Field(
+        default="", pattern=r"^(/[^?#]*)?$", description="Appended to the base URL, e.g. '/api/1.0'; empty for none"
+    )
+
+
 class AgentUnderTest(Model):
     """How the monitor reaches the agent. Replies and pushed events always wake it;
     `wakes` lists every other way it comes back to work, and may be empty when the goal is sent as a message."""
@@ -273,10 +288,18 @@ class AgentUnderTest(Model):
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"
     )
+    base_urls: list[BaseUrl] = Field(
+        default=[], description="Hosts the agent is handed a base URL for, each in its own variable, beside the proxy"
+    )
 
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
         refuse_repeats(self.outbound)
+        named = [b.env for b in self.base_urls]
+        if len(named) != len(set(named)):
+            raise ValueError(
+                f"two base URLs are handed out in one variable: {sorted(n for n in set(named) if named.count(n) > 1)}"
+            )
         if isinstance(self.goal, GoalByMessage):
             if not any(t.provider == self.goal.provider for t in self.inbound):
                 raise ValueError(
