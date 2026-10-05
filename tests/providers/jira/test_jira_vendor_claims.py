@@ -213,3 +213,37 @@ async def test_mypermissions_without_credentials_is_refused_401(site: Site) -> N
     saying the operation can be reached anonymously; a request with no Authorization at all was seen refused."""
     async with site.client(None) as anonymous:
         refused(await anonymous.get(f"{API}/mypermissions", params={"permissions": "CREATE_PROJECT"}), 401)
+
+
+# --------------------------------------------------------------------------- a malformed key anywhere else
+
+MALFORMED_KEYS = ["orb_it", "9ORBIT", "ORBITALPLANNER"]
+
+
+@pytest.mark.parametrize("key", MALFORMED_KEYS)
+async def test_a_read_naming_a_malformed_project_key_is_refused_404(site: Site, key: str) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-projectidorkey-get
+    and https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get
+    — a project that is not found is a 404. A key no project could ever hold is simply one that is not found."""
+    refused(await site.http.get(f"{API}/project/{key}"), 404)
+    refused(await site.http.get(f"{API}/project/{key}/statuses"), 404)
+    refused(
+        await site.http.get(f"{API}/mypermissions", params={"permissions": "BROWSE_PROJECTS", "projectKey": key}), 404
+    )
+
+
+@pytest.mark.parametrize("key", MALFORMED_KEYS)
+async def test_an_issue_create_naming_a_malformed_project_key_is_refused_400_on_project(site: Site, key: str) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-post
+    — a create whose fields are not valid is a 400 in the `errors` shape."""
+    body = {"fields": {"project": {"key": key}, "summary": "Plan the orbit", "issuetype": {"name": "Task"}}}
+
+    assert set(refused(await site.http.post(f"{API}/issue", json=body), 400)["errors"]) == {"project"}
+
+
+@pytest.mark.parametrize("permissions", ["BROWSE_PROJECTS,launch_rockets", "browse_projects", "BROWSE PROJECTS"])
+async def test_mypermissions_with_a_malformed_permission_key_is_refused_400(site: Site, permissions: str) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get
+    — a `permissions` list holding an invalid key is a 400; keys are matched exactly, so a lowercase spelling or a
+    space for the underscore is invalid."""
+    refused(await site.http.get(f"{API}/mypermissions", params={"permissions": permissions}), 400)

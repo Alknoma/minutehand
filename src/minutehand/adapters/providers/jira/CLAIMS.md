@@ -36,6 +36,14 @@ Pages cited:
 | No `permissions` parameter is a 400 | documented | `test_mypermissions_without_the_permissions_parameter_is_refused` | Get my permissions |
 | One unknown key refuses the whole call, and the message names it | documented (400) / observed (the name) | `test_mypermissions_with_one_unknown_key_refuses_the_whole_call_naming_it` | Get my permissions |
 | No credentials at all is a 401 | observed | `test_mypermissions_without_credentials_is_refused_401` | The page lists 401 for missing credentials and also says the call can be made anonymously |
+| A lowercase or space-separated permission key is invalid, a 400 | documented | `test_mypermissions_with_a_malformed_permission_key_is_refused_400` | Get my permissions |
+
+## A key no project could hold, named elsewhere
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| A project read, its statuses, or `mypermissions?projectKey=` naming a malformed key is a 404 | documented | `test_a_read_naming_a_malformed_project_key_is_refused_404` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-projectidorkey-get |
+| An issue create naming a malformed project key is a 400 on `project` | documented | `test_an_issue_create_naming_a_malformed_project_key_is_refused_400_on_project` | https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-post |
 
 ## Where the earlier stand-in was wrong
 
