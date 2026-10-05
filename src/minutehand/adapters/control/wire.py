@@ -164,6 +164,7 @@ class WorldView(Model):
     now: AwareDatetime = Field(description="The world's clock, simulated")
     head: int = Field(description="The latest WorldEvent.seq")
     owed: list[OwedView] = Field(default=[], description="What falls due as the clock moves")
+    resets: int = Field(default=0, ge=0, description="How many times it was reset; its record from before each is kept")
 
 
 class WorldList(Model):
@@ -171,8 +172,16 @@ class WorldList(Model):
 
 
 class EventsPage(Model):
+    """The log, filtered. Each stretch between resets numbers its events from 1, so across resets a `seq` is told
+    apart by the stretch `resets` puts it in; `since` and `head` are the current stretch's."""
+
     events: list[WorldEvent]
     head: int
+    resets: list[int] = Field(
+        default=[],
+        description="Read across resets (`since_reset=false`): for each reset, oldest first, the index in this list "
+        "of the first item after it. Empty when read since the last reset, the default",
+    )
 
 
 class EntitiesPage(Model):
@@ -181,10 +190,20 @@ class EntitiesPage(Model):
 
 class CallsPage(Model):
     calls: list[RecordedCall]
+    resets: list[int] = Field(
+        default=[],
+        description="Read across resets (`since_reset=false`): for each reset, oldest first, the index in this list "
+        "of the first item after it. Empty when read since the last reset, the default",
+    )
 
 
 class SpansPage(Model):
     spans: list[StoredSpan]
+    resets: list[int] = Field(
+        default=[],
+        description="Read across resets (`since_reset=false`): for each reset, oldest first, the index in this list "
+        "of the first item after it. Empty when read since the last reset, the default",
+    )
 
 
 class Unmatched(Model):
