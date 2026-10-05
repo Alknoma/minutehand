@@ -223,8 +223,13 @@ def asana_seed(scenario: Scenario) -> AsanaSeed:
 
 def seeded_gid(scenario: Scenario, ticket: SeededTicket) -> str:
     """The gid of the task seeded from `ticket`: its position among the scenario's asana tickets."""
+    return state.task_gid(_position(scenario, ticket))
+
+
+def _position(scenario: Scenario, ticket: SeededTicket) -> int:
+    """`ticket`'s place among the scenario's asana tickets: a ticket added to an open world comes after them all."""
     mine = [t for t in scenario.tickets if t.provider == MANIFEST.key]
-    return state.task_gid(next(i for i, t in enumerate(mine) if t is ticket))
+    return next(i for i, t in enumerate(mine) if t is ticket)
 
 
 def seed(scenario: Scenario, world: Store) -> None:
@@ -556,11 +561,13 @@ class _Seeding:
         """The seed's own comments, oldest first, then the ticket's shared comments, each a story by its person
         written as the scenario starts."""
         task = self.gid_of(ticket)
+        place = _position(self.scenario, ticket)
+        stories = iter(range(state.STORIES_PER_TASK))
         for comment in sorted(detail.comments if detail is not None else [], key=lambda c: -c.ago):
             written: datetime = self.scenario.starts_at - comment.ago
             self.asana.put_story(
                 wire.AsanaStory(
-                    gid=self.asana.next_gid(),
+                    gid=state.story_gid(place, next(stories)),
                     text=comment.text,
                     task=task,
                     created_by=self.user(comment.person),
@@ -571,7 +578,7 @@ class _Seeding:
         for shared in ticket.comments:
             self.asana.put_story(
                 wire.AsanaStory(
-                    gid=self.asana.next_gid(),
+                    gid=state.story_gid(place, next(stories)),
                     text=shared.text,
                     task=task,
                     created_by=self.user(shared.by),

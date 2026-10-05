@@ -67,6 +67,8 @@ CREDENTIALS = "credentials"
 _WIDTH = 16
 _MINTED = 1_200_000_000_000_000
 _SEEDED_TASKS = 1_190_000_000_000_000
+_SEEDED_STORIES = 1_195_000_000_000_000
+STORIES_PER_TASK = 10_000
 _SCAN = 1000
 
 DEFAULT_SECTIONS: list[tuple[str, TicketState]] = [
@@ -94,6 +96,16 @@ def task_gid(position: int) -> str:
     """A seeded task's gid, from its ticket's position among the scenario's asana tickets: below every gid the
     API mints, and in the scenario's order, as tasks made before the run would be."""
     return str(_SEEDED_TASKS + position)
+
+
+def story_gid(task_position: int, position: int) -> str:
+    """A seeded story's gid, from its task's position among the scenario's asana tickets and its own place among
+    that task's seeded stories: never from where seeding reached in the log, so a person or ticket added to an open
+    world moves none. Every one sits below every gid the API mints, so a task's stories list seeded ones first, in
+    the order the scenario gives them, then those written while the world runs, even at the same instant."""
+    if position >= STORIES_PER_TASK:
+        raise ValueError(f"a seeded asana task holds at most {STORIES_PER_TASK} stories")
+    return str(_SEEDED_STORIES + task_position * STORIES_PER_TASK + position)
 
 
 def project_gid(name: str) -> str:
