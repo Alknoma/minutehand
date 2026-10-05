@@ -17,7 +17,7 @@ from minutehand.domain.scenario import (
     PersonPosts,
     PersonReacts,
 )
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
+from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot, Operation
 from tests.providers.microsoft.tenant import CONNECTOR, Bot, Intercepted, Tenant, bearer, token, validate
 
 
@@ -42,6 +42,12 @@ async def test_a_post_its_edit_its_reaction_and_its_delete_reach_the_bot(tenant:
         (Actor.PERSON, Operation.UPDATE),
         (Actor.PERSON, Operation.DELETE),
     ]
+    texts = [
+        e.after.text if isinstance(e.after, MessageSnapshot) else None
+        for e in tenant.store.events()
+        if e.entity.kind is EntityKind.MESSAGE
+    ]
+    assert texts == ["Draft is up", "Final is up", "Final is up"], "a deleted post still says what it said"
 
 
 async def test_a_reaction_to_the_agents_message_and_a_member_joining_reach_the_bot(
