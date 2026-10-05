@@ -60,7 +60,7 @@ class BodyKept(StrEnum):
 
     WHOLE = "whole"
     TRUNCATED = "truncated"  # text, kept up to the declared limit
-    BYTES = "bytes"  # kept whole as the bytes that crossed: binary, or not valid text in its declared charset
+    BYTES = "raw"  # kept whole as the bytes that crossed: binary, or not valid text in its declared charset
     BINARY = "binary"  # bytes longer than the declared limit: its length, content type and hash only
     EMPTY = "empty"
 

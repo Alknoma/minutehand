@@ -211,24 +211,34 @@ def digest(text: str) -> str:
 class KeptBody:
     text: str | None
     body: Body
+    raw: bytes | None = None
+    """The bytes themselves, when the body is not UTF-8 text and fits the limit."""
 
 
 def keep(raw: bytes, content_type: str | None, *, limit: int, paths: Sequence[str]) -> KeptBody:
-    """What the record holds of a body: text or JSON redacted and cut at `limit` bytes; anything else its length,
-    type and hash only."""
+    """What the record holds of a body: UTF-8 text or JSON redacted and cut at `limit` bytes; any other body (binary,
+    or text not valid in UTF-8) its bytes exactly, when they fit `limit`, else its length, type and hash only."""
     if not raw:
         return KeptBody(None, Body(content_type=content_type, size=0, kept=BodyKept.EMPTY, sha256=digest("")))
-    if not is_text(content_type, raw):
+    decoded: str | None = None
+    if is_text(content_type, raw):
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            decoded = None
+    if decoded is None:
+        fits = len(raw) <= limit
         return KeptBody(
             None,
             Body(
                 content_type=content_type,
                 size=len(raw),
-                kept=BodyKept.BINARY,
+                kept=BodyKept.BYTES if fits else BodyKept.BINARY,
                 sha256=hashlib.sha256(raw).hexdigest(),
             ),
+            raw if fits else None,
         )
-    clean = redacted(raw.decode("utf-8", errors="replace"), content_type, paths)
+    clean = redacted(decoded, content_type, paths)
     encoded = clean.encode("utf-8")
     whole = len(encoded) <= limit
     text = clean if whole else encoded[:limit].decode("utf-8", errors="ignore")
@@ -508,7 +518,7 @@ class Recordings:
         captured = call.exchange.captured
         assert captured is not None
         request = captured.request
-        if request.kept in (BodyKept.BINARY, BodyKept.EMPTY) or not ignore:
+        if request.kept in (BodyKept.BINARY, BodyKept.BYTES, BodyKept.EMPTY) or not ignore:
             return request.sha256
         if request.kept is BodyKept.TRUNCATED or call.exchange.request_body is None:
             return None

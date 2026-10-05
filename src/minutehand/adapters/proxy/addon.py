@@ -288,7 +288,7 @@ class ProxyAddon:
         request, response = flow.request, flow.response
         assert response is not None
         if streamed is None:
-            body = response.get_text(strict=False) or ""
+            body = (response.get_content(strict=False) or b"").decode("utf-8", errors="replace")
         else:
             raw = b"".join(streamed)
             coding = _first_header(response, "content-encoding")
@@ -298,7 +298,7 @@ class ProxyAddon:
             host=request.pretty_host,
             path=request.path,
             status=response.status_code,
-            request_body=request.get_text(strict=False) or "",
+            request_body=(request.get_content(strict=False) or b"").decode("utf-8", errors="replace"),
             response_body=body,
             response_type=_first_header(response, "content-type") or "",
             traceparent=_first_header(request, TRACEPARENT),
@@ -350,17 +350,21 @@ class ProxyAddon:
     ) -> Exchange:
         request, response = flow.request, flow.response
         assert response is not None
+        asked, asked_bytes = redact.kept(
+            request.get_content(strict=False) or b"", _first_header(request, "content-type") or ""
+        )
+        answered, answered_bytes = redact.kept(
+            response.get_content(strict=False) or b"", _first_header(response, "content-type") or ""
+        )
         exchange = Exchange(
             method=request.method,
             host=host,
             path=redact.path(path),
             status=response.status_code,
-            request_body=redact.body(
-                request.get_text(strict=False) or None, _first_header(request, "content-type") or ""
-            ),
-            response_body=redact.body(
-                response.get_text(strict=False) or None, _first_header(response, "content-type") or ""
-            ),
+            request_body=asked,
+            response_body=answered,
+            request_bytes=asked_bytes,
+            response_bytes=answered_bytes,
             traceparent=_first_header(request, TRACEPARENT),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
@@ -410,7 +414,8 @@ class ProxyAddon:
             headers = {REPLAYED_HEADER: plan.recordings.source}
             if recorded.captured.response.content_type is not None:
                 headers["content-type"] = recorded.captured.response.content_type
-            flow.response = http.Response.make(recorded.status, (recorded.response_body or "").encode("utf-8"), headers)
+            answer = recorded.response_bytes or (recorded.response_body or "").encode("utf-8")
+            flow.response = http.Response.make(recorded.status, answer, headers)
             await self._keep(
                 flow, host, world, declaration, mode, AnsweredBy.RECORDING, replayed_from=plan.recordings.source
             )
@@ -630,7 +635,7 @@ class ProxyAddon:
         answered = capture.keep(answer, _first_header(response, "content-type"), limit=limit, paths=paths)
         if whole_size is not None and whole_size > len(answer):
             answered = capture.KeptBody(
-                None, answered.body.model_copy(update={"size": whole_size, "kept": BodyKept.BINARY})
+                None, answered.body.model_copy(update={"size": whole_size, "kept": BodyKept.BINARY}), None
             )
         keys = capture.query_keys(declaration) if declaration is not None else redact.CAPTURED_QUERY_KEYS
         started = datetime.fromtimestamp(request.timestamp_start, UTC)
@@ -642,6 +647,8 @@ class ProxyAddon:
             status=response.status_code,
             request_body=asked.text,
             response_body=answered.text,
+            request_bytes=asked.raw,
+            response_bytes=answered.raw,
             traceparent=_first_header(request, TRACEPARENT),
             captured=Captured(
                 mode=mode,
