@@ -205,7 +205,7 @@ def _deterministic(view: RunView) -> _Tally:
         report: CheckReport = check.run(view)
         tally.add(check.id, report)
         if isinstance(check, Expectations):
-            tally.met -= len(report.findings)
+            tally.met -= Expectations.failed(report)
     return tally
 
 

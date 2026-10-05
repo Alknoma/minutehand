@@ -63,7 +63,7 @@ async def test_a_run_cut_off_at_its_wake_limit_with_a_wait_open_is_not_finished_
     assert ran.returncode == 3, ran.stdout + ran.stderr
     head = ran.stdout.splitlines()
     assert head[1] == f"  {CUT_OFF}"
-    assert "\nno findings\n" in ran.stdout
+    assert "\nfail (" not in ran.stdout and "\ninformational (1)\n  expectations: sofia asked: met by" in ran.stdout
     found = re.match(r"run ([0-9a-f]+):", head[0])
     assert found is not None
     run_id = found.group(1)

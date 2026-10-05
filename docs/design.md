@@ -538,7 +538,16 @@ expect:
   - {kind: ticket_in_state, assignee: sofia, state: done}
 ```
 
-`mentions` is a case-insensitive substring match on the message text or the ticket's title and body. "Was Sofia asked about pricing" in the sense of meaning, not words, is a judged check and is designed, not built.
+`mentions` is a case-insensitive substring match on the message text or the ticket's title and body. "Was Sofia asked about pricing" in the sense of meaning, not words, is the judged check `asked_about`.
+
+A substring match can pass hollow, and both were seen on a real run: the owner was "told" the answer by a message that restated the question and carried none of the answer, and an agent told to send exactly "hello" passed by sending a paragraph that contained the word. No match is made smarter to catch it. Every met expectation is reported as an `INFORMATIONAL` finding that quotes what met it, trimmed to 160 characters, with who it went to and its seq, up to three matches and a count of the rest:
+
+```
+informational (1)
+  expectations: owner asked mentioning ['confirmed']: met by the message to Owner (seq 1): "Asked Sofia: has the venue been confirmed?"
+```
+
+A met expectation carries no pattern: there is nothing to fix. Only `FAIL` findings count against `expectations_met`.
 
 ### A person acting in the agent's own product
 

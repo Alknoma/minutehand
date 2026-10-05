@@ -9,6 +9,7 @@ import pytest
 
 from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import discover, evaluate
+from minutehand.domain.checks import FindingKind
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
 ROOT = Path(__file__).parents[2]
@@ -46,7 +47,9 @@ def test_every_pattern_a_finding_carries_exists_and_is_its_checks_own() -> None:
     findings = evaluate(WORLD, stop=None).findings + evaluate(TIMELINE, stop=None).findings
     assert findings
     for finding in findings:
-        assert finding.pattern == declared[finding.check]
+        # A met expectation is reported for the record and hands over no fix.
+        met = finding.kind is FindingKind.INFORMATIONAL and finding.check == "expectations"
+        assert finding.pattern == (None if met else declared[finding.check])
         assert finding.pattern is None or pattern(finding.pattern)
 
 

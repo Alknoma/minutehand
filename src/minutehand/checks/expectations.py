@@ -3,6 +3,12 @@
 Each expectation selects events of one macro kind (a person was asked, a ticket
 was created, deleted, or reached a state) and bounds how many there must be.
 
+A word match is a substring match, so a met expectation can be hollow: the agent
+restated the question to the owner instead of the answer, or wrote "hello" inside
+a paragraph. Nothing here guesses at that. Each met expectation is reported as an
+informational finding that quotes what met it, trimmed, and who it went to, so a
+reader sees a hollow pass for what it is.
+
 A `PersonAsked` with `about` asks what a message means, which no word match can
 answer: it is left to the judged check `asked_about`, and noted here as left.
 """
@@ -13,6 +19,7 @@ from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, R
 from minutehand.domain.scenario import (
     Expectation,
     PersonAsked,
+    Scenario,
     TicketCreated,
     TicketDeleted,
     TicketInState,
@@ -26,6 +33,12 @@ from minutehand.domain.world import (
     TicketSnapshot,
     WorldEvent,
 )
+
+QUOTED = 160
+"""How much of a matching message or ticket a met expectation quotes."""
+
+SHOWN = 3
+"""How many of the matches a met expectation quotes; the rest are counted."""
 
 
 def has_words(text: str, words: list[str]) -> bool:
@@ -67,6 +80,15 @@ class Expectations:
             too_few = count < expected.at_least
             too_many = expected.at_most is not None and count > expected.at_most
             if not (too_few or too_many):
+                findings.append(
+                    Finding(
+                        check=self.id,
+                        severity=Severity.INFORMATION,
+                        kind=FindingKind.INFORMATIONAL,
+                        message=f"{self.describe(expected)}: met by {_met_by(matched, view.scenario)}",
+                        evidence=[e.seq for e in matched],
+                    )
+                )
                 continue
             wanted = f"at least {expected.at_least}" if too_few else f"at most {expected.at_most}"
             findings.append(
@@ -80,6 +102,11 @@ class Expectations:
                 )
             )
         return CheckReport(findings=findings, notes=notes)
+
+    @staticmethod
+    def failed(report: CheckReport) -> int:
+        """How many expectations the report says were not met: its failures, never what it notes as met."""
+        return sum(1 for f in report.findings if f.kind is FindingKind.FAIL)
 
     @staticmethod
     def matches(expected: Expectation, event: WorldEvent, email: dict[str, str]) -> bool:
@@ -126,3 +153,30 @@ class Expectations:
         if isinstance(expected, TicketDeleted):
             return "ticket deleted"
         return f"ticket for {expected.assignee} in state {expected.state.value}"
+
+
+def _met_by(matched: list[WorldEvent], scenario: Scenario) -> str:
+    """What met an expectation, quoted: each message with who it went to, each ticket with its holder."""
+    if not matched:
+        return "nothing, as wanted"
+    names = {p.email: p.name for p in scenario.people}
+    shown = [_quoted(e, names) for e in matched[:SHOWN]]
+    more = f"; and {len(matched) - SHOWN} more" if len(matched) > SHOWN else ""
+    return "; ".join(shown) + more
+
+
+def _quoted(event: WorldEvent, names: dict[str, str]) -> str:
+    after = event.after
+    if isinstance(after, MessageSnapshot):
+        to = ", ".join(names[e] if e in names else e for e in after.recipient_emails) or f"channel {after.channel}"
+        return f"the message to {to} (seq {event.seq}): \u201c{_trimmed(after.text)}\u201d"
+    if isinstance(after, TicketSnapshot):
+        holder = after.assignee_email
+        held = f" for {names[holder] if holder in names else holder}" if holder is not None else ""
+        return f"the ticket{held} (seq {event.seq}): \u201c{_trimmed(after.title)}\u201d, {after.state.value}"
+    return f"{event.operation.value} of {event.entity.kind.value} {event.entity.external_id} (seq {event.seq})"
+
+
+def _trimmed(text: str) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= QUOTED else flat[: QUOTED - 1].rstrip() + "\u2026"

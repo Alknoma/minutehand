@@ -8,7 +8,7 @@ import pytest
 
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.runner import RunResult, discover, evaluate, evaluate_run, stability
-from minutehand.domain.checks import PersonBurden
+from minutehand.domain.checks import FindingKind, PersonBurden
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import TicketCreated
 from tests.checks.world import Log, at, person, reply, scenario, view
@@ -101,7 +101,11 @@ def test_a_clean_run_exits_zero_and_the_ledger_is_built_from_the_world() -> None
         unmatched_calls=[],
         stop=StopReason.AGENT_DONE,
     )
-    assert result.findings == [] and result.exit_code == 0
+    [met] = result.findings
+    assert met.kind is FindingKind.INFORMATIONAL and met.message.startswith(
+        "ticket created for sofia: met by the ticket"
+    )
+    assert result.exit_code == 0
     assert result.effectiveness.waits_opened == 2 and result.effectiveness.expectations_met == 1
 
 
