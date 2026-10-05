@@ -36,6 +36,7 @@ from minutehand.adapters.proxy.capture import Capturing, Declaration
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
+from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, Worlds, one_run
 from minutehand.application.restore import SeenCall
 from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, OnMiss, PassThrough
@@ -133,10 +134,10 @@ class ProxyAddon:
         self._streams: dict[str, list[bytes]] = {}
         self._recorded: set[str] = set()
         self.last_seen: SeenCall | None = None
-        # Calls sent on to a real host and not answered yet, by flow id; tunnels by flow id, with whether their
-        # last bytes went from the agent.
+        # Calls sent on to a real host and not answered yet, by flow id; tunnels by flow id, each with what its
+        # bytes tell of whether the agent awaits an answer on it (`tunnel.Tunnel`).
         self._sent_on: dict[str, str] = {}
-        self._tunnels: dict[str, tuple[str, bool]] = {}
+        self._tunnels: dict[str, Tunnel] = {}
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
@@ -144,10 +145,11 @@ class ProxyAddon:
         self.last_seen = SeenCall(at=time.monotonic(), what=what)
 
     def waiting(self) -> list[str]:
-        """What the agent sent and has not had answered: a call sent on to a real host, and a tunnel whose last
-        bytes went from the agent to the host (a request on it, unanswered as far as bytes can tell)."""
+        """What the agent sent and has not had answered: a call sent on to a real host, and a tunnel on which a
+        request went from the agent and nothing since reads as its answer (`tunnel.Tunnel`: a TLS 1.3 server's
+        session tickets do not)."""
         sent = list(self._sent_on.values())
-        tunnels = [f"a request on the open tunnel to {host}" for host, asked in self._tunnels.values() if asked]
+        tunnels = [awaiting for tunnel in self._tunnels.values() if (awaiting := tunnel.awaiting()) is not None]
         return sent + tunnels
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
@@ -171,13 +173,13 @@ class ProxyAddon:
     def tcp_start(self, flow: tcp.TCPFlow) -> None:
         host = str(flow.server_conn.address[0]) if flow.server_conn.address else "?"
         self._seen(f"a new tunnelled connection to {host}")
-        self._tunnels[flow.id] = (host, False)
+        self._tunnels[flow.id] = Tunnel(host)
 
     def tcp_message(self, flow: tcp.TCPFlow) -> None:
         message = flow.messages[-1]
-        host = self._tunnels[flow.id][0] if flow.id in self._tunnels else "?"
-        self._tunnels[flow.id] = (host, message.from_client)
-        self._seen(f"bytes {'to' if message.from_client else 'from'} {host} on an open tunnel")
+        tunnel = self._tunnels.setdefault(flow.id, Tunnel("?"))
+        tunnel.moved(message.content, from_client=message.from_client)
+        self._seen(f"bytes {'to' if message.from_client else 'from'} {tunnel.host} on an open tunnel")
         del flow.messages[:-1]  # bytes are relayed, not kept: a long-lived tunnel would grow without end
 
     def tcp_end(self, flow: tcp.TCPFlow) -> None:
