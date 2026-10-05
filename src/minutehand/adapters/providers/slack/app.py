@@ -23,7 +23,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from minutehand.adapters.providers.slack import state, wire
-from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID, SlackWorld
+from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.world import (
     Actor,
     ControlKind,
@@ -36,7 +36,6 @@ from minutehand.domain.world import (
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
-_TOKEN_KINDS = ("xoxb-", "xoxp-")
 _MAX_GROUP = 8
 _UNAUTHENTICATED = frozenset({"oauth.v2.access"})
 """Methods an app calls with its client id and secret, before it holds a token."""
@@ -58,13 +57,18 @@ def _header(request: Request, name: str) -> str | None:
 
 class SlackApi:
     def __init__(self, store: Store, clock: Clock) -> None:
+        self._store = store
         self._world = SlackWorld(store)
+        """The workspace the call being answered is in: set for each call before its method runs."""
         self._clock = clock
         self._methods: dict[str, Handler] = {
             "auth.test": self.auth_test,
             "users.list": self.users_list,
             "users.info": self.users_info,
             "users.lookupByEmail": self.users_lookup_by_email,
+            "users.profile.get": self.users_profile_get,
+            "users.getPresence": self.users_get_presence,
+            "dnd.info": self.dnd_info,
             "conversations.list": self.conversations_list,
             "conversations.info": self.conversations_info,
             "conversations.open": self.conversations_open,
@@ -93,8 +97,9 @@ class SlackApi:
                 await request.body(),
                 _header(request, "authorization"),
             )
+            self._world = SlackWorld(self._store)
             if method not in _UNAUTHENTICATED:
-                self._authenticate(presented)
+                self._world = self._authenticate(presented)
             faulted = self._fault(method, presented)
             answer: wire.Response = faulted if faulted is not None else self._methods[method](presented)
         except wire.Refusal as refusal:
@@ -132,12 +137,15 @@ class SlackApi:
             return wire.Failed(error=fault.error)
         return None
 
-    def _authenticate(self, presented: wire.Presented) -> None:
-        """Any bot or user token is accepted: the proxy holds no real credentials to check them against."""
+    def _authenticate(self, presented: wire.Presented) -> SlackWorld:
+        """The workspace the token is for. A workspace that declares its bot tokens takes those and what its install
+        minted; one that declares none takes any bot or user token of Slack's shape."""
         if presented.token is None:
             raise wire.Refusal("not_authed")
-        if not presented.token.startswith(_TOKEN_KINDS) or self._world.user(BOT_USER_ID) is None:
+        found = SlackWorld(self._store).for_token(presented.token)
+        if found is None or found.user(found.bot) is None:
             raise wire.Refusal("invalid_auth")
+        return found
 
     # ------------------------------------------------------------------ lookups
 
@@ -161,7 +169,7 @@ class SlackApi:
         return found
 
     def _in(self, channel: wire.SlackChannel) -> bool:
-        return self._world.is_member(channel.id, BOT_USER_ID)
+        return self._world.is_member(channel.id, self._world.bot)
 
     def _served(self, channel: wire.SlackChannel) -> wire.SlackChannel:
         if channel.is_im:
@@ -169,10 +177,13 @@ class SlackApi:
         return channel.model_copy(update={"is_member": self._in(channel)})
 
     def _snapshot(self, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
+        return self._snapshot_in(self._world, channel, message)
+
+    def _snapshot_in(self, world: SlackWorld, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
         return MessageSnapshot(
             text=wire.visible_text(message.text, message.blocks),
             channel=channel,
-            recipient_emails=self._world.human_emails(channel, besides=message.user),
+            recipient_emails=world.human_emails(channel, besides=message.user),
             thread_of=message.thread_ts,
             actions=message_actions(message),
         )
@@ -197,14 +208,58 @@ class SlackApi:
 
     def auth_test(self, presented: wire.Presented) -> wire.Ok:
         wire.read_args(wire.NoArgs, presented)
-        self._world.saw(state.user_ref(BOT_USER_ID), Operation.READ)
+        self._world.saw(state.user_ref(self._world.bot), Operation.READ)
         return wire.AuthTest(
-            url="https://simulated.slack.com/",
-            team=state.TEAM_NAME,
-            user=state.BOT_NAME,
-            team_id=state.TEAM_ID,
-            user_id=BOT_USER_ID,
-            bot_id=BOT_ID,
+            url=f"https://{self._world.team.domain}.slack.com/",
+            team=self._world.team.name,
+            user=self._world.team.bot_name,
+            team_id=self._world.team.id,
+            user_id=self._world.bot,
+            bot_id=self._world.team.bot_id,
+        )
+
+    def _now(self) -> int:
+        return int(self._clock.now().timestamp())
+
+    def _shown(self, user: wire.SlackUser) -> wire.SlackUser:
+        """The user as others see them now: an absence shows as their status, until it ends."""
+        away = self._world.away(user.id, self._now())
+        if away is None:
+            return user
+        status = {"status_text": away.reason or "Away", "status_emoji": ":palm_tree:", "status_expiration": away.ends}
+        return user.model_copy(update={"profile": user.profile.model_copy(update=status)})
+
+    def _asked_about(self, presented: wire.Presented) -> wire.SlackUser:
+        """The user a call names, or the caller's own bot user when it names none."""
+        named = wire.read_args(wire.UserArgs, presented).user
+        return self._user(named or self._world.bot)
+
+    def users_profile_get(self, presented: wire.Presented) -> wire.Ok:
+        user = self._asked_about(presented)
+        self._world.saw(state.user_ref(user.id), Operation.READ)
+        return wire.OneProfile(profile=self._shown(user).profile)
+
+    def users_get_presence(self, presented: wire.Presented) -> wire.Ok:
+        """`away` while the person is away; `active` otherwise. The bot's own presence is always `active`."""
+        user = self._asked_about(presented)
+        self._world.saw(state.user_ref(user.id), Operation.READ)
+        away = self._world.away(user.id, self._now()) is not None
+        return wire.Presence(presence="away" if away else "active")
+
+    def dnd_info(self, presented: wire.Presented) -> wire.Ok:
+        """Do not disturb, snoozed for the whole of an absence; off otherwise, as Slack answers one never set."""
+        user = self._asked_about(presented)
+        self._world.saw(state.user_ref(user.id), Operation.READ)
+        away = self._world.away(user.id, self._now())
+        if away is None:
+            return wire.DndInfo(dnd_enabled=False, next_dnd_start_ts=1, next_dnd_end_ts=1, snooze_enabled=False)
+        return wire.DndInfo(
+            dnd_enabled=True,
+            next_dnd_start_ts=away.starts,
+            next_dnd_end_ts=away.ends,
+            snooze_enabled=True,
+            snooze_endtime=away.ends,
+            snooze_remaining=away.ends - self._now(),
         )
 
     def users_list(self, presented: wire.Presented) -> wire.Ok:
@@ -213,16 +268,16 @@ class SlackApi:
         page = self._world.users(after=wire.decode_cursor(args.cursor), limit=limit + 1)
         more = len(page) > limit
         page = page[:limit]
-        self._world.saw(state.team_ref(), Operation.SEARCH)
+        self._world.saw(state.team_ref(self._world.team.id), Operation.SEARCH)
         return wire.UserList(
-            members=page,
+            members=[self._shown(u) for u in page],
             response_metadata=wire.ResponseMetadata(next_cursor=wire.encode_cursor(page[-1].id) if more else ""),
         )
 
     def users_info(self, presented: wire.Presented) -> wire.Ok:
         user = self._user(wire.read_args(wire.UserArgs, presented).user)
         self._world.saw(state.user_ref(user.id), Operation.READ)
-        return wire.OneUser(user=user)
+        return wire.OneUser(user=self._shown(user))
 
     def users_lookup_by_email(self, presented: wire.Presented) -> wire.Ok:
         email = wire.read_args(wire.EmailArgs, presented).email.strip().lower()
@@ -236,8 +291,8 @@ class SlackApi:
         )
         if found is None:
             raise wire.Refusal("users_not_found")
-        self._world.saw(state.team_ref(), Operation.SEARCH)
-        return wire.OneUser(user=found)
+        self._world.saw(state.team_ref(self._world.team.id), Operation.SEARCH)
+        return wire.OneUser(user=self._shown(found))
 
     # ------------------------------------------------------------------ conversations
 
@@ -258,7 +313,7 @@ class SlackApi:
                 more = True
                 break
             picked.append(self._served(channel))
-        self._world.saw(state.team_ref(), Operation.SEARCH)
+        self._world.saw(state.team_ref(self._world.team.id), Operation.SEARCH)
         return wire.ChannelList(
             channels=picked,
             response_metadata=wire.ResponseMetadata(next_cursor=wire.encode_cursor(picked[-1].id) if more else ""),
@@ -302,7 +357,7 @@ class SlackApi:
 
     def _conversation(self, others: list[str], *, actor: Actor) -> tuple[wire.SlackChannel, bool]:
         """The IM or group DM between the app and `others`, created when it does not exist yet."""
-        members = sorted({BOT_USER_ID, *others})
+        members = sorted({self._world.bot, *others})
         cid = state.conversation_id(members)
         existing = self._world.channel(cid)
         if existing is not None:
@@ -440,25 +495,42 @@ class SlackApi:
         *,
         ephemeral_to: str | None = None,
     ) -> wire.SlackMessage:
+        return self._from_bot_in(self._world, text, blocks, attachments, thread_ts, ephemeral_to=ephemeral_to)
+
+    def _from_bot_in(
+        self,
+        world: SlackWorld,
+        text: str,
+        blocks: list[JsonValue] | None,
+        attachments: list[JsonValue] | None,
+        thread_ts: str | None,
+        *,
+        ephemeral_to: str | None = None,
+    ) -> wire.SlackMessage:
         """A message the app posts, as Slack keeps it: its blocks given ids, and the app's bot profile on it."""
-        ts = self._world.next_ts(self._clock)
+        ts = world.next_ts(self._clock)
         return wire.SlackMessage(
             ts=ts,
-            user=BOT_USER_ID,
+            user=world.bot,
             text=text,
-            team=state.TEAM_ID,
-            bot_id=BOT_ID,
-            app_id=state.APP_ID,
+            team=world.team.id,
+            bot_id=world.team.bot_id,
+            app_id=world.team.app_id,
             thread_ts=thread_ts,
             blocks=wire.with_ids(blocks, ts),
             attachments=attachments,
-            bot_profile=state.bot_profile(int(self._clock.now().timestamp())),
+            bot_profile=state.bot_profile(int(self._clock.now().timestamp()), world.team),
             ephemeral_to=ephemeral_to,
         )
 
     def _write_ephemeral(self, channel: str, message: wire.SlackMessage, user: wire.SlackUser) -> None:
+        self._write_ephemeral_in(self._world, channel, message, user)
+
+    def _write_ephemeral_in(
+        self, world: SlackWorld, channel: str, message: wire.SlackMessage, user: wire.SlackUser
+    ) -> None:
         seen_by = [user.profile.email] if not user.is_bot and user.profile.email is not None else []
-        self._world.write(
+        world.write(
             state.message_ref(message.ts),
             message,
             operation=Operation.CREATE,
@@ -485,7 +557,7 @@ class SlackApi:
         message = self._world.message(channel.id, args.ts) if args.ts else None
         if message is None:
             raise wire.Refusal("message_not_found")
-        if message.user != BOT_USER_ID:
+        if message.user != self._world.bot:
             raise wire.Refusal("cant_update_message")
         if args.text is None and args.blocks is None and args.attachments is None:
             raise wire.Refusal("no_text")
@@ -497,7 +569,7 @@ class SlackApi:
                 "text": text,
                 "blocks": blocks,
                 "attachments": message.attachments if args.attachments is None else args.attachments,
-                "edited": wire.SlackEdited(user=BOT_USER_ID, ts=self._world.next_ts(self._clock)),
+                "edited": wire.SlackEdited(user=self._world.bot, ts=self._world.next_ts(self._clock)),
             }
         )
         self._world.write(
@@ -516,7 +588,7 @@ class SlackApi:
         message = self._world.message(channel.id, args.ts) if args.ts else None
         if message is None:
             raise wire.Refusal("message_not_found")
-        if message.user != BOT_USER_ID:
+        if message.user != self._world.bot:
             raise wire.Refusal("cant_delete_message")
         self._world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel.id)
         return wire.Deleted(channel=channel.id, ts=message.ts)
@@ -532,13 +604,13 @@ class SlackApi:
             raise wire.Refusal("invalid_name")
         reactions = list(message.reactions or [])
         same = next((r for r in reactions if r.name == name), None)
-        if same is not None and BOT_USER_ID in same.users:
+        if same is not None and self._world.bot in same.users:
             raise wire.Refusal("already_reacted")
         if same is None:
-            reactions.append(wire.SlackReaction(name=name, users=[BOT_USER_ID], count=1))
+            reactions.append(wire.SlackReaction(name=name, users=[self._world.bot], count=1))
         else:
             reactions[reactions.index(same)] = wire.SlackReaction(
-                name=name, users=[*same.users, BOT_USER_ID], count=same.count + 1
+                name=name, users=[*same.users, self._world.bot], count=same.count + 1
             )
         self._world.write(
             state.message_ref(message.ts),
@@ -620,7 +692,7 @@ class SlackApi:
         blocks = wire.with_ids(spec.blocks, view_id) or []
         return wire.SlackView(
             id=view_id,
-            team_id=state.TEAM_ID,
+            team_id=self._world.team.id,
             type=spec.type,
             title=spec.title,
             submit=spec.submit,
@@ -634,9 +706,9 @@ class SlackApi:
             clear_on_close=spec.clear_on_close,
             notify_on_close=spec.notify_on_close,
             root_view_id=root,
-            app_id=state.APP_ID,
-            app_installed_team_id=state.TEAM_ID,
-            bot_id=BOT_ID,
+            app_id=self._world.team.app_id,
+            app_installed_team_id=self._world.team.id,
+            bot_id=self._world.team.bot_id,
         )
 
     def _version(self, found: wire.OpenView) -> int:
@@ -678,23 +750,28 @@ class SlackApi:
             raise wire.Refusal("invalid_client_id")
         if not client.client_secret:
             raise wire.Refusal("bad_client_secret")
-        install = self._world.body(state.install_ref(), wire.SlackInstall)
+        every = self._world.workspaces()
+        self._world = self._world.as_team(next((w for w in every if w.oauth_code == args.code), every[0]))
+        install = self._world.body(state.install_ref(self._world.team.id), wire.SlackInstall)
         if not args.code or install is None or args.code in install.exchanged:
             raise wire.Refusal("invalid_code")
+        token = f"xoxb-{self._world.team.id}-{self._world.bot}-{state.minted('token', len(install.exchanged), 0)}"
         self._world.write(
-            state.install_ref(),
-            install.model_copy(update={"exchanged": [*install.exchanged, args.code]}),
+            state.install_ref(self._world.team.id),
+            install.model_copy(
+                update={"exchanged": [*install.exchanged, args.code], "tokens": [*install.tokens, token]}
+            ),
             operation=Operation.UPDATE,
             actor=Actor.AGENT,
             parent=state.APP,
         )
         return wire.OAuthAccess(
-            app_id=state.APP_ID,
+            app_id=self._world.team.app_id,
             authed_user=wire.AuthedUser(id=install.installer),
             scope=SCOPES,
-            access_token=f"xoxb-{state.TEAM_ID}-{BOT_USER_ID}-{state.minted('token', len(install.exchanged), 0)}",
-            bot_user_id=BOT_USER_ID,
-            team=wire.TeamRef(id=state.TEAM_ID, name=state.TEAM_NAME),
+            access_token=token,
+            bot_user_id=self._world.bot,
+            team=wire.TeamRef(id=self._world.team.id, name=self._world.team.name),
         )
 
     # ------------------------------------------------------------------ files
@@ -704,14 +781,16 @@ class SlackApi:
         redirects a browser that is not signed in."""
         key = request.path_params["key"]
         token = wire.read_call("", "", b"", _header(request, "authorization")).token
-        if token is None or not token.startswith(_TOKEN_KINDS):
-            return RedirectResponse(f"https://{state.TEAM_DOMAIN}.slack.com/?redir={request.url.path}", status_code=302)
         team, _, file_id = key.partition("-")
-        found = self._world.file(file_id) if team == state.TEAM_ID else None
-        content = self._world.body(state.content_ref(file_id), wire.SlackFileContent) if found is not None else None
+        world = SlackWorld(self._store).for_token(token) if token is not None else None
+        if world is None:
+            first = SlackWorld(self._store).team_of(team) or SlackWorld(self._store)
+            return RedirectResponse(f"https://{first.team.domain}.slack.com/?redir={request.url.path}", status_code=302)
+        found = world.file(file_id) if team == world.team.id else None
+        content = world.body(state.content_ref(file_id), wire.SlackFileContent) if found is not None else None
         if found is None or content is None or request.path_params["name"] != found.name:
             return HTMLResponse(_NOT_FOUND, status_code=404)
-        self._world.saw(state.file_ref(found.id), Operation.READ)
+        world.saw(state.file_ref(found.id), Operation.READ)
         headers = (
             {"Content-Disposition": f'attachment; filename="{found.name}"'}
             if "download" in request.url.path.split("/")
@@ -728,31 +807,33 @@ class SlackApi:
         """What the agent posts to the `response_url` of a press or a command: a new message, ephemeral unless it
         says `in_channel`; with `replace_original` the pressed message rewritten; with `delete_original` removed.
         Five uses, thirty minutes, as Slack allows."""
-        hook = self._world.body(state.hook_ref(request.path_params["hook"]), wire.SlackHook)
-        if hook is None or hook.secret != request.path_params["secret"] or request.path_params["team"] != state.TEAM_ID:
+        found_team = SlackWorld(self._store).team_of(request.path_params["team"])
+        hook = found_team.body(state.hook_ref(request.path_params["hook"]), wire.SlackHook) if found_team else None
+        if found_team is None or hook is None or hook.secret != request.path_params["secret"]:
             return JSONResponse({"ok": False, "error": "invalid_token"}, status_code=404)
         if int(self._clock.now().timestamp()) > hook.issued + HOOK_LIFETIME:
             return JSONResponse({"ok": False, "error": "expired_url"}, status_code=404)
         if hook.used >= HOOK_USES:
             return JSONResponse({"ok": False, "error": "used_url"}, status_code=404)
+        world = found_team
         try:
             body = wire.ResponseUrlBody.model_validate_json(await request.body())
         except ValueError:
             return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
-        self._world.write(
+        world.write(
             state.hook_ref(hook.id),
             hook.model_copy(update={"used": hook.used + 1}),
             operation=Operation.UPDATE,
             actor=Actor.AGENT,
             parent=state.HOOKS,
         )
-        original = self._world.located(hook.message) if hook.message is not None else None
+        original = world.located(hook.message) if hook.message is not None else None
         if body.delete_original or body.replace_original:
             if original is None:
                 return JSONResponse({"ok": False, "error": "message_not_found"}, status_code=404)
             channel, message = original
             if body.delete_original:
-                self._world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel)
+                world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel)
                 return JSONResponse({"ok": True})
             replaced = message.model_copy(
                 update={
@@ -762,13 +843,13 @@ class SlackApi:
                 }
             )
             snapshot = (
-                self._snapshot(channel, replaced)
+                self._snapshot_in(world, channel, replaced)
                 if replaced.ephemeral_to is None
-                else self._snapshot(channel, replaced).model_copy(
-                    update={"recipient_emails": self._emails([replaced.ephemeral_to])}
+                else self._snapshot_in(world, channel, replaced).model_copy(
+                    update={"recipient_emails": self._emails_in(world, [replaced.ephemeral_to])}
                 )
             )
-            self._world.write(
+            world.write(
                 state.message_ref(message.ts),
                 replaced,
                 operation=Operation.UPDATE,
@@ -779,25 +860,25 @@ class SlackApi:
             return JSONResponse({"ok": True})
         thread_ts = body.thread_ts or (original[1].thread_ts if original is not None else None)
         if body.response_type == "in_channel":  # enum-lint: exempt Slack's own response type on the wire
-            message = self._from_bot(body.text, body.blocks, body.attachments, thread_ts)
-            self._world.write(
+            message = self._from_bot_in(world, body.text, body.blocks, body.attachments, thread_ts)
+            world.write(
                 state.message_ref(message.ts),
                 message,
                 operation=Operation.CREATE,
                 actor=Actor.AGENT,
                 parent=hook.channel,
-                after=self._snapshot(hook.channel, message),
+                after=self._snapshot_in(world, hook.channel, message),
             )
             return JSONResponse({"ok": True})
-        user = self._world.user(hook.user)
+        user = world.user(hook.user)
         if user is None:
             return JSONResponse({"ok": False, "error": "user_not_found"}, status_code=404)
-        message = self._from_bot(body.text, body.blocks, body.attachments, thread_ts, ephemeral_to=user.id)
-        self._write_ephemeral(hook.channel, message, user)
+        message = self._from_bot_in(world, body.text, body.blocks, body.attachments, thread_ts, ephemeral_to=user.id)
+        self._write_ephemeral_in(world, hook.channel, message, user)
         return JSONResponse({"ok": True})
 
-    def _emails(self, users: list[str]) -> list[str]:
-        found = [self._world.user(u) for u in users]
+    def _emails_in(self, world: SlackWorld, users: list[str]) -> list[str]:
+        found = [world.user(u) for u in users]
         return [u.profile.email for u in found if u is not None and not u.is_bot and u.profile.email is not None]
 
 

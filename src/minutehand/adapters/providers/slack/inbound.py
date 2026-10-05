@@ -25,7 +25,7 @@ import httpx
 
 from minutehand.adapters.providers.slack import seed, state, wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
-from minutehand.adapters.providers.slack.state import BOT_USER_ID, SlackWorld
+from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.scenario import (
@@ -107,19 +107,47 @@ async def push_event(target: InboundTarget, body: bytes, secret: str) -> httpx.R
     raise DeliveryRefused(target.url, status, last)
 
 
-def _event(event: wire.Event, *, seq: int, clock: Clock, second: bool = False) -> bytes:
-    """The `event_callback` envelope. `event_id` is fixed by the world event the push reports; a second push for
-    the same event (the `app_mention` beside a `message`) gets an id of its own."""
+def _event(slack: SlackWorld, event: wire.Event, *, seq: int, clock: Clock, second: bool = False) -> bytes:
+    """The `event_callback` envelope, from the workspace `slack` is. `event_id` is fixed by the world event the push
+    reports; a second push for the same event (the `app_mention` beside a `message`) gets an id of its own."""
     return wire.event_body(
         wire.EventCallback(
-            team_id=state.TEAM_ID,
-            api_app_id=state.APP_ID,
+            team_id=slack.team.id,
+            api_app_id=slack.team.app_id,
             event_id=f"Ev{seq:010d}{'M' if second else ''}",
             event_time=int(clock.now().timestamp()),
-            authorizations=[wire.Authorization(team_id=state.TEAM_ID, user_id=state.BOT_USER_ID)],
+            authorizations=[wire.Authorization(team_id=slack.team.id, user_id=slack.bot)],
             event=event,
         )
     )
+
+
+def acting(world: Store, person: str, channel: str | None = None) -> SlackWorld:
+    """The workspace a person acts in: of the workspaces they belong to, the first that has `channel` with them in
+    it when one is named, else the first."""
+    every = SlackWorld(world)
+    theirs = [
+        every.as_team(w) for w in every.workspaces() if every.as_team(w).user(state.user_id(person, w.id)) is not None
+    ]
+    if not theirs:
+        raise LookupError(f"{person} is not a member of any workspace")
+    if channel is not None:
+        named = [
+            w
+            for w in theirs
+            if w.is_member(state.named_channel_id(channel, w.team.id), state.user_id(person, w.team.id))
+        ]
+        if named:
+            return named[0]
+    return theirs[0]
+
+
+def where(world: Store, channel: str) -> SlackWorld:
+    """The workspace a channel or conversation is in."""
+    found = SlackWorld(world).channel_team(channel)
+    if found is None:
+        raise LookupError(f"no Slack conversation {channel} in any workspace")
+    return found
 
 
 async def verify_url(target: InboundTarget, secret: str, challenge: str) -> None:
@@ -154,13 +182,13 @@ async def deliver(reply: PersonReply, target: InboundTarget, world: Store, clock
         raise ValueError(f"a {reply.in_reply_to.provider} message is not Slack's to answer")
     if reply.in_reply_to.kind is not EntityKind.MESSAGE:
         raise ValueError(f"a reply answers a message, not a {reply.in_reply_to.kind}")
-    slack = SlackWorld(world)
-    found = slack.located(reply.in_reply_to.external_id)
+    found = SlackWorld(world).located(reply.in_reply_to.external_id)
     if found is None:
         raise LookupError(f"no Slack message {reply.in_reply_to.external_id} for {reply.person} to answer")
     channel_id, asked = found
+    slack = where(world, channel_id)
     channel = slack.channel(channel_id)
-    author = state.user_id(reply.person)
+    author = state.user_id(reply.person, slack.team.id)
     if channel is None or not slack.is_member(channel_id, author):
         raise LookupError(f"{reply.person} is not in the conversation {channel_id} they are answering")
     # In an IM a reply is a new message; anywhere else it goes in the thread of what it answers. An ephemeral
@@ -174,11 +202,9 @@ async def deliver(reply: PersonReply, target: InboundTarget, world: Store, clock
 async def say(message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str) -> None:
     """The person DMs the agent's bot: a new message in their IM with it, never in a thread."""
     refuse_foreign(target)
-    slack = SlackWorld(world)
-    author = state.user_id(message.person)
-    if slack.user(author) is None:
-        raise LookupError(f"{message.person} is not a member of the workspace")
-    channel = slack.channel(state.conversation_id([BOT_USER_ID, author]))
+    slack = acting(world, message.person)
+    author = state.user_id(message.person, slack.team.id)
+    channel = slack.channel(state.conversation_id([slack.bot, author]))
     if channel is None:
         raise LookupError(f"{message.person} has no DM with the agent's bot; the workspace was not seeded for them")
     await _post(slack, channel, author, message.text, None, [], False, target, clock, secret)
@@ -201,7 +227,7 @@ async def _post(
     ts = seed.write_post(
         slack, channel.id, author, text, thread_ts, files, at=int(clock.now().timestamp()), actor=Actor.PERSON
     )
-    if not slack.is_member(channel.id, BOT_USER_ID):
+    if not slack.is_member(channel.id, slack.bot):
         return ts
     event = wire.MessageEvent(
         subtype="file_share" if files else None,
@@ -211,13 +237,13 @@ async def _post(
         ts=ts,
         event_ts=ts,
         channel_type=wire.event_channel_type(channel),
-        team=state.TEAM_ID,
+        team=slack.team.id,
         client_msg_id=state.client_msg_id(ts),
         thread_ts=thread_ts,
         files=files or None,
         upload=False if files else None,
     )
-    await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
     if mentions and not channel.is_im:
         mention = wire.AppMentionEvent(
             user=author,
@@ -225,12 +251,12 @@ async def _post(
             ts=ts,
             channel=channel.id,
             event_ts=ts,
-            team=state.TEAM_ID,
+            team=slack.team.id,
             client_msg_id=state.client_msg_id(ts),
             thread_ts=thread_ts,
             files=files or None,
         )
-        await push_event(target, _event(mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret)
+        await push_event(target, _event(slack, mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret)
     return ts
 
 
@@ -243,10 +269,8 @@ async def happen(
     refuse_foreign(target)
     if happening.provider != MANIFEST.key:
         raise ValueError(f"a {happening.provider} happening is not Slack's")
-    slack = SlackWorld(world)
-    author = state.user_id(happening.person)
-    if slack.user(author) is None:
-        raise LookupError(f"{happening.person} is not a member of the workspace")
+    slack = _acts_in(world, happening)
+    author = state.user_id(happening.person, slack.team.id)
     if isinstance(happening, PersonPosts):
         await _posts(slack, happening, author, target, clock, secret)
     elif isinstance(happening, PersonEdits):
@@ -266,9 +290,25 @@ async def happen(
         raise ValueError("a slash command is pushed as an interaction (`interactive.command`), not as an event")
 
 
+def _acts_in(world: Store, happening: MessagingHappening) -> SlackWorld:
+    """The workspace a happening is done in: where the post it changes is, else where the channel it names is."""
+    post: str | None = None
+    if isinstance(happening, PersonEdits | PersonDeletes | PersonReacts):
+        post = happening.post
+    if post is not None:
+        posted = SlackWorld(world).post(post)
+        if posted is None:
+            raise LookupError(f"post {post!r} is not in any workspace")
+        return where(world, posted.channel)
+    channel: str | None = None
+    if isinstance(happening, PersonPosts | PersonReacts | PersonCommands | PersonAddsAgent | PersonJoins):
+        channel = happening.channel
+    return acting(world, happening.person, channel)
+
+
 def conversation(slack: SlackWorld, name: str | None, author: str) -> wire.SlackChannel:
     """A channel by its name, or with none, the person's DM with the agent's bot; the person must be in it."""
-    cid = state.conversation_id([BOT_USER_ID, author]) if name is None else state.named_channel_id(name)
+    cid = state.conversation_id([slack.bot, author]) if name is None else state.named_channel_id(name, slack.team.id)
     found = slack.channel(cid)
     where = "their DM with the agent" if name is None else f"#{name}"
     if found is None:
@@ -302,7 +342,7 @@ async def _posts(
         seed.write_file(slack, f, author, at, seed=f"{slack.next_seq()}|{i}", actor=Actor.PERSON)
         for i, f in enumerate(posts.files)
     ]
-    text = f"<@{BOT_USER_ID}> {posts.text}" if posts.mentions_agent else posts.text
+    text = f"<@{slack.bot}> {posts.text}" if posts.mentions_agent else posts.text
     ts = await _post(slack, channel, author, text, thread_ts, files, posts.mentions_agent, target, clock, secret)
     if posts.key is not None:
         seed.remember_post(slack, posts.key, channel.id, ts, actor=Actor.PERSON)
@@ -333,7 +373,7 @@ async def _edits(
             thread_of=before.thread_ts,
         ),
     )
-    if slack.is_member(channel.id, BOT_USER_ID):
+    if slack.is_member(channel.id, slack.bot):
         event = wire.MessageChangedEvent(
             channel=channel.id,
             channel_type=wire.event_channel_type(channel),
@@ -342,7 +382,7 @@ async def _edits(
             message=after,
             previous_message=before,
         )
-        await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _deletes(
@@ -352,7 +392,7 @@ async def _deletes(
     _own(before, author, deletes.post)
     stamp = slack.next_ts(clock)
     slack.delete(state.message_ref(before.ts), actor=Actor.PERSON, parent=channel.id)
-    if slack.is_member(channel.id, BOT_USER_ID):
+    if slack.is_member(channel.id, slack.bot):
         event = wire.MessageDeletedEvent(
             channel=channel.id,
             channel_type=wire.event_channel_type(channel),
@@ -361,7 +401,7 @@ async def _deletes(
             event_ts=stamp,
             previous_message=before,
         )
-        await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _reacts(
@@ -371,7 +411,7 @@ async def _reacts(
         channel, message = _posted(slack, reacts.post)
     else:
         channel = conversation(slack, reacts.channel, author)
-        mine = [m for m in slack.messages(channel.id) if m.user == BOT_USER_ID]
+        mine = [m for m in slack.messages(channel.id) if m.user == slack.bot]
         if not mine:
             raise LookupError(f"the agent has written nothing in {channel.id} for {reacts.person} to react to")
         message = mine[-1]
@@ -393,7 +433,7 @@ async def _reacts(
         actor=Actor.PERSON,
         parent=channel.id,
     )
-    if slack.is_member(channel.id, BOT_USER_ID):
+    if slack.is_member(channel.id, slack.bot):
         event = wire.ReactionAddedEvent(
             user=author,
             reaction=reacts.reaction,
@@ -401,13 +441,13 @@ async def _reacts(
             item=wire.ReactionItem(channel=channel.id, ts=message.ts),
             event_ts=stamp,
         )
-        await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _joins(
     slack: SlackWorld, joins: PersonJoins, author: str, target: InboundTarget, clock: Clock, secret: str
 ) -> None:
-    cid = state.named_channel_id(joins.channel)
+    cid = state.named_channel_id(joins.channel, slack.team.id)
     channel = slack.channel(cid)
     if channel is None:
         raise LookupError(f"there is no #{joins.channel} in the workspace")
@@ -423,15 +463,15 @@ async def _joins(
         actor=Actor.PERSON,
         parent=cid,
     )
-    if slack.is_member(cid, BOT_USER_ID):
+    if slack.is_member(cid, slack.bot):
         event = wire.MemberJoinedEvent(
             user=author,
             channel=cid,
             channel_type="G" if channel.is_private else "C",
-            team=state.TEAM_ID,
+            team=slack.team.id,
             event_ts=stamp,
         )
-        await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _adds_agent(
@@ -441,27 +481,27 @@ async def _adds_agent(
     invited it. A bot is never invited to a DM, so a happening with no channel is refused."""
     if adds.channel is None:
         raise ValueError("a Slack bot is invited to a channel; a DM with it exists already, so name a channel")
-    cid = state.named_channel_id(adds.channel)
+    cid = state.named_channel_id(adds.channel, slack.team.id)
     channel = conversation(slack, adds.channel, author)
-    if slack.is_member(cid, BOT_USER_ID):
+    if slack.is_member(cid, slack.bot):
         raise LookupError(f"the agent is already in #{adds.channel}")
     stamp = slack.next_ts(clock)
     slack.write(
-        state.membership_ref(cid, BOT_USER_ID),
-        wire.SlackMembership(channel=cid, user=BOT_USER_ID),
+        state.membership_ref(cid, slack.bot),
+        wire.SlackMembership(channel=cid, user=slack.bot),
         operation=Operation.CREATE,
         actor=Actor.PERSON,
         parent=cid,
     )
     event = wire.MemberJoinedEvent(
-        user=BOT_USER_ID,
+        user=slack.bot,
         channel=cid,
         channel_type="G" if channel.is_private else "C",
-        team=state.TEAM_ID,
+        team=slack.team.id,
         inviter=author,
         event_ts=stamp,
     )
-    await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _opens_home(
@@ -474,4 +514,4 @@ async def _opens_home(
     event = wire.AppHomeOpenedEvent(
         user=author, channel=dm.id, event_ts=stamp, view=home.view if home is not None else None
     )
-    await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)

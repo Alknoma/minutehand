@@ -49,6 +49,9 @@ class SlackProfile(Model):
     email: str | None = None
     title: str = ""
     bot_id: str | None = None
+    status_text: str | None = None
+    status_emoji: str | None = None
+    status_expiration: int | None = None
 
 
 class SlackUser(Model):
@@ -267,10 +270,45 @@ class SlackHook(Model):
 
 
 class SlackInstall(Model):
-    """Minutehand's own: who installed the agent's app, and the OAuth codes already exchanged."""
+    """Minutehand's own: who installed the agent's app, the OAuth codes already exchanged, and the bot tokens the
+    exchanges minted, which authenticate in this workspace from then on."""
 
     installer: str
     exchanged: list[str] = []
+    tokens: list[str] = []
+
+
+class SlackWorkspace(Model):
+    """Minutehand's own: one workspace the agent's app is installed in, and who it is there."""
+
+    id: str
+    name: str
+    domain: str
+    bot_user_id: str
+    bot_id: str
+    app_id: str
+    bot_name: str
+    tokens: list[str] = Field(default=[], description="The bot tokens it accepts; none: any xoxb- or xoxp- token")
+    oauth_code: str | None = Field(default=None, description="The install code `oauth.v2.access` answers it for")
+    position: int = Field(default=0, description="Its place among the world's workspaces; the first is 0")
+
+
+class SlackAwayStretch(Model):
+    """Minutehand's own: one of a person's absences, as the scenario gives it, in seconds."""
+
+    on_first_ask: bool
+    starts_after: int
+    lasts: int
+    reason: str | None = None
+
+
+class SlackAway(Model):
+    """Minutehand's own: a person's absences, read against the run's clock whenever their profile is."""
+
+    user: str
+    email: str
+    starts_at: int = Field(description="The scenario's start, epoch seconds")
+    stretches: list[SlackAwayStretch]
 
 
 class SlackFault(Model):
@@ -847,6 +885,28 @@ class UserList(Ok):
 
 class OneUser(Ok):
     user: SlackUser
+
+
+class Presence(Ok):
+    presence: Literal["active", "away"]
+    online: bool | None = None
+    auto_away: bool | None = None
+    manual_away: bool | None = None
+    connection_count: int | None = None
+    last_activity: int | None = None
+
+
+class DndInfo(Ok):
+    dnd_enabled: bool
+    next_dnd_start_ts: int
+    next_dnd_end_ts: int
+    snooze_enabled: bool | None = None
+    snooze_endtime: int | None = None
+    snooze_remaining: int | None = None
+
+
+class OneProfile(Ok):
+    profile: SlackProfile
 
 
 class ChannelList(Ok):
