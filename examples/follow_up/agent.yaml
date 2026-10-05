@@ -22,3 +22,20 @@ inbound:
     secret:
       kind: generated
       env: AGENT_SLACK_SIGNING_SECRET
+
+# Hosts that are not places the agent keeps anything: not faked, captured. Every other host no fake
+# answers is refused (run once with --capture-unknown to see what an agent calls).
+outbound:
+  # The email to Owen never leaves the machine: it is answered 202 here, kept with the run, and read as a
+  # message from the agent to the person it names, so the expectations see it as they see a Slack message.
+  - host: api.mail.example
+    kind: acknowledge
+    answer: {status: 202, json_body: {}}
+    message:
+      recipients: ["personalizations[*].to[*].email"]
+      text: ["content[0].value"]
+      subject: [subject]
+  # A venue search is a lookup: sent to the real host, and the request and answer kept. A fork of a run
+  # answers the same search from the parent's recording instead (in_forks), so it differs only by its change.
+  - host: places.example
+    kind: pass_through

@@ -1,7 +1,7 @@
 # Follow up
 
 A small agent, `agent.py`, gets a goal: confirm the venue for the team offsite with Rosa. It asks Rosa in
-Slack, waits two days, follows up once if she has not answered, and tells Owen, who gave it the goal, when
+Slack, waits two days, follows up once if she has not answered, and emails Owen, who gave it the goal, when
 she does. It is an ordinary program: a web server from the standard library and the stock `slack_sdk`.
 It has no idea Minutehand exists.
 
@@ -11,7 +11,7 @@ says how well it carried the job.
 | File | What it is |
 |---|---|
 | `agent.py` | The agent. `AGENT_BEHAVIOUR=forgetful` makes it ask once and never follow up. |
-| `agent.yaml` | Where Minutehand reaches it: the wake and report endpoints, and where Slack pushes messages. |
+| `agent.yaml` | Where Minutehand reaches it: the wake and report endpoints, where Slack pushes messages, and the two hosts it calls that are not faked (`outbound`). |
 | `scenario.yaml` | Rosa answers 36 hours after she is asked. Owen is told the outcome and owes no answer. |
 | `scenario_silent.yaml` | Rosa never answers. |
 
@@ -25,19 +25,22 @@ minutehand run scenario.yaml --agent agent.yaml -- python agent.py
 ```
 
 Minutehand starts `python agent.py`, points its Slack calls at the fake Slack, and wakes it with the goal.
-The agent asks Rosa. A day and a half later, simulated, Rosa answers; the agent thanks her, tells Owen and
+The agent asks Rosa. A day and a half later, simulated, Rosa answers; the agent thanks her, emails Owen and
 reports that it is done.
 
 ```
-run 30d6c0aa7b98: offsite_venue
+run 054b98ac4e29: offsite_venue
   Passed: no check failed, and the agent reported it was done.
   stopped at 2026-08-25 21:00 UTC (simulated) because the agent reported it was done
   providers the agent called: slack
 
+outbound calls
+  api.mail.example: 1 call, acknowledged, never sent
+
 informational (3)
   expectations: rosa asked: met by the message to Rosa Lind (seq 17): “Hi Rosa, could you confirm the venue for the team offsite, please?”; the message to Rosa Lind (seq 21): “Thank you!”
-  expectations: owen asked mentioning ['confirmed']: met by the message to Owen Hart (seq 24): “The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
-  expectations: owen told what rosa said ('lakeside hall'): met by the message to Owen Hart (seq 24): “The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
+  expectations: owen asked mentioning ['confirmed']: met by the message to Owen Hart (seq 22): “Offsite venue The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
+  expectations: owen told what rosa said ('lakeside hall'): met by the message to Owen Hart (seq 22): “Offsite venue The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
 
 scorecard
   expectations met: 3 of 3
@@ -49,7 +52,23 @@ is met by the question and also by the thank-you. The third expectation, `relaye
 note to Owen carries "lakeside hall", a phrase that only Rosa's answer holds.
 
 The command exits 0: nothing failed, and the agent said it was done. The scorecard counts one wait, Rosa's answer, and none open at the end:
-the thank-you to Rosa and the note to Owen asked nothing, because nobody would answer them.
+the thank-you to Rosa and the email to Owen asked nothing, because nobody would answer them.
+
+The email to Owen went to `api.mail.example`, which no fake answers. `agent.yaml` declares it `acknowledge`:
+it never left the machine, was answered 202, and was read by the paths under `message` as an email from the
+agent to Owen, which is how "owen told what rosa said" is met by it. Without the declaration the call would
+be refused with 502, and the agent would fail its wake. See `docs/capture.md`.
+
+## 1a. The agent looks the venue up
+
+```bash
+LOOKUP_URL='https://places.example/v1/search?q=' minutehand run scenario.yaml --agent agent.yaml -- python agent.py
+```
+
+With `LOOKUP_URL`, the agent searches for the venue Rosa named before it writes to Owen. `places.example` is
+declared `pass_through`: the search goes to the real host, and the request and its answer are kept with the
+run (`minutehand view` shows both under "Outbound calls"). `places.example` stands for whatever search your
+agent uses; `tests/e2e/test_example_capture.py` runs this with a local server in its place.
 
 ## 2. Rosa never answers, and the agent forgets
 
