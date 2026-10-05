@@ -35,7 +35,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, Snapshot
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import Provider
+from minutehand.ports.provider import PlacesAdditions, Provider
 from minutehand.ports.store import Store
 
 Scratch = Callable[[Path, Clock], AbstractContextManager[Store]]
@@ -111,10 +111,14 @@ def additions(
             f"with this addition {key} would no longer seed {len(gone)} thing(s) its seed holds ({named}): the "
             "addition gives something already seeded other content"
         )
+    ordered = sorted(will.values(), key=lambda w: w.order)
+    placed = _placed(provider, [w for w in ordered if w.entity not in was], world)
     found: list[Written] = []
-    for written in sorted(will.values(), key=lambda w: w.order):
+    for written in ordered:
         ref = written.entity
         if ref not in was:
+            written = placed.pop(0)
+            ref = written.entity
             if world.get(ref) is not None or world.versions(ref):
                 raise AdditionRefused(
                     f"{key} would seed {ref.kind.value} {ref.external_id}, an id something made in this world since it "
@@ -133,6 +137,32 @@ def additions(
             )
         found.append(written)
     return found
+
+
+def _placed(provider: Provider, new: list[Written], world: Store) -> list[Written]:
+    """The new entities as the provider places them among what the world holds (`PlacesAdditions`): a number the
+    world has handed out since it was seeded moved to the next free one. Unchanged for a provider that numbers
+    nothing within a container."""
+    if not new or not isinstance(provider, PlacesAdditions):
+        return new
+    asked = [
+        Change(
+            entity=w.entity,
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            body=w.body,
+            parent=w.parent,
+            after=w.after,
+        )
+        for w in new
+    ]
+    try:
+        answered = provider.place(asked, world)
+    except ValueError as e:
+        raise AdditionRefused(f"{provider.manifest.key} cannot place this addition: {e}") from e
+    if len(answered) != len(asked):
+        raise AdditionRefused(f"{provider.manifest.key} placed {len(answered)} of {len(asked)} new things")
+    return [Written(c.entity, c.body or "", c.parent, c.after, w.order) for c, w in zip(answered, new, strict=True)]
 
 
 def land(

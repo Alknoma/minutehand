@@ -10,6 +10,8 @@ writes nothing: the person finds nothing to act on.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydantic import JsonValue
 
 from minutehand.adapters.providers.jira import wire
@@ -17,6 +19,7 @@ from minutehand.adapters.providers.jira.app import build_app
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.seed import JiraSeed, seed
+from minutehand.adapters.providers.jira.state import placed
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
     Comments,
@@ -28,7 +31,7 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import Actor, EntityRef
+from minutehand.domain.world import Actor, Change, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -43,6 +46,10 @@ class JiraProvider:
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)
+
+    def place(self, additions: Sequence[Change], world: Store) -> list[Change]:
+        """`PlacesAdditions`: an added issue takes its project's next number in the world (`state.placed`)."""
+        return placed(additions, world)
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`JiraSeed.rate_limits`, on a world already open: each answers its next calls 429."""

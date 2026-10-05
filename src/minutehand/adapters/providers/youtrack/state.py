@@ -34,7 +34,7 @@ same instance, and a fork sees it as of the fork.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 
 from minutehand.adapters.providers.youtrack import wire
@@ -573,3 +573,35 @@ class YouTrackWorld:
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
         return self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
+
+
+def placed(additions: Sequence[Change], world: Store) -> list[Change]:
+    """`PlacesAdditions`: each issue a further seed adds to a project the world holds takes the project's next
+    number, as the agent's next issue there would, so one the agent has filed since the world was seeded keeps its
+    readable id. The readable-id record and the issue it names are renamed together."""
+    youtrack = YouTrackWorld(world)
+    found = list(additions)
+    issues = {c.entity.external_id: n for n, c in enumerate(found) if c.entity.kind is EntityKind.TICKET}
+    following: dict[str, int] = {}
+    for n, change in enumerate(found):
+        if change.entity.kind is not EntityKind.RECORD or change.parent is None or change.body is None:
+            continue
+        project = youtrack.project(change.parent)
+        if project is None:
+            continue  # a project the addition itself brings: nothing in the world is numbered in it
+        alias = wire.parse(wire.StoredAlias, change.body)
+        if alias.issue not in issues:
+            raise ValueError(
+                f"the readable-id record {change.entity.external_id} names issue {alias.issue}, which is not added"
+            )
+        number = following[change.parent] if change.parent in following else youtrack.next_number(change.parent)
+        following[change.parent] = number + 1
+        readable = f"{project.shortName}-{number}"
+        held = found[issues[alias.issue]]
+        issue = wire.parse(wire.StoredIssue, held.body or "")
+        if issue.idReadable == readable:
+            continue
+        found[n] = change.model_copy(update={"entity": alias_ref(readable)})
+        renumbered = issue.model_copy(update={"idReadable": readable, "numberInProject": number})
+        found[issues[alias.issue]] = held.model_copy(update={"body": wire.dump(renumbered)})
+    return found

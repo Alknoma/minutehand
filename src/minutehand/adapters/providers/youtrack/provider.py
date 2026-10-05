@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from minutehand.adapters.providers.youtrack import wire
 from minutehand.adapters.providers.youtrack.app import build_app
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.seed import YouTrackSeed, seed, write_faults
-from minutehand.adapters.providers.youtrack.state import YouTrackWorld, millis
+from minutehand.adapters.providers.youtrack.state import YouTrackWorld, millis, placed
 from minutehand.domain.people import PermissionGrant
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
@@ -19,7 +21,7 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import Actor, EntityRef
+from minutehand.domain.world import Actor, Change, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -34,6 +36,10 @@ class YouTrackProvider:
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)
+
+    def place(self, additions: Sequence[Change], world: Store) -> list[Change]:
+        """`PlacesAdditions`: an added issue takes its project's next number in the world (`state.placed`)."""
+        return placed(additions, world)
 
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         """The assignee resolves, cancels or reopens the issue: its State moves to the project's first value for `to`."""
