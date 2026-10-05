@@ -7,6 +7,7 @@ world per test, and does nothing until told. That is `minutehand serve`.
 ```
 minutehand serve [--state DIR] [--host 127.0.0.1] [--proxy-port 8080] [--control-port 8081]
                  [--telemetry-port 4318] [--no-receive-telemetry] [--agent-host NAME] [--no-proxy HOST]... [--keep 100]
+                 [--model-host HOST]... [--record-model-calls] [--capture-unknown] [--upstream-ca PEM]
 ```
 
 One process: the proxy, the OTLP receiver and the control API (HTTP and JSON, under `/v1`). Every installed
@@ -83,7 +84,8 @@ Per provider, given only what a client sends:
 Every request and answer is a model in `src/minutehand/adapters/control/wire.py`: frozen, and an unknown field
 is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open, 409 for what a world
 cannot do (with `"kind": "unsupported"` when the provider cannot do it in any world; the client raises
-`Unsupported`), 422 for a body that is not the model, 502 when the service an event was pushed to refused it.
+`Unsupported`), 422 for a body that is not the model or a query parameter that is not what its route takes (a
+`since` that is no number, a `kind` that names no kind), 502 when the service an event was pushed to refused it.
 
 | Route | Body → answer | What it does |
 |---|---|---|
@@ -99,7 +101,7 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
 | `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true][?since_reset=false]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
 | `GET /v1/worlds/{id}/spans[?since_reset=false]` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
-| `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
+| `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `delete_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
 | `POST /v1/worlds/{id}/clock` | `Advance` → `Advanced` | Move the clock `by` or `to`, firing what falls due |
 | `POST /v1/worlds/{id}/faults` | `Fault` → `WorldView` | Answer the next matching calls with a status and body of the caller's |
@@ -114,8 +116,8 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
 | `GET /v1/unmatched?since=N[&late_for=W]` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
 
-A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
-opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A
+A provider the seed names (its tickets', documents', channels', provider seeds' and inbound targets' providers) is
+seeded when the world opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A
 `?provider=` that names one of the world's outbound declarations reads the messages its sends wrote.
 
 ### Outbound hosts
@@ -213,17 +215,22 @@ says what the test did and when.
 - **A further seed** (`POST /seed`, `FurtherSeed`; `OpenWorld.seed()`, `.add_person()`): more people, tickets,
   documents, spaces, sign-ins, channels, or a fragment of a provider's own seed, in the same models a world is
   opened with. Each provider the world already holds is seeded twice in a scratch store, from the scenario before
-  and after the addition, starting at the position in the log it was first seeded at, and the world is given what
-  the second wrote that the first did not (`application/further_seed.py`). A provider fragment is merged into
-  the provider's seed: a list grows, an object merges field by field, a value it sets must agree, and the whole
-  is validated by the provider's model. `Seeded.written` says how many things each provider was given. Refused
-  with 409 and nothing written when the grown scenario is not one (a key or title taken), when a value
-  contradicts the seed, when the addition would renumber what is there, when it would rewrite something that has
-  changed since it was seeded, or when it would take an id in use. Jira, YouTrack, Drive, Notion and Microsoft put
-  the log's position into the ids of what they seed (an issue, a file, a page's blocks), so a person added to one
-  of them while it holds seeded issues, files or pages is refused (open the world with them), as is a ticket added
-  to Jira; tickets added to YouTrack and Asana, documents added to Drive, Notion and Microsoft, and people added to
-  Slack and Asana land.
+  and after the addition, and the world is given what the second wrote that the first did not
+  (`application/further_seed.py`). That works because every provider names what it seeds by what the thing is (its
+  key, name, parent and kind, with a deterministic count for true duplicates), never by where seeding reached in the
+  log: the same seed seeded a thousand events later writes the same ids (`tests/serve/test_further_seed_every_provider.py`
+  holds all eight seeding providers to that). So one more person, channel, ticket, document, page, project or
+  membership lands on every provider, whatever the world already holds; a ticket added to a Jira or YouTrack
+  project the agent has since filed issues in takes the project's next number. A provider fragment is merged into
+  the provider's seed: a list grows, except that an item naming the identity of one the seed holds (its model's
+  `IDENTITY`: a Notion workspace's key, a GitHub repository's owner and name, a Jira project's name) is merged into
+  that item, so a page joins a workspace already there; an object merges field by field; a value it sets must agree,
+  or the addition is refused naming where; and the whole is validated by the provider's model. Faults a fragment
+  adds are armed after those `provider-faults` declared while the world was open. `Seeded.written` says how many things each provider was given. Refused with
+  409 and nothing written only for a real contradiction: the grown scenario is not one (a key or title taken, an
+  unknown person named), the addition gives something already seeded other content (named: "would no longer seed
+  ..."), it would rewrite something that has changed since it was seeded (named), or it would take an id something
+  made in the world since it opened already has (named).
 - **A person's account** (`POST /people`, `ChangePerson`; `OpenWorld.remove_person()`, `.deactivate_person()`,
   `.reactivate_person()`): what each provider can show is its `Manifest.people_changes`; anything else is 409
   with `kind: unsupported`, and the client raises `Unsupported`.
@@ -380,8 +387,10 @@ script over the same code:
 - **A channel archived** by a person: no act.
 - **Retries of a pushed event or webhook.** Slack's retries are sent; Notion's and Graph's deliveries are sent
   once.
-- **Fixed ids the emulators used** (`U001`, `C001GENERAL`, a fixed Asana gid): ids here derive from names and
-  positions, so a test reads them back from the world (`entities`) or the vendor API after the world opens.
+- **Fixed ids the emulators used** (`U001`, `C001GENERAL`, a fixed Asana gid): ids here derive from what each
+  seeded thing is (its key or name, its parent, its place among things of its kind in the seed), so they are stable
+  for a seed and under additions, but not chosen by the test; a test reads them back from the world (`entities`)
+  or the vendor API after the world opens.
 - **AWS per world by credential.** A SigV4 request carries its access key id in a scheme the OAuth standards do
   not define, and the router reads no provider's own format; AWS calls reach a world by a host it claims or the
   default world.
