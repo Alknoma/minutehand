@@ -26,6 +26,7 @@ from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.master import Master
 
 from minutehand.adapters.proxy.addon import ProxyAddon
+from minutehand.adapters.proxy.capture import Capturing
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
 from minutehand.application.restore import SeenCall
@@ -57,11 +58,23 @@ class Proxy:
         public_roots: str | None = None,
         telemetry: Telemetry | None = None,
         record_model_calls: bool = False,
+        capturing: Capturing | None = None,
+        capture_unknown: bool = False,
     ) -> None:
-        """`upstream_ca` replaces the system trust store when verifying the hosts an edited or recorded call is
-        sent on to. `public_roots` replaces certifi's roots in the bundle the agent is handed (`ca_bundle`).
-        `record_model_calls` opens the agent's calls to model APIs and keeps each as a span."""
-        self.addon = ProxyAddon(routing, store, clock, telemetry, record_model_calls=record_model_calls)
+        """`upstream_ca` replaces the system trust store when verifying the hosts an edited, recorded or
+        passed-through call is sent on to. `public_roots` replaces certifi's roots in the bundle the agent is
+        handed (`ca_bundle`). `record_model_calls` opens the agent's calls to model APIs and keeps each as a span.
+        `capturing` is what every run mounted on this proxy captures of the hosts nobody claims;
+        `capture_unknown` passes through and keeps an undeclared one rather than refusing it."""
+        self.addon = ProxyAddon(
+            routing,
+            store,
+            clock,
+            telemetry,
+            record_model_calls=record_model_calls,
+            capturing=capturing,
+            capture_unknown=capture_unknown,
+        )
         self._confdir = confdir
         self._listen = (host, port)
         self._upstream_ca = upstream_ca

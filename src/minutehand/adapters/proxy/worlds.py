@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from minutehand.adapters.proxy.capture import Capturing
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Exchange
@@ -30,6 +31,7 @@ class Mounted:
     store: Store
     clock: Clock
     app_for: Callable[[Manifest], ASGIApp]
+    capturing: Capturing = field(default_factory=Capturing)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -75,10 +77,12 @@ def one_run(
     *,
     scenario: Scenario | None,
     provider: Callable[[Manifest], Provider],
+    capturing: Capturing | None = None,
 ) -> One:
     """The world of one run: each of `apps` answers its provider's hosts; a provider claimed and not mounted is
     built on its first call over `store`, and seeded then with `scenario`'s people and things, unless the world
-    already holds anything of it."""
+    already holds anything of it. `capturing` is what the run captures of the hosts nobody claims, its sends
+    read against `scenario`'s people."""
     built = dict(apps)
 
     def app_for(manifest: Manifest) -> ASGIApp:
@@ -89,4 +93,7 @@ def one_run(
             built[manifest.key] = found.app(store, clock)
         return built[manifest.key]
 
-    return One(Mounted(store=store, clock=clock, app_for=app_for))
+    captures = capturing or Capturing()
+    if scenario is not None:
+        captures = captures.for_people(scenario.people)
+    return One(Mounted(store=store, clock=clock, app_for=app_for, capturing=captures))

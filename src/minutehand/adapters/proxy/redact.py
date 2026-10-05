@@ -31,21 +31,45 @@ CREDENTIAL_KEYS = frozenset(
 )
 """Exact names only: a tracker's issue `key` or a document's `secret` flag is data, not a credential."""
 
+CAPTURED_QUERY_KEYS = frozenset(
+    {
+        "key",
+        "api_key",
+        "access_token",
+        "auth",
+        "auth_token",
+        "secret",
+        "signature",
+        "sig",
+        "x_amz_signature",
+        "x_amz_credential",
+        "x_amz_security_token",
+        "x_goog_api_key",
+        "private_token",
+    }
+)
+"""Query parameters that carry a credential on the hosts no provider claims (`adapters.proxy.capture`): there is
+no provider to read them, so a name that is data on a tracker (`?key=`) is a key on a search or maps API, and
+is redacted. Compared with `-` read as `_`, in any case."""
 
-def _is_credential(name: str) -> bool:
-    return name.lower() in CREDENTIAL_KEYS
+
+def _is_credential(name: str, also: frozenset[str] = frozenset()) -> bool:
+    return name.lower() in CREDENTIAL_KEYS or name.lower().replace("-", "_") in also
 
 
-def _pairs(text: str) -> str:
-    return urlencode([(k, REDACTED if _is_credential(k) else v) for k, v in parse_qsl(text, keep_blank_values=True)])
+def _pairs(text: str, also: frozenset[str] = frozenset()) -> str:
+    return urlencode(
+        [(k, REDACTED if _is_credential(k, also) else v) for k, v in parse_qsl(text, keep_blank_values=True)]
+    )
 
 
-def path(raw: str) -> str:
-    """A request path with credential query parameters redacted."""
+def path(raw: str, *, also: frozenset[str] = frozenset()) -> str:
+    """A request path with credential query parameters redacted; `also` names more, lower case, `_` for `-`."""
     parts = urlsplit(raw)
-    if not parts.query or not any(_is_credential(k) for k, _ in parse_qsl(parts.query, keep_blank_values=True)):
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    if not parts.query or not any(_is_credential(k, also) for k, _ in pairs):
         return raw
-    return urlunsplit(parts._replace(query=_pairs(parts.query)))
+    return urlunsplit(parts._replace(query=_pairs(parts.query, also)))
 
 
 def _walk(value: object) -> object:
