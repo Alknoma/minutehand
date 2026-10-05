@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -33,8 +34,9 @@ from mitmproxy.net import encoding
 from mitmproxy.proxy import layer, layers
 from mitmproxy.proxy.layers import modes
 
+from minutehand.adapters.emulator import answers
 from minutehand.adapters.proxy import capture, connect, credentials, redact
-from minutehand.adapters.proxy.capture import Capturing, Declaration
+from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.hosts import loopback_name
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
@@ -42,7 +44,8 @@ from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.application.restore import SeenCall
-from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, OnMiss, PassThrough
+from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
+from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, Forward, HostHeader, OnMiss, PassThrough
 from minutehand.domain.provider import Manifest, world_keys
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.telemetry import SpanSource
@@ -51,6 +54,7 @@ from minutehand.domain.world import (
     AnsweredBy,
     BodyKept,
     CallBegan,
+    CallOutcome,
     Captured,
     CaptureMode,
     Change,
@@ -137,9 +141,20 @@ class _Relayed:
     quiet: asyncio.TimerHandle | None = None
 
 
+@dataclass(frozen=True)
+class _Forwarded:
+    """What a forwarded call was before it was pointed at its emulator, to be kept as the agent sent it."""
+
+    route: EmulatorRoute
+    host: str
+    path: str
+    traceparent: str | None
+    sent_traceparent: str
+
+
 @dataclass
 class _Passing:
-    """A captured call sent on to the real host, until its answer has passed."""
+    """A captured call sent on to the real host, or to its external emulator, until its answer has passed."""
 
     world: Mounted
     declaration: Declaration | None
@@ -148,6 +163,7 @@ class _Passing:
     chunks: list[bytes] = field(default_factory=lambda: list[bytes]())
     size: int = 0
     streamed: bool = False
+    forwarded: _Forwarded | None = None
 
 
 class ProxyAddon:
@@ -620,6 +636,9 @@ class ProxyAddon:
         if isinstance(declaration, Acknowledge):
             await self._acknowledge(flow, host, world, declaration)
             return
+        if isinstance(declaration, Forward):
+            await self._forward(flow, host, world, declaration)
+            return
         mode = CaptureMode.PASS_THROUGH if isinstance(declaration, PassThrough) else CaptureMode.REPLAY
         plan = world.capturing.replaying[declaration.host] if declaration.host in world.capturing.replaying else None
         if plan is None:
@@ -660,6 +679,53 @@ class ProxyAddon:
             return
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
+
+    async def _forward(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Forward) -> None:
+        """Send the call to its external emulator through the emulator's relay, unchanged but for the headers
+        `domain.emulator.ADDED_HEADERS` names, `traceparent` (the agent's trace, Minutehand's span of the call as the
+        parent) and, as declared, `Host` and the path. An emulator not running or already failed is not sent
+        anything: the agent is answered 502 at once, naming it."""
+        request = flow.request
+        named = declaration.emulator
+        route = world.capturing.emulators[named] if named in world.capturing.emulators else None
+        why = route.unavailable() if route is not None else f"emulator {named} is not running in this world"
+        caller = _first_header(request, TRACEPARENT)
+        sent = continued(caller)
+        if route is None or why is not None:
+            flow.response = _unavailable(502, named, why or "", host)
+            await self._keep(
+                flow,
+                host,
+                world,
+                declaration,
+                CaptureMode.FORWARD,
+                AnsweredBy.REFUSAL,
+                note=why,
+                emulator=route.declaration if route is not None else None,
+                emulator_name=named,
+                outcome=CallOutcome.UNAVAILABLE,
+                forwarded_traceparent=sent,
+            )
+            return
+        original_path = request.path
+        self._passing[flow.id] = _Passing(
+            world,
+            declaration,
+            CaptureMode.FORWARD,
+            None,
+            forwarded=_Forwarded(route, host, original_path, caller, sent),
+        )
+        self._sent_on[flow.id] = f"{request.method} {host}{redact.path(original_path)}"
+        kept_host = _first_header(request, "host") or host
+        request.scheme = "http"
+        request.host = "127.0.0.1"
+        request.port = route.relay_port
+        request.path = route.prefix + declaration.prefix + strip_prefix(original_path, declaration.strip)
+        request.headers["host"] = kept_host if declaration.host_header is HostHeader.PRESERVE else route.authority
+        request.headers[WORLD_HEADER] = world.store.run_id
+        request.headers[WAKE_HEADER] = str(world.clock.wake())
+        request.headers[TIME_HEADER] = world.clock.now().isoformat()
+        request.headers[TRACEPARENT] = sent
 
     async def _acknowledge(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Acknowledge) -> None:
         """Answer as declared, with an id made for this call in place of `{message_id}`; with a message reading,
@@ -753,17 +819,27 @@ class ProxyAddon:
                 decoded = coded
             raw = decoded if isinstance(decoded, bytes) else (decoded or "").encode("utf-8")
         notes = "; ".join(n for n in (passing.note, note) if n) or None
+        forwarded = passing.forwarded
+        if forwarded is not None:
+            broke = _broke(flow, forwarded)
+            if broke is not None:
+                # The relay answered in the emulator's place: it could not be reached, or did not answer in time.
+                self._unreached(flow, passing, forwarded, broke.reason, broke=broke)
+                return
+            _as_sent(flow, forwarded)
         self._keep_now(
             flow,
-            flow.request.pretty_host,
+            forwarded.host if forwarded is not None else flow.request.pretty_host,
             passing.world,
             passing.declaration,
             passing.mode,
-            AnsweredBy.REAL_HOST,
+            AnsweredBy.EMULATOR if forwarded is not None else AnsweredBy.REAL_HOST,
             note=notes,
             answer=raw,
             streamed=passing.streamed,
             whole_size=passing.size,
+            emulator=forwarded.route.declaration if forwarded is not None else None,
+            forwarded_traceparent=forwarded.sent_traceparent if forwarded is not None else None,
         )
 
     def error(self, flow: http.HTTPFlow) -> None:
@@ -774,6 +850,10 @@ class ProxyAddon:
         if passing is None:
             return
         reason = flow.error.msg if flow.error is not None else "the connection failed"
+        forwarded = passing.forwarded
+        if forwarded is not None:
+            self._unreached(flow, passing, forwarded, reason)
+            return
         if flow.response is None:
             flow.response = _json_response(
                 502, f"the real host could not be reached: {reason}", flow.request.pretty_host
@@ -792,6 +872,36 @@ class ProxyAddon:
             whole_size=passing.size,
         )
 
+    def _unreached(
+        self, flow: http.HTTPFlow, passing: _Passing, forwarded: _Forwarded, reason: str, *, broke: Broke | None = None
+    ) -> None:
+        """A forwarded call its emulator did not answer: 504 when it accepted the call and sent nothing back within
+        its `answer_within`, 502 otherwise (refused the connection, broke off). Kept as unavailable, and the
+        emulator failed: every later call to it is answered at once."""
+        named = forwarded.route.declaration.name
+        broke = broke or _broke(flow, forwarded)
+        why = broke.reason if broke is not None else f"emulator {named} broke off: {reason}"
+        timed_out = broke is not None and broke.timed_out
+        if flow.response is None:
+            flow.response = _unavailable(504 if timed_out else 502, named, why, forwarded.host)
+        forwarded.route.failed(why)
+        _as_sent(flow, forwarded)
+        self._keep_now(
+            flow,
+            forwarded.host,
+            passing.world,
+            passing.declaration,
+            passing.mode,
+            AnsweredBy.REFUSAL,
+            note=why,
+            answer=flow.response.get_content(strict=False) or b"",
+            streamed=passing.streamed,
+            whole_size=None,
+            emulator=forwarded.route.declaration,
+            outcome=CallOutcome.UNAVAILABLE,
+            forwarded_traceparent=forwarded.sent_traceparent,
+        )
+
     async def _keep(
         self,
         flow: http.HTTPFlow,
@@ -806,6 +916,10 @@ class ProxyAddon:
         recipients: list[Recipient] | None = None,
         first: int | None = None,
         locked: bool = False,
+        emulator: ExternalEmulator | None = None,
+        emulator_name: str | None = None,
+        outcome: CallOutcome | None = None,
+        forwarded_traceparent: str | None = None,
     ) -> Exchange:
         """Keep a captured call the proxy answered itself, tied to the events written for it since `first`."""
         response = flow.response
@@ -825,6 +939,10 @@ class ProxyAddon:
                 answer=response.get_content(strict=False) or b"",
                 streamed=False,
                 whole_size=None,
+                emulator=emulator,
+                emulator_name=emulator_name,
+                outcome=outcome,
+                forwarded_traceparent=forwarded_traceparent,
             )
         async with world.lock:
             return self._keep_now(
@@ -841,6 +959,10 @@ class ProxyAddon:
                 answer=response.get_content(strict=False) or b"",
                 streamed=False,
                 whole_size=None,
+                emulator=emulator,
+                emulator_name=emulator_name,
+                outcome=outcome,
+                forwarded_traceparent=forwarded_traceparent,
             )
 
     def _keep_now(
@@ -859,6 +981,10 @@ class ProxyAddon:
         note: str | None = None,
         recipients: list[Recipient] | None = None,
         first: int | None = None,
+        emulator: ExternalEmulator | None = None,
+        emulator_name: str | None = None,
+        outcome: CallOutcome | None = None,
+        forwarded_traceparent: str | None = None,
     ) -> Exchange:
         request, response = flow.request, flow.response
         assert response is not None
@@ -873,6 +999,14 @@ class ProxyAddon:
                 None, answered.body.model_copy(update={"size": whole_size, "kept": BodyKept.BINARY}), None
             )
         keys = capture.query_keys(declaration) if declaration is not None else redact.CAPTURED_QUERY_KEYS
+        operation: str | None = None
+        if mode is CaptureMode.FORWARD:
+            request_type = _first_header(request, "content-type")
+            operation = answers.operation(request.method, request.path, asked.text, request_type)
+            if outcome is None and emulator is not None:
+                outcome = answers.outcome(
+                    emulator, response.status_code, answered.text, _first_header(response, "content-type")
+                )
         started = datetime.fromtimestamp(request.timestamp_start, UTC)
         ended = datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC)
         exchange = Exchange(
@@ -885,6 +1019,7 @@ class ProxyAddon:
             request_bytes=asked.raw,
             response_bytes=answered.raw,
             traceparent=_first_header(request, TRACEPARENT),
+            outcome=outcome,
             captured=Captured(
                 mode=mode,
                 declared_as=declaration.host if declaration is not None else None,
@@ -897,6 +1032,9 @@ class ProxyAddon:
                 response=answered.body,
                 streamed=streamed,
                 recipients=recipients or [],
+                emulator=emulator.name if emulator is not None else emulator_name,
+                operation=operation,
+                forwarded_traceparent=forwarded_traceparent,
             ),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
@@ -904,6 +1042,41 @@ class ProxyAddon:
         world.store.attach(exchange, first_seq=first if first is not None else head + 1, last_seq=head)
         self.worlds.answered(world, exchange, [])
         return exchange
+
+
+def continued(traceparent: str | None) -> str:
+    """The `traceparent` a forwarded copy carries: the agent's trace and flags with a new span id, Minutehand's
+    span of the call, as the parent; a trace begun here when the agent sent none it could continue."""
+    parts = traceparent.strip().split("-") if traceparent is not None else []
+    if len(parts) == 4 and len(parts[1]) == 32 and len(parts[3]) == 2 and parts[1] != "0" * 32:
+        return f"00-{parts[1]}-{secrets.token_hex(8)}-{parts[3]}"
+    return f"00-{secrets.token_hex(16)}-{secrets.token_hex(8)}-01"
+
+
+def _broke(flow: http.HTTPFlow, forwarded: _Forwarded) -> Broke | None:
+    """Why the relay broke off the connection this call went out on, if it did."""
+    address = flow.server_conn.sockname
+    return forwarded.route.failure_for(int(address[1])) if address is not None else None
+
+
+def _as_sent(flow: http.HTTPFlow, forwarded: _Forwarded) -> None:
+    """The request as the agent sent it, for keeping: its own path and `traceparent`. What else was added for the
+    emulator is in headers, which are never kept."""
+    flow.request.path = forwarded.path
+    if forwarded.traceparent is None:
+        del flow.request.headers[TRACEPARENT]
+    else:
+        flow.request.headers[TRACEPARENT] = forwarded.traceparent
+
+
+def _unavailable(status: int, emulator: str, why: str, host: str) -> http.Response:
+    return http.Response.make(
+        status,
+        json.dumps(
+            {"error": f"external emulator {emulator} is unavailable: {why}", "emulator": emulator, "host": host}
+        ).encode(),
+        {"content-type": "application/json"},
+    )
 
 
 def message_id(declaration: Acknowledge, seq: int) -> str:
