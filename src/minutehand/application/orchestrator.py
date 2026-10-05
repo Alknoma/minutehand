@@ -51,7 +51,7 @@ from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
 from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
-from minutehand.ports.agent import AgentDriver, Reports
+from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
@@ -187,6 +187,7 @@ class Orchestrator:
         forked_at: int | None = None,
         prior_wakes: Sequence[WakeRecord] = (),
         traffic: Traffic | None = None,
+        channels: Mapping[ProviderKey, TakesReplies] | None = None,
     ) -> None:
         if agent.state is not None and state_dir is None:
             raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
@@ -221,6 +222,7 @@ class Orchestrator:
         self._parent_run = parent_run
         self._forked_at = forked_at
         self._traffic = traffic
+        self._channels = dict(channels or {})
         self._mounted = False
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
@@ -460,7 +462,9 @@ class Orchestrator:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
-                if reply.press is not None:
+                if provider in self._channels:
+                    await self._channels[provider].deliver(reply, self._store, self._clock)
+                elif reply.press is not None:
                     await self._interactions(provider).press(
                         reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
                     )
@@ -731,10 +735,11 @@ class Orchestrator:
         reply = await self._replier.decide(person, asked, history, self._clock)
         if reply is None:
             return
-        self._pushes(reply.in_reply_to.provider)
-        if reply.press is not None:
-            self._interactions(reply.in_reply_to.provider)
-        self._inbound(reply.in_reply_to.provider)
+        if reply.in_reply_to.provider not in self._channels:
+            self._pushes(reply.in_reply_to.provider)
+            if reply.press is not None:
+                self._interactions(reply.in_reply_to.provider)
+            self._inbound(reply.in_reply_to.provider)
         self._store.remember(reply)
         position = len(self._replies)
         self._replies.append(reply)
@@ -913,9 +918,11 @@ async def run_scenario(
     state_dir: Path | None = None,
     signing: Mapping[ProviderKey, str] | None = None,
     traffic: Traffic | None = None,
+    channels: Mapping[ProviderKey, TakesReplies] | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
-    `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint."""
+    `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
+    `channels` delivers people's answers to the agent's captured sends."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -932,4 +939,5 @@ async def run_scenario(
         state_dir=state_dir,
         signing=signing,
         traffic=traffic,
+        channels=channels,
     ).run()

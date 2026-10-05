@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 from pydantic import Field
 
 from minutehand.adapters.agent.reach import reach_for
+from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
@@ -71,11 +72,12 @@ from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.experiment import Fork
-from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment
+from minutehand.domain.outbound import Acknowledge
+from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.world import Actor, Operation
-from minutehand.ports.agent import Reports
+from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
@@ -201,6 +203,7 @@ async def play(
                     state_dir=state / RUNS,
                     signing=signing.by_provider,
                     traffic=proxy,
+                    channels=replies_for(agent, scenario, signing),
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -313,6 +316,7 @@ async def fork(
                     signing=signing.by_provider,
                     own=own,
                     progress=progress,
+                    channels=replies_for(agent, changed, signing),
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -654,33 +658,52 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
 
 @dataclass(frozen=True)
 class Signing:
-    """The secrets a run signs pushed events with: one per provider, and the ones the agent's command is given."""
+    """The secrets a run signs pushed events with: one per provider, one per captured host whose replies are
+    signed, and the ones the agent's command is given."""
 
     by_provider: dict[ProviderKey, str]
     for_agent: dict[str, str]
+    by_host: dict[ProviderKey, str]
+
+
+def replies_for(agent: AgentUnderTest, scenario: Scenario, signing: Signing) -> dict[ProviderKey, TakesReplies]:
+    """A channel per captured host whose sends people can answer, keyed by the name its messages go under."""
+    channels: dict[ProviderKey, TakesReplies] = {}
+    for declared in agent.outbound:
+        if isinstance(declared, Acknowledge) and declared.replies is not None:
+            secret = signing.by_host[declared.key] if declared.key in signing.by_host else None
+            channels[declared.key] = CapturedReplies(declared, scenario.people, secret=secret)
+    return channels
 
 
 def signing_for(agent: AgentUnderTest) -> Signing:
     """Each inbound target's secret for this run: generated and handed to the agent's command, read from this
     process's own variable (the secret an agent already running was configured with), or, when the target
     names none, generated and given to no one. A variable named and not set refuses the run."""
-    by_provider: dict[ProviderKey, str] = {}
     for_agent: dict[str, str] = {}
-    for target in agent.inbound:
-        source = target.secret
+
+    def resolve(source: SigningSecret | None, what: str) -> str:
         if isinstance(source, SecretFromEnvironment):
             if source.env not in os.environ:
                 raise RunRefused(
-                    f"the agent's {target.provider} signing secret is read from {source.env}, which is not set "
+                    f"the agent's {what} signing secret is read from {source.env}, which is not set "
                     "in Minutehand's environment; set it to the secret the agent was configured with"
                 )
-            value = os.environ[source.env]
-        else:
-            value = secrets.token_hex(16)
-            if isinstance(source, GeneratedSecret):
-                for_agent[source.env] = value
+            return os.environ[source.env]
+        value = secrets.token_hex(16)
+        if isinstance(source, GeneratedSecret):
+            for_agent[source.env] = value
+        return value
+
+    by_provider: dict[ProviderKey, str] = {}
+    for target in agent.inbound:
+        value = resolve(target.secret, target.provider)
         by_provider.setdefault(target.provider, value)
-    return Signing(by_provider=by_provider, for_agent=for_agent)
+    by_host: dict[ProviderKey, str] = {}
+    for declared in agent.outbound:
+        if isinstance(declared, Acknowledge) and declared.replies is not None and declared.replies.signing is not None:
+            by_host[declared.key] = resolve(declared.replies.signing.secret, f"{declared.host} reply")
+    return Signing(by_provider=by_provider, for_agent=for_agent, by_host=by_host)
 
 
 class Listen(Model):
@@ -779,9 +802,17 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
     run, which only reaches a command Minutehand starts."""
     if listen.port == 0:
         raise RunRefused("an agent configured before the run needs the proxy on a fixed port: give --proxy-port")
-    generated = [t for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
+    generated = [f"{t.provider} ({t.secret.env})" for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
+    generated += [
+        f"{d.host} replies ({d.replies.signing.secret.env})"
+        for d in agent.outbound
+        if isinstance(d, Acknowledge)
+        and d.replies is not None
+        and d.replies.signing is not None
+        and isinstance(d.replies.signing.secret, GeneratedSecret)
+    ]
     if generated:
-        names = ", ".join(f"{t.provider} ({t.secret.env})" for t in generated if t.secret is not None)
+        names = ", ".join(generated)
         raise RunRefused(
             f"agent {agent.name} has its signing secret generated per run for {names}, and a generated secret "
             "reaches only a command Minutehand starts; an agent started on its own says "

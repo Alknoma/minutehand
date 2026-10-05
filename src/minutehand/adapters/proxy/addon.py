@@ -372,21 +372,26 @@ class ProxyAddon:
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
 
     async def _acknowledge(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Acknowledge) -> None:
-        """Answer as declared; with a message reading, the send is also a message from the agent to a person."""
+        """Answer as declared, with an id made for this call in place of `{message_id}`; with a message reading,
+        the send is also a message from the agent to a person."""
         request = flow.request
-        answer = capture.canned(declaration, request.method, request.path)
-        flow.response = http.Response.make(answer.status, answer.body, answer.headers)
         reading = declaration.message
-        if reading is None:
-            await self._keep(flow, host, world, declaration, CaptureMode.ACKNOWLEDGE, AnsweredBy.DECLARATION)
-            return
-        content_type = _first_header(request, "content-type")
-        whole = capture.keep(
-            request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=declaration.redact
-        )
-        read = capture.read_message(reading, whole.text, content_type, world.capturing.people)
         async with world.lock:
             first = world.store.head() + 1
+            answer = capture.canned(
+                declaration, request.method, request.path, message_id=message_id(declaration, first)
+            )
+            flow.response = http.Response.make(answer.status, answer.body, answer.headers)
+            if reading is None:
+                await self._keep(
+                    flow, host, world, declaration, CaptureMode.ACKNOWLEDGE, AnsweredBy.DECLARATION, locked=True
+                )
+                return
+            content_type = _first_header(request, "content-type")
+            whole = capture.keep(
+                request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=declaration.redact
+            )
+            read = capture.read_message(reading, whole.text, content_type, world.capturing.people)
             if read.unread is None:
                 self._message(world, declaration, read, first)
             await self._keep(
@@ -405,7 +410,8 @@ class ProxyAddon:
     @staticmethod
     def _message(world: Mounted, declaration: Acknowledge, read: capture.Read, seq: int) -> None:
         """The send as a world event: a message from the agent to each person it reached, as their email, and to
-        each address that reaches nobody, as written. Nobody can answer it where it went."""
+        each address that reaches nobody, as written. Its people can answer it when the declaration says how an
+        answer reaches the agent (`replies`)."""
         by_key = {p.key: p for p in world.capturing.people}
         emails = [by_key[r.person].email if r.person is not None else r.address for r in read.recipients]
         channel = "to:" + ",".join(sorted({r.address.lower() for r in read.recipients}))
@@ -421,7 +427,9 @@ class ProxyAddon:
                 actor=Actor.AGENT,
                 body=body,
                 parent=channel,
-                after=MessageSnapshot(text=text, channel=channel, recipient_emails=emails, answerable=False),
+                after=MessageSnapshot(
+                    text=text, channel=channel, recipient_emails=emails, answerable=declaration.replies is not None
+                ),
             )
         )
 
@@ -602,6 +610,11 @@ class ProxyAddon:
         world.store.attach(exchange, first_seq=first if first is not None else head + 1, last_seq=head)
         self.worlds.answered(world, exchange, [])
         return exchange
+
+
+def message_id(declaration: Acknowledge, seq: int) -> str:
+    """The id an acknowledged send is answered with: its declaration's name and the seq its message takes."""
+    return f"{declaration.key}-{seq}"
 
 
 def _path_decoded(app: ASGIApp) -> ASGIApp:

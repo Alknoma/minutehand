@@ -19,10 +19,13 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from pydantic import JsonValue
+
 from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.hosts import HostPattern
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.domain.outbound import (
+    MESSAGE_ID,
     Acknowledge,
     Answer,
     HtmlAt,
@@ -264,8 +267,9 @@ class Canned:
     body: bytes
 
 
-def canned(declaration: Acknowledge, method: str, path: str) -> Canned:
-    """The answer the first matching route declares, else the host's own."""
+def canned(declaration: Acknowledge, method: str, path: str, *, message_id: str) -> Canned:
+    """The answer the first matching route declares, else the host's own, with each `{message_id}` in its strings
+    replaced by `message_id`."""
     route_path = urlsplit(path).path
     answer: Answer = next(
         (
@@ -276,12 +280,27 @@ def canned(declaration: Acknowledge, method: str, path: str) -> Canned:
         declaration.answer,
     )
     if answer.text is not None:
-        body, kind = answer.text.encode("utf-8"), TEXT
+        body, kind = answer.text.replace(MESSAGE_ID, message_id).encode("utf-8"), TEXT
     else:
-        body, kind = json.dumps({} if answer.json_body is None else answer.json_body).encode("utf-8"), JSON
+        filled = fill({} if answer.json_body is None else answer.json_body, {MESSAGE_ID: message_id})
+        body, kind = json.dumps(filled).encode("utf-8"), JSON
     named = {k.lower() for k in answer.headers}
     headers = dict(answer.headers) if "content-type" in named else {**answer.headers, "content-type": kind}
     return Canned(status=answer.status, headers=headers, body=body)
+
+
+def fill(template: JsonValue, values: Mapping[str, str]) -> JsonValue:
+    """`template` with every placeholder in `values` replaced inside its strings; the structure is kept, so a
+    value is never parsed as JSON and needs no escaping."""
+    if isinstance(template, str):
+        for placeholder, value in values.items():
+            template = template.replace(placeholder, value)
+        return template
+    if isinstance(template, list):
+        return [fill(v, values) for v in template]
+    if isinstance(template, dict):
+        return {k: fill(v, values) for k, v in template.items()}
+    return template
 
 
 # -- a send read as a message -----------------------------------------------------------------------------------

@@ -17,12 +17,15 @@ import sys
 import time
 import urllib.request
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 
 import yaml
+
+from minutehand import session
+from minutehand.ports.store import Store
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENT_DIR = ROOT / "examples" / "reference_agent"
@@ -51,7 +54,7 @@ MAIL = {
     "host": "api.mail.example",
     "name": "mail",
     "kind": "acknowledge",
-    "answer": {"status": 202, "json_body": {"id": "queued"}},
+    "answer": {"status": 202, "json_body": {"id": "{message_id}"}},
     "message": {
         "recipients": ["personalizations[*].to[*].email"],
         "text": ["content[0].value"],
@@ -61,10 +64,34 @@ MAIL = {
 SEARCH = {"host": "search.localhost", "name": "search", "kind": "pass_through"}
 
 
+GENERATED = {"kind": "generated", "env": "REFERENCE_MAIL_SECRET"}
+
+
+def replies(port: int, secret: Mapping[str, object] = GENERATED) -> dict[str, object]:
+    """How a person's answer to the agent's email reaches its inbound webhook, signed as it checks."""
+    return {
+        "url": f"http://127.0.0.1:{port}/inbound/email",
+        "body": {"id": "{reply_id}", "from": "{from}", "text": "{text}", "in_reply_to": "{in_reply_to}"},
+        "thread": "id",
+        "signing": {
+            "secret": dict(secret),
+            "header": "X-Mail-Signature",
+            "format": "sha256={hex}",
+        },
+    }
+
+
 def agent_file(
-    path: Path, port: int, *, state: Mapping[str, object] | None = None, mail: Mapping[str, object] = MAIL
+    path: Path,
+    port: int,
+    *,
+    state: Mapping[str, object] | None = None,
+    answered: bool = True,
+    secret: Mapping[str, object] = GENERATED,
+    wakes: Mapping[str, object] | None = None,
 ) -> Path:
-    """The reference agent's file, on `port`, its hooks run by this interpreter."""
+    """The reference agent's file, on `port`, its hooks run by this interpreter; with `answered`, people can
+    answer its email."""
     hooks: dict[str, object] = {
         "snapshot": [PY, HOOKS, "snapshot"],
         "restore": [PY, HOOKS, "restore"],
@@ -73,6 +100,7 @@ def agent_file(
         "answer_limit": "PT30S",
     }
     hooks.update(state or {})
+    mail = {**MAIL, "replies": replies(port, secret)} if answered else dict(MAIL)
     doc = {
         "name": "venue_booker",
         "goal": {"kind": "by_wake"},
@@ -81,9 +109,10 @@ def agent_file(
                 "kind": "reported",
                 "wake_url": f"http://127.0.0.1:{port}/wake",
                 "report_url": f"http://127.0.0.1:{port}/report",
+                **(wakes or {}),
             }
         ],
-        "outbound": [dict(mail), SEARCH],
+        "outbound": [mail, SEARCH],
         "state": hooks,
     }
     path.write_text(yaml.safe_dump(doc, sort_keys=False))
@@ -123,6 +152,27 @@ class Rig:
 
     def common(self) -> list[str]:
         return ["--state", str(self.state), "--model-host", "model.localhost", "--upstream-ca", self.ca]
+
+    def agent(self, **options: object) -> Path:
+        self.base.mkdir(parents=True, exist_ok=True)
+        return agent_file(self.base / "agent.yaml", self.port, **options)  # type: ignore[arg-type]
+
+    def run(self, scenario: str, *extra: str, env: Mapping[str, str] | None = None, **options: object) -> Done:
+        """`minutehand run` on one of the example's scenarios, the agent started as `python run.py`."""
+        agent = self.agent(**options)
+        args = ["run", str(AGENT_DIR / scenario), "--agent", str(agent), *self.common(), *extra, "--", *RUN]
+        return minutehand(args, {**self.env(), **(env or {})})
+
+    def fork(
+        self, parent: str, at: int, overrides: list[dict[str, object]], *, env: Mapping[str, str] | None = None
+    ) -> Done:
+        changes = fork_file(self.base / f"fork-{at}-{len(list(self.base.glob('fork-*')))}.yaml", overrides)
+        args = ["fork", parent, "--at", str(at), "--changes", str(changes), *self.common(), "--", *RUN]
+        return minutehand(args, {**self.env(), **(env or {})})
+
+    def world(self, run_id: str) -> AbstractContextManager[Store]:
+        """The run's world, read as `minutehand findings` reads it."""
+        return session.reading(self.state, run_id)
 
 
 @dataclass(frozen=True)

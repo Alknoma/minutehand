@@ -43,7 +43,7 @@ from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonC
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
-from minutehand.ports.agent import Reports
+from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
@@ -105,6 +105,7 @@ async def fork_run(
     signing: Mapping[ProviderKey, str] | None = None,
     own: OwnProgram | None = None,
     progress: Progress | None = None,
+    channels: Mapping[ProviderKey, TakesReplies] | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -165,6 +166,7 @@ async def fork_run(
                 forked_at=fork.at_seq,
                 prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],
                 traffic=traffic,
+                channels=channels,
             )
             orchestrator.mount()
             restored = await restore_agent(

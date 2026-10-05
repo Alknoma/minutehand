@@ -113,14 +113,45 @@ So the ledger, the scorecard ("messages to people") and the expectations (`perso
 email exactly as they see a Slack message, and `repeated_message` flags the same email sent twice to the same
 recipient within five simulated minutes.
 
-**People do not reply through a captured channel in this version.** Nobody answers an email. The rule the
-ledger follows: a message opens a wait only when its recipient can answer where it was sent
-(`MessageSnapshot.answerable`); a captured send is never one, so it **tells and does not ask**, whoever it
-went to, even a `Silent` person, whose every Slack message is a wait. An email to someone with a wait already
-open is a follow-up on that wait: they can read it. The scripted replier does not count it as one of their
-asks, so a script's `to_ask: 1` is still their first Slack message. What this gets wrong: an agent that asks a
-real question by email and waits for the answer is scored as having asked nothing, and its waiting is never
-measured.
+**People answer a captured send when the declaration says how an answer reaches the agent.** An email API's
+inbound parse, an SMS gateway's webhook: the agent has an endpoint where answers arrive, and `replies` declares
+the request that endpoint expects, with no provider code:
+
+```yaml
+  - host: api.mail.example
+    kind: acknowledge
+    answer: {status: 202, json_body: {id: "{message_id}"}}     # an id made for each send
+    message: {recipients: ["personalizations[*].to[*].email"], text: ["content[0].value"], subject: [subject]}
+    replies:
+      url: http://127.0.0.1:8790/inbound/email                  # the agent's own inbound webhook
+      method: POST                                              # or PUT
+      headers: {x-source: mail}                                 # sent as given
+      body: {id: "{reply_id}", from: "{from}", text: "{text}", in_reply_to: "{in_reply_to}"}
+      form: false                                               # true: a flat body sent as a form
+      thread: id                                                # path into the send's own answer -> {in_reply_to}
+      signing:                                                  # optional: HMAC-SHA256 over the body
+        secret: {kind: generated, env: MAIL_SIGNING_SECRET}     # or {kind: from_env, env: ...}, as inbound targets
+        header: X-Mail-Signature
+        format: "sha256={hex}"                                  # {hex} or {base64}; {timestamp} signs "<ts>.<body>"
+        timestamp_header: null                                  # a header carrying {timestamp} alone, if any
+```
+
+The body is structure, and each string in it may name `{reply_id}`, `{from}`, `{from_name}`, `{to}`,
+`{subject}` (`Re: ` and the send's), `{text}`, `{in_reply_to}` and `{sent_at}`; any other name is refused when
+the file is read. `{message_id}` in an acknowledged answer is replaced by `<name>-<seq>`, so each send has the id a
+real email API would hand back, and `thread` reads it back from the answer as stored. A secret `generated` is
+handed to the agent's command in its variable, as for an inbound target.
+
+Then a send to a scenario person is answerable (`MessageSnapshot.answerable`): it is one of their asks for the
+scripted replier (`to_ask: 1` is their first email, or their first Slack message, whichever came first), a
+model-written person reads it, and an answer is decided as for any message. When it falls due, the answer is
+written into the world as the person's message, threaded under the send, and then delivered; an answer other
+than 2xx from the agent stops the run `AGENT_FAILED`, saying which. The ledger, the expectations (`person_asked`,
+`relayed`), the follow-up checks and the scorecard read it exactly as a chat message
+(`tests/architecture/test_people_answer.py`).
+
+Without `replies`, nobody can answer: the send **tells and does not ask**, whoever it went to, even a `Silent`
+person. An email to someone with a wait already open is still a follow-up on that wait.
 
 ## Replay, and why it misses
 
@@ -183,7 +214,8 @@ A replay's `{kind: run}` names a closed world or run under the server's state di
 - Only the declaration says which body field is the recipient: a vendor whose shape differs (a list of
   objects with `address`, `email` or `to` is read; a nested `{"emailAddress": {"address": …}}` is not unless a
   path reaches it) needs its own paths.
-- People do not answer a captured send, and a captured send opens no wait (above).
+- A captured send opens a wait only when its declaration says how answers reach the agent (`replies`); the
+  standing mode's `act` cannot yet answer through one.
 - A client that pins certificates, or ignores proxy settings, is out of reach, as for providers.
 - `replay` answers carry the recorded content type and nothing else of the recorded headers.
 - A pass-through call to a host that cannot be reached is kept with 502 and a note; the agent sees the 502.

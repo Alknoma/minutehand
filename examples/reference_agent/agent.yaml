@@ -14,15 +14,24 @@ wakes:
     report_url: http://127.0.0.1:8790/report
 
 outbound:
-  # Email: answered here and never sent. Each send is read as a message to the people it names.
+  # Email: answered here and never sent. Each send is read as a message to the people it names, and a person
+  # who answers is delivered to the agent's inbound webhook, as its email provider's inbound parse would.
   - host: api.mail.example
     name: mail
     kind: acknowledge
-    answer: {status: 202, json_body: {id: queued}}
+    answer: {status: 202, json_body: {id: "{message_id}"}}
     message:
       recipients: ["personalizations[*].to[*].email"]
       text: ["content[0].value"]
       subject: [subject]
+    replies:
+      url: http://127.0.0.1:8790/inbound/email
+      body: {id: "{reply_id}", from: "{from}", text: "{text}", in_reply_to: "{in_reply_to}"}
+      thread: id
+      signing:
+        secret: {kind: generated, env: REFERENCE_MAIL_SECRET}
+        header: X-Mail-Signature
+        format: "sha256={hex}"
   # The venue search: sent on to the real host, and both sides kept; a fork replays it.
   - host: search.localhost
     name: search
