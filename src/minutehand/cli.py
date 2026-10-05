@@ -11,6 +11,9 @@
     minutehand pin <run_id> <seq> [--state DIR]  keep a checkpoint's snapshot whatever `state: keep` says
     minutehand unpin <run_id> <seq> [--state DIR]
     minutehand gc [--state DIR]                  remove stored bodies and snapshot files nothing refers to
+    minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--json] -- <command...>
+                                                 which HTTP clients in the agent's interpreter would go around the
+                                                 proxy, and which declared hosts NO_PROXY would send directly
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
@@ -262,6 +265,12 @@ def _parser() -> argparse.ArgumentParser:
     capture(served)
     state(served)
 
+    doctor = commands.add_parser(
+        "doctor", help="which HTTP clients in the agent's interpreter would go around the proxy (-- <command>)"
+    )
+    doctor.add_argument("--agent", type=Path, default=None, help="the agent file: its outbound hosts are checked too")
+    doctor.add_argument("--model-host", action="append", default=[], metavar="HOST")
+    doctor.add_argument("--json", action="store_true")
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
     state(view)
@@ -278,6 +287,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("minutehand: nothing follows --; give the agent's command or leave -- out", file=sys.stderr)
             return 2
     args = _parser().parse_args(args_in)
+    if args.command == "doctor":
+        if not command:
+            print("minutehand doctor: give the agent's command after --", file=sys.stderr)
+            return 2
+        try:
+            return _doctor(args, command)
+        except (FileRefused, RuntimeError, OSError) as e:
+            print(f"minutehand doctor: {e}", file=sys.stderr)
+            return 2
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
     if command is not None and args.command not in ("run", "fork"):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
@@ -565,6 +583,17 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
     if cannot:
         parts.append(f"not restorable at seq {', '.join(cannot)} (`minutehand findings` says why)")
     return "; ".join(parts)
+
+
+def _doctor(args: argparse.Namespace, command: list[str]) -> int:
+    """0 when every client found reaches the proxy, 1 when one would go around it."""
+    from minutehand import doctor
+
+    agent = load_agent(args.agent) if args.agent is not None else None
+    hosts = list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host]))
+    found = asyncio.run(doctor.diagnose(command, agent, hosts))
+    print(found.model_dump_json(indent=2) if args.json else doctor.described(found))
+    return 1 if found.bypasses else 0
 
 
 def _mcp(state: Path) -> int:
