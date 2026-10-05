@@ -183,6 +183,9 @@ class StateHooks(Model):
     A restore is a sequence: `stop`, `restore`, `start`, then the agent's report endpoint must answer within
     `answer_limit`, and its report must equal the one recorded at the checkpoint, and its `fingerprint`, when it
     declares one, the one taken there. Any command running longer than `step_limit` fails its step.
+
+    What the snapshot command writes is kept by the run's store, each file once across every snapshot of the run
+    and its forks, and written back out as a plain directory for `restore`. `keep` bounds how many are kept.
     """
 
     snapshot: list[str] = Field(min_length=1)
@@ -218,6 +221,12 @@ class StateHooks(Model):
     )
     step_limit: timedelta = Field(
         default=timedelta(minutes=5), gt=timedelta(0), description="How long one hook command may run"
+    )
+    keep: int | None = Field(
+        default=None,
+        ge=1,
+        description="How many of the run's newest snapshots are kept restorable; older ones are pruned, except one "
+        "pinned (`minutehand pin`), the run's start and one a fork was taken from. None keeps every one",
     )
 
     @model_validator(mode="after")

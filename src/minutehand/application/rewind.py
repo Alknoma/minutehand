@@ -36,7 +36,7 @@ from minutehand.application.orchestrator import Mounts, Orchestrator, Reach, Sco
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, Traffic, restore_agent
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import wake_dir
+from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
@@ -139,9 +139,7 @@ async def fork_run(
         parent_store = open_parent(clock)
         checkpoint = _checkpoint_at(parent_store, parent.run_id, fork.at_seq)
         restorable = _restorable(checkpoint, agent, parent.run_id, fork.at_seq)
-        snapshot = wake_dir(state_dir, restorable.snapshot_of, restorable.wake)
-        if not snapshot.is_dir():
-            raise RunRefused(f"no snapshot of agent {agent.name} at {snapshot}")
+        _refuse_unkept(parent_store, restorable, agent, parent.run_id, fork.at_seq)
         _refuse_pending_bookings(checkpoint, parent.run_id, fork.at_seq)
         child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         try:
@@ -169,16 +167,19 @@ async def fork_run(
                 channels=channels,
             )
             orchestrator.mount()
-            restored = await restore_agent(
-                hooks,
-                snapshot,
-                checkpoint_seq=fork.at_seq,
-                recorded=restorable.report,
-                reports=reports,
-                own=own,
-                progress=progress,
-                fingerprint=restorable.fingerprint,
-            )
+            with materialised(
+                parent_store, restorable.snapshot_of, restorable.wake, restore_dir(state_dir, child_id)
+            ) as snapshot:
+                restored = await restore_agent(
+                    hooks,
+                    snapshot,
+                    checkpoint_seq=fork.at_seq,
+                    recorded=restorable.report,
+                    reports=reports,
+                    own=own,
+                    progress=progress,
+                    fingerprint=restorable.fingerprint,
+                )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)
             changed_people = {o.person for o in fork.overrides if isinstance(o, PersonChange)}
@@ -218,6 +219,21 @@ def _restorable(checkpoint: Checkpoint, agent: AgentUnderTest, parent: str, at_s
             f"state was kept at seq {at_seq}; declare `state:` and play the run again. " + CANNOT_REWIND
         )
     return state
+
+
+def _refuse_unkept(store: Store, restorable: Restorable, agent: AgentUnderTest, parent: str, at_seq: int) -> None:
+    """The snapshot a restorable checkpoint names must still be kept: one pruned, or never kept, is refused."""
+    kept = store.snapshot(restorable.snapshot_of, restorable.wake)
+    if kept is None:
+        raise RunRefused(
+            f"no snapshot of agent {agent.name} after wake {restorable.wake} of run {restorable.snapshot_of} is kept"
+        )
+    if kept.pruned:
+        raise RunRefused(
+            f"the checkpoint at seq {at_seq} of run {parent} is not restorable: {SNAPSHOT_PRUNED}. "
+            "Fork from a checkpoint `minutehand checkpoints` lists as restorable, or pin one before it is pruned. "
+            + CANNOT_REWIND
+        )
 
 
 def _refuse_ticket_edits(fork: Fork, services: Services, scenario: Scenario) -> None:

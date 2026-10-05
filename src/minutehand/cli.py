@@ -5,7 +5,12 @@
     minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--judge] [--json] [PROXY] [-- <command...>]
     minutehand env --agent <agent.yaml> --proxy-port N [PROXY] [--format shell|compose] [--service NAME...]
                                                  the environment an agent Minutehand does not start needs
-    minutehand runs [--state DIR]
+    minutehand runs [--state DIR]               every finished run, with what it costs on disk
+    minutehand checkpoints <run_id> [--state DIR]
+                                                 a run's checkpoints, whether each is restorable, its snapshot's size
+    minutehand pin <run_id> <seq> [--state DIR]  keep a checkpoint's snapshot whatever `state: keep` says
+    minutehand unpin <run_id> <seq> [--state DIR]
+    minutehand gc [--state DIR]                  remove stored bodies and snapshot files nothing refers to
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
@@ -218,8 +223,21 @@ def _parser() -> argparse.ArgumentParser:
     proxy(env)
     state(env)
 
-    listing = commands.add_parser("runs", help="every finished run")
+    listing = commands.add_parser("runs", help="every finished run, with what it costs on disk")
     state(listing)
+
+    kept = commands.add_parser("checkpoints", help="a run's checkpoints, and the size of each snapshot")
+    kept.add_argument("run_id")
+    state(kept)
+
+    for verb, said in (("pin", "keep a checkpoint's snapshot whatever the agent's `keep` says"), ("unpin", "undo pin")):
+        pinning = commands.add_parser(verb, help=said)
+        pinning.add_argument("run_id")
+        pinning.add_argument("seq", type=int, help="the checkpoint's seq (listed by `checkpoints`)")
+        state(pinning)
+
+    swept = commands.add_parser("gc", help="remove stored bodies and snapshot files nothing refers to")
+    state(swept)
 
     tools = commands.add_parser("mcp", help="serve the tools a coding agent calls, over MCP on stdio")
     state(tools)
@@ -279,6 +297,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _view(state, args.port)
         if args.command == "serve":
             return _serve(args, state)
+        if args.command == "checkpoints":
+            return _checkpoints(state, args.run_id)
+        if args.command in ("pin", "unpin"):
+            return _pin(state, args.run_id, args.seq, pinned=args.command == "pin")
+        if args.command == "gc":
+            return _gc(state)
         return _runs(state)
     except (RunRefused, FileRefused, ModelFailed, OSError) as e:
         print(f"minutehand: the run could not be performed: {e}", file=sys.stderr)
@@ -476,6 +500,56 @@ def _runs(state: Path) -> int:
         parent = f"  forked from {record.parent_run} at seq {record.forked_at}" if record.parent_run else ""
         print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed{parent}")
         print(f"  {_restorable_summary(session.fork_points(state, record.run_id))}")
+        used = session.usage_of(state, record.run_id)
+        print(
+            f"  on disk: {_size(used.rows)} of rows, {_size(used.bodies)} of bodies it alone holds, "
+            f"{_size(used.snapshots)} of snapshots it alone holds"
+        )
+    return 0
+
+
+def _size(count: int) -> str:
+    for unit, scale in (("GB", 1 << 30), ("MB", 1 << 20), ("kB", 1 << 10)):
+        if count >= scale:
+            return f"{count / scale:.1f} {unit}"
+    return f"{count} bytes"
+
+
+def _checkpoints(state: Path, run_id: str) -> int:
+    found = session.checkpoints_of(state, run_id)
+    if not found:
+        print(f"run {run_id} has no checkpoints")
+        return 0
+    for one in found:
+        point, snapshot = one.point, one.snapshot
+        line = f"seq {point.seq}, after wake {point.wake}: {_point(point)}"
+        if snapshot is not None and not snapshot.pruned:
+            line += (
+                f"; snapshot of {snapshot.files} files, {_size(snapshot.size)}, "
+                f"{_size(snapshot.held)} on disk held by it alone"
+            )
+            if snapshot.pinned:
+                line += "; pinned"
+        print(line)
+    return 0
+
+
+def _pin(state: Path, run_id: str, seq: int, *, pinned: bool) -> int:
+    snapshot = session.pin(state, run_id, seq, pinned=pinned)
+    said = "pinned: pruning keeps it" if snapshot.pinned else "unpinned: the agent's `keep` may prune it"
+    print(f"the snapshot at seq {seq} of run {run_id} is {said}")
+    return 0
+
+
+def _gc(state: Path) -> int:
+    collected = session.collect(state)
+    freed = collected.freed
+    print(
+        f"freed {freed.bodies} stored bodies ({_size(freed.body_bytes)}) and {freed.files} snapshot files "
+        f"({_size(freed.file_bytes)}) across {collected.swept} world files"
+    )
+    for skipped in collected.skipped:
+        print(f"  not swept: {skipped}")
     return 0
 
 

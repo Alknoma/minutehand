@@ -20,6 +20,7 @@ from pathlib import Path
 
 from minutehand import session
 from minutehand.adapters.proxy.server import Proxy
+from tests.support.stored import everything
 
 START = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
 V6 = "::1"
@@ -92,5 +93,6 @@ async def by_environment(proxy: Proxy, calls: Sequence[Call]) -> list[Answered]:
 
 
 def stored_bytes(directory: Path) -> bytes:
-    """Every byte under a directory: the world file, its write-ahead log, and anything written beside them."""
-    return b"".join(p.read_bytes() for p in sorted(directory.rglob("*")) if p.is_file())
+    """Every byte under a directory: the world file, its write-ahead log, anything written beside them, and every
+    stored body and snapshot file decompressed."""
+    return everything(directory)

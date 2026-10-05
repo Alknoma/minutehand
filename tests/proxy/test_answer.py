@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -184,6 +185,32 @@ async def test_exchange_keeps_traceparent_and_strips_credentials(
     on_disk = stored_bytes(world_path)
     for secret in [*secrets.values(), "issued-by-ledger"]:
         assert secret.split("=")[-1].encode() not in on_disk, secret
+
+
+async def test_bodies_that_differ_only_in_a_redacted_secret_are_stored_once_and_no_secret_is_kept(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, world_path: Path
+) -> None:
+    """Redaction happens before a body is hashed: two long requests that differ only in their key share one
+    stored body, and neither key is anywhere on disk, compressed bodies and snapshot pool included."""
+    text = "A long entry the agent files twice. " * 40
+    keys = ["first-body-secret-41", "second-body-secret-42"]
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
+        async with client(proxy, proxy.ca_cert) as http:
+            for n, key in enumerate(keys):
+                created = await http.post(
+                    f"https://ledger.example/api/v2/entries?token=query-secret-{n}",
+                    json={"text": text, "api_key": key},
+                )
+                assert created.status_code == 201
+    recorded = [exchange for _, _, exchange in exchanges(world_path)]
+    assert recorded[0].request_body == recorded[1].request_body
+    assert recorded[0].request_body is not None and json.loads(recorded[0].request_body)["api_key"] == "[redacted]"
+    with sqlite3.connect(world_path) as db:
+        assert db.execute("SELECT COUNT(DISTINCT request_ref), COUNT(request_ref) FROM exchange").fetchone() == (1, 2)
+    on_disk = stored_bytes(world_path)
+    assert text.encode() in on_disk, "the search reaches inside compressed bodies"
+    for secret in [*keys, "query-secret-0", "query-secret-1"]:
+        assert secret.encode() not in on_disk, secret
 
 
 async def test_a_client_configured_only_by_environment_is_answered(

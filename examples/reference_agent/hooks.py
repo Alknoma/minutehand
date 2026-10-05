@@ -14,8 +14,9 @@ changes (api.memory, worker.memory), and a process restarted after a restore wri
 database. A process the restore did not restart still holds another moment's memory, and the fingerprint
 differs from the one taken at the checkpoint.
 
-REFERENCE_RESTORE_BUG=next makes `restore` take the snapshot of the wake after the one it was given: a restore of
-the wrong moment, for the tests that show verification catching one.
+REFERENCE_RESTORE_BUG=next makes `restore` put back the SQLite snapshot taken right after the one it was given (each
+snapshot also leaves a copy in REFERENCE_HOME/taken/, as a backup job might): a restore of the wrong moment, for
+the tests that show verification catching one.
 """
 
 from __future__ import annotations
@@ -37,10 +38,24 @@ MEMORY = ("api.memory", "worker.memory")
 
 
 def _snapshot_dir() -> Path:
-    given = Path(os.environ["MINUTEHAND_SNAPSHOT_DIR"])
-    if os.environ.get("REFERENCE_RESTORE_BUG") != "next":
+    return Path(os.environ["MINUTEHAND_SNAPSHOT_DIR"])
+
+
+TAKEN = HOME / "taken"
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _next_taken(given: Path) -> Path:
+    """The copy taken right after the one equal to `given`: the bug REFERENCE_RESTORE_BUG=next makes."""
+    copies = sorted(TAKEN.glob("*.db"), key=lambda p: int(p.stem))
+    digests = [_digest(p) for p in copies]
+    wanted = _digest(given)
+    if wanted not in digests or digests.index(wanted) + 1 >= len(copies):
         return given
-    return given.parent / f"wake-{int(given.name.split('-', 1)[1]) + 1}"
+    return copies[digests.index(wanted) + 1]
 
 
 def _database() -> Path:
@@ -65,6 +80,8 @@ def snapshot() -> None:
         _firestore("snapshot", into)
     else:
         _copy(_database(), into / "agent.db")
+        TAKEN.mkdir(exist_ok=True)
+        _copy(into / "agent.db", TAKEN / f"{len(list(TAKEN.glob('*.db')))}.db")
     print(f"snapshot in {into}")
 
 
@@ -73,7 +90,10 @@ def restore() -> None:
     if os.environ.get("REFERENCE_FIRESTORE"):
         _firestore("restore", source)
     else:
-        _copy(source / "agent.db", _database())
+        chosen = source / "agent.db"
+        if os.environ.get("REFERENCE_RESTORE_BUG") == "next":
+            chosen = _next_taken(chosen)
+        _copy(chosen, _database())
     print(f"restored from {source}")
 
 

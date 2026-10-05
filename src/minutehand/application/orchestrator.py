@@ -33,7 +33,7 @@ from minutehand.application.outbound import outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import run_hook, wake_dir
+from minutehand.application.state_hooks import take_snapshot, wake_dir
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import (
     AgentReport,
@@ -822,7 +822,6 @@ class Orchestrator:
         assert settled is not None
         if isinstance(settled, NotRestorable):
             return settled
-        await run_hook(hooks.snapshot, directory, limit=hooks.step_limit.total_seconds())
         fingerprint: str | None = None
         if hooks.fingerprint is not None:
             printed = await run_command(
@@ -834,6 +833,7 @@ class Orchestrator:
                     f"{' '.join(printed.command)} exited {printed.exit_code}: {printed.output.strip()[-500:]}"
                 )
             fingerprint = digest_of(printed.output)
+        await take_snapshot(hooks, self._store, self._state_dir, wake)
         return Restorable(
             snapshot_of=self._store.run_id,
             wake=wake,

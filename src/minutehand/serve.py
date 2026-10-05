@@ -21,8 +21,9 @@ Each world is a run in the state directory, so `minutehand findings`, `view` and
     <state>/runs/<world_id>/result.json    once closed: the checks over it as it was closed
     <state>/runs/<lobby_id>/world.db       the calls no world claimed, and spans of traces none carried
 
-Closing a world keeps the last `keep` closed worlds and removes the directories of older ones. A world still
-open when the server stops is closed then.
+Closing a world keeps the last `keep` closed worlds and removes the directories of older ones, then sweeps every
+world file left of bodies and snapshot files nothing refers to (`session.collect`, which `minutehand gc` runs too).
+A world still open when the server stops is closed then.
 """
 
 from __future__ import annotations
@@ -63,7 +64,18 @@ from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import Exchange
 from minutehand.ports.provider import ASGIApp, Message, Scope
 from minutehand.ports.store import Store
-from minutehand.session import RECORD, RESULT, RUNS, SCENARIO, WORLD, Listen, agent_environment, run_dir
+from minutehand.session import (
+    RECORD,
+    RESULT,
+    RUNS,
+    SCENARIO,
+    WORLD,
+    Collected,
+    Listen,
+    agent_environment,
+    collect,
+    run_dir,
+)
 
 KEPT = "world.json"
 LOBBY = "lobby"
@@ -312,13 +324,13 @@ class Standing:
             await self.close(world_id)
         self.lobby_store.close()
 
-    def _retain(self) -> None:
-        """Keep the newest `keep` closed standing worlds; remove the rest."""
+    def _retain(self) -> Collected:
+        """Keep the newest `keep` closed standing worlds; remove the rest, and sweep what is left as `minutehand gc`
+        does."""
         base = self._state / RUNS
         closed = [d for d in base.iterdir() if (d / KEPT).is_file() and (d / RECORD).is_file()]
         closed.sort(key=lambda d: (d / RECORD).stat().st_mtime_ns)
-        for directory in closed[: max(0, len(closed) - self._keep)]:
-            shutil.rmtree(directory, ignore_errors=True)
+        return collect(self._state, remove=[d.name for d in closed[: max(0, len(closed) - self._keep)]])
 
     # -- faults -------------------------------------------------------------------------------------------------
 
