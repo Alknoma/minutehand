@@ -14,7 +14,7 @@ changes (api.memory, worker.memory), and a process restarted after a restore wri
 database. A process the restore did not restart still holds another moment's memory, and the fingerprint
 differs from the one taken at the checkpoint.
 
-REFERENCE_RESTORE_BUG=next makes `restore` put back the SQLite snapshot taken right after the one it was given (each
+REFERENCE_RESTORE_BUG=next makes `restore` put back the snapshot taken right after the one it was given (each
 snapshot also leaves a copy in REFERENCE_HOME/taken/, as a backup job might): a restore of the wrong moment, for
 the tests that show verification catching one.
 """
@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
+import urllib.request
 from contextlib import closing
 from pathlib import Path
 
@@ -45,13 +47,22 @@ TAKEN = HOME / "taken"
 
 
 def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Of a snapshot directory: every file's path and bytes, in order."""
+    found = hashlib.sha256()
+    for file in sorted(p for p in path.rglob("*") if p.is_file()):
+        found.update(str(file.relative_to(path)).encode() + b"\0" + file.read_bytes())
+    return found.hexdigest()
+
+
+def _keep_copy(snapshot: Path) -> None:
+    TAKEN.mkdir(exist_ok=True)
+    shutil.copytree(snapshot, TAKEN / str(len([d for d in TAKEN.iterdir() if d.is_dir()])))
 
 
 def _next_taken(given: Path) -> Path:
     """The copy taken right after the one equal to `given`: the bug REFERENCE_RESTORE_BUG=next makes."""
-    copies = sorted(TAKEN.glob("*.db"), key=lambda p: int(p.stem))
-    digests = [_digest(p) for p in copies]
+    copies = sorted((d for d in TAKEN.iterdir() if d.is_dir()), key=lambda d: int(d.name))
+    digests = [_digest(d) for d in copies]
     wanted = _digest(given)
     if wanted not in digests or digests.index(wanted) + 1 >= len(copies):
         return given
@@ -80,20 +91,18 @@ def snapshot() -> None:
         _firestore("snapshot", into)
     else:
         _copy(_database(), into / "agent.db")
-        TAKEN.mkdir(exist_ok=True)
-        _copy(into / "agent.db", TAKEN / f"{len(list(TAKEN.glob('*.db')))}.db")
+    _keep_copy(into)
     print(f"snapshot in {into}")
 
 
 def restore() -> None:
     source = _snapshot_dir()
+    if os.environ.get("REFERENCE_RESTORE_BUG") == "next":
+        source = _next_taken(source)
     if os.environ.get("REFERENCE_FIRESTORE"):
         _firestore("restore", source)
     else:
-        chosen = source / "agent.db"
-        if os.environ.get("REFERENCE_RESTORE_BUG") == "next":
-            chosen = _next_taken(chosen)
-        _copy(chosen, _database())
+        _copy(source / "agent.db", _database())
     print(f"restored from {source}")
 
 
@@ -101,6 +110,14 @@ def busy() -> None:
     working = open_store().in_flight()
     print(f"{working} job(s) queued or running")
     sys.exit(0 if working else 1)
+
+
+def clear() -> None:
+    """A Firestore emulator emptied of every document, so a run starts from nothing."""
+    host = os.environ["REFERENCE_FIRESTORE"]
+    project = os.environ.get("REFERENCE_FIRESTORE_PROJECT", "demo-minutehand")
+    url = f"http://{host}/emulator/v1/projects/{project}/databases/(default)/documents"
+    urllib.request.urlopen(urllib.request.Request(url, method="DELETE"), timeout=30).close()
 
 
 def fingerprint() -> None:
@@ -111,7 +128,7 @@ def fingerprint() -> None:
     print(hashlib.sha256("\n".join(parts).encode()).hexdigest())
 
 
-COMMANDS = {"snapshot": snapshot, "restore": restore, "busy": busy, "fingerprint": fingerprint}
+COMMANDS = {"clear": clear, "snapshot": snapshot, "restore": restore, "busy": busy, "fingerprint": fingerprint}
 
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
