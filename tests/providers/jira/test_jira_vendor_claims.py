@@ -1,0 +1,215 @@
+"""What earlier Jira stand-ins were found to need, each a fact about Jira Cloud, held by this fake.
+
+Two calls carry them: creating a project (`POST /rest/api/3/project`) and asking what the caller may do
+(`GET /rest/api/3/mypermissions`). Every case goes through the real proxy over TLS at the site's own host, signed in
+as the agent with Basic. Provenance, class and source for each are in
+`src/minutehand/adapters/providers/jira/CLAIMS.md`.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from tests.providers.jira.jira_site import AGENT, API, Site, ok, refused
+
+KANBAN = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
+_LEAVE_OUT = object()
+
+
+def _project(**changed: object) -> dict[str, Any]:
+    """A body Jira accepts, with the named fields replaced (or, given `_LEAVE_OUT`, left out)."""
+    body: dict[str, object] = {
+        "key": "ORBIT",
+        "name": "Orbit relaunch",
+        "projectTypeKey": "software",
+        "projectTemplateKey": KANBAN,
+        "leadAccountId": AGENT,
+    }
+    body.update(changed)
+    return {k: v for k, v in body.items() if v is not _LEAVE_OUT}
+
+
+async def _create_refused(site: Site, body: dict[str, Any]) -> dict[str, str]:
+    head = site.store.head()
+    answer = refused(await site.http.post(f"{API}/project", json=body), 400)
+    assert site.store.head() == head, "a refused create wrote to the world"
+    errors: dict[str, str] = answer["errors"]
+    return errors
+
+
+# --------------------------------------------------------------------------- the create body
+
+
+@pytest.mark.parametrize(
+    ("missing", "named"), [("key", "projectKey"), ("name", "projectName"), ("leadAccountId", "leadAccountId")]
+)
+async def test_a_project_create_missing_a_required_field_is_refused_naming_it(
+    site: Site, missing: str, named: str
+) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — `key` and `name` are required, and either `lead` or `leadAccountId` must be set;
+    an invalid request is a 400. The refusal is keyed by the field, in Jira's `errors` map."""
+    errors = await _create_refused(site, _project(**{missing: _LEAVE_OUT}))
+
+    assert set(errors) == {named}
+
+
+async def test_a_project_create_with_neither_type_nor_template_is_refused_naming_the_type(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — without a project template the project type must be given."""
+    errors = await _create_refused(site, _project(projectTypeKey=_LEAVE_OUT, projectTemplateKey=_LEAVE_OUT))
+
+    assert set(errors) == {"projectTypeKey"}
+
+
+async def test_a_project_create_with_a_template_and_no_type_takes_the_templates_type(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — the type is required only when no template is named, and each template belongs to
+    one type. The earlier stand-in refused this body; the documentation accepts it."""
+    made = ok(await site.http.post(f"{API}/project", json=_project(projectTypeKey=_LEAVE_OUT)), 201)
+
+    assert made["key"] == "ORBIT"
+    assert ok(await site.http.get(f"{API}/project/ORBIT"))["projectTypeKey"] == "software"
+
+
+async def test_a_project_create_whose_template_belongs_to_another_type_is_refused(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — the template's type must match `projectTypeKey`."""
+    errors = await _create_refused(site, _project(projectTypeKey="business"))
+
+    assert "projectTemplateKey" in errors
+
+
+async def test_an_empty_project_create_names_every_missing_field_at_once(site: Site) -> None:
+    """Observed: Jira validates the whole body and reports every bad field in one 400, not the first one only."""
+    errors = await _create_refused(site, {})
+
+    assert set(errors) == {"projectKey", "projectName", "projectTypeKey", "leadAccountId"}
+
+
+# --------------------------------------------------------------------------- the key
+
+
+@pytest.mark.parametrize("key", ["orbit", "9ORBIT", "ORB_IT", "ORB-IT", "O"])
+async def test_a_project_key_breaking_the_key_rule_is_refused(site: Site, key: str) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — a key starts with an uppercase letter followed by one or more uppercase letters or
+    digits: lowercase, a leading digit, an underscore, a hyphen and a lone letter all break it."""
+    errors = await _create_refused(site, _project(key=key))
+
+    assert set(errors) == {"projectKey"}
+
+
+async def test_a_project_key_of_eleven_characters_is_refused(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — a key is at most 10 characters."""
+    errors = await _create_refused(site, _project(key="ORBITALPLAN"))
+
+    assert set(errors) == {"projectKey"}
+    assert "10" in errors["projectKey"]
+
+
+async def test_a_project_key_of_exactly_ten_characters_is_accepted(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — 10 is the cap, inclusive."""
+    made = ok(await site.http.post(f"{API}/project", json=_project(key="ORBITPLAN1")), 201)
+
+    assert made["key"] == "ORBITPLAN1"
+
+
+async def test_a_project_key_another_project_holds_is_refused_naming_that_project(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — keys are unique. Observed: the refusal names the project that already holds it."""
+    errors = await _create_refused(site, _project(key="FIELD"))
+
+    assert set(errors) == {"projectKey"}
+    assert "Field Ops" in errors["projectKey"]
+
+
+async def test_a_project_name_another_project_holds_is_refused(site: Site) -> None:
+    """Observed: a second project with a name already in use is a 400 on `projectName`; the create page does not
+    say so."""
+    errors = await _create_refused(site, _project(name="field ops"))
+
+    assert set(errors) == {"projectName"}
+
+
+# --------------------------------------------------------------------------- the lead and the template
+
+
+async def test_an_email_address_as_the_lead_is_refused(site: Site) -> None:
+    """Observed: `leadAccountId` takes an account id; an email address names no account and is a 400 on that
+    field."""
+    errors = await _create_refused(site, _project(leadAccountId="tomas@example.com"))
+
+    assert set(errors) == {"leadAccountId"}
+
+
+async def test_the_callers_own_account_is_a_valid_lead(site: Site) -> None:
+    """Observed: the account `/myself` answers with may lead the project it creates."""
+    me = ok(await site.http.get(f"{API}/myself"))
+
+    made = ok(await site.http.post(f"{API}/project", json=_project(leadAccountId=me["accountId"])), 201)
+
+    assert ok(await site.http.get(f"{API}/project/{made['key']}"))["lead"]["accountId"] == me["accountId"]
+
+
+async def test_a_template_key_jira_does_not_have_is_refused(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post lists the template keys; a key not among them creates nothing."""
+    errors = await _create_refused(site, _project(projectTemplateKey="com.example:orbit-board"))
+
+    assert set(errors) == {"projectTemplateKey"}
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban",
+        "com.pyxis.greenhopper.jira:gh-simplified-agility-scrum",
+        "com.pyxis.greenhopper.jira:gh-simplified-basic",
+        "com.pyxis.greenhopper.jira:gh-simplified-kanban-classic",
+        "com.pyxis.greenhopper.jira:gh-simplified-scrum-classic",
+    ],
+)
+async def test_every_software_template_jira_lists_is_accepted(site: Site, template: str) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post lists these five templates for the `software` type; the refusal of an unknown
+    template must not refuse a listed one."""
+    ok(await site.http.post(f"{API}/project", json=_project(projectTemplateKey=template)), 201)
+
+
+# --------------------------------------------------------------------------- the permission probe
+
+
+async def test_mypermissions_answers_exactly_the_keys_asked_for(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get answers per requested key with `havePermission`. Observed: no key that was not
+    asked for comes back (the parameterless form that listed every permission is gone)."""
+    found = ok(await site.http.get(f"{API}/mypermissions", params={"permissions": "BULK_CHANGE,CREATE_PROJECT"}))
+
+    assert set(found["permissions"]) == {"BULK_CHANGE", "CREATE_PROJECT"}
+    assert found["permissions"]["CREATE_PROJECT"]["havePermission"] is True
+
+
+async def test_mypermissions_reports_a_permission_the_caller_lacks_as_false(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get — a key the caller does not hold is answered, 200, with `havePermission`
+    false; it is neither an error nor left out."""
+    found = ok(await site.http.get(f"{API}/mypermissions", params={"permissions": "SYSTEM_ADMIN"}))
+
+    assert found["permissions"]["SYSTEM_ADMIN"]["havePermission"] is False
+
+
+async def test_mypermissions_without_the_permissions_parameter_is_refused(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get — `permissions` is required, and an empty one is a 400."""
+    answer = refused(await site.http.get(f"{API}/mypermissions"), 400)
+
+    assert answer["errorMessages"] and answer["errors"] == {}
+
+
+async def test_mypermissions_with_one_unknown_key_refuses_the_whole_call_naming_it(site: Site) -> None:
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get — an invalid key is a 400 for the call, so the valid keys beside it go
+    unanswered. Observed: the message names the key."""
+    answer = refused(
+        await site.http.get(f"{API}/mypermissions", params={"permissions": "CREATE_PROJECT,LAUNCH_ROCKETS"}), 400
+    )
+
+    assert "LAUNCH_ROCKETS" in answer["errorMessages"][0]
+
+
+async def test_mypermissions_without_credentials_is_refused_401(site: Site) -> None:
+    """Observed: an unauthenticated probe is a 401. https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get lists 401 for missing credentials, while also
+    saying the operation can be reached anonymously; a request with no Authorization at all was seen refused."""
+    async with site.client(None) as anonymous:
+        refused(await anonymous.get(f"{API}/mypermissions", params={"permissions": "CREATE_PROJECT"}), 401)
