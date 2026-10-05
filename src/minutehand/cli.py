@@ -70,7 +70,7 @@ from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
 from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
-from minutehand.application.outbound import described, suggested
+from minutehand.application.outbound import described, emulator_described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
@@ -98,6 +98,7 @@ _STOPPED = {
     StopReason.NOTHING_PENDING: "nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
     StopReason.CLOSED: "the standing world was closed by whoever opened it",
+    StopReason.ENVIRONMENT_FAILED: "an external emulator the run used was unavailable",
 }
 _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
 
@@ -700,6 +701,9 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
             lines.append("\nto capture the hosts nobody declared, add to the agent file (acknowledge: answered here")
             lines.append("and never sent; pass_through: sent to the real host; replay: answered from a run):")
             lines += [f"  {line}" for line in declarations.rstrip().splitlines()]
+    if record.emulators:
+        lines.append("\nexternal emulators")
+        lines += [f"  {emulator_described(use)}" for use in record.emulators]
     for kind in _KIND_ORDER:
         found = [f for f in result.findings if f.kind is kind]
         if found:

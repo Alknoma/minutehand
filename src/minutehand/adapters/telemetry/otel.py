@@ -273,7 +273,10 @@ class OtelTelemetry:
             # agent sent no trace, the one begun for it.
             _CHOSEN.set(format(forwarded.span_id, "016x"))
             if caller is None:
+                # The agent sent no trace: the span begins the one its emulator was handed, linked to its wake.
                 _CHOSEN_TRACE.set(format(forwarded.trace_id, "032x"))
+                parent = Context()
+                links = [Link(wake_span.get_span_context())] if wake_span is not None else []
         span = self._tracer.start_span(
             f"{exchange.method} {exchange.host}",
             context=parent,

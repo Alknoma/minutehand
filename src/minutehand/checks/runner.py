@@ -203,7 +203,13 @@ def verdict(
     open_waits = len(still) - len(told_after)
     open_work = open_waits + (commitments or 0)
     how = _STOPPED[stop] if stop is not None else "how the run stopped was not recorded"
-    if card.failed_checks:
+    if stop is StopReason.ENVIRONMENT_FAILED:
+        kind = VerdictKind.ENVIRONMENT_FAILED
+        words = (
+            f"Environment failed: {how}, so the agent is not judged on this run"
+            f"{f' ({_count(card.failed_checks, "check")} failed after it)' if card.failed_checks else ''}."
+        )
+    elif card.failed_checks:
         kind = VerdictKind.FAILED
         words = f"Failed: {_count(card.failed_checks, 'check')} failed; {how}."
     elif stop is StopReason.AGENT_DONE and abandoned:
@@ -364,7 +370,9 @@ def stability(results: list[RunResult]) -> Stability:
 
 
 def exit_code(results: list[RunResult]) -> int:
-    """Over several samples: 1 when any failed, else 3 when any did not finish, else 0."""
+    """Over several samples: 2 when any's environment failed, else 1 when any failed, else 3 when any did not
+    finish, else 0."""
     kinds = {r.verdict.kind for r in results}
-    worst = next((k for k in (VerdictKind.FAILED, VerdictKind.UNFINISHED) if k in kinds), VerdictKind.PASSED)
+    order = (VerdictKind.ENVIRONMENT_FAILED, VerdictKind.FAILED, VerdictKind.UNFINISHED)
+    worst = next((k for k in order if k in kinds), VerdictKind.PASSED)
     return EXIT_CODES[worst]

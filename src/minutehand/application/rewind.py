@@ -35,7 +35,7 @@ from minutehand.application.checkpoint import (
     Restorable,
     checkpoints,
 )
-from minutehand.application.orchestrator import Mounts, Orchestrator, Reach, Scorer, Services
+from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, Reach, Scorer, Services
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, Traffic, restore_agent
 from minutehand.application.run_clock import RunClock
@@ -46,7 +46,7 @@ from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonC
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
-from minutehand.domain.world import Actor, MessageSnapshot, Operation
+from minutehand.domain.world import Actor, MessageSnapshot, Operation, RecordedCall
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -64,7 +64,7 @@ FORK_RECORD = "fork.json"
 CANNOT_REWIND = (
     "A fork rewinds the fakes' world and the agent's own state; it cannot rewind what a real third-party service "
     "the run reached keeps, what a model provider keeps on its side, the AWS provider's queues and schedules, "
-    "or work the agent does in the background after the quiet period."
+    "what an external emulator holds, or work the agent does in the background after the quiet period."
 )
 
 
@@ -122,6 +122,7 @@ async def fork_run(
     progress: Progress | None = None,
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
     manifests: Sequence[Manifest] = (),
+    environment: Environment | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -163,6 +164,7 @@ async def fork_run(
         _refuse_state_outside_log(
             parent_store, [*manifests, *(p.manifest for p in services.providers)], checkpoint, fork.at_seq
         )
+        _refuse_emulated(parent_store, checkpoint, fork.at_seq)
         child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         try:
             clock.jump(checkpoint.now)
@@ -187,6 +189,7 @@ async def fork_run(
                 prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],
                 traffic=traffic,
                 channels=channels,
+                environment=environment,
             )
             orchestrator.mount()
             with materialised(
@@ -325,6 +328,30 @@ def _refuse_state_outside_log(store: Store, manifests: Sequence[Manifest], check
         raise RunRefused(
             f"the fork at seq {at_seq} of run {store.run_id} cannot rewind what the run had built up in {named}: "
             "the child would be answered from none of it. Fork from a checkpoint before the agent first used it"
+        )
+
+
+def _refuse_emulated(store: Store, checkpoint: Checkpoint, at_seq: int) -> None:
+    """An external emulator keeps its state outside the run's record, where no fork can put it back: a fork after
+    the parent's first call to one would be answered by the emulator as it is now, holding everything the parent
+    did after the fork as well. Refused, naming the emulator and that call, as a provider whose state is outside
+    the log is (`_refuse_state_outside_log`)."""
+    first: dict[str, RecordedCall] = {}
+    for call in store.calls():
+        captured = call.exchange.captured
+        if captured is None or captured.emulator is None or call.wake > checkpoint.wake:
+            continue
+        first.setdefault(captured.emulator, call)
+    if first:
+        named = "; ".join(
+            f"{name} (first {c.exchange.method} {c.exchange.host}{c.exchange.path.split('?')[0]} at wake {c.wake})"
+            for name, c in first.items()
+        )
+        raise RunRefused(
+            f"the fork at seq {at_seq} of run {store.run_id} cannot rewind the external emulator(s) it had used: "
+            f"{named}. An external emulator keeps its state outside the run's record, so a fork would be answered "
+            "by it as the parent left it. Fork from a checkpoint before the agent first called it, or rerun from "
+            "the beginning"
         )
 
 
