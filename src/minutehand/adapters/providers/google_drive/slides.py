@@ -17,12 +17,14 @@ image it cannot retrieve; any other URL is taken on trust.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Callable
 from typing import Literal, NamedTuple
 
 from pydantic import Field, ValidationError
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 EMU_PER_PT = 12700
@@ -479,12 +481,23 @@ class BatchUpdateAnswer(Model):
     writeControl: WriteControlAnswer
 
 
-class Refused(Exception):
+class Refused(ServiceRefusal):
+    """A request Slides refuses: the status, Google's status word, and its message."""
+
     def __init__(self, code: int, status: str, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.message = message
+
+    def render(self, asked: Asked) -> Rendered:
+        """Google's v1 envelope, code, message and status word, as the app answers it."""
+        body = {"error": {"code": self.code, "message": self.message, "status": self.status}}
+        return Rendered(
+            status=self.code,
+            content_type="application/json; charset=UTF-8",
+            body=json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode(),
+        )
 
 
 def _invalid(message: str) -> Refused:

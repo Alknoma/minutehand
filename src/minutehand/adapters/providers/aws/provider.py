@@ -54,11 +54,13 @@ from moto.moto_server.werkzeug_app import DomainDispatcherApplication, create_ba
 from moto.scheduler.models import scheduler_backends
 from moto.sqs.models import Queue, sqs_backends
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.aws.manifest import MANIFEST
 from minutehand.adapters.providers.aws.schedule import ScheduleRecord
 from minutehand.adapters.providers.aws.wire import (
     ActionAfterCompletion,
     CallKind,
+    NotImplementedByProvider,
     Refusal,
     ScheduleCall,
     SqsDelete,
@@ -67,7 +69,9 @@ from minutehand.adapters.providers.aws.wire import (
     sqs_delete,
     sqs_target,
 )
+from minutehand.adapters.providers.aws.wire import error as aws_error
 from minutehand.domain.clock import Due, DueKind
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, RecordSnapshot
@@ -110,6 +114,9 @@ class AwsProvider:
     def bind(self, wakes: Wakes) -> None:
         self._wakes = wakes
 
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return aws_error(status, code, message)
+
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scenario declares no AWS resources: the agent creates its own queues and schedules."""
 
@@ -143,6 +150,8 @@ class AwsProvider:
                     body,
                 )
             except Refusal as refused:
+                if isinstance(refused, NotImplementedByProvider):
+                    answering.unimplemented(refused, refused.message)
                 await _respond(
                     send,
                     refused.status,

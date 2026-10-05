@@ -24,6 +24,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.state import AGENT_GID, AsanaWorld
 from minutehand.domain.world import Actor, Operation
@@ -508,6 +509,7 @@ class AsanaApi:
         for window in self._world.home().rate_limits:
             if _at(window.start) <= now < _at(window.end):
                 wait = math.ceil((_at(window.end) - now) / timedelta(seconds=1))
+                answering.injected()
                 raise wire.Refusal(429, wire.RATE_LIMITED, retry_after=max(wait, 1))
 
     def guarded(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:

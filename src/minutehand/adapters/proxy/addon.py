@@ -34,6 +34,7 @@ from mitmproxy.net import encoding
 from mitmproxy.proxy import layer, layers
 from mitmproxy.proxy.layers import modes
 
+from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, kind_of
 from minutehand.adapters.emulator import answers
 from minutehand.adapters.proxy import capture, connect, credentials, redact
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
@@ -68,7 +69,7 @@ from minutehand.domain.world import (
     TunnelRoute,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Message, Scope
+from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -549,22 +550,30 @@ class ProxyAddon:
         kept_in.store.receive([span], source=SpanSource.WIRE)
 
     async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> None:
+        """Answer from the provider's app, guarded (`adapters.answering`): whatever building the app or answering
+        lets out becomes the agent's answer, and how the call was answered is recorded on it."""
         async with world.lock:
             first = world.store.head() + 1
             original = flow.request.path
-            exchange: Exchange | None = None
-            try:
+            outcome = Outcome()
+
+            async def built(
+                scope: Scope, receive: Callable[[], Awaitable[Message]], send: Callable[[Message], Awaitable[None]]
+            ) -> None:
+                nonlocal first
                 app = world.app_for(manifest)
                 first = world.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
+                await app(scope, receive, send)
+
+            token = OUTCOME.set(outcome)
+            try:
                 flow.request.path = strip_prefix(original, manifest.path_prefix)
-                await asgiapp.serve(_path_decoded(app), flow)
-            except Exception:
-                # Never let a claimed host fall through to the real service.
-                flow.response = _json_response(500, f"provider {manifest.key!r} failed to load", host)
-                raise
+                guarded = Guarded(built, self._renders(manifest), provider=manifest.key, clock=world.clock)
+                await asgiapp.serve(_path_decoded(guarded), flow)
             finally:
+                OUTCOME.reset(token)
                 flow.request.path = original
-                exchange = self._record(world, flow, host, original, first, manifest.key)
+            exchange = self._record(world, flow, host, original, first, manifest.key, answered_by=outcome)
         response = flow.response
         minted = (
             credentials.minted(
@@ -575,6 +584,15 @@ class ProxyAddon:
             else []
         )
         self.worlds.answered(world, exchange, minted)
+
+    def _renders(self, manifest: Manifest) -> RendersErrors:
+        """The provider's error shape; the plain one when it has none, or cannot be built (which the guard then
+        answers as Minutehand's internal error, once building the app fails the same way)."""
+        try:
+            found = self.routing.registry.provider(manifest)
+        except Exception:
+            return PLAIN
+        return found if isinstance(found, RendersErrors) else PLAIN
 
     def _edit(self, flow: http.HTTPFlow, host: str) -> None:
         try:
@@ -596,7 +614,9 @@ class ProxyAddon:
         provider: str | None,
         *,
         late_for: str | None = None,
+        answered_by: Outcome | None = None,
     ) -> Exchange:
+        """`answered_by` is how a provider's app answered the call; None for a call no provider answered."""
         request, response = flow.request, flow.response
         assert response is not None
         asked, asked_bytes = redact.kept(
@@ -616,6 +636,8 @@ class ProxyAddon:
             response_bytes=answered_bytes,
             traceparent=_first_header(request, TRACEPARENT),
             late_for=late_for,
+            outcome=kind_of(answered_by, response.status_code) if answered_by is not None else None,
+            failure=answered_by.failure if answered_by is not None else None,
         )
         self._seen(f"{request.method} {host}{exchange.path}")
         last = world.store.head()

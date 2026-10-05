@@ -40,6 +40,7 @@ from starlette.responses import Response
 from starlette.routing import Route, Router
 from starlette.types import Receive, Scope, Send
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.google_drive import docs, slides, state, wire
 from minutehand.adapters.providers.google_drive import query as drive_query
 from minutehand.adapters.providers.google_drive.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
@@ -257,6 +258,7 @@ class DriveApi:
             if fault.operation != operation or fault.remaining < 1 or wire.moment(fault.after) > now:
                 continue
             self._drive.keep_fault(key, fault.model_copy(update={"remaining": fault.remaining - 1}))
+            answering.injected()
             ids = [v for k, v in request.path_params.items() if isinstance(v, str) and k.endswith("_id")]
             raise _fault_refusal(api, fault.kind, ids[0] if ids else None)
 

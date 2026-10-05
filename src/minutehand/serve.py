@@ -51,6 +51,7 @@ import uvicorn
 from pydantic import Field
 from starlette.applications import Starlette
 
+from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import EmulatorRefused
@@ -67,7 +68,7 @@ from minutehand.application.emulators import record_health
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
-from minutehand.application.standing import StandingWorld, Unsupported, WorldRefused
+from minutehand.application.standing import StandingWorld, UnknownWorld, Unsupported, WorldRefused
 from minutehand.checks.runner import RunResult
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.provider import Manifest
@@ -535,8 +536,8 @@ class Standing:
     def get(self, world_id: str) -> World:
         if world_id not in self.worlds:
             if world_id in self._handed:
-                raise LookupError(f"world {world_id} is closed, and a closed world is never open again")
-            raise LookupError(f"no open world {world_id}")
+                raise UnknownWorld(f"world {world_id} is closed, and a closed world is never open again")
+            raise UnknownWorld(f"no open world {world_id}")
         return self.worlds[world_id]
 
     async def quiet(self, world_id: str, ask: Quiet) -> Quieted:
@@ -660,6 +661,7 @@ class Standing:
                 await app(scope, receive, send)
                 return
             armed.left -= 1
+            injected()
             fault = armed.fault
             headers = [(b"content-type", fault.content_type.encode())]
             if fault.retry_after is not None:

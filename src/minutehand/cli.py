@@ -43,7 +43,11 @@ Exit codes of `run`, `fork` and `findings`, which follow the verdict each report
   3  not finished: no check failed, but the run stopped without the agent reporting done (the wake limit, the
      deadline, an agent that asked for no further wake, an agent that failed) while a wait or a commitment
      was still open
-With samples: 1 when any sample failed, else 3 when any did not finish, else 0.
+  4  not scored: Minutehand itself failed while answering one of the agent's calls, so the run says nothing about
+     the agent; any command exits 4 too when Minutehand fails, naming where its traceback was written (--debug
+     prints it as well)
+With samples: 2 when an external emulator was unavailable in any sample, else 4 when Minutehand failed in any,
+else 1 when any failed, else 3 when any did not finish, else 0.
 """
 
 from __future__ import annotations
@@ -54,6 +58,8 @@ import copy
 import os
 import shlex
 import sys
+import tempfile
+import traceback
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -76,12 +82,15 @@ from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import exit_code, stability
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
-from minutehand.domain.run import StopReason
+from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
 from minutehand.domain.scenario import Model
 from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
 
 DEFAULT_STATE = Path(".minutehand")
+DEBUG = "--debug"
+INTERNAL_EXIT = EXIT_CODES[VerdictKind.TOOL_FAILED]
+"""What the command exits with when Minutehand itself failed: the exit of a run whose fake broke."""
 SERVE_IMAGE = "minutehand"
 SERVE_CA_VOLUME = "minutehand-ca"
 SERVE_CA_DIR = "/etc/minutehand"
@@ -117,6 +126,11 @@ class Played(Model):
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="minutehand", description="Simulated days for a proactive agent.")
+    parser.add_argument(
+        DEBUG,
+        action="store_true",
+        help="on an internal error, print its traceback as well (anywhere before --, with any command)",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
     def state(sub: argparse.ArgumentParser) -> None:
@@ -291,7 +305,39 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """THE converter of the command line: every refusal the commands know keeps its message and exit code; anything
+    else is Minutehand's own error, said in one line naming where its traceback was written, and exits 4."""
     args_in = list(sys.argv[1:] if argv is None else argv)
+    ours = args_in[: args_in.index("--")] if "--" in args_in else args_in
+    debug = DEBUG in ours
+    if debug:
+        args_in = [a for a in ours if a != DEBUG] + args_in[len(ours) :]
+    try:
+        return _main(args_in)
+    except Exception as error:
+        return _internal(error, debug=debug)
+
+
+def _internal(error: Exception, *, debug: bool) -> int:
+    """Minutehand's own error: its traceback written to a file, one line naming it, and the traceback on screen
+    too with --debug."""
+    written = "".join(traceback.format_exception(error))
+    with tempfile.NamedTemporaryFile(
+        "w", prefix="minutehand-internal-error-", suffix=".txt", delete=False, encoding="utf-8"
+    ) as kept:
+        kept.write(written)
+    if debug:
+        print(written, file=sys.stderr, end="")
+    said = str(error).splitlines()[0] if str(error) else ""
+    print(
+        f"minutehand: internal error (a bug in minutehand, not in the agent or the scenario): "
+        f"{type(error).__name__}: {said}; the traceback is in {kept.name}",
+        file=sys.stderr,
+    )
+    return INTERNAL_EXIT
+
+
+def _main(args_in: list[str]) -> int:
     command: list[str] | None = None
     if "--" in args_in:
         split = args_in.index("--")

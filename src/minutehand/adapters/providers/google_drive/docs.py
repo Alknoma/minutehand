@@ -23,6 +23,7 @@ batch is applied to the latest: there are no collaborators' concurrent edits to 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Callable, Iterator
 from enum import StrEnum
@@ -30,6 +31,7 @@ from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, ValidationError
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 # --------------------------------------------------------------------------- styles, as Docs spells them
@@ -593,7 +595,7 @@ class BatchUpdateAnswer(Model):
     writeControl: WriteControlAnswer
 
 
-class Refused(Exception):
+class Refused(ServiceRefusal):
     """A request Docs refuses: the status, Docs' status word, and its message."""
 
     def __init__(self, code: int, status: str, message: str) -> None:
@@ -601,6 +603,15 @@ class Refused(Exception):
         self.code = code
         self.status = status
         self.message = message
+
+    def render(self, asked: Asked) -> Rendered:
+        """Google's v1 envelope, code, message and status word, as the app answers it."""
+        body = {"error": {"code": self.code, "message": self.message, "status": self.status}}
+        return Rendered(
+            status=self.code,
+            content_type="application/json; charset=UTF-8",
+            body=json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode(),
+        )
 
 
 def _invalid(message: str) -> Refused:

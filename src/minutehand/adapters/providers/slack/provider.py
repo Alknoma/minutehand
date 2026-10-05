@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.slack import inbound, interactive, state
+from minutehand.adapters.providers.slack import inbound, interactive, state, wire
 from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.seed import SlackSeed, seed, write_faults
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
     InboundCredential,
@@ -29,6 +30,9 @@ class SlackProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return wire.error_answer(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

@@ -389,11 +389,16 @@ class Environment(Model):
 class RefusalKind(StrEnum):
     UNSUPPORTED = "unsupported"
     """The provider cannot do what was asked at all, in any world: a capability it does not have."""
+    INTERNAL_ERROR = "internal_error"
+    """Not a refusal of the request: Minutehand failed while answering it (status 500)."""
 
 
 class Refusal(Model):
     error: str
     kind: RefusalKind | None = Field(default=None, description="Set when the refusal is of a known kind")
+    exception_type: str | None = Field(
+        default=None, description="Set for an internal error: the exception's qualified class name"
+    )
 
 
 class FurtherSeed(Model):

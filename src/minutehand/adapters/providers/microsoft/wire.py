@@ -386,7 +386,9 @@ class InnerError(Aliased):
 class GraphErrorBody(Aliased):
     code: str
     message: str
-    innerError: InnerError
+    innerError: InnerError | None = Field(
+        default=None, description="Every refusal of Graph's carries one; Minutehand's own errors, none"
+    )
 
 
 class GraphError(Model):

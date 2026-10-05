@@ -20,6 +20,7 @@ from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.seed import JiraSeed, seed
 from minutehand.adapters.providers.jira.state import placed
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
     Comments,
@@ -43,6 +44,10 @@ class JiraProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        del code
+        return wire.error_answer(status, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)

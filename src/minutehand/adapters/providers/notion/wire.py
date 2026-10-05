@@ -28,6 +28,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 API_VERSION = "2022-06-28"
@@ -57,6 +58,7 @@ class ErrorCode(StrEnum):
     VALIDATION_ERROR = "validation_error"
     MISSING_VERSION = "missing_version"
     CONFLICT_ERROR = "conflict_error"
+    INTERNAL_SERVER_ERROR = "internal_server_error"
 
 
 _STATUS = {
@@ -70,10 +72,14 @@ _STATUS = {
     ErrorCode.VALIDATION_ERROR: 400,
     ErrorCode.MISSING_VERSION: 400,
     ErrorCode.CONFLICT_ERROR: 409,
+    ErrorCode.INTERNAL_SERVER_ERROR: 500,
 }
 
+ERROR_TYPE = "application/json; charset=utf-8"
+"""The content type Notion answers with, errors included."""
 
-class Refusal(Exception):
+
+class Refusal(ServiceRefusal):
     """Notion answered with an error object."""
 
     def __init__(self, code: ErrorCode, message: str, headers: dict[str, str] | None = None) -> None:
@@ -96,6 +102,26 @@ class Refusal(Exception):
                 "request_id": request_id,
             }
         )
+
+    def render(self, asked: Asked) -> Rendered:
+        """The error object, its request id minted from the call: the app's own gate mints it from the store's head
+        as well, which a refusal answered here has no way to read."""
+        minted = request_id(f"{asked.now.isoformat()}:{asked.method}:{asked.path}")
+        return Rendered(
+            status=self.status,
+            content_type=ERROR_TYPE,
+            body=self.body(minted).encode(),
+            headers=[(name.lower(), value) for name, value in self.headers.items()],
+        )
+
+
+def error_answer(status: int, message: str, minted: str) -> Rendered:
+    """What Minutehand answers in Notion's place (501, 500), as Notion's error object with a code `notion-client`
+    raises `APIResponseError` for: `invalid_request` ("this request is not supported") for an operation the fake
+    does not implement, `internal_server_error` for anything else."""
+    code = ErrorCode.INVALID_REQUEST if status == 501 else ErrorCode.INTERNAL_SERVER_ERROR
+    body = {"object": "error", "status": status, "code": code.value, "message": message, "request_id": minted}
+    return Rendered(status=status, content_type=ERROR_TYPE, body=json.dumps(body).encode())
 
 
 def invalid(message: str) -> Refusal:

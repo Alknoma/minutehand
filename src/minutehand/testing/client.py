@@ -1,6 +1,6 @@
 """`MinutehandClient` and `AsyncMinutehandClient`: the control API of `minutehand serve`, typed both ways with
 the server's own models (`minutehand.adapters.control.wire`). A refusal raises `Refused` with its status and
-the server's words."""
+the server's words; Minutehand's own failure (500) raises `ServerFailed`, never `Refused`."""
 
 from __future__ import annotations
 
@@ -87,6 +87,16 @@ class Unsupported(Refused):
     which it has)."""
 
 
+class ServerFailed(Exception):
+    """Not a refusal: Minutehand itself failed while answering (500, `RefusalKind.INTERNAL_ERROR`). The traceback
+    is in the server's log."""
+
+    def __init__(self, status: int, error: str) -> None:
+        super().__init__(f"{status}: {error}")
+        self.status = status
+        self.error = error
+
+
 def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
     if answered.is_success:
         return model.model_validate_json(answered.content)
@@ -96,6 +106,8 @@ def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
         raise Refused(answered.status_code, answered.text) from None
     if refusal.kind is RefusalKind.UNSUPPORTED:
         raise Unsupported(answered.status_code, refusal.error)
+    if refusal.kind is RefusalKind.INTERNAL_ERROR:
+        raise ServerFailed(answered.status_code, refusal.error)
     raise Refused(answered.status_code, refusal.error)
 
 

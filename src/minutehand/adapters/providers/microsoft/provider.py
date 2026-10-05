@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
+from minutehand.adapters.providers.microsoft.common import error_answer
 from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of
 from minutehand.adapters.providers.microsoft.inbound import People, activity_token
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
@@ -25,6 +26,7 @@ from minutehand.adapters.providers.microsoft.state import (
     item_text,
     user_ref,
 )
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
     InboundCredential,
@@ -66,6 +68,9 @@ class MicrosoftProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return error_answer(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed.seed(scenario, MicrosoftWorld(world))

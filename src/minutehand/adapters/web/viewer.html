@@ -240,6 +240,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   }
   function runStatus(row) {
     if (!row.finished) { return ["run", "Running…"]; }
+    if (row.verdict === "tool_failed") { return ["fail", "Not scored: Minutehand broke"]; }
     if (row.verdict === "failed") { return ["fail", "Failed: " + plural(row.failed, "problem", "problems")]; }
     if (row.verdict === "unfinished") { return ["review", "Not finished"]; }
     if (row.to_review > 0) { return ["ok", "Passed, " + row.to_review + " to look at"]; }
@@ -320,6 +321,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
       return ['review', "Still running", "Reached " + when(run.reached) + " on the simulated clock. This page follows it."];
     }
     var v = view.findings.verdict, why = v.words;
+    if (v.kind === "tool_failed") { return ["fail", "Not scored: Minutehand broke", why]; }
     if (v.kind === "failed") { return ["fail", "Failed: " + plural(fails, "problem", "problems") + " found", why]; }
     if (v.kind === "unfinished") { return ["review", "Not finished", why]; }
     if (reviews) { return ["ok", "Passed, with " + reviews + " to look at", why]; }
@@ -396,7 +398,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     if (state.pinned !== null) { highlight(state.pinned); }
   }
 
-  var VERDICT_LABEL = { passed: ["ok", "Passed"], failed: ["fail", "Failed"], unfinished: ["review", "Not finished"] };
+  var VERDICT_LABEL = { passed: ["ok", "Passed"], failed: ["fail", "Failed"], unfinished: ["review", "Not finished"], tool_failed: ["fail", "Not scored"] };
 
   function forkPanel(f) {
     var parentRow = state.list.filter(function (r) { return r.run_id === f.parent_run; })[0];

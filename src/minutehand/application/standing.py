@@ -14,18 +14,20 @@ only in the run loop.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from minutehand.application.further_seed import Scratch, land
 from minutehand.application.model_calls import per_wake
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
-from minutehand.checks.runner import RunResult, evaluate, view_of
+from minutehand.checks.runner import RunResult, broken, evaluate, view_of
 from minutehand.domain.people import (
     InboundCredential,
     InboundCredentialAsk,
@@ -91,6 +93,30 @@ class WorldRefused(RunRefused):
 
 class Unsupported(WorldRefused):
     """What was asked is a capability the provider does not have, in any world."""
+
+
+class NotFound(WorldRefused):
+    """What was asked names something the world does not hold: a ticket, a message, a person's chat."""
+
+
+class UnknownWorld(NotFound):
+    """No open world has the id asked for."""
+
+
+@contextmanager
+def _refusing() -> Iterator[None]:
+    """A port method refuses what the world cannot do with `LookupError` (it names nothing the world holds) or
+    `ValueError` (it cannot be done); here each becomes the typed refusal the control API answers, its words kept.
+    A `KeyError` or `IndexError` is a lookup that failed inside Minutehand, and a `ValidationError` a body that is
+    not the model: neither is a refusal of the world's, and each goes on as it is."""
+    try:
+        yield
+    except (KeyError, IndexError, ValidationError, RunRefused):
+        raise
+    except LookupError as e:
+        raise NotFound(str(e.args[0]) if e.args else str(e)) from e
+    except ValueError as e:
+        raise WorldRefused(str(e)) from e
 
 
 @dataclass(frozen=True)
@@ -204,7 +230,8 @@ class StandingWorld:
         if key not in self._built:
             found = self._provider(key)
             if not any(e.entity.provider == key for e in self.store.events()):
-                found.seed(self.scenario, self.store)
+                with _refusing():
+                    found.seed(self.scenario, self.store)
             self._built[key] = found
         return self._built[key]
 
@@ -232,7 +259,8 @@ class StandingWorld:
             self.clock.jump(max(owed.at, self.clock.now()))
             before = self.store.head()
             async with self._push(owed.what):
-                await self._fire(owed)
+                with _refusing():
+                    await self._fire(owed)
             fired.append(
                 Fired(at=self.clock.now(), what=owed.what, events=list(range(before + 1, self.store.head() + 1)))
             )
@@ -349,9 +377,9 @@ class StandingWorld:
         before = self.store.head()
         message = PersonMessage(person=person, text=text, at=self.clock.now())
         async with self._push(f"{person} says {text[:40]!r} on {provider}"):
-            await self._pushes(provider).say(
-                message, self._target(provider), self.store, self.clock, secret=self._signing[provider]
-            )
+            pushes, target = self._pushes(provider), self._target(provider)
+            with _refusing():
+                await pushes.say(message, target, self.store, self.clock, secret=self._signing[provider])
         return self._written(before)
 
     async def reply(self, person: str, text: str, *, to: EntityRef) -> WorldEvent:
@@ -361,9 +389,9 @@ class StandingWorld:
         answer = PersonReply(person=person, in_reply_to=to, text=text, at=self.clock.now())
         self.store.remember(answer)
         async with self._push(f"{person} replies {text[:40]!r} on {to.provider}"):
-            await self._pushes(to.provider).deliver(
-                answer, self._target(to.provider), self.store, self.clock, secret=self._signing[to.provider]
-            )
+            pushes, target = self._pushes(to.provider), self._target(to.provider)
+            with _refusing():
+                await pushes.deliver(answer, target, self.store, self.clock, secret=self._signing[to.provider])
         return self._written(before)
 
     async def happen_now(self, happening: Happening) -> WorldEvent:
@@ -377,11 +405,14 @@ class StandingWorld:
             key = checked.happening_provider(happening)
             refuse_unheld(checked, {key: self.provider(key).manifest})
         except (ValueError, RunRefused) as e:
+            if isinstance(e, NotFound):
+                raise
             raise WorldRefused(f"this happening cannot land here: {e}") from e
         self._lands(happening, 1)
         before = self.store.head()
         async with self._push(f"{happening.person} {_doing(happening)}"):
-            await self._happen(happening)
+            with _refusing():
+                await self._happen(happening)
         self._acted.append(happening)
         return self._written(before, reads=True)
 
@@ -396,9 +427,9 @@ class StandingWorld:
         answer = PersonReply(person=person, in_reply_to=on, text=press.label, at=self.clock.now(), press=press)
         self.store.remember(answer)
         async with self._push(f"{person} presses {press.label!r} on {on.provider}"):
-            await found.press(
-                answer, self._target(on.provider), self.store, self.clock, secret=self._signing[on.provider]
-            )
+            target = self._target(on.provider)
+            with _refusing():
+                await found.press(answer, target, self.store, self.clock, secret=self._signing[on.provider])
         return self._written(before)
 
     def declare_faults(self, provider: ProviderKey, faults: str) -> None:
@@ -406,18 +437,26 @@ class StandingWorld:
         found = self.provider(provider)
         if not isinstance(found, DeclaresFaults):
             raise WorldRefused(f"{provider} declares no faults of its own")
-        try:
-            found.declare(faults, self.store, self.clock)
-        except ValueError as e:
-            raise WorldRefused(f"{provider} cannot declare these faults: {e}") from e
+        with _refusing():
+            try:
+                found.declare(faults, self.store, self.clock)
+            except ValueError as e:
+                raise WorldRefused(f"{provider} cannot declare these faults: {e}") from e
 
     def delete_ticket(self, ticket: EntityRef) -> WorldEvent:
         """A person deletes the ticket now: one the agent filed, or one seeded."""
         before = self.store.head()
+        deletes = self._deletes(ticket.provider)
         try:
-            self._deletes(ticket.provider).delete_ticket(ticket, self.store, self.clock)
+            deletes.delete_ticket(ticket, self.store, self.clock)
         except LookupError as e:
+            if isinstance(e, (KeyError, IndexError)):
+                raise
             raise WorldRefused(str(e.args[0]) if e.args else str(e)) from e
+        except ValueError as e:
+            if isinstance(e, ValidationError):
+                raise
+            raise WorldRefused(str(e)) from e
         return self._written(before)
 
     # -- the world changed from outside, while open ---------------------------------------------------------------
@@ -470,6 +509,10 @@ class StandingWorld:
             if isinstance(e, WorldRefused):
                 raise
             raise WorldRefused(f"this addition cannot land here: {e}") from e
+        except LookupError as e:
+            if isinstance(e, (KeyError, IndexError)):
+                raise
+            raise NotFound(str(e.args[0]) if e.args else str(e)) from e
         self.scenario = after
         self._people = {p.email: p for p in after.people}
         if self._replier is not None:
@@ -513,15 +556,18 @@ class StandingWorld:
         if not isinstance(found, MintsInboundCredentials):
             raise Unsupported(f"{provider} signs nothing it pushes")
         secret = self._signing[provider] if provider in self._signing else ""
-        try:
-            return found.credential(ask, self.store, self.clock, secret=secret)
-        except ValueError as e:
-            raise WorldRefused(f"{provider} cannot sign that: {e}") from e
+        with _refusing():
+            try:
+                return found.credential(ask, self.store, self.clock, secret=secret)
+            except ValueError as e:
+                raise WorldRefused(f"{provider} cannot sign that: {e}") from e
 
     def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
         """The ticket's assignee moves it, as actor PERSON."""
         before = self.store.head()
-        self._holds(ticket.provider).transition(ticket, to, self.store, self.clock)
+        holds = self._holds(ticket.provider)
+        with _refusing():
+            holds.transition(ticket, to, self.store, self.clock)
         return self._written(before)
 
     def edit_ticket(self, ticket: EntityRef, *, state: TicketState | None, assignee: str | None) -> WorldEvent:
@@ -531,7 +577,8 @@ class StandingWorld:
         if not isinstance(provider, EditsTickets):
             raise WorldRefused(f"{ticket.provider} holds no tickets that can be rewritten")
         before = self.store.head()
-        provider.edit(ticket, state=state, assignee_email=email, world=self.store, clock=self.clock)
+        with _refusing():
+            provider.edit(ticket, state=state, assignee_email=email, world=self.store, clock=self.clock)
         return self._written(before)
 
     # -- reading ------------------------------------------------------------------------------------------------
@@ -546,6 +593,7 @@ class StandingWorld:
             self.store.replies(),
             unmatched_calls=[c.exchange for c in self.store.calls() if c.refused],
             model_calls=per_wake(self.store.spans(), [STANDING_WAKE]),
+            broken_calls=broken(self.store.calls()),
         )
         return evaluate(view, stop=stop, ended=self.clock.now())
 

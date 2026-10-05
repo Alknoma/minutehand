@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.world import (
@@ -103,6 +104,7 @@ class SlackApi:
             faulted = self._fault(method, presented)
             answer: wire.Response = faulted if faulted is not None else self._methods[method](presented)
         except wire.Refusal as refusal:
+            answering.refused()
             answer = wire.Failed(error=refusal.error)
         if isinstance(answer, wire.RateLimitedAnswer):
             return Response(
@@ -132,6 +134,7 @@ class SlackApi:
                 parent=state.FAULTS,
                 after=RecordSnapshot(resource="faults", text=f"{method} failed on purpose: {fault.error}"),
             )
+            answering.injected()
             if fault.retry_after is not None:
                 return wire.RateLimitedAnswer(error=fault.error, retry_after=fault.retry_after)
             return wire.Failed(error=fault.error)
