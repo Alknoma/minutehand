@@ -1,8 +1,14 @@
-"""The Slack Web API, as an ASGI app over the run's store and clock.
+"""Slack's HTTP surface, as an ASGI app over the run's store and clock.
 
-Every method answers at `/api/<method>`, by GET or POST, with its arguments in the
-query string, a form-encoded body or a JSON body, exactly as Slack accepts them.
-Every refusal is Slack's own `{"ok": false, "error": ...}` with HTTP 200.
+Every Web API method answers at `/api/<method>`, by GET or POST, with its arguments in the
+query string, a form-encoded body or a JSON body, exactly as Slack accepts them. Every
+refusal is Slack's own `{"ok": false, "error": ...}` with HTTP 200, except `ratelimited`,
+which is HTTP 429 with `Retry-After`, as Slack sends it.
+
+Beside the Web API, on the hosts Slack serves them from (`*.slack.com`, so the same app):
+`files.slack.com/files-pri/...`, a file's `url_private` and `url_private_download`, served to a
+bearer token and redirected to the sign-in page without one; and `hooks.slack.com/actions/...`
+and `/commands/...`, the `response_url` of a press or a slash command.
 """
 
 from __future__ import annotations
@@ -10,19 +16,38 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 
+from pydantic import JsonValue
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID, SlackWorld
-from minutehand.domain.world import Actor, MessageSnapshot, Operation
+from minutehand.domain.world import (
+    Actor,
+    ControlKind,
+    EntityKind,
+    MessageAction,
+    MessageSnapshot,
+    Operation,
+    RecordSnapshot,
+)
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
 _TOKEN_KINDS = ("xoxb-", "xoxp-")
 _MAX_GROUP = 8
+_UNAUTHENTICATED = frozenset({"oauth.v2.access"})
+"""Methods an app calls with its client id and secret, before it holds a token."""
+_TRIGGER_LIFETIME = 3
+"""Seconds a `trigger_id` can open a view, on the run's clock."""
+HOOK_LIFETIME = 30 * 60
+HOOK_USES = 5
+SCOPES = (
+    "app_mentions:read,channels:history,channels:read,chat:write,commands,files:read,groups:history,groups:read,"
+    "im:history,im:read,im:write,mpim:history,mpim:read,users:read,users:read.email"
+)
 
 Handler = Callable[[wire.Presented], wire.Ok]
 
@@ -51,6 +76,10 @@ class SlackApi:
             "chat.update": self.chat_update,
             "chat.delete": self.chat_delete,
             "reactions.add": self.reactions_add,
+            "views.open": self.views_open,
+            "views.update": self.views_update,
+            "views.publish": self.views_publish,
+            "oauth.v2.access": self.oauth_v2_access,
         }
 
     async def endpoint(self, request: Request) -> Response:
@@ -64,11 +93,44 @@ class SlackApi:
                 await request.body(),
                 _header(request, "authorization"),
             )
-            self._authenticate(presented)
-            answer: wire.Response = self._methods[method](presented)
+            if method not in _UNAUTHENTICATED:
+                self._authenticate(presented)
+            faulted = self._fault(method, presented)
+            answer: wire.Response = faulted if faulted is not None else self._methods[method](presented)
         except wire.Refusal as refusal:
             answer = wire.Failed(error=refusal.error)
+        if isinstance(answer, wire.RateLimitedAnswer):
+            return Response(
+                wire.respond(answer),
+                status_code=429,
+                headers={"Retry-After": str(answer.retry_after)},
+                media_type="application/json; charset=utf-8",
+            )
         return Response(wire.respond(answer), media_type="application/json; charset=utf-8")
+
+    def _fault(self, method: str, presented: wire.Presented) -> wire.Failed | None:
+        """The first fault the scenario declares for this call that still has calls to fail, used up by one."""
+        now = int(self._clock.now().timestamp())
+        for fault in self._world.bodies(EntityKind.RECORD, state.FAULTS, wire.SlackFault):
+            if fault.call is not None and fault.call != method:
+                continue
+            if (fault.remaining is not None and fault.remaining < 1) or now < fault.from_time:
+                continue
+            if fault.only_rich and not presented.rich:
+                continue
+            left = None if fault.remaining is None else fault.remaining - 1
+            self._world.write(
+                state.fault_ref(fault.position),
+                fault.model_copy(update={"remaining": left}),
+                operation=Operation.UPDATE,
+                actor=Actor.SCENARIO,
+                parent=state.FAULTS,
+                after=RecordSnapshot(resource="faults", text=f"{method} failed on purpose: {fault.error}"),
+            )
+            if fault.retry_after is not None:
+                return wire.RateLimitedAnswer(error=fault.error, retry_after=fault.retry_after)
+            return wire.Failed(error=fault.error)
+        return None
 
     def _authenticate(self, presented: wire.Presented) -> None:
         """Any bot or user token is accepted: the proxy holds no real credentials to check them against."""
@@ -112,6 +174,7 @@ class SlackApi:
             channel=channel,
             recipient_emails=self._world.human_emails(channel, besides=message.user),
             thread_of=message.thread_ts,
+            actions=message_actions(message),
         )
 
     def _summarised(self, root: wire.SlackMessage, every: list[wire.SlackMessage]) -> wire.SlackMessage:
@@ -221,7 +284,13 @@ class SlackApi:
             raise wire.Refusal("users_list_not_supplied")
         if len(wanted) > _MAX_GROUP:
             raise wire.Refusal("too_many_users")
-        others = [self._user(u).id for u in wanted]
+        found = [self._user(u) for u in wanted]
+        for user in found:
+            if user.deleted:
+                raise wire.Refusal("user_disabled")
+            if user.is_bot and len(found) == 1:
+                raise wire.Refusal("cannot_dm_bot")
+        others = [u.id for u in found]
         channel, opened = self._conversation(others, actor=Actor.AGENT)
         if not opened:
             self._world.saw(state.channel_ref(channel.id), Operation.READ)
@@ -330,17 +399,7 @@ class SlackApi:
             if parent is None:
                 raise wire.Refusal("thread_not_found")
             thread_ts = parent.thread_ts or parent.ts
-        message = wire.SlackMessage(
-            ts=self._world.next_ts(self._clock),
-            user=BOT_USER_ID,
-            text=args.text,
-            team=state.TEAM_ID,
-            bot_id=BOT_ID,
-            app_id=state.APP_ID,
-            thread_ts=thread_ts,
-            blocks=args.blocks,
-            attachments=args.attachments,
-        )
+        message = self._from_bot(args.text, args.blocks, args.attachments, thread_ts)
         self._world.write(
             state.message_ref(message.ts),
             message,
@@ -368,33 +427,51 @@ class SlackApi:
         if args.thread_ts:
             parent = self._world.message(channel.id, args.thread_ts)
             thread_ts = (parent.thread_ts or parent.ts) if parent is not None else args.thread_ts
-        message = wire.SlackMessage(
-            ts=self._world.next_ts(self._clock),
+        message = self._from_bot(args.text, args.blocks, args.attachments, thread_ts, ephemeral_to=user.id)
+        self._write_ephemeral(channel.id, message, user)
+        return wire.PostedEphemeral(message_ts=message.ts)
+
+    def _from_bot(
+        self,
+        text: str,
+        blocks: list[JsonValue] | None,
+        attachments: list[JsonValue] | None,
+        thread_ts: str | None,
+        *,
+        ephemeral_to: str | None = None,
+    ) -> wire.SlackMessage:
+        """A message the app posts, as Slack keeps it: its blocks given ids, and the app's bot profile on it."""
+        ts = self._world.next_ts(self._clock)
+        return wire.SlackMessage(
+            ts=ts,
             user=BOT_USER_ID,
-            text=args.text,
+            text=text,
             team=state.TEAM_ID,
             bot_id=BOT_ID,
             app_id=state.APP_ID,
             thread_ts=thread_ts,
-            blocks=args.blocks,
-            attachments=args.attachments,
-            ephemeral_to=user.id,
+            blocks=wire.with_ids(blocks, ts),
+            attachments=attachments,
+            bot_profile=state.bot_profile(int(self._clock.now().timestamp())),
+            ephemeral_to=ephemeral_to,
         )
+
+    def _write_ephemeral(self, channel: str, message: wire.SlackMessage, user: wire.SlackUser) -> None:
         seen_by = [user.profile.email] if not user.is_bot and user.profile.email is not None else []
         self._world.write(
             state.message_ref(message.ts),
             message,
             operation=Operation.CREATE,
             actor=Actor.AGENT,
-            parent=channel.id,
+            parent=channel,
             after=MessageSnapshot(
                 text=wire.visible_text(message.text, message.blocks),
-                channel=channel.id,
+                channel=channel,
                 recipient_emails=seen_by,
-                thread_of=thread_ts,
+                thread_of=message.thread_ts,
+                actions=message_actions(message),
             ),
         )
-        return wire.PostedEphemeral(message_ts=message.ts)
 
     def _destination(self, channel: str) -> wire.SlackChannel:
         """A channel id, or a member id, which Slack answers with that member's IM with the app."""
@@ -413,7 +490,7 @@ class SlackApi:
         if args.text is None and args.blocks is None and args.attachments is None:
             raise wire.Refusal("no_text")
         text = message.text if args.text is None else args.text
-        blocks = message.blocks if args.blocks is None else args.blocks
+        blocks = message.blocks if args.blocks is None else wire.with_ids(args.blocks, message.ts)
         wire.check_message(text, blocks)
         updated = message.model_copy(
             update={
@@ -472,6 +549,293 @@ class SlackApi:
         )
         return wire.Ok()
 
+    # ------------------------------------------------------------------ views
+
+    def views_open(self, presented: wire.Presented) -> wire.Ok:
+        """A modal, opened with the `trigger_id` of a press or a command: once, and within three seconds."""
+        args = wire.read_args(wire.ViewsOpenArgs, presented)
+        if args.view is None:
+            raise wire.Refusal("invalid_arguments")
+        trigger = self._world.body(state.trigger_ref(args.trigger_id), wire.SlackTrigger) if args.trigger_id else None
+        if trigger is None:
+            raise wire.Refusal("invalid_trigger_id")
+        if trigger.view is not None:
+            raise wire.Refusal("exchanged_trigger_id")
+        if int(self._clock.now().timestamp()) > trigger.issued + _TRIGGER_LIFETIME:
+            raise wire.Refusal("expired_trigger_id")
+        if args.view.type != "modal":  # enum-lint: exempt Slack's own view type on the wire
+            raise wire.Refusal("invalid_arguments")
+        wire.check_view(args.view)
+        self._refuse_taken_external_id(args.view.external_id, None)
+        view_id = state.view_id(self._world.next_seq())
+        shown = self._view(view_id, args.view, root=view_id, version=0)
+        self._world.write(
+            state.trigger_ref(trigger.id),
+            trigger.model_copy(update={"view": view_id}),
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            parent=state.TRIGGERS,
+        )
+        self._write_view(wire.OpenView(view=shown, user=trigger.user, trigger_id=trigger.id), Operation.CREATE)
+        return wire.ViewAnswered(view=shown)
+
+    def views_update(self, presented: wire.Presented) -> wire.Ok:
+        args = wire.read_args(wire.ViewsUpdateArgs, presented)
+        if args.view is None or not (args.view_id or args.external_id):
+            raise wire.Refusal("invalid_arguments")
+        found = self._open_view(args.view_id, args.external_id)
+        if found is None:
+            raise wire.Refusal("not_found")
+        if args.hash and args.hash != found.view.hash:
+            raise wire.Refusal("hash_conflict")
+        if args.view.type != found.view.type:
+            raise wire.Refusal("invalid_arguments")
+        wire.check_view(args.view)
+        self._refuse_taken_external_id(args.view.external_id, found.view.id)
+        shown = self._view(found.view.id, args.view, root=found.view.root_view_id, version=self._version(found))
+        self._write_view(found.model_copy(update={"view": shown, "errors": {}}), Operation.UPDATE)
+        return wire.ViewAnswered(view=shown)
+
+    def views_publish(self, presented: wire.Presented) -> wire.Ok:
+        """A member's Home tab: one per member, replaced by every publish."""
+        args = wire.read_args(wire.ViewsPublishArgs, presented)
+        if args.view is None or not args.user_id:
+            raise wire.Refusal("invalid_arguments")
+        if args.view.type != "home":  # enum-lint: exempt Slack's own view type on the wire
+            raise wire.Refusal("invalid_arguments")
+        user = self._user(args.user_id)
+        wire.check_view(args.view)
+        view_id = state.home_view_id(user.id)
+        existing = self._world.body(state.view_ref(view_id), wire.OpenView)
+        if existing is not None and args.hash and args.hash != existing.view.hash:
+            raise wire.Refusal("hash_conflict")
+        version = self._version(existing) if existing is not None else 0
+        shown = self._view(view_id, args.view, root=view_id, version=version)
+        self._write_view(
+            wire.OpenView(view=shown, user=user.id), Operation.CREATE if existing is None else Operation.UPDATE
+        )
+        return wire.ViewAnswered(view=shown)
+
+    def _view(self, view_id: str, spec: wire.ViewSpec, *, root: str, version: int) -> wire.SlackView:
+        blocks = wire.with_ids(spec.blocks, view_id) or []
+        return wire.SlackView(
+            id=view_id,
+            team_id=state.TEAM_ID,
+            type=spec.type,
+            title=spec.title,
+            submit=spec.submit,
+            close=spec.close,
+            blocks=blocks,
+            private_metadata=spec.private_metadata,
+            callback_id=spec.callback_id,
+            external_id=spec.external_id,
+            state=wire.ViewState(),
+            hash=state.view_hash(view_id, version),
+            clear_on_close=spec.clear_on_close,
+            notify_on_close=spec.notify_on_close,
+            root_view_id=root,
+            app_id=state.APP_ID,
+            app_installed_team_id=state.TEAM_ID,
+            bot_id=BOT_ID,
+        )
+
+    def _version(self, found: wire.OpenView) -> int:
+        return int(found.view.hash.split(".", 1)[0]) + 1
+
+    def _open_view(self, view_id: str, external_id: str) -> wire.OpenView | None:
+        if view_id:
+            found = self._world.body(state.view_ref(view_id), wire.OpenView)
+            return found if found is not None and found.open else None
+        return next(
+            (
+                v
+                for v in self._world.bodies(EntityKind.RECORD, state.VIEWS, wire.OpenView)
+                if v.open and v.view.external_id == external_id
+            ),
+            None,
+        )
+
+    def _refuse_taken_external_id(self, external_id: str, besides: str | None) -> None:
+        if not external_id:
+            return
+        for found in self._world.bodies(EntityKind.RECORD, state.VIEWS, wire.OpenView):
+            if found.open and found.view.external_id == external_id and found.view.id != besides:
+                raise wire.Refusal("duplicate_external_id")
+
+    def _write_view(self, shown: wire.OpenView, operation: Operation) -> None:
+        write_view(self._world, shown, operation, Actor.AGENT)
+
+    # ------------------------------------------------------------------ oauth
+
+    def oauth_v2_access(self, presented: wire.Presented) -> wire.Ok:
+        """The install's code exchanged for the bot token. Any code is accepted once: no browser ever signed in to
+        make one, so a code is whatever the agent was redirected with. The installer is the scenario's owner."""
+        args = wire.read_args(wire.OAuthArgs, presented)
+        client = presented.client or (
+            wire.OAuthClient(client_id=args.client_id, client_secret=args.client_secret) if args.client_id else None
+        )
+        if client is None or not client.client_id:
+            raise wire.Refusal("invalid_client_id")
+        if not client.client_secret:
+            raise wire.Refusal("bad_client_secret")
+        install = self._world.body(state.install_ref(), wire.SlackInstall)
+        if not args.code or install is None or args.code in install.exchanged:
+            raise wire.Refusal("invalid_code")
+        self._world.write(
+            state.install_ref(),
+            install.model_copy(update={"exchanged": [*install.exchanged, args.code]}),
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            parent=state.APP,
+        )
+        return wire.OAuthAccess(
+            app_id=state.APP_ID,
+            authed_user=wire.AuthedUser(id=install.installer),
+            scope=SCOPES,
+            access_token=f"xoxb-{state.TEAM_ID}-{BOT_USER_ID}-{state.minted('token', len(install.exchanged), 0)}",
+            bot_user_id=BOT_USER_ID,
+            team=wire.TeamRef(id=state.TEAM_ID, name=state.TEAM_NAME),
+        )
+
+    # ------------------------------------------------------------------ files
+
+    async def file(self, request: Request) -> Response:
+        """A file's `url_private`: its content to any bot or user token; without one, Slack's sign-in page, as Slack
+        redirects a browser that is not signed in."""
+        key = request.path_params["key"]
+        token = wire.read_call("", "", b"", _header(request, "authorization")).token
+        if token is None or not token.startswith(_TOKEN_KINDS):
+            return RedirectResponse(f"https://{state.TEAM_DOMAIN}.slack.com/?redir={request.url.path}", status_code=302)
+        team, _, file_id = key.partition("-")
+        found = self._world.file(file_id) if team == state.TEAM_ID else None
+        content = self._world.body(state.content_ref(file_id), wire.SlackFileContent) if found is not None else None
+        if found is None or content is None or request.path_params["name"] != found.name:
+            return HTMLResponse(_NOT_FOUND, status_code=404)
+        self._world.saw(state.file_ref(found.id), Operation.READ)
+        headers = (
+            {"Content-Disposition": f'attachment; filename="{found.name}"'}
+            if "download" in request.url.path.split("/")
+            else {}
+        )
+        return Response(content.text.encode(), media_type=content.mimetype, headers=headers)
+
+    async def sign_in(self, request: Request) -> Response:
+        return HTMLResponse(_SIGN_IN)
+
+    # ------------------------------------------------------------------ response_url
+
+    async def response_url(self, request: Request) -> Response:
+        """What the agent posts to the `response_url` of a press or a command: a new message, ephemeral unless it
+        says `in_channel`; with `replace_original` the pressed message rewritten; with `delete_original` removed.
+        Five uses, thirty minutes, as Slack allows."""
+        hook = self._world.body(state.hook_ref(request.path_params["hook"]), wire.SlackHook)
+        if hook is None or hook.secret != request.path_params["secret"] or request.path_params["team"] != state.TEAM_ID:
+            return JSONResponse({"ok": False, "error": "invalid_token"}, status_code=404)
+        if int(self._clock.now().timestamp()) > hook.issued + HOOK_LIFETIME:
+            return JSONResponse({"ok": False, "error": "expired_url"}, status_code=404)
+        if hook.used >= HOOK_USES:
+            return JSONResponse({"ok": False, "error": "used_url"}, status_code=404)
+        try:
+            body = wire.ResponseUrlBody.model_validate_json(await request.body())
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        self._world.write(
+            state.hook_ref(hook.id),
+            hook.model_copy(update={"used": hook.used + 1}),
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            parent=state.HOOKS,
+        )
+        original = self._world.located(hook.message) if hook.message is not None else None
+        if body.delete_original or body.replace_original:
+            if original is None:
+                return JSONResponse({"ok": False, "error": "message_not_found"}, status_code=404)
+            channel, message = original
+            if body.delete_original:
+                self._world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel)
+                return JSONResponse({"ok": True})
+            replaced = message.model_copy(
+                update={
+                    "text": body.text,
+                    "blocks": wire.with_ids(body.blocks, message.ts),
+                    "attachments": body.attachments,
+                }
+            )
+            snapshot = (
+                self._snapshot(channel, replaced)
+                if replaced.ephemeral_to is None
+                else self._snapshot(channel, replaced).model_copy(
+                    update={"recipient_emails": self._emails([replaced.ephemeral_to])}
+                )
+            )
+            self._world.write(
+                state.message_ref(message.ts),
+                replaced,
+                operation=Operation.UPDATE,
+                actor=Actor.AGENT,
+                parent=channel,
+                after=snapshot,
+            )
+            return JSONResponse({"ok": True})
+        thread_ts = body.thread_ts or (original[1].thread_ts if original is not None else None)
+        if body.response_type == "in_channel":  # enum-lint: exempt Slack's own response type on the wire
+            message = self._from_bot(body.text, body.blocks, body.attachments, thread_ts)
+            self._world.write(
+                state.message_ref(message.ts),
+                message,
+                operation=Operation.CREATE,
+                actor=Actor.AGENT,
+                parent=hook.channel,
+                after=self._snapshot(hook.channel, message),
+            )
+            return JSONResponse({"ok": True})
+        user = self._world.user(hook.user)
+        if user is None:
+            return JSONResponse({"ok": False, "error": "user_not_found"}, status_code=404)
+        message = self._from_bot(body.text, body.blocks, body.attachments, thread_ts, ephemeral_to=user.id)
+        self._write_ephemeral(hook.channel, message, user)
+        return JSONResponse({"ok": True})
+
+    def _emails(self, users: list[str]) -> list[str]:
+        found = [self._world.user(u) for u in users]
+        return [u.profile.email for u in found if u is not None and not u.is_bot and u.profile.email is not None]
+
+
+_SIGN_IN = (
+    "<!DOCTYPE html><html><head><title>Sign in | Slack</title></head>"
+    "<body><h1>Sign in to Simulated Workspace</h1></body></html>"
+)
+_NOT_FOUND = "<!DOCTYPE html><html><head><title>Not found | Slack</title></head><body></body></html>"
+
+
+def message_actions(message: wire.SlackMessage) -> list[MessageAction]:
+    """The controls a reader can use on a message, as the domain names them."""
+    kinds = {"button": ControlKind.BUTTON, "users_select": ControlKind.USER_SELECT}
+    return [
+        MessageAction(
+            action_id=c.action_id,
+            label=c.label,
+            control=ControlKind.LINK if c.url is not None else kinds[c.type],
+            value=c.value,
+        )
+        for c in wire.controls(message.blocks)
+    ]
+
+
+def write_view(world: SlackWorld, shown: wire.OpenView, operation: Operation, actor: Actor) -> None:
+    """A view in the store, recorded with the text it shows so the checks can read what the agent wrote in it."""
+    title = shown.view.title.text if shown.view.title is not None else ""
+    world.write(
+        state.view_ref(shown.view.id),
+        shown,
+        operation=operation,
+        actor=actor,
+        parent=state.VIEWS,
+        after=RecordSnapshot(
+            resource="views", text="\n".join(t for t in (title, wire.visible_text("", shown.view.blocks)) if t)
+        ),
+    )
+
 
 def _within(ts: Decimal, *, oldest: Decimal | None, latest: Decimal | None, inclusive: bool) -> bool:
     if oldest is not None and (ts < oldest if inclusive else ts <= oldest):
@@ -482,4 +846,13 @@ def _within(ts: Decimal, *, oldest: Decimal | None, latest: Decimal | None, incl
 def build_app(store: Store, clock: Clock) -> Starlette:
     api = SlackApi(store, clock)
     endpoint: Callable[[Request], Awaitable[Response]] = api.endpoint
-    return Starlette(routes=[Route("/api/{method}", endpoint, methods=["GET", "POST"])])
+    return Starlette(
+        routes=[
+            Route("/api/{method}", endpoint, methods=["GET", "POST"]),
+            Route("/files-pri/{key}/{name}", api.file, methods=["GET"]),
+            Route("/files-pri/{key}/download/{name}", api.file, methods=["GET"]),
+            Route("/actions/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
+            Route("/commands/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
+            Route("/", api.sign_in, methods=["GET"]),
+        ]
+    )
