@@ -32,3 +32,7 @@ expect:
   - kind: person_asked
     person: owen
     mentions: [confirmed]
+  - kind: relayed                     # Owen is told what Rosa said, not only that something is "confirmed":
+    said_by: rosa                     # the tell is a phrase only her answer holds, and the scenario is
+    to: owen                          # refused if the goal or anyone else could hand it to the agent.
+    tell: lakeside hall

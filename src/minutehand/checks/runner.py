@@ -287,6 +287,7 @@ def view_of(
         events=events,
         wakes=wakes,
         obligations=build(scenario, events, replies, withdrawn=withdrawn),
+        replies=[r for i, r in enumerate(replies) if i not in withdrawn],
         commitments=commitments,
         unmatched_calls=unmatched_calls,
     )

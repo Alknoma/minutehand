@@ -167,5 +167,6 @@ def view(
         events=log.events,
         wakes=wakes or [],
         obligations=build(world, log.events, replies or []),
+        replies=replies or [],
         unmatched_calls=unmatched,
     )

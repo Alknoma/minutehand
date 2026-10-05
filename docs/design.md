@@ -198,7 +198,7 @@ src/minutehand/
   domain/             pure: no I/O, no clock reads
     scenario.py       Model, Scenario, Person, Answers, Scripted, Silent, DelayRange, WorkingHours, Absence,
                       SeededTicket, SeededDocument, TicketFate, Direction, PersonAsked, TicketCreated,
-                      TicketDeleted, TicketInState
+                      TicketDeleted, TicketInState, Relayed
     world.py          WorldEvent, Change, Stored, Exchange, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot, DocumentSnapshot, RecordSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
@@ -548,6 +548,18 @@ informational (1)
 ```
 
 A met expectation carries no pattern: there is nothing to fix. Only `FAIL` findings count against `expectations_met`.
+
+"The owner was told what Sofia answered" is `Relayed`, defined from the log alone, with no judgement and no word list:
+
+```yaml
+  - {kind: relayed, said_by: rosa, to: owen, tell: lakeside hall}
+```
+
+- **The tell is the author's.** A phrase only `said_by`'s answer holds. The scenario is refused when its goal, a direction, a seeded ticket or document, or anyone else's scripted reply or facts holds it, when `said_by` is `Silent`, and when none of their scripted replies (or, for a model-written person, none of their facts) holds it.
+- **The person must say it first.** The first event in the world whose text holds the tell must be a message from a person that is `said_by`'s own reply, not withdrawn, landing at that moment (`RunView.replies`). An agent message that held it earlier means the agent did not hear it from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
+- **A match** is an agent message to `to`, after that reply, holding the tell, in any case.
+
+What it gets wrong: the tell is a substring, so a relay that paraphrases ("the hall by the lake") is not counted, and one that quotes the tell inside a sentence that contradicts it is. A model-written person may phrase the fact without the tell, and the expectation then fails though the content was passed on.
 
 ### A person acting in the agent's own product
 

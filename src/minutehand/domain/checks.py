@@ -12,6 +12,7 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
 from minutehand.domain.conversation import Judgement
+from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import EntityRef, Exchange, WorldEvent
 
@@ -178,6 +179,9 @@ class RunView(Model):
     events: list[WorldEvent]
     wakes: list[WakeRecord]
     obligations: list[Obligation] = []
+    replies: list[PersonReply] = Field(
+        default=[], description="What people said: every reply not withdrawn before it landed, with who and when"
+    )
     commitments: list[Commitment] | None = None
     unmatched_calls: list[Exchange] | None = Field(
         default=None,
