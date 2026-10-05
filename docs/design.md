@@ -695,7 +695,7 @@ The checks, discovered by `checks/runner.py` (any class in a module of `checks/`
 | `chased_absent_person` | `FAIL`: messaged someone away while a delegate covered | `absence_aware` |
 | `duplicate_ticket` | `FAIL`: the same normalised title filed twice in one project while the first was open | `one_open_ask_per_person` |
 | `expectations` | `FAIL` per unmet expectation | `honest_closure` |
-| `idle_wake` | `REVIEW`: a wake that changed nothing in the world and nothing the agent was waiting on | `check_world_before_model` |
+| `idle_wake` | `REVIEW`: a wake that changed nothing in the world and nothing the agent was waiting on, with the model calls received during it, or that none could be counted; not raised when the agent's telemetry shows it made none | `check_world_before_model` |
 | `kept_chasing_after_done` | `REVIEW`: a message threaded under an answered ask, or naming a finished ticket | `one_open_ask_per_person` |
 | `late_follow_up` | `FAIL`: a follow-up more than `GRACE` after the wait fell due | `expiry_on_every_wait` |
 | `near_miss_name` | `FAIL`: a protected name written one letter off | `confirm_names` |
@@ -703,6 +703,8 @@ The checks, discovered by `checks/runner.py` (any class in a module of `checks/`
 | `repeated_message` | `REVIEW`: two messages to one channel within five minutes of simulated time, no reply between, sharing rare wording | `one_open_ask_per_person` |
 | `slow_to_react` | `FAIL`: an answer landed or work was finished and the agent came back late or never | `expiry_on_every_wait` |
 | `unmatched_call` | `REVIEW`: a call to a host no provider claims | none |
+
+`idle_wake` states what it saw and gives no reason: "wake 3 changed nothing in the world and nothing the agent was waiting on; 2 model calls were received or recorded during it", or, with no span of a model call in the run, that the count is not known. Why a wake was idle (asked the model to look, woke too early, dropped a reply) is not observed, so the advice for each cause is on the pattern's page, not in the finding. A wake that changed nothing and made no model call, by telemetry that reports model calls, cost nothing worth fixing and is only noted. What this gets wrong: an agent that traces some of its model calls and not others has an untraced, costly wake read as free; and "changed nothing" counts only writes to the world and changes to reported commitments, so a wake that learned something it kept in its own memory reads as idle.
 
 Not built:
 
@@ -962,7 +964,7 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 
 | Pillar | What the agent's telemetry adds | Built |
 |---|---|---|
-| Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is placed in the wake its start fell in, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. No check reads spans yet, and no scorecard number counts tokens. |
+| Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is placed in the wake its start fell in, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. `idle_wake` reads each wake's model calls (`RunView.model_calls`). No scorecard number counts tokens. |
 | Comparing a fork with its parent | A fork sees its parent's spans of the wakes up to the fork, and keeps its own after it; the same event in parent and child can be read with the model call behind each, so a `PromptPatch` can be judged by what the model was then asked and answered, not only by what the world did. | The fork's view of spans. No side-by-side of a parent's and a child's model calls. |
 
 ### What a coding agent calls
@@ -1067,7 +1069,7 @@ Nine, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/patter
 | `Pattern.key` | Failure | Design | Found by | Reference mechanism |
 |---|---|---|---|---|
 | `expiry_on_every_wait` | Waits on something forever | Every wait carries an expected-by date and the agent wakes on it | `late_follow_up`, `no_follow_up`, `slow_to_react` | An expected-by date on every blocker and one "next stale check" time derived from them, which the scheduler books |
-| `check_world_before_model` | Spends a model call to learn nothing changed | On waking, look at the world with plain code first; involve the model only when judgement is needed | `idle_wake` | A filter to the waits actually stale, and a cheap preflight that ends the wake when none is |
+| `check_world_before_model` | Spends a wake, and the model calls in it, to learn nothing changed | Spend a wake's model calls only on what changed since the last look; the page lists why a wake can change nothing and what each cause needs | `idle_wake` | A filter to the waits actually stale, and a cheap preflight that ends the wake when none is |
 | `absence_aware` | Chases someone who is away | Know who is away and until when; extend the wait or go to their delegate | `chased_absent_person` | An absence filter over every follow-up before it is sent, rerouting to the named cover |
 | `budgeted_follow_up` | Follows up too often, or too late | Space reminders across the time left before the deadline | `acted_after_deadline` | The next reminder computed from the time remaining and the number already sent |
 | `bounded_asking` | Asks for input indefinitely | After a fixed number of attempts, stop asking and deliver the best available version | none | A count of attempts per unmet need and a pivot to best-effort delivery past a threshold |

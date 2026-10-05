@@ -24,8 +24,9 @@ PATTERNS: tuple[Pattern, ...] = (
     Pattern(
         key="check_world_before_model",
         title="Look at the world before asking the model",
-        failure="Spends a model call to learn that nothing changed.",
-        design="On waking, look at the world with plain code first; involve the model only when judgement is needed.",
+        failure="Spends a wake, and the model calls in it, to learn that nothing changed.",
+        design="Spend a wake's model calls only on what changed since the last look; the page lists why a wake can "
+        "change nothing and what each cause needs.",
         reference=_page("check_world_before_model"),
     ),
     Pattern(

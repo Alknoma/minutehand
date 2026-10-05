@@ -38,6 +38,7 @@ from minutehand.domain.checks import (
     FindingKind,
     RunView,
     Stability,
+    WakeModelCalls,
     WakeRecord,
 )
 from minutehand.domain.people import PersonReply
@@ -279,6 +280,7 @@ def view_of(
     withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
+    model_calls: list[WakeModelCalls] | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -290,6 +292,7 @@ def view_of(
         replies=[r for i, r in enumerate(replies) if i not in withdrawn],
         commitments=commitments,
         unmatched_calls=unmatched_calls,
+        model_calls=model_calls,
     )
 
 

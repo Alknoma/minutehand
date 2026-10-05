@@ -58,6 +58,7 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
+from minutehand.application.model_calls import per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier_model import PeopleReplier
@@ -507,6 +508,7 @@ class _Judge:
             withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in world.calls() if call.provider is None],
+            model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop)

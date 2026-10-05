@@ -11,7 +11,7 @@ from minutehand.checks.idle_wake import IdleWake
 from minutehand.checks.near_miss_name import NearMissName
 from minutehand.checks.repeated_message import RepeatedMessage
 from minutehand.checks.unmatched_call import UnmatchedCall
-from minutehand.domain.checks import FindingKind, WakeRecord
+from minutehand.domain.checks import FindingKind, WakeModelCalls, WakeRecord
 from minutehand.domain.scenario import Expectation, PersonAsked, TicketInState
 from minutehand.domain.world import Actor, Exchange, Operation, TicketState
 from tests.checks.world import Log, at, person, scenario, view
@@ -28,6 +28,27 @@ def test_a_wake_that_changed_nothing_is_flagged_for_review() -> None:
     wakes = [_wake(1, 2), _wake(2, 0), _wake(3, 0, commitments=True)]
     [finding] = IdleWake().run(view(scenario(OWNER), Log(), wakes=wakes)).findings
     assert (finding.wake, finding.kind, finding.pattern) == (2, FindingKind.REVIEW, "check_world_before_model")
+    assert finding.message == (
+        "wake 2 changed nothing in the world and nothing the agent was waiting on; no telemetry of the agent's "
+        "model calls was received, so how many it made is not known"
+    )
+
+
+def test_an_idle_wake_states_the_model_calls_received_during_it_and_no_advice() -> None:
+    wakes = [_wake(1, 2), _wake(2, 0), _wake(3, 0)]
+    calls = [WakeModelCalls(wake=1, calls=3), WakeModelCalls(wake=2, calls=2), WakeModelCalls(wake=3, calls=0)]
+    report = IdleWake().run(view(scenario(OWNER), Log(), wakes=wakes).model_copy(update={"model_calls": calls}))
+
+    # Wake 3 changed nothing and made no model call: that cost nothing, and it is noted, not raised.
+    [finding] = report.findings
+    assert finding.wake == 2 and finding.message == (
+        "wake 2 changed nothing in the world and nothing the agent was waiting on; 2 model calls were received or "
+        "recorded during it"
+    )
+    assert report.notes == [
+        "wake 3 changed nothing in the world and nothing the agent was waiting on, and made no model call: "
+        "not wasted effort"
+    ]
 
 
 def test_wakes_that_each_changed_something_are_not_idle() -> None:
