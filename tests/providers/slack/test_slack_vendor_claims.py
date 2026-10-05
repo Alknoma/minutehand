@@ -97,8 +97,8 @@ async def test_one_unknown_id_in_a_group_dm_refuses_the_whole_open_user_not_foun
 
 
 async def test_a_token_that_is_not_slacks_is_refused_invalid_auth(slack: Intercepted) -> None:
-    """DOCUMENTED: a token Slack never issued is `invalid_auth`. Only the shape of a token is checked here; see
-    CLAIMS.md. https://docs.slack.dev/reference/methods/auth.test"""
+    """DOCUMENTED: a token not shaped like Slack's is `invalid_auth`.
+    https://docs.slack.dev/reference/methods/auth.test"""
     answer = await refusal(slack.asynchronous(token="ghp_not-a-slack-token").auth_test())
 
     assert answer["error"] == "invalid_auth"
