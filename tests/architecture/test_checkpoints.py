@@ -14,6 +14,7 @@ import os
 import re
 import signal
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -24,10 +25,14 @@ FINGERPRINT = {"fingerprint": [PY, HOOKS, "fingerprint"]}
 
 
 def _jobs_in_snapshots(rig: Rig, run_id: str) -> dict[str, list[str]]:
+    """The state of each job in each snapshot the run's store kept, by wake, each written out to be read."""
     found: dict[str, list[str]] = {}
-    for directory in sorted((rig.state / "runs" / run_id).glob("wake-*")):
-        with sqlite3.connect(directory / "agent.db") as db:
-            found[directory.name] = [state for (state,) in db.execute("SELECT state FROM jobs")]
+    with rig.world(run_id) as world:
+        for kept in world.snapshots():
+            into = rig.base / "read" / f"wake-{kept.wake}"
+            world.materialise(kept.run_id, kept.wake, into)
+            with closing(sqlite3.connect(into / "agent.db")) as db:
+                found[into.name] = [state for (state,) in db.execute("SELECT state FROM jobs")]
     return found
 
 
