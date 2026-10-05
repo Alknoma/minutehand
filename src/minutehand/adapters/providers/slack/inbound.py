@@ -30,6 +30,7 @@ from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.scenario import (
     MessagingHappening,
+    PersonAddsAgent,
     PersonCommands,
     PersonDeletes,
     PersonEdits,
@@ -256,6 +257,8 @@ async def happen(
         await _reacts(slack, happening, author, target, clock, secret)
     elif isinstance(happening, PersonJoins):
         await _joins(slack, happening, author, target, clock, secret)
+    elif isinstance(happening, PersonAddsAgent):
+        await _adds_agent(slack, happening, author, target, clock, secret)
     elif isinstance(happening, PersonOpensAgent):
         await _opens_home(slack, world, author, target, clock, secret)
     else:
@@ -429,6 +432,36 @@ async def _joins(
             event_ts=stamp,
         )
         await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
+
+
+async def _adds_agent(
+    slack: SlackWorld, adds: PersonAddsAgent, author: str, target: InboundTarget, clock: Clock, secret: str
+) -> None:
+    """The person invites the agent's bot to a channel they are in: Slack tells the bot it joined, naming who
+    invited it. A bot is never invited to a DM, so a happening with no channel is refused."""
+    if adds.channel is None:
+        raise ValueError("a Slack bot is invited to a channel; a DM with it exists already, so name a channel")
+    cid = state.named_channel_id(adds.channel)
+    channel = conversation(slack, adds.channel, author)
+    if slack.is_member(cid, BOT_USER_ID):
+        raise LookupError(f"the agent is already in #{adds.channel}")
+    stamp = slack.next_ts(clock)
+    slack.write(
+        state.membership_ref(cid, BOT_USER_ID),
+        wire.SlackMembership(channel=cid, user=BOT_USER_ID),
+        operation=Operation.CREATE,
+        actor=Actor.PERSON,
+        parent=cid,
+    )
+    event = wire.MemberJoinedEvent(
+        user=BOT_USER_ID,
+        channel=cid,
+        channel_type="G" if channel.is_private else "C",
+        team=state.TEAM_ID,
+        inviter=author,
+        event_ts=stamp,
+    )
+    await push_event(target, _event(event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _opens_home(

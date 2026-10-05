@@ -47,6 +47,7 @@ from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.scenario import (
     Happening,
+    PersonAddsAgent,
     PersonCommands,
     PersonDeletes,
     PersonEdits,
@@ -342,6 +343,8 @@ class People:
             await self.react(user, activity_id, happening.reaction, target)
         elif isinstance(happening, PersonJoins):
             await self.join(user, self.named(happening.channel, user), target)
+        elif isinstance(happening, PersonAddsAgent):
+            await self.install(user, self.named(happening.channel, user), target)
         elif isinstance(happening, PersonOpensAgent):
             raise ValueError(
                 "Teams pushes nothing to a bot when a person opens its app; this happening has no Teams form"

@@ -1020,6 +1020,7 @@ class MemberJoinedEvent(Model):
     channel: str
     channel_type: Literal["C", "G"]
     team: str
+    inviter: str | None = Field(default=None, description="Who added `user`; absent when they joined by themselves")
     event_ts: str
 
 

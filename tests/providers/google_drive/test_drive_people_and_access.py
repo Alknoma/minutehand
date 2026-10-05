@@ -16,8 +16,10 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import (
     Access,
     AccessRole,
+    Commented,
     DocumentHappening,
     Edited,
+    FieldSet,
     Moved,
     ProviderSeed,
     SeededDocument,
@@ -221,6 +223,51 @@ async def test_people_edit_move_and_share_a_seeded_document_as_themselves(
     assert modifier["emailAddress"] == "mara@example.com"
     assert by_dov.status_code == 200
     assert people and all(op in (Operation.CREATE, Operation.UPDATE) for _, op in people)
+
+
+async def test_a_person_comments_on_a_seeded_document_and_the_agent_reads_it_as_theirs(
+    drive: Drive, api: httpx.AsyncClient
+) -> None:
+    drive.clock.jump(START + timedelta(hours=3))
+    happening = DocumentHappening(
+        document="Supplier Shortlist", person="mara", after=timedelta(hours=3), action=Commented(text="Initech too?")
+    )
+    drive.provider.change(happening, SCENARIO, drive.store, drive.clock)
+    found = files_of(
+        answer(await api.get("/drive/v3/files", params={"q": "name = 'Supplier Shortlist'"}, headers=AUTH))
+    )[0]
+    listed_comments = answer(
+        await api.get(
+            f"/drive/v3/files/{found['id']}/comments",
+            params={"fields": "comments(content,author(displayName,me),createdTime)"},
+            headers=AUTH,
+        )
+    )
+    assert listed_comments["comments"] == [
+        {
+            "content": "Initech too?",
+            "author": {"displayName": "Mara Lindqvist", "me": False},
+            "createdTime": "2026-09-14T11:30:00.000Z",
+        }
+    ]
+
+
+def test_a_field_set_on_a_drive_document_is_refused_at_load_naming_the_happening() -> None:
+    from minutehand.adapters.proxy.registry import Registry
+    from minutehand.application.refusals import RunRefused, refuse_unheld
+
+    happening = DocumentHappening(
+        document="Supplier Shortlist",
+        person="mara",
+        after=timedelta(hours=1),
+        action=FieldSet(field="Status", value="x"),
+    )
+    scenario = SCENARIO.model_copy(update={"happenings": [happening]})
+    manifests = {m.key: m for m in Registry.installed().manifests}
+    with pytest.raises(RunRefused, match=r"happening 1 \(mara field_set the seeded document 'Supplier Shortlist'\) "):
+        refuse_unheld(scenario, manifests)
+    commented = happening.model_copy(update={"action": Commented(text="ok")})
+    refuse_unheld(SCENARIO.model_copy(update={"happenings": [commented]}), manifests)
 
 
 async def test_a_change_listing_says_removed_for_a_file_deleted_and_the_token_is_checked(

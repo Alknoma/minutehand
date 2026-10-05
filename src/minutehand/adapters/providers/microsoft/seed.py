@@ -101,6 +101,11 @@ class MicrosoftSeed(Model):
     """What only Microsoft seeds, as the body of the scenario's `ProviderSeed` for `microsoft`."""
 
     faults: list[FaultSeed] = []
+    not_installed_for: list[str] = Field(
+        default=[],
+        description="Person.key of each person whose own chat with the bot does not exist yet: the bot reaches them "
+        "only once they install it (`PersonAddsAgent` with no channel)",
+    )
 
 
 def microsoft_seed(scenario: Scenario) -> MicrosoftSeed:
@@ -316,6 +321,10 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
         user = UserRecord(user=_graph_user(person, directory), tenant_id=directory.tenant_id, person_key=person.key)
         users[person.key] = user
         world.write(user_ref(user.user.id), user, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=USERS)
+    spec = microsoft_seed(scenario)
+    unknown = sorted(set(spec.not_installed_for) - set(users))
+    if unknown:
+        raise ValueError(f"the Microsoft seed names no user of the tenant: {', '.join(unknown)}")
     for user in users.values():
         personal = ConversationRecord(
             id="a:" + derived_uuid(directory.tenant_id, "personal", user.user.id).replace("-", ""),
@@ -323,7 +332,7 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
             type=wire.ConversationType.PERSONAL,
             tenant_id=directory.tenant_id,
             members=[user.user.id],
-            bot_installed=True,
+            bot_installed=user.person_key not in spec.not_installed_for,
             created=stamp,
         )
         world.write_conversation(personal, operation=Operation.CREATE, actor=Actor.SCENARIO)
