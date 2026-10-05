@@ -50,6 +50,7 @@ from minutehand.domain.telemetry import (
 )
 from minutehand.domain.world import (
     Actor,
+    CallBegan,
     Change,
     EntityKind,
     EntityRef,
@@ -480,7 +481,15 @@ class SqliteStore:
         return found
 
     @_locked
-    def attach(self, exchange: Exchange, *, first_seq: int, last_seq: int, provider: ProviderKey | None = None) -> None:
+    def attach(
+        self,
+        exchange: Exchange,
+        *,
+        first_seq: int,
+        last_seq: int,
+        provider: ProviderKey | None = None,
+        began: CallBegan | None = None,
+    ) -> None:
         position = self._db.execute("SELECT COUNT(*) FROM exchange WHERE run_id=?", (self.run_id,)).fetchone()[0]
         request, request_ref = self._keep(exchange.request_body)
         response, response_ref = self._keep(exchange.response_body)
@@ -496,8 +505,8 @@ class SqliteStore:
                 first_seq,
                 last_seq,
                 provider,
-                self._clock.wake(),
-                self._clock.now().isoformat(),
+                began.wake if began is not None else self._clock.wake(),
+                (began.sim_time if began is not None else self._clock.now()).isoformat(),
                 exchange.model_dump_json(exclude={"request_body", "response_body", "request_bytes", "response_bytes"}),
                 request,
                 request_ref,
