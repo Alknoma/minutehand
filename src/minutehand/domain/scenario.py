@@ -2,13 +2,18 @@
 
 A scenario holds no absolute dates except `starts_at`. Every other moment is an
 offset from it, so the same file replays on any day and under any seed.
+
+A scenario file may leave `starts_at` out (`WrittenScenario`): it then starts at the
+moment the run starts, for an agent that reads the real clock. A run resolves it once,
+before anything is played, into the `Scenario` it plays and records, so every sample,
+fork and rerun of that run starts at the same instant.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
@@ -212,11 +217,12 @@ class TicketInState(Bound):
 Expectation = Annotated[PersonAsked | TicketCreated | TicketDeleted | TicketInState, Field(discriminator="kind")]
 
 
-class Scenario(Model):
+class _ScenarioBody(Model):
+    """Everything a scenario says but when it starts."""
+
     name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     goal: str = Field(description="The text handed to the agent, verbatim")
     owner: str = Field(description="Person.key of whoever gave the goal")
-    starts_at: AwareDatetime
     deadline_after: timedelta | None = None
     max_wakes: int = Field(default=20, ge=1)
     seed: int = 17
@@ -229,7 +235,7 @@ class Scenario(Model):
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
 
     @model_validator(mode="after")
-    def _keys_resolve(self) -> Scenario:
+    def _keys_resolve(self) -> Self:
         keys = [p.key for p in self.people]
         if len(keys) != len(set(keys)):
             raise ValueError("two people share a key")
@@ -243,6 +249,26 @@ class Scenario(Model):
         missing = sorted(set(named) - known)
         if missing:
             raise ValueError(f"no such person: {', '.join(missing)}")
+        return self
+
+
+class WrittenScenario(_ScenarioBody):
+    """A scenario as its file states it. With no `starts_at` it starts at the moment the run does."""
+
+    starts_at: AwareDatetime | None = Field(default=None, description="None: the moment the run starts")
+
+    def starting(self, now: datetime) -> Scenario:
+        """The scenario a run plays: its own `starts_at`, or `now`, the moment the run starts, when it has none."""
+        return Scenario.model_validate({**self.model_dump(), "starts_at": self.starts_at or now})
+
+
+class Scenario(_ScenarioBody):
+    """A scenario as a run plays it and records it: its start is an instant."""
+
+    starts_at: AwareDatetime = Field(description="Simulated; every other moment is an offset from it")
+
+    def starting(self, now: datetime) -> Scenario:
+        """Itself: its start is already an instant."""
         return self
 
     @property

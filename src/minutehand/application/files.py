@@ -17,7 +17,7 @@ from pydantic import BaseModel, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import WrittenScenario
 
 _M = TypeVar("_M", bound=BaseModel)
 
@@ -53,8 +53,9 @@ class FileRefused(ValueError):
     """A scenario or agent file that could not be read or does not describe a valid model."""
 
 
-def load_scenario(path: Path) -> Scenario:
-    return _load(path, Scenario)
+def load_scenario(path: Path) -> WrittenScenario:
+    """A scenario file; one without `starts_at` starts when the run does."""
+    return _load(path, WrittenScenario)
 
 
 def load_agent(path: Path) -> AgentUnderTest:

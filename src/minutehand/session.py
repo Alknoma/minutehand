@@ -57,7 +57,7 @@ from minutehand.domain.checks import WakeRecord
 from minutehand.domain.experiment import Fork
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment
 from minutehand.domain.run import RunRecord
-from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario
+from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
@@ -108,7 +108,7 @@ def run_dir(state: Path, run_id: str) -> Path:
 
 
 async def play(
-    scenario: Scenario,
+    written: Scenario | WrittenScenario,
     agent: AgentUnderTest,
     *,
     state: Path,
@@ -131,9 +131,13 @@ async def play(
     Each sample after the first starts from the agent's own state as the first found it, restored through
     its `StateHooks`. Without hooks the agent carries what it remembers from one sample into the next, and
     the samples are not independent.
+
+    A scenario with no `starts_at` starts now: the instant is taken once, here, and every sample plays and
+    records it, so a fork of any of them starts from the same moment.
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
+    scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
     registry = Registry.installed()
     routing = Routing(registry)
@@ -431,6 +435,11 @@ def _refuse_unwritten(scenario: Scenario, model: LanguageModel | None) -> None:
             f"configured: set {MODEL_VARIABLE} and {API_KEY_VARIABLE}, and {BASE_URL_VARIABLE} for a service "
             "other than OpenAI's"
         )
+
+
+def _now() -> datetime:
+    """The moment a run starts, to the second, for a scenario that starts when its run does."""
+    return datetime.now(UTC).replace(microsecond=0)  # clock-lint: exempt the real start of a run, read once
 
 
 def _new_run_id() -> str:

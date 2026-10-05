@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -20,7 +20,7 @@ from minutehand.adapters.telemetry.otel import OtelTelemetry
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.experiment import Fork, PersonChange
 from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import Silent
+from minutehand.domain.scenario import Silent, WrittenScenario
 from minutehand.domain.world import Actor
 from tests.e2e.support import ANSWER, T0, agent_under_test, answers, messages, scenario, texts, world
 
@@ -129,3 +129,31 @@ async def test_the_run_is_exported_as_spans_and_the_agents_own_span_parents_its_
     [reply] = by_person  # the person's answer has no caller of its own: it parents to the wake it landed in
     assert reply.parent is not None and reply.parent.span_id == context(wakes[1]).span_id
     assert len(logs.get_finished_logs()) == len(outcome.result.findings)
+
+
+async def test_a_scenario_with_no_start_starts_when_the_run_does_and_its_samples_and_fork_keep_that_instant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    state = tmp_path / "state"
+    written = WrittenScenario.model_validate(
+        {k: v for k, v in scenario(Silent()).model_dump().items() if k != "starts_at"}
+    )
+    before = datetime.now(UTC).replace(microsecond=0)
+
+    first, second = await session.play(written, launched.agent, state=state, samples=2, command=launched.command)
+    after = datetime.now(UTC)
+
+    started = first.record.started_at
+    assert before <= started <= after
+    assert second.record.started_at == started
+    assert first.record.wakes[0].sim_time == started
+    assert session.scenario_of(state, first.record.run_id).starts_at == started
+    assert first.record.ended_at == started + timedelta(days=14)
+
+    point = next(p for p in session.fork_points(state, first.record.run_id) if p.wake == 1)
+    changes = Fork(parent_run=first.record.run_id, at_seq=point.seq, overrides=[])
+    [child] = await session.fork(first.record.run_id, changes, state=state, command=launched.command)
+    assert child.record.started_at == started
+    assert child.record.ended_at == started + timedelta(days=14)

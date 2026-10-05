@@ -1,9 +1,11 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from pydantic import ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import Scenario, WrittenScenario
 
 BASE = {
     "name": "partner_pipeline",
@@ -63,3 +65,28 @@ def test_a_fork_carries_typed_overrides() -> None:
         }
     )
     assert [o.kind for o in fork.overrides] == ["prompt_patch", "model_swap"]
+
+
+RUN_STARTS = datetime(2026, 10, 4, 15, 30, 12, tzinfo=UTC)
+
+
+def test_a_scenario_file_without_a_start_starts_when_the_run_does() -> None:
+    written = WrittenScenario.model_validate(
+        {k: v for k, v in BASE.items() if k != "starts_at"} | {"deadline_after": "P2D"}
+    )
+
+    played = written.starting(RUN_STARTS)
+
+    assert written.starts_at is None
+    assert played.starts_at == RUN_STARTS and played.deadline == RUN_STARTS + timedelta(days=2)
+
+
+def test_a_scenario_file_with_a_start_keeps_it_whenever_the_run_starts() -> None:
+    assert WrittenScenario.model_validate(BASE).starting(RUN_STARTS).starts_at == datetime(
+        2026, 8, 24, 10, 50, 3, tzinfo=UTC
+    )
+
+
+def test_a_played_scenario_without_its_start_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="starts_at"):
+        Scenario.model_validate({k: v for k, v in BASE.items() if k != "starts_at"})
