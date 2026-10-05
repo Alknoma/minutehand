@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from enum import StrEnum
 from pathlib import Path
 from typing import TypeVar
 
@@ -17,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
-from minutehand.domain.scenario import WrittenScenario
+from minutehand.domain.scenario import Seed, WrittenScenario
 
 _M = TypeVar("_M", bound=BaseModel)
 
@@ -104,3 +105,67 @@ def _validate(path: Path, raw: object, model: type[_M], *, called: str | None = 
         return model.model_validate(raw)
     except ValidationError as e:
         raise FileRefused(f"{path}: not a valid {called or model.__name__}:\n{e}") from e
+
+
+def load_seed(path: Path) -> Seed:
+    """A standing world's seed: a scenario file with nothing to achieve."""
+    return _load(path, Seed)
+
+
+class FileKind(StrEnum):
+    """What a declaration file is, for `minutehand schema` and `minutehand validate`."""
+
+    AGENT = "agent"
+    SCENARIO = "scenario"
+    SEED = "seed"
+
+
+MODELS: dict[FileKind, type[BaseModel]] = {
+    FileKind.AGENT: AgentUnderTest,
+    FileKind.SCENARIO: WrittenScenario,
+    FileKind.SEED: Seed,
+}
+"""The model each kind of file is read as: its JSON Schema is the file's (`schemas/<kind>.schema.json`)."""
+
+SCHEMA_BASE = "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas"
+"""Where the published schemas are read from by an editor (`# yaml-language-server: $schema=<base>/agent.schema.json`)."""
+
+
+def schema(kind: FileKind) -> dict[str, object]:
+    """The JSON Schema (2020-12) of one kind of file, as Pydantic generates it from the model."""
+    found = MODELS[kind].model_json_schema(mode="validation")
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"{SCHEMA_BASE}/{kind.value}.schema.json",
+        **found,
+    }
+
+
+def kind_of(raw: object) -> FileKind:
+    """What a file is from what it holds: people and a goal make a scenario, people alone a seed, anything else an
+    agent file."""
+    if isinstance(raw, dict) and "people" in raw:
+        return FileKind.SCENARIO if "goal" in raw and "owner" in raw else FileKind.SEED
+    return FileKind.AGENT
+
+
+def where(location: tuple[int | str, ...]) -> str:
+    """A place in a file as a path a reader follows: `inboxes[0].pending.items`."""
+    out = ""
+    for step in location:
+        out += f"[{step}]" if isinstance(step, int) else (f".{step}" if out else str(step))
+    return out or "(the whole file)"
+
+
+def problems(path: Path, kind: FileKind | None = None) -> tuple[FileKind | None, BaseModel | None, list[str]]:
+    """Every load-time problem of one file, each naming its place in the file; the model read when there is none."""
+    try:
+        model = MODELS[kind] if kind is not None else AgentUnderTest
+        raw = _read(path, model)
+    except FileRefused as e:
+        return kind, None, [str(e)]
+    kind = kind or kind_of(raw)
+    try:
+        return kind, MODELS[kind].model_validate(raw), []
+    except ValidationError as e:
+        return kind, None, [f"{path}: {where(tuple(err['loc']))}: {err['msg']}" for err in e.errors()]

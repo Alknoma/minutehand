@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 from pydantic import Field
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
+from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.emulator.fleet import Emulators
@@ -88,7 +89,7 @@ from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_s
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.application.steps import steps
-from minutehand.checks.runner import RunResult, broken, evaluate, evaluate_judged, view_of
+from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
@@ -853,6 +854,7 @@ class _Judge:
             unmatched_calls=[call.exchange for call in world.calls() if call.refused],
             model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
             broken_calls=broken(world.calls()),
+            contract_breaks=contract_breaks(world.calls()),
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop)
@@ -1015,7 +1017,10 @@ def inboxes_for(agent: AgentUnderTest, scenario: Scenario, signing: Signing) -> 
     none."""
     if not agent.inboxes:
         return None
-    return Inboxes(scenario, [HttpInboxReach(declared, signing.by_person) for declared in agent.inboxes])
+    try:
+        return Inboxes(scenario, [HttpInboxReach(declared, signing.by_person) for declared in agent.inboxes])
+    except OperationUnresolved as e:
+        raise RunRefused(f"agent {agent.name}'s inboxes: {e}") from e
 
 
 def signing_for(agent: AgentUnderTest, people: Sequence[Person] = ()) -> Signing:

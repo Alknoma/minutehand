@@ -29,7 +29,7 @@ from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_scripted import ScriptedReplier, decision_text
 from minutehand.application.run_clock import RunClock
 from minutehand.application.steps import STEP, steps
-from minutehand.checks.runner import RunResult, broken, evaluate, view_of
+from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, view_of
 from minutehand.domain.people import (
     Decides,
     InboundCredential,
@@ -782,6 +782,7 @@ def score(scenario: Scenario, world: Store, *, stop: StopReason | None, ended: d
         unmatched_calls=[c.exchange for c in calls if c.refused],
         model_calls=per_wake(world.spans(), [w.index for w in wakes]),
         broken_calls=broken(calls),
+        contract_breaks=contract_breaks(calls),
     )
     return evaluate(view, stop=stop, ended=ended)
 

@@ -52,6 +52,7 @@ from pydantic import Field
 from starlette.applications import Starlette
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
+from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.emulator.fleet import Emulators
@@ -975,7 +976,10 @@ def _inboxes(spec: CreateWorld, scenario: Scenario) -> Inboxes | None:
         if source.env not in os.environ:
             raise WorldRefused(f"{person.key}'s credential is read from {source.env}, which the server does not have")
         credentials[person.key] = os.environ[source.env]
-    return Inboxes(scenario, [HttpInboxReach(declared, credentials) for declared in spec.inboxes])
+    try:
+        return Inboxes(scenario, [HttpInboxReach(declared, credentials) for declared in spec.inboxes])
+    except OperationUnresolved as e:
+        raise WorldRefused(f"this world's inboxes: {e}") from e
 
 
 @contextmanager

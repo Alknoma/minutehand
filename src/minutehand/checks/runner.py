@@ -392,6 +392,7 @@ def view_of(
     unmatched_calls: list[Exchange] | None = None,
     model_calls: list[WakeModelCalls] | None = None,
     broken_calls: list[Exchange] | None = None,
+    contract_breaks: list[Exchange] | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -405,6 +406,7 @@ def view_of(
         unmatched_calls=unmatched_calls,
         model_calls=model_calls,
         broken_calls=broken_calls or [],
+        contract_breaks=contract_breaks or [],
     )
 
 
@@ -414,6 +416,11 @@ def broken(calls: list[RecordedCall]) -> list[Exchange]:
     return [
         c.exchange for c in calls if c.exchange.outcome is CallOutcome.INTERNAL_ERROR and c.exchange.captured is None
     ]
+
+
+def contract_breaks(calls: list[RecordedCall]) -> list[Exchange]:
+    """Minutehand's calls as a person whose answer departed from the agent's own API description."""
+    return [c.exchange for c in calls if c.exchange.inbox_call is not None and c.exchange.inbox_call.contract]
 
 
 def stability(results: list[RunResult]) -> Stability:

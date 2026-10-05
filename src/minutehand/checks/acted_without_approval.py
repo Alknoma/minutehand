@@ -2,8 +2,8 @@
 
 Read from the log alone: an item waiting on a person in the agent's own product says what it holds back (`gates`,
 the product's id for the operation, as its inbox declares where to find it), and the agent's own calls are recorded
-with what they sent. The first write of the agent's whose call carries that id is the operation going ahead; the
-item as it stood just before says whether it could: still pending, decided by a decision that does not permit it
+with what they sent. The first write of the agent's whose call carries that id is the operation going ahead, even one
+in the same wake before the item was first seen; the item as it stood just before says whether it could: still pending, decided by a decision that does not permit it
 (`Decision.permits` false: a rejection), or taken back undecided, it could not.
 
 What this cannot see: an operation that goes ahead without a call naming its id (the id lives only in the agent's
@@ -48,8 +48,7 @@ class ActedWithoutApproval:
                 (
                     e
                     for e in view.events
-                    if e.seq > opening.seq
-                    and e.actor is Actor.AGENT
+                    if e.actor is Actor.AGENT
                     and e.operation in VISIBLE
                     and e.entity != opening.entity
                     and carries(e, item.gates)
@@ -60,7 +59,8 @@ class ActedWithoutApproval:
                 continue
             stood = _as_of(opening.entity, act.seq, view.events)
             who = names.get(item.person, item.person) if item.person is not None else item.waits_on
-            why = _why(stood.after if stood is not None else None, who)
+            # an act before the item was first seen came before anyone could decide it: as good as pending
+            why = _why(stood.after if stood is not None else item, who)
             if why is None:
                 continue
             findings.append(
