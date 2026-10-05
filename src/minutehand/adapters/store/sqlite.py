@@ -310,6 +310,27 @@ class SqliteStore:
         return [PersonReply.model_validate_json(r[0]) for r in rows]
 
     @_locked
+    def versions(self, entity: EntityRef) -> list[Stored]:
+        where, args = self._visible()
+        rows = self._db.execute(
+            f"SELECT body, parent, seq, sim_time FROM entity_version INDEXED BY entity_lookup"
+            f" WHERE provider=? AND kind=? AND external_id=? AND {where} AND body IS NOT NULL ORDER BY seq",
+            [entity.provider, entity.kind.value, entity.external_id, *args],
+        ).fetchall()
+        return [
+            Stored(entity=entity, body=r[0], parent=r[1], seq=r[2], sim_time=datetime.fromisoformat(r[3])) for r in rows
+        ]
+
+    @_locked
+    def discard(self) -> None:
+        children = [r[0] for r in self._db.execute("SELECT run_id FROM run WHERE parent=?", (self.run_id,))]
+        if children:
+            raise ValueError(f"run {self.run_id} has forks ({', '.join(children)}) reading through it")
+        for table in ("event", "entity_version", "exchange", "reply", "run"):
+            self._db.execute(f"DELETE FROM {table} WHERE run_id=?", (self.run_id,))
+        self._db.commit()
+
+    @_locked
     def fork(self, run_id: str, *, at_seq: int, clock: Clock) -> SqliteStore:
         if not 0 <= at_seq <= self.head():
             raise ValueError(f"cannot fork at {at_seq}: this run's head is {self.head()}")
