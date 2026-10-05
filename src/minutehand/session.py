@@ -166,13 +166,13 @@ async def play(
         raise RunRefused(f"a run needs at least one sample, not {samples}")
     scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
+    listen = listen or Listen()
     registry = Registry.installed()
-    routing = Routing(registry)
+    routing = _routing(registry, listen)
     services = _services(scenario, agent, registry)
-    capturing = capturing_for(agent, registry, state=state)
+    capturing = capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts)
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
-    listen = listen or Listen()
     async with intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
@@ -270,11 +270,14 @@ async def fork(
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, model)
+    listen = listen or Listen()
     registry = Registry.installed()
-    routing = Routing(registry)
+    routing = _routing(registry, listen)
     services = _services(changed, agent, registry)
     forked_after = next((p.wake for p in fork_points(state, parent_run) if p.seq == changes.at_seq), 0)
-    capturing = capturing_for(agent, registry, state=state, parent=parent_run, after_wake=forked_after)
+    capturing = capturing_for(
+        agent, registry, state=state, parent=parent_run, after_wake=forked_after, model_hosts=listen.model_hosts
+    )
     child_id = _new_run_id()
     scorer = _Judge(changed, model if judge else None, judging=judge)
     signing = signing_for(agent)
@@ -283,7 +286,6 @@ async def fork(
         return SqliteStore(world, parent_run, clock)
 
     holding = RunClock(scenario.starts_at)
-    listen = listen or Listen()
     async with intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy:
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
@@ -533,14 +535,27 @@ class _Judge:
         return result
 
 
+def _routing(registry: Registry, listen: Listen) -> Routing:
+    try:
+        return Routing(registry, model_hosts=listen.model_hosts)
+    except (ProviderConflict, ValueError) as e:
+        raise RunRefused(f"the model hosts {', '.join(listen.model_hosts)}: {e}") from e
+
+
 def capturing_for(
-    agent: AgentUnderTest, registry: Registry, *, state: Path, parent: str | None = None, after_wake: int = 0
+    agent: AgentUnderTest,
+    registry: Registry,
+    *,
+    state: Path,
+    parent: str | None = None,
+    after_wake: int = 0,
+    model_hosts: Sequence[str] = DEFAULT_MODEL_HOSTS,
 ) -> Capturing:
     """What a run captures of the hosts no provider claims: the agent's outbound declarations, refused when one
     names a host a provider claims or a model API, with the recordings each replay reads. In a fork of `parent`,
     a pass-through host replays the parent's answer to the same call unless it says otherwise (`in_forks`)."""
     try:
-        refuse_claimed(agent.outbound, registry, DEFAULT_MODEL_HOSTS)
+        refuse_claimed(agent.outbound, registry, model_hosts)
         replaying = replaying_for(agent.outbound, state=state, parent=parent, after_wake=after_wake)
         return Capturing(agent.outbound, replaying=replaying)
     except (ProviderConflict, FileNotFoundError, ValueError) as e:
@@ -699,6 +714,11 @@ class Listen(Model):
         default=None,
         description="The CAs a real host is verified against when a call is passed through, edited or recorded; "
         "None trusts the system's",
+    )
+    model_hosts: list[str] = Field(
+        default=list(DEFAULT_MODEL_HOSTS),
+        description="Hosts that are model APIs: tunnelled, or opened to edit or record their calls. The three "
+        "public ones by default; a self-hosted or other provider's API is added here",
     )
 
     def _reached_at(self) -> str:

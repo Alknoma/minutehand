@@ -19,7 +19,8 @@ reaches directly. Beside the proxy, on the same host, an OTLP/HTTP receiver keep
 the run: --telemetry-port (default: any free port), or --no-receive-telemetry to serve none. Spans the agent
 exports are passed on to wherever OTEL_EXPORTER_OTLP_ENDPOINT in Minutehand's own environment points.
 --record-model-calls opens the agent's calls to model APIs and keeps each as a span, for an agent that
-exports nothing. A host no provider claims is refused unless the agent file declares it under `outbound`
+exports nothing. --model-host HOST, repeated, names a model API besides the three public ones (a self-hosted
+model, another provider), so it is tunnelled, edited by a fork's PromptPatch or ModelSwap, or recorded. A host no provider claims is refused unless the agent file declares it under `outbound`
 (acknowledge, pass_through or replay); --capture-unknown passes every undeclared one through and keeps it, and
 the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 
@@ -54,6 +55,7 @@ import yaml
 from minutehand import serve as standing
 from minutehand import session
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
@@ -138,6 +140,14 @@ def _parser() -> argparse.ArgumentParser:
             "--record-model-calls",
             action="store_true",
             help="open the agent's calls to model APIs, send them on unchanged and keep each as a span",
+        )
+        sub.add_argument(
+            "--model-host",
+            action="append",
+            default=[],
+            metavar="HOST",
+            help="a host that is a model API, besides api.openai.com, api.anthropic.com and "
+            "generativelanguage.googleapis.com: tunnelled, edited by a fork, or recorded with --record-model-calls",
         )
         capture(sub)
 
@@ -291,6 +301,7 @@ def _listen(args: argparse.Namespace) -> session.Listen:
         record_model_calls=args.record_model_calls,
         capture_unknown=args.capture_unknown,
         upstream_ca=args.upstream_ca,
+        model_hosts=list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host])),
     )
 
 
