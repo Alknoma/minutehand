@@ -31,7 +31,7 @@ from minutehand.adapters.web.responses import (
     ScorecardResponse,
     WakesResponse,
 )
-from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, write_checkpoint
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, NoHooks, write_checkpoint
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.patterns import pattern
 from minutehand.domain.checks import FindingKind, ObligationKind
@@ -133,7 +133,7 @@ async def test_a_run_still_being_written_is_read_as_of_its_last_commit(tmp_path:
     (directory / session.SCENARIO).write_text(scenario(Silent()).model_dump_json())
     clock = RunClock(T0)
     writer = SqliteStore(directory / session.WORLD, "running", clock)
-    empty = Checkpoint(wake=0, now=T0, replies=0, pending=[])
+    empty = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=NoHooks())
     write_checkpoint(writer, empty)
     clock.begin_wake()
     question = Change(

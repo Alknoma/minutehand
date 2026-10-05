@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Mapping
 
 from mitmproxy import http, tls
@@ -20,6 +21,7 @@ from mitmproxy.addons import asgiapp
 from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
+from minutehand.application.restore import SeenCall
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Exchange
@@ -65,6 +67,16 @@ class ProxyAddon:
         # One answered call at a time, so the events between two reads of the head
         # are exactly the events this call produced.
         self._recording = asyncio.Lock()
+        self.last_seen: SeenCall | None = None
+
+    def _seen(self, what: str) -> None:
+        """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
+        can wait until the agent has been quiet. A request on a tunnelled connection that is already open is
+        never seen: the proxy does not read inside a tunnel."""
+        self.last_seen = SeenCall(at=time.monotonic(), what=what)
+
+    def http_connect(self, flow: http.HTTPFlow) -> None:
+        self._seen(f"CONNECT {flow.request.pretty_host}:{flow.request.port}")
 
     def mount(
         self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
@@ -82,10 +94,12 @@ class ProxyAddon:
         if host is None and data.context.server.address is not None:
             host = data.context.server.address[0]
         if host is not None and self.routing.policy(host) is HostPolicy.TUNNEL:
+            self._seen(f"a new tunnelled connection to {host}")
             data.ignore_connection = True
 
     async def request(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host
+        self._seen(f"{flow.request.method} {host}{redact.path(flow.request.path)}")
         policy = self.routing.policy(host)
         if policy is HostPolicy.ANSWER:
             manifest = self.routing.claimant(host)
@@ -152,6 +166,7 @@ class ProxyAddon:
             ),
             traceparent=_first_header(request, TRACEPARENT),
         )
+        self._seen(f"{request.method} {host}{exchange.path}")
         last = self.store.head()
         self.store.attach(exchange, first_seq=first, last_seq=last, provider=provider)
         if self.telemetry is not None and last >= first:

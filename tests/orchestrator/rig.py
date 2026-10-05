@@ -21,6 +21,8 @@ from tests.orchestrator.world import CHAT, SECRET, Chat, RecordingClock, Schedul
 
 AGENTS = Path(__file__).parent / "agents"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
+QUIET = timedelta(milliseconds=20)
+"""The test agents' quiet period: each checkpoint waits this long after the agent's last call."""
 
 
 def person(key: str, reply: ReplyBehaviour) -> Person:
@@ -69,6 +71,7 @@ class Rig:
             state = StateHooks(
                 snapshot=[*hook, "snapshot", str(self.tmp / "agent")],
                 restore=[*hook, "restore", str(self.tmp / "agent")],
+                quiet=QUIET,
             )
         return AgentUnderTest(
             name="asker",
@@ -114,6 +117,7 @@ class Rig:
             mounts=self.board,
             state_dir=self.tmp / "state",
             signing={CHAT: SECRET},
+            traffic=self.board,
         )
         return record, store, clock
 

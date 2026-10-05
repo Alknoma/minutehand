@@ -11,7 +11,10 @@ directory under the state directory, written by the models, so a later process c
     <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
     <state>/runs/<run_id>/agent.json     `AgentUnderTest`
     <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
-    <state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks`
+    <state>/runs/<run_id>/wake-<n>/      the agent's snapshot after wake n, when it declares `StateHooks` and
+                                         settled in time
+    <state>/runs/<run_id>/restore.json   for a fork, or a sample after the first: every step of the restore that
+                                         started it, with each command's output, and whether it was verified
 
 One proxy per process: mitmproxy keeps its master in a module global, so `play` and `fork` each start one
 and move it from sample to sample with `Proxy.mount`, and never two at once.
@@ -26,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import shutil
 import sqlite3
 import threading
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
@@ -44,13 +48,21 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore
-from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
+from minutehand.application.checkpoint import (
+    CHECKPOINT,
+    AgentState,
+    NoHooks,
+    NotRestorable,
+    checkpoints,
+    read_checkpoint,
+)
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier_model import PeopleReplier
-from minutehand.application.rewind import changed_scenario, fork_run
+from minutehand.application.restore import Progress, Restored, restore_agent
+from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import run_hook, wake_dir
+from minutehand.application.state_hooks import wake_dir
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import WakeRecord
@@ -59,6 +71,7 @@ from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.world import Actor, Operation
+from minutehand.ports.agent import Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
@@ -94,10 +107,12 @@ class Outcome(Model):
 
 
 class ForkPoint(Model):
-    """Where a fork may be taken: the end of a wake, as a seq in the world's log."""
+    """Where a fork may be taken: the end of a wake, as a seq in the world's log, and whether the agent's own
+    state there can be put back."""
 
     wake: int
     seq: int
+    agent: AgentState
 
 
 def run_dir(state: Path, run_id: str) -> Path:
@@ -118,6 +133,7 @@ async def play(
     model: LanguageModel | None = None,
     judge: bool = False,
     listen: Listen | None = None,
+    progress: Progress | None = None,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
 
@@ -128,9 +144,9 @@ async def play(
     CA and the run's signing secrets added to this process's environment, waited for until it accepts
     connections, and stopped when the run ends.
 
-    Each sample after the first starts from the agent's own state as the first found it, restored through
-    its `StateHooks`. Without hooks the agent carries what it remembers from one sample into the next, and
-    the samples are not independent.
+    Each sample after the first starts from the agent's own state as the first found it, restored and
+    verified through its `StateHooks` as a fork's is (`progress` hears each step). Without hooks the agent
+    carries what it remembers from one sample into the next, and the samples are not independent.
 
     A scenario with no `starts_at` starts now: the instant is taken once, here, and every sample plays and
     records it, so a fork of any of them starts from the same moment.
@@ -148,18 +164,19 @@ async def play(
     async with _proxy(routing, first[0], first[1], state, listen) as proxy:
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
-            if sample > 0 and agent.state is not None:
-                await run_hook(agent.state.restore, wake_dir(state / RUNS, first[0].run_id, 0))
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge)
             signing = signing_for(agent)
             env = agent_environment(listen, proxy.port, proxy.ca_bundle, signing.for_agent)
-            async with _agent_process(command, env, agent, directory / AGENT_LOG):
+            reach = reach_for(agent, env=env)
+            async with _agent_process(command, env, agent, directory / AGENT_LOG) as own:
+                if sample > 0 and agent.state is not None:
+                    await _restore_start(state, first[0], agent, reach.main, own, directory, progress)
                 record = await run_scenario(
                     scenario=scenario,
                     agent=agent,
-                    reach=reach_for(agent, env=env),
+                    reach=reach,
                     store=store,
                     clock=clock,
                     services=services,
@@ -169,9 +186,44 @@ async def play(
                     scorer=scorer,
                     state_dir=state / RUNS,
                     signing=signing.by_provider,
+                    traffic=proxy,
                 )
             outcomes.append(_keep(directory, record, scorer))
     return outcomes
+
+
+async def _restore_start(
+    state: Path,
+    first: Store,
+    agent: AgentUnderTest,
+    main: object,
+    own: _Program | None,
+    directory: Path,
+    progress: Progress | None,
+) -> None:
+    """Before a sample after the first: the agent put back as the first sample found it, through the same
+    verified restore a fork uses. Refused when the first sample's start was not restorable."""
+    assert agent.state is not None
+    start = next(iter(checkpoints(first).items()), None)
+    if start is None:
+        raise RunRefused(f"run {first.run_id} has no checkpoint at its start to restore the next sample from")
+    seq, checkpoint = start
+    restorable = checkpoint.agent
+    if isinstance(restorable, NotRestorable | NoHooks):
+        why = restorable.reason if isinstance(restorable, NotRestorable) else "no state hooks"
+        raise RunRefused(
+            f"the next sample cannot start where run {first.run_id} started: its start is not restorable: {why}"
+        )
+    restored = await restore_agent(
+        agent.state,
+        wake_dir(state / RUNS, restorable.snapshot_of, restorable.wake),
+        checkpoint_seq=seq,
+        recorded=restorable.report,
+        reports=main if isinstance(main, Reports) else None,
+        own=own,
+        progress=progress,
+    )
+    (directory / RESTORE_RECORD).write_text(restored.model_dump_json(indent=2), encoding="utf-8")
 
 
 async def fork(
@@ -184,11 +236,15 @@ async def fork(
     model: LanguageModel | None = None,
     judge: bool = False,
     listen: Listen | None = None,
+    progress: Progress | None = None,
 ) -> list[Outcome]:
     """Rerun a finished run from one of its checkpoints with `changes` applied, once per `Fork.samples`.
 
     The people, tickets and deadline change in the world; a `PromptPatch` or `ModelSwap` is applied on the
-    wire, to the agent's own calls to its model, through the proxy's EDIT policy.
+    wire, to the agent's own calls to its model, through the proxy's EDIT policy. The agent's own state is
+    restored and verified first (`application.restore`); `progress` hears each step as it is taken.
+
+    A fork that is refused leaves no run behind: no row in the world file and no directory.
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
@@ -216,7 +272,7 @@ async def fork(
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
-            async with _agent_process(command, env, agent, log):
+            async with _agent_process(command, env, agent, log) as own:
                 records = await fork_run(
                     fork=changes,
                     parent=parent.record,
@@ -231,9 +287,15 @@ async def fork(
                     wire=routing,
                     telemetry=telemetry,
                     mounts=proxy,
+                    traffic=proxy,
                     scorer=scorer,
                     signing=signing.by_provider,
+                    own=own,
+                    progress=progress,
                 )
+        except RunRefused:
+            _remove_refused(state, world, child_id, changes.samples)
+            raise
         finally:
             routing.apply(child_id, [])
     outcomes: list[Outcome] = []
@@ -242,6 +304,16 @@ async def fork(
         _write_inputs(child, changed, agent)
         outcomes.append(_keep(child, record, scorer))
     return outcomes
+
+
+def _remove_refused(state: Path, world: Path, child_id: str, samples: int) -> None:
+    """The directories a refused fork made, for every child the world file does not hold: a refusal leaves no
+    run behind. A sample that finished before a later one was refused keeps its directory."""
+    held = {run_id for run_id, _, _ in _ReadOnlyStore.runs_in(world)}
+    for run_id in [child_id, *(f"{child_id}-{n + 1}" for n in range(samples))]:
+        directory = run_dir(state, run_id)
+        if directory.is_dir() and run_id not in held and not (directory / RECORD).is_file():
+            shutil.rmtree(directory)
 
 
 # -- reading runs back ----------------------------------------------------------------------------------------
@@ -274,8 +346,16 @@ def fork_points(state: Path, run_id: str) -> list[ForkPoint]:
 
 
 def points_in(world: Store) -> list[ForkPoint]:
-    """The checkpoints a world's log holds, each a point a fork may be taken from."""
-    return [ForkPoint(wake=e.wake, seq=e.seq) for e in world.events() if e.entity == CHECKPOINT]
+    """The checkpoints a world's log holds, each a point a fork may be taken from, and whether the agent's own
+    state there can be put back."""
+    return [ForkPoint(wake=c.wake, seq=seq, agent=c.agent) for seq, c in checkpoints(world).items()]
+
+
+def restore_of(state: Path, run_id: str) -> Restored | None:
+    """How the agent was restored to start this run: a fork, or a sample after the first. None for a run that
+    started from the beginning."""
+    path = run_dir(state, run_id) / RESTORE_RECORD
+    return Restored.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
 class Logged(Model):
@@ -628,44 +708,71 @@ def _tail(log: Path) -> str:
     return text.strip()[-1500:] or "(it printed nothing)"
 
 
+class _Program:
+    """The agent's own program, started by Minutehand: `application.restore.OwnProgram`, so a restore can stop it
+    and start it again with the same environment, and nothing it held in memory survives the restore."""
+
+    def __init__(self, command: Sequence[str], env: Mapping[str, str], agent: AgentUnderTest, log: Path) -> None:
+        self._command = list(command)
+        self._env = {**os.environ, **env}
+        self._agent = agent
+        self._log = log
+        self._process: asyncio.subprocess.Process | None = None
+
+    @property
+    def command(self) -> Sequence[str]:
+        return self._command
+
+    async def start(self) -> None:
+        with self._log.open("ab") as out:
+            try:
+                self._process = await asyncio.create_subprocess_exec(
+                    *self._command,
+                    env=self._env,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=out,
+                )
+            except OSError as e:
+                raise RunRefused(f"the agent's command {self._command[0]} could not be started: {e}") from e
+        url = _listens_on(self._agent)
+        if url is not None:
+            await _until_listening(self._process, url, self._log)
+
+    def exited(self) -> int | None:
+        return self._process.returncode if self._process is not None else None
+
+    async def stop(self) -> None:
+        process, self._process = self._process, None
+        if process is None or process.returncode is not None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), STOP_TIMEOUT)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+
 @asynccontextmanager
 async def _agent_process(
     command: Sequence[str] | None,
     env: Mapping[str, str],
     agent: AgentUnderTest,
     log: Path,
-) -> AsyncIterator[None]:
+) -> AsyncIterator[_Program | None]:
     if not command:
-        yield
+        yield None
         return
-    with log.open("ab") as out:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                env={**os.environ, **env},
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=out,
-                stderr=out,
-            )
-        except OSError as e:
-            raise RunRefused(f"the agent's command {command[0]} could not be started: {e}") from e
-        try:
-            url = _listens_on(agent)
-            if url is not None:
-                await _until_listening(process, url, log)
-            yield
-            if process.returncode is not None:
-                raise AgentExited(
-                    f"the agent's command exited {process.returncode} before the run ended:\n{_tail(log)}"
-                )
-        finally:
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), STOP_TIMEOUT)
-                except TimeoutError:
-                    process.kill()
-                    await process.wait()
+    program = _Program(command, env, agent, log)
+    try:
+        await program.start()
+        yield program
+        code = program.exited()
+        if code is not None:
+            raise AgentExited(f"the agent's command exited {code} before the run ended:\n{_tail(log)}")
+    finally:
+        await program.stop()
 
 
 async def _until_listening(process: asyncio.subprocess.Process, url: str, log: Path) -> None:

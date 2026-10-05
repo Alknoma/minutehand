@@ -48,6 +48,7 @@ async def fork(rig: Rig, parent: RunRecord, scn: Scenario, agent: AgentUnderTest
         replier_for=ScriptedReplier,
         state_dir=rig.tmp / "state",
         mounts=rig.board,
+        traffic=rig.board,
         signing={CHAT: SECRET},
     )
 
