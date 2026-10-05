@@ -682,11 +682,12 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
 def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None, account: ForkAccount | None) -> str:
     record, result = outcome.record, outcome.result
     lines = [f"run {record.run_id}: {record.scenario}", f"  {result.verdict.words}"]
-    if account is not None:
-        lines += [f"  {line}" for line in fork_described(account)]
-    elif restored is not None:
+    if restored is not None:
+        # The line scripts read since forks were first restored: kept beside the fuller account below.
         verdict = "verified" if restored.verified else f"NOT verified: {restored.unverified}"
         lines.append(f"  the agent was restored from seq {restored.checkpoint_seq}, {verdict}")
+    if account is not None:
+        lines += [f"  {line}" for line in fork_described(account)]
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
     if record.failure is not None:
         lines.append(f"  {record.failure}")
