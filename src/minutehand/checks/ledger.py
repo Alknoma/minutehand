@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime
 
+from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.checks import Obligation, ObligationKind
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import AbsenceTrigger, DelayRange, Model, Person, Scenario, Silent, TicketState
@@ -61,24 +62,18 @@ def recipients(event: WorldEvent, scenario: Scenario) -> list[Person]:
 
 def absences(scenario: Scenario, events: list[WorldEvent]) -> list[Away]:
     """Every absence in the scenario, anchored: at the start, or at the agent's first message to that person."""
-    first_ask: dict[str, datetime] = {}
-    for event in events:
-        if event.actor is Actor.AGENT and event.operation is Operation.CREATE:
-            for person in recipients(event, scenario):
-                first_ask.setdefault(person.key, event.sim_time)
     stretches: list[Away] = []
     for person in scenario.people:
+        asked = first_ask(person.email, events)
         for absence in person.absences:
-            if absence.trigger is AbsenceTrigger.AT_START:
-                anchor = scenario.starts_at
-            elif person.key in first_ask:
-                anchor = first_ask[person.key]
-            else:
-                continue
-            starts = anchor + absence.starts_after
-            stretches.append(
-                Away(person=person.key, starts=starts, ends=starts + absence.lasts, delegate=absence.delegate)
+            found = placed(
+                from_start=scenario.starts_at if absence.trigger is AbsenceTrigger.AT_START else None,
+                asked=asked,
+                starts_after=absence.starts_after,
+                lasts=absence.lasts,
             )
+            if found is not None:
+                stretches.append(Away(person=person.key, starts=found[0], ends=found[1], delegate=absence.delegate))
     return stretches
 
 
