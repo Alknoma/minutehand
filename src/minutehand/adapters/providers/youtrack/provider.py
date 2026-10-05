@@ -71,7 +71,7 @@ class YouTrackProvider:
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`YouTrackSeed.faults`, on a world already open."""
         found = fault_fragment(YouTrackSeed, faults, frozenset({"faults"})).faults
-        write_faults(YouTrackWorld(world), found, clock.now())
+        write_faults(YouTrackWorld(world), found, clock.now(), declared=True)
 
     def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
         """The issue is deleted, with every link it is an end of, by its assignee (or whoever last changed it)."""

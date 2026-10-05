@@ -124,8 +124,14 @@ def test_a_person_added_to_an_open_github_world_who_has_an_account_is_given_it(t
         assert '"email":"ivy@example.com"' in after[(EntityKind.RECORD, "account/ivy-ng")].replace(" ", "")
 
 
-def test_a_repository_added_under_a_name_the_world_holds_is_refused(tmp_path: Path) -> None:
+def test_a_repository_named_again_with_a_file_of_other_content_is_refused(tmp_path: Path) -> None:
+    """A fragment naming a held repository grows it (`SeedRepository.IDENTITY`); one giving a held file other text
+    contradicts it, and is refused naming the file."""
     with _open(tmp_path) as world:
-        again = ProviderSeed(provider="github", body=json.dumps({"repositories": [{"owner": "acme", "name": "notes"}]}))
-        with pytest.raises(WorldRefused, match="two repositories share a name"):
+        again = ProviderSeed(
+            provider="github",
+            body=json.dumps({"repositories": [{"owner": "acme", "name": "notes",
+                                               "files": [{"path": "README.md", "text": "bye"}]}]}),
+        )  # fmt: skip
+        with pytest.raises(WorldRefused, match=r"files\[path='README.md'\]\.text is 'hi'"):
             world.extend(provider_seeds=[again], directory=tmp_path, scratch=_scratch)

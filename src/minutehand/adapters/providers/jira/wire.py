@@ -538,6 +538,13 @@ class StoredFaultUse(Wire):
     used: int
 
 
+class StoredDeclaredLimits(Wire):
+    """Rate limits declared on an open world (`provider-faults`), kept apart from the site's seeded ones, so a later
+    seed fragment that adds to the site's never rewrites what was declared."""
+
+    limits: list[StoredRateLimit] = []
+
+
 StoredModel = TypeVar(
     "StoredModel",
     StoredSite,
@@ -551,6 +558,7 @@ StoredModel = TypeVar(
     StoredLink,
     StoredAlias,
     StoredFaultUse,
+    StoredDeclaredLimits,
 )
 
 

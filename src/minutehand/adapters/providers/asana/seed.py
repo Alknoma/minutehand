@@ -24,13 +24,14 @@ must name something; one that does not is refused before anything is written.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import Field, model_validator
 
 from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.state import AGENT_GID, WORKSPACE_GID, AsanaWorld
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
@@ -55,7 +56,8 @@ class SeedAgent(Model):
     email: str = state.AGENT_EMAIL
 
 
-class SeedTeam(Model):
+class SeedTeam(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str
     members: list[str] | None = Field(default=None, description="Person keys; None: everyone")
     agent: bool = Field(default=True, description="Whether the agent's user is a member")
@@ -67,7 +69,8 @@ class SeedOption(Model):
     enabled: bool = True
 
 
-class SeedField(Model):
+class SeedField(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str
     kind: wire.FieldKind
     options: list[SeedOption] = Field(default=[], description="For enum and multi_enum only")
@@ -86,12 +89,14 @@ class SeedField(Model):
         return self
 
 
-class SeedSection(Model):
+class SeedSection(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str
     means: TicketState | None = Field(default=None, description="The state a task here is in, when status reads it")
 
 
-class SeedProject(Model):
+class SeedProject(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str
     team: str | None = Field(default=None, description="SeedTeam.name; in an organization, None means the first team")
     notes: str = ""
@@ -121,8 +126,10 @@ class SeedComment(Model):
     ago: timedelta = Field(default=timedelta(0), description="How long before the scenario's start it was written")
 
 
-class SeedTask(Model):
+class SeedTask(Model, Keyed):
     """What only Asana says of one seeded ticket."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("ticket",)
 
     ticket: str = Field(description="SeededTicket.title of an asana ticket")
     section: str | None = Field(default=None, description="SeedSection.name in its project; None: as its state says")
@@ -160,7 +167,8 @@ class SeedByField(Model):
 SeedStatus = Annotated[SeedCompleted | SeedBySection | SeedByField, Field(discriminator="kind")]
 
 
-class SeedToken(Model):
+class SeedToken(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("token",)
     token: str = Field(min_length=1)
     person: str | None = Field(default=None, description="Person.key it acts as; None: the agent")
     expires_after: timedelta | None = Field(default=None, description="None: it never expires")

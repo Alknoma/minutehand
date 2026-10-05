@@ -54,9 +54,7 @@ class JiraProvider:
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`JiraSeed.rate_limits`, on a world already open: each answers its next calls 429."""
         limits = fault_fragment(JiraSeed, faults, frozenset({"rate_limits"})).rate_limits
-        jira = Desk(world).world
-        site = jira.site()
-        jira.write_site(site.model_copy(update={"rateLimits": [*site.rateLimits, *limits]}), actor=Actor.SCENARIO)
+        Desk(world).world.declare_limits(limits)
         del clock
 
     # ------------------------------------------------------------------ ports

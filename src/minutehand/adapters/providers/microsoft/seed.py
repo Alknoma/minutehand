@@ -520,9 +520,17 @@ def write_holds(world: MicrosoftWorld, holds: list[HoldSeed], starts_at: datetim
         world.write_hold(hold)
 
 
-def write_faults(world: MicrosoftWorld, faults: list[FaultSeed], starts_at: datetime) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(
+    world: MicrosoftWorld, faults: list[FaultSeed], starts_at: datetime, *, declared: bool = False
+) -> None:
     """Record declared faults after any already recorded, each from `starts_at` plus its own offset."""
-    first = len(world.faults())
+    first = (DECLARED if declared else 0) + len(world.faults())
     for position, fault in enumerate(faults, start=first):
         answer = fault.answer
         limited = isinstance(answer, RateLimited)

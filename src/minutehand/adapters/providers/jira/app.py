@@ -250,7 +250,8 @@ class JiraApi:
         )
 
     def _throttle(self, site: wire.StoredSite, method: str, path: str) -> None:
-        for index, limit in enumerate(site.rateLimits):
+        del site
+        for index, limit in self._world.rate_limits():
             if limit.method is not None and limit.method.upper() != method:
                 continue
             if not path.startswith(limit.path):

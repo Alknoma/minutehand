@@ -141,7 +141,7 @@ class MicrosoftProvider:
         """`MicrosoftSeed.faults` and `.holds`, on a world already open, each counted from now."""
         found = fault_fragment(seed.MicrosoftSeed, faults, frozenset({"faults", "holds"}))
         mw = MicrosoftWorld(world)
-        seed.write_faults(mw, found.faults, clock.now())
+        seed.write_faults(mw, found.faults, clock.now(), declared=True)
         seed.write_holds(mw, found.holds, clock.now())
 
     # ------------------------------------------------------------------ ChangesPeople

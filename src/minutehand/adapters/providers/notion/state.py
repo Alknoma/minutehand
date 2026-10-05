@@ -53,6 +53,9 @@ from minutehand.ports.store import Store
 WORKSPACES = "workspaces"
 TOKENS = "tokens"
 SCHEDULE = "schedule"
+DECLARED = "schedule-declared"
+"""The faults declared on an open world (`provider-faults`), kept apart from the seed's own, so a later seed fragment
+that adds to the seed's schedule never rewrites what was declared, and each keeps its own count of firings."""
 WEBHOOKS = "webhooks"
 _SCAN = 1000
 
@@ -144,8 +147,9 @@ class NotionWorld:
         return self._store.head() + 1
 
     def mint(self, *parts: str) -> str:
-        """A new object's id: from the event about to be written and what distinguishes it within the call."""
-        return wire.minted_id(self._store.run_id, str(self.next_seq()), *parts)
+        """A new object's id: from the event about to be written and what distinguishes it within the call. Never
+        from the run, so a fork that does what its parent did makes the same ids, and the two compare alike."""
+        return wire.minted_id("minted", str(self.next_seq()), *parts)
 
     # ------------------------------------------------------------------ reads
 
@@ -194,7 +198,17 @@ class NotionWorld:
         found = self._read(record_ref(SCHEDULE))
         return found if isinstance(found, wire.StoredSchedule) else wire.StoredSchedule()
 
-    def fired(self, fault: int) -> int:
+    def declared(self) -> wire.StoredSchedule:
+        found = self._read(record_ref(DECLARED))
+        return found if isinstance(found, wire.StoredSchedule) else wire.StoredSchedule()
+
+    def armed(self) -> list[tuple[str, wire.PlannedFault]]:
+        """Every armed fault with the key its firings are counted under: the seed's in its order, then those
+        declared on the open world in theirs."""
+        seeded = [(str(n), f) for n, f in enumerate(self.schedule().faults)]
+        return seeded + [(f"declared-{n}", f) for n, f in enumerate(self.declared().faults)]
+
+    def fired(self, fault: str) -> int:
         found = self._read(record_ref(f"fault-{fault}"))
         return found.count if isinstance(found, wire.StoredCount) else 0
 
@@ -392,11 +406,12 @@ class NotionWorld:
             )
         )
 
-    def write_schedule(self, schedule: wire.StoredSchedule) -> WorldEvent:
-        found = self._read(record_ref(SCHEDULE))
-        return self._setup(SCHEDULE, schedule, None, Operation.CREATE if found is None else Operation.UPDATE)
+    def write_schedule(self, schedule: wire.StoredSchedule, *, declared: bool = False) -> WorldEvent:
+        name = DECLARED if declared else SCHEDULE
+        found = self._read(record_ref(name))
+        return self._setup(name, schedule, None, Operation.CREATE if found is None else Operation.UPDATE)
 
-    def count_fault(self, fault: int, count: int) -> WorldEvent:
+    def count_fault(self, fault: str, count: int) -> WorldEvent:
         return self._store.apply(
             Change(
                 entity=record_ref(f"fault-{fault}"),

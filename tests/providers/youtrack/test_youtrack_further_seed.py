@@ -190,9 +190,11 @@ def test_a_ticket_with_its_issue_details_lands_with_a_link_to_a_seeded_issue(
 
 
 def test_a_seeded_project_short_name_given_other_content_is_refused(world: StandingWorld, tmp_path: Path) -> None:
+    """A fragment naming a held project grows it (`ProjectSeed.IDENTITY`); one giving it another short name
+    contradicts it, and is refused naming the field."""
     head = world.store.head()
     clash = {"projects": [{"name": "Launch", "short_name": "OTHER"}]}
-    with pytest.raises(WorldRefused, match="two YouTrack projects are named Launch"):
+    with pytest.raises(WorldRefused, match=r"projects\[name='Launch'\]\.short_name is 'LAUNCH'"):
         world.extend(
             provider_seeds=[ProviderSeed(provider="youtrack", body=json.dumps(clash))],
             directory=tmp_path,

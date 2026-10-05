@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
 from minutehand.adapters.providers.youtrack import fields, state, wire
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
@@ -59,30 +61,37 @@ LINK_TYPES = [
 Login = str
 
 
-class UserSeed(Model):
+class UserSeed(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("login",)
     login: Login = Field(pattern=r"^[A-Za-z0-9._-]+$")
     name: str
     email: str | None = None
     banned: bool = False
 
 
-class TokenSeed(Model):
+class TokenSeed(Model, Keyed):
     """A permanent token (`perm:…`) that acts as a user. Once any is seeded, only these and issued ones are let in."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("token",)
 
     token: str = Field(min_length=1)
     login: Login
 
 
-class ServiceSeed(Model):
+class ServiceSeed(Model, Keyed):
     """A Hub service that may ask `/hub/api/rest/oauth2/token` for a token with its secret, and acts as a user."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("client_id",)
 
     client_id: str = Field(min_length=1)
     secret: str = Field(min_length=1)
     login: Login
 
 
-class FieldSeed(Model):
+class FieldSeed(Model, Keyed):
     """A field the instance defines beyond the standard set."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
 
     name: str
     type: wire.FieldType
@@ -107,7 +116,8 @@ class ProjectFieldSeed(Model):
     default: str | None = None
 
 
-class ProjectSeed(Model):
+class ProjectSeed(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str = Field(description="The project a seeded ticket names, or a project no ticket is in yet")
     short_name: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     description: str = ""
@@ -141,7 +151,8 @@ class HistorySeed(Model):
     fields: list[FieldValueSeed]
 
 
-class IssueSeed(Model):
+class IssueSeed(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("ticket",)
     ticket: str = Field(description="SeededTicket.key")
     fields: list[FieldValueSeed] = []
     links: list[LinkSeed] = []
@@ -606,9 +617,15 @@ def _seed_history(youtrack: YouTrackWorld, issue: wire.StoredIssue, detail: Issu
         current = changed
 
 
-def write_faults(youtrack: YouTrackWorld, faults: list[FaultSeed], start: datetime) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(youtrack: YouTrackWorld, faults: list[FaultSeed], start: datetime, *, declared: bool = False) -> None:
     """Record each fault after those already recorded, from `start` plus its own offset."""
-    first = len(youtrack.faults())
+    first = (DECLARED if declared else 0) + len(youtrack.faults())
     for number, fault in enumerate(faults, start=first):
         youtrack.write_fault(
             number,

@@ -9,7 +9,7 @@ is in the first workspace every one of its members and authors belongs to."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
@@ -17,6 +17,7 @@ from pydantic import Field, model_validator
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import (
     AbsenceTrigger,
     Account,
@@ -53,8 +54,10 @@ class FaultSeed(Model):
     )
 
 
-class WorkspaceSeed(Model):
+class WorkspaceSeed(Model, Keyed):
     """One workspace the agent's app is installed in: who it is there, the bot tokens that are its, and who is in it."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("team_id",)
 
     team_id: str = Field(default=state.TEAM_ID, pattern=r"^T[A-Z0-9]+$")
     name: str = state.TEAM_NAME
@@ -302,9 +305,15 @@ def write_away(slack: SlackWorld, person: Person, start: datetime, team: str) ->
     )
 
 
-def write_faults(slack: SlackWorld, faults: list[FaultSeed], start: datetime) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(slack: SlackWorld, faults: list[FaultSeed], start: datetime, *, declared: bool = False) -> None:
     """Record each fault after those already recorded, from `start` plus its own offset."""
-    first = len(slack.bodies(EntityKind.RECORD, state.FAULTS, wire.SlackFault))
+    first = (DECLARED if declared else 0) + len(slack.bodies(EntityKind.RECORD, state.FAULTS, wire.SlackFault))
     for position, fault in enumerate(faults, start=first):
         answer = fault.answer
         limited = answer if isinstance(answer, RateLimited) else None

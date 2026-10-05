@@ -141,8 +141,10 @@ class NotionProvider:
         found = fault_fragment(NotionSeed, faults, frozenset({"faults"})).faults
         notion = NotionWorld(world)
         bots = {i.key: i.id for w in notion.workspaces() for i in notion.integrations(w.id)}
-        schedule = notion.schedule()
-        notion.write_schedule(schedule.model_copy(update={"faults": [*schedule.faults, *plan(found, bots)]}))
+        schedule = notion.declared()
+        notion.write_schedule(
+            schedule.model_copy(update={"faults": [*schedule.faults, *plan(found, bots)]}), declared=True
+        )
         del clock
 
     # ------------------------------------------------------------------ NotifiesChanges

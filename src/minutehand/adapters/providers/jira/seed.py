@@ -17,7 +17,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import date, timedelta
-from typing import Self
+from typing import ClassVar, Self
 
 from pydantic import Field, JsonValue, model_validator
 
@@ -31,6 +31,7 @@ from minutehand.adapters.providers.jira.state import (
     seeded_project_id,
     ticket_project_id,
 )
+from minutehand.domain.provider import Keyed
 from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
@@ -43,8 +44,10 @@ _CLOUD = uuid.UUID("c41f0f6a-0b7e-4c1e-9d8f-3a5e2b6c7d18")
 _KEY = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 
-class SeededAccount(Model):
+class SeededAccount(Model, Keyed):
     """An account that is not one of the scenario's people: an app, someone who left, a portal customer."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("key",)
 
     key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     name: str
@@ -114,13 +117,15 @@ class SeededSprint(Model):
     lasts: timedelta | None = None
 
 
-class SeededBoard(Model):
+class SeededBoard(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str
     type: str = "scrum"
     sprints: list[SeededSprint] = []
 
 
-class SeededProject(Model):
+class SeededProject(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str = Field(description="As the scenario's tickets name it")
     key: str | None = Field(default=None, description="2-10 capitals and digits; derived from the name if absent")
     description: str = ""
@@ -142,7 +147,8 @@ class SeededProject(Model):
         return self
 
 
-class SeededField(Model):
+class SeededField(Model, Keyed):
+    IDENTITY: ClassVar[tuple[str, ...]] = ("id",)
     id: str = Field(pattern=r"^customfield_\d+$")
     name: str
     kind: wire.CustomFieldType
@@ -176,8 +182,10 @@ class SeededLink(Model):
     outward: bool = Field(default=True, description="This issue does the outward act: it blocks `to`")
 
 
-class SeededIssue(Model):
+class SeededIssue(Model, Keyed):
     """What one seeded Jira ticket carries beyond the scenario's title, body, assignee, state, labels and comments."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("ticket",)
 
     ticket: str = Field(description="The key (`SeededTicket.key`) of the scenario's Jira ticket it describes")
     issue_type: str = "Task"

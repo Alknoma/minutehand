@@ -134,8 +134,11 @@ def link_ref(link: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"link:{link}")
 
 
-def fault_ref(index: int) -> EntityRef:
+def fault_ref(index: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"fault:{index}")
+
+
+DECLARED_LIMITS = _ref(EntityKind.RECORD, "declared-limits")
 
 
 def issue_ref(issue: str) -> EntityRef:
@@ -257,7 +260,27 @@ class JiraWorld:
         stored = self._store.get(link_ref(link))
         return None if stored is None else wire.parse(wire.StoredLink, stored.body)
 
-    def fault_use(self, index: int) -> int:
+    def rate_limits(self) -> list[tuple[str, wire.StoredRateLimit]]:
+        """Every rate limit with the key its uses are counted under: the site's seeded ones in order, then those
+        declared on the open world in theirs."""
+        stored = self._store.get(DECLARED_LIMITS)
+        declared = [] if stored is None else wire.parse(wire.StoredDeclaredLimits, stored.body).limits
+        return [(str(n), x) for n, x in enumerate(self.site().rateLimits)] + [
+            (f"declared-{n}", x) for n, x in enumerate(declared)
+        ]
+
+    def declare_limits(self, limits: list[wire.StoredRateLimit]) -> WorldEvent:
+        stored = self._store.get(DECLARED_LIMITS)
+        held = [] if stored is None else wire.parse(wire.StoredDeclaredLimits, stored.body).limits
+        return self._write(
+            DECLARED_LIMITS,
+            wire.StoredDeclaredLimits(limits=[*held, *limits]),
+            FAULTS,
+            actor=Actor.SCENARIO,
+            create=stored is None,
+        )
+
+    def fault_use(self, index: str) -> int:
         stored = self._store.get(fault_ref(index))
         return 0 if stored is None else wire.parse(wire.StoredFaultUse, stored.body).used
 
@@ -317,7 +340,7 @@ class JiraWorld:
     def write_sprint(self, sprint: wire.StoredSprint, *, actor: Actor) -> WorldEvent:
         return self._write(sprint_ref(sprint.id), sprint, SPRINTS, actor=actor, create=True)
 
-    def spend_fault(self, index: int, used: int) -> WorldEvent:
+    def spend_fault(self, index: str, used: int) -> WorldEvent:
         return self._write(
             fault_ref(index), wire.StoredFaultUse(used=used), FAULTS, actor=Actor.AGENT, create=used == 1
         )
@@ -385,6 +408,7 @@ class JiraWorld:
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""
         return self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
+
 
 def placed(additions: Sequence[Change], world: Store) -> list[Change]:
     """`PlacesAdditions`: each issue a further seed adds to a project the world holds takes the project's next

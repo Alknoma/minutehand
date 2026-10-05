@@ -192,9 +192,15 @@ def seed(scenario: Scenario, world: Store) -> None:
     write_faults(drive, drive_seed(scenario).faults, start)
 
 
-def write_faults(drive: DriveWorld, faults: list[FaultSeed], start: datetime) -> None:
+DECLARED = 1_000_000
+"""Where the numbers of faults declared on an open world (`provider-faults`) start: above every number a seed gives
+its own faults, which count from 0 in the seed's order, so a fault a later seed fragment adds never takes the
+number of one declared before it, and the seed's are armed ahead of the declared ones."""
+
+
+def write_faults(drive: DriveWorld, faults: list[FaultSeed], start: datetime, *, declared: bool = False) -> None:
     """Record each fault after those already recorded, from `start` plus its own offset."""
-    first = len(drive.faults())
+    first = (DECLARED if declared else 0) + len(drive.faults())
     for fault in faults:
         if fault.operation not in OPERATIONS:
             raise ValueError(
