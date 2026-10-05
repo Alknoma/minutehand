@@ -57,7 +57,7 @@ from minutehand.application.standing import StandingWorld, WorldRefused
 from minutehand.checks.runner import RunResult
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import Model
+from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import Exchange
 from minutehand.ports.provider import ASGIApp, Message, Scope
 from minutehand.ports.store import Store
@@ -242,6 +242,11 @@ class Standing:
             raise WorldRefused(f"already claimed by an open world: {', '.join(taken)}")
         if claims.default and self._default is not None:
             raise WorldRefused(f"world {self._default} is already the default; at most one open world is")
+
+    def installed(self, key: str) -> ProviderKey:
+        if key not in self._manifests:
+            raise WorldRefused(f"no installed provider is named {key}; installed: {', '.join(sorted(self._manifests))}")
+        return key
 
     def get(self, world_id: str) -> World:
         if world_id not in self.worlds:

@@ -26,6 +26,10 @@ dependencies = [
 [project.scripts]
 minutehand = "minutehand.cli:main"
 
+[project.entry-points.pytest11]
+# Fixtures only, imported lazily: a suite that requests none of them is unchanged.
+minutehand = "minutehand.testing.plugin"
+
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "pyright>=1.1.390", "ruff>=0.8", "boto3>=1.35", "slack_sdk>=3.33", "psutil>=6",
        "uvicorn>=0.30", "asana>=5", "google-api-python-client>=2.150", "google-auth>=2.35",

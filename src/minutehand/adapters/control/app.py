@@ -116,6 +116,14 @@ def create_app(serving: Serving) -> Starlette:
     def world_of(request: Request) -> World:
         return standing.get(request.path_params["world_id"])
 
+    def provider_of(request: Request, world: World) -> str | None:
+        """The provider a read names, seeded into the world first if nothing has called it yet: the world a
+        service would find on its first call is the world a test reads."""
+        provider = _query(request, "provider")
+        if provider is not None:
+            world.standing.provider(standing.installed(provider))
+        return provider
+
     async def health(_: Request) -> Response:
         return Response("ok", media_type="text/plain")
 
@@ -141,7 +149,7 @@ def create_app(serving: Serving) -> Starlette:
     async def events(request: Request) -> Response:
         found = world_of(request)
         since = int(_query(request, "since") or 0)
-        provider, kind = _query(request, "provider"), _query(request, "kind")
+        provider, kind = provider_of(request, found), _query(request, "kind")
         actor, operation = _query(request, "actor"), _query(request, "operation")
         wanted_kind = EntityKind(kind) if kind is not None else None
         wanted_actor = Actor(actor) if actor is not None else None
@@ -160,7 +168,7 @@ def create_app(serving: Serving) -> Starlette:
 
     async def entities(request: Request) -> Response:
         found = world_of(request)
-        provider, kind = _query(request, "provider"), _query(request, "kind")
+        provider, kind = provider_of(request, found), _query(request, "kind")
         wanted_kind = EntityKind(kind) if kind is not None else None
         refs: dict[EntityRef, None] = {}
         for event in found.store.events():

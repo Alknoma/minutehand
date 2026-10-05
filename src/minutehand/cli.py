@@ -50,11 +50,9 @@ import yaml
 
 from minutehand import serve as standing
 from minutehand import session
-from minutehand.adapters.mcp import server as mcp_server
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
-from minutehand.adapters.web import app as viewer
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
 from minutehand.application.refusals import RunRefused
@@ -390,6 +388,8 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
 
 
 def _mcp(state: Path) -> int:
+    from minutehand.adapters.mcp import server as mcp_server  # loaded only for this command: it is slow to import
+
     mcp_server.serve(state)
     return 0
 
@@ -413,6 +413,8 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
 
 
 def _view(state: Path, port: int) -> int:
+    from minutehand.adapters.web import app as viewer  # loaded only for this command
+
     print(f"minutehand: the viewer is at http://127.0.0.1:{port}/ (state {state})", file=sys.stderr)
     viewer.serve(state, port=port)
     return 0
