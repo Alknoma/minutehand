@@ -368,7 +368,8 @@ class Connector:
                 wire.ChannelSummary(id=c.id, name=None if c.id == general.id else c.display_name) for c in channels
             ]
         )
-        return Response(wire.dump(answer), media_type=JSON)
+        # Written with its nulls: General's `name` is null on the wire, which `wire.dump` would drop.
+        return Response(answer.model_dump_json(by_alias=True), media_type=JSON)
 
     # ------------------------------------------------------------------ answering
 
