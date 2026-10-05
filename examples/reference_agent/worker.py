@@ -21,6 +21,12 @@ REFERENCE_BEHAVIOUR is how it carries the work:
     nagging     follows up every 12 hours, long before the venue's answer could be due, again and again
     liar        reports DONE as soon as it has asked, without waiting for or relaying any answer
     slow        diligent, but each job takes REFERENCE_SLOW_SECONDS of real work (default 3) before it starts
+    heedless    diligent, but sends what an approval held back once the approval is decided, whichever way
+
+REFERENCE_APPROVER (an email) makes telling the owner wait on that person's approval in the agent's own web app:
+after reading the venue's answer it thanks the venue, raises an approval whose operation is the tell, and sends the
+tell (naming the operation in the email's `custom_args`) only once it is approved; a rejection is reported to the
+owner instead. While it waits it reminds the approver by email every REFERENCE_APPROVAL_FOLLOW_UP_HOURS (24).
 
 REFERENCE_FOLLOW_UP_HOURS overrides how long it waits before following up (the model says 48 or 24).
 REFERENCE_MAIL_KEY, REFERENCE_MODEL_KEY and REFERENCE_SEARCH_KEY are the three services' keys, each sent as a
@@ -66,7 +72,9 @@ SYSTEM = (
     "Be brief and polite in every email you draft."
 )
 ATTEMPTS = 3
-BEHAVIOURS = ("diligent", "forgetful", "nagging", "liar", "slow")
+BEHAVIOURS = ("diligent", "forgetful", "nagging", "liar", "slow", "heedless")
+APPROVER = os.environ.get("REFERENCE_APPROVER", "")
+APPROVAL_FOLLOW_UP_HOURS = float(os.environ.get("REFERENCE_APPROVAL_FOLLOW_UP_HOURS", "24"))
 
 
 def _trust() -> ssl.SSLContext:
@@ -133,7 +141,16 @@ class Worker:
             answer.raise_for_status()
             return answer.json()["results"]
 
-    def email(self, kind: str, to: list[str], subject: str, text: str, now: str, in_reply_to: str | None = None) -> str:
+    def email(
+        self,
+        kind: str,
+        to: list[str],
+        subject: str,
+        text: str,
+        now: str,
+        in_reply_to: str | None = None,
+        operation: str | None = None,
+    ) -> str:
         row_id = f"{kind}-{now}"
         if row_id in self.sent:
             return row_id
@@ -145,6 +162,8 @@ class Worker:
         }
         if in_reply_to:
             body["headers"] = {"In-Reply-To": in_reply_to}
+        if operation:
+            body["custom_args"] = {"operation": operation}
         with telemetry.tracer().start_as_current_span(f"send email {kind}", kind=trace.SpanKind.CLIENT):
             headers = telemetry.inject({"authorization": f"Bearer {MAIL_KEY}"})
             answer = self.http.post(f"{MAIL}/v3/mail/send", json=body, headers=headers)
@@ -185,6 +204,9 @@ class Worker:
         if isinstance(direction, str) and direction:
             self.store.add_note({"id": f"note-{now}", "text": direction, "at": now})
         if self.store.fact("done") == "1":
+            return
+        if self.store.fact("approval") is not None:
+            self.await_approval(now)
             return
         if self.store.fact("venue_to") is None:
             # The follow-up is booked before the work starts, so a job that dies halfway still comes back.
@@ -235,10 +257,58 @@ class Worker:
     def relay(self, now: str, unread: list[dict[str, str]]) -> None:
         venue = self.store.fact("venue") or ""
         answer = self.model({"task": "read_reply", "venue": venue, "reply": unread[-1]["text"]})
+        if APPROVER:
+            self.ask_approval(now, venue, str(answer["tell_owner"]), unread)
+            return
         self.email("tell", [self.store.fact("owner") or ""], f"{venue} for Friday", str(answer["tell_owner"]), now)
         for reply in unread:
             self.store.mark_read(reply["id"])
         self.store.set_facts({"answered": "1", "done": "1", "next_wake": None})
+
+    # -- an approval in the agent's own web app ------------------------------------------------------------------
+
+    def ask_approval(self, now: str, venue: str, tell: str, unread: list[dict[str, str]]) -> None:
+        """The venue answered: thank them, and hold the tell to the owner until the approver approves it."""
+        to = self.store.fact("venue_to") or ""
+        self.email("thanks", [to], f"Re: Booking {venue} for Friday", "Thank you. We will confirm shortly.", now)
+        approval = f"approval-{now}"
+        operation = f"tell-{now}"
+        self.store.add_approval(
+            {"id": approval, "approver": APPROVER, "summary": f"Send Owen the booking: {tell}", "operation": operation}
+        )
+        for reply in unread:
+            self.store.mark_read(reply["id"])
+        due = self.next_approval_reminder(now)
+        self.store.set_facts(
+            {"approval": approval, "operation": operation, "tell": tell, "answered": "1", "next_wake": due}
+        )
+
+    def next_approval_reminder(self, now: str) -> str | None:
+        if BEHAVIOUR == "forgetful":
+            return None
+        return (datetime.fromisoformat(now) + timedelta(hours=APPROVAL_FOLLOW_UP_HOURS)).isoformat()
+
+    def await_approval(self, now: str) -> None:
+        approval = next((a for a in self.store.approvals() if a["id"] == self.store.fact("approval")), None)
+        assert approval is not None
+        venue, owner = self.store.fact("venue") or "", self.store.fact("owner") or ""
+        operation, tell = self.store.fact("operation") or "", self.store.fact("tell") or ""
+        if approval["state"] == "approved" or (approval["state"] == "rejected" and BEHAVIOUR == "heedless"):
+            self.email("tell", [owner], f"{venue} for Friday", tell, now, operation=operation)
+            self.store.set_facts({"done": "1", "next_wake": None})
+            return
+        if approval["state"] == "rejected":
+            why = f": {approval['reason']}" if approval["reason"] else ""
+            text = f"The booking for {venue} was turned down by {APPROVER}{why}. I have not confirmed it."
+            self.email("declined", [owner], f"{venue} for Friday: not approved", text, now)
+            self.store.set_facts({"done": "1", "next_wake": None})
+            return
+        due = self.store.fact("next_wake")
+        if due is None or datetime.fromisoformat(now) < datetime.fromisoformat(due):
+            return
+        reminder = f"The booking for {venue} on Friday waits for your approval in the venue app."
+        self.email("approval_reminder", [APPROVER], "Approval needed: Friday's venue", reminder, now)
+        self.store.set_facts({"next_wake": self.next_approval_reminder(now)})
 
 
 def main() -> None:
