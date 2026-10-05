@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime
 from types import ModuleType
 from typing import Protocol
@@ -252,12 +252,21 @@ def evaluate_run(
     replies: list[PersonReply],
     *,
     stop: StopReason | None,
+    withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
     ended: datetime | None = None,
 ) -> RunResult:
     """Build the obligations ledger from the world and the replies, then run every deterministic check."""
-    view = view_of(scenario, events, wakes, replies, commitments=commitments, unmatched_calls=unmatched_calls)
+    view = view_of(
+        scenario,
+        events,
+        wakes,
+        replies,
+        withdrawn=withdrawn,
+        commitments=commitments,
+        unmatched_calls=unmatched_calls,
+    )
     return evaluate(view, stop=stop, ended=ended)
 
 
@@ -267,15 +276,17 @@ def view_of(
     wakes: list[WakeRecord],
     replies: list[PersonReply],
     *,
+    withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
 ) -> RunView:
-    """What every check reads: the world, the wakes, and the obligations ledger built from the replies."""
+    """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
+    which `withdrawn` (positions) were withdrawn before they landed."""
     return RunView(
         scenario=scenario,
         events=events,
         wakes=wakes,
-        obligations=build(scenario, events, replies),
+        obligations=build(scenario, events, replies, withdrawn=withdrawn),
         commitments=commitments,
         unmatched_calls=unmatched_calls,
     )

@@ -47,7 +47,7 @@ from minutehand.adapters.web.responses import (
     WakesResponse,
     explained,
 )
-from minutehand.application.checkpoint import CHECKPOINT
+from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
 from minutehand.application.model_calls import trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.checks._waits import chases, ended_at
@@ -118,7 +118,14 @@ def create_app(state: Path) -> Starlette:
     def obligations(run_id: str) -> Response:
         scenario = session.scenario_of(state, run_id)
         with session.reading(state, run_id) as world:
-            view = view_of(scenario, world.events(), session.wakes_of(state, run_id, world), world.replies())
+            last = read_checkpoint(world)
+            view = view_of(
+                scenario,
+                world.events(),
+                session.wakes_of(state, run_id, world),
+                world.replies(),
+                withdrawn=last.withdrawn if last is not None else [],
+            )
         due = {c.obligation.key: c.expiries for c in chases(view, ended_at(view))}
         return _json(
             ObligationsResponse(

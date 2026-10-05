@@ -504,6 +504,7 @@ class _Judge:
             world.events(),
             record.wakes,
             world.replies(),
+            withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in world.calls() if call.provider is None],
         )

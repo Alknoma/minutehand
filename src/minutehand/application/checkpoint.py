@@ -96,6 +96,11 @@ class Checkpoint(Model):
     wake: int = Field(ge=0, description="The wake that had just ended; 0 is setup")
     now: AwareDatetime
     replies: int = Field(ge=0, description="How many replies had been decided: the length of `Store.replies()`")
+    withdrawn: list[int] = Field(
+        default=[],
+        description="Positions in `Store.replies()` of replies withdrawn before they landed, because the agent "
+        "edited the message they answered: they never reached anyone and settle nothing",
+    )
     fated: list[EntityRef] = Field(default=[], description="Tickets whose fate is already scheduled or landed")
     commitments: list[Commitment] | None = None
     pending: list[Pending]
