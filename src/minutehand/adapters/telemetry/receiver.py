@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import os
 import socket
 from collections.abc import Callable
 from types import TracebackType
@@ -104,6 +105,7 @@ class Receiver:
         self._http_port = 0
         self._grpc_port: int | None = None
         self._grpc_server: GrpcServer | None = None
+        self._grpc_starting = asyncio.Lock()
 
     @property
     def notices(self) -> list[str]:
@@ -222,9 +224,6 @@ class Receiver:
         server.lifespan = config.lifespan_class(config)
         await server.startup(sockets=[inner])
         self._server, self._socket = server, inner
-        if self._grpc:
-            self._grpc_server = GrpcServer(self)
-            self._grpc_port = await self._grpc_server.start()
         self._front = await asyncio.start_server(self._connection, sock=listener)
         self._client = httpx.AsyncClient()
         return self
@@ -239,11 +238,11 @@ class Receiver:
             return
         port = self._http_port
         if head == H2_PREFACE:
-            if self._grpc_port is None:
+            if not self._grpc:
                 self._say(GRPC_NOT_INSTALLED)
                 writer.close()
                 return
-            port = self._grpc_port
+            port = await self._grpc_started()
         try:
             inner_reader, inner_writer = await asyncio.open_connection("127.0.0.1", port)
         except OSError:
@@ -251,6 +250,15 @@ class Receiver:
             return
         inner_writer.write(head)
         await asyncio.gather(_pump(reader, inner_writer), _pump(inner_reader, writer))
+
+    async def _grpc_started(self) -> int:
+        """The gRPC server, started on the first gRPC connection: most agents never open one, and a run that
+        loads gRPC carries its fork handlers into every hook command it starts."""
+        async with self._grpc_starting:
+            if self._grpc_port is None:
+                self._grpc_server = GrpcServer(self)
+                self._grpc_port = await self._grpc_server.start()
+            return self._grpc_port
 
     def _say(self, notice: str) -> None:
         if notice not in self._notices:
@@ -311,6 +319,9 @@ class GrpcServer:
         self._server: object | None = None
 
     async def start(self) -> int:
+        # gRPC's fork handlers write to stderr at every fork once it is loaded, and block when nobody reads it:
+        # this process forks for every hook and the agent's command, none of which uses gRPC.
+        os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "false")
         import grpc
         from opentelemetry.proto.collector.logs.v1 import logs_service_pb2_grpc
         from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2_grpc

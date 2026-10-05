@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import os
+import subprocess
 import sys
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
@@ -321,3 +322,29 @@ async def test_a_genai_log_event_is_kept_as_a_child_of_its_span_and_shows_what_t
     found = model_call(next(s for s in kept if s.source is SpanSource.RECEIVED), kept)
     assert found.input_messages is not None and "Is Lakeside Hall free on Friday?" in found.input_messages
     assert found.output_messages is not None and "Ask Rosa." in found.output_messages
+
+
+def test_receiving_loads_no_grpc_until_a_grpc_exporter_connects(tmp_path: Path) -> None:
+    """Once gRPC is loaded, its fork handlers write to stderr at every fork, and block when nobody reads it: a
+    60-day run hung at wake 93 starting a hook. A run whose agent exports over HTTP never loads it."""
+    script = """
+import asyncio, sys
+from datetime import UTC, datetime
+from pathlib import Path
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.adapters.telemetry.receiver import Receiver
+from minutehand.application.run_clock import RunClock
+
+async def main() -> None:
+    clock = RunClock(datetime(2026, 8, 24, tzinfo=UTC))
+    async with Receiver(SqliteStore(Path(sys.argv[1]), "run", clock), clock):
+        pass
+    print("grpc" in sys.modules)
+
+asyncio.run(main())
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "world.db")], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "False"
