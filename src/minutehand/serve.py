@@ -89,7 +89,7 @@ from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scenario
 from minutehand.domain.telemetry import ReceivedSpan
-from minutehand.domain.world import CallOutcome, Exchange
+from minutehand.domain.world import CallOutcome, Exchange, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import (
     ASGIApp,
@@ -633,6 +633,13 @@ class Standing:
         if world.case is not None:
             return await self.case_checks(world.case, stop=None)
         return await world.standing.checks(stop=None)
+
+    async def perform_due(self, world_id: str) -> list[WorldEvent]:
+        """The decisions a world's people owe by its clock, its case's, or the moment its latest step began, whichever
+        is latest: a harness that keeps its own clock marks its steps at its own moments and never moves the world's."""
+        world = self.get(world_id)
+        now = self._case_now(world.case) if world.case is not None else world.standing.clock.now()
+        return await world.standing.perform_due(max(now, world.steps.at))
 
     async def advance(self, world_id: str, to: datetime) -> list[Fired]:
         """Move a world's clock: a step is inferred first when the move goes forward and nobody marks steps

@@ -549,7 +549,7 @@ def create_app(serving: Serving) -> Starlette:
         return _json(InboxesView(pending=pending, due=due, unread=looked.unread))
 
     async def perform_due(request: Request) -> Response:
-        done = await world_of(request).standing.perform_due()
+        done = await standing.perform_due(world_of(request).world_id)
         return _json(DecisionsDone(decisions=[_decision(e) for e in done]))
 
     async def decide(request: Request) -> Response:

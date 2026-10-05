@@ -336,15 +336,17 @@ class StandingWorld:
         owed = sorted((o for o in self._owed if o.reply is not None and o.reply.decides), key=lambda o: o.at)
         return [(o.at, o.reply) for o in owed if o.reply is not None]
 
-    async def perform_due(self) -> list[WorldEvent]:
-        """Read the inboxes, then make every decision due at the world's clock, as its person, earliest first; the
-        clock does not move."""
+    async def perform_due(self, now: datetime) -> list[WorldEvent]:
+        """Read the inboxes, then make every decision due by `now` (the world's clock, or its case's when that is
+        later), as its person, earliest first, each at the moment it fell due: the world's clock moves to it, and
+        nothing else owed is fired."""
         await self.look()
         done: list[WorldEvent] = []
         for owed in sorted(self._owed, key=lambda o: o.at):
-            if owed.reply is None or owed.reply.decides is None or owed.at > self.clock.now():
+            if owed.reply is None or owed.reply.decides is None or owed.at > max(now, self.clock.now()):
                 continue
             self._owed.remove(owed)
+            self.clock.jump(max(owed.at, self.clock.now()))
             async with self._push(owed.what):
                 made = await self._decide(owed.reply)
             if made is not None:

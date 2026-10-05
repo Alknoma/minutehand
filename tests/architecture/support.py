@@ -66,6 +66,11 @@ SEARCH = {"host": "search.localhost", "name": "search", "kind": "pass_through"}
 
 GENERATED = {"kind": "generated", "env": "REFERENCE_MAIL_SECRET"}
 
+APPROVER_TOKEN_VARIABLE = "NADIA_APPROVER_TOKEN"
+APPROVER_TOKEN = "nadia-signs-in-with-this-3e1f"
+"""Nadia's credential in the reference agent's web app for a standing world: the server reads it from its own
+environment, and the agent is configured with the same."""
+
 
 def approvals(port: int) -> dict[str, object]:
     """The reference agent's approvals in its own web app, as `agent.yaml` declares them, on `port`."""
