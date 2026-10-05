@@ -18,6 +18,39 @@ class StopReason(StrEnum):
     AGENT_FAILED = "agent_failed"  # the agent could not be reached or answered with an error
 
 
+class VerdictKind(StrEnum):
+    PASSED = "passed"  # no check failed, and the agent finished: it reported done, or nothing was left open
+    UNFINISHED = "unfinished"  # no check failed, but the agent never reported done and work was still open
+    FAILED = "failed"  # a check failed
+
+
+EXIT_CODES = {VerdictKind.PASSED: 0, VerdictKind.FAILED: 1, VerdictKind.UNFINISHED: 3}
+"""What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is a run that could not be
+performed, which has no verdict."""
+
+
+class Verdict(Model):
+    """Whether the run's checks held, kept apart from whether the agent finished.
+
+    A run is finished when the agent reported it was done, or when nothing was left open: no wait the world
+    had not settled and no commitment the agent's last report still held open. A run that stopped any other
+    way with work open is UNFINISHED even when every check held: a wake limit, the scenario's deadline or an
+    agent that stopped asking to be woken cut it off, and nobody saw the agent finish."""
+
+    kind: VerdictKind
+    stop: StopReason | None = Field(description="How the run ended; None for a run captured elsewhere, which says not")
+    failed_checks: int = Field(ge=0)
+    open_waits: int = Field(ge=0, description="Waits the world had not settled when the run ended")
+    open_commitments: int | None = Field(
+        ge=0, description="Commitments the agent's last report held open; None when it reported none at all"
+    )
+    words: str = Field(description="The verdict in one sentence, as every surface states it")
+
+    @property
+    def exit_code(self) -> int:
+        return EXIT_CODES[self.kind]
+
+
 class RunRecord(Model):
     run_id: str
     scenario: str
