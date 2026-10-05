@@ -27,7 +27,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
-from minutehand.domain.scenario import Model, ProviderKey, Scenario, TicketState
+from minutehand.domain.scenario import Model, Moves, ProviderKey, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -231,6 +231,14 @@ class Chat:
         self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
     ) -> None:
         self._rewrite(ticket, Actor.SCENARIO, state=state, assignee_email=assignee_email, world=world)
+
+    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
+        seeded = scenario.happening_ticket(happening)
+        n = [t for t in scenario.tickets if t.provider == CHAT].index(seeded)
+        ticket = EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id=f"seed{n}")
+        if not isinstance(happening.action, Moves):
+            raise NotImplementedError(f"the test chat cannot {happening.action.kind} a ticket")
+        self._rewrite(ticket, Actor.PERSON, state=happening.action.to, assignee_email=None, world=world)
 
     def _rewrite(
         self, ticket: EntityRef, actor: Actor, *, state: TicketState | None, assignee_email: str | None, world: Store

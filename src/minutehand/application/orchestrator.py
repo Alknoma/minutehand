@@ -23,6 +23,7 @@ from minutehand.application.checkpoint import (
     PendingBooking,
     PendingDirection,
     PendingFate,
+    PendingHappening,
     PendingReply,
     PendingWake,
     Restorable,
@@ -52,7 +53,15 @@ from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation
 from minutehand.ports.agent import AgentDriver, Reports
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
-from minutehand.ports.provider import ASGIApp, BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
+from minutehand.ports.provider import (
+    ActsOnTickets,
+    ASGIApp,
+    BooksWakes,
+    EditsTickets,
+    HoldsTickets,
+    Provider,
+    PushesEvents,
+)
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -242,9 +251,20 @@ class Orchestrator:
     async def run(self) -> RunRecord:
         """A fresh run: seed the world, checkpoint the setup, send START, and play forward."""
         started = time.monotonic()
+        for happening in self._scenario.happenings:
+            self._acts(self._scenario.happening_ticket(happening).provider)
         self._begin()
         for provider in self._services.providers:
             provider.seed(self._scenario, self._store)
+        for i, happening in enumerate(self._scenario.happenings):
+            self._pending.append(
+                PendingHappening(
+                    due=Due(
+                        at=self._scenario.starts_at + happening.after, kind=DueKind.TICKET_FATE, ref=f"happening:{i}"
+                    ),
+                    happening=i,
+                )
+            )
         for i, direction in enumerate(self._scenario.directions):
             self._pending.append(
                 PendingDirection(
@@ -375,7 +395,7 @@ class Orchestrator:
             fired = [p for p in self._pending if p.due in jump.firing]
             self._pending = [p for p in self._pending if p.due not in jump.firing]
             self._clock.jump(jump.now)
-            if all(isinstance(p, PendingFate) for p in fired):
+            if all(isinstance(p, PendingFate | PendingHappening) for p in fired):
                 await self._fire(fired)
                 continue
             wake = self._clock.begin_wake()
@@ -417,6 +437,10 @@ class Orchestrator:
         for item in fired:
             if isinstance(item, PendingFate):
                 self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
+            if isinstance(item, PendingHappening):
+                happening = self._scenario.happenings[item.happening]
+                provider = self._scenario.happening_ticket(happening).provider
+                self._acts(provider).act(happening, self._scenario, self._store, self._clock)
         for item in fired:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
@@ -736,6 +760,15 @@ class Orchestrator:
         if provider not in self._services.tickets:
             raise RunRefused(f"a ticket fate is due on {provider}, which holds no tickets a person can move")
         return self._services.tickets[provider]
+
+    def _acts(self, provider: ProviderKey) -> ActsOnTickets:
+        found = next((p for p in self._services.providers if p.manifest.key == provider), None)
+        if not isinstance(found, ActsOnTickets):
+            raise RunRefused(
+                f"a happening acts on a seeded {provider} ticket, and {provider} "
+                + ("is not in this run" if found is None else "has no tickets a person can act on")
+            )
+        return found
 
 
 def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:

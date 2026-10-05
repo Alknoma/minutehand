@@ -3,8 +3,8 @@
 Ported from the refusal suite of the emulator this provider replaces. Each case
 there was a leniency that hid a real defect: an assignee spelled as a handle
 accepted, a write without its `data` wrapper stored. The cases about project
-creation, custom fields, tags, teams and the free-workspace 402 are not ported:
-that surface is not served here (see the manifest).
+creation, custom fields, tags, teams, the free-workspace 402, tokens and throttling
+are in `test_asana_parity_refusals.py`.
 """
 
 from __future__ import annotations
@@ -153,8 +153,8 @@ async def test_moving_a_task_between_projects_or_workspaces_by_put_is_refused(cl
 
 
 async def test_a_field_this_simulation_does_not_serve_is_refused_by_name(client: httpx.AsyncClient) -> None:
-    refused = await client.post("/tasks", json={"data": {"workspace": WS, "custom_fields": {"1": "2"}}})
-    assert error(refused, 501) == "custom_fields: Not supported by this simulation of Asana"
+    refused = await client.post("/tasks", json={"data": {"workspace": WS, "followers": ["me"]}})
+    assert error(refused, 501) == "followers: Not supported by this simulation of Asana"
 
 
 async def test_a_comment_with_nothing_to_say_is_refused(client: httpx.AsyncClient) -> None:
