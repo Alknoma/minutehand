@@ -203,10 +203,12 @@ src/minutehand/
   domain/             pure: no I/O, no clock reads
     scenario.py       Model, Scenario, Person, Account, Answers, Scripted, ScriptedReply, ScriptedPress, FormInput,
                       Silent, DelayRange, WorkingHours, Absence, SeededTicket, SeededComment, SeededDocument,
-                      SeededChannel, SeededPost, SeededFile, ProviderSeed, Happening (TicketHappening (Moves,
-                      Reassigns, Comments, Deletes) | MessagingHappening (PersonPosts, PersonEdits, PersonDeletes,
-                      PersonReacts, PersonJoins, PersonOpensAgent, PersonCommands)), TicketFate, Direction,
-                      PersonAsked, TicketCreated, TicketDeleted, TicketInState, Relayed
+                      DocumentKind, Access, SharedSpace, SignIn, SeededChannel, SeededPost, SeededFile,
+                      ProviderSeed, Happening (TicketHappening (Moves, Reassigns, Comments, Deletes) |
+                      DocumentHappening (Edited, Renamed, Moved, Shared, Trashed) | MessagingHappening
+                      (PersonPosts, PersonEdits, PersonDeletes, PersonReacts, PersonJoins, PersonOpensAgent,
+                      PersonCommands)), TicketFate, Direction, PersonAsked, TicketCreated, TicketDeleted,
+                      TicketInState, Relayed
     world.py          WorldEvent, Change, Stored, Exchange, Captured, Body, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, RecordSnapshot,
                       InteractionSnapshot
@@ -350,7 +352,7 @@ class PushesEvents(Protocol):
     ) -> None: ...
 
     async def happen(
-        self, happening: Happening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
+        self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None: ...
 
 
@@ -378,10 +380,12 @@ class ActsOnTickets(Protocol):
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None: ...
 
 
+@runtime_checkable
 class ChangesDocuments(Protocol):
     def change(self, happening: DocumentHappening, scenario: Scenario, world: Store, clock: Clock) -> None: ...
 
 
+@runtime_checkable
 class NotifiesChanges(Protocol):
     def watched(self, world: Store, clock: Clock) -> bool: ...
 
@@ -410,9 +414,40 @@ class BooksWakes(Protocol):
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 | GitHub | `github` | `api.github.com` (REST and `/graphql`; no prefix) | none: repository reads only, see its `README.md` |
 
-All five are `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. A person acting on a seeded ticket by themselves at a set moment (completing, reassigning, commenting on or deleting it) is a `TicketHappening`: the run schedules it when it seeds, `ActsOnTickets.act` lands it as actor `PERSON`, it wakes nobody, and a run whose happening names a provider that cannot act is refused before anything is seeded; a ticket already gone is left alone. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
+Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack holds all three; Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`.
 
-All five are `Tier.FINISHED`. A person changing a document is a `DocumentChange` in the scenario (`Edited`, `Renamed`, `Moved`, `Shared`, `Trashed`, at an offset, by a person): the run loop fires it as it fires a ticket's fate, through `ChangesDocuments.change`, as actor `PERSON`. It wakes the agent only when the provider says the agent is watching (`watched`, Drive's `changes.watch`); that wake carries no `WakeRequest`, and inside it `notify` tells the agent the way the service does (Drive POSTs to the channel's address with `X-Goog-Channel-ID`, `X-Goog-Resource-State`, `X-Goog-Message-Number`, `X-Goog-Resource-ID`, `X-Goog-Resource-URI`). A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name.
+### Things people do by themselves
+
+`Scenario.happenings` is one list of one discriminated union, `Happening`, on `kind`. Each member is something a person does at an offset with no agent involved, and each family lands through the port its provider implements:
+
+| Family | Members (`kind`) | Names its target | Lands through | Wakes the agent |
+|---|---|---|---|---|
+| Ticket | `TicketHappening` (`ticket`): `action` is `Moves(to)`, `Reassigns(to: person or None)`, `Comments(text)` or `Deletes()` | the seeded ticket's `title`, exactly one | `ActsOnTickets.act` (Asana, YouTrack) | never: it is found on the next read |
+| Document | `DocumentHappening` (`document`): `action` is `Edited(append)`, `Renamed(to)`, `Moved(folder)`, `Shared(access)` or `Trashed()` | the seeded document's `title`, exactly one | `ChangesDocuments.change` (Drive) | only when the agent watches (`NotifiesChanges`, Drive's `changes.watch`); that wake carries no `WakeRequest`, and inside it `notify` POSTs Drive's channel headers |
+| Messaging | `MessagingHappening`: `PersonPosts` (`posts`), `PersonEdits` (`edits`), `PersonDeletes` (`deletes`), `PersonReacts` (`reacts`), `PersonJoins` (`joins`), `PersonOpensAgent` (`opens_agent`), `PersonCommands` (`commands`) | its own `provider`, channel and post keys | `PushesEvents.happen` (Slack) | yes, `PERSON_REPLIED`, as a pushed reply does |
+
+The run schedules every happening when it seeds, as one `PendingHappening` under `DueKind.HAPPENING`, and fires it from one place (`Orchestrator._happen`), as actor `PERSON` on the run's clock. A run whose happening lands on a provider without its family's port, or a messaging one on a provider with no inbound target, is refused in the `Orchestrator` constructor before anything is seeded, naming the happening and the provider (`happening 1 (tom deletes the seeded ticket 'Lease') lands on testsched, which has no tickets a person can act on`). A ticket or document already deleted when its happening falls due is left alone. A standing world (`minutehand serve`) owes the same happenings and fires each as its clock is advanced past it.
+
+```yaml
+tickets:
+  - {provider: asana, project: Launch, title: Book the venue, assignee: nadia}
+  - {key: notes, provider: youtrack, project: Launch, title: Write the release notes, assignee: nadia,
+     labels: [docs], comments: [{by: owen, text: Due before the partner call}]}
+documents:
+  - {provider: google_drive, title: Launch plan, text: "# Launch plan"}
+happenings:
+  - {kind: ticket, person: nadia, ticket: Book the venue, after: P1D, action: {kind: moves, to: done}}
+  - {kind: ticket, person: nadia, ticket: Write the release notes, after: P2D,
+     action: {kind: comments, text: Draft is in the shared folder}}
+  - {kind: document, person: nadia, document: Launch plan, after: P3D, action: {kind: renamed, to: Launch plan (final)}}
+  - {kind: posts, provider: slack, person: nadia, text: All three are done on my side, after: P4D}
+```
+
+That file plays in one run in `tests/providers/test_every_happening_family.py`.
+
+### Deliberate failures
+
+A fault is typed by the provider that can produce it and declared in that provider's own seed (`ProviderSeed.body`); there is no shared `Scenario.faults`, because no one shape holds every provider's failures without carrying knobs the others would ignore: Slack's `SlackSeed.faults` (any Slack error code or `ratelimited` with `Retry-After`, every call or N, `only_rich`), Drive's `DriveSeed.faults` (N calls of a Google operation answered one of seven `wire.FaultKind`s), YouTrack's `YouTrackSeed.faults` (a method and path glob answered any HTTP status over a window) and Asana's `AsanaSeed.rate_limits` (throttled stretches). The standing mode's control API keeps its own `faults` route, whose caller writes the status and body.
 
 ### A provider's own seed: Asana
 
@@ -450,17 +485,17 @@ provider_seeds:
 
 The emulator this replaced answered three things differently from Asana as documented, and a client tested against it needs changing: its factory hard-coded the workspace's and the Status, Priority and Story Points fields' gids, where this provider's gids are derived from names and found through the API; it answered a bare `opt_fields=custom_fields` with each field in full, where every bare nested field here answers its gid and resource type, which is Asana's documented rule for an object named without its fields and is not verified against the live API, so a client must name `custom_fields.enum_value.name` and the like; and it had no project memberships or `addMembers`.
 
-What people do to seeded tickets whatever the agent does is a `TicketHappening`: a seeded ticket's `key`, the person, an offset, and a change (`state`, `assignee`, `comment` or `delete`). Each is pending from the start and fires through the ticket provider's `TicketsHappen.happen`, as actor `PERSON` with that person as the author and the run's clock as the time, without a wake; a run whose happenings land on a provider without the port is refused. What one provider needs beyond the provider-neutral people, tickets and documents is a `ProviderSeed`: the provider's key and its own seed as JSON text, parsed only by that provider.
+YouTrack's own seed names a seeded ticket by its `key` (`IssueSeed.ticket`, `LinkSeed.ticket`); a happening names it by title, as on every ticket provider.
 
 ```yaml
 tickets:
   - {key: notes, provider: youtrack, project: Launch, title: Write the release notes, assignee: tomas,
      labels: [docs], comments: [{by: iris, text: Due before the partner call}]}
-ticket_happenings:
-  - {ticket: notes, by: tomas, after: P2D, change: {kind: state, to: done}}
+happenings:
+  - {kind: ticket, ticket: Write the release notes, person: tomas, after: P2D, action: {kind: moves, to: done}}
 provider_seeds:
   - provider: youtrack
-    text: '{"tokens": [{"token": "perm:…", "login": "agent-bot"}],
+    body: '{"tokens": [{"token": "perm:…", "login": "agent-bot"}],
             "projects": [{"name": "Launch", "fields": [{"name": "State"}, {"name": "Assignee"}, {"name": "Due Date"}]}],
             "issues": [{"ticket": "notes", "fields": [{"field": "Due Date", "value": "2026-08-26"}]}],
             "grants": [{"login": "tomas", "permission": "jetbrains.youtrack.updateIssue", "project": "Launch", "held": false}],
@@ -489,7 +524,7 @@ The fake was brought to what a production Slack agent sends and expects, read ca
 | `block_actions` (buttons, `users_select`) | Yes | Form-encoded `payload`, with `trigger_id`, `response_url`, `actions[]`, `container`, `channel`, `message`, `user`, `team`; the message is left out for an ephemeral one, as Slack does. Other element types (static selects, overflow, date pickers) are not offered to a person. |
 | `view_submission` | Yes | `view.state.values` for every input block, `private_metadata`, `callback_id`; the answer's `response_action` (`errors`, `update`, `push`, `clear`, or none) is applied to the view. Only `plain_text_input` can be filled. `view_closed` is never sent. |
 | Slash commands | Yes, as `PersonCommands` | Form fields with `response_url` and `trigger_id`; the immediate answer is shown to the person, or the channel with `in_channel`. Sent to the inbound URL, not one per command. |
-| Faults | `Scenario.faults` | `RateLimited(retry_after)` answers HTTP 429 with `Retry-After`; `Refused(error)` answers any Slack error code; `only_rich` fails only calls with blocks or attachments, so a plain retry passes; `times` and `after` bound it. Each failure is a `faults` record by actor `SCENARIO`. |
+| Faults | `SlackSeed.faults`, in Slack's `ProviderSeed` | `RateLimited(retry_after)` answers HTTP 429 with `Retry-After`; `Refused(error)` answers any Slack error code; `only_rich` fails only calls with blocks or attachments, so a plain retry passes; `times` and `after` bound it. Each failure is a `faults` record by actor `SCENARIO`. |
 | Seeding | `Scenario.channels`, `Person.account` | Public and private channels with topic, purpose, members, the agent in or out, history with threads and files; DMs and group DMs with history; guests (not in `#general`), deactivated accounts and other apps' bots. |
 
 Where the parent repository's emulator answered differently from Slack, the fake follows Slack, and a test written against the emulator would change: it listed ephemeral messages in history; minted DM ids as `D` and the joined member ids; never listed IMs; let any author's message be updated or deleted (Slack: `cant_update_message`, `cant_delete_message`); ran a request with no token as the bot (Slack: `not_authed`); gave every user `tz_offset` 3600; answered missing reaction arguments `invalid_arguments`; served no `response_url` (a 404); and answered `missing_scope` from a per-token scope list, which this fake has not, so `missing_scope` is a declared `Refused` fault.
@@ -507,11 +542,14 @@ Orchestrator.run():
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
     clock.jump(jump.now)
-    only ticket fates and happenings fired -> HoldsTickets.transition, ActsOnTickets.act, no wake
+    only ticket fates and ticket or document happenings fired -> HoldsTickets.transition, ActsOnTickets.act,
+                     ChangesDocuments.change; no wake, unless the agent watches a changed provider's documents
+                     (NotifiesChanges.watched), then a DUE wake in which NotifiesChanges.notify tells it
     otherwise, one wake:
       fire in order: fates (transition), replies (PushesEvents.deliver, or PushesInteractions.press for a
-                     reply that uses a control), happenings (ActsOnTickets.act for a ticket, PushesEvents.happen
-                     for a message), directions by message (say),
+                     reply that uses a control), happenings (ActsOnTickets.act for a ticket,
+                     ChangesDocuments.change for a document, PushesEvents.happen for a message), directions by
+                     message (say),
                      bookings (BooksWakes.fire), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
       read the new events: an agent message to a person, as its text reads when the wake ends
@@ -1279,7 +1317,7 @@ What is built for people today (`application/replier_scripted.py`, `ScriptedRepl
 - A reply is stored the first time it is decided and arrives through the provider as a real inbound event: a threaded reply in a channel, a new message in a DM.
 - A scripted reply may use a control instead of writing back (`ScriptedReply.press`): the control on the asked message whose label reads `ScriptedPress.label`, in any case, a person picked for a person picker, and `form` typed into the modal the agent opens in answer. A message with no such control gets no reply: the person cannot press what is not there. A model-written person is shown the message's controls (a link is not one) and may answer with `press` and `form` instead of `text`. Either way the reply is a `PersonReply` with `press` set, stored and replayed like any other, its `text` what the person typed or else the label, so `Relayed` hears a reason typed into a form. The press lands as `InteractionSnapshot` events by actor `PERSON` naming the person, the control, its value and what was typed: "nadia pressed “Accept”" is one event in the log.
 - An edit that changes a message's controls without changing its text is put to the person again, as a text change is: a "Thinking…" message turned into a card by `chat.update` asks its question then.
-- `Scenario.happenings` are what people do unprompted at set offsets (post, edit, delete, react, join, open the agent's Home tab, run a slash command); each wakes the agent with `PERSON_REPLIED`.
+- `Scenario.happenings` are what people do unprompted at set offsets, in three families (see "Things people do by themselves"); a messaging one (post, edit, delete, react, join, open the agent's Home tab, run a slash command) wakes the agent with `PERSON_REPLIED`.
 
 Designed:
 

@@ -95,7 +95,10 @@ nothing refuses it. A declared host a provider claims is refused with 409, namin
 
 `Seed` (`domain/scenario.py`) is a scenario file with nothing to achieve: the goal and expectations may be left
 out, the owner defaults to the first person, and at least one person is required. A whole scenario file loads
-too; its expectations are what `checks` holds the world to.
+too; its expectations are what `checks` holds the world to. Its `provider_seeds`, `channels`, `spaces`,
+`sign_ins` and `happenings` are accepted as in a run; each happening falls due when the world's clock is advanced
+past it, whether or not scripted people speak, and one aimed at a provider without its family's port refuses the
+world at creation.
 
 ```json
 {
@@ -130,11 +133,12 @@ The clock of a world stands still. Nothing fires on its own.
 
 ### Faults
 
-No provider exposes typed faults yet, so a fault is answered by the server in front of the provider: the next
-`times` calls of the world to `provider` whose method matches and whose path, as the provider's app sees it
-(Asana's `/api/1.0` removed), starts with `path` get `status`, `body` and an optional `Retry-After`. The body is
-the caller's to write in the service's error shape. Provider-rendered faults (Slack's `ratelimited`, a Graph
-401) are pending.
+A fault armed through this route is answered by the server in front of the provider: the next `times` calls of
+the world to `provider` whose method matches and whose path, as the provider's app sees it (Asana's `/api/1.0`
+removed), starts with `path` get `status`, `body` and an optional `Retry-After`. The body is the caller's to write
+in the service's error shape. A provider's own typed faults (Slack's `ratelimited` with `only_rich`, Drive's
+`FaultKind`s, YouTrack's path faults, Asana's rate-limit stretches) are declared in that provider's seed, the
+seed's `provider_seeds`, when the world is created; arming one of those after creation is pending.
 
 ## Each world is a run
 

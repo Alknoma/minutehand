@@ -648,16 +648,16 @@ class _ScenarioBody(Model):
         named += [e.person for e in self.expect if isinstance(e, PersonAsked)]
         named += [e.assignee for e in self.expect if isinstance(e, (TicketCreated, TicketInState)) and e.assignee]
         named += [k for e in self.expect if isinstance(e, Relayed) for k in (e.said_by, e.to)]
-        named += [h.action.to for h in self._ticket_happenings() if isinstance(h.action, Reassigns) and h.action.to]
+        named += [h.action.to for h in self._on_tickets() if isinstance(h.action, Reassigns) and h.action.to]
         named += [k for d in self.documents for k in (d.owner, d.modified_by) if k is not None]
         named += [a.person for d in self.documents for a in d.shared_with]
         named += [a.person for s in self.spaces for a in s.members]
         named += [s.person for s in self.sign_ins if s.person is not None]
-        named += [h.action.access.person for h in self._document_happenings() if isinstance(h.action, Shared)]
+        named += [h.action.access.person for h in self._on_documents() if isinstance(h.action, Shared)]
         missing = sorted(set(named) - known)
         if missing:
             raise ValueError(f"no such person: {', '.join(missing)}")
-        for happening in self._ticket_happenings():
+        for happening in self._on_tickets():
             self.happening_ticket(happening)
         self._places_resolve()
         seeded = [s.provider for s in self.provider_seeds]
@@ -696,10 +696,10 @@ class _ScenarioBody(Model):
             return self.happening_document(happening).provider
         return happening.provider
 
-    def _ticket_happenings(self) -> list[TicketHappening]:
+    def _on_tickets(self) -> list[TicketHappening]:
         return [h for h in self.happenings if isinstance(h, TicketHappening)]
 
-    def _document_happenings(self) -> list[DocumentHappening]:
+    def _on_documents(self) -> list[DocumentHappening]:
         return [h for h in self.happenings if isinstance(h, DocumentHappening)]
 
     def provider_seed(self, provider: str) -> ProviderSeed | None:
@@ -748,7 +748,7 @@ class _ScenarioBody(Model):
         titles = [(d.provider, d.title) for d in self.documents]
         if len(titles) != len(set(titles)):
             raise ValueError("two seeded documents of one provider share a title")
-        for happening in self._document_happenings():
+        for happening in self._on_documents():
             self.happening_document(happening)
 
     def _refuse_tell(self, relayed: Relayed) -> None:
@@ -767,12 +767,12 @@ class _ScenarioBody(Model):
         ]
         elsewhere += [
             (f"the change to {h.document!r}", h.action.append)
-            for h in self._document_happenings()
+            for h in self._on_documents()
             if isinstance(h.action, Edited)
         ]
         elsewhere += [
             (f"{h.person}'s comment on {h.ticket!r}", h.action.text)
-            for h in self._ticket_happenings()
+            for h in self._on_tickets()
             if isinstance(h.action, Comments)
         ]
         for person in self.people:
