@@ -22,6 +22,7 @@ from tests.providers.youtrack.youtrack_instance import (
     assignee_field,
     entities,
     entity,
+    named,
     refusal,
     state_field,
 )
@@ -75,7 +76,7 @@ async def test_an_agent_hands_an_issue_to_a_person_over_a_socket(instance: Insta
         no_token = await http.get(f"/issues/{made['id']}", headers={"Authorization": ""})
 
     assert projects[0] == {"id": LAUNCH, "shortName": "LAUNCH", "$type": "Project"}
-    assignees = team[1]["bundle"]
+    assignees = named(team, "Assignee")["bundle"]
     assert isinstance(assignees, dict)
     assert {"login": "noor", "email": "noor@example.com", "$type": "User"} in list(assignees["aggregatedUsers"])
     assert [i["idReadable"] for i in found] == [made["idReadable"]]

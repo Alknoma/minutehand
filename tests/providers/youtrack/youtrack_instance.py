@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import ssl
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +16,9 @@ import pytest
 from minutehand.adapters.providers.youtrack import state, wire
 from minutehand.adapters.providers.youtrack.provider import YouTrackProvider, build
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
+from minutehand.adapters.proxy.policy import Routing
+from minutehand.adapters.proxy.registry import BUILTIN_PACKAGE, Registry
+from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, Scenario, SeededTicket, TicketState
@@ -108,6 +113,31 @@ async def client(instance: Instance) -> AsyncIterator[httpx.AsyncClient]:
         yield c
 
 
+@asynccontextmanager
+async def proxied(instance: Instance, confdir: Path, token: str | None = TOKEN) -> AsyncIterator[httpx.AsyncClient]:
+    """A client whose every call reaches the instance the way the agent's do: through the run's proxy, over TLS,
+    to the YouTrack Cloud host, answered by the provider the registry routes that host to."""
+    registry = Registry()
+    registry.discover(BUILTIN_PACKAGE)
+    async with Proxy(Routing(registry), instance.store, instance.clock, confdir=confdir) as proxy:
+        proxy.mount(instance.store, instance.clock, {"youtrack": instance.provider.app(instance.store, instance.clock)})
+        headers = {"Accept": "application/json"} | ({"Authorization": f"Bearer {token}"} if token else {})
+        async with httpx.AsyncClient(
+            proxy=proxy.url,
+            verify=ssl.create_default_context(cafile=str(proxy.ca_cert)),
+            trust_env=False,
+            base_url=HOST,
+            headers=headers,
+        ) as http:
+            yield http
+
+
+@pytest.fixture
+async def through_proxy(instance: Instance, tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
+    async with proxied(instance, tmp_path / "ca") as http:
+        yield http
+
+
 Json = dict[str, object]
 
 
@@ -154,3 +184,17 @@ def assignee_field(login: str | None) -> Json:
 
 def millis_now(clock: RunClock) -> int:
     return state.millis(clock.now())
+
+
+def named(collection: object, name: str) -> Json:
+    """The entry of an answered collection with this `name`, or with a `field` of this name: a project's or an
+    issue's custom field, found as a client finds one."""
+    assert isinstance(collection, list), collection
+    for entry in collection:
+        assert isinstance(entry, dict)
+        if entry.get("name") == name:
+            return entry
+        inner = entry.get("field")
+        if isinstance(inner, dict) and inner.get("name") == name:
+            return entry
+    raise AssertionError(f"nothing named {name!r} in {collection}")
