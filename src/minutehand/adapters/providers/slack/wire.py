@@ -271,6 +271,12 @@ class SlackHook(Model):
     used: int = 0
 
 
+class SlackSignIn(Model):
+    """Minutehand's own: a token the scenario declares, and the member it signs in as (None: the app's bot)."""
+
+    user: str | None = None
+
+
 class SlackInstall(Model):
     """Minutehand's own: who installed the agent's app, and the OAuth codes already exchanged."""
 

@@ -133,10 +133,13 @@ class SlackApi:
         return None
 
     def _authenticate(self, presented: wire.Presented) -> None:
-        """Any bot or user token is accepted: the proxy holds no real credentials to check them against."""
+        """A bot or user token the workspace issued: any such token while the scenario declares no Slack sign-in,
+        and only the ones it declares once it does."""
         if presented.token is None:
             raise wire.Refusal("not_authed")
         if not presented.token.startswith(_TOKEN_KINDS) or self._world.user(BOT_USER_ID) is None:
+            raise wire.Refusal("invalid_auth")
+        if not self._world.knows_token(presented.token):
             raise wire.Refusal("invalid_auth")
 
     # ------------------------------------------------------------------ lookups
