@@ -206,14 +206,42 @@ class SpansPage(Model):
     )
 
 
+class LobbyKind(StrEnum):
+    """What a call kept in the lobby is. Only `unclaimed` is a call nobody expected: the others are traffic the
+    server was told about, kept so the record is complete."""
+
+    UNCLAIMED = "unclaimed"
+    """No open world claimed it and nothing declared its host: refused with 502 (a late call for a closed world among
+    them, `Exchange.late_for`). The lobby a suite asserts empty."""
+    MODEL_HOST = "model_host"
+    """A burst on a tunnel to a host the server was told is a model host (a default one, or `serve --model-host`),
+    relayed unopened (`Exchange.tunnelled`), when no world declared that host."""
+    PASS_THROUGH = "pass_through"
+    """A call to a host no provider claims, passed through and kept because the server was told to
+    (`serve --capture-unknown`, `Exchange.captured`)."""
+
+
+def lobby_kind(call: RecordedCall) -> LobbyKind:
+    """What a call the lobby kept is, read from how it was answered."""
+    if call.exchange.tunnelled is not None:
+        return LobbyKind.MODEL_HOST
+    if call.exchange.captured is not None:
+        return LobbyKind.PASS_THROUGH
+    return LobbyKind.UNCLAIMED
+
+
 class Unmatched(Model):
-    """Calls no open world claimed, oldest first: refused with 502, or bursts on a tunnel to a model host no world
-    declared, relayed unopened (`Exchange.tunnelled`, route `none`). `since` and `head` count every call the lobby
-    kept across the life of the server (a call to a provider's shared host, answered there and not listed here,
-    among them), so `since` reads only what is new."""
+    """Calls kept in the lobby, oldest first, of the kinds asked for (`?kind=`, repeated; by default only
+    `unclaimed`: calls no open world claimed and nothing declared, refused with 502). `kinds` counts every call the
+    lobby kept since `since`, by kind, whichever were asked for, so traffic left out of `calls` is never out of
+    sight. `since` and `head` count every call the lobby kept across the life of the server (a call to a provider's
+    shared host, answered there and listed under no kind, among them), so `since` reads only what is new."""
 
     calls: list[RecordedCall]
     head: int
+    kinds: dict[LobbyKind, int] = Field(
+        default={}, description="How many calls of each kind the lobby kept since `since`, listed or not"
+    )
 
 
 class Say(Model):
