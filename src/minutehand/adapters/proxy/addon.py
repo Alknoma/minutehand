@@ -39,7 +39,7 @@ from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.worlds import Mounted, Worlds, one_run
 from minutehand.application.restore import SeenCall
 from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, OnMiss, PassThrough
-from minutehand.domain.provider import Manifest
+from minutehand.domain.provider import Manifest, world_keys
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
@@ -227,6 +227,7 @@ class ProxyAddon:
             self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
+        manifest = self.routing.claimant(host)
         world = self.worlds.world_for(
             host,
             credentials.presented(
@@ -235,8 +236,8 @@ class ProxyAddon:
                 content_type=_first_header(request, "content-type") or "",
                 body=request.get_content(strict=False) or b"",
             ),
+            world_keys(manifest, host, request.path) if manifest is not None else [],
         )
-        manifest = self.routing.claimant(host)
         if policy is HostPolicy.ANSWER and manifest is not None and world is not None:
             await self._answer(flow, host, manifest, world)
             return

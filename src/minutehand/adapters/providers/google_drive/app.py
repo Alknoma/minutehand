@@ -43,7 +43,7 @@ from starlette.types import Receive, Scope, Send
 from minutehand.adapters.providers.google_drive import docs, slides, state, wire
 from minutehand.adapters.providers.google_drive import query as drive_query
 from minutehand.adapters.providers.google_drive.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
-from minutehand.domain.scenario import DocumentHappening, Edited, Model, Moved, Renamed, Shared
+from minutehand.domain.scenario import Commented, DocumentHappening, Edited, FieldSet, Model, Moved, Renamed, Shared
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -1234,6 +1234,20 @@ class DriveApi:
             )
             self.grant(stored, permission, actor=Actor.PERSON)
             return
+        if isinstance(action, Commented):
+            now = self._now()
+            comment = wire.Comment(
+                id=state.comment_id(self._drive.next_seq()),
+                createdTime=now,
+                modifiedTime=now,
+                author=wire.DriveUser(displayName=person.displayName, permissionId=person.permissionId, me=False),
+                htmlContent=html.escape(action.text),
+                content=action.text,
+            )
+            self._drive.write_comment(stored.file.id, comment, actor=Actor.PERSON)
+            return
+        if isinstance(action, FieldSet):
+            raise ValueError("a Drive file has no fields a person sets; the scenario is refused at load for this")
         update: dict[str, object] = {}
         content = stored.content
         if isinstance(action, Edited):

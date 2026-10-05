@@ -400,18 +400,7 @@ def seed(scenario: Scenario, world: Store) -> None:
         )
 
     start = scenario.starts_at
-    for number, fault in enumerate(extra.faults):
-        youtrack.write_fault(
-            number,
-            wire.StoredFault(
-                method=fault.method.upper(),
-                path=fault.path,
-                status=fault.status,
-                starts=state.millis(start + fault.after),
-                ends=None if fault.lasts is None else state.millis(start + fault.after + fault.lasts),
-            ),
-            actor=Actor.SCENARIO,
-        )
+    write_faults(youtrack, extra.faults, start)
 
     details = {i.ticket: i for i in extra.issues}
     keys = {t.key for t in seeded if t.key is not None}
@@ -586,3 +575,20 @@ def _seed_history(youtrack: YouTrackWorld, issue: wire.StoredIssue, detail: Issu
         changed = youtrack.settled(changed, project, was=current, by=author.id, at=state.millis(start - entry.ago))
         youtrack.update_issue(changed, actor=Actor.SCENARIO)
         current = changed
+
+
+def write_faults(youtrack: YouTrackWorld, faults: list[FaultSeed], start: datetime) -> None:
+    """Record each fault after those already recorded, from `start` plus its own offset."""
+    first = len(youtrack.faults())
+    for number, fault in enumerate(faults, start=first):
+        youtrack.write_fault(
+            number,
+            wire.StoredFault(
+                method=fault.method.upper(),
+                path=fault.path,
+                status=fault.status,
+                starts=state.millis(start + fault.after),
+                ends=None if fault.lasts is None else state.millis(start + fault.after + fault.lasts),
+            ),
+            actor=Actor.SCENARIO,
+        )

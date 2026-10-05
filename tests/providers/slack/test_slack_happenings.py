@@ -21,6 +21,7 @@ from minutehand.domain.scenario import (
     Account,
     MessagingHappening,
     Person,
+    PersonAddsAgent,
     PersonCommands,
     PersonDeletes,
     PersonEdits,
@@ -359,3 +360,36 @@ async def test_url_verification_wants_the_challenge_back(agent: AgentEndpoint) -
 async def test_url_verification_answered_without_the_challenge_is_refused(agent: AgentEndpoint) -> None:
     with pytest.raises(DeliveryRefused, match="challenge"):
         await inbound.verify_url(agent.target(), SECRET, "abc")
+
+
+async def test_a_person_inviting_the_bot_to_a_channel_is_told_as_its_own_join_naming_the_inviter(
+    seeded: tuple[SlackProvider, SqliteStore, RunClock], agent: AgentEndpoint, through: Intercepted
+) -> None:
+    from slack_sdk.errors import SlackApiError
+
+    sdk = through.asynchronous()
+    with pytest.raises(SlackApiError, match="not_in_channel"):
+        await sdk.conversations_history(channel=QUIET)
+    await happen(seeded, agent, PersonAddsAgent(provider="slack", person="iris", channel="quiet"))
+
+    [joined] = events(agent)
+    assert joined == {
+        "type": "member_joined_channel",
+        "user": state.BOT_USER_ID,
+        "channel": QUIET,
+        "channel_type": "C",
+        "team": state.TEAM_ID,
+        "inviter": state.user_id("iris"),
+        "event_ts": joined["event_ts"],
+    }
+    assert (await sdk.conversations_history(channel=QUIET))["ok"] is True
+
+
+async def test_inviting_the_bot_where_it_already_is_or_to_a_dm_is_refused(
+    seeded: tuple[SlackProvider, SqliteStore, RunClock], agent: AgentEndpoint, through: Intercepted
+) -> None:
+    with pytest.raises(LookupError, match="already in #launch"):
+        await happen(seeded, agent, PersonAddsAgent(provider="slack", person="iris", channel="launch"))
+    with pytest.raises(ValueError, match="invited to a channel"):
+        await happen(seeded, agent, PersonAddsAgent(provider="slack", person="iris"))
+    assert agent.received == []

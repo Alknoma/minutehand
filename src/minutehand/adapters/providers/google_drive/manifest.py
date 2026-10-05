@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import DocumentChange, Manifest, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -16,4 +16,12 @@ MANIFEST = Manifest(
         "iamcredentials.googleapis.com",
     ],
     kinds=[EntityKind.DOCUMENT, EntityKind.COMMENT],
+    document_changes=[
+        DocumentChange.EDITED,
+        DocumentChange.RENAMED,
+        DocumentChange.MOVED,
+        DocumentChange.SHARED,
+        DocumentChange.TRASHED,
+        DocumentChange.COMMENTED,
+    ],
 )

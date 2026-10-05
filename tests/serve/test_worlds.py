@@ -256,3 +256,15 @@ def test_spans_are_kept_with_the_world_whose_calls_carried_their_trace(served: S
         assert [s.span.name for s in served.client.spans(world.world_id).spans] == ["post the reminder"]
     finally:
         served.client.close_world(world.world_id)
+
+
+def test_slacks_legacy_token_argument_in_a_form_reaches_its_world(served: Served) -> None:
+    world = OpenWorld(served.client, served.client.create_world(spec("xoxb-legacy-form")))
+    try:
+        trust = ssl.create_default_context(cafile=served.bundle)
+        with httpx.Client(proxy=served.proxy, verify=trust, trust_env=False, timeout=30) as http:
+            answered = http.post("https://slack.com/api/auth.test", data={"token": "xoxb-legacy-form"})
+        assert answered.status_code == 200 and answered.json()["ok"] is True, answered.text
+        assert [c.exchange.path for c in world.calls()] == ["/api/auth.test"]
+    finally:
+        served.client.close_world(world.world_id)

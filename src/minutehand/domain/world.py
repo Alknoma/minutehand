@@ -171,9 +171,17 @@ class InteractionSnapshot(Model):
 
 
 class DocumentSnapshot(Model):
+    """A document as it read after a change. A provider that cannot flatten its content leaves `text` None."""
+
     kind: Literal["document"] = "document"
     title: str
     mime_type: str | None = None
+    text: str | None = Field(default=None, description="The whole content flattened to text, one block a line")
+    parent: str | None = Field(default=None, description="The title of what it sits under; None at the top")
+    last_edited_by: str | None = Field(
+        default=None, description="Who last changed it: a person's email, or the name of the integration's bot"
+    )
+    last_edited_at: AwareDatetime | None = Field(default=None, description="Simulated time of that change")
 
 
 class RecordSnapshot(Model):

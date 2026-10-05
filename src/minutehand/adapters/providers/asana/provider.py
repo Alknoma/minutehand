@@ -5,9 +5,9 @@ from __future__ import annotations
 from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
-from minutehand.adapters.providers.asana.seed import seed, seeded_gid
+from minutehand.adapters.providers.asana.seed import AsanaSeed, seed, seeded_gid
 from minutehand.adapters.providers.asana.state import AsanaWorld
-from minutehand.domain.provider import Manifest
+from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
 from minutehand.ports.clock import Clock
@@ -23,6 +23,24 @@ class AsanaProvider:
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`AsanaSeed.rate_limits`, on a world already open: each stretch counted from now."""
+        limits = fault_fragment(AsanaSeed, faults, frozenset({"rate_limits"})).rate_limits
+        asana = AsanaWorld(world)
+        workspace = asana.workspace(state.WORKSPACE_GID)
+        if workspace is None:
+            raise ValueError("this world holds no Asana workspace to declare faults on")
+        now = clock.now()
+        windows = [
+            wire.RateWindow(start=wire.stamp(now + r.after), end=wire.stamp(now + r.after + r.lasts)) for r in limits
+        ]
+        asana.put_record(
+            workspace.model_copy(update={"rate_limits": [*workspace.rate_limits, *windows]}),
+            parent=state.WORKSPACES,
+            actor=Actor.SCENARIO,
+            operation=Operation.UPDATE,
+        )
 
     def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
         """The assignee moves the task to `to` the way the workspace's status source says it: ticks it done,

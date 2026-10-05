@@ -38,8 +38,10 @@ class Mounted:
 class Worlds(Protocol):
     """Where calls go: one world for `minutehand run`, many for `minutehand serve`."""
 
-    def world_for(self, host: str, credentials: Sequence[str]) -> Mounted | None:
-        """The world this call belongs to; None when it belongs to none, and is refused and kept in `lobby`."""
+    def world_for(self, host: str, credentials: Sequence[str], keys: Sequence[str]) -> Mounted | None:
+        """The world this call belongs to, by the host it went to, the world keys its provider reads in its URL
+        (`Manifest.world_keys`), or the credentials it carries; None when it belongs to none, and is refused and
+        kept in `lobby`."""
         ...
 
     @property
@@ -59,7 +61,7 @@ class One:
     def __init__(self, world: Mounted) -> None:
         self._world = world
 
-    def world_for(self, host: str, credentials: Sequence[str]) -> Mounted | None:
+    def world_for(self, host: str, credentials: Sequence[str], keys: Sequence[str]) -> Mounted | None:
         return self._world
 
     @property

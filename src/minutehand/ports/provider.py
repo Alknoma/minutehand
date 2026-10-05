@@ -154,6 +154,19 @@ class ChangesDocuments(Protocol):
 
 
 @runtime_checkable
+class DeclaresFaults(Protocol):
+    """A provider whose deliberate failures, typed in its own seed model, can be declared on a world already open
+    (`minutehand serve`), as a scenario declares them before it starts."""
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`faults` is a fragment of this provider's own seed model as JSON text that sets only the fields that
+        declare faults. Validate it as seeding does, and refuse loudly (`ValueError`) a fragment that sets anything
+        else or names what the world does not hold; record each fault after those already recorded, as actor
+        SCENARIO, as seeding records it, with its offsets counted from `clock.now()`."""
+        ...
+
+
+@runtime_checkable
 class NotifiesChanges(Protocol):
     """A provider the agent can ask to be told when its documents change (Drive's `changes.watch`): how a
     `DocumentHappening` becomes a wake."""

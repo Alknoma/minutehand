@@ -5,9 +5,10 @@ from __future__ import annotations
 from minutehand.adapters.providers.slack import inbound, interactive
 from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
-from minutehand.adapters.providers.slack.seed import seed
+from minutehand.adapters.providers.slack.seed import SlackSeed, seed, write_faults
+from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.provider import Manifest
+from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import MessagingHappening, PersonCommands, Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -45,6 +46,14 @@ class SlackProvider:
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
         await interactive.press(reply, target, world, clock, secret=secret)
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`SlackSeed.faults`, on a world already open."""
+        _declare(faults, world, clock)
+
+
+def _declare(faults: str, world: Store, clock: Clock) -> None:
+    write_faults(SlackWorld(world), fault_fragment(SlackSeed, faults, frozenset({"faults"})).faults, clock.now())
 
 
 def build() -> SlackProvider:

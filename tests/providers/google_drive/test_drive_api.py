@@ -166,16 +166,15 @@ async def test_a_write_is_an_agent_event_on_a_document_with_title_mime_type_and_
         EntityKind.DOCUMENT,
         made["id"],
     )
-    assert event.after == DocumentSnapshot(title="Freight Contract", mime_type=DOC)
+    assert isinstance(event.after, DocumentSnapshot)
+    assert (event.after.title, event.after.mime_type, event.after.text) == ("Freight Contract", DOC, "Signed.")
     stored = drive.store.get(state.file_ref(str(made["id"])))
     assert stored is not None and stored.parent == folder
 
     await api.patch(f"/drive/v3/files/{made['id']}", json={"name": "Freight Contract v2"}, headers=AUTH)
     renamed = drive.store.events()[-1]
-    assert (renamed.operation, renamed.after) == (
-        Operation.UPDATE,
-        DocumentSnapshot(title="Freight Contract v2", mime_type=DOC),
-    )
+    assert renamed.operation is Operation.UPDATE and isinstance(renamed.after, DocumentSnapshot)
+    assert renamed.after.title == "Freight Contract v2"
 
 
 async def test_file_ids_come_from_the_event_sequence(drive: Drive, api: httpx.AsyncClient, tmp_path: Path) -> None:

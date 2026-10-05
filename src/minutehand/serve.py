@@ -54,7 +54,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import Receiver
 from minutehand.application.outbound import outbound_uses
-from minutehand.application.refusals import RunRefused, refuse_unheld_ticket_fields
+from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import StandingWorld, WorldRefused
 from minutehand.checks.runner import RunResult
@@ -145,6 +145,7 @@ class Standing:
         self.worlds: dict[str, World] = {}
         self._tokens: dict[str, str] = {}
         self._hosts: dict[str, str] = {}
+        self._keys: dict[str, str] = {}
         self._traces: dict[str, str] = {}
         self._default: str | None = None
         lobby_id = f"{LOBBY}-{secrets.token_hex(6)}"
@@ -160,8 +161,10 @@ class Standing:
 
     # -- adapters.proxy.worlds.Worlds -------------------------------------------------------------------------
 
-    def world_for(self, host: str, credentials: Sequence[str]) -> Mounted | None:
+    def world_for(self, host: str, credentials: Sequence[str], keys: Sequence[str]) -> Mounted | None:
         found = self._hosts[host.lower()] if host.lower() in self._hosts else None
+        if found is None:
+            found = next((self._keys[k.lower()] for k in keys if k.lower() in self._keys), None)
         if found is None:
             found = next((self._tokens[c] for c in credentials if c in self._tokens), None)
         if found is None:
@@ -210,7 +213,7 @@ class Standing:
         except (ProviderConflict, FileNotFoundError) as e:
             raise WorldRefused(f"this world's outbound hosts: {e}") from e
         try:
-            refuse_unheld_ticket_fields(spec.seed.tickets, self._manifests)
+            refuse_unheld(spec.seed, self._manifests)
         except RunRefused as refused:
             raise WorldRefused(str(refused)) from refused
         world_id = secrets.token_hex(6)
@@ -263,6 +266,8 @@ class Standing:
             self._tokens[token] = world_id
         for host in spec.claims.hosts:
             self._hosts[host.lower()] = world_id
+        for key in spec.claims.keys:
+            self._keys[key.lower()] = world_id
         if spec.claims.default:
             self._default = world_id
         return world
@@ -270,6 +275,7 @@ class Standing:
     def _refuse_taken(self, claims: Claims) -> None:
         taken = [t for t in claims.tokens if t in self._tokens]
         taken += [h for h in claims.hosts if h.lower() in self._hosts]
+        taken += [k for k in claims.keys if k.lower() in self._keys]
         if taken:
             raise WorldRefused(f"already claimed by an open world: {', '.join(taken)}")
         if claims.default and self._default is not None:
@@ -312,6 +318,7 @@ class Standing:
         del self.worlds[world_id]
         self._tokens = {t: w for t, w in self._tokens.items() if w != world_id}
         self._hosts = {h: w for h, w in self._hosts.items() if w != world_id}
+        self._keys = {k: w for k, w in self._keys.items() if w != world_id}
         for trace in world.traces:
             del self._traces[trace]
         if self._default == world_id:

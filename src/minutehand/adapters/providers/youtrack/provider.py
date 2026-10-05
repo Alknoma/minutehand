@@ -5,9 +5,9 @@ from __future__ import annotations
 from minutehand.adapters.providers.youtrack import wire
 from minutehand.adapters.providers.youtrack.app import build_app
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
-from minutehand.adapters.providers.youtrack.seed import seed
+from minutehand.adapters.providers.youtrack.seed import YouTrackSeed, seed, write_faults
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld, millis
-from minutehand.domain.provider import Manifest
+from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import Actor, EntityRef
 from minutehand.ports.clock import Clock
@@ -50,6 +50,11 @@ class YouTrackProvider:
                 raise LookupError(f"no YouTrack user has the email {assignee_email}")
             changed = _assigned(youtrack, project, changed, user, by=changed.updater, at=at)
         youtrack.update_issue(changed, actor=Actor.SCENARIO)
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`YouTrackSeed.faults`, on a world already open."""
+        found = fault_fragment(YouTrackSeed, faults, frozenset({"faults"})).faults
+        write_faults(YouTrackWorld(world), found, clock.now())
 
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         """A person changes the state or assignee of a seeded issue, comments on it, or deletes it, as themselves. An

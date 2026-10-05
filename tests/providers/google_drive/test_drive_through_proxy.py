@@ -460,10 +460,14 @@ say(changes=seen, quiet=quiet, again=again)
     assert drained["again"] == [404, "notFound"]
     assert not google.provider.watched(google.store, google.clock)
     edited = [e for e in google.store.events() if e.actor is Actor.PERSON]
-    assert [(e.operation, e.after) for e in edited] == [
-        (Operation.UPDATE, DocumentSnapshot(title=SUPPLIERS.title, mime_type="application/vnd.google-apps.document")),
-        (Operation.UPDATE, DocumentSnapshot(title="notes.txt", mime_type="text/plain")),
+    assert [
+        (e.operation, e.after.title, e.after.last_edited_by) for e in edited if isinstance(e.after, DocumentSnapshot)
+    ] == [
+        (Operation.UPDATE, SUPPLIERS.title, "rosa@example.com"),
+        (Operation.UPDATE, "notes.txt", "dov@example.com"),
     ]
+    assert isinstance(edited[0].after, DocumentSnapshot) and edited[0].after.text is not None
+    assert edited[0].after.text.endswith("Initech added.")
 
 
 async def test_declared_faults_reach_the_client_in_googles_shape_and_its_retry_logic_reads_them(tmp_path: Path) -> None:

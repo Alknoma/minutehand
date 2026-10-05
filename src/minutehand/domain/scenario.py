@@ -304,12 +304,31 @@ class Trashed(Model):
     kind: Literal["trashed"] = "trashed"
 
 
-DocumentAction = Annotated[Edited | Renamed | Moved | Shared | Trashed, Field(discriminator="kind")]
+class Commented(Model):
+    """The person writes a comment on the document, not in it."""
+
+    kind: Literal["commented"] = "commented"
+    text: str = Field(min_length=1)
+
+
+class FieldSet(Model):
+    """The person sets one field of a record-shaped document (a database row's property) to a value, written as
+    text the provider reads by the field's type: an option's name, a number, a date, `true` or `false`, or
+    comma-separated names for a field that holds several."""
+
+    kind: Literal["field_set"] = "field_set"
+    field: str = Field(min_length=1)
+    value: str
+
+
+DocumentAction = Annotated[
+    Edited | Renamed | Moved | Shared | Trashed | Commented | FieldSet, Field(discriminator="kind")
+]
 
 
 class DocumentHappening(Model):
-    """A person changes a seeded document at a moment, with no agent involved: edits, renames, moves, shares or
-    trashes it.
+    """A person changes a seeded document at a moment, with no agent involved: edits, renames, moves, shares,
+    trashes, comments on it, or sets one of its fields.
 
     It lands on the run's clock through the provider that holds the document (`ports.provider.ChangesDocuments`),
     recorded as that person's change. It wakes nobody, unless the agent asked that provider to be told of changes
@@ -445,6 +464,14 @@ class PersonOpensAgent(_MessagingHappening):
     kind: Literal["opens_agent"] = "opens_agent"
 
 
+class PersonAddsAgent(_MessagingHappening):
+    """A person adds the agent to a conversation it is not in: invites its bot to a channel (Slack), or installs
+    its app in a team, a chat, or with no channel their own chat with it (Teams)."""
+
+    kind: Literal["adds_agent"] = "adds_agent"
+    channel: ChannelName | None = None
+
+
 class PersonCommands(_MessagingHappening):
     """A person runs one of the agent's commands (a Slack slash command), in a channel or their DM with it."""
 
@@ -455,7 +482,14 @@ class PersonCommands(_MessagingHappening):
 
 
 MessagingHappening = (
-    PersonPosts | PersonEdits | PersonDeletes | PersonReacts | PersonJoins | PersonOpensAgent | PersonCommands
+    PersonPosts
+    | PersonEdits
+    | PersonDeletes
+    | PersonReacts
+    | PersonJoins
+    | PersonAddsAgent
+    | PersonOpensAgent
+    | PersonCommands
 )
 """What a person does unprompted in a messaging service; each member names its own provider."""
 
@@ -720,7 +754,8 @@ class _ScenarioBody(Model):
         posts = {(c.provider, p.key) for c in self.channels for p in _every_post(c.history) if p.key is not None}
         messaging = [h for h in self.happenings if not isinstance(h, TicketHappening | DocumentHappening)]
         for happening in sorted(messaging, key=lambda h: h.after):
-            channel = happening.channel if isinstance(happening, (PersonPosts, PersonReacts, PersonCommands)) else None
+            places = (PersonPosts, PersonReacts, PersonCommands, PersonAddsAgent)
+            channel = happening.channel if isinstance(happening, places) else None
             if isinstance(happening, PersonJoins):
                 channel = happening.channel
             if channel is not None and channel != GENERAL_CHANNEL and (happening.provider, channel) not in names:
@@ -775,6 +810,16 @@ class _ScenarioBody(Model):
             (f"the change to {h.document!r}", h.action.append)
             for h in self._on_documents()
             if isinstance(h.action, Edited)
+        ]
+        elsewhere += [
+            (f"{h.person}'s comment on {h.document!r}", h.action.text)
+            for h in self._on_documents()
+            if isinstance(h.action, Commented)
+        ]
+        elsewhere += [
+            (f"{h.person}'s {h.action.field} on {h.document!r}", h.action.value)
+            for h in self._on_documents()
+            if isinstance(h.action, FieldSet)
         ]
         elsewhere += [
             (f"{h.person}'s comment on {h.ticket!r}", h.action.text)
