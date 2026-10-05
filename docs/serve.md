@@ -123,6 +123,7 @@ the client raises `ServerFailed`, not `Refused`. Each status comes from one conv
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now; for a world of a case, the case's |
 | `POST /v1/worlds/{id}/steps` | `MarkStep` → `StepView` | A step begins (`edge: began`, `at`, `reason`) or ends (`edge: ended`); a world of a case steps its case |
+| `POST /v1/worlds/{id}/report` | `AgentReport` → `Checked` | The agent's own report of its work, relayed by whoever drives it: `status` (`done` is how the run stopped) and the `commitments` it still holds open, which keep the run from passing. The latest stands; a world of a case reports for its case |
 | `POST /v1/worlds/{id}/inboxes/read` | → `InboxesView` | Read the world's inboxes as each person now: what waits on people, and the decisions owed with when each falls due |
 | `POST /v1/worlds/{id}/inboxes/due` | → `DecisionsDone` | Make every decision due by the world's clock, its case's, or its latest step's moment, as its person |
 | `POST /v1/worlds/{id}/inboxes/decide` | `DecideNow` → `DecisionView` | A person decides an item now, with a decision and its inputs |
@@ -306,7 +307,7 @@ supported path is still the acts above, which build, sign and push the request t
 ## Scoring a run you drive yourself
 
 A harness that drives its own agent and its own simulated time, and uses this server only for the fakes and the
-record, adds three things and nothing else:
+record, adds four things and nothing else:
 
 ```python
 from minutehand.testing.world import open_case
@@ -316,7 +317,8 @@ for cycle in cycles:
     case.advance(to=cycle.now)  # the clock, as before: a separate act
     with case.step(at=cycle.now, reason=cycle.why):  # 2. where one go of the agent begins and ends
         run_the_agent_once()
-result = case.close().result  # 3. the case's checks, once, when its last world closes
+case.report(AgentReport(status=..., commitments=[...]))  # 3. what the service itself says of its work
+result = case.close().result  # 4. the case's checks, once, when its last world closes
 ```
 
 Over the wire: `CreateWorld.case` on each world, `POST /v1/cases/{case_id}/steps` with `{"edge": "began", "at":

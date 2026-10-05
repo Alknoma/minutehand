@@ -6,6 +6,7 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.domain.agent import AgentReport
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import CaptureMode
@@ -123,6 +124,11 @@ class RunRecord(Model):
     wall_seconds: float = Field(ge=0)
     stop: StopReason
     failure: str | None = Field(default=None, description="Why, when the run stopped AGENT_FAILED")
+    reported: AgentReport | None = Field(
+        default=None,
+        description="A standing world or a case (`minutehand serve`): the agent's own report of its work, as whoever "
+        "drove it last relayed it; None when nobody relayed one",
+    )
     providers: list[ProviderKey] = Field(
         default=[], description="Every provider the agent called, in the order of its first call"
     )
