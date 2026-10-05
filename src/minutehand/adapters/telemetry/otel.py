@@ -11,6 +11,7 @@ wall time by the port, so the SDK stamps them when they open and close.
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 
 from opentelemetry._logs import Logger, LoggerProvider, SeverityNumber
@@ -23,6 +24,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.id_generator import IdGenerator, RandomIdGenerator
 from opentelemetry.trace import (
     INVALID_SPAN,
     Link,
@@ -41,6 +43,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 
 from minutehand.domain.agent import WakeReason
 from minutehand.domain.checks import Effectiveness, Finding, Severity
+from minutehand.domain.emulator import EmulatorChange, EmulatorHealth
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import Actor, Operation, RecordedCall, WorldEvent
@@ -53,6 +56,27 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _NANOSECOND_PER_MICROSECOND = 1000
 _PROPAGATOR = TraceContextTextMapPropagator()
 _NOT_A_CHANGE = frozenset({Operation.READ, Operation.SEARCH})
+
+
+_CHOSEN: ContextVar[str | None] = ContextVar("minutehand_chosen_span", default=None)
+_CHOSEN_TRACE: ContextVar[str | None] = ContextVar("minutehand_chosen_trace", default=None)
+
+
+class ChosenIds(IdGenerator):
+    """Random ids, except the one a forwarded call's span must have: the id its emulator was already told is the
+    parent of its own spans, before Minutehand's span of the call existed. Give it to the tracer provider for a
+    forwarded call's span to join the emulator's spans in a backend."""
+
+    def __init__(self) -> None:
+        self._random = RandomIdGenerator()
+
+    def generate_span_id(self) -> int:
+        chosen = _CHOSEN.get()
+        return int(chosen, 16) if chosen is not None else self._random.generate_span_id()
+
+    def generate_trace_id(self) -> int:
+        chosen = _CHOSEN_TRACE.get()
+        return int(chosen, 16) if chosen is not None else self._random.generate_trace_id()
 
 
 def unix_nano(moment: datetime) -> int:
@@ -237,6 +261,19 @@ class OtelTelemetry:
             attributes["minutehand.capture.declared_as"] = captured.declared_as
         if captured.replayed_from is not None:
             attributes["minutehand.capture.replayed_from"] = captured.replayed_from
+        if captured.emulator is not None:
+            attributes["minutehand.emulator"] = captured.emulator
+        if captured.operation is not None:
+            attributes["minutehand.operation"] = captured.operation
+        if exchange.outcome is not None:
+            attributes["minutehand.call.outcome"] = exchange.outcome.value
+        forwarded = _caller(captured.forwarded_traceparent)
+        if forwarded is not None:
+            # The emulator was told this span is its parent, so it is this span's own id (`ChosenIds`); when the
+            # agent sent no trace, the one begun for it.
+            _CHOSEN.set(format(forwarded.span_id, "016x"))
+            if caller is None:
+                _CHOSEN_TRACE.set(format(forwarded.trace_id, "032x"))
         span = self._tracer.start_span(
             f"{exchange.method} {exchange.host}",
             context=parent,
@@ -245,9 +282,28 @@ class OtelTelemetry:
             links=links,
             start_time=unix_nano(captured.started),
         )
+        _CHOSEN.set(None)
+        _CHOSEN_TRACE.set(None)
         if exchange.status >= 500:
             span.set_status(Status(StatusCode.ERROR, f"answered {exchange.status}"))
         span.end(end_time=unix_nano(captured.ended))
+
+    def emulator_changed(self, change: EmulatorChange) -> None:
+        """A span with no duration under the run, `minutehand.emulator <health>`, as the transition happens: its
+        reason, never its log."""
+        parent = set_span_in_context(self._run) if self._run is not None else Context()
+        attributes: dict[str, str | int] = {
+            "minutehand.emulator": change.emulator,
+            "minutehand.emulator.health": change.health.value,
+        }
+        if change.reason is not None:
+            attributes["minutehand.emulator.reason"] = change.reason
+        span = self._tracer.start_span(
+            f"minutehand.emulator {change.health.value}", context=parent, attributes=attributes
+        )
+        if change.health in (EmulatorHealth.UNHEALTHY, EmulatorHealth.DIED):
+            span.set_status(Status(StatusCode.ERROR, change.reason or change.health.value))
+        span.end()
 
     def wake_ended(self, wake: int) -> None:
         span = self._wake_spans.pop(wake, None)
@@ -322,7 +378,7 @@ def from_environment() -> OtelTelemetry:
     Bodies are exported only when `MINUTEHAND_EXPORT_BODIES=1`.
     """
     resource = Resource.create({"service.name": SCOPE})
-    tracer_provider = SdkTracerProvider(resource=resource)
+    tracer_provider = SdkTracerProvider(resource=resource, id_generator=ChosenIds())
     logger_provider = SdkLoggerProvider(resource=resource)
     export_bodies = os.environ.get(BODIES_VARIABLE) == "1"
     if not os.environ.get(ENDPOINT_VARIABLE):

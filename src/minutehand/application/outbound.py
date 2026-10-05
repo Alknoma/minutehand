@@ -82,6 +82,7 @@ def described(use: OutboundUse) -> str:
         CaptureMode.PASS_THROUGH: "passed through to the real host",
         CaptureMode.REPLAY: "replayed from a recording",
         CaptureMode.DISCOVERED: "passed through, undeclared (--capture-unknown)",
+        CaptureMode.FORWARD: "forwarded to its external emulator",
     }[use.mode]
     parts = [f"{use.host}: {use.calls} call{'s' if use.calls != 1 else ''}, {how}"]
     if use.mode is CaptureMode.REPLAY:

@@ -162,6 +162,7 @@ _STOPPED = {
     StopReason.NOTHING_PENDING: "the run stopped because nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the run stopped because the agent could not be reached or answered with an error",
     StopReason.CLOSED: "the standing world was closed by whoever opened it",
+    StopReason.ENVIRONMENT_FAILED: "the run stopped because an external emulator it used was unavailable",
 }
 
 

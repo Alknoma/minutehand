@@ -28,6 +28,7 @@ from minutehand.domain.outbound import (
     MESSAGE_ID,
     Acknowledge,
     Answer,
+    Forward,
     HtmlAt,
     InForks,
     MessageReading,
@@ -39,7 +40,7 @@ from minutehand.domain.outbound import (
 from minutehand.domain.scenario import Person
 from minutehand.domain.world import AnsweredBy, Body, BodyKept, Recipient, RecordedCall
 
-Declaration = Acknowledge | PassThrough | Replay
+Declaration = Acknowledge | PassThrough | Replay | Forward
 
 RECORDINGS = "captured.jsonl"
 """In a run's directory: every call the run captured, one `RecordedCall` a line, redacted as stored. A replay

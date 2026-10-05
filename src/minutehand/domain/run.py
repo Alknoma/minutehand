@@ -18,17 +18,24 @@ class StopReason(StrEnum):
     NOTHING_PENDING = "nothing_pending"  # nothing is due and the agent named no next wake: it is stuck
     AGENT_FAILED = "agent_failed"  # the agent could not be reached or answered with an error
     CLOSED = "closed"  # a standing world (`minutehand serve`) was closed by whoever opened it
+    ENVIRONMENT_FAILED = "environment_failed"  # an external emulator the run used was unavailable: not the agent
 
 
 class VerdictKind(StrEnum):
     PASSED = "passed"  # no check failed, and the agent finished: it reported done, or nothing was left open
     UNFINISHED = "unfinished"  # no check failed, but the agent never reported done and work was still open
     FAILED = "failed"  # a check failed
+    ENVIRONMENT_FAILED = "environment_failed"  # the run's environment failed under the agent: nothing is judged
 
 
-EXIT_CODES = {VerdictKind.PASSED: 0, VerdictKind.FAILED: 1, VerdictKind.UNFINISHED: 3}
-"""What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is a run that could not be
-performed, which has no verdict."""
+EXIT_CODES = {
+    VerdictKind.PASSED: 0,
+    VerdictKind.FAILED: 1,
+    VerdictKind.ENVIRONMENT_FAILED: 2,
+    VerdictKind.UNFINISHED: 3,
+}
+"""What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is also a run that could not be
+performed, which has no verdict: either way, the environment and not the agent."""
 
 
 class Verdict(Model):
@@ -76,6 +83,26 @@ class OutboundUse(Model):
     bytes_received: int = Field(default=0, ge=0, description="On those tunnels, to the agent")
 
 
+class OperationCount(Model):
+    operation: str
+    calls: int = Field(ge=1)
+
+
+class EmulatorUse(Model):
+    """What the agent's calls to one external emulator came to, by `CallOutcome`."""
+
+    emulator: str
+    calls: int = Field(ge=0)
+    answered: int = Field(default=0, ge=0)
+    refused: int = Field(default=0, ge=0, description="Errors it answered as the real service would")
+    internal_errors: int = Field(default=0, ge=0, description="5xx answers nobody declared a faithful error")
+    unavailable: int = Field(default=0, ge=0, description="Calls nothing answered: it was down or did not answer")
+    not_implemented: list[OperationCount] = Field(
+        default=[], description="Operations it had no answer for, each with how many calls asked"
+    )
+    first_unavailable: str | None = Field(default=None, description="The first call it was unavailable for")
+
+
 class RunRecord(Model):
     run_id: str
     scenario: str
@@ -93,4 +120,5 @@ class RunRecord(Model):
     outbound: list[OutboundUse] = Field(
         default=[], description="Every host no provider claims that the agent called, in the order of its first call"
     )
+    emulators: list[EmulatorUse] = Field(default=[], description="Every external emulator the agent's calls reached")
     wakes: list[WakeRecord]
