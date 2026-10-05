@@ -510,12 +510,12 @@ class _Seeding:
                 return value.model_copy(update={"options": [state.option_gid(gid, n) for n in sent.options]})
             case "text":
                 return value.model_copy(update={"text": sent.text})
-            case "number":
+            case "number":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
                 return value.model_copy(update={"number": sent.number})
             case "date":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
                 on = self.scenario.starts_at + sent.date_after if sent.date_after is not None else None
                 return value.model_copy(update={"date": on.date().isoformat() if on is not None else None})
-            case "people":
+            case "people":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
                 return value.model_copy(update={"people": [self.user(k) for k in sent.people]})
 
     def _comments(self, ticket: SeededTicket, detail: SeedTask | None) -> None:

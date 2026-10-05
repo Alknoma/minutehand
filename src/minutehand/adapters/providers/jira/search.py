@@ -93,7 +93,7 @@ def _clause(clause: Clause, context: Context) -> Test:
     match name:
         case "project":  # enum-lint: exempt a JQL field name
             return _set_clause(clause, context, _projects(clause, context), lambda i: [i.project])
-        case "status":
+        case "status":  # enum-lint: exempt a JQL field name
             ids = _named(clause, "status", [(s.id, s.name) for s in site.statuses])
             return _set_clause(clause, context, ids, lambda i: [i.status])
         case "statuscategory":

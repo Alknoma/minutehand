@@ -24,6 +24,7 @@ from minutehand.domain.scenario import (
 )
 from minutehand.domain.world import (
     Actor,
+    DocumentSnapshot,
     EntityKind,
     EntityRef,
     Exchange,
@@ -148,6 +149,11 @@ class Log:
         """An agent write to a resource nobody has mapped to a ticket, message or document."""
         ref = EntityRef(provider="generated", kind=EntityKind.RECORD, external_id=f"r{len(self.events) + 1}")
         return self._add(hours, Actor.AGENT, Operation.CREATE, ref, RecordSnapshot(resource=resource, text=text), wake)
+
+    def document(self, title: str, text: str | None, hours: float, *, wake: int = 1) -> WorldEvent:
+        """An agent write to a document, with its content flattened to text when its provider gives it."""
+        ref = EntityRef(provider="docs", kind=EntityKind.DOCUMENT, external_id=f"d{len(self.events) + 1}")
+        return self._add(hours, Actor.AGENT, Operation.UPDATE, ref, DocumentSnapshot(title=title, text=text), wake)
 
     def edit(self, message: WorldEvent, hours: float, text: str, *, wake: int = 1) -> WorldEvent:
         """The agent rewrites a message it sent, in place."""

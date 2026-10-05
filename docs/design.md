@@ -414,6 +414,7 @@ class BooksWakes(Protocol):
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 | GitHub | `github` | `api.github.com` (REST and `/graphql`; no prefix) | none: repository reads only, see its `README.md` |
 | Jira Cloud | `jira` | `*.atlassian.net`, `api.atlassian.com`, `auth.atlassian.com` (none; the app reads the site path and `/ex/jira/{cloudId}` itself) | `HoldsTickets`, `EditsTickets` |
+| Notion | `notion` | `api.notion.com` | none |
 
 Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack holds all three; Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`.
 
