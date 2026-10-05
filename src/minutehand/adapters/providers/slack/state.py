@@ -16,6 +16,7 @@
 | a slash command | RECORD | `command.<trigger_id>`    | `commands` |
 | the app's install | RECORD | `install`               | `app` |
 | a fault     | RECORD   | `fault.<position>`          | `faults` |
+| a declared sign-in | RECORD | `sign_in.<digest of the token>` | `sign_ins` |
 
 Only users are RECORDs under the team and only memberships RECORDs under a channel: everything else Minutehand
 keeps is listed under a parent of its own, so no listing of users or members ever meets it.
@@ -146,6 +147,14 @@ def install_ref() -> EntityRef:
 
 def fault_ref(position: int) -> EntityRef:
     return _ref(EntityKind.RECORD, f"fault.{position}")
+
+
+def sign_in_ref(token: str) -> EntityRef:
+    """Where a token the scenario declares is kept: under its digest, never the token itself."""
+    return _ref(EntityKind.RECORD, "sign_in." + hashlib.sha256(f"token|{token}".encode()).hexdigest())
+
+
+SIGN_INS = "sign_ins"
 
 
 FILES = "files"
@@ -314,6 +323,13 @@ class SlackWorld:
 
     def post(self, key: str) -> wire.SlackPostKey | None:
         return self.body(post_ref(key), wire.SlackPostKey)
+
+    def knows_token(self, token: str) -> bool:
+        """Whether the workspace issued this token: any token when the scenario declares no Slack sign-in, and
+        once it declares one, only the tokens it names."""
+        if self._store.get(sign_in_ref(token)) is not None:
+            return True
+        return not self._store.children(MANIFEST.key, EntityKind.RECORD, SIGN_INS, after=None, limit=1)
 
     def file(self, file: str) -> wire.SlackFile | None:
         stored = self._store.get(file_ref(file))

@@ -126,7 +126,7 @@ async def test_a_proactive_conversation_with_a_person_who_never_installed_the_bo
         json={"members": [{"id": user.mri}], "channelData": {"tenant": {"id": connector.tenant.directory.tenant_id}}},
         headers=connector.auth,
     )
-    assert error_code(refused, 403) == "Forbidden"
+    assert error_code(refused, 403) == "ForbiddenOperationException"
     sending = await connector.http.post(
         f"{CONNECTOR}v3/conversations/{chat.id}/activities",
         json={"type": "message", "text": "hi"},
@@ -135,20 +135,19 @@ async def test_a_proactive_conversation_with_a_person_who_never_installed_the_bo
     assert error_code(sending, 403) == "BotNotInConversationRoster"
 
 
-async def test_paged_members_follow_the_continuation_token(connector: Bot) -> None:
-    seen: list[str] = []
-    continuation: str | None = None
-    while True:
-        params = {"pageSize": "1", **({"continuationToken": continuation} if continuation else {})}
-        page = (
-            await connector.http.get(
-                f"{CONNECTOR}v3/conversations/{connector.general}/pagedmembers", params=params, headers=connector.auth
-            )
-        ).json()
-        seen += [m["email"] for m in page["members"]]
-        continuation = page["continuationToken"] if "continuationToken" in page else None
-        if continuation is None:
-            break
+async def test_paged_members_below_the_minimum_page_size_answer_fifty_and_this_roster_whole(connector: Bot) -> None:
+    """Teams' documented minimum page size is 50, so a smaller pageSize still answers up to 50 members: this
+    three-person roster comes back whole, with no continuation token
+    (https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/get-teams-context)."""
+    page = (
+        await connector.http.get(
+            f"{CONNECTOR}v3/conversations/{connector.general}/pagedmembers",
+            params={"pageSize": "1"},
+            headers=connector.auth,
+        )
+    ).json()
+    seen = [m["email"] for m in page["members"]]
+    assert "continuationToken" not in page or page["continuationToken"] is None
     assert sorted(seen) == ["dania@example.com", "owen@example.com", "sofia@example.com"]
     user, _ = connector.chat("sofia")
     one = await connector.http.get(
@@ -187,7 +186,7 @@ async def test_an_unknown_conversation_and_an_oversized_activity_are_refused(con
     assert error_code(missing, 404) == "ConversationNotFound"
     huge = await connector.http.post(
         f"{CONNECTOR}v3/conversations/{connector.general}/activities",
-        json={"type": "message", "text": "x" * (29 * 1024)},
+        json={"type": "message", "text": "x" * 60_000},
         headers=connector.auth,
     )
     assert error_code(huge, 413) == "MessageSizeTooBig"

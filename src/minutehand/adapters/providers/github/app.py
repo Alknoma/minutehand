@@ -32,6 +32,8 @@ PAGE_DEFAULT = 30
 PAGE_MAX = 100
 SEARCH_CEILING = 1000
 """Search serves the first thousand results and no more."""
+TEXT_MATCH = "application/vnd.github.text-match+json"
+"""The media type that asks search for `text_matches`."""
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,35 @@ def _json(entity: wire.Wire | list[wire.Wire], status: int = 200, headers: dict[
     return Answered(status, body, headers or {})
 
 
+class _Exhausted(Exception):
+    """A call refused because its budget is spent; it carries its whole answer, headers and all."""
+
+    def __init__(self, answered: Answered) -> None:
+        super().__init__("rate limit exceeded")
+        self.answered = answered
+
+
+def _login(caller: Caller | None) -> str | None:
+    return caller.account.login if caller is not None and caller.account is not None else None
+
+
+def _budget_headers(budget: wire.StoredBudget, resource: wire.Resource) -> dict[str, str]:
+    """The `X-RateLimit-*` headers GitHub puts on every answer, for the budget the call spent."""
+    return {
+        "X-RateLimit-Limit": str(budget.limit),
+        "X-RateLimit-Remaining": str(budget.remaining),
+        "X-RateLimit-Used": str(budget.used),
+        "X-RateLimit-Reset": str(budget.reset),
+        "X-RateLimit-Resource": resource.value,
+    }
+
+
+def _budget_out(budget: wire.StoredBudget, resource: wire.Resource) -> wire.BudgetOut:
+    return wire.BudgetOut(
+        limit=budget.limit, remaining=budget.remaining, used=budget.used, reset=budget.reset, resource=resource
+    )
+
+
 def resource_of(path: str) -> wire.Resource:
     if path == "/graphql":
         return wire.Resource.GRAPHQL
@@ -89,18 +120,34 @@ class GitHubApi:
 
     # ------------------------------------------------------------------ the gate
 
-    def endpoint(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
+    def endpoint(self, handler: Handler, *, spends: bool = True) -> Callable[[Request], Awaitable[Response]]:
         async def answer(request: Request) -> Response:
             version = _header(request, "x-github-api-version")
+            resource = resource_of(request.url.path)
             caller: Caller | None = None
+            budget: wire.StoredBudget | None = None
             try:
                 if version is not None and version not in wire.API_VERSIONS:
                     raise wire.Refusal(400, f"API version {version} is not supported.", section="/about-the-rest-api")
                 caller = self._authenticate(request)
+                budget = self._window(caller, resource)
+                if spends and budget.limit > 0:
+                    if budget.remaining == 0:
+                        raise self._exhausted(budget, resource, caller)
+                    budget = budget.model_copy(update={"used": budget.used + 1})
+                    self._world.write_budget(_login(caller), resource, budget)
                 answered = self._fault(request, caller) or await handler(request, caller)
             except wire.Refusal as refusal:
                 answered = Answered(refusal.status, wire.error_body(refusal), refusal.headers)
-            headers = {"X-GitHub-Media-Type": "github.v3; format=json", **answered.headers}
+            except _Exhausted as exhausted:
+                answered = exhausted.answered
+            if budget is None:
+                budget = self._window(caller, resource)
+            headers = {
+                "X-GitHub-Media-Type": "github.v3; format=json",
+                **_budget_headers(budget, resource),
+                **answered.headers,
+            }
             if caller is not None and caller.token is not None and caller.token.kind is wire.TokenKind.CLASSIC:
                 headers["X-OAuth-Scopes"] = ", ".join(caller.token.scopes)
             if version is not None and version in wire.API_VERSIONS:
@@ -108,6 +155,29 @@ class GitHubApi:
             return Response(answered.body, status_code=answered.status, media_type=wire.JSON, headers=headers)
 
         return answer
+
+    def _window(self, caller: Caller | None, resource: wire.Resource) -> wire.StoredBudget:
+        """The caller's primary budget for `resource` as it stands now: the user's, shared by every token that acts
+        as them, or the address's when nobody is authenticated. A window that has ended on the run's clock is a
+        whole budget again, ending a full window from now; the run's clock does not move inside a wake, so a
+        budget spent there stays spent until the clock passes its reset."""
+        login = _login(caller)
+        limit = wire.limit_for(resource, authenticated=login is not None)
+        now = self._clock.now().timestamp()
+        stored = self._world.budget(login, resource)
+        if stored is not None and now < stored.reset:
+            return stored
+        return wire.StoredBudget(limit=limit, used=0, reset=math.ceil(now) + wire.WINDOW_SECONDS[resource])
+
+    def _exhausted(self, budget: wire.StoredBudget, resource: wire.Resource, caller: Caller) -> _Exhausted:
+        """The call after the last one the budget allows: GitHub's primary-limit refusal, which spends nothing."""
+        return _Exhausted(self._rate_limited(403, resource, caller, _budget_headers(budget, resource)))
+
+    async def rate_limit(self, request: Request, caller: Caller) -> Answered:
+        """`GET /rate_limit`: every budget of the caller as it stands, `rate` being the core one. Reading it
+        spends nothing."""
+        budgets = {resource: _budget_out(self._window(caller, resource), resource) for resource in wire.Resource}
+        return _json(wire.RateLimitOut(resources=budgets, rate=budgets[wire.Resource.CORE]))
 
     def _authenticate(self, request: Request) -> Caller:
         authorization = (_header(request, "authorization") or "").strip()
@@ -135,7 +205,6 @@ class GitHubApi:
         return None
 
     def _faulted(self, fault: wire.Fault, resource: wire.Resource, caller: Caller) -> Answered:
-        who = f"user ID {caller.account.id}" if caller.account is not None else "this address"
         if isinstance(fault, wire.ServerError):
             return Answered(fault.status, json.dumps({"message": "Server Error"}).encode())
         if isinstance(fault, wire.SecondaryRateLimited):
@@ -147,19 +216,18 @@ class GitHubApi:
             return Answered(fault.status, wire.error_body(refusal), {"Retry-After": str(fault.retry_after)})
         reset = math.ceil(self._clock.now().timestamp()) + wire.WINDOW_SECONDS[resource]
         limit = wire.LIMITS[resource]
-        headers = {
-            "X-RateLimit-Limit": str(limit),
-            "X-RateLimit-Remaining": "0",
-            "X-RateLimit-Used": str(limit),
-            "X-RateLimit-Reset": str(reset),
-            "X-RateLimit-Resource": resource.value,
-        }
+        spent = wire.StoredBudget(limit=limit, used=limit, reset=reset)
+        return self._rate_limited(fault.status, resource, caller, _budget_headers(spent, resource))
+
+    def _rate_limited(self, status: int, resource: wire.Resource, caller: Caller, headers: dict[str, str]) -> Answered:
+        """The primary limit's refusal: a 403 (or 429) on REST, a 200 whose `errors` say RATE_LIMITED on GraphQL."""
+        who = f"user ID {caller.account.id}" if caller.account is not None else "this address"
         message = f"API rate limit exceeded for {who}."
         if resource is wire.Resource.GRAPHQL:
             errors = wire.GraphErrorsOut(errors=[wire.GraphError(type="RATE_LIMITED", message=message)])
             return Answered(200, errors.model_dump_json(exclude_none=True).encode(), headers)
-        refusal = wire.Refusal(fault.status, message, section="/using-the-rest-api/rate-limits-for-the-rest-api")
-        return Answered(fault.status, wire.error_body(refusal), headers)
+        refusal = wire.Refusal(status, message, section="/using-the-rest-api/rate-limits-for-the-rest-api")
+        return Answered(status, wire.error_body(refusal), headers)
 
     # ------------------------------------------------------------------ who may see what
 
@@ -419,6 +487,32 @@ class GitHubApi:
         self._world.saw(state.repository_ref(owner, name), Operation.READ)
         return _json(self._repository_out(caller, repository))
 
+    async def languages(self, request: Request, caller: Caller) -> Answered:
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repository = self._visible(caller, owner, name, "/repos/repos#list-repository-languages")
+        self._world.saw(state.repository_ref(owner, name), Operation.READ)
+        counted = dict(content.breakdown(self._world.files(repository)))
+        return Answered(200, json.dumps(counted).encode())
+
+    async def branches(self, request: Request, caller: Caller) -> Answered:
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repository = self._visible(caller, owner, name, "/branches/branches#list-branches")
+        self._world.saw(state.repository_ref(owner, name), Operation.READ)
+        if not repository.commits:
+            return _json([])
+        head = repository.commits[0].sha
+        names = sorted({repository.default_branch, *repository.branches})
+        start, end, links = self._page(request, len(names))
+        out: list[wire.Wire] = [
+            wire.BranchOut(
+                name=branch,
+                commit=wire.ShaRefOut(sha=head, url=f"{wire.API}/repos/{repository.full_name}/commits/{head}"),
+                protected=False,
+            )
+            for branch in names[start:end]
+        ]
+        return _json(out, headers=links)
+
     async def contents(self, request: Request, caller: Caller) -> Answered:
         section = "/repos/contents#get-repository-content"
         owner, name = request.path_params["owner"], request.path_params["repo"]
@@ -583,8 +677,33 @@ class GitHubApi:
                 if query.matches(file, raw.decode("utf-8")):
                     hits.append((repository, file))
         start, end, links = self._page(request, len(hits), ceiling=SEARCH_CEILING)
-        items = [self._code_item(r, f) for r, f in hits[start:end]]
-        return _json(wire.CodeSearchOut(total_count=len(hits), incomplete_results=False, items=items), headers=links)
+        window = hits[start:end]
+        if TEXT_MATCH not in (_header(request, "accept") or ""):
+            items = [self._code_item(r, f) for r, f in window]
+            return _json(
+                wire.CodeSearchOut(total_count=len(hits), incomplete_results=False, items=items), headers=links
+            )
+        matched = [
+            wire.MatchedCodeItemOut(
+                **self._code_item(r, f).model_dump(),
+                text_matches=[self._text_match(r, f, query)],
+            )
+            for r, f in window
+        ]
+        out = wire.MatchedCodeSearchOut(total_count=len(hits), incomplete_results=False, items=matched)
+        return _json(out, headers=links)
+
+    def _text_match(
+        self, repository: wire.StoredRepository, file: wire.StoredFile, query: search.CodeQuery
+    ) -> wire.TextMatchOut:
+        fragment, terms = search.text_match(query, _raw(file).decode("utf-8"))
+        return wire.TextMatchOut(
+            object_url=f"{wire.API}/repositories/{repository.id}/contents/{file.path}?ref={repository.commits[0].sha}",
+            object_type="FileContent",
+            property="content",
+            fragment=fragment,
+            matches=[wire.TermMatchOut(text=t.text, indices=[t.start, t.end]) for t in terms],
+        )
 
     def _code_item(self, repository: wire.StoredRepository, file: wire.StoredFile) -> wire.CodeItemOut:
         full = repository.full_name
@@ -610,11 +729,16 @@ class GitHubApi:
         )
 
     async def graph(self, request: Request, caller: Caller) -> Answered:
-        if caller.account is None:
+        viewer = caller.account
+        if viewer is None:
             raise wire.Refusal(401, "This endpoint requires you to be authenticated.", section="/graphql")
         try:
             body = wire.GraphQLIn.model_validate_json(await request.body())
         except ValidationError as error:
+            if any(problem["loc"] == ("query",) for problem in error.errors()):
+                raise wire.Refusal(
+                    400, "A query attribute must be specified and must be a string.", section="/graphql"
+                ) from error
             raise wire.Refusal(400, "Problems parsing JSON", section="/graphql") from error
 
         def find(owner: str, name: str) -> graphql.Visible | None:
@@ -623,7 +747,7 @@ class GitHubApi:
                 return None
             return graphql.Visible(repository=repository, files=lambda: self._world.files(repository))
 
-        answer = graphql.execute(body, find)
+        answer = graphql.execute(body, find, viewer)
         for repository in answer.seen:
             self._world.saw(state.repository_ref(repository.owner, repository.name), Operation.READ)
         return Answered(200, answer.body)
@@ -644,6 +768,8 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/user", "GET", api.user),
         ("/user/repos", "GET", api.user_repos),
         ("/repos/{owner}/{repo}", "GET", api.repository),
+        ("/repos/{owner}/{repo}/languages", "GET", api.languages),
+        ("/repos/{owner}/{repo}/branches", "GET", api.branches),
         ("/repos/{owner}/{repo}/contents", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/{path:path}", "GET", api.contents),
@@ -654,6 +780,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/graphql", "POST", api.graph),
     ]
     routes = [Route(path, api.endpoint(handler), methods=[method]) for path, method, handler in table]
+    routes.append(Route("/rate_limit", api.endpoint(api.rate_limit, spends=False), methods=["GET"]))
 
     async def refused(request: Request, error: Exception) -> Response:
         status = error.status_code if isinstance(error, HTTPException) else 500

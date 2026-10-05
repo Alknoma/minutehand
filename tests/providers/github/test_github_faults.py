@@ -79,7 +79,8 @@ async def test_a_spent_fault_is_the_world_s_doing_in_the_log(hub: Hub) -> None:
     before = hub.store.head()
     async with hub.client() as http:
         await http.get("/search/code", params={"q": "retry repo:lanternworks/ledger"})
-    [spent] = hub.store.events(since=before)
+    budget, spent = hub.store.events(since=before)
+    assert (budget.actor, budget.entity.external_id) == (Actor.SCENARIO, "budget/iris-calder/code_search")
     assert (spent.actor, spent.operation) == (Actor.SCENARIO, Operation.UPDATE)
     assert spent.entity.external_id == "fault/000000"
 
