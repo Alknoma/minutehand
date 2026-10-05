@@ -118,6 +118,11 @@ class SqliteStore:
         self._db.commit()
         self._lineage = self._load_lineage()
 
+    def close(self) -> None:
+        """Close the file: a process that holds many worlds over its life keeps open only those still in use."""
+        with self._lock:
+            self._db.close()
+
     def _load_lineage(self) -> list[tuple[str, int | None, int | None, int | None]]:
         """This run and its ancestors, each with the highest event seq, the number of recorded calls and the
         highest wake of its spans that this run may see (None: all)."""

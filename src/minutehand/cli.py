@@ -8,6 +8,9 @@
     minutehand runs [--state DIR]
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
+    minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
+                     [--agent-host NAME] [--keep N]
+                                                 a standing proxy with a control API, for test suites (docs/serve.md)
 
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
 an agent in containers), --proxy-port (default: any free port), --agent-proxy-host (the host the agent uses
@@ -45,6 +48,7 @@ from pathlib import Path
 
 import yaml
 
+from minutehand import serve as standing
 from minutehand import session
 from minutehand.adapters.mcp import server as mcp_server
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
@@ -179,6 +183,25 @@ def _parser() -> argparse.ArgumentParser:
     tools = commands.add_parser("mcp", help="serve the tools a coding agent calls, over MCP on stdio")
     state(tools)
 
+    served = commands.add_parser(
+        "serve", help="a standing proxy with a control API: worlds a test suite opens, reads and closes"
+    )
+    served.add_argument("--host", default="127.0.0.1", help="where the proxy, receiver and control API listen")
+    served.add_argument("--proxy-port", type=int, default=standing.DEFAULT_PROXY_PORT)
+    served.add_argument("--control-port", type=int, default=standing.DEFAULT_CONTROL_PORT)
+    served.add_argument("--telemetry-port", type=int, default=standing.DEFAULT_TELEMETRY_PORT)
+    served.add_argument("--no-receive-telemetry", action="store_true", help="serve no OTLP receiver")
+    served.add_argument(
+        "--agent-host", default=None, help="the name services reach this server by (a Compose service name)"
+    )
+    served.add_argument(
+        "--no-proxy", action="append", default=[], metavar="HOST", help="a host services reach directly"
+    )
+    served.add_argument(
+        "--keep", type=int, default=standing.DEFAULT_KEEP, help="closed worlds kept; older ones are removed"
+    )
+    state(served)
+
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
     state(view)
@@ -212,6 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _mcp(state)
         if args.command == "view":
             return _view(state, args.port)
+        if args.command == "serve":
+            return _serve(args, state)
         return _runs(state)
     except (RunRefused, FileRefused, ModelFailed, OSError) as e:
         print(f"minutehand: the run could not be performed: {e}", file=sys.stderr)
@@ -366,6 +391,24 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
 
 def _mcp(state: Path) -> int:
     mcp_server.serve(state)
+    return 0
+
+
+def _serve(args: argparse.Namespace, state: Path) -> int:
+    options = standing.ServeOptions(
+        host=args.host,
+        proxy_port=args.proxy_port,
+        control_port=args.control_port,
+        telemetry_port=args.telemetry_port,
+        receive_telemetry=not args.no_receive_telemetry,
+        agent_host=args.agent_host,
+        no_proxy=args.no_proxy,
+        keep=args.keep,
+    )
+    try:
+        asyncio.run(standing.serve_forever(state, options))
+    except KeyboardInterrupt:
+        return 0
     return 0
 
 
