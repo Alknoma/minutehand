@@ -1,0 +1,10 @@
+# From the fork onward Rosa answers a day and a half after she is asked; her unanswered question is put to
+# her again under this behaviour.
+overrides:
+  - kind: person_change
+    person: rosa
+    reply:
+      kind: scripted
+      delay: {shortest: PT36H, longest: PT36H}
+      replies:
+        - {to_ask: 1, text: "The lakeside hall, booked for the 14th."}
