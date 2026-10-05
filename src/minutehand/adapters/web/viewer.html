@@ -386,7 +386,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
     var view = state.view, run = view.run, sc = run.scenario;
     var v = verdict(view);
     var parent = state.list.filter(function (r) { return r.run_id === run.run_id; })[0];
-    var eyebrow = words(sc.name) + " · started " + when(sc.starts_at) + " simulated" +
+    var eyebrow = (parent && parent.case ? "case " + parent.case + " · " + plural(parent.worlds.length, "world", "worlds") : words(sc.name)) + " · started " + when(sc.starts_at) + " simulated" +
       (parent && parent.parent_run !== null ? " · a fork" : "");
     var findings = view.findings.findings.slice().sort(function (a, b) {
       return KIND_ORDER[a.finding.kind] - KIND_ORDER[b.finding.kind] || a.number - b.number;
@@ -486,11 +486,16 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
     html += '<p class="sub">' + plural(t.calls.length, "model call", "model calls") + ", by the " + stepWord() + " each is placed in.</p><ol class=\"steps\">";
     steps.forEach(function (n) {
       var calls = byStep[n], wrote = calls.filter(function (c) { return c.wrote.length; }).length;
-      html += "<li><details" + (wrote ? " open" : "") + "><summary>" + esc((n ? stepWord().charAt(0).toUpperCase() + stepWord().slice(1) + " " + n : "Setup") + ": " + plural(calls.length, "call", "calls") + (wrote ? ", " + wrote + " of them wrote a message" : "")) + "</summary><ul>" +
+      var stepped = !view.run.driven || view.wakes.some(function (w) { return w.index === n; });
+      var title = !n ? "Setup" : stepped ? stepWord().charAt(0).toUpperCase() + stepWord().slice(1) + " " + n : "Outside any step";
+      html += "<li><details" + (wrote ? " open" : "") + "><summary>" + esc(title + ": " + plural(calls.length, "call", "calls") + (wrote ? ", " + wrote + " of them wrote a message" : "")) + "</summary><ul>" +
         calls.map(function (c) {
-          var msgs = c.wrote.map(function (seq) { return bySeq[seq] ? "“" + bySeq[seq].text.slice(0, 120) + "”" : "#" + seq; }).join("; ");
+          var msgs = c.wrote.map(function (seq) {
+            var m = bySeq[seq];
+            return m ? "“" + m.text.slice(0, 120) + "” (" + JOINED[m.written_by ? m.written_by.joined_by : c.joined_by] + ")" : "#" + seq;
+          }).join("; ");
           return "<li>" + esc(when(c.started).slice(-5) + " real · " + (c.model || "model not named") + (tokens(c) ? " · " + tokens(c) : "")) +
-            (msgs ? '<span class="wrote"> wrote ' + esc(msgs) + " (" + esc(JOINED[c.joined_by]) + ")</span>" : "") + "</li>";
+            (msgs ? '<span class="wrote"> wrote ' + esc(msgs) + "</span>" : "") + "</li>";
         }).join("") + "</ul></details></li>";
     });
     return html + "</ol></section>";
@@ -588,7 +593,10 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
     var title = p ? p.title : words(f.check);
     var place = [];
     if (f.at) { place.push(when(f.at)); }
-    if (f.wake !== null) { place.push("wake " + f.wake); }
+    if (f.wake !== null) {
+      var inStep = !state.view.run.driven || state.view.wakes.some(function (w) { return w.index === f.wake; });
+      place.push(inStep ? stepWord() + " " + f.wake : "outside any step");
+    }
     return '<li class="finding" tabindex="0" data-number="' + x.number + '">' +
       '<h3><span class="chip ' + f.kind + '">' + KIND_LABEL[f.kind] + "</span>" + esc(title) + "</h3>" +
       "<p>" + esc(f.message) + (place.length ? " (" + esc(place.join(", ")) + ")" : "") + "</p>" +
@@ -635,7 +643,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
       if (c.input_tokens !== null || c.output_tokens !== null) {
         about.push((c.input_tokens === null ? "?" : c.input_tokens) + " tokens in, " + (c.output_tokens === null ? "?" : c.output_tokens) + " out");
       }
-      if (t.joined_by === "wake") { about.push("the nearest model call in the same wake, not joined by a trace"); }
+      if (t.joined_by !== "trace") { about.push(JOINED[t.joined_by]); }
       return '<div class="asked"><b>What the model was asked and answered</b>' +
         (about.length ? "<span>" + esc(about.join(" · ")) + "</span>" : "") +
         (c.system_instructions ? "<details><summary>System prompt</summary><pre>" + esc(messages(c.system_instructions)) + "</pre></details>" : "") +
@@ -704,7 +712,10 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
     }
     view.wakes.forEach(function (w) { t1 = Math.max(t1, ms(w.sim_time)); });
     changes.forEach(function (e) { t1 = Math.max(t1, ms(e.sim_time)); });
-    view.obligations.forEach(function (w) { if (w.obligation.expected_by) { t1 = Math.max(t1, ms(w.obligation.expected_by)); } });
+    // a wait still open stretches the axis to when it was due; a settled one's date, never reached, does not
+    view.obligations.forEach(function (w) {
+      if (w.obligation.expected_by && !w.obligation.settled_at) { t1 = Math.max(t1, ms(w.obligation.expected_by)); }
+    });
     if (t1 - t0 < 600e3) { t1 = t0 + 600e3; }  // under ten minutes, or one instant: ten minutes wide
     var W = Math.max(scroll.clientWidth || 720, 720, view.wakes.length * 56), X0 = 18, X1 = W - 28;
     function x(t) { return X0 + (t - t0) / (t1 - t0) * (X1 - X0); }
@@ -734,6 +745,7 @@ ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
     if (x(first) - X0 > 70) { el("text", { x: X0 + 3, y: 18 }, svg, when(new Date(t0).toISOString())); }
     for (var t = first; t <= t1; t += stepH * 3600e3) {
       var gx = x(t);
+      if (gx > X1 - 40) { break; }
       el("line", { x1: gx, y1: 24, x2: gx, y2: H - 6, stroke: "var(--grid)" }, svg);
       el("text", { x: gx + 3, y: 18 }, svg, stepH >= 24 ? when(new Date(t).toISOString()).replace(/ 00:00$/, "") : when(new Date(t).toISOString()));
     }
