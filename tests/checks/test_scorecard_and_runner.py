@@ -11,7 +11,7 @@ from minutehand.checks.runner import RunResult, discover, evaluate, evaluate_run
 from minutehand.domain.checks import FindingKind, PersonBurden
 from minutehand.domain.run import StopReason, VerdictKind
 from minutehand.domain.scenario import Silent, TicketCreated
-from tests.checks.world import Log, at, person, reply, scenario, view
+from tests.checks.world import ONE_WAKE, Log, at, person, reply, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
 OWNER, SOFIA = person("owner"), person("sofia")
@@ -98,7 +98,7 @@ def test_a_clean_run_exits_zero_and_the_ledger_is_built_from_the_world() -> None
     result = evaluate_run(
         scenario(SOFIA, expect=[TicketCreated(assignee="sofia")]),
         log.events,
-        [],
+        [ONE_WAKE],
         [reply(SOFIA, ask, 1.5)],
         unmatched_calls=[],
         stop=StopReason.AGENT_DONE,
@@ -115,7 +115,7 @@ def _result(failing: bool) -> RunResult:
     return (
         evaluate(WORLD, stop=None)
         if failing
-        else evaluate_run(scenario(OWNER), [], [], [], unmatched_calls=[], stop=None)
+        else evaluate_run(scenario(OWNER), [], [ONE_WAKE], [], unmatched_calls=[], stop=None)
     )
 
 
