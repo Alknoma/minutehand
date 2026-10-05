@@ -13,8 +13,9 @@ import urllib.request
 
 wake = json.load(sys.stdin)
 for call in os.environ["AGENT_CALLS"].split(","):
-    method, url = call.split()
-    asked = urllib.request.Request(url, data=b"x" if method == "POST" else None, method=method)
+    method, url, *body = call.split(maxsplit=2)
+    sent = body[0].encode() if body else b"x" if method == "POST" else None
+    asked = urllib.request.Request(url, data=sent, method=method)
     try:
         with urllib.request.urlopen(asked, timeout=30) as answered:
             status, body = answered.status, answered.read()

@@ -56,6 +56,29 @@ fails the run. `test_known_failures.py` holds this page's table to that file.
 - A button press lands after the person's delay and reaches the agent; a form after a press carries what was typed.
 - A standing world lists a scripted answer still to land as owed.
 
+### 6. Rewind is honest (`test_rewind.py`)
+
+- A fork of the reference agent restores, is verified by its report and fingerprint, names each restore step, and
+  says what it changed, where it split and how its outcome differs from its parent's.
+- A restore that brings back another moment is refused, naming the field that differs, and leaves no run behind.
+- A fork after an external emulator was used is refused naming it; one from before runs.
+- A fork after the AWS scheduler fake was used is refused naming it; one from before runs.
+
+### 7. Errors are told apart (`test_errors.py`)
+
+- An operation the Slack fake lacks reaches `slack_sdk` as the fake's gap, recorded `not_implemented`.
+- An operation the Asana fake lacks reaches the `asana` client as the fake's gap, recorded `not_implemented`.
+- An operation an installed fake lacks is answered 501 naming the fake, recorded `not_implemented`, and scored.
+- Minutehand's own bug in a fake reaches the client as an internal error naming Minutehand, keeps its traceback,
+  and makes the verdict the tool's failure.
+- A fault armed through the control API and one of Slack's typed faults are recorded `injected_fault`, never as
+  the service's refusal, and the same call afterwards is answered.
+
+### 8. Pending human decisions in the agent's own product, and the agent file validated without a run
+
+Not yet on `integration-main` (`feat/inboxes`). No test is written against an unmerged branch; this list is empty
+until it lands.
+
 ## Known failures
 
 | Test | Observed | Promised |
@@ -64,3 +87,5 @@ fails the run. `test_known_failures.py` holds this page's table to that file.
 | `test_verdicts.py::test_a_late_follow_up_on_a_question_answered_only_when_chased_is_scored_and_failed` | Rosa answers only her 2nd message; a follow-up 36 h after her answer fell due scores 0 made, 0 due, 0 late and the run passes | design.md, Pillar one: a follow-up is any agent write the person could see while the wait is open, and one more than GRACE after it fell due is late_follow_up, FAIL |
 | `test_driven_parity.py::test_the_same_story_driven_through_serve_gets_the_verdict_scorecard_and_findings_run_gives` | driven as serve.md's recipe says (advance, then a step around the wake), Rosa's answer lands on the advance outside every step: idle_wakes 1 and an idle_wake review, where `run` scores 0 and none | serve.md, Scoring a run you drive yourself: a step is recorded as the run loop records a wake, and the checks and scorecard read it as one |
 | `test_people.py::test_a_standing_world_lists_a_scripted_answer_still_to_land_as_owed` | Rosa is asked and her scripted answer fires 5 h later on an advance, but WorldView.owed is empty until then, so a harness cannot learn where to move the clock | serve.md, the control API: GET /v1/worlds/{id} answers what the world owes; WorldView.owed is what falls due as the clock moves |
+| `test_errors.py::test_an_operation_the_slack_fake_lacks_reaches_slack_sdk_as_the_fakes_gap_not_slacks_refusal` | chat.scheduleMessage, which the Slack fake's README lists as not done, is answered 200 unknown_method and recorded `refused`: Slack's own refusal, scored against the agent | design.md, What leaves a provider: an operation the fake lacks is 501 "minutehand's <provider> fake does not implement <METHOD> <path>", recorded `not_implemented` |
+| `test_errors.py::test_an_operation_the_asana_fake_lacks_reaches_the_asana_client_as_the_fakes_gap_not_asanas_refusal` | POST /webhooks is answered 501 "webhooks: Not supported by this simulation of Asana" and recorded `refused`, with no failure kept | design.md, What leaves a provider and serve.md, How each call was answered: a 501 for an operation the fake does not have is `not_implemented`, naming the fake and the call |

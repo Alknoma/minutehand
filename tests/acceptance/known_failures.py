@@ -41,5 +41,17 @@ KNOWN_FAILURES: Final[dict[str, KnownFailure]] = {
         promised="serve.md, the control API: GET /v1/worlds/{id} answers what the world owes; WorldView.owed is "
         "what falls due as the clock moves",
     ),
+    "test_errors.py::test_an_operation_the_slack_fake_lacks_reaches_slack_sdk_as_the_fakes_gap_not_slacks_refusal": KnownFailure(
+        observed="chat.scheduleMessage, which the Slack fake's README lists as not done, is answered 200 "
+        "unknown_method and recorded `refused`: Slack's own refusal, scored against the agent",
+        promised="design.md, What leaves a provider: an operation the fake lacks is 501 \"minutehand's <provider> "
+        'fake does not implement <METHOD> <path>", recorded `not_implemented`',
+    ),
+    "test_errors.py::test_an_operation_the_asana_fake_lacks_reaches_the_asana_client_as_the_fakes_gap_not_asanas_refusal": KnownFailure(
+        observed='POST /webhooks is answered 501 "webhooks: Not supported by this simulation of Asana" and '
+        "recorded `refused`, with no failure kept",
+        promised="design.md, What leaves a provider and serve.md, How each call was answered: a 501 for an "
+        "operation the fake does not have is `not_implemented`, naming the fake and the call",
+    ),
 }
 """Keyed by `<file>.py::<test function>`, the file relative to `tests/acceptance/`."""

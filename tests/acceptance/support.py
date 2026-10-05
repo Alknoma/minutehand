@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -493,9 +493,63 @@ def stored_bytes(state: Path) -> bytes:
         if raw.startswith(b"\x28\xb5\x2f\xfd"):
             found += zstandard.ZstdDecompressor().decompressobj().decompress(raw)
         if path.suffix == ".db":
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 for (blob,) in db.execute("SELECT stored FROM content"):
                     found += blob
                     if blob.startswith(b"\x28\xb5\x2f\xfd"):
                         found += zstandard.ZstdDecompressor().decompressobj().decompress(blob)
     return bytes(found)
+
+
+REFERENCE = EXAMPLES / "reference_agent"
+
+
+@dataclass(frozen=True)
+class Reference:
+    """The shipped reference agent, set up as `docs/reference-agent.md` says, on ports and in a home of its own."""
+
+    agent_file: Path
+    command: list[str]
+    env: dict[str, str]
+    options: list[str]
+    """What `run` and `fork` are given beside the agent file: the model host and the outside world's CA."""
+
+
+@contextmanager
+def reference_agent(tmp_path: Path) -> Iterator[Reference]:
+    """`outside.py` serving the model API and the search, and the agent file with its port and commands made the
+    test's own (the example's names port 8790 and runs `python hooks.py` from its own folder)."""
+    outside_dir = tmp_path / "outside"
+    log = tmp_path / "outside.log"
+    with log.open("wb") as err:
+        process = subprocess.Popen(
+            [PYTHON, str(REFERENCE / "outside.py"), "--dir", str(outside_dir)],
+            env=clean_environment(),
+            stdout=subprocess.PIPE,
+            stderr=err,
+        )
+    try:
+        assert process.stdout is not None
+        line = process.stdout.readline()
+        assert line, f"outside.py printed nothing: {log.read_text()}"
+        outside = json.loads(line)
+        port = free_port()
+        written = (REFERENCE / "agent.yaml").read_text().replace("8790", str(port))
+        written = written.replace("[python, hooks.py,", f"[{PYTHON}, {REFERENCE / 'hooks.py'},")
+        agent_file = tmp_path / "agent.yaml"
+        agent_file.write_text(written)
+        home = tmp_path / "home"
+        home.mkdir()
+        env = {
+            "REFERENCE_PORT": str(port),
+            "REFERENCE_HOME": str(home),
+            "REFERENCE_MODEL_URL": outside["model"],
+            "REFERENCE_SEARCH_URL": outside["search"],
+            "REFERENCE_EXTRA_CA": outside["ca"],
+        }
+        options = ["--model-host", "model.localhost", "--upstream-ca", outside["ca"]]
+        yield Reference(agent_file, [PYTHON, str(REFERENCE / "run.py")], env, options)
+    finally:
+        _reap(process)
+        if process.stdout is not None:
+            process.stdout.close()
