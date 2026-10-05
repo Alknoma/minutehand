@@ -27,6 +27,7 @@ FRAGMENTS = {
     "asana": ('{"rate_limits": [{"after": "PT1M", "lasts": "PT1M"}]}', '{"rate_limits": [], "tags": ["x"]}'),
     "jira": ('{"rate_limits": [{"path": "/rest/api/3/issue", "times": 1, "retry_after": 3}]}', '{"site": "elsewhere"}'),
     "notion": ('{"faults": [{"kind": "conflict"}]}', '{"faults": [], "webhooks": []}'),
+    "github": ('{"faults": [{"kind": "server_error"}]}', '{"faults": [], "users": []}'),
     "microsoft": ('{"faults": [{"answer": {"kind": "refused", "error": "generalException"}}]}', '{"not_installed_for": []}'),
 }  # fmt: skip
 

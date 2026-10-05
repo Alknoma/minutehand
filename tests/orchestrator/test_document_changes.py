@@ -91,6 +91,7 @@ async def test_a_change_nobody_watches_lands_at_its_moment_and_wakes_no_one(rig:
                 text="40k?",
                 last_edited_by="sofia@example.com",
                 last_edited_at=RENAMED_AT,
+                owner="owner@example.com",
             ),
         )
     ]

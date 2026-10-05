@@ -16,6 +16,7 @@ import base64
 import binascii
 import json
 import re
+from datetime import UTC, datetime
 
 from starlette.requests import Request
 from starlette.responses import Response
@@ -31,6 +32,7 @@ from minutehand.adapters.providers.microsoft.common import (
 )
 from minutehand.adapters.providers.microsoft.state import (
     GRAPH,
+    AwayRecord,
     ConversationRecord,
     MicrosoftWorld,
     TeamRecord,
@@ -225,6 +227,19 @@ class TeamsGraph:
             self._refuse_options(request, set())
             self._world.saw(user_ref(user.user.id), Operation.READ)
             return self._one(request, user.user, f"{GRAPH}/$metadata#users/$entity")
+        if parts[2:] == ["presence"]:
+            self._world.saw(user_ref(user.user.id), Operation.READ)
+            return self._one(
+                request, self.presence(user), f"{GRAPH}/$metadata#users('{user.user.id}')/presence/$entity"
+            )
+        if parts[2:] == ["mailboxSettings"]:
+            self._world.saw(user_ref(user.user.id), Operation.READ)
+            settings = wire.MailboxSettings(automaticRepliesSetting=self._replies(user))
+            return self._one(request, settings, f"{GRAPH}/$metadata#users('{user.user.id}')/mailboxSettings")
+        if parts[2:] == ["mailboxSettings", "automaticRepliesSetting"]:
+            self._world.saw(user_ref(user.user.id), Operation.READ)
+            context = f"{GRAPH}/$metadata#users('{user.user.id}')/mailboxSettings/automaticRepliesSetting"
+            return self._one(request, self._replies(user), context)
         if parts[2:] == ["chats"]:
             chats = [
                 self._chat(c)
@@ -233,6 +248,56 @@ class TeamsGraph:
             ]
             return self._page(request, chats, f"{GRAPH}/$metadata#users('{user.user.id}')/chats")
         raise bad_request(f"Unsupported segment '{'/'.join(parts[2:])}'.")
+
+    # ------------------------------------------------------------------ presence and automatic replies
+
+    def presence(self, user: UserRecord) -> wire.Presence:
+        """Out of office while an absence of theirs lasts, with their automatic reply; available otherwise."""
+        now = self._clock.now()
+        away = self._world.away(user, now)
+        if away is None or not away[0] <= now < away[1]:
+            return wire.Presence(
+                id=user.user.id,
+                availability="Available",
+                activity="Available",
+                outOfOfficeSettings=wire.OutOfOfficeSettings(isOutOfOffice=False),
+            )
+        return wire.Presence(
+            id=user.user.id,
+            availability="Away",
+            activity="OutOfOffice",
+            outOfOfficeSettings=wire.OutOfOfficeSettings(message=_reply_text(user, away), isOutOfOffice=True),
+        )
+
+    def _replies(self, user: UserRecord) -> wire.AutomaticRepliesSetting:
+        """Scheduled over the absence that lasts now, or the next one known; disabled when none is."""
+        away = self._world.away(user, self._clock.now())
+        if away is None:
+            return wire.AutomaticRepliesSetting(status="disabled")
+        message = _reply_text(user, away)
+        return wire.AutomaticRepliesSetting(
+            status="scheduled",
+            scheduledStartDateTime=wire.DateTimeTimeZone(dateTime=_mailbox_time(away[0])),
+            scheduledEndDateTime=wire.DateTimeTimeZone(dateTime=_mailbox_time(away[1])),
+            internalReplyMessage=message,
+            externalReplyMessage=message,
+        )
+
+    async def communications(self, request: Request, parts: list[str]) -> Response:
+        """`GET /communications/presences/{id}` and `POST /communications/getPresencesByUserId`."""
+        graph_caller(request)
+        if request.method == "GET" and len(parts) == 3 and parts[1] == "presences":
+            user = self._user(parts[2])
+            self._world.saw(user_ref(user.user.id), Operation.READ)
+            return self._one(request, self.presence(user), f"{GRAPH}/$metadata#communications/presences/$entity")
+        if request.method == "POST" and parts[1:] == ["getPresencesByUserId"]:
+            try:
+                asked = wire.read(wire.PresencesByUserId, await request.body())
+            except wire.Unreadable as e:
+                raise bad_request(e.message) from e
+            found = [self.presence(self._user(i)) for i in asked.ids]
+            return self._page(request, found, f"{GRAPH}/$metadata#Collection(microsoft.graph.presence)")
+        raise bad_request(f"Unsupported segment '{'/'.join(parts)}'.")
 
     # ------------------------------------------------------------------ teams and channels
 
@@ -418,3 +483,14 @@ class TeamsGraph:
                 request, list(reversed(replies_of(root.id))), f"{GRAPH}/$metadata#{context}('{root.id}')/replies"
             )
         raise bad_request(f"Unsupported segment '{'/'.join(rest[1:])}'.")
+
+
+def _mailbox_time(at: datetime) -> str:
+    """A `dateTimeTimeZone`'s `dateTime`: local to its `timeZone` (UTC here), seven digits of fraction."""
+    return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.0000000")
+
+
+def _reply_text(user: UserRecord, away: tuple[datetime, datetime, AwayRecord]) -> str:
+    """The automatic reply a person away would have set: that they are out, why if they said, and until when."""
+    why = f" ({away[2].reason})" if away[2].reason else ""
+    return f"{user.user.displayName} is out of office{why} until {away[1].astimezone(UTC):%A %d %B %Y}."

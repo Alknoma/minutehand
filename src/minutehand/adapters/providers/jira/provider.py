@@ -17,8 +17,17 @@ from minutehand.adapters.providers.jira.app import build_app
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.seed import JiraSeed, seed
-from minutehand.domain.provider import Manifest, fault_fragment
-from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
+from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
+from minutehand.domain.scenario import (
+    Comments,
+    Deletes,
+    Moves,
+    Person,
+    Reassigns,
+    Scenario,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import Actor, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -27,6 +36,7 @@ from minutehand.ports.store import Store
 
 class JiraProvider:
     manifest: Manifest = MANIFEST
+    seed_model = JiraSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
@@ -80,6 +90,30 @@ class JiraProvider:
         written = desk.write(issue, changed, by=None, at=clock.now(), actor=Actor.SCENARIO)
         if written is issue:
             desk.world.update_issue(issue, actor=Actor.SCENARIO)
+
+    def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
+        """The issue is deleted, with its subtasks and the links naming them, as its assignee deletes it."""
+        desk = Desk(world)
+        issue = _located(desk, ticket)
+        if issue is None:
+            raise LookupError(f"no Jira issue {ticket.external_id} in this run")
+        desk.delete(issue, actor=Actor.PERSON)
+        del clock
+
+    def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
+        """A site administrator deactivates or reactivates the person's Atlassian account: deactivated, it signs in
+        to nothing, is not assignable, and reads `active: false` wherever it is shown."""
+        jira = Desk(world).world
+        user = jira.user_by_email(person.email)
+        if user is None:
+            raise ValueError(f"{person.key} has no Jira account")
+        active = change is PersonChange.REACTIVATED
+        if change not in (PersonChange.DEACTIVATED, PersonChange.REACTIVATED):
+            raise ValueError(f"jira has no way to show a person {change.value}")
+        if user.active is active:
+            raise ValueError(f"{person.key}'s Jira account is already {'active' if active else 'inactive'}")
+        jira.write_user(user.model_copy(update={"active": active}), actor=Actor.SCENARIO)
+        del clock
 
     # ------------------------------------------------------------------ a person's acts
 

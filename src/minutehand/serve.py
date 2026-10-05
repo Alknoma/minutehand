@@ -34,8 +34,8 @@ import secrets
 import shutil
 import socket
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,7 +44,7 @@ import uvicorn
 from pydantic import Field
 from starlette.applications import Starlette
 
-from minutehand.adapters.control.wire import Claims, CreateWorld, Fault
+from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -56,13 +56,24 @@ from minutehand.adapters.telemetry.receiver import Receiver
 from minutehand.application.outbound import outbound_uses
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
-from minutehand.application.standing import StandingWorld, WorldRefused
+from minutehand.application.standing import StandingWorld, Unsupported, WorldRefused
 from minutehand.checks.runner import RunResult
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import Exchange
-from minutehand.ports.provider import ASGIApp, Message, Scope
+from minutehand.ports.clock import Clock
+from minutehand.ports.provider import (
+    ASGIApp,
+    ChangesPeople,
+    DeclaresFaults,
+    DeletesTickets,
+    GrantsPermissions,
+    Message,
+    MintsInboundCredentials,
+    OwnsSeed,
+    Scope,
+)
 from minutehand.ports.store import Store
 from minutehand.session import (
     RECORD,
@@ -132,6 +143,8 @@ class World:
     faults: list[_Armed] = field(default_factory=list)
     traces: set[str] = field(default_factory=set)
     open: bool = True
+    signing: dict[ProviderKey, str] = field(default_factory=dict)
+    capturing: Capturing = field(default_factory=Capturing)
 
 
 class Standing:
@@ -153,11 +166,22 @@ class Standing:
         directory.mkdir(parents=True)
         self._lobby_clock = RunClock(_now())
         self.lobby_store = SqliteStore(directory / WORLD, lobby_id, self._lobby_clock)
-        self._lobby = Mounted(store=self.lobby_store, clock=self._lobby_clock, app_for=self._no_app)
+        self._shared = {h.lower(): m for m in registry.manifests for h in m.shared_hosts}
+        self._shared_apps: dict[ProviderKey, ASGIApp] = {}
+        self._lobby = Mounted(store=self.lobby_store, clock=self._lobby_clock, app_for=self._shared_app)
 
-    @staticmethod
-    def _no_app(manifest: Manifest) -> ASGIApp:
-        raise RunRefused(f"the lobby answers no provider; a call to {manifest.key} here is refused")
+    def shared(self, host: str) -> bool:
+        """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
+        return host.lower() in self._shared
+
+    def _shared_app(self, manifest: Manifest) -> ASGIApp:
+        """The lobby answers a provider only for its shared hosts (published keys, the same in every world), over the
+        lobby's own store; any other call to it here is refused."""
+        if manifest.key not in {m.key for m in self._shared.values()}:
+            raise RunRefused(f"the lobby answers no provider; a call to {manifest.key} here is refused")
+        if manifest.key not in self._shared_apps:
+            self._shared_apps[manifest.key] = self._registry.provider(manifest).app(self.lobby_store, self._lobby_clock)
+        return self._shared_apps[manifest.key]
 
     # -- adapters.proxy.worlds.Worlds -------------------------------------------------------------------------
 
@@ -169,6 +193,8 @@ class Standing:
             found = next((self._tokens[c] for c in credentials if c in self._tokens), None)
         if found is None:
             found = self._default
+        if found is None and host.lower() in self._shared:
+            return self._lobby
         return self.worlds[found].mounted if found is not None else None
 
     @property
@@ -201,6 +227,8 @@ class Standing:
             | {d.provider for d in spec.seed.documents}
             | {i.provider for i in spec.inbound}
             | {f.provider for f in spec.faults}
+            | {s.provider for s in spec.seed.provider_seeds}
+            | {c.provider for c in spec.seed.channels}
         )
         unknown = sorted(named - set(self._manifests))
         if unknown:
@@ -216,10 +244,42 @@ class Standing:
             refuse_unheld(spec.seed, self._manifests)
         except RunRefused as refused:
             raise WorldRefused(str(refused)) from refused
+        unseeded = sorted(
+            s.provider
+            for s in spec.seed.provider_seeds
+            if not isinstance(self._registry.provider(self._manifests[s.provider]), OwnsSeed)
+        )
+        if unseeded:
+            raise Unsupported(f"{', '.join(unseeded)} has no seed of its own: give it no provider seed")
         world_id = secrets.token_hex(6)
-        scenario = spec.seed.starting(_now())
         directory = run_dir(self._state, world_id)
         directory.mkdir(parents=True)
+        signing = {i.provider: i.secret or secrets.token_hex(16) for i in spec.inbound}
+        try:
+            world = self._open(world_id, spec, signing, capturing, _now())
+        except Exception:
+            shutil.rmtree(directory)
+            raise
+        name = spec.seed.name
+        kept = Kept(world_id=world_id, name=name, claims=spec.claims, scripted_people=spec.scripted_people)
+        (directory / KEPT).write_text(kept.model_dump_json(indent=2), encoding="utf-8")
+        self.worlds[world_id] = world
+        for token in spec.claims.tokens:
+            self._tokens[token] = world_id
+        for host in spec.claims.hosts:
+            self._hosts[host.lower()] = world_id
+        for key in spec.claims.keys:
+            self._keys[key.lower()] = world_id
+        if spec.claims.default:
+            self._default = world_id
+        return world
+
+    def _open(
+        self, world_id: str, spec: CreateWorld, signing: dict[ProviderKey, str], capturing: Capturing, now: datetime
+    ) -> World:
+        """The world's store, seeded from `spec` as of `now`, with every provider its seed names seeded already."""
+        scenario = spec.seed.starting(now)
+        directory = run_dir(self._state, world_id)
         clock = RunClock(scenario.starts_at)
         store = SqliteStore(directory / WORLD, world_id, clock)
         try:
@@ -229,26 +289,25 @@ class Standing:
                 clock=clock,
                 provider=lambda key: self._registry.provider(self._manifests[key]),
                 inbound=[i.to_target() for i in spec.inbound],
-                signing={i.provider: i.secret or secrets.token_hex(16) for i in spec.inbound},
+                signing=signing,
                 scripted=spec.scripted_people,
             )
             named = sorted(
                 {t.provider for t in scenario.tickets}
                 | {d.provider for d in scenario.documents}
                 | {i.provider for i in spec.inbound}
+                | {s.provider for s in scenario.provider_seeds}
+                | {c.provider for c in scenario.channels}
             )
             standing.open(named)
         except Exception:
             store.close()
-            shutil.rmtree(directory)
+            (directory / WORLD).unlink(missing_ok=True)
             raise
-        name = spec.seed.name
         (directory / SCENARIO).write_text(scenario.model_dump_json(indent=2), encoding="utf-8")
-        kept = Kept(world_id=world_id, name=name, claims=spec.claims, scripted_people=spec.scripted_people)
-        (directory / KEPT).write_text(kept.model_dump_json(indent=2), encoding="utf-8")
-        world = World(
+        return World(
             world_id=world_id,
-            name=name,
+            name=spec.seed.name,
             spec=spec,
             standing=standing,
             store=store,
@@ -260,17 +319,63 @@ class Standing:
             ),
             opened=time.monotonic(),
             faults=[_Armed(f, f.times) for f in spec.faults],
+            signing=signing,
+            capturing=capturing,
         )
+
+    def reset(self, world_id: str) -> World:
+        """The world back to the seed it was opened with, in place: the same id, the same claims, the same inbound
+        targets and secrets, its clock back at its start, the faults it was opened with armed again, and nothing
+        the agent, a person or the test did since. Its log so far is discarded, and tokens its fakes minted are
+        no longer claimed: the world that minted them is gone."""
+        old = self.get(world_id)
+        old.store.close()
+        old.open = False
+        for suffix in ("", "-wal", "-shm"):
+            (run_dir(self._state, world_id) / f"{WORLD}{suffix}").unlink(missing_ok=True)
+        world = self._open(world_id, old.spec, old.signing, old.capturing, old.standing.scenario.starts_at)
         self.worlds[world_id] = world
-        for token in spec.claims.tokens:
-            self._tokens[token] = world_id
-        for host in spec.claims.hosts:
-            self._hosts[host.lower()] = world_id
-        for key in spec.claims.keys:
-            self._keys[key.lower()] = world_id
-        if spec.claims.default:
-            self._default = world_id
+        claimed = set(old.spec.claims.tokens)
+        self._tokens = {t: w for t, w in self._tokens.items() if w != world_id or t in claimed}
+        for trace in old.traces:
+            del self._traces[trace]
         return world
+
+    def extend(self, world_id: str, added: FurtherSeed) -> dict[ProviderKey, int]:
+        """`StandingWorld.extend`, with a scratch store beside the world's own."""
+        world = self.get(world_id)
+        directory = run_dir(self._state, world_id)
+        return world.standing.extend(
+            people=added.people,
+            tickets=added.tickets,
+            documents=added.documents,
+            spaces=added.spaces,
+            sign_ins=added.sign_ins,
+            channels=added.channels,
+            provider_seeds=added.provider_seeds,
+            directory=directory,
+            scratch=_scratch,
+        )
+
+    def capabilities(self) -> list[ProviderView]:
+        """What each installed provider can be asked to do in a world already open."""
+        found: list[ProviderView] = []
+        for key in sorted(self._manifests):
+            provider = self._registry.provider(self._manifests[key])
+            found.append(
+                ProviderView(
+                    key=key,
+                    people_changes=list(provider.manifest.people_changes)
+                    if isinstance(provider, ChangesPeople)
+                    else [],
+                    permissions=isinstance(provider, GrantsPermissions),
+                    inbound_credentials=isinstance(provider, MintsInboundCredentials),
+                    faults=isinstance(provider, DeclaresFaults),
+                    deletes_tickets=isinstance(provider, DeletesTickets),
+                    seed_model=isinstance(provider, OwnsSeed),
+                )
+            )
+        return found
 
     def _refuse_taken(self, claims: Claims) -> None:
         taken = [t for t in claims.tokens if t in self._tokens]
@@ -387,6 +492,16 @@ class Standing:
         return answer
 
 
+@contextmanager
+def _scratch(path: Path, clock: Clock) -> Iterator[Store]:
+    """An empty store at `path` for `application.further_seed`, closed when done."""
+    store = SqliteStore(path, "scratch", clock)
+    try:
+        yield store
+    finally:
+        store.close()
+
+
 def _now() -> datetime:
     """The moment a world with no `starts_at` starts, to the second."""
     return datetime.now(UTC).replace(microsecond=0)  # clock-lint: exempt the real start of a standing world, read once
@@ -415,11 +530,16 @@ class Serving:
             telemetry_port=self.receiver.port if self.receiver is not None else 0,
         )
 
-    def environment(self, ca_path: str | None) -> dict[str, str]:
+    def environment(self, ca_path: str | None, no_proxy: Sequence[str] = ()) -> dict[str, str]:
         """What a service needs to reach the fakes through this server; `ca_path` is where it finds the CA bundle
-        (`GET /v1/ca.pem`), this machine's own file when None."""
+        (`GET /v1/ca.pem`), this machine's own file when None; `no_proxy` names more hosts the service reaches
+        directly (the other services of its stack). This server's own name is always among them: its control API
+        and OTLP receiver are plain HTTP, never reached through its proxy."""
+        listen = self.listen()
+        own = [listen.agent_host] if listen.agent_host is not None else []
+        direct = listen.model_copy(update={"no_proxy": [*listen.no_proxy, *no_proxy, *own]})
         return agent_environment(
-            self.listen(),
+            direct,
             self.proxy.port,
             ca_path or str(self.proxy.ca_bundle.resolve()),
             {},

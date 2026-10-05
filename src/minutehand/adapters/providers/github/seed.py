@@ -26,6 +26,7 @@ from typing import Self
 from pydantic import Field, model_validator
 
 from minutehand.adapters.providers.github import wire
+from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.scenario import Person, Scenario
 from minutehand.ports.store import Store
@@ -123,6 +124,12 @@ class SeedRepository(wire.Wire):
         description="Entries a recursive tree holds before GitHub answers it truncated; lowered only so a "
         "small repository can be read truncated",
     )
+    directory_entry_limit: int = Field(
+        default=1000,
+        ge=1,
+        description="Entries the contents endpoint lists of one directory, saying nothing of the rest; lowered "
+        "only so a small directory can be read cut short",
+    )
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -139,6 +146,14 @@ class SeedRepository(wire.Wire):
         if self.default_branch in self.branches:
             raise ValueError(f"{self.owner}/{self.name}: {self.default_branch} is the default branch already")
         return self
+
+
+class SeedLimits(wire.Wire):
+    """A repository's reading limits set apart from its seed: what a test lowers on a world already open."""
+
+    repository: str = Field(description="`owner/name` of a seeded repository")
+    tree_entry_limit: int | None = Field(default=None, ge=1, description="None leaves it as it is")
+    directory_entry_limit: int | None = Field(default=None, ge=1, description="None leaves it as it is")
 
 
 class SeedBudget(wire.Wire):
@@ -163,6 +178,9 @@ class GitHubSeed(wire.Wire):
     tokens: list[SeedToken] = []
     repositories: list[SeedRepository] = []
     faults: list[wire.Fault] = Field(default=[], description="Answered to the agent's calls in the order armed")
+    limits: list[SeedLimits] = Field(
+        default=[], description="Each repository's reading limits, over what its own seed says; applied in order"
+    )
     budgets: list[SeedBudget] = Field(default=[], description="Primary budgets that start part spent")
 
     @model_validator(mode="after")
@@ -186,6 +204,9 @@ class GitHubSeed(wire.Wire):
         names = [f"{r.owner}/{r.name}".lower() for r in self.repositories]
         if len(names) != len(set(names)):
             raise ValueError("two repositories share a name")
+        limited = sorted({x.repository for x in self.limits if x.repository.lower() not in names})
+        if limited and self.repositories:
+            raise ValueError(f"limits name no such repository: {', '.join(limited)}")
         selected = {s for t in self.tokens for s in t.repositories or []}
         unknown = sorted(s for s in selected if s.lower() not in names)
         if unknown:
@@ -307,6 +328,7 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
             stargazers_count=repository.stargazers_count,
             forks_count=repository.forks_count,
             tree_entry_limit=repository.tree_entry_limit,
+            directory_entry_limit=repository.directory_entry_limit,
             created_at=commits[-1].date if commits else created,
         )
         github.write_repository(stored)
@@ -319,9 +341,8 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
                 ),
             )
 
-    for position, fault in enumerate(given.faults):
-        github.arm(position, wire.StoredFault(fault=fault))
-
+    write_faults(github, given.faults)
+    write_limits(github, given.limits)
     for budget in given.budgets:
         limit = wire.limit_for(budget.resource, authenticated=budget.login is not None)
         login = None if budget.login is None else accounts[budget.login.lower()].login
@@ -329,3 +350,32 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
         github.write_budget(
             login, budget.resource, wire.StoredBudget(limit=limit, used=limit - budget.remaining, reset=reset)
         )
+
+
+def github_seed(scenario: Scenario) -> GitHubSeed:
+    """The scenario's own seed for GitHub, or an empty GitHub when it gives none."""
+    found = scenario.provider_seed(MANIFEST.key)
+    return GitHubSeed() if found is None else GitHubSeed.model_validate_json(found.body)
+
+
+def write_faults(github: GitHubWorld, faults: list[wire.Fault]) -> None:
+    """Arm each fault after those already armed."""
+    first = len(github.faults())
+    for position, fault in enumerate(faults, start=first):
+        github.arm(position, wire.StoredFault(fault=fault))
+
+
+def write_limits(github: GitHubWorld, limits: list[SeedLimits]) -> None:
+    """Set each repository's reading limits, as the scenario; a repository the world does not hold is refused."""
+    for limit in limits:
+        owner, _, name = limit.repository.partition("/")
+        stored = github.repository(owner, name)
+        if stored is None:
+            raise ValueError(f"no repository {limit.repository} in this world")
+        changed = stored.model_copy(
+            update={
+                "tree_entry_limit": limit.tree_entry_limit or stored.tree_entry_limit,
+                "directory_entry_limit": limit.directory_entry_limit or stored.directory_entry_limit,
+            }
+        )
+        github.update_repository(changed)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import DocumentChange, Manifest, Tier
+from minutehand.domain.provider import DocumentChange, Manifest, PersonChange, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -17,4 +17,5 @@ MANIFEST = Manifest(
         DocumentChange.COMMENTED,
         DocumentChange.FIELD_SET,
     ],
+    people_changes=[PersonChange.REMOVED],
 )

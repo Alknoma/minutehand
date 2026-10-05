@@ -21,6 +21,7 @@ from minutehand.ports.store import Store
 
 class GoogleDriveProvider:
     manifest: Manifest = MANIFEST
+    seed_model = DriveSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(DriveApi(world, clock))

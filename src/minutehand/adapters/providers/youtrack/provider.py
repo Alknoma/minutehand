@@ -7,8 +7,18 @@ from minutehand.adapters.providers.youtrack.app import build_app
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.seed import YouTrackSeed, seed, write_faults
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld, millis
-from minutehand.domain.provider import Manifest, fault_fragment
-from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
+from minutehand.domain.people import PermissionGrant
+from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
+from minutehand.domain.scenario import (
+    Comments,
+    Deletes,
+    Moves,
+    Person,
+    Reassigns,
+    Scenario,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import Actor, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -17,6 +27,7 @@ from minutehand.ports.store import Store
 
 class YouTrackProvider:
     manifest: Manifest = MANIFEST
+    seed_model = YouTrackSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
@@ -55,6 +66,52 @@ class YouTrackProvider:
         """`YouTrackSeed.faults`, on a world already open."""
         found = fault_fragment(YouTrackSeed, faults, frozenset({"faults"})).faults
         write_faults(YouTrackWorld(world), found, clock.now())
+
+    def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
+        """The issue is deleted, with every link it is an end of, by its assignee (or whoever last changed it)."""
+        youtrack = YouTrackWorld(world)
+        issue, project = _located(youtrack, ticket)
+        assignee = youtrack.assignee_of(project, issue)
+        by = assignee.id if assignee is not None else issue.updater
+        youtrack.delete_issue(issue, by=by, at=millis(clock.now()), actor=Actor.PERSON)
+
+    def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
+        """An administrator bans or unbans the person's account: banned, it reads `banned: true` in YouTrack and
+        Hub, its tokens no longer sign in, and it cannot be assigned."""
+        youtrack = YouTrackWorld(world)
+        user = _account(youtrack, person)
+        if change not in (PersonChange.DEACTIVATED, PersonChange.REACTIVATED):
+            raise ValueError(f"youtrack has no way to show a person {change.value}")
+        banned = change is PersonChange.DEACTIVATED
+        if user.banned is banned:
+            raise ValueError(f"{person.key}'s YouTrack account is already {'banned' if banned else 'not banned'}")
+        youtrack.write_user(user.model_copy(update={"banned": banned}), actor=Actor.SCENARIO)
+        del clock
+
+    def permit(self, grant: PermissionGrant, person: Person, world: Store, clock: Clock) -> None:
+        """A permission given to or taken from the person, in one project (by short name or name) or all of them,
+        after every grant already made, so it is the last word."""
+        youtrack = YouTrackWorld(world)
+        user = _account(youtrack, person)
+        try:
+            permission = wire.Permission(grant.permission)
+        except ValueError:
+            known = ", ".join(p.value for p in wire.Permission)
+            raise ValueError(f"youtrack has no permission {grant.permission!r}; it has {known}") from None
+        project = None
+        if grant.project is not None:
+            wanted = grant.project.lower()
+            project = next((p for p in youtrack.projects() if wanted in (p.shortName.lower(), p.name.lower())), None)
+            if project is None:
+                raise ValueError(f"a grant names project {grant.project!r}, which the instance has not got")
+        youtrack.write_grant(
+            len(youtrack.grants()),
+            wire.StoredGrant(
+                user=user.id, permission=permission, project=None if project is None else project.id, held=grant.held
+            ),
+            actor=Actor.SCENARIO,
+        )
+        del clock
 
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         """A person changes the state or assignee of a seeded issue, comments on it, or deletes it, as themselves. An
@@ -110,6 +167,13 @@ def _assigned(
         values[field.id] = user.id
     changed = issue.model_copy(update={"values": values})
     return youtrack.settled(changed, project, was=issue, by=by, at=at)
+
+
+def _account(youtrack: YouTrackWorld, person: Person) -> wire.StoredUser:
+    user = youtrack.user_by_login(person.key) or youtrack.user_by_email(person.email)
+    if user is None:
+        raise ValueError(f"{person.key} has no YouTrack account")
+    return user
 
 
 def _located(youtrack: YouTrackWorld, ticket: EntityRef) -> tuple[wire.StoredIssue, wire.StoredProject]:

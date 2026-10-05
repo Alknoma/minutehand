@@ -876,6 +876,10 @@ class StoredUser(Model):
     name: str
     email: str | None = None
     integration: str | None = Field(default=None, description="For a bot: the integration it acts for")
+    removed: bool = Field(
+        default=False,
+        description="Removed from the workspace: unlisted and not found; what they wrote still names them",
+    )
 
 
 class Capability(StrEnum):

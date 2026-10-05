@@ -3,7 +3,7 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
 
     GET    /v1/health
     GET    /v1/ca.pem                                  the CA bundle a service trusts
-    GET    /v1/environment[?ca_path=P]                 the variables a service needs (`Environment`)
+    GET    /v1/environment[?ca_path=P][&no_proxy=H]... the variables a service needs (`Environment`)
     GET    /v1/worlds                                  `WorldList`
     POST   /v1/worlds                                  `CreateWorld` -> 201 `WorldView`
     GET    /v1/worlds/{id}                             `WorldView`
@@ -19,11 +19,19 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     POST   /v1/worlds/{id}/clock                       `Advance` -> `Advanced`
     POST   /v1/worlds/{id}/faults                      `Fault` -> `WorldView`
     POST   /v1/worlds/{id}/provider-faults             `DeclareFaults` -> `WorldView`: a provider's own typed faults
+    POST   /v1/worlds/{id}/seed                        `FurtherSeed` -> `Seeded`: more seeded into the open world
+    POST   /v1/worlds/{id}/people                      `ChangePerson` -> `Acted`: an account removed, deactivated...
+    POST   /v1/worlds/{id}/permissions                 `Permit` -> `Acted`: a named permission granted or withheld
+    POST   /v1/worlds/{id}/inbound-credential          `MintInbound` -> `Minted`: headers for a request a test builds
+    POST   /v1/worlds/{id}/reset                       -> `WorldView`: back to its seed, same id and claims
+    GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
     GET    /v1/worlds/{id}/checks                      `Checked`
+    GET    /v1/providers                               `ProvidersView`: what each provider can do while open
     GET    /v1/unmatched?since=N                       `Unmatched`: calls no open world claimed
 
-A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do, 422 for a body
-that is not the model, 502 when the service an event was pushed to refused it.
+A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
+`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model, 502 when the
+service an event was pushed to refused it.
 """
 
 from __future__ import annotations
@@ -44,28 +52,40 @@ from minutehand.adapters.control.wire import (
     Advance,
     Advanced,
     CallsPage,
+    ChangePerson,
     Checked,
     CreateWorld,
     DeclareFaults,
+    DeleteTicket,
     EditTicket,
     EntitiesPage,
     Environment,
     EventsPage,
     Fault,
     FiredView,
+    FurtherSeed,
     Happen,
+    Minted,
+    MintInbound,
     MoveTicket,
     OwedView,
+    Permit,
     PressControl,
+    ProvidersView,
+    RawEntity,
+    RawState,
     Refusal,
+    RefusalKind,
     Reply,
     Say,
+    Seeded,
     SpansPage,
     Unmatched,
     WorldList,
     WorldView,
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
+from minutehand.application.standing import Unsupported
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, Stored, WorldEvent
 
@@ -79,8 +99,8 @@ def _json(model: Model, status: int = 200) -> Response:
     return Response(model.model_dump_json(), status_code=status, media_type="application/json")
 
 
-def _refused(status: int, error: str) -> Response:
-    return _json(Refusal(error=error), status)
+def _refused(status: int, error: str, kind: RefusalKind | None = None) -> Response:
+    return _json(Refusal(error=error, kind=kind), status)
 
 
 def _guarded(handler: Handler) -> Handler:
@@ -93,6 +113,8 @@ def _guarded(handler: Handler) -> Handler:
             return _refused(404, str(e.args[0]) if e.args else str(e))
         except AgentFailed as e:
             return _refused(502, str(e))
+        except Unsupported as e:
+            return _refused(409, str(e), RefusalKind.UNSUPPORTED)
         except (RunRefused, ValueError) as e:
             return _refused(409, str(e))
 
@@ -139,7 +161,8 @@ def create_app(serving: Serving) -> Starlette:
         return Response(serving.proxy.ca_bundle.read_bytes(), media_type="application/x-pem-file")
 
     async def environment(request: Request) -> Response:
-        return _json(Environment(variables=serving.environment(_query(request, "ca_path"))))
+        direct = request.query_params.getlist("no_proxy")
+        return _json(Environment(variables=serving.environment(_query(request, "ca_path"), direct)))
 
     async def worlds(_: Request) -> Response:
         return _json(WorldList(worlds=[_view(w) for w in standing.worlds.values()]))
@@ -212,10 +235,60 @@ def create_app(serving: Serving) -> Starlette:
             event = live.edit_ticket(asked.ticket, state=asked.state, assignee=asked.assignee)
         elif isinstance(asked, Happen):
             event = await live.happen_now(asked.happening)
+        elif isinstance(asked, DeleteTicket):
+            event = live.delete_ticket(asked.ticket)
         else:
             assert isinstance(asked, PressControl)
             event = await live.press(asked.person, asked.on, asked.press)
         return _json(Acted(event=event))
+
+    async def further_seed(request: Request) -> Response:
+        found = world_of(request)
+        added = FurtherSeed.model_validate_json(await request.body())
+        written = standing.extend(found.world_id, added)
+        return _json(Seeded(view=_view(found), written=written))
+
+    async def people(request: Request) -> Response:
+        found = world_of(request)
+        asked = ChangePerson.model_validate_json(await request.body())
+        live = found.standing
+        return _json(Acted(event=live.change_person(standing.installed(asked.provider), asked.person, asked.change)))
+
+    async def permissions(request: Request) -> Response:
+        found = world_of(request)
+        asked = Permit.model_validate_json(await request.body())
+        return _json(Acted(event=found.standing.permit(standing.installed(asked.provider), asked.grant)))
+
+    async def inbound_credential(request: Request) -> Response:
+        found = world_of(request)
+        asked = MintInbound.model_validate_json(await request.body())
+        minted = found.standing.credential(standing.installed(asked.provider), asked.ask)
+        return _json(Minted(credential=minted))
+
+    async def reset(request: Request) -> Response:
+        return _json(_view(standing.reset(world_of(request).world_id)))
+
+    async def state(request: Request) -> Response:
+        found = world_of(request)
+        provider = provider_of(request, found)
+        if provider is None:
+            return _refused(422, "name the provider whose state to read: ?provider=")
+        refs: dict[EntityRef, None] = {}
+        for event in found.store.events():
+            if event.entity.provider == provider and event.operation not in (Operation.READ, Operation.SEARCH):
+                refs[event.entity] = None
+        return _json(
+            RawState(
+                provider=provider,
+                entities=[
+                    RawEntity(entity=r, deleted=found.store.get(r) is None, versions=found.store.versions(r))
+                    for r in refs
+                ],
+            )
+        )
+
+    async def providers(_: Request) -> Response:
+        return _json(ProvidersView(providers=standing.capabilities()))
 
     async def advance(request: Request) -> Response:
         found = world_of(request)
@@ -248,7 +321,9 @@ def create_app(serving: Serving) -> Starlette:
     async def unmatched(request: Request) -> Response:
         since = int(_query(request, "since") or 0)
         recorded = standing.lobby_store.calls()
-        return _json(Unmatched(calls=recorded[since:], head=len(recorded)))
+        return _json(
+            Unmatched(calls=[c for c in recorded[since:] if not standing.shared(c.exchange.host)], head=len(recorded))
+        )
 
     def route(path: str, handler: Handler, methods: list[str]) -> Route:
         return Route(f"{API}{path}", _guarded(handler), methods=methods)
@@ -271,7 +346,14 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/clock", advance, ["POST"]),
             route("/worlds/{world_id}/faults", faults, ["POST"]),
             route("/worlds/{world_id}/provider-faults", declare, ["POST"]),
+            route("/worlds/{world_id}/seed", further_seed, ["POST"]),
+            route("/worlds/{world_id}/people", people, ["POST"]),
+            route("/worlds/{world_id}/permissions", permissions, ["POST"]),
+            route("/worlds/{world_id}/inbound-credential", inbound_credential, ["POST"]),
+            route("/worlds/{world_id}/reset", reset, ["POST"]),
+            route("/worlds/{world_id}/state", state, ["GET"]),
             route("/worlds/{world_id}/checks", checks, ["GET"]),
+            route("/providers", providers, ["GET"]),
             route("/unmatched", unmatched, ["GET"]),
         ]
     )

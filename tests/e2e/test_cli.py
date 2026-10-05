@@ -222,9 +222,23 @@ def test_env_serve_as_writes_a_stack_whose_services_reach_minutehand_by_its_serv
     assert environment["HTTPS_PROXY"] == "http://minutehand:8080"
     assert environment["SSL_CERT_FILE"] == "/etc/minutehand/minutehand-ca-bundle.pem"
     assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,worker,firestore,minutehand"
+    assert environment["no_grpc_proxy"] == environment["NO_PROXY"]
+    assert environment["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] == "/etc/minutehand/minutehand-ca-bundle.pem"
     assert environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://minutehand:4318"
     assert override["volumes"] == {"minutehand-ca": {}}
     assert "&id" not in printed.stdout
+
+
+def test_env_serve_as_without_telemetry_still_reaches_the_server_directly(tmp_path: Path) -> None:
+    printed = _cli(
+        "env", "--format", "compose", "--serve-as", "minutehand", "--service", "platform",
+        "--no-receive-telemetry", "--state", str(tmp_path), env=dict(os.environ),
+    )  # fmt: skip
+
+    assert printed.returncode == 0, printed.stderr
+    environment = yaml.safe_load(printed.stdout)["services"]["platform"]["environment"]
+    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,minutehand"
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in environment
 
 
 def test_env_serve_as_without_compose_is_refused_with_exit_2(tmp_path: Path) -> None:

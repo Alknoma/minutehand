@@ -532,7 +532,7 @@ class GitHubApi:
             return _json(self._content_out(repository, entry, shown, inline=True))
         if path and path not in content.directories(files):
             raise wire.not_found(section)
-        entries = content.children(files, path)[: content.CONTENTS_DIRECTORY_LIMIT]
+        entries = content.children(files, path)[: repository.directory_entry_limit]
         return _json([self._content_out(repository, e, shown, inline=False) for e in entries])
 
     async def blob(self, request: Request, caller: Caller) -> Answered:

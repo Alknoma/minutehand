@@ -13,8 +13,6 @@ from minutehand.adapters.providers.github import wire
 
 CONTENTS_INLINE_LIMIT = 1024 * 1024
 """Past 1 MiB the contents endpoint carries no bytes (`"content": ""`, `"encoding": "none"`)."""
-CONTENTS_DIRECTORY_LIMIT = 1000
-"""The contents endpoint answers a directory with at most this many entries, and says nothing of the rest."""
 SEARCH_INDEX_LIMIT = 384 * 1024
 """Code search indexes no file larger than this."""
 

@@ -13,7 +13,8 @@ from minutehand.adapters.providers.google_drive import state
 from minutehand.adapters.providers.google_drive.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, Operation, RecordSnapshot
+from minutehand.domain.scenario import AccessRole
+from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, GrantSnapshot, Operation
 from tests.providers.google_drive.drive_world import (
     AUTH,
     DOC,
@@ -401,7 +402,7 @@ async def test_permissions_list_the_owner_and_take_a_new_grant(
     assert (event.actor, event.operation, event.after) == (
         Actor.AGENT,
         Operation.CREATE,
-        RecordSnapshot(resource="permission", text="reader auditor@example.org"),
+        GrantSnapshot(document="Supplier Shortlist", to="auditor@example.org", role=AccessRole.READER),
     )
 
 

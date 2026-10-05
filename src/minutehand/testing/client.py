@@ -4,7 +4,7 @@ the server's words."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 
 import httpx
@@ -17,6 +17,7 @@ from minutehand.adapters.control.wire import (
     Advance,
     Advanced,
     CallsPage,
+    ChangePerson,
     Checked,
     CreateWorld,
     DeclareFaults,
@@ -24,7 +25,16 @@ from minutehand.adapters.control.wire import (
     Environment,
     EventsPage,
     Fault,
+    FurtherSeed,
+    Minted,
+    MintInbound,
+    Permit,
+    ProvidersView,
+    ProviderView,
+    RawState,
     Refusal,
+    RefusalKind,
+    Seeded,
     SpansPage,
     Unmatched,
     WorldList,
@@ -68,14 +78,26 @@ def _query(
     return found
 
 
+class Unsupported(Refused):
+    """The provider cannot do what was asked in any world: a capability it does not have (`GET /v1/providers` says
+    which it has)."""
+
+
 def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
     if answered.is_success:
         return model.model_validate_json(answered.content)
     try:
-        error = Refusal.model_validate_json(answered.content).error
+        refusal = Refusal.model_validate_json(answered.content)
     except ValueError:
-        error = answered.text
-    raise Refused(answered.status_code, error)
+        raise Refused(answered.status_code, answered.text) from None
+    if refusal.kind is RefusalKind.UNSUPPORTED:
+        raise Unsupported(answered.status_code, refusal.error)
+    raise Refused(answered.status_code, refusal.error)
+
+
+def _environment_query(ca_path: str | None, no_proxy: Sequence[str]) -> httpx.QueryParams:
+    found: list[tuple[str, str | int | float | bool | None]] = [("ca_path", ca_path)] if ca_path is not None else []
+    return httpx.QueryParams([*found, *(("no_proxy", host) for host in no_proxy)])
 
 
 def _advance(by: timedelta | None, to: datetime | None) -> str:
@@ -118,9 +140,11 @@ class MinutehandClient:
         answered.raise_for_status()
         return answered.content
 
-    def environment(self, ca_path: str | None = None) -> dict[str, str]:
-        params = {"ca_path": ca_path} if ca_path is not None else None
-        return self._get("/environment", Environment, params).variables
+    def environment(self, ca_path: str | None = None, *, no_proxy: Sequence[str] = ()) -> dict[str, str]:
+        """The variables a service needs; `no_proxy` names the stack's own services, which it reaches directly."""
+        return _read(
+            self._http.get("/environment", params=_environment_query(ca_path, no_proxy)), Environment
+        ).variables
 
     def create_world(self, spec: CreateWorld) -> WorldView:
         return self._post("/worlds", spec.model_dump_json(), WorldView)
@@ -168,6 +192,29 @@ class MinutehandClient:
     def declare_faults(self, world_id: str, declared: DeclareFaults) -> WorldView:
         return self._post(f"/worlds/{world_id}/provider-faults", declared.model_dump_json(), WorldView)
 
+    def further_seed(self, world_id: str, added: FurtherSeed) -> Seeded:
+        return self._post(f"/worlds/{world_id}/seed", added.model_dump_json(exclude_unset=True), Seeded)
+
+    def change_person(self, world_id: str, change: ChangePerson) -> Acted:
+        return self._post(f"/worlds/{world_id}/people", change.model_dump_json(), Acted)
+
+    def permit(self, world_id: str, permit: Permit) -> Acted:
+        return self._post(f"/worlds/{world_id}/permissions", permit.model_dump_json(), Acted)
+
+    def inbound_credential(self, world_id: str, mint: MintInbound) -> Minted:
+        return self._post(f"/worlds/{world_id}/inbound-credential", mint.model_dump_json(), Minted)
+
+    def reset(self, world_id: str) -> WorldView:
+        return self._post(f"/worlds/{world_id}/reset", "{}", WorldView)
+
+    def raw_state(self, world_id: str, provider: str) -> RawState:
+        """Every version of every entity `provider` holds in the world. For a person debugging: its shape is the
+        provider's own and is not stable."""
+        return self._get(f"/worlds/{world_id}/state", RawState, {"provider": provider})
+
+    def providers(self) -> list[ProviderView]:
+        return self._get("/providers", ProvidersView).providers
+
     def checks(self, world_id: str) -> Checked:
         return self._get(f"/worlds/{world_id}/checks", Checked)
 
@@ -197,9 +244,9 @@ class AsyncMinutehandClient:
     async def _post[M: Model](self, path: str, body: str, model: type[M]) -> M:
         return _read(await self._http.post(path, content=body, headers={"content-type": "application/json"}), model)
 
-    async def environment(self, ca_path: str | None = None) -> dict[str, str]:
-        params = {"ca_path": ca_path} if ca_path is not None else None
-        return (await self._get("/environment", Environment, params)).variables
+    async def environment(self, ca_path: str | None = None, *, no_proxy: Sequence[str] = ()) -> dict[str, str]:
+        answered = await self._http.get("/environment", params=_environment_query(ca_path, no_proxy))
+        return _read(answered, Environment).variables
 
     async def create_world(self, spec: CreateWorld) -> WorldView:
         return await self._post("/worlds", spec.model_dump_json(), WorldView)
@@ -250,6 +297,27 @@ class AsyncMinutehandClient:
 
     async def declare_faults(self, world_id: str, declared: DeclareFaults) -> WorldView:
         return await self._post(f"/worlds/{world_id}/provider-faults", declared.model_dump_json(), WorldView)
+
+    async def further_seed(self, world_id: str, added: FurtherSeed) -> Seeded:
+        return await self._post(f"/worlds/{world_id}/seed", added.model_dump_json(exclude_unset=True), Seeded)
+
+    async def change_person(self, world_id: str, change: ChangePerson) -> Acted:
+        return await self._post(f"/worlds/{world_id}/people", change.model_dump_json(), Acted)
+
+    async def permit(self, world_id: str, permit: Permit) -> Acted:
+        return await self._post(f"/worlds/{world_id}/permissions", permit.model_dump_json(), Acted)
+
+    async def inbound_credential(self, world_id: str, mint: MintInbound) -> Minted:
+        return await self._post(f"/worlds/{world_id}/inbound-credential", mint.model_dump_json(), Minted)
+
+    async def reset(self, world_id: str) -> WorldView:
+        return await self._post(f"/worlds/{world_id}/reset", "{}", WorldView)
+
+    async def raw_state(self, world_id: str, provider: str) -> RawState:
+        return await self._get(f"/worlds/{world_id}/state", RawState, {"provider": provider})
+
+    async def providers(self) -> list[ProviderView]:
+        return (await self._get("/providers", ProvidersView)).providers
 
     async def checks(self, world_id: str) -> Checked:
         return await self._get(f"/worlds/{world_id}/checks", Checked)

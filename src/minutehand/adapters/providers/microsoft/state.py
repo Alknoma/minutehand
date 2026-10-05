@@ -34,7 +34,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
@@ -47,7 +47,9 @@ from minutehand.domain.world import (
     DocumentSnapshot,
     EntityKind,
     EntityRef,
+    MessageSnapshot,
     Operation,
+    RecordSnapshot,
     Snapshot,
     Stored,
     WorldEvent,
@@ -134,10 +136,24 @@ class AppRecord(Model):
     tenant_id: str
 
 
+class AwayRecord(Model):
+    """A stretch a person is away, as the tenant shows it: out of office, with their automatic reply. `starts` is
+    known at seeding for an absence from the start; one that begins on the agent's first message to them is
+    anchored when the store shows that message (`MicrosoftWorld.away`)."""
+
+    starts: datetime | None = Field(
+        default=None, description="None: from the agent's first message to them, plus `starts_after`"
+    )
+    starts_after: timedelta = timedelta(0)
+    lasts: timedelta
+    reason: str | None = None
+
+
 class UserRecord(Model):
     user: wire.GraphUser
     tenant_id: str
     person_key: str | None = None
+    absences: list[AwayRecord] | None = None
 
     @property
     def mri(self) -> str:
@@ -503,6 +519,8 @@ class MicrosoftWorld:
             text=item_text(stored) or None,
             last_edited_by=self._editor(stored.item.lastModifiedBy),
             last_edited_at=datetime.fromisoformat(stored.item.lastModifiedDateTime.replace("Z", "+00:00")),
+            owner=self._editor(stored.item.createdBy),
+            space=self._space(stored.item.parentReference.driveId),
         )
         return self.write(
             item_ref(stored.item.id),
@@ -518,7 +536,61 @@ class MicrosoftWorld:
         if by.user is not None:
             found = self.user(by.user.id)
             return (found.user.mail if found is not None else None) or by.user.displayName
-        return by.application.displayName if by.application is not None else None
+        if by.application is None:
+            return None
+        app = self.app(by.application.id)
+        return by.application.displayName or (app.display_name if app is not None else None)
+
+    def _space(self, drive_id: str) -> str | None:
+        """The shared place a drive is: its site's name for a team's library; None for a person's own OneDrive."""
+        drive = self.drive(drive_id)
+        if drive is None or drive.site_id is None:
+            return None
+        site = self.site(drive.site_id)
+        return site.site.displayName if site is not None else drive.drive.name
+
+    def write_user(self, user: UserRecord, *, actor: Actor, text: str) -> WorldEvent:
+        """A user changed while the world is open, as an administrator changes them."""
+        return self.write(
+            user_ref(user.user.id),
+            user,
+            operation=Operation.UPDATE,
+            actor=actor,
+            parent=USERS,
+            after=RecordSnapshot(resource="user", text=text),
+        )
+
+    def away(self, user: UserRecord, now: datetime) -> tuple[datetime, datetime, AwayRecord] | None:
+        """The stretch `user` is away at `now`, or else the next one already known, as (start, end, absence): an
+        absence from the start is known from seeding; one from the agent's first message to them is known once
+        the store holds that message, in any provider."""
+        if not user.absences:
+            return None
+        email = user.user.mail
+        first: datetime | None = None
+        if email is not None and any(a.starts is None for a in user.absences):
+            first = next(
+                (
+                    e.sim_time
+                    for e in self.store.events()
+                    if e.actor is Actor.AGENT
+                    and e.operation is Operation.CREATE
+                    and isinstance(e.after, MessageSnapshot)
+                    and email in e.after.recipient_emails
+                ),
+                None,
+            )
+        known: list[tuple[datetime, datetime, AwayRecord]] = []
+        for absence in user.absences:
+            anchor = absence.starts if absence.starts is not None else first
+            if anchor is None:
+                continue
+            start = anchor + absence.starts_after
+            known.append((start, start + absence.lasts, absence))
+        current = next((k for k in known if k[0] <= now < k[1]), None)
+        if current is not None:
+            return current
+        return min((k for k in known if k[0] > now), key=lambda k: k[0], default=None)
 
     def permissions(self, item: str) -> list[wire.Permission]:
         return self._all(wire.Permission, EntityKind.RECORD, PERMISSION_PARENT.format(item=item))

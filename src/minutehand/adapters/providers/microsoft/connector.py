@@ -133,7 +133,15 @@ class Connector:
             raise ConnectorRefusal(404, "ConversationNotFound", "Conversation not found.")
         if not found.bot_installed or self._world.tenant(found.tenant_id) is None or app.tenant_id != found.tenant_id:
             raise ConnectorRefusal(403, "BotNotInConversationRoster", "The bot is not part of the conversation roster.")
+        if found.type is wire.ConversationType.PERSONAL and not self._reachable(found):
+            raise ConnectorRefusal(403, "BotNotInConversationRoster", "The bot is not part of the conversation roster.")
         return found
+
+    def _reachable(self, personal: ConversationRecord) -> bool:
+        """A 1:1 chat reaches its person while their account is there and enabled: a removed or disabled user's
+        chat refuses the bot, as Teams does once the directory has dropped them."""
+        users = [self._world.user(oid) for oid in personal.members]
+        return all(u is not None and u.user.accountEnabled is not False for u in users)
 
     def _activity_body(self, request_body: bytes) -> wire.SentActivity:
         if len(request_body.decode("utf-8", errors="replace").encode("utf-16-le")) > MAX_ACTIVITY_UTF16_BYTES:
@@ -273,6 +281,8 @@ class Connector:
         if user is None or user.tenant_id != tenant or app.tenant_id != tenant:
             raise ConnectorRefusal(404, "MemberNotFound", "The member was not found in the tenant.")
         conversation = self._world.personal_with(user.user.id, tenant)
+        if user.user.accountEnabled is False:
+            raise ConnectorRefusal(403, "BotNotInConversationRoster", "The bot is not part of the conversation roster.")
         if conversation is None or not conversation.bot_installed:
             raise ConnectorRefusal(
                 403, "ForbiddenOperationException", "The bot is not installed in the user's personal scope."

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from enum import StrEnum
 from typing import Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityKind
@@ -40,6 +41,14 @@ class DocumentChange(StrEnum):
     TRASHED = "trashed"
     COMMENTED = "commented"
     FIELD_SET = "field_set"
+
+
+class PersonChange(StrEnum):
+    """What can happen to a person's account while a world is open; not every provider can show every one."""
+
+    REMOVED = "removed"  # gone from the workspace, team or tenant: the account answers as not found
+    DEACTIVATED = "deactivated"  # still there, but can no longer sign in, be assigned or be messaged
+    REACTIVATED = "reactivated"  # a deactivated account active again
 
 
 class WorldKey(Model):
@@ -100,6 +109,17 @@ class Manifest(Model):
         description="What a person can do to its seeded documents; a scenario whose document happening does any "
         "other is refused at load, since the provider could not show it",
     )
+    shared_hosts: list[str] = Field(
+        default=[],
+        description="Hosts whose answers are the same in every world and need no world's state (published signing "
+        "keys and their metadata): under `minutehand serve`, a call to one that no world claims is answered "
+        "rather than refused",
+    )
+    people_changes: list[PersonChange] = Field(
+        default=[],
+        description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "
+        "is refused at the call, naming these",
+    )
 
 
 def world_keys(manifest: Manifest, host: str, path: str) -> list[str]:
@@ -119,3 +139,26 @@ def fault_fragment[M: Model](seed: type[M], text: str, fields: frozenset[str]) -
             f"a fault declaration on an open world may set only {', '.join(sorted(fields))}; it sets {', '.join(others)}"
         )
     return fragment
+
+
+def merged_seed[M: Model](seed: type[M], held: str | None, added: str) -> str:
+    """A provider's own seed with a further fragment of it merged in: a list the fragment sets grows by what it lists,
+    an object it sets is merged field by field, and any other value it sets must be what the world's seed already
+    says. The fragment may name what only the whole seed holds (a repository's owner), so it is read as the merge's
+    input and the whole is validated through the provider's model, which refuses what it cannot read."""
+    fragment: JsonValue = json.loads(added)
+    whole: JsonValue = json.loads(held) if held is not None else {}
+    return seed.model_validate(_merged(whole, fragment, seed.__name__)).model_dump_json(exclude_unset=True)
+
+
+def _merged(held: JsonValue, added: JsonValue, where: str) -> JsonValue:
+    if isinstance(held, dict) and isinstance(added, dict):
+        out = dict(held)
+        for name, value in added.items():
+            out[name] = _merged(held[name], value, f"{where}.{name}") if name in held else value
+        return out
+    if isinstance(held, list) and isinstance(added, list):
+        return [*held, *added]
+    if held != added:
+        raise ValueError(f"{where} is {held!r} in this world's seed, and the addition says {added!r}")
+    return held

@@ -12,11 +12,12 @@ fork and rerun of that run starts at the same instant.
 from __future__ import annotations
 
 import json
-from datetime import datetime, time, timedelta
+import re
+from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 
 class Model(BaseModel):
@@ -131,6 +132,12 @@ class Scripted(Model):
     kind: Literal["scripted"] = "scripted"
     delay: DelayRange = DelayRange()
     replies: list[ScriptedReply]
+    presses_every: ScriptedPress | None = Field(
+        default=None,
+        description="On every message the agent sends them that carries a control reading this label (an approval "
+        "card's Approve), they press it after their delay, however many there are; a scripted reply to that ask "
+        "is used instead when there is one",
+    )
 
 
 class Silent(Model):
@@ -543,11 +550,18 @@ pushed to the agent, as a reply is. A new family is a new member with its own `k
 
 
 class TicketFate(Model):
-    """What happens to a ticket the agent hands to a person."""
+    """What happens to a ticket the agent hands to a person: it reaches a state, or its assignee deletes it."""
 
     assignee: str = Field(description="Person.key")
-    becomes: TicketState
+    becomes: TicketState | None = Field(default=None, description="The state it reaches; None when it is deleted")
+    deleted: bool = Field(default=False, description="Its assignee deletes it instead, through `DeletesTickets`")
     after: timedelta
+
+    @model_validator(mode="after")
+    def _one_outcome(self) -> Self:
+        if (self.becomes is None) == (not self.deleted):
+            raise ValueError("a ticket's fate is a state it becomes or its deletion; give exactly one")
+        return self
 
 
 class Direction(Model):
@@ -623,8 +637,32 @@ class Relayed(Bound):
     tell: str = Field(min_length=1, description="A phrase only `said_by`'s answer holds")
 
 
+class DocumentCreated(Bound):
+    """The agent created a document: with these words in its title, in this shared place, owned by this person, and
+    holding these words as it last read (by `by`, when given). One document counts once, however often it changed."""
+
+    kind: Literal["document_created"] = "document_created"
+    provider: ProviderKey | None = Field(default=None, description="None matches any document provider")
+    titled: list[str] = Field(default=[], description="Words the title must contain, any case")
+    space: str | None = Field(default=None, description="SharedSpace.name it must be in; None matches anywhere")
+    owner: str | None = Field(default=None, description="Person.key who must own it; None matches any owner")
+    holds: list[str] = Field(
+        default=[], description="Words its text must hold, any case, as it last read: a tell only one answer carries"
+    )
+
+
+class DocumentShared(Bound):
+    """The agent gave this person access to a document, at least as `role`."""
+
+    kind: Literal["document_shared"] = "document_shared"
+    person: str = Field(description="Person.key")
+    titled: list[str] = Field(default=[], description="Words the document's title must contain, any case")
+    role: AccessRole = Field(default=AccessRole.READER, description="The least access that counts")
+
+
 Expectation = Annotated[
-    PersonAsked | TicketCreated | TicketDeleted | TicketInState | Relayed, Field(discriminator="kind")
+    PersonAsked | TicketCreated | TicketDeleted | TicketInState | Relayed | DocumentCreated | DocumentShared,
+    Field(discriminator="kind"),
 ]
 
 
@@ -682,6 +720,8 @@ class _ScenarioBody(Model):
         named += [e.person for e in self.expect if isinstance(e, PersonAsked)]
         named += [e.assignee for e in self.expect if isinstance(e, (TicketCreated, TicketInState)) and e.assignee]
         named += [k for e in self.expect if isinstance(e, Relayed) for k in (e.said_by, e.to)]
+        named += [e.person for e in self.expect if isinstance(e, DocumentShared)]
+        named += [e.owner for e in self.expect if isinstance(e, DocumentCreated) and e.owner is not None]
         named += [h.action.to for h in self._on_tickets() if isinstance(h.action, Reassigns) and h.action.to]
         named += [k for d in self.documents for k in (d.owner, d.modified_by) if k is not None]
         named += [a.person for d in self.documents for a in d.shared_with]
@@ -851,9 +891,47 @@ class WrittenScenario(_ScenarioBody):
 
     starts_at: AwareDatetime | None = Field(default=None, description="None: the moment the run starts")
 
+    @model_validator(mode="after")
+    def _dates_read(self) -> Self:
+        """Every `{{start...}}` in the text names a moment: refused at load, not when a run begins."""
+        _dated(self.model_dump(), self.starts_at or datetime(2000, 1, 1, tzinfo=UTC))
+        return self
+
     def starting(self, now: datetime) -> Scenario:
-        """The scenario a run plays: its own `starts_at`, or `now`, the moment the run starts, when it has none."""
-        return Scenario.model_validate({**self.model_dump(), "starts_at": self.starts_at or now})
+        """The scenario a run plays: its own `starts_at`, or `now`, the moment the run starts, when it has none.
+        Every `{{start+<ISO 8601 duration>}}` in its text becomes that moment (`DATED`), so a goal can name a date
+        two days from a start nobody knows when the file is written."""
+        start = self.starts_at or now
+        return Scenario.model_validate(_dated({**self.model_dump(), "starts_at": start}, start))
+
+
+DATED = re.compile(r"\{\{start(?:(?P<sign>[+-])(?P<offset>P[0-9A-Za-z.]+))?(?::(?P<form>date|iso|time))?\}\}")
+"""A moment counted from the scenario's start, written in any of its text: `{{start+P2D}}` reads "Thursday 3 September
+2026", `{{start+P2D:iso}}` reads "2026-09-03", `{{start+P1DT5H:time}}` reads "Wednesday 2 September 2026, 14:00 UTC".
+Resolved once, when the run's start is known (`WrittenScenario.starting`), in UTC."""
+
+_OFFSET: TypeAdapter[timedelta] = TypeAdapter(timedelta)
+
+
+def _dated(value: object, start: datetime) -> object:
+    if isinstance(value, str):
+        return DATED.sub(lambda m: _moment(m, start), value)
+    if isinstance(value, dict):
+        return {k: _dated(v, start) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_dated(v, start) for v in value]
+    return value
+
+
+def _moment(found: re.Match[str], start: datetime) -> str:
+    offset = _OFFSET.validate_python(found["offset"]) if found["offset"] else timedelta(0)
+    at = (start + (-offset if found["sign"] == "-" else offset)).astimezone(UTC)
+    day = f"{at:%A} {at.day} {at:%B %Y}"
+    if found["form"] == "iso":
+        return at.date().isoformat()
+    if found["form"] == "time":
+        return f"{day}, {at:%H:%M} UTC"
+    return day
 
 
 class Seed(WrittenScenario):

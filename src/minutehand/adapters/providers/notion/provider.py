@@ -27,19 +27,20 @@ from minutehand.adapters.providers.notion.seed import (
     value_request,
 )
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row
-from minutehand.domain.provider import Manifest, fault_fragment
+from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
     Commented,
     DocumentHappening,
     Edited,
     FieldSet,
     Moved,
+    Person,
     Renamed,
     Scenario,
     Shared,
     Trashed,
 )
-from minutehand.domain.world import Actor
+from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -47,6 +48,7 @@ from minutehand.ports.store import Store
 
 class NotionProvider:
     manifest: Manifest = MANIFEST
+    seed_model = NotionSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
@@ -110,6 +112,26 @@ class NotionProvider:
         emails |= {p.key: emails[p.email] for p in scenario.people if p.email in emails}
         raw = value_request(schema, value, {}, emails, by_id=True)
         editor.update_page(row.id, {"properties": {action.field: raw}}, by=user)
+
+    # ------------------------------------------------------------------ ChangesPeople
+
+    def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
+        """A workspace owner removes the person from every workspace they are a member of: `/v1/users` lists them no
+        more and `/v1/users/{id}` answers `object_not_found`; pages and comments they wrote still name them."""
+        if change is not PersonChange.REMOVED:
+            raise ValueError(f"notion has no way to show a person {change.value}")
+        notion = NotionWorld(world)
+        members = [
+            u
+            for w in notion.workspaces()
+            for u in notion.users(w.id)
+            if u.type is wire.UserType.PERSON and (u.email or "").lower() == person.email.lower()
+        ]
+        if not members:
+            raise ValueError(f"{person.key} is not a member of any Notion workspace")
+        for member in members:
+            notion.write_user(member.model_copy(update={"removed": True}), operation=Operation.UPDATE)
+        del clock
 
     # ------------------------------------------------------------------ DeclaresFaults
 

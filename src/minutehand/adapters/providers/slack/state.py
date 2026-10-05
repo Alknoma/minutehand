@@ -16,7 +16,13 @@
 | a slash command | RECORD | `command.<trigger_id>`    | `commands` |
 | the app's install | RECORD | `install`               | `app` |
 | a fault     | RECORD   | `fault.<position>`          | `faults` |
+| a workspace the app is in | RECORD | `workspace.<team>` | `workspaces` |
+| a person's absences | RECORD | `away.<user>`            | `away` |
 | a declared sign-in | RECORD | `sign_in.<digest of the token>` | `sign_ins` |
+
+A world holds one workspace or several (`SlackSeed.workspaces`). Users, channels and files are listed under their
+workspace's team id; a channel's messages and members under the channel, whose id differs per workspace. Every
+`SlackWorld` reads and writes as one workspace (`team`): the one the call's token is for, the one a person acts in.
 
 Only users are RECORDs under the team and only memberships RECORDs under a channel: everything else Minutehand
 keeps is listed under a parent of its own, so no listing of users or members ever meets it.
@@ -29,11 +35,22 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import TypeVar
 
 from minutehand.adapters.providers.slack import wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, Snapshot, Stored, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    Change,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    Snapshot,
+    Stored,
+    WorldEvent,
+)
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -58,9 +75,10 @@ def _derived(prefix: str, *parts: str) -> str:
     return prefix + hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:10].upper()
 
 
-def user_id(person_key: str) -> str:
-    """A person's member id: the same for the same `Person.key` in every run."""
-    return _derived("U", "person", person_key)
+def user_id(person_key: str, team: str = TEAM_ID) -> str:
+    """A person's member id in a workspace: the same for the same `Person.key` in every run; another workspace
+    gives the same person another id, as Slack does."""
+    return _derived("U", "person", person_key) if team == TEAM_ID else _derived("U", "person", team, person_key)
 
 
 def other_bot_id(person_key: str) -> str:
@@ -74,8 +92,8 @@ def client_msg_id(ts: str) -> str:
     return f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
 
 
-def named_channel_id(name: str) -> str:
-    return _derived("C", "channel", name)
+def named_channel_id(name: str, team: str = TEAM_ID) -> str:
+    return _derived("C", "channel", name) if team == TEAM_ID else _derived("C", "channel", team, name)
 
 
 def conversation_id(users: list[str]) -> str:
@@ -88,9 +106,17 @@ def _ref(kind: EntityKind, external_id: str) -> EntityRef:
     return EntityRef(provider=MANIFEST.key, kind=kind, external_id=external_id)
 
 
-def team_ref() -> EntityRef:
+def team_ref(team: str = TEAM_ID) -> EntityRef:
     """What a listing or a search of the whole workspace reads."""
-    return _ref(EntityKind.RECORD, TEAM_ID)
+    return _ref(EntityKind.RECORD, team)
+
+
+def workspace_ref(team: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"workspace.{team}")
+
+
+def away_ref(user: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"away.{user}")
 
 
 def user_ref(user: str) -> EntityRef:
@@ -141,8 +167,8 @@ def command_ref(trigger: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"command.{trigger}")
 
 
-def install_ref() -> EntityRef:
-    return _ref(EntityKind.RECORD, "install")
+def install_ref(team: str = TEAM_ID) -> EntityRef:
+    return _ref(EntityKind.RECORD, "install" if team == TEAM_ID else f"install.{team}")
 
 
 def fault_ref(position: int) -> EntityRef:
@@ -166,34 +192,48 @@ INTERACTIONS = "interactions"
 COMMANDS = "commands"
 APP = "app"
 FAULTS = "faults"
+WORKSPACES = "workspaces"
+AWAY = "away"
+
+DEFAULT_WORKSPACE = wire.SlackWorkspace(
+    id=TEAM_ID,
+    name=TEAM_NAME,
+    domain=TEAM_DOMAIN,
+    bot_user_id=BOT_USER_ID,
+    bot_id=BOT_ID,
+    app_id=APP_ID,
+    bot_name=BOT_NAME,
+)
+"""The workspace a world is when its seed names none: any xoxb- or xoxp- token is its bot."""
+TOKEN_KINDS = ("xoxb-", "xoxp-")
 
 
 def file_id(seed: str) -> str:
     return _derived("F", "file", seed)
 
 
-def url_private(file: str, name: str) -> str:
-    return f"https://{FILES_HOST}/files-pri/{TEAM_ID}-{file}/{name}"
+def url_private(file: str, name: str, team: str = TEAM_ID) -> str:
+    return f"https://{FILES_HOST}/files-pri/{team}-{file}/{name}"
 
 
-def url_private_download(file: str, name: str) -> str:
-    return f"https://{FILES_HOST}/files-pri/{TEAM_ID}-{file}/download/{name}"
+def url_private_download(file: str, name: str, team: str = TEAM_ID) -> str:
+    return f"https://{FILES_HOST}/files-pri/{team}-{file}/download/{name}"
 
 
-def response_url(hook: str, secret: str, *, command: bool) -> str:
-    return f"https://{HOOKS_HOST}/{'commands' if command else 'actions'}/{TEAM_ID}/{hook}/{secret}"
+def response_url(hook: str, secret: str, *, command: bool, team: str = TEAM_ID) -> str:
+    return f"https://{HOOKS_HOST}/{'commands' if command else 'actions'}/{team}/{hook}/{secret}"
 
 
-def bot_profile(updated: int) -> wire.BotProfile:
+def bot_profile(updated: int, workspace: wire.SlackWorkspace = DEFAULT_WORKSPACE) -> wire.BotProfile:
     """The `bot_profile` Slack attaches to every message the app posts."""
     icon = "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png"
     return wire.BotProfile(
-        id=BOT_ID,
-        app_id=APP_ID,
-        name=BOT_NAME,
+        id=workspace.bot_id,
+        app_id=workspace.app_id,
+        name=workspace.bot_name,
         icons=wire.BotIcons(image_36=icon, image_48=icon.replace("36", "48"), image_72=icon.replace("36", "72")),
         updated=updated,
-        team_id=TEAM_ID,
+        team_id=workspace.id,
     )
 
 
@@ -216,11 +256,61 @@ def minted(kind: str, seq: int, at: int) -> str:
     return f"{seq}.{at}.{tail}"
 
 
-class SlackWorld:
-    """Typed reads and writes of one run's Slack entities."""
+@dataclass(frozen=True)
+class Away:
+    """A stretch a person is away, in epoch seconds, and what their status says of it."""
 
-    def __init__(self, store: Store) -> None:
+    reason: str | None
+    starts: int
+    ends: int
+
+
+class SlackWorld:
+    """Typed reads and writes of one run's Slack entities, as one of its workspaces: `team`, or with none given the
+    first the world holds."""
+
+    def __init__(self, store: Store, team: wire.SlackWorkspace | None = None) -> None:
         self._store = store
+        self.team = team if team is not None else self._first()
+
+    def _first(self) -> wire.SlackWorkspace:
+        return self.workspaces()[0]
+
+    # ------------------------------------------------------------------ workspaces
+
+    def workspaces(self) -> list[wire.SlackWorkspace]:
+        """Every workspace the world holds, in the order seeded; the default one when it holds none."""
+        found = [wire.parse(wire.SlackWorkspace, s.body) for s in self._pages(EntityKind.RECORD, WORKSPACES)]
+        return sorted(found, key=lambda w: w.position) or [DEFAULT_WORKSPACE]
+
+    def as_team(self, team: wire.SlackWorkspace) -> SlackWorld:
+        return SlackWorld(self._store, team)
+
+    def team_of(self, team_id: str) -> SlackWorld | None:
+        found = next((w for w in self.workspaces() if w.id == team_id), None)
+        return None if found is None else self.as_team(found)
+
+    def for_token(self, token: str) -> SlackWorld | None:
+        """The workspace a bot or user token is for: one that declares it or minted it, else the first that declares
+        no tokens and so takes any token of Slack's shape."""
+        every = self.workspaces()
+        for workspace in every:
+            install = self.body(install_ref(workspace.id), wire.SlackInstall)
+            if token in workspace.tokens or (install is not None and token in install.tokens):
+                return self.as_team(workspace)
+        if not token.startswith(TOKEN_KINDS):
+            return None
+        open_to_any = next((w for w in every if not w.tokens), None)
+        return None if open_to_any is None else self.as_team(open_to_any)
+
+    def channel_team(self, channel: str) -> SlackWorld | None:
+        """The workspace a channel is in."""
+        stored = self._store.get(channel_ref(channel))
+        return None if stored is None or stored.parent is None else self.team_of(stored.parent)
+
+    @property
+    def bot(self) -> str:
+        return self.team.bot_user_id
 
     # ------------------------------------------------------------------ reads
 
@@ -234,24 +324,26 @@ class SlackWorld:
 
     def user(self, user: str) -> wire.SlackUser | None:
         stored = self._store.get(user_ref(user))
-        if stored is None or stored.parent != TEAM_ID:
+        if stored is None or stored.parent != self.team.id:
             return None
         return wire.parse(wire.SlackUser, stored.body)
 
     def users(self, *, after: str | None, limit: int) -> list[wire.SlackUser]:
-        page = self._store.children(MANIFEST.key, EntityKind.RECORD, TEAM_ID, after=after, limit=limit)
+        page = self._store.children(MANIFEST.key, EntityKind.RECORD, self.team.id, after=after, limit=limit)
         return [wire.parse(wire.SlackUser, s.body) for s in page]
 
     def every_user(self) -> Iterator[wire.SlackUser]:
-        for stored in self._pages(EntityKind.RECORD, TEAM_ID):
+        for stored in self._pages(EntityKind.RECORD, self.team.id):
             yield wire.parse(wire.SlackUser, stored.body)
 
     def channel(self, channel: str) -> wire.SlackChannel | None:
         stored = self._store.get(channel_ref(channel))
-        return None if stored is None else wire.parse(wire.SlackChannel, stored.body)
+        if stored is None or stored.parent != self.team.id:
+            return None
+        return wire.parse(wire.SlackChannel, stored.body)
 
     def channels_after(self, after: str | None) -> Iterator[wire.SlackChannel]:
-        for stored in self._pages(EntityKind.CHANNEL, TEAM_ID, after):
+        for stored in self._pages(EntityKind.CHANNEL, self.team.id, after):
             yield wire.parse(wire.SlackChannel, stored.body)
 
     def is_member(self, channel: str, user: str) -> bool:
@@ -321,6 +413,34 @@ class SlackWorld:
     def bodies(self, kind: EntityKind, parent: str, model: type[StoredBody]) -> list[StoredBody]:
         return [wire.parse(model, s.body) for s in self._pages(kind, parent)]
 
+    def away(self, user: str, now: int) -> Away | None:
+        """The absence the person is in at `now`, anchored as the scenario's checks anchor it: at the scenario's
+        start, or at the agent's first message to them (on any provider), each plus its own `starts_after`."""
+        found = self.body(away_ref(user), wire.SlackAway)
+        if found is None:
+            return None
+        first_ask: int | None = None
+        if any(s.on_first_ask for s in found.stretches):
+            first_ask = next(
+                (
+                    int(e.sim_time.timestamp())
+                    for e in self._store.events()
+                    if e.actor is Actor.AGENT
+                    and e.operation is Operation.CREATE
+                    and isinstance(e.after, MessageSnapshot)
+                    and found.email in e.after.recipient_emails
+                ),
+                None,
+            )
+        for stretch in found.stretches:
+            anchor = first_ask if stretch.on_first_ask else found.starts_at
+            if anchor is None:
+                continue
+            starts = anchor + stretch.starts_after
+            if starts <= now < starts + stretch.lasts:
+                return Away(reason=stretch.reason, starts=starts, ends=starts + stretch.lasts)
+        return None
+
     def post(self, key: str) -> wire.SlackPostKey | None:
         return self.body(post_ref(key), wire.SlackPostKey)
 
@@ -333,7 +453,7 @@ class SlackWorld:
 
     def file(self, file: str) -> wire.SlackFile | None:
         stored = self._store.get(file_ref(file))
-        return None if stored is None or stored.parent != TEAM_ID else wire.parse(wire.SlackFile, stored.body)
+        return None if stored is None or stored.parent != self.team.id else wire.parse(wire.SlackFile, stored.body)
 
     # ------------------------------------------------------------------ writes
 
@@ -361,15 +481,16 @@ class SlackWorld:
     def open_conversation(self, members: list[str], *, created: int, actor: Actor) -> wire.SlackChannel:
         """Write an IM (the app and one other) or a group DM, and a membership for each member."""
         cid = conversation_id(members)
-        others = [m for m in members if m != BOT_USER_ID]
+        bot = self.team.bot_user_id
+        others = [m for m in members if m != bot]
         if len(set(members)) <= 2:
             channel = wire.SlackChannel(
                 id=cid,
                 is_im=True,
                 is_private=True,
                 created=created,
-                creator=BOT_USER_ID,
-                user=others[0] if others else BOT_USER_ID,
+                creator=bot,
+                user=others[0] if others else bot,
             )
         else:
             channel = wire.SlackChannel(
@@ -379,9 +500,9 @@ class SlackWorld:
                 is_group=True,
                 is_private=True,
                 created=created,
-                creator=BOT_USER_ID,
+                creator=bot,
             )
-        self.write(channel_ref(cid), channel, operation=Operation.CREATE, actor=actor, parent=TEAM_ID)
+        self.write(channel_ref(cid), channel, operation=Operation.CREATE, actor=actor, parent=self.team.id)
         for member in sorted(set(members)):
             self.write(
                 membership_ref(cid, member),

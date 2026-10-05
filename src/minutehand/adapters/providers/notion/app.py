@@ -704,7 +704,7 @@ class NotionApi:
         self._users_allowed(call)
         user_id = self._id(request, "user_id")
         user = self._world.user(user_id)
-        if user is None or user.workspace != call.workspace:
+        if user is None or user.workspace != call.workspace or user.removed:
             raise wire.not_found(wire.Missing.USER, user_id)
         return _answer(self._user(call, user))
 

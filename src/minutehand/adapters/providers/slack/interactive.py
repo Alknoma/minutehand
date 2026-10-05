@@ -21,7 +21,7 @@ from minutehand.adapters.providers.slack import inbound, state, wire
 from minutehand.adapters.providers.slack.app import message_actions, write_view
 from minutehand.adapters.providers.slack.inbound import DeliveryRefused
 from minutehand.adapters.providers.slack.manifest import MANIFEST
-from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID, SlackWorld
+from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import InboundTarget, PersonReply, Press
 from minutehand.domain.scenario import FormInput, PersonCommands
@@ -54,10 +54,11 @@ def _person(slack: SlackWorld, author: str) -> wire.PayloadUser:
     user = slack.user(author)
     if user is None:
         raise LookupError(f"{author} is not a member of the workspace")
-    return wire.PayloadUser(id=user.id, username=user.name, name=user.name, team_id=state.TEAM_ID)
+    return wire.PayloadUser(id=user.id, username=user.name, name=user.name, team_id=slack.team.id)
 
 
-_TEAM = wire.PayloadTeam(id=state.TEAM_ID, domain=state.TEAM_DOMAIN)
+def _team(slack: SlackWorld) -> wire.PayloadTeam:
+    return wire.PayloadTeam(id=slack.team.id, domain=slack.team.domain)
 
 
 def _channel(channel: wire.SlackChannel) -> wire.PayloadChannel:
@@ -113,13 +114,13 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
         raise ValueError(f"{reply.person}'s reply presses nothing; it is delivered as a message")
     if reply.in_reply_to.provider != MANIFEST.key or reply.in_reply_to.kind is not EntityKind.MESSAGE:
         raise ValueError(f"{reply.person} presses on {reply.in_reply_to}, which is not a Slack message")
-    slack = SlackWorld(world)
-    found = slack.located(reply.in_reply_to.external_id)
+    found = SlackWorld(world).located(reply.in_reply_to.external_id)
     if found is None:
         raise LookupError(f"no Slack message {reply.in_reply_to.external_id} for {reply.person} to press on")
     channel_id, message = found
+    slack = inbound.where(world, channel_id)
     channel = slack.channel(channel_id)
-    author = state.user_id(reply.person)
+    author = state.user_id(reply.person, slack.team.id)
     shown = message.ephemeral_to == author if message.ephemeral_to is not None else slack.is_member(channel_id, author)
     if channel is None or not shown:
         raise LookupError(f"{reply.person} was never shown the message {message.ts} they press on")
@@ -134,7 +135,7 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
     if control is None:
         offered = [a.action_id for a in message_actions(message)]
         raise LookupError(f"the message {message.ts} has no control {pressed.action_id!r} to press; it has {offered}")
-    picked = state.user_id(pressed.picks) if pressed.picks is not None else None
+    picked = state.user_id(pressed.picks, slack.team.id) if pressed.picks is not None else None
     if control.type == "users_select" and picked is None:
         raise ValueError(f"{reply.person} uses the person picker {control.label!r} and picks nobody")
 
@@ -156,7 +157,7 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
     )
     payload = wire.BlockActions(
         user=_person(slack, author),
-        api_app_id=state.APP_ID,
+        api_app_id=slack.team.app_id,
         container=wire.MessageContainer(
             message_ts=message.ts,
             channel_id=channel_id,
@@ -164,10 +165,10 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
             thread_ts=message.thread_ts,
         ),
         trigger_id=trigger.id,
-        team=_TEAM,
+        team=_team(slack),
         channel=_channel(channel),
         message=message.model_copy(update={"ephemeral_to": None}) if message.ephemeral_to is None else None,
-        response_url=state.response_url(hook.id, hook.secret, command=False),
+        response_url=state.response_url(hook.id, hook.secret, command=False, team=slack.team.id),
         actions=[
             wire.PressedAction(
                 type=control.type,
@@ -279,7 +280,7 @@ async def submit(
         ),
     )
     payload = wire.ViewSubmission(
-        team=_TEAM, user=_person(slack, author), api_app_id=state.APP_ID, trigger_id=trigger.id, view=view
+        team=_team(slack), user=_person(slack, author), api_app_id=slack.team.app_id, trigger_id=trigger.id, view=view
     )
     url = _url(target)
     answered = await _send(url, wire.payload_form(payload), secret, "a view_submission payload")
@@ -312,7 +313,7 @@ def _next_view(slack: SlackWorld, shown: wire.OpenView, answer: wire.ViewAnswer)
     spec = answer.view
     view = wire.SlackView(
         id=view_id,
-        team_id=state.TEAM_ID,
+        team_id=slack.team.id,
         type=spec.type,
         title=spec.title,
         submit=spec.submit,
@@ -327,9 +328,9 @@ def _next_view(slack: SlackWorld, shown: wire.OpenView, answer: wire.ViewAnswer)
         notify_on_close=spec.notify_on_close,
         previous_view_id=shown.view.id if pushing else shown.view.previous_view_id,
         root_view_id=shown.view.root_view_id,
-        app_id=state.APP_ID,
-        app_installed_team_id=state.TEAM_ID,
-        bot_id=BOT_ID,
+        app_id=slack.team.app_id,
+        app_installed_team_id=slack.team.id,
+        bot_id=slack.team.bot_id,
     )
     write_view(
         slack,
@@ -346,8 +347,8 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
     """The person runs one of the agent's slash commands: form fields to the agent's URL, and what it answers at
     once shown to them alone, or to the channel when it says `in_channel`."""
     inbound.refuse_foreign(target)
-    slack = SlackWorld(world)
-    author = state.user_id(happening.person)
+    slack = inbound.acting(world, happening.person, happening.channel)
+    author = state.user_id(happening.person, slack.team.id)
     channel = inbound.conversation(slack, happening.channel, author)
     trigger, hook = mint(slack, clock, author, channel.id, None)
     slack.write(
@@ -359,13 +360,13 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
         after=RecordSnapshot(resource="slash_commands", text=f"{happening.command} {happening.text}".strip()),
     )
     body = wire.slash_command_form(
-        team=_TEAM,
+        team=_team(slack),
         channel=_channel(channel),
         user=_person(slack, author),
         command=happening.command,
         text=happening.text,
-        api_app_id=state.APP_ID,
-        response_url=state.response_url(hook.id, hook.secret, command=True),
+        api_app_id=slack.team.app_id,
+        response_url=state.response_url(hook.id, hook.secret, command=True, team=slack.team.id),
         trigger_id=trigger.id,
     )
     answered = await _send(target.url, body, secret, f"the slash command {happening.command}")
@@ -383,17 +384,17 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
     assert user is not None
     message = wire.SlackMessage(
         ts=ts,
-        user=BOT_USER_ID,
+        user=slack.bot,
         text=answer.text,
-        team=state.TEAM_ID,
-        bot_id=BOT_ID,
-        app_id=state.APP_ID,
+        team=slack.team.id,
+        bot_id=slack.team.bot_id,
+        app_id=slack.team.app_id,
         blocks=wire.with_ids(answer.blocks, ts),
-        bot_profile=state.bot_profile(int(clock.now().timestamp())),
+        bot_profile=state.bot_profile(int(clock.now().timestamp()), slack.team),
         ephemeral_to=None if in_channel else author,
     )
     seen = (
-        slack.human_emails(channel.id, besides=BOT_USER_ID)
+        slack.human_emails(channel.id, besides=slack.bot)
         if in_channel
         else ([user.profile.email] if user.profile.email else [])
     )
