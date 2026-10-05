@@ -73,6 +73,7 @@ markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
     "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
+    "conformance: one property of docs/conformance.md held against one provider through its vendor API, the control API and the world's record; runs by default",
 ]
 filterwarnings = [
     # A warning raised against our own code is an error. Third-party internals are left alone.
