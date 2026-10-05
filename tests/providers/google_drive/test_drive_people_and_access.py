@@ -33,6 +33,7 @@ from tests.providers.google_drive.drive_world import (
     answer,
     client_for,
     create_doc,
+    files_of,
     issue,
     listed,
     names_of,
@@ -186,29 +187,31 @@ async def test_people_edit_move_and_share_a_seeded_document_as_themselves(
             drive.store,
             drive.clock,
         )
-    shortlist = answer(
-        await api.get(
-            "/drive/v3/files",
-            params={
-                "q": "name = 'Supplier Shortlist'",
-                "fields": "files(id,parents,modifiedTime,lastModifyingUser,shared)",
-            },
-            headers=AUTH,
+    shortlist = files_of(
+        answer(
+            await api.get(
+                "/drive/v3/files",
+                params={
+                    "q": "name = 'Supplier Shortlist'",
+                    "fields": "files(id,parents,modifiedTime,lastModifyingUser,shared)",
+                },
+                headers=AUTH,
+            )
         )
-    )["files"][0]
+    )[0]
     exported = await api.get(
         f"/drive/v3/files/{shortlist['id']}/export", params={"mimeType": "text/plain"}, headers=AUTH
     )
-    archive = answer(
-        await api.get(f"/drive/v3/files/{shortlist['parents'][0]}", params={"fields": "name"}, headers=AUTH)
-    )
+    parents, modifier = shortlist["parents"], shortlist["lastModifyingUser"]
+    assert isinstance(parents, list) and isinstance(modifier, dict)
+    archive = answer(await api.get(f"/drive/v3/files/{parents[0]}", params={"fields": "name"}, headers=AUTH))
     by_dov = await api.get(f"/drive/v3/files/{shortlist['id']}", headers=dov)
     people = [(e.actor, e.operation) for e in drive.store.events() if e.actor is Actor.PERSON]
 
     assert exported.text.endswith("Initech joined.\r\n")
     assert archive == {"name": "Archive"}
     assert shortlist["modifiedTime"] == "2026-09-14T10:30:00.000Z" and shortlist["shared"] is True
-    assert shortlist["lastModifyingUser"]["emailAddress"] == "mara@example.com"
+    assert modifier["emailAddress"] == "mara@example.com"
     assert by_dov.status_code == 200
     assert people and all(op in (Operation.CREATE, Operation.UPDATE) for _, op in people)
 
@@ -216,21 +219,23 @@ async def test_people_edit_move_and_share_a_seeded_document_as_themselves(
 async def test_a_change_listing_says_removed_for_a_file_deleted_and_the_token_is_checked(
     api: httpx.AsyncClient,
 ) -> None:
-    start = answer(await api.get("/drive/v3/changes/startPageToken", headers=AUTH))["startPageToken"]
+    start = str(answer(await api.get("/drive/v3/changes/startPageToken", headers=AUTH))["startPageToken"])
     made = await create_doc(api, "Short Lived", "x")
     await api.delete(f"/drive/v3/files/{made['id']}", headers=AUTH)
     changes = answer(await api.get("/drive/v3/changes", params={"pageToken": start}, headers=AUTH))
     missing = await api.get("/drive/v3/changes", headers=AUTH)
     future = await api.get("/drive/v3/changes", params={"pageToken": "999999"}, headers=AUTH)
 
-    assert [(c["fileId"], c["removed"]) for c in changes["changes"]] == [(made["id"], True)]
-    assert "file" not in changes["changes"][0] and "newStartPageToken" in changes
+    listed_changes = changes["changes"]
+    assert isinstance(listed_changes, list)
+    assert [(c["fileId"], c["removed"]) for c in listed_changes] == [(made["id"], True)]
+    assert "file" not in listed_changes[0] and "newStartPageToken" in changes
     assert reason_of(missing, 400) == "required"
     assert reason_of(future, 400) == "invalid"
 
 
 async def test_a_watch_without_an_address_type_or_unique_id_is_refused(api: httpx.AsyncClient) -> None:
-    start = answer(await api.get("/drive/v3/changes/startPageToken", headers=AUTH))["startPageToken"]
+    start = str(answer(await api.get("/drive/v3/changes/startPageToken", headers=AUTH))["startPageToken"])
     watch = "/drive/v3/changes/watch"
     kind = await api.post(
         watch, params={"pageToken": start}, json={"id": "c1", "type": "email", "address": "https://a"}, headers=AUTH
@@ -285,4 +290,5 @@ async def test_a_shared_drive_member_reads_its_files_and_a_stranger_does_not(tmp
         )
         drives = answer(await api.get("/drive/v3/drives", headers={"Authorization": "Bearer ya29.mara"}))
     assert dov_sees["files"] == [{"name": "Team Plan"}]
-    assert {"name": "Team Plan"} not in mara_sees["files"] and drives["drives"] == []
+    assert mara_sees["files"] == [] or {"name": "Team Plan"} not in files_of(mara_sees)
+    assert drives["drives"] == []
