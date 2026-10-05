@@ -964,15 +964,20 @@ class Standing:
 
 
 def _inboxes(spec: CreateWorld, scenario: Scenario) -> Inboxes | None:
-    """The inboxes a world declares, reached as its people, each person's credential read from this server's own
+    """The inboxes a world declares, reached as its people. A person's credential is the one given with the world
+    (`CreateWorld.credentials`: a key the service minted for this run), else read from this server's own
     environment: a credential generated per run reaches only a command Minutehand starts, and a standing world
     starts none."""
     if not spec.inboxes:
         return None
-    credentials: dict[str, str] = {}
+    known = {person.key for person in scenario.people}
+    unknown = sorted(set(spec.credentials) - known)
+    if unknown:
+        raise WorldRefused(f"credentials are given for {', '.join(unknown)}, who are not people of this world")
+    credentials: dict[str, str] = dict(spec.credentials)
     for person in scenario.people:
         source = person.credential
-        if source is None:
+        if source is None or person.key in credentials:
             continue
         if isinstance(source, GeneratedSecret):
             raise WorldRefused(

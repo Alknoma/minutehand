@@ -152,7 +152,13 @@ class CreateWorld(Model):
         default=[],
         description="Where work waits on a person in the service's own product, read and decided as each person "
         "(`domain.inboxes`, as an agent file declares them); a person's `credential` is read from the server's "
-        "environment",
+        "environment, or given in `credentials`",
+    )
+    credentials: dict[str, str] = Field(
+        default={},
+        description="Each person's credential in the service's own product, by `Person.key`, when whoever opens the "
+        "world holds it (a key the service minted for this run): used to act as that person in `inboxes`, kept in "
+        "memory for the life of the world and never written to the record. It wins over `Person.credential`",
     )
     case: str | None = Field(
         default=None,
