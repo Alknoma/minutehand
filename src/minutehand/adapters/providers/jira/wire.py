@@ -508,9 +508,10 @@ class StoredComment(Wire):
 class StoredLink(Wire):
     """One link: `source` does the type's outward act to `destination` ("source blocks destination").
 
-    A create names the source `inwardIssue` and the destination `outwardIssue`; an issue's own `issuelinks`
-    show the source an `outwardIssue` (the issue it blocks) and the destination an `inwardIssue` (the issue
-    that blocks it)."""
+    A create, and a read of the link itself, name the source `outwardIssue` (the "from" issue, as Atlassian's
+    reference calls it) and the destination `inwardIssue`. An issue's own `issuelinks` name the OTHER end: the
+    source's entry carries `outwardIssue` (the issue it blocks), the destination's `inwardIssue` (the issue that
+    blocks it)."""
 
     id: str
     type: str

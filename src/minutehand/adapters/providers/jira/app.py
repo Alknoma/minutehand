@@ -1137,18 +1137,18 @@ class JiraApi:
         if body.inwardIssue is None or body.outwardIssue is None:
             raise wire.bad("A link needs both an inward and an outward issue.")
         ends: list[wire.StoredIssue] = []
-        for ref in (body.inwardIssue, body.outwardIssue):
+        for ref in (body.outwardIssue, body.inwardIssue):
             reference = ref.key or (str(ref.id) if ref.id is not None else "")
             issue, project = self._issue(call, reference)
             self._may_edit(call, project, "link issues")
             ends.append(issue)
-        inward, outward = ends
+        outward, inward = ends
         self._world.write_link(
-            wire.StoredLink(id=self._world.next_id(), type=link_type.id, source=inward.id, destination=outward.id),
+            wire.StoredLink(id=self._world.next_id(), type=link_type.id, source=outward.id, destination=inward.id),
             actor=Actor.AGENT,
         )
         if body.comment is not None and wire.is_document(body.comment.body):
-            self._desk.comment(inward, body.comment.body, by=call.account, at=self._now(), actor=Actor.AGENT)
+            self._desk.comment(outward, body.comment.body, by=call.account, at=self._now(), actor=Actor.AGENT)
         return 201, None
 
     def _link(self, call: Call) -> wire.StoredLink:
@@ -1162,7 +1162,7 @@ class JiraApi:
     def link_get(self, call: Call) -> Answer:
         link = self._link(call)
         site = self._world.site()
-        inward, outward = self._world.issue(link.source), self._world.issue(link.destination)
+        outward, inward = self._world.issue(link.source), self._world.issue(link.destination)
         assert inward is not None and outward is not None
         return 200, {
             "id": link.id,
@@ -1174,8 +1174,8 @@ class JiraApi:
 
     def link_delete(self, call: Call) -> Answer:
         link = self._link(call)
-        inward, project = self._issue(call, link.source)
-        del inward
+        source, project = self._issue(call, link.source)
+        del source
         self._may_edit(call, project, "link issues")
         self._world.delete_link(link, actor=Actor.AGENT)
         return 204, None

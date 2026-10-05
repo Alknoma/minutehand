@@ -33,6 +33,16 @@ sources and screens. Entering a done status sets `resolution` (the transition's 
 Won't Do for a status declared cancelled) and `resolutiondate`; leaving it clears both. `TicketSnapshot.state`
 is each status's declared outcome: by default `done` for a done category and `open` otherwise.
 
+**Link direction.** Atlassian's reference for `POST /rest/api/3/issueLink`
+(https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-links/) calls the outward issue the
+link's "from" issue: the permission to link and the optional comment are on the project and issue that
+`outwardIssue` names. So `{type: Blocks, outwardIssue: A, inwardIssue: B}` records "A blocks B", and a client
+that puts the blocking issue on `outwardIssue` is right. On a read, an issue's `issuelinks` name the other end:
+A's entry carries `outwardIssue: B` (label it with the type's `outward`, "blocks"), B's carries `inwardIssue: A`
+("is blocked by"), as the issue linking model page shows
+(https://developer.atlassian.com/cloud/jira/platform/issue-linking-model/). `GET /issueLink/{id}` names the ends
+as the create does. Read from the documentation; not verified against a live site.
+
 Permissions are project roles (Administrators, Member, Viewer): no role, and an issue or project is a 404; a
 viewer who writes gets a 403. Site administration does not grant reading a project's issues.
 

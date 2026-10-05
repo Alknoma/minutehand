@@ -336,6 +336,23 @@ async def test_user_get_by_account_id(site: Site) -> None:
     assert (user["displayName"], user["emailAddress"]) == ("Iris Calder", "iris@example.com")
 
 
+async def test_a_blocks_link_reads_back_as_the_outward_issue_blocking_the_inward_one(site: Site) -> None:
+    """Atlassian's reference: the outward issue is the link's "from" end, so `outwardIssue: A, inwardIssue: B`
+    with Blocks says A blocks B; on A the link names B as `outwardIssue` (A blocks it), on B it names A as
+    `inwardIssue` (B is blocked by it)."""
+    made = await site.http.post(
+        f"{API}/issueLink",
+        json={"type": {"name": "Blocks"}, "outwardIssue": {"key": "FIELD-1"}, "inwardIssue": {"key": "LAUNCH-2"}},
+    )
+    assert made.status_code == 201
+    blocker = ok(await site.http.get(f"{API}/issue/FIELD-1", params={"fields": "issuelinks"}))["fields"]["issuelinks"]
+    blocked = ok(await site.http.get(f"{API}/issue/LAUNCH-2", params={"fields": "issuelinks"}))["fields"]["issuelinks"]
+    [on_blocker] = blocker
+    on_blocked = next(link for link in blocked if link["id"] == on_blocker["id"])
+    assert (on_blocker["type"]["outward"], on_blocker["outwardIssue"]["key"]) == ("blocks", "LAUNCH-2")
+    assert (on_blocked["type"]["inward"], on_blocked["inwardIssue"]["key"]) == ("is blocked by", "FIELD-1")
+
+
 async def test_issue_link_create_and_delete(site: Site) -> None:
     made = await site.http.post(
         f"{API}/issueLink",
@@ -344,8 +361,9 @@ async def test_issue_link_create_and_delete(site: Site) -> None:
     assert made.status_code == 201 and made.content == b""
     links = ok(await site.http.get(f"{API}/issue/FIELD-1", params={"fields": "issuelinks"}))["fields"]["issuelinks"]
     [link] = links
-    assert link["outwardIssue"]["key"] == "LAUNCH-2"
-    assert ok(await site.http.get(f"{API}/issueLink/{link['id']}"))["inwardIssue"]["key"] == "FIELD-1"
+    assert link["inwardIssue"]["key"] == "LAUNCH-2", "FIELD-1 is the inward end, so its entry names the other end"
+    read = ok(await site.http.get(f"{API}/issueLink/{link['id']}"))
+    assert (read["inwardIssue"]["key"], read["outwardIssue"]["key"]) == ("FIELD-1", "LAUNCH-2")
     assert (await site.http.delete(f"{API}/issueLink/{link['id']}")).status_code == 204
     assert (
         ok(await site.http.get(f"{API}/issue/FIELD-1", params={"fields": "issuelinks"}))["fields"]["issuelinks"] == []
