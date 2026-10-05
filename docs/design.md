@@ -139,6 +139,7 @@ The e2e test agent (`tests/e2e/agents/slack_agent.py`, behaviour `forgetful`: as
 ```
 $ minutehand run scenario.yaml --agent agent.yaml --state state -- python slack_agent.py serve --port 8765 --state agent.json
 run d799b57b7ad2: partner_pricing
+  Failed: 2 checks failed; the run stopped because nothing more was due and the agent asked for no wake.
   stopped at 2026-09-07 10:00 UTC (simulated) because nothing more was due and the agent asked for no wake
 
 fail (2)
@@ -180,7 +181,7 @@ The agent stopped after one wake; the clock ran on to the deadline (seq 19 is th
 Built, on the command line:
 
 ```
-minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, findings, scorecard, checkpoints; exit 1 on any FAIL
+minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1 or 3 by the verdict
 minutehand findings <run_id>                                   -> the same report, read back from the state directory
 minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
 minutehand runs
@@ -630,13 +631,38 @@ wakes                  20          3 changed nothing
 
 These waits are read from the captured agent's own records, which predate the ledger and name no person or entity, so no reaction is timed on this run.
 
+#### The verdict
+
+Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). Whether the checks held and whether the agent finished are two questions, and a run answers both. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is.
+
+| `VerdictKind` | When | Exit |
+|---|---|---|
+| `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
+| `PASSED` | No check failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
+| `UNFINISHED` | No check failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
+
+```
+run 5c1e0a9f2b77: partner_pricing
+  Not finished: no check failed, but the agent never reported it was done; the run stopped at the scenario's wake limit, with 1 wait still open.
+```
+
+Exit 3 is not a failure: a scenario whose point is that nobody answers ends at its deadline with the agent's question open, and is `UNFINISHED` rather than `FAILED`. A CI job that wants such a scenario green accepts 3 for it; one that wants every agent to close its work accepts only 0. 2 stays "could not be performed", which has no verdict.
+
+What the rule gets wrong:
+
+- **It trusts `DONE`.** An agent that reports done with its work open passes, unless an expectation or a check says otherwise; that is `honest_closure`'s job, through the scenario's expectations, not the verdict's.
+- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question. An agent that finished its goal, told a silent owner so, and never said `DONE` is `UNFINISHED`.
+- **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
+- **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
+
 | Layer | Answers | State |
 |---|---|---|
 | Scorecard (`Effectiveness`, `checks/effectiveness.py`) | How well, in numbers that compare across runs, prompts and models | Built and tested; ends every run |
 | Expectations (`checks/expectations.py`) | Did the world end up right | Built and tested |
 | Checks | Which known failure, where, with evidence | 12 built and tested (below) |
 | Patterns (`checks/patterns.py`) | What design fixes it | 9, each with a page in `docs/patterns/` |
-| Stability (`Stability`) | How often, over several samples | Built: `--samples N` reports "passed k of N" |
+| Verdict (`Verdict`) | Did the checks hold, and did the agent finish | Built and tested; ends every run and sets the exit code |
+| Stability (`Stability`) | How often, over several samples | Built: `--samples N` reports "passed k of N"; a sample that did not finish did not pass |
 
 The checks, discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, `needs` and `run`; no registration):
 
@@ -935,7 +961,7 @@ minutehand env --agent <agent.yaml> --proxy-port N [--format shell|compose] [--s
 
 `run`, `fork` and `env` take `--proxy-host`, `--proxy-port`, `--agent-proxy-host`, `--no-proxy HOST` (repeated), `--telemetry-port`, `--no-receive-telemetry` and `--record-model-calls`. `env` prints the environment an agent Minutehand does not start needs, for every run on that port under that state directory: `export` lines, or a Compose override. It makes the proxy's CA if there is none yet, and refuses a port left to the system and a signing secret generated per run.
 
-Exit 0 when no finding is `FindingKind.FAIL`, 1 when any is (with samples, when any sample failed), 2 when the run could not be performed. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
+`run`, `fork` and `findings` exit by the verdict (see "The verdict"): 0 passed, 1 failed, 3 not finished, and 2 when the run could not be performed. With samples: 1 when any sample failed, else 3 when any did not finish, else 0. The state directory defaults to `$MINUTEHAND_STATE`, else `.minutehand`. A fork's changes file holds `overrides` and optionally `samples`; one that names `parent_run` or `at_seq` itself is refused.
 
 ### Distribution: a tool beside the codebase, never a dependency of it
 

@@ -9,6 +9,7 @@ import pytest
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.runner import RunResult, discover, evaluate, evaluate_run, stability
 from minutehand.domain.checks import PersonBurden
+from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import TicketCreated
 from tests.checks.world import Log, at, person, reply, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
@@ -62,7 +63,7 @@ def test_burden_counts_messages_per_person_and_the_ones_that_chased_an_open_ask(
 
 
 def test_the_reference_scorecard_keeps_its_numbers_and_adds_no_untimeable_reaction() -> None:
-    card = evaluate(TIMELINE).effectiveness
+    card = evaluate(TIMELINE, stop=None).effectiveness
     assert (card.follow_ups_due, card.follow_ups_made, card.follow_ups_late) == (3, 3, 1)
     assert timedelta(hours=32) < card.time_lost < timedelta(hours=33)
     assert (card.reactions_due, card.idle_wakes) == (0, 3)
@@ -73,7 +74,7 @@ def test_every_check_module_is_discovered_without_a_list() -> None:
 
 
 def test_the_reference_capture_fails_with_the_known_findings_and_names_what_did_not_run() -> None:
-    result = evaluate(WORLD)
+    result = evaluate(WORLD, stop=None)
     assert result.exit_code == 1
     assert sorted({f.check for f in result.findings}) == ["expectations", "near_miss_name", "repeated_message"]
     assert result.effectiveness.expectations_met == 3 and result.effectiveness.failed_checks == 5
@@ -98,13 +99,18 @@ def test_a_clean_run_exits_zero_and_the_ledger_is_built_from_the_world() -> None
         [],
         [reply(SOFIA, ask, 1.5)],
         unmatched_calls=[],
+        stop=StopReason.AGENT_DONE,
     )
     assert result.findings == [] and result.exit_code == 0
     assert result.effectiveness.waits_opened == 2 and result.effectiveness.expectations_met == 1
 
 
 def _result(failing: bool) -> RunResult:
-    return evaluate(WORLD) if failing else evaluate_run(scenario(OWNER), [], [], [], unmatched_calls=[])
+    return (
+        evaluate(WORLD, stop=None)
+        if failing
+        else evaluate_run(scenario(OWNER), [], [], [], unmatched_calls=[], stop=None)
+    )
 
 
 def test_stability_counts_the_samples_that_passed() -> None:
@@ -122,5 +128,5 @@ def test_the_scenario_deadline_is_not_counted_as_a_wait() -> None:
     log.message([SOFIA], 2, text="Thanks.")
     world = view(scenario(SOFIA, deadline_after=timedelta(days=14)), log, [reply(SOFIA, ask, 1.5)])
     assert len(world.obligations) == 2  # the ask and the deadline, which the ledger keeps for its own checks
-    card = evaluate(world).effectiveness
+    card = evaluate(world, stop=None).effectiveness
     assert (card.waits_opened, card.waits_open_at_end) == (1, 0)

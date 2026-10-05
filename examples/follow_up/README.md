@@ -30,6 +30,7 @@ reports that it is done.
 
 ```
 run 30d6c0aa7b98: offsite_venue
+  Passed: no check failed, and the agent reported it was done.
   stopped at 2026-08-25 21:00 UTC (simulated) because the agent reported it was done
 
 no findings
@@ -39,7 +40,7 @@ scorecard
   ...
 ```
 
-The command exits 0: nothing failed. The scorecard counts one wait, Rosa's answer, and none open at the end:
+The command exits 0: nothing failed, and the agent said it was done. The scorecard counts one wait, Rosa's answer, and none open at the end:
 the thank-you to Rosa and the note to Owen asked nothing, because nobody would answer them.
 
 ## 2. Rosa never answers, and the agent forgets
@@ -53,6 +54,7 @@ to her, and the job sits waiting until the scenario's two weeks run out.
 
 ```
 run bf46bbfef5fe: offsite_venue_silent
+  Failed: 1 check failed; the run stopped because nothing more was due and the agent asked for no wake.
   stopped at 2026-09-07 09:00 UTC (simulated) because nothing more was due and the agent asked for no wake
 
 fail (1)

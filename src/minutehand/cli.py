@@ -21,8 +21,14 @@ exports nothing.
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
 
-Exit codes: 0 when no finding is a failure, 1 when any is (with samples, when any sample failed), 2 when
-the run could not be performed.
+Exit codes of `run`, `fork` and `findings`, which follow the verdict each report starts with:
+  0  passed: no check failed, and the agent finished: it reported done, or nothing was left open
+  1  failed: a check failed
+  2  the run could not be performed
+  3  not finished: no check failed, but the run stopped without the agent reporting done (the wake limit, the
+     deadline, an agent that asked for no further wake, an agent that failed) while a wait or a commitment
+     was still open
+With samples: 1 when any sample failed, else 3 when any did not finish, else 0.
 """
 
 from __future__ import annotations
@@ -50,7 +56,7 @@ from minutehand.application.files import FileRefused, load_agent, load_fork, loa
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
-from minutehand.checks.runner import stability
+from minutehand.checks.runner import exit_code, stability
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import Model
@@ -381,14 +387,12 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
         )
         if stable is not None:
             print(f"\nstability: passed {stable.passed} of {stable.samples} samples")
-    if stable is not None:
-        return 0 if stable.passed == stable.samples else 1
-    return max(o.result.exit_code for o in outcomes)
+    return exit_code([o.result for o in outcomes])
 
 
 def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None) -> str:
     record, result = outcome.record, outcome.result
-    lines = [f"run {record.run_id}: {record.scenario}"]
+    lines = [f"run {record.run_id}: {record.scenario}", f"  {result.verdict.words}"]
     if record.parent_run is not None:
         lines.append(f"  forked from {record.parent_run} at seq {record.forked_at}")
     if restored is not None:

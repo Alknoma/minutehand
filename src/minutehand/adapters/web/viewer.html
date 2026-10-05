@@ -44,7 +44,7 @@ nav button[aria-current="true"]{background:var(--surface);box-shadow:inset 0 0 0
 nav b{display:block;font-weight:500;overflow-wrap:anywhere}
 nav small{display:block;color:var(--ink-2);font-size:13px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
-.dot.fail{background:var(--fail)} .dot.ok{background:var(--ok)} .dot.run{background:var(--agent);animation:pulse 1.4s infinite}
+.dot.fail{background:var(--fail)} .dot.ok{background:var(--ok)} .dot.review{background:var(--review)} .dot.run{background:var(--agent);animation:pulse 1.4s infinite}
 @keyframes pulse{50%{opacity:.3}}
 @media (prefers-reduced-motion:reduce){.dot.run{animation:none}}
 main{display:flex;flex-direction:column;gap:26px;min-width:0}
@@ -121,13 +121,6 @@ svg text.jump{fill:var(--ink-2)}
   };
   var NS = document.getElementById("ns").namespaceURI;
   var RUNNING_REFRESH = 2000, LIST_REFRESH = 5000;
-  var STOPPED = {
-    agent_done: "The agent said it was done.",
-    wake_limit: "It stopped at the scenario's limit on wakes.",
-    deadline_passed: "The clock reached the deadline.",
-    nothing_pending: "Nothing more was due, and the agent asked for no further wake.",
-    agent_failed: "The agent could not be reached or answered with an error."
-  };
   var KIND_LABEL = { fail: "Fail", review: "To review", informational: "Note" };
   var KIND_ORDER = { fail: 0, review: 1, informational: 2 };
   var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -199,7 +192,8 @@ svg text.jump{fill:var(--ink-2)}
   }
   function runStatus(row) {
     if (!row.finished) { return ["run", "Running…"]; }
-    if (row.failed > 0) { return ["fail", "Failed: " + plural(row.failed, "problem", "problems")]; }
+    if (row.verdict === "failed") { return ["fail", "Failed: " + plural(row.failed, "problem", "problems")]; }
+    if (row.verdict === "unfinished") { return ["review", "Not finished"]; }
     if (row.to_review > 0) { return ["ok", "Passed, " + row.to_review + " to look at"]; }
     return ["ok", "Passed"];
   }
@@ -267,8 +261,9 @@ svg text.jump{fill:var(--ink-2)}
     if (!run.finished) {
       return ['review', "Still running", "Reached " + when(run.reached) + " on the simulated clock. This page follows it."];
     }
-    var why = STOPPED[run.record.stop] || "";
-    if (fails) { return ["fail", "Failed: " + plural(fails, "problem", "problems") + " found", why]; }
+    var v = view.findings.verdict, why = v.words;
+    if (v.kind === "failed") { return ["fail", "Failed: " + plural(fails, "problem", "problems") + " found", why]; }
+    if (v.kind === "unfinished") { return ["review", "Not finished", why]; }
     if (reviews) { return ["ok", "Passed, with " + reviews + " to look at", why]; }
     return ["ok", "Passed", why];
   }

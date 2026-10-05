@@ -117,7 +117,7 @@ def build(state: Path) -> FastMCP:
             "starts it with HTTPS_PROXY and CA variables set, so its calls to Slack and the trackers reach the "
             "fakes, and stops it when the run ends. Without `command` the agent must already be running. "
             "`samples` > 1 plays the scenario that many times and reports how many passed. Returns each run's "
-            "id, why it stopped, counts of findings by kind, the scorecard, and the checkpoints rerun_from can "
+            "id, why it stopped, its verdict (passed, failed, or unfinished: no check failed but the agent did not finish), counts of findings by kind, the scorecard, and the checkpoints rerun_from can "
             "restart it from. Takes seconds to minutes; only one run plays at a time."
         )
     )
@@ -135,14 +135,19 @@ def build(state: Path) -> FastMCP:
 
     @server.tool(
         description=(
-            "Every finding the checks raised on a finished run, numbered for show_evidence. kind 'fail' means "
+            "The run's verdict and every finding the checks raised on it, numbered for show_evidence. kind 'fail' means "
             "the agent did something wrong; 'review' means it may have. Each names the pattern: the known "
             "failure of proactive agents it is an instance of. `blocked` lists checks that could not run."
         )
     )
     def list_findings(run_id: str) -> FindingList:
         outcome = _load(state, run_id)
-        return FindingList(run_id=run_id, findings=_numbered(outcome.result), blocked=outcome.result.blocked)
+        return FindingList(
+            run_id=run_id,
+            verdict=outcome.result.verdict,
+            findings=_numbered(outcome.result),
+            blocked=outcome.result.blocked,
+        )
 
     @server.tool(
         description=(
@@ -212,7 +217,7 @@ def build(state: Path) -> FastMCP:
 
     @server.tool(
         description=(
-            "Every finished run in the state directory, oldest first, with why it stopped, whether it passed, "
+            "Every finished run in the state directory, oldest first, with why it stopped, its verdict, "
             "and its parent and children: a rerun is a child of the run it was forked from."
         )
     )
@@ -230,7 +235,7 @@ def build(state: Path) -> FastMCP:
                     scenario=o.record.scenario,
                     stop=o.record.stop,
                     stopped_at=o.record.ended_at,
-                    passed=o.result.exit_code == 0,
+                    verdict=o.result.verdict,
                     findings=_counts(o.result),
                     parent_run=o.record.parent_run,
                     forked_at=o.record.forked_at,
@@ -260,7 +265,7 @@ def _played(state: Path, outcomes: Sequence[Outcome], *, sampled: bool) -> RunsP
                 forked_at=o.record.forked_at,
                 stop=o.record.stop,
                 stopped_at=o.record.ended_at,
-                passed=o.result.exit_code == 0,
+                verdict=o.result.verdict,
                 findings=_counts(o.result),
                 blocked=o.result.blocked,
                 scorecard=o.result.effectiveness,

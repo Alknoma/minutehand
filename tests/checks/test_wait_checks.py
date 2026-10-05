@@ -120,7 +120,7 @@ def test_an_early_reminder_counts_and_the_wait_left_after_it_says_what_happened(
         "due again 4 days 18 hours after the ask, it sat 9 days 6 hours until the run ended"
     )
     assert finding.at == at(114) and finding.evidence == [1, 2]
-    card = evaluate(view(scenario(OWNER, DANIA), log)).effectiveness
+    card = evaluate(view(scenario(OWNER, DANIA), log), stop=None).effectiveness
     assert (card.waits_opened, card.waits_open_at_end) == (1, 1)
     assert (card.follow_ups_due, card.follow_ups_made, card.follow_ups_late) == (1, 1, 1)
     assert card.time_lost == timedelta(hours=336 - 114)
@@ -134,7 +134,7 @@ def test_a_follow_up_gives_the_person_their_whole_delay_again() -> None:
     log.message([OWNER], 170, text="status")
     world = view(scenario(OWNER, DANIA), log)
     assert NoFollowUp().run(world).findings == [] and LateFollowUp().run(world).findings == []
-    card = evaluate(world).effectiveness
+    card = evaluate(world, stop=None).effectiveness
     assert (card.follow_ups_due, card.follow_ups_made, card.follow_ups_late) == (1, 2, 0)
 
 
@@ -171,7 +171,7 @@ def test_a_thank_you_to_someone_who_answered_is_not_an_open_wait_or_a_slow_react
     log.message([away_after], 1.5, text="Thank you!")
     log.message([OWNER], 30, text="The contract is signed.")
     world = view(scenario(OWNER, away_after), log, [reply(away_after, ask, 1)])
-    result = evaluate(world)
+    result = evaluate(world, stop=None)
     assert [f.check for f in result.findings] == []
     assert (result.effectiveness.waits_opened, result.effectiveness.waits_open_at_end) == (1, 0)
     assert (result.effectiveness.reactions_due, result.effectiveness.reactions_slow) == (1, 0)

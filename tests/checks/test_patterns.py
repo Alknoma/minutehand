@@ -43,7 +43,7 @@ def test_every_pattern_a_check_declares_exists() -> None:
 
 def test_every_pattern_a_finding_carries_exists_and_is_its_checks_own() -> None:
     declared = {c.id: vars(type(c))["pattern"] for c in discover()}
-    findings = evaluate(WORLD).findings + evaluate(TIMELINE).findings
+    findings = evaluate(WORLD, stop=None).findings + evaluate(TIMELINE, stop=None).findings
     assert findings
     for finding in findings:
         assert finding.pattern == declared[finding.check]

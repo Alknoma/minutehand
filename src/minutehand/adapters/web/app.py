@@ -120,10 +120,16 @@ def create_app(state: Path) -> Starlette:
 
     def findings(run_id: str) -> Response:
         if not session.find(state, run_id).finished:
-            return _json(FindingsResponse(finished=False, findings=[], blocked=[], notes=[]))
+            return _json(FindingsResponse(finished=False, verdict=None, findings=[], blocked=[], notes=[]))
         result = session.load(state, run_id).result
         return _json(
-            FindingsResponse(finished=True, findings=explained(result), blocked=result.blocked, notes=result.notes)
+            FindingsResponse(
+                finished=True,
+                verdict=result.verdict,
+                findings=explained(result),
+                blocked=result.blocked,
+                notes=result.notes,
+            )
         )
 
     def scorecard(run_id: str) -> Response:
@@ -199,6 +205,7 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
         goal=scenario.goal,
         finished=entry.finished,
         stop=outcome.record.stop if outcome is not None else None,
+        verdict=outcome.result.verdict.kind if outcome is not None else None,
         failed=kinds.count(FindingKind.FAIL),
         to_review=kinds.count(FindingKind.REVIEW),
         parent_run=entry.parent_run,

@@ -19,6 +19,7 @@ from minutehand.checks.judged.ticket_is_actionable import TICKET_PROMPT_VERSION,
 from minutehand.checks.runner import NO_MODEL, RunResult, discover, discover_judged, evaluate, evaluate_judged
 from minutehand.domain.checks import FindingKind, Severity
 from minutehand.domain.conversation import Judgement
+from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import Expectation, PersonAsked
 from minutehand.domain.world import Actor, Operation
 from tests.checks.world import Log, person, scenario, view
@@ -65,7 +66,7 @@ def test_the_two_judged_checks_are_found_and_are_not_deterministic_checks() -> N
 async def test_an_unclear_ticket_is_a_review_finding_carrying_the_model_and_prompt_version() -> None:
     world = view(scenario(OWNER, TOM), tickets())
     async with fake_completions(judge) as fake:
-        result = await evaluate_judged(world, model(fake))
+        result = await evaluate_judged(world, model(fake), stop=StopReason.AGENT_DONE)
 
     [finding] = [f for f in result.findings if f.check == "ticket_is_actionable"]
     assert finding.kind is FindingKind.REVIEW and finding.severity is Severity.WARNING
@@ -85,7 +86,7 @@ async def test_a_ticket_a_deterministic_check_failed_is_not_judged() -> None:
     log.ticket(VAGUE, TOM, 2)
     world = view(scenario(OWNER, TOM).model_copy(update={"protected_names": ["Acme"]}), log)
     async with fake_completions(judge) as fake:
-        result = await evaluate_judged(world, model(fake))
+        result = await evaluate_judged(world, model(fake), stop=None)
 
     assert [f.check for f in result.findings if f.kind is FindingKind.FAIL] == ["near_miss_name"]
     assert [VAGUE in r.last for r in fake.for_schema("TicketVerdict")] == [True]
@@ -98,7 +99,7 @@ async def test_a_deleted_ticket_is_not_judged_and_an_edited_one_is_judged_as_it_
     edited = log.ticket(VAGUE, TOM, 3)
     log.ticket(CLEAR, TOM, 4, operation=Operation.UPDATE, external_id=edited.entity.external_id)
     async with fake_completions(judge) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), log), model(fake))
+        result = await evaluate_judged(view(scenario(OWNER, TOM), log), model(fake), stop=None)
 
     assert [CLEAR in r.last for r in fake.for_schema("TicketVerdict")] == [True]
     assert [f for f in result.findings if f.check == "ticket_is_actionable"] == []
@@ -108,7 +109,7 @@ async def test_with_no_model_every_judged_check_is_blocked_and_nothing_is_asked(
     expect: list[Expectation] = [PersonAsked(person="sofia", about="the price")]
     log = tickets()
     log.message([SOFIA], 3, text="What is the price?")
-    result = await evaluate_judged(view(scenario(OWNER, SOFIA, TOM, expect=expect), log), None)
+    result = await evaluate_judged(view(scenario(OWNER, SOFIA, TOM, expect=expect), log), None, stop=None)
 
     assert judged_blocked(result) == [f"asked_about: {NO_MODEL}", f"ticket_is_actionable: {NO_MODEL}"]
     assert [f for f in result.findings if f.kind is not FindingKind.INFORMATIONAL] == []
@@ -119,7 +120,7 @@ async def test_unjudged_runs_neither_judge_nor_list_judged_checks_as_blocked_and
     expect: list[Expectation] = [PersonAsked(person="sofia", about="the price"), PersonAsked(person="sofia")]
     log = Log()
     log.message([SOFIA], 3, text="What is the price?")
-    result = evaluate(view(scenario(OWNER, SOFIA, expect=expect), log))
+    result = evaluate(view(scenario(OWNER, SOFIA, expect=expect), log), stop=None)
 
     assert judged_blocked(result) == []
     assert "expectations: sofia asked about 'the price': left to the judged check asked_about" in result.notes
@@ -137,7 +138,7 @@ async def test_asked_about_counts_only_the_messages_the_model_says_ask_about_it(
     asked = log.message([SOFIA], 2, text="What price did we agree for partners?")
     log.message([TOM], 3, text="What price did we agree for partners?")
     async with fake_completions(judge) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, SOFIA, TOM, expect=expect), log), model(fake))
+        result = await evaluate_judged(view(scenario(OWNER, SOFIA, TOM, expect=expect), log), model(fake), stop=None)
 
     findings = [f for f in result.findings if f.check == "asked_about"]
     assert [f.message for f in findings] == [
@@ -156,7 +157,7 @@ async def test_asked_about_counts_only_the_messages_the_model_says_ask_about_it(
 
 async def test_a_model_that_fails_blocks_the_check_it_failed_in() -> None:
     async with fake_completions(lambda _: Answer(status=500, body='{"error": "down"}')) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), tickets()), model(fake))
+        result = await evaluate_judged(view(scenario(OWNER, TOM), tickets()), model(fake), stop=None)
     [blocked] = judged_blocked(result)
     assert blocked.startswith("ticket_is_actionable: the model failed:") and "answered 500" in blocked
 
@@ -167,7 +168,7 @@ async def test_a_judged_finding_is_exported_with_its_model_and_prompt_version() 
     logs.add_log_record_processor(SimpleLogRecordProcessor(exporter))
     telemetry = OtelTelemetry(TracerProvider(), logs, MeterProvider(metric_readers=[InMemoryMetricReader()]))
     async with fake_completions(judge) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), tickets()), model(fake))
+        result = await evaluate_judged(view(scenario(OWNER, TOM), tickets()), model(fake), stop=None)
 
     for finding in result.findings:
         telemetry.found(finding)
@@ -198,13 +199,13 @@ async def test_a_verdict_that_does_not_validate_is_asked_for_again(bad: str) -> 
     log = Log()
     log.ticket(CLEAR, TOM, 1)
     async with fake_completions(once_bad) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), log), model(fake))
+        result = await evaluate_judged(view(scenario(OWNER, TOM), log), model(fake), stop=None)
     assert len(fake.received) == 2 and judged_blocked(result) == []
 
 
 def test_an_about_expectation_is_not_a_word_match_for_the_deterministic_check() -> None:
     expect: list[Expectation] = [PersonAsked(person="sofia", about="the price")]
-    result = evaluate(view(scenario(OWNER, SOFIA, expect=expect), Log()))
+    result = evaluate(view(scenario(OWNER, SOFIA, expect=expect), Log()), stop=None)
 
     assert [f for f in result.findings if f.check == "expectations"] == []
     assert (result.effectiveness.expectations_met, result.effectiveness.expectations_total) == (0, 1)

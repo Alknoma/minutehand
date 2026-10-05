@@ -507,7 +507,11 @@ class _Judge:
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in world.calls() if call.provider is None],
         )
-        result = await evaluate_judged(view, self._model) if self._judging else evaluate(view)
+        result = (
+            await evaluate_judged(view, self._model, stop=record.stop)
+            if self._judging
+            else evaluate(view, stop=record.stop)
+        )
         self.results[record.run_id] = result
         return result
 
