@@ -19,6 +19,7 @@ from minutehand.application.restore import Restored, RestoreFailed
 from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.domain.agent import AgentUnderTest, Booked
 from minutehand.domain.experiment import DeadlineShift, Fork, PersonChange, PromptPatch, TicketEdit
+from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Scenario, TicketState
 from minutehand.domain.world import Actor, EntityKind, EntityRef, TicketSnapshot
@@ -37,7 +38,15 @@ def two_replies() -> Scenario:
     return base.model_copy(update={"people": people})
 
 
-async def fork(rig: Rig, parent: RunRecord, scn: Scenario, agent: AgentUnderTest, how: Fork) -> list[RunRecord]:
+async def fork(
+    rig: Rig,
+    parent: RunRecord,
+    scn: Scenario,
+    agent: AgentUnderTest,
+    how: Fork,
+    *,
+    manifests: list[Manifest] | None = None,
+) -> list[RunRecord]:
     def open_parent(clock: Clock) -> Store:
         return rig.open(parent.run_id, clock)
 
@@ -55,6 +64,7 @@ async def fork(rig: Rig, parent: RunRecord, scn: Scenario, agent: AgentUnderTest
         mounts=rig.board,
         traffic=rig.board,
         signing={CHAT: SECRET},
+        manifests=manifests or [],
     )
 
 
@@ -71,7 +81,9 @@ def runs(rig: Rig) -> list[str]:
         db.close()
 
 
-async def test_a_fork_replays_earlier_replies_applies_a_person_change_and_leaves_the_parent_alone(rig: Rig) -> None:
+async def test_a_fork_applies_a_person_change_to_a_reply_decided_but_not_yet_landed_and_leaves_the_parent_alone(
+    rig: Rig,
+) -> None:
     scn = two_replies()
     agent = rig.agent("ask_and_file", hooks=True)
     parent, parent_store, _ = await rig.run(scn, agent)
@@ -86,18 +98,19 @@ async def test_a_fork_replays_earlier_replies_applies_a_person_change_and_leaves
 
     assert child.stop is StopReason.AGENT_DONE
     assert child.parent_run == "root" and child.forked_at == after_start
-    # The reply sofia had already decided before the fork lands unchanged at +36h; her next answer is the new one.
+    # The reply sofia had decided before the fork, due at +36h, had not been said by it: it is withdrawn and she
+    # is asked again as she now is, answering 12 hours on.
     landed = [json.loads(p)["text"] for p in rig.chat.pushed]
-    assert landed == ["Yes, 40k.", "CHANGED two"]
+    assert landed == ["CHANGED one", "CHANGED two"]
     assert [w.sim_time for w in child.wakes] == [
         T0,
-        T0 + timedelta(hours=36),
-        T0 + timedelta(hours=48),
+        T0 + timedelta(hours=12),
+        T0 + timedelta(hours=24),
         T0 + timedelta(days=4),
     ]
     # The agent's own state was restored to the end of wake 1, not carried on from the parent's end.
     assert state(rig)["reasons"] == ["start", "person_replied", "person_replied", "due"]
-    assert state(rig)["heard"] == ["Yes, 40k.", "CHANGED two"]
+    assert state(rig)["heard"] == ["CHANGED one", "CHANGED two"]
     reopened = rig.open("root", RecordingClock(T0))
     assert [e.model_dump() for e in reopened.events()] == before
     assert [r.text for r in reopened.replies()] == ["Yes, 40k.", "Signing Friday."]
@@ -174,6 +187,37 @@ async def test_a_fork_after_the_booking_fired_is_not_refused(rig: Rig) -> None:
     last = checkpoint_seqs(store)[-1]
     [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=last))
     assert child.forked_at == last
+
+
+def _outside(rig: Rig) -> list[Manifest]:
+    """The test scheduler, as a provider that says it keeps its deliveries outside the log, as AWS does."""
+    return [rig.sched.manifest.model_copy(update={"state_outside_log": "its deliveries, in this test's memory"})]
+
+
+async def test_a_fork_after_a_provider_with_state_outside_the_log_was_used_is_refused(rig: Rig) -> None:
+    """The fork after the booking fired shares nothing pending, and before this was refused it ran: the child was
+    answered by a scheduler holding none of what the parent had booked or delivered (on AWS, a fresh account
+    with none of the agent's queues), and nothing said so."""
+    agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))], hooks=True)
+    scn = scenario(ticket_fates=[])
+    parent, store, _ = await rig.run(scn, agent)
+    last = checkpoint_seqs(store)[-1]
+    refusal = (
+        rf"the fork at seq {last} of run root cannot rewind what the run had built up in testsched \(its changes "
+        r"in the log\), which keeps its deliveries, in this test's memory"
+    )
+    with pytest.raises(RunRefused, match=refusal):
+        await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=last), manifests=_outside(rig))
+    assert runs(rig) == ["root"]
+
+
+async def test_a_fork_before_the_agent_first_used_such_a_provider_is_not_refused(rig: Rig) -> None:
+    agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))], hooks=True)
+    scn = scenario(ticket_fates=[])
+    parent, store, _ = await rig.run(scn, agent)
+    setup = checkpoint_seqs(store)[0]
+    [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=setup), manifests=_outside(rig))
+    assert child.forked_at == setup
 
 
 def test_a_deadline_shift_moves_the_childs_deadline() -> None:

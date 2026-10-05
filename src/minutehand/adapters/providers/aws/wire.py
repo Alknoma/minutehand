@@ -280,6 +280,82 @@ class UnsupportedTarget(Exception):
         self.arn = arn
 
 
+class SqsDelete(Model):
+    """A DeleteMessage or DeleteMessageBatch: the agent saying it is done with these messages."""
+
+    region: str
+    queue: str
+    receipt_handles: list[str]
+
+
+class _QueueUrl(_Wire):
+    queue_url: str = Field(alias="QueueUrl")
+
+
+class _DeleteMessage(_QueueUrl):
+    receipt_handle: str = Field(alias="ReceiptHandle")
+
+
+class _DeleteEntry(_Wire):
+    id: str = Field(alias="Id")
+    receipt_handle: str = Field(alias="ReceiptHandle")
+
+
+class _DeleteMessageBatch(_QueueUrl):
+    entries: list[_DeleteEntry] = Field(alias="Entries")
+
+
+_SQS_HOST = re.compile(r"(?:sqs\.([a-z0-9-]+)|([a-z0-9-]+)\.queue|queue)\.amazonaws\.com(?::\d+)?")
+_BATCH_HANDLE = re.compile(r"DeleteMessageBatchRequestEntry\.\d+\.ReceiptHandle")
+_DELETE_TARGETS = ("AmazonSQS.DeleteMessage", "AmazonSQS.DeleteMessageBatch")
+
+
+def sqs_delete(host: str, target: str, body: bytes) -> SqsDelete | None:
+    """The messages a request to SQS deletes, or None when it deletes none.
+
+    Both of SQS's protocols are read: JSON (`X-Amz-Target: AmazonSQS.DeleteMessage`, what boto3 sends) and the
+    older query protocol (`Action=DeleteMessage` in a form body, what older SDKs send). A body neither reads is
+    left to moto, which answers it as AWS would."""
+    if _sqs_region(host) is None:
+        return None
+    if target in _DELETE_TARGETS:
+        try:
+            if target == _DELETE_TARGETS[0]:
+                single = _DeleteMessage.model_validate_json(body)
+                return _deleting(host, single.queue_url, [single.receipt_handle])
+            batch = _DeleteMessageBatch.model_validate_json(body)
+            return _deleting(host, batch.queue_url, [e.receipt_handle for e in batch.entries])
+        except ValidationError:
+            return None
+    form = parse_qs(body.decode("utf-8", errors="replace"))
+    action = form["Action"][0] if "Action" in form else None
+    if "QueueUrl" not in form:
+        return None
+    url = form["QueueUrl"][0]
+    if action == "DeleteMessage" and "ReceiptHandle" in form:
+        return _deleting(host, url, form["ReceiptHandle"])
+    if action == "DeleteMessageBatch":
+        return _deleting(host, url, [v for k, vs in form.items() if _BATCH_HANDLE.fullmatch(k) for v in vs])
+    return None
+
+
+def _sqs_region(host: str) -> str | None:
+    m = _SQS_HOST.fullmatch(host)
+    if m is None:
+        return None
+    return m.group(1) or m.group(2) or "us-east-1"
+
+
+def _deleting(host: str, queue_url: str, handles: list[str]) -> SqsDelete | None:
+    """The queue a QueueUrl names (its last path segment), in the region its own host names, else the request's."""
+    url_host, _, path = queue_url.split("://", 1)[-1].partition("/")
+    region = _sqs_region(url_host) or _sqs_region(host)
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    if region is None or not name or not handles:
+        return None
+    return SqsDelete(region=region, queue=name, receipt_handles=handles)
+
+
 _ARN = re.compile(r"arn:aws[a-z-]*:([a-z0-9-]+):([a-z0-9-]*):(\d*):(.+)")
 
 

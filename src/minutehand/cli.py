@@ -11,13 +11,14 @@
     minutehand pin <run_id> <seq> [--state DIR]  keep a checkpoint's snapshot whatever `state: keep` says
     minutehand unpin <run_id> <seq> [--state DIR]
     minutehand gc [--state DIR]                  remove stored bodies and snapshot files nothing refers to
-    minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--json] -- <command...>
+    minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--agent-host H] [--no-proxy H]... [--json] -- <command...>
                                                  which HTTP clients in the agent's interpreter would go around the
                                                  proxy, and which declared hosts NO_PROXY would send directly
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
                      [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
+                     [--model-host HOST]... [--record-model-calls]
                                                  a standing proxy with a control API, for test suites (docs/serve.md)
 
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
@@ -54,7 +55,6 @@ import os
 import shlex
 import sys
 from collections.abc import Callable, Sequence
-from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 
@@ -68,6 +68,8 @@ from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
 from minutehand.application.files import FileRefused, load_agent, load_fork, load_scenario
+from minutehand.application.forks import ForkAccount, scorecard_lines
+from minutehand.application.forks import described as fork_described
 from minutehand.application.outbound import described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
@@ -144,6 +146,10 @@ def _parser() -> argparse.ArgumentParser:
             action="store_true",
             help="serve no OTLP receiver and leave the agent's OTLP exporter where it points",
         )
+        models(sub)
+        capture(sub)
+
+    def models(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
             "--record-model-calls",
             action="store_true",
@@ -157,7 +163,6 @@ def _parser() -> argparse.ArgumentParser:
             help="a host that is a model API, besides api.openai.com, api.anthropic.com and "
             "generativelanguage.googleapis.com: tunnelled, edited by a fork, or recorded with --record-model-calls",
         )
-        capture(sub)
 
     def capture(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
@@ -262,6 +267,7 @@ def _parser() -> argparse.ArgumentParser:
     served.add_argument(
         "--keep", type=int, default=standing.DEFAULT_KEEP, help="closed worlds kept; older ones are removed"
     )
+    models(served)
     capture(served)
     state(served)
 
@@ -270,6 +276,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--agent", type=Path, default=None, help="the agent file: its outbound hosts are checked too")
     doctor.add_argument("--model-host", action="append", default=[], metavar="HOST")
+    doctor.add_argument(
+        "--agent-host", default=None, help="the name the agent uses for this machine, as the run will be given it"
+    )
+    doctor.add_argument(
+        "--no-proxy", action="append", default=[], metavar="HOST", help="a host the run will send direct, as given it"
+    )
     doctor.add_argument("--json", action="store_true")
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
@@ -503,7 +515,14 @@ def _findings(args: argparse.Namespace, state: Path) -> int:
     if args.json:
         print(outcome.model_dump_json(indent=2))
     else:
-        print(_describe(outcome, session.fork_points(state, args.run_id), session.restore_of(state, args.run_id)))
+        print(
+            _describe(
+                outcome,
+                session.fork_points(state, args.run_id),
+                session.restore_of(state, args.run_id),
+                session.fork_account(state, args.run_id),
+            )
+        )
     return outcome.result.exit_code
 
 
@@ -515,8 +534,13 @@ def _runs(state: Path) -> int:
     for outcome in found:
         record = outcome.record
         failed = sum(1 for f in outcome.result.findings if f.kind is FindingKind.FAIL)
-        parent = f"  forked from {record.parent_run} at seq {record.forked_at}" if record.parent_run else ""
-        print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed{parent}")
+        print(f"{record.run_id}  {record.scenario}  {record.stop.value}  {failed} failed")
+        account = session.fork_account(state, record.run_id)
+        if account is not None:
+            print(
+                f"  forked from {account.parent_run} at seq {account.at_seq}, after wake {account.after_wake} "
+                f"({account.at:%Y-%m-%d %H:%M} UTC simulated): {account.summary}"
+            )
         print(f"  {_restorable_summary(session.fork_points(state, record.run_id))}")
         used = session.usage_of(state, record.run_id)
         print(
@@ -591,7 +615,8 @@ def _doctor(args: argparse.Namespace, command: list[str]) -> int:
 
     agent = load_agent(args.agent) if args.agent is not None else None
     hosts = list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host]))
-    found = asyncio.run(doctor.diagnose(command, agent, hosts))
+    listen = session.Listen(agent_host=args.agent_host, no_proxy=args.no_proxy)
+    found = asyncio.run(doctor.diagnose(command, agent, hosts, listen))
     print(found.model_dump_json(indent=2) if args.json else doctor.described(found))
     return 1 if found.bypasses else 0
 
@@ -615,6 +640,8 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
         keep=args.keep,
         capture_unknown=args.capture_unknown,
         upstream_ca=args.upstream_ca,
+        model_hosts=args.model_host,
+        record_model_calls=args.record_model_calls,
     )
     try:
         asyncio.run(standing.serve_forever(state, options))
@@ -638,7 +665,12 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
     else:
         print(
             "\n\n".join(
-                _describe(o, session.fork_points(state, o.record.run_id), session.restore_of(state, o.record.run_id))
+                _describe(
+                    o,
+                    session.fork_points(state, o.record.run_id),
+                    session.restore_of(state, o.record.run_id),
+                    session.fork_account(state, o.record.run_id),
+                )
                 for o in outcomes
             )
         )
@@ -647,14 +679,15 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
     return exit_code([o.result for o in outcomes])
 
 
-def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None) -> str:
+def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None, account: ForkAccount | None) -> str:
     record, result = outcome.record, outcome.result
     lines = [f"run {record.run_id}: {record.scenario}", f"  {result.verdict.words}"]
-    if record.parent_run is not None:
-        lines.append(f"  forked from {record.parent_run} at seq {record.forked_at}")
     if restored is not None:
+        # The line scripts read since forks were first restored: kept beside the fuller account below.
         verdict = "verified" if restored.verified else f"NOT verified: {restored.unverified}"
         lines.append(f"  the agent was restored from seq {restored.checkpoint_seq}, {verdict}")
+    if account is not None:
+        lines += [f"  {line}" for line in fork_described(account)]
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
     if record.failure is not None:
         lines.append(f"  {record.failure}")
@@ -703,25 +736,8 @@ def _finding(finding: Finding) -> str:
     return line
 
 
-def _span(delta: timedelta) -> str:
-    hours = delta.total_seconds() / 3600
-    return f"{hours / 24:.1f} days" if hours >= 48 else f"{hours:.0f} hours"
-
-
 def _scorecard(card: Effectiveness) -> list[str]:
-    lines = [
-        f"expectations met: {card.expectations_met} of {card.expectations_total}",
-        f"waits opened: {card.waits_opened}, still open at the end: {card.waits_open_at_end}",
-        f"follow-ups due: {card.follow_ups_due}, made: {card.follow_ups_made}, late: {card.follow_ups_late}, "
-        f"early: {card.follow_ups_early}",
-        f"time the agent lost: {_span(card.time_lost)}",
-        f"wakes: {card.wakes}, of which changed nothing: {card.idle_wakes}",
-        f"messages to people: {card.messages_to_people}",
-        f"failed checks: {card.failed_checks}",
-    ]
-    if card.slowest_follow_up is not None:
-        lines.insert(4, f"slowest follow-up: {_span(card.slowest_follow_up)} after its wait expired")
-    return lines
+    return [f"{line.label}: {line.value}" for line in scorecard_lines(card)]
 
 
 if __name__ == "__main__":

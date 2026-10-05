@@ -19,7 +19,16 @@ from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
 from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
 from minutehand.domain.telemetry import ForwardFailure, ReceivedSpan, Signal, SpanSource, StoredSpan
-from minutehand.domain.world import Change, EntityKind, EntityRef, Exchange, RecordedCall, Stored, WorldEvent
+from minutehand.domain.world import (
+    CallBegan,
+    Change,
+    EntityKind,
+    EntityRef,
+    Exchange,
+    RecordedCall,
+    Stored,
+    WorldEvent,
+)
 from minutehand.ports.clock import Clock
 
 
@@ -48,10 +57,20 @@ class Store(Protocol):
         """The latest sequence number this run can see."""
         ...
 
-    def attach(self, exchange: Exchange, *, first_seq: int, last_seq: int, provider: ProviderKey | None = None) -> None:
+    def attach(
+        self,
+        exchange: Exchange,
+        *,
+        first_seq: int,
+        last_seq: int,
+        provider: ProviderKey | None = None,
+        began: CallBegan | None = None,
+    ) -> None:
         """Record one HTTP call and tie it to the events it produced.
 
-        `first_seq > last_seq` means it produced none. `provider` is None for a host nobody claimed.
+        `first_seq > last_seq` means it produced none. `provider` is None for a host nobody claimed. `began` is
+        the wake and simulated time in progress when the call began, for a call recorded only after it ended
+        (a burst on a tunnel); None means the clock's, now.
         """
         ...
 

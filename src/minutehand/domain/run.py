@@ -54,10 +54,13 @@ class Verdict(Model):
 
 
 class OutboundUse(Model):
-    """The agent's calls to one host no provider claims: captured as declared, discovered, or refused."""
+    """The agent's calls to one host no provider claims: captured as declared, discovered, refused, or relayed
+    unopened on tunnels (a model API)."""
 
     host: str
-    mode: CaptureMode | None = Field(description="None: nobody declared it and the run refused it")
+    mode: CaptureMode | None = Field(
+        description="None: nobody declared it, and the run refused it, or, when `tunnelled`, relayed it unopened"
+    )
     declared_as: str | None = Field(default=None, description="The declaration's host pattern, when one matched")
     calls: int = Field(ge=0)
     replayed: int = Field(default=0, ge=0, description="Answered from a recording")
@@ -67,6 +70,10 @@ class OutboundUse(Model):
     unknown_recipients: list[str] = Field(
         default=[], description="Addresses its sends named that match no person in the scenario"
     )
+    tunnelled: int = Field(default=0, ge=0, description="Bursts on tunnels the proxy relayed and never opened")
+    connections: int = Field(default=0, ge=0, description="The tunnels those bursts were on")
+    bytes_sent: int = Field(default=0, ge=0, description="On those tunnels, from the agent")
+    bytes_received: int = Field(default=0, ge=0, description="On those tunnels, to the agent")
 
 
 class RunRecord(Model):

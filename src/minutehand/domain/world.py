@@ -96,6 +96,37 @@ class Captured(Model):
     recipients: list[Recipient] = Field(default=[], description="Read out of a send declared as a message")
 
 
+class TunnelRoute(StrEnum):
+    """Why a tunnelled call is kept in the world it is kept in."""
+
+    RUN = "run"  # `minutehand run` or `fork`: every call is the one run's
+    HOST = "host"  # `minutehand serve`: the world that declared the host a model host
+    NONE = "none"  # `minutehand serve`: no world claims the host; kept in the lobby, and listed as unmatched
+
+
+class Tunnelled(Model):
+    """A call on a tunnel the proxy relays as bytes and never opens (a model API the run neither edits nor
+    records): that it happened, never what it said. Its bodies are not opened, so the `Exchange` holds none.
+
+    One record is one burst: the bytes that moved from the first after the connection opened, or after the
+    previous burst was written, until the server had answered and the connection fell quiet, or it closed. A
+    keep-alive connection reused across wakes is a record in each wake it carried a request in, each stamped
+    with the wake and simulated time in progress when its first byte moved."""
+
+    port: int = Field(ge=0, le=65535)
+    connection: str = Field(description="The tunnel's own id, the same on every burst it carried")
+    burst: int = Field(ge=1, description="This burst's number on its connection, from 1")
+    opened: AwareDatetime = Field(description="Real time the agent's connection to the proxy opened")
+    started: AwareDatetime = Field(description="Real time of the burst's first byte")
+    ended: AwareDatetime = Field(description="Real time of the burst's last byte")
+    closed: AwareDatetime | None = Field(
+        default=None, description="Real time the connection closed, when it closed at the end of this burst"
+    )
+    bytes_sent: int = Field(ge=0, description="Bytes from the agent, encrypted, as they crossed")
+    bytes_received: int = Field(ge=0, description="Bytes to the agent, encrypted, as they crossed")
+    route: TunnelRoute
+
+
 class Exchange(Model):
     """One HTTP call as it crossed the wire. Bodies are the provider's own format.
 
@@ -115,6 +146,11 @@ class Exchange(Model):
     response_bytes: bytes | None = Field(default=None, description="The answer's body when it is not UTF-8 text")
     traceparent: str | None = Field(default=None, description="W3C trace context the caller sent, if any")
     captured: Captured | None = Field(default=None, description="Set for a call to a host no provider claims")
+    tunnelled: Tunnelled | None = Field(
+        default=None,
+        description="Set for a burst on a tunnel the proxy never opened: `method` is CONNECT, `path` its "
+        "host:port, `status` the 200 the proxy answered the CONNECT with, and no body is kept",
+    )
 
 
 class TicketSnapshot(Model):
@@ -271,11 +307,19 @@ class Stored(Model):
     sim_time: AwareDatetime
 
 
+class CallBegan(Model):
+    """Where on the run's clock a call began, for one recorded only after it ended."""
+
+    wake: int = Field(ge=0)
+    sim_time: AwareDatetime
+
+
 class RecordedCall(Model):
     """One HTTP call the proxy saw, with the events it produced, if any.
 
-    `provider` is None when no provider claimed the host: the call was captured (`exchange.captured`) or, when
-    that is None too, refused. `first_seq > last_seq` means the call produced no event.
+    `provider` is None when no provider claimed the host: the call was captured (`exchange.captured`), relayed
+    unopened on a tunnel (`exchange.tunnelled`) or, when both are None, refused. `first_seq > last_seq` means the
+    call produced no event. `wake` and `sim_time` are those in progress when the call began.
     """
 
     exchange: Exchange
@@ -287,5 +331,6 @@ class RecordedCall(Model):
 
     @property
     def refused(self) -> bool:
-        """No provider claimed it and nothing captured it: it was answered 502 and reached nothing."""
-        return self.provider is None and self.exchange.captured is None
+        """No provider claimed it, nothing captured it and no tunnel carried it: it was answered 502 and reached
+        nothing."""
+        return self.provider is None and self.exchange.captured is None and self.exchange.tunnelled is None

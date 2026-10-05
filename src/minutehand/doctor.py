@@ -15,6 +15,7 @@ and model hosts are also checked against the handed-out `NO_PROXY`, as each libr
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import shutil
@@ -106,9 +107,57 @@ for host in hosts:
         pass
     import urllib.request
     seen["urllib"] = bool(urllib.request.proxy_bypass_environment(host))
+    try:
+        import httpx
+        with httpx.Client() as c:
+            seen["httpx"] = c._transport_for_url(httpx.URL(target)) is c._transport
+    except ModuleNotFoundError:
+        pass
+    try:
+        import aiohttp.helpers, yarl
+        try:
+            aiohttp.helpers.get_env_proxy_for_url(yarl.URL(target))
+            seen["aiohttp"] = False
+        except LookupError:
+            seen["aiohttp"] = True
+    except ModuleNotFoundError:
+        pass
     direct[host] = seen
-print(json.dumps({"libraries": found, "hosts": direct}))
+installed = sorted(name for name, result in found.items() if result != "not installed")
+print(json.dumps({"libraries": found, "hosts": direct, "installed": installed}))
 """
+
+
+def _ipv6(host: str) -> bool:
+    try:
+        ipaddress.IPv6Address(host.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
+def _named(host: str, entry: str) -> bool:
+    """Whether a `NO_PROXY` entry covers `host` by curl's documented rule: the host itself, or a domain it is under.
+    An address entry is matched as an address."""
+    entry = entry.strip().lower().lstrip(".")
+    host = host.lower()
+    return bool(entry) and (host == entry or (not _ipv6(host) and host.endswith("." + entry)))
+
+
+def _node(host: str, entry: str) -> bool:
+    """Whether a `NO_PROXY` entry covers `host` as Node's clients that read it do (undici's `EnvHttpProxyAgent`,
+    `proxy-from-env` under axios): exactly, unless the entry starts with `.` or `*`, which make it a suffix."""
+    entry = entry.strip().lower()
+    host = host.lower()
+    if entry.startswith((".", "*")):
+        return host.endswith(entry.lstrip("*"))
+    return host == entry
+
+
+def _documented(host: str, no_proxy: Sequence[str]) -> list[str]:
+    """The clients outside the probed interpreter that would send `host` direct, by each one's documented rule."""
+    found = ["curl"] if any(_named(host, e) for e in no_proxy) else []
+    return found + (["node"] if any(_node(host, e) for e in no_proxy) else [])
 
 
 class LibraryCheck(Model):
@@ -120,6 +169,11 @@ class LibraryCheck(Model):
 class HostCheck(Model):
     host: str
     bypassed_by: list[str] = Field(description="Libraries that would send a call to this host around the proxy")
+    unreachable_by: list[str] = Field(
+        default=[],
+        description="Installed libraries that cannot reach this host through any proxy: httpx asks for a tunnel to "
+        "an IPv6 literal without its brackets, which the proxy refuses naming the cause",
+    )
 
 
 class Diagnosis(Model):
@@ -128,9 +182,15 @@ class Diagnosis(Model):
     hosts: list[HostCheck]
     notes: list[str]
 
+    no_proxy: list[str] = Field(default=[], description="The NO_PROXY the agent is handed, entry by entry")
+
     @property
     def bypasses(self) -> bool:
-        return any(c.result.startswith("bypassed") for c in self.libraries) or any(h.bypassed_by for h in self.hosts)
+        return (
+            any(c.result.startswith("bypassed") for c in self.libraries)
+            or any(h.bypassed_by for h in self.hosts)
+            or any(h.unreachable_by for h in self.hosts)
+        )
 
 
 @dataclass(frozen=True)
@@ -149,17 +209,24 @@ def _interpreter(command: Sequence[str]) -> _Probe:
     return _Probe([found], f"{command[0]} is not a Python; the probe ran in {found}, which may not be the agent's")
 
 
-async def diagnose(command: Sequence[str], agent: AgentUnderTest | None, model_hosts: Sequence[str]) -> Diagnosis:
+async def diagnose(
+    command: Sequence[str], agent: AgentUnderTest | None, model_hosts: Sequence[str], listen: Listen | None = None
+) -> Diagnosis:
+    """`listen` is how the run will be configured (`--agent-host`, `--no-proxy`): what decides the `NO_PROXY` the
+    agent is handed."""
     probe = _interpreter(command)
+    listen = listen or Listen()
     hosts = sorted({d.host for d in agent.outbound if not d.host.startswith("*.")} if agent is not None else set())
     hosts += [h for h in model_hosts if h not in DEFAULT_MODEL_HOSTS]
     with tempfile.TemporaryDirectory() as scratch:
         base = Path(scratch)
         clock = RunClock(datetime.now(UTC))  # clock-lint: exempt a probe outside any run, stamped for the record only
         store = SqliteStore(base / "world.db", "doctor", clock)
-        listen = Listen()
         async with Proxy(Routing(Registry.installed(), model_hosts=list(model_hosts)), store, clock, confdir=base) as p:
-            env = {**os.environ, **agent_environment(listen, p.port, p.ca_bundle, {}, telemetry_port=None)}
+            # The proxy as this machine reaches it, and the NO_PROXY the run will hand the agent wherever it runs.
+            handed = agent_environment(Listen(), p.port, p.ca_bundle, {}, telemetry_port=None)
+            direct = ",".join(listen.direct())
+            env = {**os.environ, **handed, "NO_PROXY": direct, "no_proxy": direct, "no_grpc_proxy": direct}
             process = await asyncio.create_subprocess_exec(
                 *probe.argv,
                 "-c",
@@ -178,17 +245,26 @@ async def diagnose(command: Sequence[str], agent: AgentUnderTest | None, model_h
     libraries = [
         LibraryCheck(library=name, result=result, advice=ADVICE[name]) for name, result in found["libraries"].items()
     ]
+    no_proxy = listen.direct()
+    installed: list[str] = found["installed"]
     checked = [
-        HostCheck(host=host, bypassed_by=sorted(lib for lib, direct in seen.items() if direct))
+        HostCheck(
+            host=host,
+            bypassed_by=sorted({*(lib for lib, direct in seen.items() if direct), *_documented(host, no_proxy)}),
+            unreachable_by=["httpx"] if "httpx" in installed and _ipv6(host) else [],
+        )
         for host, seen in found["hosts"].items()
     ]
     notes = [probe.note] if probe.note else []
     notes.append(
-        "httpx cannot reach an IPv6 literal host through any proxy (it sends CONNECT without brackets, which the "
-        "proxy refuses with 400): give such a host a name"
+        "curl and Node are not probed: a host is checked against the NO_PROXY by their documented rules (curl: the "
+        "host or a domain it is under; undici and proxy-from-env: the host exactly, a suffix only for an entry "
+        "starting with . or *)"
     )
     notes.append("Node's built-in fetch needs NODE_USE_ENV_PROXY=1 to read HTTPS_PROXY (not probed here)")
-    return Diagnosis(interpreter=" ".join(probe.argv), libraries=libraries, hosts=checked, notes=notes)
+    return Diagnosis(
+        interpreter=" ".join(probe.argv), libraries=libraries, hosts=checked, notes=notes, no_proxy=no_proxy
+    )
 
 
 def described(diagnosis: Diagnosis) -> str:
@@ -201,14 +277,19 @@ def described(diagnosis: Diagnosis) -> str:
         lines.append(line)
     if diagnosis.hosts:
         lines.append("")
-        lines.append("declared hosts, against the NO_PROXY the agent is handed:")
+        lines.append(f"declared hosts, against the NO_PROXY the agent is handed ({','.join(diagnosis.no_proxy)}):")
         for host in diagnosis.hosts:
             if host.bypassed_by:
                 lines.append(
-                    f"  MISS {host.host}: {', '.join(host.bypassed_by)} would send it directly (NO_PROXY names "
-                    "localhost and 127.0.0.1, which these read as covering every name under them)"
+                    f"  MISS {host.host}: {', '.join(host.bypassed_by)} would send it directly (a name in NO_PROXY "
+                    "covers every name under it for these)"
                 )
-            else:
+            if host.unreachable_by:
+                lines.append(
+                    f"  MISS {host.host}: {', '.join(host.unreachable_by)} cannot reach an IPv6 literal through any "
+                    "proxy (its CONNECT omits the brackets, and the proxy refuses it saying so): give the host a name"
+                )
+            if not host.bypassed_by and not host.unreachable_by:
                 lines.append(f"  ok   {host.host}")
     lines += ["", *[f"note: {n}" for n in diagnosis.notes]]
     return "\n".join(lines)

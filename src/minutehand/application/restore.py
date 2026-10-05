@@ -259,6 +259,13 @@ class StepResult(Model):
     seconds: float = Field(ge=0)
 
 
+class Verification(StrEnum):
+    """What a restore was compared against the checkpoint by."""
+
+    REPORT = "report"  # the agent's report: status, next wake, commitments
+    FINGERPRINT = "fingerprint"  # the digest the `fingerprint` hook printed of the agent's state
+
+
 class Restored(Model):
     """One restore of the agent, kept with the run it started (`restore.json`)."""
 
@@ -266,6 +273,7 @@ class Restored(Model):
     snapshot: str = Field(description="The snapshot directory restored from")
     steps: list[StepResult]
     verified: bool
+    verified_by: list[Verification] = Field(description="What it was compared by; empty when it was not verified")
     unverified: str | None = Field(default=None, description="Why the restore could not be verified")
 
 
@@ -338,14 +346,25 @@ async def restore_agent(
         if printed is not None and fingerprint is not None:
             _compare(checkpoint_seq, [], fingerprint, printed, steps)
             say(f"{RestoreStep.VERIFY.value}: the fingerprint equals the one at the checkpoint")
-            return Restored(checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=True)
+            return Restored(
+                checkpoint_seq=checkpoint_seq,
+                snapshot=str(snapshot),
+                steps=steps,
+                verified=True,
+                verified_by=[Verification.FINGERPRINT],
+            )
         reason = (
             "the agent has no report endpoint to ask between wakes (only a `reported` wake source has one), so "
             "what its state holds after the restore was not compared with the checkpoint"
         )
         say(f"{RestoreStep.VERIFY.value}: not verified: {reason}")
         return Restored(
-            checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=False, unverified=reason
+            checkpoint_seq=checkpoint_seq,
+            snapshot=str(snapshot),
+            steps=steps,
+            verified=False,
+            verified_by=[],
+            unverified=reason,
         )
     say(f"{RestoreStep.ANSWER.value}: waiting for the agent's report endpoint")
     report = await _answer(hooks, reports, checkpoint_seq, steps)
@@ -356,14 +375,26 @@ async def restore_agent(
         reason = "no report was recorded at the checkpoint to compare with"
         say(f"{RestoreStep.VERIFY.value}: not verified: {reason}")
         return Restored(
-            checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=False, unverified=reason
+            checkpoint_seq=checkpoint_seq,
+            snapshot=str(snapshot),
+            steps=steps,
+            verified=False,
+            verified_by=[],
+            unverified=reason,
         )
     _compare(checkpoint_seq, differences(recorded, report), fingerprint, printed, steps)
+    by_fingerprint = printed is not None and fingerprint is not None
     say(
         f"{RestoreStep.VERIFY.value}: the report equals the one at the checkpoint"
-        + (", and so does the fingerprint" if printed is not None and fingerprint is not None else "")
+        + (", and so does the fingerprint" if by_fingerprint else "")
     )
-    return Restored(checkpoint_seq=checkpoint_seq, snapshot=str(snapshot), steps=steps, verified=True)
+    return Restored(
+        checkpoint_seq=checkpoint_seq,
+        snapshot=str(snapshot),
+        steps=steps,
+        verified=True,
+        verified_by=[Verification.REPORT, *([Verification.FINGERPRINT] if by_fingerprint else [])],
+    )
 
 
 async def _fingerprint(hooks: StateHooks, snapshot: Path, steps: list[StepResult], checkpoint_seq: int) -> str:

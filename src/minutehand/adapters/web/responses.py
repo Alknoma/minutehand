@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.application.forks import ForkAccount
 from minutehand.application.model_calls import EventTrace
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
@@ -27,6 +28,10 @@ class RunRow(Model):
     parent_run: str | None
     forked_at: int | None
     forked_after_wake: int | None = Field(description="The wake whose end the fork was taken at")
+    forked_ran_on: bool = Field(
+        default=False, description="The fork was taken at a later checkpoint of that wake: the clock had run on"
+    )
+    changed: str | None = Field(description="For a fork, what it changed, in a few words; None for a root run")
     children: list[str]
 
 
@@ -41,6 +46,10 @@ class RunResponse(Model):
     record: RunRecord | None = Field(description="None until the run finishes")
     reached: AwareDatetime = Field(description="The latest simulated moment the run has recorded")
     checkpoints: list[ForkPoint]
+    fork: ForkAccount | None = Field(
+        description="For a fork: where it split, what it changed, whether its restore was verified, and how its "
+        "outcome differs from its parent's; None for a run started from the beginning"
+    )
 
 
 class WakesResponse(Model):

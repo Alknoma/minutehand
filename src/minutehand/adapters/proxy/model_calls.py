@@ -11,6 +11,12 @@ with the attributes OpenTelemetry's GenAI conventions name:
     gen_ai.input.messages                  the messages sent, each a role and its parts
     gen_ai.output.messages                 the messages answered, each a role, its parts and finish reason
     gen_ai.usage.input_tokens, gen_ai.usage.output_tokens
+    minutehand.request.body                the request body, byte for byte
+    minutehand.response.body               the answer's body, byte for byte (a stream as its events arrived)
+
+A body is kept as a string only when it is valid UTF-8 text, with credential fields redacted as an exchange's
+are; any other body (JSON in UTF-16, a byte that is no text at all) is kept as exactly its bytes, and nothing
+read from it is text with replacement characters: its messages are read only where its encoding is known.
 
 The three request shapes `edit.py` knows are read (OpenAI chat completions, OpenAI responses, Anthropic
 messages), each answered as one JSON body or as a stream of server-sent events. A call in any other shape
@@ -29,11 +35,13 @@ from datetime import datetime
 from enum import StrEnum
 from urllib.parse import urlsplit
 
+from minutehand.adapters.proxy import redact
 from minutehand.application.model_calls import caller_of
 from minutehand.domain.telemetry import (
     Attribute,
     AttributeValue,
     BoolValue,
+    BytesValue,
     IntValue,
     ReceivedSpan,
     SpanStatus,
@@ -259,11 +267,27 @@ def _read_stream(call: _Call, stream: str) -> None:
         call.outputs.append(entry)
 
 
-def _json(text: str) -> object:
+def _json(raw: bytes) -> object:
+    """The body's JSON, in whichever encoding JSON allows (UTF-8, -16 or -32); None when it is not JSON."""
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
+
+
+def _utf8(raw: bytes) -> str | None:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _body(raw: bytes, content_type: str) -> AttributeValue | None:
+    """A body as the span keeps it: UTF-8 text, credentials redacted, or exactly its bytes; None when empty."""
+    text, kept = redact.kept(raw, content_type)
+    if kept is not None:
+        return BytesValue(value=kept.hex())
+    return StringValue(value=text) if text is not None else None
 
 
 @dataclass(frozen=True)
@@ -273,8 +297,9 @@ class Exchanged:
     host: str
     path: str
     status: int
-    request_body: str
-    response_body: str
+    request_body: bytes
+    request_type: str
+    response_body: bytes
     response_type: str
     traceparent: str | None
     started: datetime
@@ -290,7 +315,9 @@ def span_of(exchanged: Exchanged) -> ReceivedSpan:
     if call.shape is not Shape.UNKNOWN:
         streamed = exchanged.response_type.split(";", 1)[0].strip().lower() == EVENT_STREAM
         if streamed:
-            _read_stream(call, exchanged.response_body)
+            stream = _utf8(exchanged.response_body)
+            if stream is not None:
+                _read_stream(call, stream)
         else:
             _read_answer(call, _json(exchanged.response_body))
     known = call.shape is not Shape.UNKNOWN
@@ -300,6 +327,13 @@ def span_of(exchanged: Exchanged) -> ReceivedSpan:
         ("http.response.status_code", IntValue(value=exchanged.status)),
         ("minutehand.recorded_on_the_wire", BoolValue(value=True)),
     ]
+    for key, raw, kind in (
+        ("minutehand.request.body", exchanged.request_body, exchanged.request_type),
+        ("minutehand.response.body", exchanged.response_body, exchanged.response_type),
+    ):
+        kept = _body(raw, kind)
+        if kept is not None:
+            attributes.append((key, kept))
     if known:
         vendor = StringValue(value=_VENDOR[call.shape])
         attributes += [

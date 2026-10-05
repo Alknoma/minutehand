@@ -88,6 +88,11 @@ class Mounts(Protocol):
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None: ...
 
+    def flush(self) -> None:
+        """Record every call still in progress as far as it has gone (a burst on a tunnel it relays unopened, kept
+        once it falls quiet): the run is about to be summarised."""
+        ...
+
 
 class Scorer(Protocol):
     """Whoever judges a finished run (the checks). Its findings and scorecard end the run's telemetry.
@@ -350,6 +355,8 @@ class Orchestrator:
             scheduler.bind(_Bookings(self, key))
 
     async def _end(self, stop: StopReason, started: float) -> RunRecord:
+        if self._mounts is not None:
+            self._mounts.flush()
         record = RunRecord(
             run_id=self._store.run_id,
             scenario=self._scenario.name,

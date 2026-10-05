@@ -93,7 +93,7 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `DELETE /v1/worlds/{id}` | → `Checked` | Close it: the checks as it stood, its record written, its claims released |
 | `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since` | → `EventsPage` | The log, filtered; `since` is a seq |
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
-| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts |
+| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
 | `GET /v1/worlds/{id}/spans` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
 | `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket`, `happen` (any happening, now), `press` (a control on a message, now) |
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
@@ -108,7 +108,7 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
-| `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed; `head` is the position to read on from |
+| `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
 
 A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
 opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A
@@ -123,6 +123,23 @@ a service's email client that carries the world's token (or posts to a host the 
 its own world's declaration; another world may declare the same host differently, and a world that declares
 nothing refuses it. A declared host a provider claims is refused with 409, naming both. `serve
 --capture-unknown` passes every undeclared call through instead, kept in its world or the lobby.
+
+### Model hosts
+
+A model API is decided by its host before its call is opened, so it cannot be told apart by world from the
+credentials it carries. `api.openai.com`, `api.anthropic.com` and `generativelanguage.googleapis.com`, and each
+`serve --model-host HOST` (a self-hosted model, a gateway), are model hosts for every world: tunnelled, never
+decrypted, or, under `serve --record-model-calls`, opened, sent on unchanged and kept as a span
+(`docs/design.md`, Hosts the proxy does not own). A world may declare more:
+
+```json
+{"model_hosts": [{"host": "llm.internal", "record": true}]}
+```
+
+Each is tunnelled, or recorded when `record` says so, and belongs to that world until it closes: a second open
+world that declares an overlapping host is refused with 409, as is a host a provider claims or the world
+captures under `outbound`. A recorded call is kept in the world that declared its host, else in the world whose
+calls carried its trace (`traceparent`), else in the lobby; `GET /v1/worlds/{id}/spans` reads it.
 
 ### A seed
 
@@ -309,7 +326,7 @@ services:
   platform:
     environment:
       HTTPS_PROXY: http://minutehand:8080
-      NO_PROXY: localhost,127.0.0.1,platform,worker,firestore,minutehand
+      NO_PROXY: 127.0.0.1,platform,worker,firestore,minutehand,localhost
       SSL_CERT_FILE: /etc/minutehand/minutehand-ca-bundle.pem
       REQUESTS_CA_BUNDLE: /etc/minutehand/minutehand-ca-bundle.pem
       OTEL_EXPORTER_OTLP_ENDPOINT: http://minutehand:4318
@@ -338,13 +355,9 @@ script over the same code:
 
 ## What it does not do
 
-- **Base-URL mode.** A service that reaches a fake by a base URL it is configured with (`SLACK_API_URL`) rather
-  than through a proxy is not served: every call must go through the proxy.
 - **A channel archived** by a person: no act.
 - **Retries of a pushed event or webhook.** Slack's retries are sent; Notion's and Graph's deliveries are sent
   once.
-- **A binary response is not recorded.** The call is answered, but a body the proxy cannot keep as text (a
-  `.docx` download) leaves the call out of the world's `calls` (`docs/design.md`, Known issues).
 - **Fixed ids the emulators used** (`U001`, `C001GENERAL`, a fixed Asana gid): ids here derive from names and
   positions, so a test reads them back from the world (`entities`) or the vendor API after the world opens.
 - **AWS per world by credential.** A SigV4 request carries its access key id in a scheme the OAuth standards do

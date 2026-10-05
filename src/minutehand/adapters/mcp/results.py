@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.application.forks import ForkAccount
 from minutehand.application.model_calls import JoinedBy, ModelCall
 from minutehand.domain.checks import Effectiveness, FindingKind, Pattern, Severity, Stability, WakeRecord
 from minutehand.domain.run import OutboundUse, StopReason, Verdict
@@ -15,6 +16,13 @@ _VERDICT = (
     "passed: no check failed and the agent finished (it reported done, or nothing was left open). failed: a "
     "check failed. unfinished: no check failed, but the run stopped without the agent reporting done while a "
     "wait or a commitment was still open; `words` says how it stopped and what was open"
+)
+
+_FORK = (
+    "For a rerun: the checkpoint it split from (after which wake, at what simulated time), what it changed in words, "
+    "whether its restore was verified and by what (report, fingerprint) or why not, and against its parent from the "
+    "split on: both verdicts, each scorecard line that differs, findings gained and lost, and the first change in "
+    "the world at which the two records part. Null for a run played from the beginning"
 )
 
 
@@ -62,6 +70,7 @@ class PlayedRun(Model):
     blocked: list[str] = Field(description="Checks that could not read their input and did not run")
     scorecard: Effectiveness
     checkpoints: list[ForkPoint] = Field(description="Where rerun_from may restart this run: a seq per wake end")
+    fork: ForkAccount | None = Field(description=_FORK)
 
 
 class RunsPlayed(Model):
@@ -153,6 +162,7 @@ class ListedRun(Model):
     parent_run: str | None
     forked_at: int | None
     children: list[str] = Field(description="Runs forked from this one")
+    fork: ForkAccount | None = Field(description=_FORK)
 
 
 class RunListing(Model):

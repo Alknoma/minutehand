@@ -270,6 +270,7 @@ def build(state: Path) -> FastMCP:
                     parent_run=o.record.parent_run,
                     forked_at=o.record.forked_at,
                     children=children[o.record.run_id],
+                    fork=session.fork_account(state, o.record.run_id),
                 )
                 for o in finished
             ]
@@ -300,6 +301,7 @@ def _played(state: Path, outcomes: Sequence[Outcome], *, sampled: bool) -> RunsP
                 blocked=o.result.blocked,
                 scorecard=o.result.effectiveness,
                 checkpoints=session.fork_points(state, o.record.run_id),
+                fork=session.fork_account(state, o.record.run_id),
             )
             for o in outcomes
         ],

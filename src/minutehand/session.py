@@ -44,7 +44,9 @@ from pydantic import Field
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
+from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -61,24 +63,25 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
-from minutehand.application.model_calls import per_wake
+from minutehand.application.forks import ForkAccount, Outcomes, change_words, outcomes, restore_account, summary
+from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_model import PeopleReplier
 from minutehand.application.restore import Progress, Restored, SeenCall, restore_agent
-from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
+from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.checks.runner import RunResult, evaluate, evaluate_judged, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
-from minutehand.domain.experiment import Fork
+from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.people import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Answers, Model, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.world import Actor, Operation, TicketSnapshot
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
@@ -200,7 +203,7 @@ async def play(
             signing = signing_for(agent)
             env = agent_environment(
                 listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-            )
+            ) | base_url_environment(agent, listen.proxy_url(proxy.port))
             reach = reach_for(agent, env=env)
             async with _agent_process(command, env, agent, directory / AGENT_LOG) as own:
                 if sample > 0 and agent.state is not None:
@@ -319,7 +322,7 @@ async def fork(
         scorer.receiver = proxy.receiver
         env = agent_environment(
             listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-        )
+        ) | base_url_environment(agent, listen.proxy_url(proxy.port))
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -344,6 +347,7 @@ async def fork(
                     own=own,
                     progress=progress,
                     channels=replies_for(agent, changed, signing),
+                    manifests=registry.manifests,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -419,6 +423,71 @@ def restore_of(state: Path, run_id: str) -> Restored | None:
     started from the beginning."""
     path = run_dir(state, run_id) / RESTORE_RECORD
     return Restored.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def fork_of(state: Path, run_id: str) -> Fork | None:
+    """What a fork was asked to change, as kept with it. None for a run that was not forked."""
+    path = run_dir(state, run_id) / FORK_RECORD
+    return Fork.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def fork_account(state: Path, run_id: str) -> ForkAccount | None:
+    """A fork, told (`application.forks`): where it split, what it changed, whether its restore was proven, and,
+    once both have finished, how its outcome differs from its parent's. None for a run that was not forked."""
+    entry = find(state, run_id)
+    if entry.parent_run is None or entry.forked_at is None:
+        return None
+    at_seq = entry.forked_at
+    asked = fork_of(state, run_id)
+    parent_scenario = scenario_of(state, entry.parent_run)
+    with reading(state, entry.parent_run) as parent_world:
+        held = checkpoints(parent_world)
+        checkpoint = held[at_seq]
+        ran_on = any(seq < at_seq and earlier.wake == checkpoint.wake for seq, earlier in held.items())
+        parent_events = parent_world.events()
+        calls = [model_call(s).model for s in parent_world.spans() if is_model_call(s)]
+        after = [model_call(s).model for s in parent_world.spans() if s.wake > checkpoint.wake and is_model_call(s)]
+        # The models the parent asked for after the split; when it made no call after it, those it asked for at all.
+        models = list(dict.fromkeys(m for m in (after or calls) if m is not None))
+    with reading(state, run_id) as fork_world:
+        fork_events = fork_world.events()
+
+    def ticket_before(override: Override) -> TicketSnapshot | None:
+        if not isinstance(override, TicketEdit):
+            return None
+        held = [
+            e.after
+            for e in parent_events
+            if e.seq <= at_seq and e.entity == override.entity and isinstance(e.after, TicketSnapshot)
+        ]
+        return held[-1] if held else None
+
+    restored = restore_of(state, run_id)
+    outcome: Outcomes | None = None
+    if entry.finished and find(state, entry.parent_run).finished:
+        outcome = outcomes(
+            load(state, entry.parent_run).result,
+            load(state, run_id).result,
+            parent_events=parent_events,
+            fork_events=fork_events,
+            at_seq=at_seq,
+            scenario=parent_scenario,
+            fork_scenario=scenario_of(state, run_id),
+        )
+    return ForkAccount(
+        parent_run=entry.parent_run,
+        at_seq=at_seq,
+        after_wake=checkpoint.wake,
+        at=checkpoint.now,
+        ran_on=ran_on,
+        changes=[
+            change_words(o, parent_scenario, ticket_before=ticket_before(o), models_before=models)
+            for o in (asked.overrides if asked is not None else [])
+        ],
+        summary=summary(asked, parent_scenario) if asked is not None else "Rerun; what it changed was not kept",
+        restore=restore_account(restored) if restored is not None else None,
+        outcome=outcome,
+    )
 
 
 class Checkpointed(Model):
@@ -890,17 +959,29 @@ class Listen(Model):
         """The telemetry receiver as the agent reaches it."""
         return f"http://{self._reached_at()}:{port}"
 
+    def elsewhere(self) -> bool:
+        """Whether the agent runs on another machine than the proxy (a container): its `localhost` is then not the
+        proxy's, and the proxy cannot forward a call to it."""
+        return self.agent_host is not None and not loopback(self.agent_host)
+
     def direct(self) -> list[str]:
-        """The hosts the agent reaches directly: itself, those named, and this machine when the receiver is on,
-        whose OTLP endpoint is not reached through the proxy."""
+        """The hosts the agent reaches directly (`NO_PROXY`): this machine by its loopback ADDRESS, those named, and
+        the receiver's host when it is on, whose OTLP endpoint is not reached through the proxy. `localhost` is
+        named only for an agent `elsewhere`: on this machine the proxy forwards it (`ProxyAddon.forwarded`), and
+        named it would send every `*.localhost` host direct under requests, urllib, aiohttp and curl."""
         hosts = [*DIRECT, *self.no_proxy]
-        if self.receive_telemetry:
+        if self.receive_telemetry and not loopback(self._reached_at()):
             hosts.append(self._reached_at())
+        if self.elsewhere():
+            hosts.append(LOOPBACK_NAME)
         return list(dict.fromkeys(hosts))
 
 
-DIRECT = ("localhost", "127.0.0.1")
-"""Hosts every agent reaches directly: itself, and Minutehand's own calls to it never go through the proxy."""
+DIRECT = ("127.0.0.1",)
+"""What every agent reaches directly: this machine by address. Never a name, which requests, urllib, aiohttp and curl
+read as covering every name under it, and never `::1`, which requests reads as a suffix of any IPv6 literal
+(`2001:db8::1`). An IPv4 address is matched exactly by every client (docs/design.md, "What the agent reaches
+directly")."""
 
 
 def agent_environment(
@@ -961,7 +1042,16 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
         )
     bundle = write_bundle(state / "ca")
     telemetry_port = listen.telemetry_port if listen.receive_telemetry else None
-    return agent_environment(listen, listen.port, ca_bundle or str(bundle.resolve()), {}, telemetry_port=telemetry_port)
+    handed = agent_environment(
+        listen, listen.port, ca_bundle or str(bundle.resolve()), {}, telemetry_port=telemetry_port
+    )
+    return handed | base_url_environment(agent, listen.proxy_url(listen.port))
+
+
+def base_url_environment(agent: AgentUnderTest, proxy: str) -> dict[str, str]:
+    """Each base URL the agent file declares (`AgentUnderTest.base_urls`), in its variable, against the proxy as the
+    agent reaches it (`adapters.proxy.base_url`)."""
+    return {declared.env: base_url(proxy, declared.host) + declared.path for declared in agent.base_urls}
 
 
 @dataclass(frozen=True)
@@ -992,6 +1082,9 @@ class Intercepting:
     def waiting(self) -> list[str]:
         """`application.restore.Traffic`: what the agent sent and the proxy has not seen answered."""
         return self.proxy.waiting()
+
+    def flush(self) -> None:
+        self.proxy.flush()
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.proxy.mount(world, clock, apps, scenario=scenario)

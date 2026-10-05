@@ -1,7 +1,8 @@
 """A throwaway certificate authority and a local HTTPS server that stands in for a model API.
 
 Nothing here reaches the public internet: the server listens on an ephemeral port on
-127.0.0.1 and presents a certificate for `localhost` signed by a CA made per test.
+127.0.0.1 and presents a certificate for `localhost` and `model.localhost` (a name the proxy never
+forwards on its own) signed by a CA made per test.
 """
 
 from __future__ import annotations
@@ -73,6 +74,7 @@ def make_authority(directory: Path) -> Authority:
             x509.SubjectAlternativeName(
                 [
                     x509.DNSName("localhost"),
+                    x509.DNSName("model.localhost"),
                     x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
                     x509.IPAddress(ipaddress.ip_address("::1")),
                 ]

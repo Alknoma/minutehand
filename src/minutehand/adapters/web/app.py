@@ -4,7 +4,8 @@
 
     GET /                                   viewer.html: inline CSS, JS and SVG, nothing fetched from elsewhere
     GET /api/runs                           every run, finished or still running, with the fork tree
-    GET /api/runs/{run_id}                  the scenario, the record once finished, the checkpoints
+    GET /api/runs/{run_id}                  the scenario, the record once finished, the checkpoints, and for a
+                                            fork what it changed and how it differs from its parent
     GET /api/runs/{run_id}/wakes
     GET /api/runs/{run_id}/events           the world's log, without the run loop's own checkpoints
     GET /api/runs/{run_id}/calls            every HTTP call the proxy recorded
@@ -48,6 +49,7 @@ from minutehand.adapters.web.responses import (
     explained,
 )
 from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
+from minutehand.application.forks import summary
 from minutehand.application.model_calls import trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.checks._waits import chases, ended_at
@@ -100,6 +102,7 @@ def create_app(state: Path) -> Starlette:
                 record=record,
                 reached=reached or scenario.starts_at,
                 checkpoints=checkpoints,
+                fork=session.fork_account(state, run_id),
             )
         )
 
@@ -223,6 +226,11 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
     outcome = session.load(state, entry.run_id) if entry.finished else None
     kinds = [f.kind for f in outcome.result.findings] if outcome is not None else []
     after_wake: int | None = None
+    changed: str | None = None
+    account = session.fork_account(state, entry.run_id) if entry.parent_run is not None else None
+    if entry.parent_run is not None:
+        asked = session.fork_of(state, entry.run_id)
+        changed = summary(asked, session.scenario_of(state, entry.parent_run)) if asked is not None else None
     if entry.forked_at is not None:
         with session.reading(state, entry.run_id) as world:
             after_wake = next(
@@ -240,6 +248,8 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
         parent_run=entry.parent_run,
         forked_at=entry.forked_at,
         forked_after_wake=after_wake,
+        forked_ran_on=account.ran_on if account is not None else False,
+        changed=changed,
         children=children,
     )
 

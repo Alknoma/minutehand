@@ -38,13 +38,45 @@ class Routing:
         self.registry = registry
         self._model_hosts = [HostPattern(host) for host in model_hosts]
         for pattern in self._model_hosts:
-            for manifest in registry.manifests:
-                for claimed in manifest.hosts:
-                    if pattern.overlaps(HostPattern(claimed)):
-                        raise ProviderConflict(
-                            f"{pattern.text!r} is a model host and {manifest.key!r} claims {claimed!r}"
-                        )
+            self._refuse_claimed(pattern)
+        # Model hosts a world of `minutehand serve` declared while open, each with whether its calls are recorded.
+        self._declared: dict[str, tuple[HostPattern, bool]] = {}
         self.edits: list[ModelEdit] = [o for o in overrides if isinstance(o, PromptPatch | ModelSwap)]
+
+    def _refuse_claimed(self, pattern: HostPattern) -> None:
+        for manifest in self.registry.manifests:
+            for claimed in manifest.hosts:
+                if pattern.overlaps(HostPattern(claimed)):
+                    raise ProviderConflict(f"{pattern.text!r} is a model host and {manifest.key!r} claims {claimed!r}")
+
+    @property
+    def model_hosts(self) -> list[str]:
+        """Every host that is a model API now: those the routing was built with, and those declared since."""
+        return [p.text for p in self._model_hosts] + list(self._declared)
+
+    def declare(self, host: str, *, record: bool) -> None:
+        """A model host declared while the proxy runs (a world of `minutehand serve`), tunnelled or, with `record`,
+        opened and kept as spans. Refused (`ProviderConflict`) when a provider claims it or it overlaps a host
+        already declared; `ValueError` when it is no host pattern."""
+        pattern = HostPattern(host)
+        self._refuse_claimed(pattern)
+        taken = [text for text, (other, _) in self._declared.items() if other.overlaps(pattern)]
+        if taken:
+            raise ProviderConflict(f"{host!r} overlaps the model host {taken[0]!r} another world declared")
+        self._declared[host] = (pattern, record)
+
+    def withdraw(self, host: str) -> None:
+        """A declared model host no longer one: the world that declared it closed."""
+        del self._declared[host]
+
+    def declared(self, host: str) -> str | None:
+        """The declared model host pattern `host` falls under, if one does."""
+        return next((text for text, (pattern, _) in self._declared.items() if pattern.matches(host)), None)
+
+    def records(self, host: str) -> bool:
+        """Whether the declaration `host` falls under asks for its calls to be kept as spans."""
+        found = self.declared(host)
+        return found is not None and self._declared[found][1]
 
     def apply(self, run_id: str, overrides: list[ModelEdit]) -> None:
         """`application.rewind.OnTheWire`: the model edits for the run about to play. One run plays at a time
@@ -52,7 +84,7 @@ class Routing:
         self.edits = list(overrides)
 
     def is_model_host(self, host: str) -> bool:
-        return any(pattern.matches(host) for pattern in self._model_hosts)
+        return any(pattern.matches(host) for pattern in self._model_hosts) or self.declared(host) is not None
 
     def edits_for(self, host: str) -> list[ModelEdit]:
         if not self.is_model_host(host):

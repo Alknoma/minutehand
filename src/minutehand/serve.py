@@ -12,6 +12,12 @@ default world, when one is open; else none: it is refused with 502 and kept in t
 `GET /v1/unmatched` reads it. A span the services export is kept in the world whose calls carried its trace,
 and in the lobby when none did.
 
+A model API is decided by its host before its call is opened, so it is never decided per world by credentials:
+the three public ones and every `--model-host` are model hosts for every world, tunnelled, or opened and kept as
+spans under `--record-model-calls`. A world may declare more (`CreateWorld.model_hosts`), each tunnelled or
+recorded as it says; such a host belongs to that world while it is open. A recorded call is kept in the world
+that declared its host, else in the world whose calls carried its trace, else in the lobby.
+
 Each world is a run in the state directory, so `minutehand findings`, `view` and the MCP tools read it:
 
     <state>/runs/<world_id>/world.db       its log, as any run's
@@ -123,6 +129,14 @@ class ServeOptions(Model):
     upstream_ca: Path | None = Field(
         default=None, description="The CAs a real host is verified against when a call is passed through"
     )
+    model_hosts: list[str] = Field(
+        default=[],
+        description="Model APIs besides api.openai.com, api.anthropic.com and generativelanguage.googleapis.com, "
+        "for every world: tunnelled, or recorded with `record_model_calls`",
+    )
+    record_model_calls: bool = Field(
+        default=False, description="Open every world's calls to model APIs, send them on unchanged, keep each as a span"
+    )
 
 
 @dataclass
@@ -147,12 +161,17 @@ class World:
     capturing: Capturing = field(default_factory=Capturing)
 
 
+def _nothing_relayed(world: Mounted) -> None:
+    """Before a proxy routes to the worlds, no tunnel is relayed into any of them."""
+
+
 class Standing:
     """Every world the server holds, and which one each call belongs to: `adapters.proxy.worlds.Worlds`."""
 
-    def __init__(self, state: Path, registry: Registry, *, keep: int) -> None:
+    def __init__(self, state: Path, registry: Registry, *, keep: int, routing: Routing | None = None) -> None:
         self._state = state
         self._registry = registry
+        self.routing = routing or Routing(registry)
         self._keep = keep
         self._manifests = {m.key: m for m in registry.manifests}
         self.worlds: dict[str, World] = {}
@@ -160,6 +179,7 @@ class Standing:
         self._hosts: dict[str, str] = {}
         self._keys: dict[str, str] = {}
         self._traces: dict[str, str] = {}
+        self._models: dict[str, str] = {}
         self._default: str | None = None
         lobby_id = f"{LOBBY}-{secrets.token_hex(6)}"
         directory = run_dir(state, lobby_id)
@@ -169,6 +189,9 @@ class Standing:
         self._shared = {h.lower(): m for m in registry.manifests for h in m.shared_hosts}
         self._shared_apps: dict[ProviderKey, ASGIApp] = {}
         self._lobby = Mounted(store=self.lobby_store, clock=self._lobby_clock, app_for=self._shared_app)
+        self.flush_in: Callable[[Mounted], None] = _nothing_relayed
+        """What records the calls still in progress in a world before it is closed or reset: the proxy's
+        `ProxyAddon.flush_in`, once it routes to these worlds."""
 
     def shared(self, host: str) -> bool:
         """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
@@ -214,6 +237,14 @@ class Standing:
                 self._traces[parts[1]] = owner.world_id
                 owner.traces.add(parts[1])
 
+    def keeping(self, host: str, trace_id: str | None) -> Mounted:
+        declared = self.routing.declared(host)
+        if declared is not None and declared in self._models:
+            return self.worlds[self._models[declared]].mounted
+        if trace_id is not None and trace_id in self._traces:
+            return self.worlds[self._traces[trace_id]].mounted
+        return self._lobby
+
     def by_trace(self, trace_id: str) -> Store | None:
         """`Receiver.route`: the world whose calls carried this trace."""
         return self.worlds[self._traces[trace_id]].store if trace_id in self._traces else None
@@ -236,7 +267,9 @@ class Standing:
                 f"no installed provider is named {', '.join(unknown)}; installed: {', '.join(sorted(self._manifests))}"
             )
         try:
-            refuse_claimed(spec.outbound, self._registry, DEFAULT_MODEL_HOSTS)
+            refuse_claimed(
+                spec.outbound, self._registry, [*self.routing.model_hosts, *(m.host for m in spec.model_hosts)]
+            )
             capturing = Capturing(spec.outbound, replaying=replaying_for(spec.outbound, state=self._state))
         except (ProviderConflict, FileNotFoundError) as e:
             raise WorldRefused(f"this world's outbound hosts: {e}") from e
@@ -252,6 +285,7 @@ class Standing:
         if unseeded:
             raise Unsupported(f"{', '.join(unseeded)} has no seed of its own: give it no provider seed")
         world_id = secrets.token_hex(6)
+        self._declare_models(world_id, spec)
         directory = run_dir(self._state, world_id)
         directory.mkdir(parents=True)
         signing = {i.provider: i.secret or secrets.token_hex(16) for i in spec.inbound}
@@ -259,6 +293,7 @@ class Standing:
             world = self._open(world_id, spec, signing, capturing, _now())
         except Exception:
             shutil.rmtree(directory)
+            self._withdraw_models(world_id)
             raise
         name = spec.seed.name
         kept = Kept(world_id=world_id, name=name, claims=spec.claims, scripted_people=spec.scripted_people)
@@ -273,6 +308,21 @@ class Standing:
         if spec.claims.default:
             self._default = world_id
         return world
+
+    def _declare_models(self, world_id: str, spec: CreateWorld) -> None:
+        """The model hosts `spec` declares, routed as it says and this world's until it closes; all or none."""
+        try:
+            for model in spec.model_hosts:
+                self.routing.declare(model.host, record=model.record)
+                self._models[model.host] = world_id
+        except (ProviderConflict, ValueError) as e:
+            self._withdraw_models(world_id)
+            raise WorldRefused(f"this world's model hosts: {e}") from e
+
+    def _withdraw_models(self, world_id: str) -> None:
+        for host in [h for h, w in self._models.items() if w == world_id]:
+            self.routing.withdraw(host)
+            del self._models[host]
 
     def _open(
         self, world_id: str, spec: CreateWorld, signing: dict[ProviderKey, str], capturing: Capturing, now: datetime
@@ -329,6 +379,7 @@ class Standing:
         the agent, a person or the test did since. Its log so far is discarded, and tokens its fakes minted are
         no longer claimed: the world that minted them is gone."""
         old = self.get(world_id)
+        self.flush_in(old.mounted)
         old.store.close()
         old.open = False
         for suffix in ("", "-wal", "-shm"):
@@ -400,6 +451,7 @@ class Standing:
         """Score the world as it stands, write its record, release its claims and its file, and remove the
         oldest closed worlds beyond `keep`."""
         world = self.get(world_id)
+        self.flush_in(world.mounted)
         result = await world.standing.checks(stop=StopReason.CLOSED)
         world.standing.close()
         record = RunRecord(
@@ -426,6 +478,7 @@ class Standing:
         self._keys = {k: w for k, w in self._keys.items() if w != world_id}
         for trace in world.traces:
             del self._traces[trace]
+        self._withdraw_models(world_id)
         if self._default == world_id:
             self._default = None
         self._retain()
@@ -554,11 +607,15 @@ async def serving(state: Path, options: ServeOptions) -> AsyncIterator[Serving]:
 
     state.mkdir(parents=True, exist_ok=True)
     registry = Registry.installed()
-    standing = Standing(state, registry, keep=options.keep)
+    try:
+        routing = Routing(registry, model_hosts=list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *options.model_hosts])))
+    except ProviderConflict as e:
+        raise RunRefused(f"the model hosts {', '.join(options.model_hosts)}: {e}") from e
+    standing = Standing(state, registry, keep=options.keep, routing=routing)
     lobby = standing.lobby
     try:
         async with Proxy(
-            Routing(registry),
+            routing,
             lobby.store,
             lobby.clock,
             confdir=state / "ca",
@@ -566,8 +623,10 @@ async def serving(state: Path, options: ServeOptions) -> AsyncIterator[Serving]:
             port=options.proxy_port,
             upstream_ca=options.upstream_ca,
             capture_unknown=options.capture_unknown,
+            record_model_calls=options.record_model_calls,
         ) as proxy:
             proxy.addon.route(standing)
+            standing.flush_in = proxy.addon.flush_in
             async with _receiver(standing, options) as receiver:
                 serving_ = Serving(standing, proxy, receiver, options.control_port, options)
                 async with _control(create_app(serving_), options.host, options.control_port) as port:

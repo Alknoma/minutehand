@@ -51,5 +51,7 @@ a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with
 - No `ETag` or conditional requests, no `Accept: application/vnd.github.raw`. A text match's fragment is the first
   line holding a term, not GitHub's wider snippet.
 - Code search scores every hit 1.0 and orders by repository and path.
-- `HEAD` is accepted as a ref by every endpoint; whether GitHub's REST endpoints accept it has not been checked.
+- `HEAD` is accepted as a ref everywhere a ref is. GraphQL documents it; the REST reference does not mention it,
+  so it is kept as accepted there (`CLAIMS.md`, "`HEAD` as a ref"). Getting one commit by ref and compare are
+  not served.
 - The seed comes beside the scenario (`GitHubProvider.seed_with`) until a scenario carries a provider's own seed.

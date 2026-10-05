@@ -120,6 +120,12 @@ class Manifest(Model):
         description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "
         "is refused at the call, naming these",
     )
+    state_outside_log: str | None = Field(
+        default=None,
+        description="What of the state this provider answers from it keeps outside the run's log, in words (e.g. "
+        "queues and their messages, in a library's process memory); None when everything is in the log. A fork "
+        "of a run that called it before the fork's seq is refused, naming this, since the child could not see it",
+    )
 
 
 def world_keys(manifest: Manifest, host: str, path: str) -> list[str]:

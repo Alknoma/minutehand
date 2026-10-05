@@ -15,12 +15,12 @@ import pytest
 from botocore.exceptions import ClientError
 
 from minutehand.adapters.providers.aws.provider import AwsProvider, build
-from minutehand.adapters.providers.aws.wire import UnsupportedTarget
+from minutehand.adapters.providers.aws.wire import SqsDelete, UnsupportedTarget, sqs_delete
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordSnapshot
-from minutehand.ports.provider import BooksWakes, Provider, Wakes
+from minutehand.ports.provider import BooksWakes, ConfirmsDelivery, Provider, Wakes
 from tests.support.aws_proxy import AwsProxy
 
 START = datetime(2026, 8, 24, 10, 51, tzinfo=UTC)  # a Monday
@@ -114,6 +114,8 @@ def test_it_satisfies_the_ports() -> None:
     wakes: Wakes = ListWakes()
     books.bind(wakes)
     assert provider.manifest.books_wakes
+    confirms: ConfirmsDelivery = aws
+    assert isinstance(confirms, ConfirmsDelivery)
 
 
 def test_a_one_time_schedule_books_its_instant_in_utc(run: AwsRun) -> None:
@@ -275,3 +277,60 @@ def test_two_provider_instances_do_not_see_each_others_aws(run: AwsRun, tmp_path
     assert other.poll(url_b) == []
     run.activate()
     assert run.poll(url_a) == ["only in run a"]
+
+
+def test_a_delivery_is_taken_when_the_agent_deletes_its_message_and_not_when_it_receives_it(run: AwsRun) -> None:
+    """As an agent on SQS does: receive, act, then delete. The run may move past the booking's wake only after the
+    delete; a message received and not deleted returns to the queue if the agent fails, so it is not taken."""
+    url, queue = run.queue()
+    arn = run.schedule("follow-up", "rate(6 hours)", queue)
+    run.advance()
+    assert not run.provider.taken(arn, run.store)
+    [received] = run.sqs.receive_message(QueueUrl=url)["Messages"]
+    assert not run.provider.taken(arn, run.store), "received is not taken"
+    run.sqs.delete_message(QueueUrl=url, ReceiptHandle=received["ReceiptHandle"])
+    assert run.proxy.on_loop(lambda: run.provider.taken(arn, run.store))
+    assert (Actor.AGENT, Operation.DELETE, None) in run.log()
+    run.advance()
+    assert not run.provider.taken(arn, run.store), "the next occurrence delivered again"
+
+
+def test_a_batch_delete_takes_each_delivery_it_names(run: AwsRun) -> None:
+    url, queue = run.queue()
+    first = run.schedule("first", "at(2026-08-25T00:00:00)", queue)
+    second = run.schedule("second", "at(2026-08-25T00:00:00)", queue)
+    run.advance()
+    received = run.sqs.receive_message(QueueUrl=url, MaxNumberOfMessages=10)["Messages"]
+    assert len(received) == 2
+    run.sqs.delete_message_batch(
+        QueueUrl=url, Entries=[{"Id": str(n), "ReceiptHandle": m["ReceiptHandle"]} for n, m in enumerate(received)]
+    )
+    assert run.proxy.on_loop(lambda: run.provider.taken(first, run.store) and run.provider.taken(second, run.store))
+
+
+def test_a_message_the_agent_sent_itself_and_deleted_takes_no_booking(run: AwsRun) -> None:
+    url, queue = run.queue()
+    arn = run.schedule("follow-up", "at(2026-08-25T00:00:00)", queue)
+    run.advance()
+    run.sqs.send_message(QueueUrl=url, MessageBody="the agent's own")
+    for message in run.sqs.receive_message(QueueUrl=url, MaxNumberOfMessages=10)["Messages"]:
+        if message["Body"] == "the agent's own":
+            run.sqs.delete_message(QueueUrl=url, ReceiptHandle=message["ReceiptHandle"])
+    assert not run.provider.taken(arn, run.store)
+
+
+def test_a_delete_in_the_query_protocol_is_read_as_one() -> None:
+    """Older SDKs send SQS's query protocol: a form body naming the action."""
+    host = "sqs.eu-west-1.amazonaws.com"
+    url = "https://sqs.eu-west-1.amazonaws.com/123456789012/agent-wakes"
+    single = f"Action=DeleteMessage&QueueUrl={url}&ReceiptHandle=abc".encode()
+    batch = (
+        f"Action=DeleteMessageBatch&QueueUrl={url}&DeleteMessageBatchRequestEntry.1.Id=a"
+        "&DeleteMessageBatchRequestEntry.1.ReceiptHandle=one&DeleteMessageBatchRequestEntry.2.Id=b"
+        "&DeleteMessageBatchRequestEntry.2.ReceiptHandle=two"
+    ).encode()
+    assert sqs_delete(host, "", single) == SqsDelete(region="eu-west-1", queue="agent-wakes", receipt_handles=["abc"])
+    found = sqs_delete(host, "", batch)
+    assert found is not None and sorted(found.receipt_handles) == ["one", "two"]
+    assert sqs_delete(host, "", f"Action=ReceiveMessage&QueueUrl={url}".encode()) is None
+    assert sqs_delete("scheduler.eu-west-1.amazonaws.com", "", single) is None

@@ -104,9 +104,11 @@ def _advance(by: timedelta | None, to: datetime | None) -> str:
     return Advance(by=by, to=to).model_dump_json(exclude_none=True)
 
 
-def _calls_query(*, unmatched: bool, captured: bool) -> dict[str, str] | None:
-    """`GET /calls`'s filters: refused calls, captured calls, or with neither every call."""
-    asked = {name: "true" for name, wanted in (("unmatched", unmatched), ("captured", captured)) if wanted}
+def _calls_query(*, unmatched: bool, captured: bool, tunnelled: bool = False) -> dict[str, str] | None:
+    """`GET /calls`'s filters: refused calls, captured calls, calls on tunnels relayed unopened, or with none of
+    them every call."""
+    wanted_by = (("unmatched", unmatched), ("captured", captured), ("tunnelled", tunnelled))
+    asked = {name: "true" for name, wanted in wanted_by if wanted}
     return asked or None
 
 
@@ -174,8 +176,14 @@ class MinutehandClient:
     def entities(self, world_id: str, *, provider: str | None = None, kind: EntityKind | None = None) -> EntitiesPage:
         return self._get(f"/worlds/{world_id}/entities", EntitiesPage, _query(provider=provider, kind=kind))
 
-    def calls(self, world_id: str, *, unmatched: bool = False, captured: bool = False) -> CallsPage:
-        return self._get(f"/worlds/{world_id}/calls", CallsPage, _calls_query(unmatched=unmatched, captured=captured))
+    def calls(
+        self, world_id: str, *, unmatched: bool = False, captured: bool = False, tunnelled: bool = False
+    ) -> CallsPage:
+        return self._get(
+            f"/worlds/{world_id}/calls",
+            CallsPage,
+            _calls_query(unmatched=unmatched, captured=captured, tunnelled=tunnelled),
+        )
 
     def spans(self, world_id: str) -> SpansPage:
         return self._get(f"/worlds/{world_id}/spans", SpansPage)
@@ -278,9 +286,13 @@ class AsyncMinutehandClient:
     ) -> EntitiesPage:
         return await self._get(f"/worlds/{world_id}/entities", EntitiesPage, _query(provider=provider, kind=kind))
 
-    async def calls(self, world_id: str, *, unmatched: bool = False, captured: bool = False) -> CallsPage:
+    async def calls(
+        self, world_id: str, *, unmatched: bool = False, captured: bool = False, tunnelled: bool = False
+    ) -> CallsPage:
         return await self._get(
-            f"/worlds/{world_id}/calls", CallsPage, _calls_query(unmatched=unmatched, captured=captured)
+            f"/worlds/{world_id}/calls",
+            CallsPage,
+            _calls_query(unmatched=unmatched, captured=captured, tunnelled=tunnelled),
         )
 
     async def spans(self, world_id: str) -> SpansPage:

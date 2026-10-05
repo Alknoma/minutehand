@@ -18,6 +18,7 @@ as it arrives, by the same tee a recorded model call's stream uses.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -30,13 +31,16 @@ from mitmproxy import http, tcp, tls
 from mitmproxy.addons import asgiapp
 from mitmproxy.net import encoding
 from mitmproxy.proxy import layer, layers
+from mitmproxy.proxy.layers import modes
 
-from minutehand.adapters.proxy import capture, credentials, redact
+from minutehand.adapters.proxy import capture, connect, credentials, redact
 from minutehand.adapters.proxy.capture import Capturing, Declaration
 from minutehand.adapters.proxy.edit import apply_edits
+from minutehand.adapters.proxy.hosts import loopback_name
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
-from minutehand.adapters.proxy.worlds import Mounted, Worlds, one_run
+from minutehand.adapters.proxy.tunnel import Tunnel
+from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.application.restore import SeenCall
 from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, OnMiss, PassThrough
 from minutehand.domain.provider import Manifest, world_keys
@@ -46,6 +50,7 @@ from minutehand.domain.world import (
     Actor,
     AnsweredBy,
     BodyKept,
+    CallBegan,
     Captured,
     CaptureMode,
     Change,
@@ -55,6 +60,8 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     Recipient,
+    Tunnelled,
+    TunnelRoute,
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp, Message, Scope
@@ -92,6 +99,42 @@ TEE_LIMIT = 64 * 1024 * 1024
 is kept as its length only."""
 
 REPLAYED_HEADER = "x-minutehand-replayed"
+
+
+BURST_QUIET = 0.5
+"""Seconds a tunnel the proxy never opens stays quiet, its last request answered, before what moved on it since
+its previous record is written as one call. This only splits calls within a wake: the agent sending in a later
+wake than its burst began in always ends that burst first, so a connection reused in a later wake is a record
+in each, however the machine's timers ran."""
+
+
+@dataclass
+class _Burst:
+    """What has moved on a relayed tunnel since its previous record was written."""
+
+    world: Mounted
+    route: TunnelRoute
+    began: CallBegan
+    started: float
+    ended: float
+    sent: int = 0
+    received: int = 0
+    carried: bool = False
+
+
+@dataclass
+class _Relayed:
+    """One tunnel the proxy relays as bytes: what they say of a request awaiting its answer (`Tunnel`), and the
+    burst in progress, written as a recorded call when it falls quiet, when the connection closes, or when the
+    proxy is moved to another run or stopped."""
+
+    tunnel: Tunnel
+    connection: str
+    port: int
+    opened: float
+    written: int = 0
+    burst: _Burst | None = None
+    quiet: asyncio.TimerHandle | None = None
 
 
 @dataclass
@@ -133,10 +176,10 @@ class ProxyAddon:
         self._streams: dict[str, list[bytes]] = {}
         self._recorded: set[str] = set()
         self.last_seen: SeenCall | None = None
-        # Calls sent on to a real host and not answered yet, by flow id; tunnels by flow id, with whether their
-        # last bytes went from the agent.
+        # Calls sent on to a real host and not answered yet, by flow id; tunnels by flow id, each with what its
+        # bytes tell of whether the agent awaits an answer on it (`tunnel.Tunnel`).
         self._sent_on: dict[str, str] = {}
-        self._tunnels: dict[str, tuple[str, bool]] = {}
+        self._tunnels: dict[str, _Relayed] = {}
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
@@ -144,13 +187,28 @@ class ProxyAddon:
         self.last_seen = SeenCall(at=time.monotonic(), what=what)
 
     def waiting(self) -> list[str]:
-        """What the agent sent and has not had answered: a call sent on to a real host, and a tunnel whose last
-        bytes went from the agent to the host (a request on it, unanswered as far as bytes can tell)."""
+        """What the agent sent and has not had answered: a call sent on to a real host, and a tunnel on which a
+        request went from the agent and nothing since reads as its answer (`tunnel.Tunnel`: a TLS 1.3 server's
+        session tickets do not)."""
         sent = list(self._sent_on.values())
-        tunnels = [f"a request on the open tunnel to {host}" for host, asked in self._tunnels.values() if asked]
+        tunnels = [
+            awaiting for relayed in self._tunnels.values() if (awaiting := relayed.tunnel.awaiting()) is not None
+        ]
         return sent + tunnels
 
+    def forwarded(self, host: str) -> bool:
+        """`localhost` itself, which nothing claims or declares: the agent's environment no longer sends it direct
+        (`session.Listen.direct`), so the proxy sends it on to this machine untouched, unrecorded and unseen, as
+        if it had gone direct. A name under `localhost` is a host like any other."""
+        return (
+            loopback_name(host)
+            and self.routing.policy(host) is HostPolicy.REFUSE
+            and self.worlds.lobby.capturing.find(host) is None
+        )
+
     def http_connect(self, flow: http.HTTPFlow) -> None:
+        if self.forwarded(flow.request.pretty_host):
+            return
         self._seen(f"CONNECT {flow.request.pretty_host}:{flow.request.port}")
 
     def next_layer(self, nextlayer: layer.NextLayer) -> None:
@@ -159,11 +217,24 @@ class ProxyAddon:
         on a tunnel that was already open is activity like any other call. mitmproxy's own NextLayer addon has
         chosen first; this replaces its choice for those hosts only."""
         context = nextlayer.context
+        chosen = nextlayer.layer
+        if isinstance(chosen, layers.HttpLayer) and context.layers[-2:] == [context.layers[0], chosen]:
+            # The client's own connection to the proxy, about to be read as HTTP: mitmproxy would refuse a CONNECT
+            # it cannot parse with a bare 400, before any hook sees a flow.
+            address6 = connect.unbracketed_ipv6(nextlayer.data_client())
+            if address6 is not None and isinstance(context.layers[0], modes.HttpProxy):
+                self._seen(f"CONNECT {address6} without brackets, refused")
+                context.layers.remove(chosen)
+                nextlayer.layer = connect.Refused(context, connect.refusal(address6))
+            return
         address = context.server.address
         if context.client.transport_protocol != "tcp" or address is None:
             return
         if not any(isinstance(lay, layers.HttpLayer) for lay in context.layers):
             return  # not the inside of a CONNECT
+        if self.forwarded(str(address[0])):
+            nextlayer.layer = layers.TCPLayer(context, ignore=True)
+            return
         if isinstance(nextlayer.layer, layers.TCPLayer) or self.policy(str(address[0])) is not HostPolicy.TUNNEL:
             return
         nextlayer.layer = layers.TCPLayer(context)
@@ -171,27 +242,131 @@ class ProxyAddon:
     def tcp_start(self, flow: tcp.TCPFlow) -> None:
         host = str(flow.server_conn.address[0]) if flow.server_conn.address else "?"
         self._seen(f"a new tunnelled connection to {host}")
-        self._tunnels[flow.id] = (host, False)
+        self._tunnels[flow.id] = self._relayed(flow)
+
+    def _relayed(self, flow: tcp.TCPFlow) -> _Relayed:
+        address = flow.server_conn.address
+        return _Relayed(
+            Tunnel(str(address[0]) if address else "?"),
+            connection=flow.id,
+            port=int(address[1]) if address else 0,
+            opened=flow.client_conn.timestamp_start,
+        )
 
     def tcp_message(self, flow: tcp.TCPFlow) -> None:
         message = flow.messages[-1]
-        host = self._tunnels[flow.id][0] if flow.id in self._tunnels else "?"
-        self._tunnels[flow.id] = (host, message.from_client)
-        self._seen(f"bytes {'to' if message.from_client else 'from'} {host} on an open tunnel")
+        relayed = self._tunnels[flow.id] if flow.id in self._tunnels else self._relayed(flow)
+        self._tunnels[flow.id] = relayed
+        tunnel = relayed.tunnel
+        carried = tunnel.moved(message.content, from_client=message.from_client)
+        self._seen(f"bytes {'to' if message.from_client else 'from'} {tunnel.host} on an open tunnel")
+        earlier = relayed.burst
+        if message.from_client and earlier is not None and earlier.world.clock.wake() != earlier.began.wake:
+            # The agent sends again in a later wake: what moved before is the earlier wake's call, whatever the
+            # bytes said of an answer. A wake edge ends a burst, never only a quiet period.
+            self._write(relayed, closed=None)
+        burst = relayed.burst or self._burst(tunnel.host, message.timestamp)
+        relayed.burst = burst
+        burst.ended = message.timestamp
+        burst.carried = burst.carried or carried
+        if message.from_client:
+            burst.sent += len(message.content)
+        else:
+            burst.received += len(message.content)
+        if relayed.quiet is not None:
+            relayed.quiet.cancel()
+        relayed.quiet = asyncio.get_running_loop().call_later(BURST_QUIET, self._fell_quiet, flow.id)
         del flow.messages[:-1]  # bytes are relayed, not kept: a long-lived tunnel would grow without end
 
+    def _burst(self, host: str, at: float) -> _Burst:
+        """A burst beginning now: kept in the world the host's model calls are kept in, stamped with that world's
+        wake and simulated time now, whenever it is written."""
+        world = self.worlds.keeping(host, None)
+        if isinstance(self.worlds, One):
+            route = TunnelRoute.RUN
+        else:
+            route = TunnelRoute.NONE if world is self.worlds.lobby else TunnelRoute.HOST
+        began = CallBegan(wake=world.clock.wake(), sim_time=world.clock.now())
+        return _Burst(world, route, began, started=at, ended=at)
+
+    def _fell_quiet(self, flow_id: str) -> None:
+        """No bytes for `BURST_QUIET`: the burst is over unless the agent is still awaiting its answer, which the
+        next bytes, the connection's close or a flush end instead."""
+        relayed = self._tunnels[flow_id] if flow_id in self._tunnels else None
+        if relayed is None or relayed.tunnel.asked:
+            return
+        self._write(relayed, closed=None)
+
     def tcp_end(self, flow: tcp.TCPFlow) -> None:
-        self._tunnels.pop(flow.id, None)
+        self._closed(flow)
 
     def tcp_error(self, flow: tcp.TCPFlow) -> None:
-        self._tunnels.pop(flow.id, None)
+        self._closed(flow)
+
+    def _closed(self, flow: tcp.TCPFlow) -> None:
+        relayed = self._tunnels.pop(flow.id, None)
+        if relayed is None:
+            return
+        ends = [t for t in (flow.client_conn.timestamp_end, flow.server_conn.timestamp_end) if t is not None]
+        closed = max(ends) if ends else relayed.burst.ended if relayed.burst is not None else None
+        self._write(relayed, closed=closed)
+
+    def flush(self) -> None:
+        """Write every burst still in progress on a relayed tunnel, as far as it has gone: the run is ending or
+        the proxy is moving to another one. What moves on the tunnel afterwards is a burst of its own."""
+        for relayed in self._tunnels.values():
+            self._write(relayed, closed=None)
+
+    def flush_in(self, world: Mounted) -> None:
+        """`flush`, for the bursts kept in `world` only: it is about to be scored and closed, or reset."""
+        for relayed in self._tunnels.values():
+            if relayed.burst is not None and relayed.burst.world is world:
+                self._write(relayed, closed=None)
+
+    def done(self) -> None:
+        """mitmproxy is stopping: what is in progress is written before the run's store is closed."""
+        self.flush()
+
+    def _write(self, relayed: _Relayed, *, closed: float | None) -> None:
+        """The burst in progress as one recorded call, in the world it began in. A burst of nothing but TLS
+        alerts or cipher changes (a connection's `close_notify`) carried no call and is dropped."""
+        if relayed.quiet is not None:
+            relayed.quiet.cancel()
+            relayed.quiet = None
+        burst, relayed.burst = relayed.burst, None
+        if burst is None or not burst.carried:
+            return
+        relayed.written += 1
+        host = relayed.tunnel.host
+        exchange = Exchange(
+            method="CONNECT",
+            host=host,
+            path=f"{host}:{relayed.port}",
+            status=200,
+            tunnelled=Tunnelled(
+                port=relayed.port,
+                connection=relayed.connection,
+                burst=relayed.written,
+                opened=datetime.fromtimestamp(relayed.opened, UTC),
+                started=datetime.fromtimestamp(burst.started, UTC),
+                ended=datetime.fromtimestamp(burst.ended, UTC),
+                closed=datetime.fromtimestamp(closed, UTC) if closed is not None else None,
+                bytes_sent=burst.sent,
+                bytes_received=burst.received,
+                route=burst.route,
+            ),
+        )
+        head = burst.world.store.head()
+        burst.world.store.attach(exchange, first_seq=head + 1, last_seq=head, began=burst.began)
 
     def mount(
         self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
     ) -> None:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
         its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
-        and seeded then with `scenario`'s people and things, unless `world` already holds anything of it."""
+        and seeded then with `scenario`'s people and things, unless `world` already holds anything of it. A burst
+        in progress on a relayed tunnel is written to the run it began in first."""
+        self.flush()
         self.worlds = one_run(
             world, clock, apps, scenario=scenario, provider=self.routing.registry.provider, capturing=self.capturing
         )
@@ -211,13 +386,22 @@ class ProxyAddon:
     def policy(self, host: str) -> HostPolicy:
         """The routing's policy for `host`, with a model API this proxy records opened rather than tunnelled."""
         policy = self.routing.policy(host)
-        return HostPolicy.RECORD if policy is HostPolicy.TUNNEL and self.record_model_calls else policy
+        return HostPolicy.RECORD if policy is HostPolicy.TUNNEL and self._records(host) else policy
+
+    def _records(self, host: str) -> bool:
+        """Whether a model call to `host` is kept as a span: every one, under `record_model_calls`, or one to a
+        model host a world declared with `record`."""
+        return self.record_model_calls or self.routing.records(host)
 
     async def request(self, flow: http.HTTPFlow) -> None:
+        if flow.response is not None:
+            return  # answered as its headers arrived: a base-URL request that names no host (`base_url`)
         host = flow.request.pretty_host
+        if self.forwarded(host):
+            return
         self._seen(f"{flow.request.method} {host}{redact.path(flow.request.path)}")
         policy = self.policy(host)
-        if self.record_model_calls and policy in (HostPolicy.EDIT, HostPolicy.RECORD):
+        if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._records(host):
             self._recorded.add(flow.id)
         if policy is HostPolicy.EDIT:
             self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
@@ -288,24 +472,27 @@ class ProxyAddon:
         request, response = flow.request, flow.response
         assert response is not None
         if streamed is None:
-            body = (response.get_content(strict=False) or b"").decode("utf-8", errors="replace")
+            body = response.get_content(strict=False) or b""
         else:
             raw = b"".join(streamed)
             coding = _first_header(response, "content-encoding")
             decoded = encoding.decode(raw, coding) if coding else raw
-            body = decoded.decode("utf-8", errors="replace") if isinstance(decoded, bytes) else decoded
+            body = decoded if isinstance(decoded, bytes) else decoded.encode("utf-8")
         exchanged = Exchanged(
             host=request.pretty_host,
             path=request.path,
             status=response.status_code,
-            request_body=(request.get_content(strict=False) or b"").decode("utf-8", errors="replace"),
+            request_body=request.get_content(strict=False) or b"",
+            request_type=_first_header(request, "content-type") or "",
             response_body=body,
             response_type=_first_header(response, "content-type") or "",
             traceparent=_first_header(request, TRACEPARENT),
             started=datetime.fromtimestamp(request.timestamp_start, UTC),
             ended=datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC),
         )
-        self.worlds.lobby.store.receive([span_of(exchanged)], source=SpanSource.WIRE)
+        span = span_of(exchanged)
+        kept_in = self.worlds.keeping(exchanged.host, span.trace_id if span.parent_span_id is not None else None)
+        kept_in.store.receive([span], source=SpanSource.WIRE)
 
     async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> None:
         async with world.lock:

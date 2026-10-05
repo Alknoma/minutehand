@@ -389,6 +389,9 @@ class Switchboard:
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.apps = dict(apps)
 
+    def flush(self) -> None:
+        """It relays no tunnel, so nothing it sees is ever recorded later than as it is answered."""
+
     async def __call__(self, scope: dict[str, object], receive: object, send: object) -> None:
         path = scope["path"]
         assert isinstance(path, str)

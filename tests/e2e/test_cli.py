@@ -164,7 +164,7 @@ def test_env_writes_a_compose_override_that_injects_the_variables_and_mounts_the
     environment = platform["environment"]
     assert environment["HTTPS_PROXY"] == "http://host.docker.internal:18080"
     assert environment["SSL_CERT_FILE"] == environment["NODE_EXTRA_CA_CERTS"] == "/etc/minutehand/ca-bundle.pem"
-    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,worker,firestore,host.docker.internal"
+    assert environment["NO_PROXY"] == "127.0.0.1,platform,worker,firestore,host.docker.internal,localhost"
     assert environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://host.docker.internal:18081"
 
 
@@ -221,7 +221,7 @@ def test_env_serve_as_writes_a_stack_whose_services_reach_minutehand_by_its_serv
     environment = platform["environment"]
     assert environment["HTTPS_PROXY"] == "http://minutehand:8080"
     assert environment["SSL_CERT_FILE"] == "/etc/minutehand/minutehand-ca-bundle.pem"
-    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,worker,firestore,minutehand"
+    assert environment["NO_PROXY"] == "127.0.0.1,platform,worker,firestore,minutehand,localhost"
     assert environment["no_grpc_proxy"] == environment["NO_PROXY"]
     assert environment["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] == "/etc/minutehand/minutehand-ca-bundle.pem"
     assert environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://minutehand:4318"
@@ -237,7 +237,7 @@ def test_env_serve_as_without_telemetry_still_reaches_the_server_directly(tmp_pa
 
     assert printed.returncode == 0, printed.stderr
     environment = yaml.safe_load(printed.stdout)["services"]["platform"]["environment"]
-    assert environment["NO_PROXY"] == "localhost,127.0.0.1,platform,minutehand"
+    assert environment["NO_PROXY"] == "127.0.0.1,platform,minutehand,localhost"
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in environment
 
 

@@ -108,7 +108,7 @@ def test_the_environment_names_the_bundle_in_every_ca_variable_and_the_proxy_in_
     for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
         assert found[name] == "http://host.docker.internal:18080"
     # The receiver is reached directly, not through the proxy, at the name the agent has for this machine.
-    assert found["NO_PROXY"] == found["no_proxy"] == "localhost,127.0.0.1,db,host.docker.internal"
+    assert found["NO_PROXY"] == found["no_proxy"] == "127.0.0.1,db,host.docker.internal,localhost"
     assert found["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://host.docker.internal:18081"
     assert found["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://host.docker.internal:18081/v1/traces"
     assert found["OTEL_EXPORTER_OTLP_PROTOCOL"] == found["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] == "http/protobuf"

@@ -11,16 +11,22 @@ What the world log holds, and what it does not:
 - Every booking, update, cancellation and delivery is a `RecordSnapshot` on a
   RECORD entity in the run's `Store`: `resource="schedule"` (keyed by the schedule
   ARN, the same string as the `Due.ref`) and `resource="queue_message"` (keyed by
-  the SQS message id). What the agent did is `actor=AGENT`; what the scheduler
-  did (a delivery, a re-booking, a delete after completion) is `actor=SCENARIO`.
-  The schedule record carries `next_at`, so what is pending is in the log too.
+  the SQS message id, listed under the schedule that delivered it). What the agent
+  did is `actor=AGENT`; what the scheduler did (a delivery, a re-booking, a delete
+  after completion) is `actor=SCENARIO`. The schedule record carries `next_at`, so
+  what is pending is in the log too.
+- **A delivery is taken when the agent deletes its message** (`DeleteMessage` or
+  `DeleteMessageBatch`, either SQS protocol): the delivery's record is deleted as
+  the agent's act, and `taken` (`ConfirmsDelivery`) answers True once nothing the
+  schedule delivered is still live. Receiving is not taking.
 - **moto keeps AWS's own state in process memory, outside the `Store`.** Queues,
   their messages, and moto's copy of each schedule are not in the log, and each
   run's app takes a fresh account (below), so a fork cannot reach them at all: the
   schedule record it shares with its parent names the parent's account, whose
-  queues live only in the memory of the process that played the parent. A fork
-  whose checkpoint holds a pending booking is therefore refused before it starts
-  (`application.rewind`); `fire` raises `LookupError` on a schedule targeting
+  queues live only in the memory of the process that played the parent. The
+  manifest says so (`state_outside_log`), and a fork of a run that used this
+  provider before the fork's seq is therefore refused before it starts, naming
+  it (`application.rewind`); `fire` raises `LookupError` on a schedule targeting
   another account. moto's SQS backend holds a `threading.RLock` and cannot be
   pickled or deep-copied, so there is no per-run snapshot to restore instead.
 - **moto reads the machine clock.** SQS DelaySeconds, VisibilityTimeout,
@@ -46,7 +52,7 @@ from collections.abc import Awaitable, Callable
 from asgiref.wsgi import WsgiToAsgi
 from moto.moto_server.werkzeug_app import DomainDispatcherApplication, create_backend_app
 from moto.scheduler.models import scheduler_backends
-from moto.sqs.models import sqs_backends
+from moto.sqs.models import Queue, sqs_backends
 
 from minutehand.adapters.providers.aws.manifest import MANIFEST
 from minutehand.adapters.providers.aws.schedule import ScheduleRecord
@@ -55,8 +61,10 @@ from minutehand.adapters.providers.aws.wire import (
     CallKind,
     Refusal,
     ScheduleCall,
+    SqsDelete,
     schedule_arn,
     schedule_call,
+    sqs_delete,
     sqs_target,
 )
 from minutehand.domain.clock import Due, DueKind
@@ -142,6 +150,8 @@ class AwsProvider:
                     refused.body(),
                 )
                 return
+            deleting = sqs_delete(_header(headers, b"host"), _header(headers, b"x-amz-target"), body)
+            deliveries = self._deliveries(deleting, world) if deleting is not None else []
             forwarded = dict(scope)
             forwarded["headers"] = [(k, v) for k, v in headers if k != b"x-moto-account-id"] + [
                 (b"x-moto-account-id", account)
@@ -149,6 +159,8 @@ class AwsProvider:
             status, response_headers, response_body = await _call(moto, forwarded, body)
             if call is not None and 200 <= status < 300:
                 self._record(call, world, clock)
+            if deleting is not None and 200 <= status < 300:
+                self._taken(deleting, deliveries, world)
             await _respond(send, status, response_headers, response_body)
 
         return serve
@@ -177,6 +189,48 @@ class AwsProvider:
         operation = Operation.CREATE if call.kind is CallKind.CREATE else Operation.UPDATE
         world.apply(_schedule_change(record, operation, Actor.AGENT))
 
+    def _deliveries(self, deleting: SqsDelete, world: Store) -> list[QueueMessageRecord]:
+        """The delivered messages still live in the world that these receipt handles name. Read before moto
+        answers the delete, since a receipt handle names nothing once its message is gone."""
+        queue = self._queue(deleting)
+        if queue is None:
+            return []
+        # moto keeps in-flight messages only in `_messages`; its public `messages` lists the visible ones, and a
+        # message the agent has received is exactly one that is not visible.
+        ids = {m.id for m in queue._messages if any(m.had_receipt_handle(h) for h in deleting.receipt_handles)}
+        found: list[QueueMessageRecord] = []
+        for message_id in sorted(ids):
+            stored = world.get(_message_entity(message_id))
+            if stored is not None:
+                found.append(QueueMessageRecord.model_validate_json(stored.body))
+        return found
+
+    def _taken(self, deleting: SqsDelete, deliveries: list[QueueMessageRecord], world: Store) -> None:
+        """Each delivered message the delete removed from its queue is gone from the world too, as the agent's
+        act: the booking that delivered it has been taken."""
+        queue = self._queue(deleting)
+        remaining = {m.id for m in queue._messages} if queue is not None else set()
+        for delivery in deliveries:
+            if delivery.message_id in remaining:
+                continue
+            world.apply(
+                Change(
+                    entity=_message_entity(delivery.message_id),
+                    operation=Operation.DELETE,
+                    actor=Actor.AGENT,
+                    parent=delivery.schedule_arn,
+                )
+            )
+
+    def _queue(self, deleting: SqsDelete) -> Queue | None:
+        queues = sqs_backends[self.account][deleting.region].queues
+        return queues[deleting.queue] if deleting.queue in queues else None
+
+    def taken(self, ref: str, world: Store) -> bool:
+        """`ConfirmsDelivery`: everything schedule `ref` delivered has been deleted from its queue by the agent.
+        A message merely received is not taken: it is in flight, and returns to the queue if the agent fails."""
+        return not world.children(MANIFEST.key, EntityKind.RECORD, ref, limit=1)
+
     async def fire(self, ref: str, world: Store, clock: Clock) -> None:
         stored = world.get(_schedule_entity(ref))
         if stored is None:
@@ -203,11 +257,11 @@ class AwsProvider:
         )
         world.apply(
             Change(
-                entity=EntityRef(provider=MANIFEST.key, kind=EntityKind.RECORD, external_id=message.id),
+                entity=_message_entity(message.id),
                 operation=Operation.CREATE,
                 actor=Actor.SCENARIO,
                 body=delivered.model_dump_json(),
-                parent=queue.arn,
+                parent=ref,
                 after=RecordSnapshot(resource="queue_message", text=record.target_input),
             )
         )
@@ -242,6 +296,10 @@ def build() -> AwsProvider:
 
 def _schedule_entity(arn: str) -> EntityRef:
     return EntityRef(provider=MANIFEST.key, kind=EntityKind.RECORD, external_id=arn)
+
+
+def _message_entity(message_id: str) -> EntityRef:
+    return EntityRef(provider=MANIFEST.key, kind=EntityKind.RECORD, external_id=message_id)
 
 
 def _schedule_change(record: ScheduleRecord, operation: Operation, actor: Actor) -> Change:
