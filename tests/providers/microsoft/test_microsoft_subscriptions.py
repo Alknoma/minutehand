@@ -16,7 +16,8 @@ async def test_a_subscription_expires_on_the_runs_clock_and_notifies_nothing_aft
     tenant: Tenant, microsoft: Intercepted, webhook: Webhook
 ) -> None:
     drive = tenant.world.drives()[0].drive.id
-    item = tenant.world.children(tenant.world.drives()[0].root_id)[-1].item.id
+    root = tenant.world.drives()[0].root_id
+    item = next(c.item.id for c in tenant.world.children(root) if c.item.name == "notes.txt")
     async with microsoft.http() as http:
         auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
         made = await http.post(
