@@ -55,4 +55,5 @@ def minutehand_world(minutehand: MinutehandClient, minutehand_spec: CreateWorld)
     try:
         yield world
     finally:
-        minutehand.close_world(world.world_id)
+        if world.closed is None:
+            world.close()
