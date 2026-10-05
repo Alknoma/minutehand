@@ -1116,7 +1116,7 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 - **A fork starts only at a restorable checkpoint,** and only for an agent with `StateHooks`. A checkpoint at which the agent did not settle within `settle_limit` is not restorable.
 - **A restore is proven by the agent's report alone.** Two moments with the same status, next wake and commitments are indistinguishable to the verify step; an agent with no report endpoint between wakes is restored unverified.
 - **Settling sees only calls through the proxy.** A call to `localhost` or a request on a tunnel already open is invisible, so background work there can outlive the quiet period unseen.
-- **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 6.8 to 16.7 s here, about 58 s on a loaded machine.
+- **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork sees none of its parent's queues, and a booking pending at the fork raises when it fires. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
 - **Every provider accepts any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana, YouTrack and Drive accept any bearer token; Drive's `/token` verifies nothing.

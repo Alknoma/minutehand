@@ -38,12 +38,11 @@ The `restore` step, from the copy to the emulator answering again with the expor
 
 | Where | Image | Seconds |
 |---|---|---|
-| macOS, Docker Desktop, about 47 other containers running, 2026-10-04 (two restores in one test run) | a local image with firebase-tools 13.35.1 | 6.8 and 16.7 |
+| macOS, Docker Desktop, about 47 other containers running, 2026-10-04: two test runs, two restores each | a local image with firebase-tools 13.35.1 | 6.8 and 16.7; 4.5 and 4.7 |
 | the same machine, more heavily loaded, earlier the same day (stop to answering) | the same | about 58 |
 
-Plan for a minute per fork. The whole fork-and-restore cycle in the test (stop, restore, start, answer,
-verify) took 8.3 s of the 47 s the test ran for, most of the rest being the parent run's six exports and the
-second, deliberately wrong restore.
+Plan for a minute per fork. The whole restore sequence in the test (stop, restore, start, answer, verify)
+took 8.3 s and 5.5 s; the test took 59.5 s and 31.1 s end to end, emulator start and removal included.
 
 ## Run it
 
