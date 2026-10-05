@@ -324,7 +324,7 @@ class Switchboard:
     def __init__(self) -> None:
         self.apps: dict[ProviderKey, ASGIApp] = {}
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.apps = dict(apps)
 
     async def __call__(self, scope: dict[str, object], receive: object, send: object) -> None:

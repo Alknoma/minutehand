@@ -49,6 +49,7 @@ def test_a_forgetful_agent_fails_no_follow_up_and_the_command_exits_1(
     assert ran.returncode == 1, ran.stderr
     out = ran.stdout
     assert "because nothing more was due and the agent asked for no wake" in out
+    assert "\n  providers the agent called: slack\n" in out
     failed = out[out.index("\nfail (") : out.index("\nscorecard")]
     assert "no_follow_up: wait on sofia expired" in failed
     assert "pattern expiry_on_every_wait: An expiry on every wait." in failed

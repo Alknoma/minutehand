@@ -21,7 +21,7 @@ from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.domain.provider import Manifest
-from minutehand.domain.scenario import ProviderKey
+from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Exchange
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -61,16 +61,21 @@ class ProxyAddon:
         self.clock = clock
         self.telemetry = telemetry
         self._apps: dict[str, ASGIApp] = {}
+        self._scenario: Scenario | None = None
         # One answered call at a time, so the events between two reads of the head
         # are exactly the events this call produced.
         self._recording = asyncio.Lock()
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
+    def mount(
+        self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
+    ) -> None:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
-        its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`."""
+        its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
+        and seeded then with `scenario`'s people and things, unless `world` already holds anything of it."""
         self.store = world
         self.clock = clock
         self._apps = dict(apps)
+        self._scenario = scenario
 
     def tls_clienthello(self, data: tls.ClientHelloData) -> None:
         host = data.client_hello.sni
@@ -95,8 +100,13 @@ class ProxyAddon:
                 self._record(flow, host, flow.request.path, first, None)
 
     def _app(self, manifest: Manifest) -> ASGIApp:
+        """The provider's app for this run; built on its first call, and seeded first when it is new to the world:
+        an agent calling a service the scenario never named still finds the scenario's people there."""
         if manifest.key not in self._apps:
-            self._apps[manifest.key] = self.routing.registry.provider(manifest).app(self.store, self.clock)
+            provider = self.routing.registry.provider(manifest)
+            if self._scenario is not None and not any(e.entity.provider == manifest.key for e in self.store.events()):
+                provider.seed(self._scenario, self.store)
+            self._apps[manifest.key] = provider.app(self.store, self.clock)
         return self._apps[manifest.key]
 
     async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest) -> None:
@@ -105,6 +115,7 @@ class ProxyAddon:
             original = flow.request.path
             try:
                 app = self._app(manifest)
+                first = self.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
                 flow.request.path = strip_prefix(original, manifest.path_prefix)
                 await asgiapp.serve(app, flow)
             except Exception:

@@ -28,7 +28,7 @@ from mitmproxy.master import Master
 from minutehand.adapters.proxy.addon import ProxyAddon
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
-from minutehand.domain.scenario import ProviderKey
+from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -82,9 +82,12 @@ class Proxy:
         it tunnels to a real host both verify. Written when the proxy starts."""
         return self._confdir / BUNDLE
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None:
-        """`application.orchestrator.Mounts`: the run the proxy now answers and records for."""
-        self.addon.mount(world, clock, apps)
+    def mount(
+        self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
+    ) -> None:
+        """`application.orchestrator.Mounts`: the run the proxy now answers and records for, and the scenario a
+        provider first called mid-run is seeded with."""
+        self.addon.mount(world, clock, apps, scenario=scenario)
 
     async def __aenter__(self) -> Proxy:
         if _running:

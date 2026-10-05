@@ -59,9 +59,10 @@ _PRIORITY = [WakeReason.PERSON_REPLIED, WakeReason.DIRECTION, WakeReason.DUE, Wa
 
 class Mounts(Protocol):
     """Whoever serves the providers' APIs to the agent (the proxy). Told once per run, since a fork is a new world:
-    from then on the calls it answers are recorded in `world`, and each provider in `apps` answers its hosts."""
+    from then on the calls it answers are recorded in `world`, and each provider in `apps` answers its hosts. A
+    provider the agent calls that is not in `apps` is seeded with `scenario` on its first call."""
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp]) -> None: ...
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None: ...
 
 
 class Scorer(Protocol):
@@ -284,6 +285,7 @@ class Orchestrator:
                     provider.manifest.key: provider.app(self._store, self._clock)
                     for provider in self._services.providers
                 },
+                scenario=self._scenario,
             )
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))
@@ -300,6 +302,7 @@ class Orchestrator:
             wall_seconds=time.monotonic() - started,
             stop=stop,
             failure=self._failure,
+            providers=list(dict.fromkeys(c.provider for c in self._store.calls() if c.provider is not None)),
             wakes=self._wakes,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None

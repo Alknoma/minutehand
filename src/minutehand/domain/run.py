@@ -7,7 +7,7 @@ from enum import StrEnum
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import WakeRecord
-from minutehand.domain.scenario import Model
+from minutehand.domain.scenario import Model, ProviderKey
 
 
 class StopReason(StrEnum):
@@ -29,4 +29,7 @@ class RunRecord(Model):
     wall_seconds: float = Field(ge=0)
     stop: StopReason
     failure: str | None = Field(default=None, description="Why, when the run stopped AGENT_FAILED")
+    providers: list[ProviderKey] = Field(
+        default=[], description="Every provider the agent called, in the order of its first call"
+    )
     wakes: list[WakeRecord]

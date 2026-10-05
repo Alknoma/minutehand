@@ -335,6 +335,7 @@ def _describe(outcome: Outcome, points: list[ForkPoint]) -> str:
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
     if record.failure is not None:
         lines.append(f"  {record.failure}")
+    lines.append(f"  providers the agent called: {', '.join(record.providers) or 'none'}")
     for kind in _KIND_ORDER:
         found = [f for f in result.findings if f.kind is kind]
         if found:
