@@ -50,6 +50,8 @@ _PROJECT_EDITS = ["CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES", "DELETE_I
                   "ASSIGN_ISSUES", "ASSIGNABLE_USER", "RESOLVE_ISSUES", "CLOSE_ISSUES", "LINK_ISSUES",
                   "SCHEDULE_ISSUES"]  # fmt: skip
 _PROJECT = ["BROWSE_PROJECTS", "ADMINISTER_PROJECTS", *_PROJECT_EDITS]
+_PERMISSION_IDS = {key: str(n) for n, key in enumerate(_GLOBAL)} | {key: str(100 + n) for n, key in enumerate(_PROJECT)}
+"""Every key `mypermissions` answers, with its id; a key not here is not a permission."""
 
 
 @dataclass(frozen=True)
@@ -559,14 +561,15 @@ class JiraApi:
         if not asked:
             raise wire.bad("The 'permissions' query parameter is required.")
         keys = [k.strip() for k in asked.split(",") if k.strip()]
-        unknown = [k for k in keys if k not in _GLOBAL and k not in _PROJECT]
+        known = [k for k in keys if k in _PERMISSION_IDS]
+        unknown = [k for k in keys if k not in _PERMISSION_IDS]
         if unknown:
             raise wire.bad(f"These permission keys are not valid: {', '.join(unknown)}.")
         me = self._me(call)
         reference = _param(call.request, "projectKey") or _param(call.request, "projectId")
         projects = [self._project(call, reference)] if reference else self._world.projects()
         answers: wire.Json = {}
-        for key in keys:
+        for key in known:
             if key in _GLOBAL:
                 held = (me.siteAdmin and key != "SYSTEM_ADMIN") or key == "USER_PICKER"
                 kind = "GLOBAL"
@@ -580,7 +583,7 @@ class JiraApi:
                 held = any(self._desk.can_edit(p, me.accountId) for p in projects)
                 kind = "PROJECT"
             answers[key] = {
-                "id": str(_GLOBAL.index(key) if key in _GLOBAL else 100 + _PROJECT.index(key)),
+                "id": _PERMISSION_IDS[key],
                 "key": key,
                 "name": key.replace("_", " ").title(),
                 "type": kind,
@@ -670,12 +673,8 @@ class JiraApi:
         projects = self._world.projects()
         errors: dict[str, str] = {}
         key = body.key or ""
-        if not key:
-            errors["projectKey"] = "A project needs a key."
-        elif len(key) > 10:
-            errors["projectKey"] = "A project key is at most 10 characters long."
-        elif not re.fullmatch(r"[A-Z][A-Z0-9]+", key):
-            errors["projectKey"] = "A project key is a capital letter followed by capitals and digits."
+        if problem := wire.project_key_problem(key):
+            errors["projectKey"] = problem
         else:
             holder = next((p for p in projects if p.key == key), None)
             if holder is not None:
@@ -684,20 +683,25 @@ class JiraApi:
             errors["projectName"] = "A project needs a name."
         elif any(p.name.lower() == body.name.lower() for p in projects):
             errors["projectName"] = "Another project already has this name."
-        if not body.projectTypeKey:
-            errors["projectTypeKey"] = "A project needs a type."
-        elif body.projectTypeKey not in ("software", "business", "service_desk"):
-            errors["projectTypeKey"] = f"'{body.projectTypeKey}' is not a project type."
+        # The type may be left out when a template is named: the template builds exactly one type.
+        template = body.projectTemplateKey
+        project_type = body.projectTypeKey
+        if template is not None and template not in wire.TEMPLATE_TYPES:
+            errors["projectTemplateKey"] = "There is no project template with that key on this site."
+        elif template is not None:
+            builds = wire.TEMPLATE_TYPES[template]
+            if not project_type:
+                project_type = builds
+            elif project_type != builds:
+                errors["projectTemplateKey"] = f"This template makes a {builds} project, not a {project_type} one."
+        if not project_type:
+            errors["projectTypeKey"] = "A project needs a type, or a template that implies one."
+        elif project_type not in wire.PROJECT_TYPES:
+            errors["projectTypeKey"] = f"'{project_type}' is not a project type."
         lead = self._world.user(body.leadAccountId) if body.leadAccountId else None
         if lead is None:
             errors["leadAccountId"] = "The project lead must be an existing account, named by accountId."
-        templates = ("com.pyxis.greenhopper.jira:gh-simplified-agility-kanban",
-                     "com.pyxis.greenhopper.jira:gh-simplified-agility-scrum",
-                     "com.pyxis.greenhopper.jira:gh-simplified-kanban-classic",
-                     "com.pyxis.greenhopper.jira:gh-simplified-scrum-classic")  # fmt: skip
-        if body.projectTemplateKey is not None and body.projectTemplateKey not in templates:
-            errors["projectTemplateKey"] = "There is no project template with that key on this site."
-        if errors or lead is None or body.name is None:
+        if errors or lead is None or body.name is None or project_type is None:
             raise wire.Refusal(400, [], errors)
         site = self._world.site()
         made = default_project(
@@ -710,7 +714,7 @@ class JiraApi:
             administrators=list(dict.fromkeys([lead.accountId, me.accountId])),
             description=body.description or "",
             type_names=["Epic", "Task", "Subtask"],
-        ).model_copy(update={"projectTypeKey": body.projectTypeKey, "simplified": True})
+        ).model_copy(update={"projectTypeKey": project_type, "simplified": True})
         self._world.write_project(made, actor=Actor.AGENT)
         board_id = len(self._world.boards()) + 1
         kanban = body.projectTemplateKey is None or "kanban" in body.projectTemplateKey

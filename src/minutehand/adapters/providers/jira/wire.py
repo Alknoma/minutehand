@@ -17,6 +17,7 @@ Every timestamp is written the way Jira Cloud writes one: `2026-08-24T10:50:03.0
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -624,6 +625,60 @@ class CountIn(Wire):
     model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
 
     jql: str = ""
+
+
+def _templates(project_type: str, prefix: str, names: str) -> dict[str, str]:
+    return {f"{prefix}:{name}": project_type for name in names.split()}
+
+
+TEMPLATE_TYPES: dict[str, str] = {
+    **_templates(
+        "software",
+        "com.pyxis.greenhopper.jira",
+        "gh-simplified-agility-kanban gh-simplified-agility-scrum gh-simplified-basic gh-simplified-kanban-classic "
+        "gh-simplified-scrum-classic",
+    ),
+    **_templates(
+        "business",
+        "com.atlassian.jira-core-project-templates",
+        "jira-core-simplified-content-management jira-core-simplified-document-approval "
+        "jira-core-simplified-lead-tracking jira-core-simplified-process-control jira-core-simplified-procurement "
+        "jira-core-simplified-project-management jira-core-simplified-recruitment jira-core-simplified-task-tracking",
+    ),
+    **_templates(
+        "service_desk",
+        "com.atlassian.servicedesk",
+        "simplified-it-service-management simplified-external-service-desk simplified-hr-service-desk "
+        "simplified-facilities-service-desk simplified-legal-service-desk simplified-analytics-service-desk "
+        "simplified-marketing-service-desk simplified-design-service-desk simplified-sales-service-desk "
+        "simplified-finance-service-desk company-managed-blank-service-project "
+        "company-managed-general-service-project team-managed-general-service-project next-gen-it-service-desk "
+        "next-gen-hr-service-desk next-gen-legal-service-desk next-gen-marketing-service-desk "
+        "next-gen-facilities-service-desk next-gen-analytics-service-desk next-gen-finance-service-desk "
+        "next-gen-design-service-desk next-gen-sales-service-desk",
+    ),
+    **_templates("customer_service", "com.atlassian.jcs", "customer-service-management"),
+}
+"""Each project template Jira Cloud's create-project reference lists, and the one project type it builds
+(https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post)."""
+
+PROJECT_TYPES = frozenset(TEMPLATE_TYPES.values())
+
+PROJECT_KEY_MOST = 10
+"""The longest project key Jira takes: an uppercase letter, then one or more uppercase letters or digits
+(https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post)."""
+_PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9]+")
+
+
+def project_key_problem(key: str) -> str | None:
+    """What is wrong with `key` as a new project's key, in the words of a create's `errors.projectKey`."""
+    if not key:
+        return "A project needs a key."
+    if len(key) > PROJECT_KEY_MOST:
+        return f"A project key is at most {PROJECT_KEY_MOST} characters long."
+    if not _PROJECT_KEY.fullmatch(key):
+        return "A project key is a capital letter followed by capitals and digits."
+    return None
 
 
 class ProjectIn(Wire):

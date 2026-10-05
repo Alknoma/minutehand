@@ -135,7 +135,12 @@ async def test_a_read_is_recorded_as_the_agent_reading_and_changes_nothing(hub: 
     before = hub.store.head()
     async with hub.client() as http:
         await http.get("/repos/lanternworks/ledger/contents/web/app.ts")
-    [read] = hub.store.events(since=before)
+    spent, read = hub.store.events(since=before)
+    assert (spent.actor, spent.operation, spent.entity.external_id) == (
+        Actor.SCENARIO,
+        Operation.CREATE,
+        "budget/iris-calder/core",
+    )
     assert (read.actor, read.operation, read.entity.external_id) == (
         Actor.AGENT,
         Operation.READ,
