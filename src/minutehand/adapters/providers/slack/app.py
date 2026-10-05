@@ -490,7 +490,11 @@ class SlackApi:
         if args.text is None and args.blocks is None and args.attachments is None:
             raise wire.Refusal("no_text")
         text = message.text if args.text is None else args.text
-        blocks = message.blocks if args.blocks is None else wire.with_ids(args.blocks, message.ts)
+        if args.blocks is not None:
+            blocks = wire.with_ids(args.blocks, message.ts)
+        else:
+            # Slack keeps the old blocks only when neither blocks nor text is given; new text alone replaces them.
+            blocks = message.blocks if args.text is None else None
         wire.check_message(text, blocks)
         updated = message.model_copy(
             update={
