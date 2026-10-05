@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -115,3 +116,19 @@ def test_a_whole_scenario_file_loads_as_a_seed_with_its_expectations() -> None:
 def test_a_seed_with_nobody_in_it_is_rejected() -> None:
     with pytest.raises(ValidationError, match="at least 1 item"):
         Seed.model_validate({"people": []})
+
+
+def test_a_provider_seed_written_as_structure_is_kept_as_its_json_text() -> None:
+    scenario = Scenario.model_validate(
+        {**BASE, "provider_seeds": [{"provider": "notion", "body": {"workspaces": [{"key": "acme"}]}}]}
+    )
+    found = scenario.provider_seed("notion")
+    assert found is not None and json.loads(found.body) == {"workspaces": [{"key": "acme"}]}
+    assert scenario.provider_seed("slack") is None
+
+
+def test_two_seeds_for_one_provider_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="more than one provider seed for notion"):
+        Scenario.model_validate(
+            {**BASE, "provider_seeds": [{"provider": "notion", "body": "{}"}, {"provider": "notion", "body": "{}"}]}
+        )
