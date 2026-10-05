@@ -222,7 +222,7 @@ def _held(event: WorldEvent) -> str | None:
     if isinstance(after, RecordSnapshot):
         return after.text
     if isinstance(after, DocumentSnapshot):
-        return after.title
+        return after.title if after.text is None else f"{after.title} {after.text}"
     return None
 
 
