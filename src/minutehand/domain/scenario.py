@@ -508,29 +508,6 @@ nobody; a document happening wakes the agent only when it watches that provider'
 pushed to the agent, as a reply is. A new family is a new member with its own `kind` and its own port."""
 
 
-class RateLimited(Model):
-    kind: Literal["rate_limited"] = "rate_limited"
-    retry_after: timedelta = Field(default=timedelta(seconds=1), gt=timedelta(0))
-
-
-class Refused(Model):
-    kind: Literal["refused"] = "refused"
-    error: str = Field(min_length=1, description="The service's own error code, as it sends it")
-
-
-class Fault(Model):
-    """A call the service fails on purpose, the way the real one fails it."""
-
-    provider: ProviderKey
-    call: str | None = Field(default=None, description="The service's own name for the call; None is every call")
-    answer: Annotated[RateLimited | Refused, Field(discriminator="kind")]
-    times: int | None = Field(default=1, ge=1, description="How many calls it fails; None is every one")
-    after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="From this offset on")
-    only_rich: bool = Field(
-        default=False, description="Fail only calls that carry rich content (Slack's blocks); the plain retry passes"
-    )
-
-
 class TicketFate(Model):
     """What happens to a ticket the agent hands to a person."""
 
@@ -641,7 +618,6 @@ class _ScenarioBody(Model):
     provider_seeds: list[ProviderSeed] = Field(
         default=[], description="Each provider's own seed beyond people, tickets and documents; one per provider"
     )
-    faults: list[Fault] = Field(default=[], description="Calls the services fail on purpose")
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
 
     @model_validator(mode="after")

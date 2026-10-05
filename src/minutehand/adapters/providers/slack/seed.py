@@ -1,18 +1,22 @@
 """The workspace a scenario starts in: its people, the agent's bot user, `#general`, an IM with each person who can
-be messaged, the channels and history the scenario seeds, who installed the app, and the faults it declares."""
+be messaged, the channels and history the scenario seeds, who installed the app, and the faults Slack's own seed
+(`SlackSeed`, the scenario's `ProviderSeed` for `slack`) declares."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
+
+from pydantic import Field
 
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID, SlackWorld
 from minutehand.domain.scenario import (
     Account,
+    Model,
     Person,
-    RateLimited,
     Scenario,
     SeededChannel,
     SeededFile,
@@ -20,6 +24,40 @@ from minutehand.domain.scenario import (
 )
 from minutehand.domain.world import Actor, DocumentSnapshot, MessageSnapshot, Operation
 from minutehand.ports.store import Store
+
+
+class RateLimited(Model):
+    kind: Literal["rate_limited"] = "rate_limited"
+    retry_after: timedelta = Field(default=timedelta(seconds=1), gt=timedelta(0))
+
+
+class Refused(Model):
+    kind: Literal["refused"] = "refused"
+    error: str = Field(min_length=1, description="Slack's own error code, as it sends it")
+
+
+class FaultSeed(Model):
+    """A Web API call Slack fails on purpose, the way Slack fails it."""
+
+    call: str | None = Field(default=None, description="Slack's own method name; None is every call")
+    answer: Annotated[RateLimited | Refused, Field(discriminator="kind")]
+    times: int | None = Field(default=1, ge=1, description="How many calls it fails; None is every one")
+    after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="From this offset on")
+    only_rich: bool = Field(
+        default=False, description="Fail only calls that carry blocks or attachments; the plain retry passes"
+    )
+
+
+class SlackSeed(Model):
+    """What only Slack seeds, as the body of the scenario's `ProviderSeed` for `slack`."""
+
+    faults: list[FaultSeed] = []
+
+
+def slack_seed(scenario: Scenario) -> SlackSeed:
+    found = scenario.provider_seed(MANIFEST.key)
+    return SlackSeed() if found is None else SlackSeed.model_validate_json(found.body)
+
 
 REACHABLE = (Account.MEMBER, Account.GUEST)
 """Who the agent can open a DM with: a bot cannot be DMed and a deactivated account cannot be reached."""
@@ -94,9 +132,7 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     for channel in (c for c in scenario.channels if c.provider == MANIFEST.key):
         _channel(slack, channel, scenario, created)
-    for position, fault in enumerate(scenario.faults):
-        if fault.provider != MANIFEST.key:
-            continue
+    for position, fault in enumerate(slack_seed(scenario).faults):
         answer = fault.answer
         limited = answer if isinstance(answer, RateLimited) else None
         slack.write(

@@ -11,9 +11,10 @@ from slack_sdk.errors import SlackApiError
 
 from minutehand.adapters.providers.slack import state
 from minutehand.adapters.providers.slack.provider import build
+from minutehand.adapters.providers.slack.seed import FaultSeed, RateLimited, Refused, SlackSeed
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.scenario import Fault, RateLimited, Refused
+from minutehand.domain.scenario import ProviderSeed
 from minutehand.domain.world import Actor, ControlKind, MessageAction, MessageSnapshot, Operation, RecordSnapshot
 from tests.providers.slack.intercepted import Intercepted, data, off_loop
 from tests.providers.slack.slack_workspace import GENERAL, SCENARIO, START, Workspace
@@ -241,8 +242,9 @@ async def test_a_file_downloads_with_a_bot_token_and_without_one_lands_on_the_si
 # ------------------------------------------------------------------ faults
 
 
-def _faulted(workspace: Workspace, tmp_path: Any, *faults: Fault) -> tuple[SqliteStore, Any]:
-    scenario = SCENARIO.model_copy(update={"faults": list(faults)})
+def _faulted(workspace: Workspace, tmp_path: Any, *faults: FaultSeed) -> tuple[SqliteStore, Any]:
+    seed = ProviderSeed(provider="slack", body=SlackSeed(faults=list(faults)).model_dump_json())
+    scenario = SCENARIO.model_copy(update={"provider_seeds": [seed]})
     store = SqliteStore(tmp_path / "faulted.db", "faulted", RunClock(START))
     provider = build()
     provider.seed(scenario, store)
@@ -255,7 +257,7 @@ async def test_a_rate_limit_answers_429_with_retry_after_and_then_passes(
     store, app = _faulted(
         workspace,
         tmp_path,
-        Fault(provider="slack", call="chat.postMessage", answer=RateLimited(retry_after=timedelta(seconds=7))),
+        FaultSeed(call="chat.postMessage", answer=RateLimited(retry_after=timedelta(seconds=7))),
     )
     slack.proxy.mount(store, workspace.clock, {"slack": app})
     sdk = slack.sync()
@@ -276,7 +278,7 @@ async def test_blocks_rejected_on_purpose_pass_when_the_caller_retries_without_t
     slack: Intercepted, workspace: Workspace, tmp_path: Any
 ) -> None:
     store, app = _faulted(
-        workspace, tmp_path, Fault(provider="slack", answer=Refused(error="invalid_blocks"), times=None, only_rich=True)
+        workspace, tmp_path, FaultSeed(answer=Refused(error="invalid_blocks"), times=None, only_rich=True)
     )
     slack.proxy.mount(store, workspace.clock, {"slack": app})
     sdk = slack.asynchronous()
@@ -304,7 +306,7 @@ async def test_blocks_rejected_on_purpose_pass_when_the_caller_retries_without_t
 async def test_a_declared_refusal_reaches_the_sdk_as_slack_sends_it_once(
     slack: Intercepted, workspace: Workspace, tmp_path: Any, error: str
 ) -> None:
-    store, app = _faulted(workspace, tmp_path, Fault(provider="slack", answer=Refused(error=error)))
+    store, app = _faulted(workspace, tmp_path, FaultSeed(answer=Refused(error=error)))
     slack.proxy.mount(store, workspace.clock, {"slack": app})
     sdk = slack.asynchronous()
     with pytest.raises(SlackApiError) as refused:
@@ -315,7 +317,7 @@ async def test_a_declared_refusal_reaches_the_sdk_as_slack_sends_it_once(
 
 async def test_a_fault_waits_for_its_moment(slack: Intercepted, workspace: Workspace, tmp_path: Any) -> None:
     store, app = _faulted(
-        workspace, tmp_path, Fault(provider="slack", answer=Refused(error="invalid_auth"), after=timedelta(hours=1))
+        workspace, tmp_path, FaultSeed(answer=Refused(error="invalid_auth"), after=timedelta(hours=1))
     )
     slack.proxy.mount(store, workspace.clock, {"slack": app})
     sdk = slack.asynchronous()
