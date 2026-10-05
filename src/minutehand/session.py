@@ -61,7 +61,7 @@ from minutehand.application.checkpoint import (
 )
 from minutehand.application.model_calls import per_wake
 from minutehand.application.orchestrator import Services, run_scenario
-from minutehand.application.refusals import RunRefused, refuse_unheld_ticket_fields
+from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_model import PeopleReplier
 from minutehand.application.restore import Progress, Restored, SeenCall, restore_agent
 from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
@@ -614,7 +614,7 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
         raise RunRefused(
             f"no installed provider is named {', '.join(unknown)}; installed: {', '.join(sorted(manifests))}"
         )
-    refuse_unheld_ticket_fields(scenario.tickets, manifests)
+    refuse_unheld(scenario, manifests)
     providers: list[Provider] = [registry.provider(manifests[key]) for key in sorted(named)]
     pushes: dict[ProviderKey, PushesEvents] = {}
     tickets: dict[ProviderKey, HoldsTickets] = {}

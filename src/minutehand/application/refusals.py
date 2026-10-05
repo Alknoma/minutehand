@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from minutehand.domain.provider import Manifest, TicketField
-from minutehand.domain.scenario import ProviderKey, SeededTicket
+from minutehand.domain.provider import DocumentChange, Manifest, TicketField
+from minutehand.domain.scenario import DocumentHappening, ProviderKey, Scenario, Seed
 
 
 class AgentFailed(Exception):
@@ -16,11 +16,22 @@ class RunRefused(Exception):
     """The run cannot start or continue as configured: a missing provider, an unsupported person, no state hooks."""
 
 
-def refuse_unheld_ticket_fields(tickets: list[SeededTicket], manifests: Mapping[ProviderKey, Manifest]) -> None:
-    """A seeded ticket that sets a field its provider cannot hold is refused, naming the ticket: the provider would
-    drop it in silence, and the scenario would claim a world that never existed. A provider not installed is
-    refused elsewhere, by name."""
-    for ticket in tickets:
+def refuse_unheld(scenario: Scenario | Seed, manifests: Mapping[ProviderKey, Manifest]) -> None:
+    """A seeded ticket that sets a field its provider cannot hold is refused, naming the ticket, and a document
+    happening its provider cannot show is refused, naming the happening: the provider would drop the one in silence
+    and could not do the other, and the scenario would claim a world that never existed. A provider not installed
+    is refused elsewhere, by name."""
+    for n, happening in enumerate(scenario.happenings, start=1):
+        if not isinstance(happening, DocumentHappening):
+            continue
+        provider = scenario.happening_document(happening).provider
+        manifest = manifests.get(provider)
+        if manifest is not None and DocumentChange(happening.action.kind) not in manifest.document_changes:
+            raise RunRefused(
+                f"happening {n} ({happening.person} {happening.action.kind} the seeded document "
+                f"{happening.document!r}) lands on {provider}, which has no way to show that"
+            )
+    for ticket in scenario.tickets:
         manifest = manifests.get(ticket.provider)
         if manifest is None:
             continue

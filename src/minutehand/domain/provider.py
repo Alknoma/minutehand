@@ -27,6 +27,19 @@ class TicketField(StrEnum):
     COMMENTS = "comments"
 
 
+class DocumentChange(StrEnum):
+    """What a person can do to a seeded document (`DocumentHappening.action`); not every document provider can show
+    every one."""
+
+    EDITED = "edited"
+    RENAMED = "renamed"
+    MOVED = "moved"
+    SHARED = "shared"
+    TRASHED = "trashed"
+    COMMENTED = "commented"
+    FIELD_SET = "field_set"
+
+
 class Manifest(Model):
     key: ProviderKey
     tier: Tier
@@ -41,4 +54,9 @@ class Manifest(Model):
         default=[],
         description="The optional `SeededTicket` fields its tickets hold; a scenario that sets any other on one of "
         "its tickets is refused at load, since the provider would drop it in silence",
+    )
+    document_changes: list[DocumentChange] = Field(
+        default=[],
+        description="What a person can do to its seeded documents; a scenario whose document happening does any "
+        "other is refused at load, since the provider could not show it",
     )
