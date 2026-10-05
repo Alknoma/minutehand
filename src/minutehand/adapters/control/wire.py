@@ -28,17 +28,23 @@ class Claims(Model):
     `acme.youtrack.cloud`), or carries one of `tokens`: a bearer token, a Basic password, an OAuth
     `access_token` or `refresh_token`, or a signed JWT assertion's issuer or subject (a service account).
     An access token a token endpoint mints for a call of this world is claimed by it from then on.
+    A call is also this world's when its URL names one of `keys` where its provider's manifest says a URL names
+    a world (`Manifest.world_keys`): a Microsoft tenant id or domain in a sign-in path, the label of a SharePoint,
+    Atlassian or YouTrack host, an Atlassian cloud id in `/ex/jira/{cloudId}/`. Those calls carry no credential
+    (OpenID metadata, key sets, `authorize`, a pre-authenticated download), and without a key a second tenant's
+    would reach the first's world.
     `default` makes this world the one every call no world claims goes to; at most one open world is the
     default, and while it is, it shares the stack with no isolation for those calls."""
 
     tokens: list[str] = []
     hosts: list[str] = []
+    keys: list[str] = []
     default: bool = False
 
     @model_validator(mode="after")
     def _claims_something(self) -> Self:
-        if not self.tokens and not self.hosts and not self.default:
-            raise ValueError("a world claims no call: give tokens, hosts, or default: true")
+        if not self.tokens and not self.hosts and not self.keys and not self.default:
+            raise ValueError("a world claims no call: give tokens, hosts, keys, or default: true")
         return self
 
 

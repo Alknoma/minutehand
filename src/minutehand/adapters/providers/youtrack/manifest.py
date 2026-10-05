@@ -8,7 +8,7 @@ shapes itself, on either host family.
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, TicketField, Tier
+from minutehand.domain.provider import Manifest, TicketField, Tier, WorldKey
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -17,4 +17,5 @@ MANIFEST = Manifest(
     hosts=["*.youtrack.cloud", "*.myjetbrains.com"],
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],
     ticket_fields=[TicketField.KEY, TicketField.LABELS, TicketField.COMMENTS],
+    world_keys=[WorldKey(host="{key}.youtrack.cloud"), WorldKey(host="{key}.myjetbrains.com")],
 )

@@ -6,7 +6,6 @@ from __future__ import annotations
 import base64
 import ssl
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,7 +25,7 @@ def served(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Minutehan
         yield client, client.environment()
 
 
-def _seed(site: str, token: str, title: str, *, refresh: str | None = None) -> Seed:
+def _seed(site: str, token: str, title: str, *, refresh: str | None = None, cloud_id: str | None = None) -> Seed:
     credentials: list[dict[str, Any]] = [{"account": "agent", "api_token": token}]
     if refresh is not None:
         credentials.append(
@@ -43,7 +42,8 @@ def _seed(site: str, token: str, title: str, *, refresh: str | None = None) -> S
             "tickets": [{"provider": "jira", "project": "Ops", "title": title, "assignee": "owen"}],
             "provider_seeds": [
                 {"provider": "jira", "body": {"site": site, "agent_email": f"agent@{site}.example",
-                                              "credentials": credentials}}
+                                              "credentials": credentials,
+                                              **({"cloud_id": cloud_id} if cloud_id else {})}}
             ],
         }
     )  # fmt: skip
@@ -97,12 +97,10 @@ def test_two_worlds_each_see_only_their_own_site(served: tuple[MinutehandClient,
         client.close_world(globex.view.world_id)
 
 
-def test_an_oauth_refresh_in_a_form_follows_its_world_and_one_in_json_does_not(
-    served: tuple[MinutehandClient, dict[str, str]], tmp_path: Path
+def test_an_oauth_refresh_in_json_or_in_a_form_follows_its_world(
+    served: tuple[MinutehandClient, dict[str, str]],
 ) -> None:
-    """The proxy reads a refresh token only from a form body (RFC 6749); Atlassian's documented request is JSON,
-    which carries no credential the router reads, so with no default world it lands in the lobby."""
-    del tmp_path
+    """Atlassian's documented refresh is a JSON body; the proxy reads its `refresh_token` as it reads a form's."""
     client, environment = served
     world = OpenWorld(client, client.create_world(CreateWorld(seed=_seed("initech", "initech-token", "Initech task",
                                                                          refresh="initech-refresh"),
@@ -119,11 +117,12 @@ def test_an_oauth_refresh_in_a_form_follows_its_world_and_one_in_json_does_not(
                 json={"grant_type": "refresh_token", "client_id": "app", "client_secret": "shh",
                       "refresh_token": "initech-refresh"},
             )  # fmt: skip
-            assert as_json.status_code == 502
+            assert as_json.status_code == 200, as_json.text
+            rotated = as_json.json()["refresh_token"]
             as_form = http.post(
                 "https://auth.atlassian.com/oauth/token",
                 data={"grant_type": "refresh_token", "client_id": "app", "client_secret": "shh",
-                      "refresh_token": "initech-refresh"},
+                      "refresh_token": rotated},
             )  # fmt: skip
             assert as_form.status_code == 200, as_form.text
             minted = as_form.json()["access_token"]
@@ -134,6 +133,42 @@ def test_an_oauth_refresh_in_a_form_follows_its_world_and_one_in_json_does_not(
             assert resources.status_code == 200 and resources.json()[0]["name"] == "initech"
     finally:
         client.close_world(world.view.world_id)
+
+
+def test_a_site_host_and_a_cloud_id_name_their_world_with_no_token_claimed(
+    served: tuple[MinutehandClient, dict[str, str]],
+) -> None:
+    """Each world claims only its site's name and cloud id (`Claims.keys`): the site's own host and the OAuth
+    gateway's `/ex/jira/{cloudId}/` path reach it whatever credential the call carries."""
+    client, environment = served
+    worlds = {
+        site: OpenWorld(
+            client,
+            client.create_world(
+                CreateWorld(
+                    seed=_seed(
+                        site, f"{site}-key-token", f"{site} task", refresh=f"{site}-r", cloud_id=f"{site}-cloud"
+                    ),
+                    claims=Claims(keys=[site, f"{site}-cloud"]),
+                )
+            ),
+        )
+        for site in ("hooli", "piedpiper")
+    }
+    try:
+        for site, world in worlds.items():
+            with _client(environment, site, f"{site}-key-token") as http:
+                assert _summaries(http, site) == [f"{site} task"]
+                me = http.get(
+                    f"https://api.atlassian.com/ex/jira/{site}-cloud/rest/api/3/myself",
+                    headers={"Authorization": f"Bearer {site}-r-access"},
+                )
+                assert me.status_code == 200, me.text
+            hosts = [c.exchange.host for c in world.calls()]
+            assert hosts == [f"{site}.atlassian.net", "api.atlassian.com"]
+    finally:
+        for world in worlds.values():
+            client.close_world(world.view.world_id)
 
 
 def test_a_person_finishes_a_jira_issue_and_the_scenario_reassigns_it_through_the_control_api(

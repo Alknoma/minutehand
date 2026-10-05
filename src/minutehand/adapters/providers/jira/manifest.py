@@ -8,7 +8,7 @@ paths differ by host, so the manifest strips nothing and the app reads both shap
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, TicketField, Tier
+from minutehand.domain.provider import Manifest, TicketField, Tier, WorldKey
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -17,4 +17,5 @@ MANIFEST = Manifest(
     hosts=["*.atlassian.net", "api.atlassian.com", "auth.atlassian.com"],
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],
     ticket_fields=[TicketField.KEY, TicketField.LABELS, TicketField.COMMENTS],
+    world_keys=[WorldKey(host="{key}.atlassian.net"), WorldKey(path="/ex/jira/{key}/")],
 )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.domain.provider import DocumentChange, Manifest, Tier
+from minutehand.domain.provider import DocumentChange, Manifest, Tier, WorldKey
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
@@ -17,6 +17,13 @@ MANIFEST = Manifest(
     ],
     kinds=[EntityKind.MESSAGE, EntityKind.CHANNEL, EntityKind.DOCUMENT],
     pushes_events=True,
+    world_keys=[
+        WorldKey(path="/{key}/oauth2/v2.0/"),
+        WorldKey(path="/{key}/v2.0/.well-known/"),
+        WorldKey(path="/{key}/discovery/"),
+        WorldKey(host="{key}.sharepoint.com"),
+        WorldKey(host="{key}-my.sharepoint.com"),
+    ],
     document_changes=[
         DocumentChange.EDITED,
         DocumentChange.RENAMED,
