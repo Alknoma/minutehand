@@ -62,6 +62,20 @@ claim rests on what was seen from the real service. Tests are in `tests/provider
 | A body with no string `query` is 400 | documented | G `test_a_body_without_a_query_is_refused_400` | https://docs.github.com/en/graphql/guides/forming-calls-with-graphql |
 | …and the message says a query attribute must be specified | observed | (same test) | |
 
+## `HEAD` as a ref
+
+Each place the fake accepts a ref or a SHA, and what GitHub's public reference says of `HEAD` there. Tests in
+`test_github_vendor_claims_head.py` (H). The REST reference names a SHA, a branch or a tag for every ref parameter
+and never mentions `HEAD`, so a client that relies on `HEAD` there relies on something undocumented.
+
+| Place | What the reference says | The fake | Test | Source |
+|---|---|---|---|---|
+| `GET /repos/{owner}/{repo}/commits?sha=` | "SHA or branch to start listing commits from." Not stated by the documentation; kept as accepted | Lists from the head commit, as the default branch | H `test_list_commits_with_sha_head_starts_at_the_default_branch` | https://docs.github.com/en/rest/commits/commits#list-commits |
+| `GET /repos/{owner}/{repo}/contents/{path}?ref=` | "The name of the commit/branch/tag." Not stated by the documentation; kept as accepted | The default branch's content | H `test_repository_content_with_ref_head_is_the_default_branchs` | https://docs.github.com/en/rest/repos/contents#get-repository-content |
+| `GET /repos/{owner}/{repo}/git/trees/{tree_sha}` | "The SHA1 value or ref (branch or tag) name of the tree." Not stated by the documentation; kept as accepted | The default branch's root tree | H `test_get_a_tree_named_head_is_the_root_tree_of_the_default_branch` | https://docs.github.com/en/rest/git/trees#get-a-tree |
+| GraphQL `Repository.object(expression:)` | Documented: "A Git revision expression suitable for rev-parse", which reads `HEAD` | `HEAD` and `HEAD:path` resolve at the head commit | H `test_graphql_object_expression_head_names_the_head_commit` | https://docs.github.com/en/graphql/reference/repos#repository |
+| `GET /repos/{owner}/{repo}/commits/{ref}`, compare (`BASE...HEAD`) | "a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME)"; compare's `HEAD` is the head BRANCH's name, not the ref `HEAD` | Not served: 404 as an unknown route | | https://docs.github.com/en/rest/commits/commits#get-a-commit |
+
 ## Contradicted by the documentation (the old emulator was wrong)
 
 - A call with no `Authorization` was refused 401 "Bad credentials" on every route. GitHub serves public data
