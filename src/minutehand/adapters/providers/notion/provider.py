@@ -17,9 +17,17 @@ from minutehand.adapters.providers.notion import webhooks, wire
 from minutehand.adapters.providers.notion.app import build_app
 from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.manifest import MANIFEST
-from minutehand.adapters.providers.notion.seed import SeedValue, document_page, person_id, seed, value_request
+from minutehand.adapters.providers.notion.seed import (
+    NotionSeed,
+    SeedValue,
+    document_page,
+    person_id,
+    plan,
+    seed,
+    value_request,
+)
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row
-from minutehand.domain.provider import Manifest
+from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import (
     Commented,
     DocumentHappening,
@@ -102,6 +110,18 @@ class NotionProvider:
         emails |= {p.key: emails[p.email] for p in scenario.people if p.email in emails}
         raw = value_request(schema, value, {}, emails, by_id=True)
         editor.update_page(row.id, {"properties": {action.field: raw}}, by=user)
+
+    # ------------------------------------------------------------------ DeclaresFaults
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`NotionSeed.faults`, on a world already open, armed after those already armed. An integration is named
+        by its key, as in the seed, and must be one this world holds."""
+        found = fault_fragment(NotionSeed, faults, frozenset({"faults"})).faults
+        notion = NotionWorld(world)
+        bots = {i.key: i.id for w in notion.workspaces() for i in notion.integrations(w.id)}
+        schedule = notion.schedule()
+        notion.write_schedule(schedule.model_copy(update={"faults": [*schedule.faults, *plan(found, bots)]}))
+        del clock
 
     # ------------------------------------------------------------------ NotifiesChanges
 

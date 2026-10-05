@@ -19,6 +19,7 @@ from minutehand.adapters.control.wire import (
     CallsPage,
     Checked,
     CreateWorld,
+    DeclareFaults,
     EntitiesPage,
     Environment,
     EventsPage,
@@ -164,6 +165,9 @@ class MinutehandClient:
     def arm(self, world_id: str, fault: Fault) -> WorldView:
         return self._post(f"/worlds/{world_id}/faults", fault.model_dump_json(), WorldView)
 
+    def declare_faults(self, world_id: str, declared: DeclareFaults) -> WorldView:
+        return self._post(f"/worlds/{world_id}/provider-faults", declared.model_dump_json(), WorldView)
+
     def checks(self, world_id: str) -> Checked:
         return self._get(f"/worlds/{world_id}/checks", Checked)
 
@@ -243,6 +247,9 @@ class AsyncMinutehandClient:
 
     async def arm(self, world_id: str, fault: Fault) -> WorldView:
         return await self._post(f"/worlds/{world_id}/faults", fault.model_dump_json(), WorldView)
+
+    async def declare_faults(self, world_id: str, declared: DeclareFaults) -> WorldView:
+        return await self._post(f"/worlds/{world_id}/provider-faults", declared.model_dump_json(), WorldView)
 
     async def checks(self, world_id: str) -> Checked:
         return await self._get(f"/worlds/{world_id}/checks", Checked)

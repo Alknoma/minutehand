@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from minutehand.adapters.providers.google_drive.app import DriveApi, build_app
 from minutehand.adapters.providers.google_drive.manifest import MANIFEST
-from minutehand.adapters.providers.google_drive.seed import seed
-from minutehand.domain.provider import Manifest
+from minutehand.adapters.providers.google_drive.seed import DriveSeed, seed, write_faults
+from minutehand.adapters.providers.google_drive.state import DriveWorld
+from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import DocumentHappening, Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -35,6 +36,10 @@ class GoogleDriveProvider:
 
     async def notify(self, world: Store, clock: Clock) -> None:
         await DriveApi(world, clock).notify()
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`DriveSeed.faults`, on a world already open."""
+        write_faults(DriveWorld(world), fault_fragment(DriveSeed, faults, frozenset({"faults"})).faults, clock.now())
 
 
 def build() -> GoogleDriveProvider:

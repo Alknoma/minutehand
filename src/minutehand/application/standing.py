@@ -19,11 +19,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from minutehand.application.model_calls import per_wake
-from minutehand.application.refusals import RunRefused
+from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.runner import RunResult, evaluate, view_of
-from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
+from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply, Press
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import (
@@ -48,11 +48,13 @@ from minutehand.ports.provider import (
     ActsOnTickets,
     ASGIApp,
     ChangesDocuments,
+    DeclaresFaults,
     EditsTickets,
     HoldsTickets,
     NotifiesChanges,
     Provider,
     PushesEvents,
+    PushesInteractions,
 )
 from minutehand.ports.store import Store
 
@@ -304,6 +306,46 @@ class StandingWorld:
             answer, self._target(to.provider), self.store, self.clock, secret=self._signing[to.provider]
         )
         return self._written(before)
+
+    async def happen_now(self, happening: Happening) -> WorldEvent:
+        """`happening`, of any family, done now rather than at its offset: checked as a scenario's would be (its
+        person, its ticket, document, channel or post, the port it lands through), then landed the way `advance`
+        lands one."""
+        try:
+            checked = type(self.scenario).model_validate(
+                {**self.scenario.model_dump(), "happenings": [happening.model_dump()]}
+            )
+            key = checked.happening_provider(happening)
+            refuse_unheld(checked, {key: self.provider(key).manifest})
+        except (ValueError, RunRefused) as e:
+            raise WorldRefused(f"this happening cannot land here: {e}") from e
+        self._lands(happening, 1)
+        before = self.store.head()
+        await self._happen(happening)
+        return self._written(before)
+
+    async def press(self, person: str, on: EntityRef, press: Press) -> WorldEvent:
+        """`person` uses a control on the message `on` now (a button, a pick, a form filled), pushed to the
+        agent's interactivity target the way the provider's service pushes it."""
+        self._person(person)
+        found = self.provider(on.provider)
+        if not isinstance(found, PushesInteractions):
+            raise WorldRefused(f"{on.provider} carries no controls a person can use")
+        before = self.store.head()
+        answer = PersonReply(person=person, in_reply_to=on, text=press.label, at=self.clock.now(), press=press)
+        self.store.remember(answer)
+        await found.press(answer, self._target(on.provider), self.store, self.clock, secret=self._signing[on.provider])
+        return self._written(before)
+
+    def declare_faults(self, provider: ProviderKey, faults: str) -> None:
+        """A fragment of `provider`'s own seed model declaring faults, validated and recorded by the provider."""
+        found = self.provider(provider)
+        if not isinstance(found, DeclaresFaults):
+            raise WorldRefused(f"{provider} declares no faults of its own")
+        try:
+            found.declare(faults, self.store, self.clock)
+        except ValueError as e:
+            raise WorldRefused(f"{provider} cannot declare these faults: {e}") from e
 
     def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
         """The ticket's assignee moves it, as actor PERSON."""

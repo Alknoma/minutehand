@@ -6,8 +6,21 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from minutehand.adapters.control.wire import Advanced, Checked, EditTicket, Fault, MoveTicket, Reply, Say, WorldView
-from minutehand.domain.scenario import TicketState
+from minutehand.adapters.control.wire import (
+    Advanced,
+    Checked,
+    DeclareFaults,
+    EditTicket,
+    Fault,
+    Happen,
+    MoveTicket,
+    PressControl,
+    Reply,
+    Say,
+    WorldView,
+)
+from minutehand.domain.people import Press
+from minutehand.domain.scenario import Happening, TicketState
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -97,6 +110,18 @@ class OpenWorld:
         self, ticket: EntityRef, *, state: TicketState | None = None, assignee: str | None = None
     ) -> WorldEvent:
         return self.client.act(self.world_id, EditTicket(ticket=ticket, state=state, assignee=assignee)).event
+
+    def happen(self, happening: Happening) -> WorldEvent:
+        """A person does `happening` now, whatever its family, as the world lands one when its clock passes it."""
+        return self.client.act(self.world_id, Happen(happening=happening)).event
+
+    def press(self, person: str, on: EntityRef, press: Press) -> WorldEvent:
+        """`person` uses a control on the message `on` now, pushed to the world's interactivity target."""
+        return self.client.act(self.world_id, PressControl(person=person, on=on, press=press)).event
+
+    def declare_faults(self, provider: str, seed: dict[str, object] | str) -> None:
+        """Faults typed by `provider`, as a fragment of its own seed model (`{"faults": [...]}`)."""
+        self.client.declare_faults(self.world_id, DeclareFaults.model_validate({"provider": provider, "seed": seed}))
 
     def advance(self, by: timedelta | None = None, *, to: datetime | None = None) -> Advanced:
         return self.client.advance(self.world_id, by=by, to=to)

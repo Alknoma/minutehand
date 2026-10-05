@@ -6,15 +6,16 @@ and an unknown field is refused, so a client that misspells a field is told, nev
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from minutehand.checks.runner import RunResult
 from minutehand.domain.outbound import OutboundHost, refuse_repeats
-from minutehand.domain.people import InboundTarget
-from minutehand.domain.scenario import Model, ProviderKey, Seed, TicketState
+from minutehand.domain.people import InboundTarget, Press
+from minutehand.domain.scenario import Happening, Model, ProviderKey, Seed, TicketState
 from minutehand.domain.telemetry import StoredSpan
 from minutehand.domain.world import EntityRef, RecordedCall, Stored, WorldEvent
 
@@ -74,6 +75,20 @@ class Fault(Model):
     content_type: str = "application/json"
     retry_after: int | None = Field(default=None, ge=0, description="Seconds, sent as Retry-After")
     times: int = Field(default=1, ge=1)
+
+
+class DeclareFaults(Model):
+    """Faults typed by one provider, given as a fragment of that provider's own seed model that sets only the
+    fields declaring them (Slack's `faults`, Asana's `rate_limits`, Microsoft's `faults` and `holds`, ...): the
+    provider validates it and records each as seeding does, its offsets counted from the world's now."""
+
+    provider: ProviderKey
+    seed: str = Field(description="The fragment, as JSON text; written as structure, it is kept as its text")
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _as_text(cls, value: object) -> object:
+        return json.dumps(value) if isinstance(value, dict) else value
 
 
 class CreateWorld(Model):
@@ -177,7 +192,24 @@ class EditTicket(Model):
     assignee: str | None = Field(default=None, description="Person.key")
 
 
-Act = Annotated[Say | Reply | MoveTicket | EditTicket, Field(discriminator="kind")]
+class Happen(Model):
+    """A person does something by themselves now: any happening a scenario can schedule (a ticket's, a document's,
+    or a messaging one), landed the way the world lands one when its clock passes it. Its `after` is not read."""
+
+    kind: Literal["happen"] = "happen"
+    happening: Happening
+
+
+class PressControl(Model):
+    """A person uses a control on a message now: presses a button, picks someone, fills and submits a form."""
+
+    kind: Literal["press"] = "press"
+    person: str
+    on: EntityRef = Field(description="The message the control is on")
+    press: Press
+
+
+Act = Annotated[Say | Reply | MoveTicket | EditTicket | Happen | PressControl, Field(discriminator="kind")]
 
 
 class ActRequest(Model):

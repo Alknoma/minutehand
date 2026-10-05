@@ -899,6 +899,7 @@ class IntegrationKind(StrEnum):
 class StoredIntegration(Model):
     kind: Literal["integration"] = "integration"
     id: str = Field(description="Its bot user's id")
+    key: str = Field(description="Minutehand's own: the seed's key for it; never served")
     workspace: str
     name: str
     type: IntegrationKind

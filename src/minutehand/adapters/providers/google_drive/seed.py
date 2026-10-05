@@ -18,7 +18,7 @@ Everything is written as actor SCENARIO.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from pydantic import Field
 
@@ -186,12 +186,19 @@ def seed(scenario: Scenario, world: Store) -> None:
         for access in document.shared_with:
             grant(drive, made, users[access.person], ROLES[access.role], actor=Actor.SCENARIO)
 
-    for position, fault in enumerate(drive_seed(scenario).faults):
+    write_faults(drive, drive_seed(scenario).faults, start)
+
+
+def write_faults(drive: DriveWorld, faults: list[FaultSeed], start: datetime) -> None:
+    """Record each fault after those already recorded, from `start` plus its own offset."""
+    first = len(drive.faults())
+    for fault in faults:
         if fault.operation not in OPERATIONS:
             raise ValueError(
                 f"a fault names {fault.operation!r}, which is not a Google Drive, Docs or Slides call this simulation "
                 f"answers; it answers {', '.join(sorted(OPERATIONS))}"
             )
+    for position, fault in enumerate(faults, start=first):
         stored = wire.StoredFault(
             operation=fault.operation,
             kind=fault.kind,

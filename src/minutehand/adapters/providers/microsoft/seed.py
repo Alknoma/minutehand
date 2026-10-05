@@ -453,13 +453,14 @@ def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, 
 def _faults(world: MicrosoftWorld, scenario: Scenario) -> None:
     spec = microsoft_seed(scenario)
     write_faults(world, spec.faults, scenario.starts_at)
-    write_holds(world, spec.holds, scenario, scenario.starts_at)
+    write_holds(world, spec.holds, scenario.starts_at)
 
 
-def write_holds(world: MicrosoftWorld, holds: list[HoldSeed], scenario: Scenario, starts_at: datetime) -> None:
-    """Record each hold after any already recorded; the document and the person must both be there."""
-    first = len(world.holds())
-    for position, hold in enumerate(holds, start=first):
+def write_holds(world: MicrosoftWorld, holds: list[HoldSeed], starts_at: datetime) -> None:
+    """Record each hold after any already recorded; the document and the person must both be there, for every
+    hold, before any is written."""
+    made: list[wire.StoredHold] = []
+    for position, hold in enumerate(holds, start=len(world.holds())):
         item = world.seeded(hold.document)
         if item is None:
             raise ValueError(f"a hold names {hold.document!r}, which is no seeded Microsoft document")
@@ -467,7 +468,7 @@ def write_holds(world: MicrosoftWorld, holds: list[HoldSeed], scenario: Scenario
         if holder is None:
             raise ValueError(f"a hold names {hold.by}, who is no user of the tenant")
         start = starts_at + hold.after
-        world.write_hold(
+        made.append(
             wire.StoredHold(
                 position=position,
                 item=item,
@@ -476,6 +477,8 @@ def write_holds(world: MicrosoftWorld, holds: list[HoldSeed], scenario: Scenario
                 until_time=int((start + hold.lasts).timestamp()) if hold.lasts is not None else None,
             )
         )
+    for hold in made:
+        world.write_hold(hold)
 
 
 def write_faults(world: MicrosoftWorld, faults: list[FaultSeed], starts_at: datetime) -> None:

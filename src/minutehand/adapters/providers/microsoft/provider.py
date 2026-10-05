@@ -18,7 +18,7 @@ from minutehand.adapters.providers.microsoft.inbound import People
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import DriveRecord, MicrosoftWorld, UserRecord, item_text
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.provider import Manifest
+from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import (
     AccessRole,
     DocumentHappening,
@@ -117,6 +117,15 @@ class MicrosoftProvider:
         else:
             raise ValueError(f"a person cannot {action.kind} a Microsoft file; the scenario is refused at load")
         mw.owe(drive.drive.id, stored.item.id, actor=Actor.PERSON)
+
+    # ------------------------------------------------------------------ DeclaresFaults
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`MicrosoftSeed.faults` and `.holds`, on a world already open, each counted from now."""
+        found = fault_fragment(seed.MicrosoftSeed, faults, frozenset({"faults", "holds"}))
+        mw = MicrosoftWorld(world)
+        seed.write_faults(mw, found.faults, clock.now())
+        seed.write_holds(mw, found.holds, clock.now())
 
     # ------------------------------------------------------------------ NotifiesChanges
 

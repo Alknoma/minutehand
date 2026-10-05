@@ -390,7 +390,8 @@ class NotionWorld:
         )
 
     def write_schedule(self, schedule: wire.StoredSchedule) -> WorldEvent:
-        return self._setup(SCHEDULE, schedule, None, Operation.CREATE)
+        found = self._read(record_ref(SCHEDULE))
+        return self._setup(SCHEDULE, schedule, None, Operation.CREATE if found is None else Operation.UPDATE)
 
     def count_fault(self, fault: int, count: int) -> WorldEvent:
         return self._store.apply(

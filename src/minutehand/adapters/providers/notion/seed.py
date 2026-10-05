@@ -320,12 +320,26 @@ def seed(scenario: Scenario, world: Store) -> None:
             ),
             operation=Operation.CREATE,
         )
+    planned = planned_faults(found.faults, workspaces)
+    if planned:
+        notion.write_schedule(wire.StoredSchedule(faults=planned))
+
+
+def planned_faults(faults: list[SeedFault], workspaces: list[SeedWorkspace]) -> list[wire.PlannedFault]:
+    """The faults as the schedule holds them, each integration named by its bot's id."""
+    bots = {i.key: object_id(w.key, i.key) for w in workspaces for i in w.integrations}
+    return plan(faults, bots)
+
+
+def plan(faults: list[SeedFault], bots: dict[str, str]) -> list[wire.PlannedFault]:
+    """The faults as the schedule holds them, `bots` naming each integration key's bot id."""
     planned: list[wire.PlannedFault] = []
-    for fault in found.faults:
+    for fault in faults:
         bot = None
         if fault.integration is not None:
-            where = next(w for w in workspaces for i in w.integrations if i.key == fault.integration)
-            bot = object_id(where.key, fault.integration)
+            if fault.integration not in bots:
+                raise ValueError(f"a fault names no integration this world holds: {fault.integration}")
+            bot = bots[fault.integration]
         if isinstance(fault, RateLimited):
             planned.append(
                 wire.PlannedFault(
@@ -339,8 +353,7 @@ def seed(scenario: Scenario, world: Store) -> None:
             )
         else:
             planned.append(wire.PlannedFault(kind=wire.FaultKind.CONFLICT, times=fault.times, integration=bot))
-    if planned:
-        notion.write_schedule(wire.StoredSchedule(faults=planned))
+    return planned
 
 
 def _seed_workspace(
@@ -538,6 +551,7 @@ def _seed_integration(
     notion.write_integration(
         wire.StoredIntegration(
             id=bot,
+            key=integration.key,
             workspace=ws,
             name=integration.name,
             type=integration.type,

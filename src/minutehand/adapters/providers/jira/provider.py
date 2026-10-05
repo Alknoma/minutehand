@@ -16,8 +16,8 @@ from minutehand.adapters.providers.jira import wire
 from minutehand.adapters.providers.jira.app import build_app
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
-from minutehand.adapters.providers.jira.seed import seed
-from minutehand.domain.provider import Manifest
+from minutehand.adapters.providers.jira.seed import JiraSeed, seed
+from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import Actor, EntityRef
 from minutehand.ports.clock import Clock
@@ -33,6 +33,14 @@ class JiraProvider:
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)
+
+    def declare(self, faults: str, world: Store, clock: Clock) -> None:
+        """`JiraSeed.rate_limits`, on a world already open: each answers its next calls 429."""
+        limits = fault_fragment(JiraSeed, faults, frozenset({"rate_limits"})).rate_limits
+        jira = Desk(world).world
+        site = jira.site()
+        jira.write_site(site.model_copy(update={"rateLimits": [*site.rateLimits, *limits]}), actor=Actor.SCENARIO)
+        del clock
 
     # ------------------------------------------------------------------ ports
 

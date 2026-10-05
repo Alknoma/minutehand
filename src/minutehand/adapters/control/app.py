@@ -18,6 +18,7 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     GET    /v1/worlds/{id}/clock                       `WorldView` (its `now` and `owed`)
     POST   /v1/worlds/{id}/clock                       `Advance` -> `Advanced`
     POST   /v1/worlds/{id}/faults                      `Fault` -> `WorldView`
+    POST   /v1/worlds/{id}/provider-faults             `DeclareFaults` -> `WorldView`: a provider's own typed faults
     GET    /v1/worlds/{id}/checks                      `Checked`
     GET    /v1/unmatched?since=N                       `Unmatched`: calls no open world claimed
 
@@ -45,14 +46,17 @@ from minutehand.adapters.control.wire import (
     CallsPage,
     Checked,
     CreateWorld,
+    DeclareFaults,
     EditTicket,
     EntitiesPage,
     Environment,
     EventsPage,
     Fault,
     FiredView,
+    Happen,
     MoveTicket,
     OwedView,
+    PressControl,
     Refusal,
     Reply,
     Say,
@@ -204,9 +208,13 @@ def create_app(serving: Serving) -> Starlette:
             event = await live.reply(asked.person, asked.text, to=asked.to)
         elif isinstance(asked, MoveTicket):
             event = live.move_ticket(asked.ticket, asked.to)
-        else:
-            assert isinstance(asked, EditTicket)
+        elif isinstance(asked, EditTicket):
             event = live.edit_ticket(asked.ticket, state=asked.state, assignee=asked.assignee)
+        elif isinstance(asked, Happen):
+            event = await live.happen_now(asked.happening)
+        else:
+            assert isinstance(asked, PressControl)
+            event = await live.press(asked.person, asked.on, asked.press)
         return _json(Acted(event=event))
 
     async def advance(request: Request) -> Response:
@@ -226,6 +234,12 @@ def create_app(serving: Serving) -> Starlette:
     async def faults(request: Request) -> Response:
         found = world_of(request)
         standing.arm(found.world_id, Fault.model_validate_json(await request.body()))
+        return _json(_view(found))
+
+    async def declare(request: Request) -> Response:
+        found = world_of(request)
+        asked = DeclareFaults.model_validate_json(await request.body())
+        found.standing.declare_faults(standing.installed(asked.provider), asked.seed)
         return _json(_view(found))
 
     async def checks(request: Request) -> Response:
@@ -256,6 +270,7 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/clock", world, ["GET"]),
             route("/worlds/{world_id}/clock", advance, ["POST"]),
             route("/worlds/{world_id}/faults", faults, ["POST"]),
+            route("/worlds/{world_id}/provider-faults", declare, ["POST"]),
             route("/worlds/{world_id}/checks", checks, ["GET"]),
             route("/unmatched", unmatched, ["GET"]),
         ]
