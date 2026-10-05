@@ -508,6 +508,10 @@ class StoredComment(Wire):
     created: datetime
     updated: datetime
     updateAuthor: str
+    seededFrom: int | None = Field(
+        default=None,
+        description="Minutehand's own: its place among its issue's seeded comments, which read first; never served",
+    )
 
 
 class StoredLink(Wire):
