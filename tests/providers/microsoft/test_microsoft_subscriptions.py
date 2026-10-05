@@ -64,6 +64,12 @@ async def test_a_subscription_too_long_unvalidated_or_unwatchable_is_refused(
             headers=auth,
         )
         assert silent.status_code == 400 and "validation" in silent.json()["error"]["message"]
+        webhook.echo = False
+        unechoed = await http.post(
+            f"{GRAPH}/subscriptions", json={**base, "expirationDateTime": _at(tenant, timedelta(hours=1))}, headers=auth
+        )
+        assert unechoed.status_code == 400
+        webhook.echo = True
         unwatchable = await http.post(
             f"{GRAPH}/subscriptions",
             json={**base, "resource": "/users", "expirationDateTime": _at(tenant, timedelta(hours=1))},

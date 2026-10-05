@@ -241,6 +241,7 @@ class Webhook:
     url: str
     validations: list[str] = field(default_factory=list)
     notifications: list[dict[str, Any]] = field(default_factory=list)
+    echo: bool = True
 
 
 @pytest.fixture
@@ -252,7 +253,7 @@ async def webhook() -> AsyncIterator[Webhook]:
     async def receive(request: Request) -> Response:
         if "validationToken" in request.query_params:
             handle.validations.append(request.query_params["validationToken"])
-            return PlainTextResponse(request.query_params["validationToken"])
+            return PlainTextResponse(request.query_params["validationToken"] if handle.echo else "ok")
         handle.notifications.append(json.loads(await request.body()))
         return Response(status_code=202)
 
