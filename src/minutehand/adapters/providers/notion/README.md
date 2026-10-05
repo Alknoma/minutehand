@@ -89,6 +89,14 @@ documentation.
 - **Not reproduced:** aggregation of frequent events, delivery delay and out-of-order delivery,
   retries (each event is sent once), `page.moved`, `page.locked`, data-source events.
 
+## While a world is open (`minutehand serve`)
+
+- A member is removed (`OpenWorld.remove_person("notion", key)`) from every workspace they belong to: `/v1/users`
+  lists them no more, `/v1/users/{id}` answers 404 `object_not_found`, and what they wrote still names them.
+  Deactivation is refused as unsupported: Notion has no such state for a member.
+- Every page version tells its `owner` (who created it: a person's email, or the integration's name) and its
+  `space` (the workspace's name).
+
 ## In the world log
 
 Each page or row is one entity, and its blocks are stored inside it. A block edit, an

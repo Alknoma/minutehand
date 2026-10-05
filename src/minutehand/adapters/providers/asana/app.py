@@ -173,7 +173,7 @@ class View:
         if not wire.is_user_identifier(identifier):
             raise wire.bad(f"{field}: Not a Recognized ID")
         found = self.world.resolve_user(identifier, me=self.caller.gid)
-        if found is None:
+        if found is None or found.removed:
             raise wire.unknown(field, identifier, status=status)
         return found
 
@@ -444,12 +444,6 @@ def _query(request: Request) -> wire.Query:
     return wire.Query(list(request.query_params.multi_items()))
 
 
-def _listed[Out: wire.Representation](request: Request, items: list[Out]) -> Response:
-    query = _query(request)
-    chosen, next_page = wire.page(items, query, request.url.path)
-    return _answer(wire.many(chosen, wire.field_tree(query), next_page))
-
-
 def _one(request: Request, item: wire.Representation, status: int = 200) -> Response:
     return _answer(wire.one(item, wire.field_tree(_query(request))), status)
 
@@ -497,7 +491,17 @@ class AsanaApi:
             raise wire.Refusal(
                 401, "The bearer token has expired. If you have a refresh token, use it to get a new one."
             )
-        return _held(self._world.user(credential.user), credential.user)
+        user = _held(self._world.user(credential.user), credential.user)
+        if user.removed:
+            raise wire.Refusal(401, "Not Authorized")
+        return user
+
+    def _listed[Out: wire.Representation](self, request: Request, items: list[Out]) -> Response:
+        """One page of a collection, by the workspace's own threshold for a read without `limit`."""
+        query = _query(request)
+        limit = self._world.home().unpaginated_limit
+        chosen, next_page = wire.page(items, query, request.url.path, unpaginated_limit=limit)
+        return _answer(wire.many(chosen, wire.field_tree(query), next_page))
 
     def _throttle(self) -> None:
         now = self._clock.now()
@@ -572,7 +576,7 @@ class AsanaApi:
             members = view.team(team, status=400).members
             found = [u for u in found if u.gid in members]
         self._world.saw(state.record_ref(state.WORKSPACE_GID), Operation.SEARCH)
-        return _listed(request, [view.user_out(u) for u in found])
+        return self._listed(request, [view.user_out(u) for u in found])
 
     async def user(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -586,12 +590,12 @@ class AsanaApi:
         organization = view.organization(_query(request).text("organization"))
         found = [t for t in self._world.teams() if t.workspace == organization.gid and user.gid in t.members]
         self._world.saw(state.record_ref(organization.gid), Operation.SEARCH)
-        return _listed(request, [view.team_out(t) for t in found])
+        return self._listed(request, [view.team_out(t) for t in found])
 
     async def workspaces(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
         self._world.saw(state.record_ref(state.WORKSPACE_GID), Operation.SEARCH)
-        return _listed(request, [view.workspace_out(w) for w in self._world.workspaces()])
+        return self._listed(request, [view.workspace_out(w) for w in self._world.workspaces()])
 
     async def workspace(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -603,7 +607,7 @@ class AsanaApi:
         view = self._view(caller)
         workspace = view.workspace(request.path_params["gid"])
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
-        return _listed(request, [view.user_out(u) for u in self._world.users()])
+        return self._listed(request, [view.user_out(u) for u in self._world.users()])
 
     async def workspace_teams(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -611,7 +615,7 @@ class AsanaApi:
         if not workspace.is_organization:
             raise wire.bad(_NOT_ORGANIZATION)
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
-        return _listed(request, [view.team_out(t) for t in self._world.teams() if t.workspace == workspace.gid])
+        return self._listed(request, [view.team_out(t) for t in self._world.teams() if t.workspace == workspace.gid])
 
     async def team(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -623,7 +627,7 @@ class AsanaApi:
         view = self._view(caller)
         team = view.team(request.path_params["gid"])
         self._world.saw(state.record_ref(team.gid), Operation.SEARCH)
-        return _listed(request, [view.user_out(u) for u in self._world.users() if u.gid in team.members])
+        return self._listed(request, [view.user_out(u) for u in self._world.users() if u.gid in team.members])
 
     # ------------------------------------------------------------------ projects
 
@@ -638,7 +642,7 @@ class AsanaApi:
             and view.visible(p)
         ]
         self._world.saw(state.record_ref(team or workspace or state.WORKSPACE_GID), Operation.SEARCH)
-        return _listed(request, [view.project_out(p) for p in found])
+        return self._listed(request, [view.project_out(p) for p in found])
 
     async def workspace_projects(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -719,7 +723,7 @@ class AsanaApi:
         view = self._view(caller)
         project = view.project(request.path_params["gid"])
         self._world.saw(state.record_ref(project.gid), Operation.SEARCH)
-        return _listed(request, [view.section_out(s) for s in self._world.sections(project.gid)])
+        return self._listed(request, [view.section_out(s) for s in self._world.sections(project.gid)])
 
     async def create_section(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -736,7 +740,7 @@ class AsanaApi:
         project = view.project(request.path_params["gid"])
         found = _completed_since(_query(request), self._world.project_tasks(project.gid))
         self._world.saw(state.record_ref(project.gid), Operation.SEARCH)
-        return _listed(request, [view.task_out(t) for t in found])
+        return self._listed(request, [view.task_out(t) for t in found])
 
     async def project_memberships(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -747,7 +751,7 @@ class AsanaApi:
             members = [m for m in members if m == view.user(wanted, field="user", status=400).gid]
         self._world.saw(state.record_ref(project.gid), Operation.SEARCH)
         found = [view.membership_out(project, m) for m in members]
-        return _listed(request, sorted(found, key=lambda m: m.gid))
+        return self._listed(request, sorted(found, key=lambda m: m.gid))
 
     async def _members(self, request: Request, caller: wire.AsanaUser, *, adding: bool) -> Response:
         view = self._view(caller)
@@ -773,7 +777,7 @@ class AsanaApi:
         project = view.project(request.path_params["gid"])
         self._world.saw(state.record_ref(project.gid), Operation.SEARCH)
         found = [view.setting_out(project, _held(self._world.custom_field(f), f)) for f in project.custom_fields]
-        return _listed(request, sorted(found, key=lambda s: s.gid))
+        return self._listed(request, sorted(found, key=lambda s: s.gid))
 
     async def add_custom_field_setting(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -811,7 +815,7 @@ class AsanaApi:
         section = view.section(request.path_params["gid"])
         found = [t for t in self._world.tasks() if any(m.section == section.gid for m in t.memberships)]
         self._world.saw(state.record_ref(section.project), Operation.SEARCH)
-        return _listed(request, [view.task_out(t) for t in _completed_since(_query(request), found)])
+        return self._listed(request, [view.task_out(t) for t in _completed_since(_query(request), found)])
 
     async def add_task_to_section(self, request: Request, caller: wire.AsanaUser) -> Response:
         """Move the task to the section within the section's project; a task not in that project joins it."""
@@ -834,7 +838,7 @@ class AsanaApi:
         workspace = view.workspace(request.path_params["gid"])
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         found = [view.field_out(f) for f in self._world.custom_fields() if f.workspace == workspace.gid]
-        return _listed(request, found)
+        return self._listed(request, found)
 
     async def custom_field(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -845,7 +849,7 @@ class AsanaApi:
     def _tags(self, request: Request, view: View, workspace: str | None) -> Response:
         self._world.saw(state.record_ref(workspace or state.WORKSPACE_GID), Operation.SEARCH)
         found = [view.tag_out(t) for t in self._world.tags() if workspace is None or t.workspace == workspace]
-        return _listed(request, found)
+        return self._listed(request, found)
 
     async def tags(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -890,13 +894,13 @@ class AsanaApi:
         tag = view.tag(request.path_params["gid"])
         found = [t for t in self._world.tasks() if tag.gid in t.tags and view.sees(t)]
         self._world.saw(state.record_ref(tag.gid), Operation.SEARCH)
-        return _listed(request, [view.task_out(t) for t in found])
+        return self._listed(request, [view.task_out(t) for t in found])
 
     async def task_tags(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
         task = view.task(request.path_params["gid"])
         self._world.saw(state.task_ref(task.gid), Operation.READ)
-        return _listed(request, [view.tag_out(_held(self._world.tag(t), t)) for t in task.tags])
+        return self._listed(request, [view.tag_out(_held(self._world.tag(t), t)) for t in task.tags])
 
     async def _tagged(self, request: Request, caller: wire.AsanaUser, *, adding: bool) -> Response:
         view = self._view(caller)
@@ -953,7 +957,7 @@ class AsanaApi:
         if since is not None:
             found = [t for t in found if _at(t.modified_at) >= since]
         self._world.saw(state.record_ref(seen), Operation.SEARCH)
-        return _listed(request, [view.task_out(t) for t in found])
+        return self._listed(request, [view.task_out(t) for t in found])
 
     def _values(self, view: View, task: wire.AsanaTask, sent: dict[str, JsonValue]) -> list[wire.AsanaFieldValue]:
         """The task's custom field values with what was sent written over them; each sent field must be one the
@@ -1039,7 +1043,7 @@ class AsanaApi:
         view = self._view(caller)
         task = view.task(request.path_params["gid"])
         self._world.saw(state.task_ref(task.gid), Operation.READ)
-        return _listed(request, [view.task_out(t) for t in self._world.subtasks(task.gid)])
+        return self._listed(request, [view.task_out(t) for t in self._world.subtasks(task.gid)])
 
     async def get_task(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -1112,7 +1116,7 @@ class AsanaApi:
         view = self._view(caller)
         task = view.task(request.path_params["gid"])
         self._world.saw(state.task_ref(task.gid), Operation.READ)
-        return _listed(request, [view.story_out(s) for s in self._world.stories(task.gid)])
+        return self._listed(request, [view.story_out(s) for s in self._world.stories(task.gid)])
 
     # ------------------------------------------------------------------ search, typeahead
 

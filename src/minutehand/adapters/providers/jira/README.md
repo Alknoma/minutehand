@@ -57,6 +57,14 @@ A person's acts are `TicketHappening`s through `ActsOnTickets.act`: `Moves` (the
 required screen), `Reassigns` (to someone or nobody), `Comments`, `Deletes`, each by the happening's person at the
 run clock's time, recorded as actor PERSON with that person as the changelog's or comment's author.
 
+## While a world is open (`minutehand serve`)
+
+- A person deletes an issue (`OpenWorld.delete_ticket`, or a `TicketFate` with `deleted: true`): the issue, its
+  subtasks and the links naming them go, as actor PERSON, and the API answers 404 for it.
+- An account is deactivated or reactivated (`OpenWorld.deactivate_person` / `reactivate_person`): it reads
+  `active: false`, its credentials sign in to nothing, and it is not assignable (400). Removing an account is
+  refused as unsupported: Jira Cloud deactivates, it does not delete.
+
 ## What it does not do
 
 - API v2 (`/rest/api/2`), the old `/rest/api/3/search`, bulk create, webhooks, watchers, votes, worklogs,

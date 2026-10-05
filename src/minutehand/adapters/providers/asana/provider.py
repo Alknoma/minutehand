@@ -5,10 +5,19 @@ from __future__ import annotations
 from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
-from minutehand.adapters.providers.asana.seed import AsanaSeed, seed, seeded_gid
+from minutehand.adapters.providers.asana.seed import AsanaSeed, limited, seed, seeded_gid
 from minutehand.adapters.providers.asana.state import AsanaWorld
-from minutehand.domain.provider import Manifest, fault_fragment
-from minutehand.domain.scenario import Comments, Deletes, Moves, Reassigns, Scenario, TicketHappening, TicketState
+from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
+from minutehand.domain.scenario import (
+    Comments,
+    Deletes,
+    Moves,
+    Person,
+    Reassigns,
+    Scenario,
+    TicketHappening,
+    TicketState,
+)
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -17,6 +26,7 @@ from minutehand.ports.store import Store
 
 class AsanaProvider:
     manifest: Manifest = MANIFEST
+    seed_model = AsanaSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
@@ -25,8 +35,10 @@ class AsanaProvider:
         seed(scenario, world)
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
-        """`AsanaSeed.rate_limits`, on a world already open: each stretch counted from now."""
-        limits = fault_fragment(AsanaSeed, faults, frozenset({"rate_limits"})).rate_limits
+        """`AsanaSeed.rate_limits`, on a world already open, each stretch counted from now; and `.limits`, the
+        workspace's plan, kind and threshold for a read without `limit`, from now on."""
+        fragment = fault_fragment(AsanaSeed, faults, frozenset({"rate_limits", "limits"}))
+        limits = fragment.rate_limits
         asana = AsanaWorld(world)
         workspace = asana.workspace(state.WORKSPACE_GID)
         if workspace is None:
@@ -36,7 +48,7 @@ class AsanaProvider:
             wire.RateWindow(start=wire.stamp(now + r.after), end=wire.stamp(now + r.after + r.lasts)) for r in limits
         ]
         asana.put_record(
-            workspace.model_copy(update={"rate_limits": [*workspace.rate_limits, *windows]}),
+            limited(workspace.model_copy(update={"rate_limits": [*workspace.rate_limits, *windows]}), fragment.limits),
             parent=state.WORKSPACES,
             actor=Actor.SCENARIO,
             operation=Operation.UPDATE,
@@ -62,6 +74,37 @@ class AsanaProvider:
                 raise LookupError(f"no asana user has the email {assignee_email}")
             task = task.model_copy(update={"assignee": user.gid, "modified_at": wire.stamp(clock.now())})
         asana.put_task(task, operation=Operation.UPDATE, actor=Actor.SCENARIO)
+
+    def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
+        """The task is deleted, with its subtasks, as its assignee (or the owner) deletes it in Asana."""
+        asana = AsanaWorld(world)
+        asana.delete_task(_task(asana, ticket), actor=Actor.PERSON)
+        del clock
+
+    def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
+        """An administrator removes the person from the workspace: no longer listed or a team's member, refused as
+        an assignee or a follower, their tokens refused; what they did before still names them."""
+        if change is not PersonChange.REMOVED:
+            raise ValueError(f"asana has no way to show a person {change.value}")
+        asana = AsanaWorld(world)
+        user = asana.user(state.user_gid(person.key))
+        if user is None or user.removed:
+            raise ValueError(f"{person.key} is not a member of the asana workspace")
+        asana.put_record(
+            user.model_copy(update={"removed": True}),
+            parent=state.USERS,
+            actor=Actor.SCENARIO,
+            operation=Operation.UPDATE,
+        )
+        for team in asana.teams():
+            if user.gid in team.members:
+                asana.put_record(
+                    team.model_copy(update={"members": [m for m in team.members if m != user.gid]}),
+                    parent=state.TEAMS,
+                    actor=Actor.SCENARIO,
+                    operation=Operation.UPDATE,
+                )
+        del clock
 
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         """The person does what the happening says to the seeded task, as themself. A task no longer there
