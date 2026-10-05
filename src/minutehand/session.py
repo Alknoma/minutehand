@@ -441,10 +441,14 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
     asked = fork_of(state, run_id)
     parent_scenario = scenario_of(state, entry.parent_run)
     with reading(state, entry.parent_run) as parent_world:
-        checkpoint = checkpoints(parent_world)[at_seq]
+        held = checkpoints(parent_world)
+        checkpoint = held[at_seq]
+        ran_on = any(seq < at_seq and earlier.wake == checkpoint.wake for seq, earlier in held.items())
         parent_events = parent_world.events()
-        asked_for = (model_call(s).model for s in parent_world.spans() if s.wake > checkpoint.wake and is_model_call(s))
-        models = list(dict.fromkeys(m for m in asked_for if m is not None))
+        calls = [model_call(s).model for s in parent_world.spans() if is_model_call(s)]
+        after = [model_call(s).model for s in parent_world.spans() if s.wake > checkpoint.wake and is_model_call(s)]
+        # The models the parent asked for after the split; when it made no call after it, those it asked for at all.
+        models = list(dict.fromkeys(m for m in (after or calls) if m is not None))
     with reading(state, run_id) as fork_world:
         fork_events = fork_world.events()
 
@@ -475,6 +479,7 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
         at_seq=at_seq,
         after_wake=checkpoint.wake,
         at=checkpoint.now,
+        ran_on=ran_on,
         changes=[
             change_words(o, parent_scenario, ticket_before=ticket_before(o), models_before=models)
             for o in (asked.overrides if asked is not None else [])

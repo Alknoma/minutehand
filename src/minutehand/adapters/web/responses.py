@@ -28,6 +28,9 @@ class RunRow(Model):
     parent_run: str | None
     forked_at: int | None
     forked_after_wake: int | None = Field(description="The wake whose end the fork was taken at")
+    forked_ran_on: bool = Field(
+        default=False, description="The fork was taken at a later checkpoint of that wake: the clock had run on"
+    )
     changed: str | None = Field(description="For a fork, what it changed, in a few words; None for a root run")
     children: list[str]
 

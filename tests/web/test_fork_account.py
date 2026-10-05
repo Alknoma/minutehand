@@ -16,6 +16,7 @@ import pytest
 from minutehand import cli, session
 from minutehand.adapters.mcp.results import RunListing
 from minutehand.adapters.web.responses import RunResponse, RunsResponse
+from minutehand.application.forks import described
 from minutehand.application.restore import Verification
 from minutehand.domain.experiment import DeadlineShift, Fork, PersonChange
 from minutehand.domain.run import VerdictKind
@@ -144,3 +145,28 @@ def test_findings_are_paired_by_check_and_kind_so_a_changed_message_is_changed_n
     gained, lost, changed = _paired(parent, fork)
     assert [f.check for f in gained] == ["new"] and [f.check for f in lost] == ["nagged"]
     assert [(c.parent.message, c.fork.message) for c in changed] == [("expired 2 days", "expired 4 days")]
+
+
+async def test_a_fork_from_the_checkpoint_the_clock_ran_on_to_says_so_and_not_the_end_of_its_wake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The forgetful agent asks for no wake after wake 1, so the clock runs on to the deadline and a second
+    checkpoint is written that also follows wake 1: a fork from it split days after wake 1 ended."""
+    state = tmp_path / "state"
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
+    end, ran_on = [p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1][:2]
+    for point in (end, ran_on):
+        how = Fork(parent_run=parent.record.run_id, at_seq=point.seq, overrides=[DeadlineShift(by=timedelta(days=3))])
+        await session.fork(parent.record.run_id, how, state=state, command=launched.command)
+    forks = {r.forked_at: r for r in session.logged(state) if r.parent_run is not None}
+
+    async with client(state) as c:
+        listed = {r.run_id: r for r in (await read(c, "/api/runs", RunsResponse)).runs}
+    at_end = session.fork_account(state, forks[end.seq].run_id)
+    later = session.fork_account(state, forks[ran_on.seq].run_id)
+    assert at_end is not None and later is not None
+    assert not at_end.ran_on and later.ran_on and later.at > at_end.at
+    assert not listed[forks[end.seq].run_id].forked_ran_on and listed[forks[ran_on.seq].run_id].forked_ran_on
+    assert "after wake 1, with the clock run on to " in "\n".join(described(later))
+    assert "with the clock run on" not in "\n".join(described(at_end))

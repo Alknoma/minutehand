@@ -227,6 +227,7 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
     kinds = [f.kind for f in outcome.result.findings] if outcome is not None else []
     after_wake: int | None = None
     changed: str | None = None
+    account = session.fork_account(state, entry.run_id) if entry.parent_run is not None else None
     if entry.parent_run is not None:
         asked = session.fork_of(state, entry.run_id)
         changed = summary(asked, session.scenario_of(state, entry.parent_run)) if asked is not None else None
@@ -247,6 +248,7 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
         parent_run=entry.parent_run,
         forked_at=entry.forked_at,
         forked_after_wake=after_wake,
+        forked_ran_on=account.ran_on if account is not None else False,
         changed=changed,
         children=children,
     )

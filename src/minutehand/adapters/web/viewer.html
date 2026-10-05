@@ -236,7 +236,7 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
     return roots.length > 1 ? name + ", run " + (roots.indexOf(row) + 1) : name;
   }
   function splitLabel(row) {
-    return row.forked_after_wake === null ? "" : (row.forked_after_wake === 0 ? "from setup · " : "after wake " + row.forked_after_wake + " · ");
+    return row.forked_after_wake === null ? "" : (row.forked_after_wake === 0 ? "from setup · " : "after wake " + row.forked_after_wake + (row.forked_ran_on ? ", clock run on" : "") + " · ");
   }
   function runStatus(row) {
     if (!row.finished) { return ["run", "Running…"]; }
@@ -401,10 +401,11 @@ ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:
   function forkPanel(f) {
     var parentRow = state.list.filter(function (r) { return r.run_id === f.parent_run; })[0];
     var parentName = parentRow ? runLabel(parentRow) : f.parent_run;
-    var where = f.after_wake === 0 ? "at setup, before the first wake" : "at the end of wake " + f.after_wake;
+    var where = f.after_wake === 0 ? "at setup, before the first wake"
+      : (f.ran_on ? "after wake " + f.after_wake + ", once the clock had run on with nothing due to" : "at the end of wake " + f.after_wake);
     var html = '<section class="fork" aria-label="What this fork is"><h2>What this fork is</h2><dl>';
     html += "<dt>Split from</dt><dd><a href=\"#" + esc(encodeURIComponent(f.parent_run)) + "\">" + esc(parentName) + "</a> " +
-      esc(where) + ", " + esc(when(f.at)) + " simulated (checkpoint seq " + f.at_seq + ")</dd>";
+      esc(where) + (f.ran_on && f.after_wake !== 0 ? " " : ", ") + esc(when(f.at)) + " simulated (checkpoint seq " + f.at_seq + ")</dd>";
     html += "<dt>What it changed</dt><dd>" + (f.changes.length
       ? "<ul>" + f.changes.map(function (c) { return "<li>" + esc(c) + "</li>"; }).join("") + "</ul>"
       : "Nothing: a rerun from the same moment, to see how much the agent varies.") + "</dd>";

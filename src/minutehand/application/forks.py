@@ -117,6 +117,11 @@ class ForkAccount(Model):
     at_seq: int = Field(description="The checkpoint the fork split from")
     after_wake: int = Field(description="The wake whose end that checkpoint is; 0 is setup")
     at: AwareDatetime = Field(description="The simulated moment of the split")
+    ran_on: bool = Field(
+        default=False,
+        description="The checkpoint is not the wake's end but a later one: the clock ran on, with nothing due, to "
+        "the scenario's deadline",
+    )
     changes: list[str] = Field(description="Each change the fork made, in words, in the order it was asked for")
     summary: str = Field(description="What it changed, short enough for a list of runs")
     restore: RestoreAccount | None = Field(description="None when no restore was recorded with the fork")
@@ -444,7 +449,8 @@ def described(account: ForkAccount) -> list[str]:
     """The account as lines of text, for the command line."""
     lines = [
         f"forked from {account.parent_run} at seq {account.at_seq}: after wake {account.after_wake}, "
-        f"{_moment(account.at)} (simulated)"
+        + ("with the clock run on to " if account.ran_on else "")
+        + f"{_moment(account.at)} (simulated)"
     ]
     if account.changes:
         lines.append("what it changed:")
