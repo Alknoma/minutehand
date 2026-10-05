@@ -11,7 +11,6 @@ import httpx
 from minutehand.adapters.providers.google_drive import state
 from minutehand.adapters.providers.google_drive.manifest import MANIFEST
 from minutehand.adapters.providers.google_drive.provider import build
-from minutehand.adapters.providers.google_drive.state import ROOT_ID
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
@@ -20,14 +19,18 @@ from tests.providers.google_drive.drive_world import (
     AUTH,
     DOC,
     FOLDER,
+    OWNER,
+    ROOT_ID,
     SCENARIO,
     START,
+    TOKEN,
     Drive,
     answer,
     client_for,
     create_doc,
     listed,
     names_of,
+    unsigned_assertion,
 )
 
 
@@ -66,13 +69,15 @@ async def test_a_fork_sees_files_only_up_to_the_fork(drive: Drive, api: httpx.As
 
 
 def test_seeding_writes_my_drive_people_access_and_documents_as_the_scenario(drive: Drive) -> None:
-    events = drive.store.events()
+    events = [e for e in drive.store.events() if e.entity.external_id != state.secret_digest(TOKEN)]
     assert events and {e.actor for e in events} == {Actor.SCENARIO}
 
     world = drive.world
-    root = world.root()
+    root = world.file(ROOT_ID)
     assert root is not None and root.file.owners[0].emailAddress == "mara@example.com"
-    files = {stored.file.name: stored for stored, _ in world.walk()}
+    dov_root = world.file(state.root_id("dov@example.com"))
+    assert dov_root is not None and dov_root.file.name == "My Drive", "everyone has a My Drive of their own"
+    files = {stored.file.name: stored for stored, _ in world.walk(ROOT_ID)}
     assert sorted(files) == ["Kickoff Notes", "Procurement", "Supplier Shortlist"], "the slack document is not Drive's"
     assert files["Procurement"].file.mimeType == FOLDER and files["Procurement"].file.parents == [ROOT_ID]
     shortlist = files["Supplier Shortlist"]
@@ -80,7 +85,8 @@ def test_seeding_writes_my_drive_people_access_and_documents_as_the_scenario(dri
     assert state.readable_text(shortlist) == "Three suppliers remain.\nPrices due Friday."
     assert shortlist.file.createdTime == "2026-09-14T08:30:00.000Z"
     assert [o.emailAddress for o in shortlist.file.owners] == ["mara@example.com"]
-    assert sorted(p.emailAddress or "" for p in world.grants(ROOT_ID)) == [state.AGENT_EMAIL, "dov@example.com"]
+    assert world.grants(ROOT_ID) == [], "nobody is granted the owner's My Drive unless the scenario says so"
+    assert world.role("dov@example.com", shortlist) is None and world.role(OWNER, shortlist) == "owner"
     assert world.user("dov@example.com") is not None and world.user("mara@example.com") is not None
 
     created = [e for e in events if e.entity == state.file_ref(shortlist.file.id)]
@@ -106,7 +112,7 @@ async def test_the_token_endpoint_answers_a_service_account_assertion(oauth: htt
             "/token",
             data={
                 "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                "assertion": "header.claims.signature",
+                "assertion": unsigned_assertion("reader@sim-project.iam.example.com"),
             },
         )
     )
@@ -144,7 +150,13 @@ async def test_the_token_endpoint_rejects_an_unknown_grant_or_a_missing_assertio
 
 def test_the_provider_is_registered_and_its_manifest_imports_nothing_else() -> None:
     assert (MANIFEST.key, MANIFEST.tier) == ("google_drive", Tier.FINISHED)
-    assert MANIFEST.hosts == ["www.googleapis.com", "oauth2.googleapis.com", "docs.googleapis.com"]
+    assert MANIFEST.hosts == [
+        "www.googleapis.com",
+        "oauth2.googleapis.com",
+        "docs.googleapis.com",
+        "slides.googleapis.com",
+        "iamcredentials.googleapis.com",
+    ]
     assert MANIFEST.kinds == [EntityKind.DOCUMENT, EntityKind.COMMENT] and not MANIFEST.pushes_events
     loaded = subprocess.run(
         [

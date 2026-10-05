@@ -1,4 +1,4 @@
-"""Google's own JSON for Drive v3, Docs v1 and the OAuth token endpoint: the only module that parses or builds it.
+"""Google's own JSON for Drive v3 and Google's sign-in endpoints. Docs v1 is `docs.py`, Slides v1 `slides.py`.
 
 Four families of model live here:
 
@@ -28,10 +28,15 @@ from urllib.parse import parse_qsl
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
+from minutehand.adapters.providers.google_drive.docs import DocBody
+from minutehand.adapters.providers.google_drive.slides import Deck
 from minutehand.domain.scenario import Model
 
 FOLDER = "application/vnd.google-apps.folder"
 DOCUMENT = "application/vnd.google-apps.document"
+SPREADSHEET = "application/vnd.google-apps.spreadsheet"
+PRESENTATION = "application/vnd.google-apps.presentation"
+SHORTCUT = "application/vnd.google-apps.shortcut"
 GOOGLE_APPS = "application/vnd.google-apps."
 OCTET_STREAM = "application/octet-stream"
 
@@ -142,6 +147,25 @@ def login_required() -> Refusal:
     )
 
 
+def invalid_credentials() -> Refusal:
+    """A token Google does not accept: unknown, expired or revoked."""
+    message = (
+        "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other"
+        " valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project."
+    )
+    item = ErrorItem(
+        domain="global",
+        reason="authError",
+        message="Invalid Credentials",
+        location="Authorization",
+        locationType="header",
+    )
+    return Refusal(
+        GoogleError(error=ErrorBody(code=401, message=message, errors=[item], status="UNAUTHENTICATED")),
+        headers={"WWW-Authenticate": 'Bearer realm="https://accounts.google.com/", error="invalid_token"'},
+    )
+
+
 def docs_refusal(code: int, status: str, message: str) -> Refusal:
     """A Docs v1 error: code, message and status, and no `errors` list."""
     return Refusal(GoogleError(error=ErrorBody(code=code, message=message, status=status)))
@@ -173,6 +197,11 @@ class DriveUser(Model):
     me: bool | None = Field(default=None, description="Set when served to say the caller is this user")
 
 
+class ShortcutDetails(Model):
+    targetId: str
+    targetMimeType: str | None = None
+
+
 class DriveFile(Model):
     """A Drive v3 `File`, as far as this fake knows one."""
 
@@ -192,23 +221,36 @@ class DriveFile(Model):
     size: str | None = Field(default=None, description="Bytes of a binary file; Docs editors files have none")
     md5Checksum: str | None = None
     webViewLink: str
+    driveId: str | None = Field(default=None, description="The shared drive it is in; None in a My Drive")
+    lastModifyingUser: DriveUser | None = None
+    shared: bool | None = None
+    shortcutDetails: ShortcutDetails | None = None
 
 
-class DocText(Model):
-    """The text of a Google Docs file. It is the document: export and the Docs API both read it."""
+class BlobRef(Model):
+    """A binary file's bytes, kept once as their own entity under their digest: a change to the file's metadata
+    does not copy them, and two files with the same bytes share them."""
 
-    kind: Literal["doc_text"] = "doc_text"
-    text: str
+    kind: Literal["blob"] = "blob"
+    digest: str
+    size: int
+    md5: str
 
 
 class Blob(Model):
-    """The bytes of a binary file, base64-encoded so they survive as JSON text."""
+    """The bytes of a binary file, base64-encoded so they survive as JSON text: the body of a `BlobRef`'s entity."""
 
-    kind: Literal["blob"] = "blob"
     base64: str
 
 
-Content = Annotated[DocText | Blob, Field(discriminator="kind")]
+class Sheet(Model):
+    """A Google Sheets file: the cells of its one sheet, row by row."""
+
+    kind: Literal["sheet"] = "sheet"
+    rows: list[list[str]] = []
+
+
+Content = Annotated[DocBody | Deck | Sheet | BlobRef, Field(discriminator="kind")]
 
 
 class StoredFile(Model):
@@ -261,7 +303,89 @@ class Comment(Model):
     replies: list[JsonValue] = []
 
 
-Stored = TypeVar("Stored", StoredFile, DriveUser, Permission, Comment)
+class SharedDrive(Model):
+    kind: Literal["drive#drive"] = "drive#drive"
+    id: str
+    name: str
+    createdTime: str
+    hidden: bool = False
+
+
+class Credential(Model):
+    """A refresh token or a service account the run signs in, and whom it signs in as. Kept under its digest;
+    the credential itself is never stored."""
+
+    email: str = Field(description="Who a token issued for it acts as")
+    service_account: bool = False
+    revoked: bool = False
+
+
+class AccessToken(Model):
+    """An access token the run issued, kept under its digest."""
+
+    email: str
+    expires: str = Field(description="RFC 3339, simulated time")
+    credential: str = Field(description="The digest of the credential it was issued for")
+    revoked: bool = False
+
+
+class Channel(Model):
+    """A `changes.watch` subscription: where to tell the agent of changes, and what it has been told."""
+
+    id: str
+    resourceId: str
+    resourceUri: str
+    address: str
+    expiration: str = Field(description="RFC 3339, simulated time")
+    token: str | None = None
+    email: str
+    driveId: str | None = None
+    told_after: int = Field(description="The last event seq the agent has been told of")
+    messages: int = Field(default=1, description="Notifications sent, the sync message first")
+    stopped: bool = False
+    undelivered: int = Field(default=0, description="Notifications the agent's address did not accept")
+
+
+class StoredFault(Model):
+    operation: str
+    kind: str
+    after: str = Field(description="RFC 3339, simulated time")
+    remaining: int
+
+
+class SeededFile(Model):
+    """The file a seeded document became, found by its title however it is renamed later."""
+
+    file_id: str
+
+
+class UploadSession(Model):
+    """A resumable upload in progress: the metadata it began with and the bytes received so far."""
+
+    metadata: str = Field(description="The JSON body of the first request")
+    media_type: str
+    total: int | None
+    received: str = Field(default="", description="base64")
+    file_id: str | None = Field(default=None, description="Set when the upload replaces a file's content")
+    email: str
+    query: str = Field(description="The first request's query string, which says what to answer")
+
+
+Stored = TypeVar(
+    "Stored",
+    StoredFile,
+    DriveUser,
+    Permission,
+    Comment,
+    SharedDrive,
+    Credential,
+    AccessToken,
+    Channel,
+    StoredFault,
+    UploadSession,
+    Blob,
+    SeededFile,
+)
 
 
 def parse(model: type[Stored], body: str) -> Stored:
@@ -278,6 +402,10 @@ def blob(content: bytes) -> Blob:
 
 def blob_bytes(stored: Blob) -> bytes:
     return base64.b64decode(stored.base64)
+
+
+def digest(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 def md5(content: bytes) -> str:
@@ -298,8 +426,17 @@ def web_view_link(file_id: str, mime_type: str) -> str:
     if mime_type == FOLDER:
         return f"https://drive.google.com/drive/folders/{file_id}"
     if mime_type == DOCUMENT:
-        return f"https://docs.google.com/document/d/{file_id}/edit"
+        return f"https://docs.google.com/document/d/{file_id}/edit?usp=drivesdk"
+    if mime_type == SPREADSHEET:
+        return f"https://docs.google.com/spreadsheets/d/{file_id}/edit?usp=drivesdk"
+    if mime_type == PRESENTATION:
+        return f"https://docs.google.com/presentation/d/{file_id}/edit?usp=drivesdk"
     return f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+
+
+def rfc1123(moment: datetime) -> str:
+    """The date format of Google's push notification headers."""
+    return moment.astimezone(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
 
 # --------------------------------------------------------------------------- requests
@@ -450,7 +587,30 @@ class CallQuery(Model):
     addParents: str = ""
     removeParents: str = ""
     uploadType: str | None = None
+    upload_id: str | None = None
     transferOwnership: str = "false"
+    sendNotificationEmail: str = "true"
+    emailMessage: str | None = None
+    corpora: str | None = None
+    driveId: str | None = None
+    supportsAllDrives: str = "false"
+    supportsTeamDrives: str = "false"
+    includeItemsFromAllDrives: str = "false"
+    includeTeamDriveItems: str = "false"
+    spaces: str = "drive"
+    includeRemoved: str = "true"
+    restrictToMyDrive: str = "false"
+    includeTabsContent: str = "false"
+    token: str | None = None
+
+    @property
+    def all_drives(self) -> bool:
+        """Whether the caller says it supports shared drives (`supportsTeamDrives` is the old spelling)."""
+        return self.supportsAllDrives == "true" or self.supportsTeamDrives == "true"
+
+    @property
+    def items_from_all_drives(self) -> bool:
+        return self.includeItemsFromAllDrives == "true" or self.includeTeamDriveItems == "true"
 
 
 def read_query(query: str) -> CallQuery:
@@ -477,17 +637,74 @@ class TokenRequest(Model):
     client_id: str | None = None
     client_secret: str | None = None
     scope: str | None = None
+    code: str | None = None
+    redirect_uri: str | None = None
+    code_verifier: str | None = None
+
+
+class JwtClaims(Model):
+    """The claims of a service account's signed assertion that say who it is, read without the signature: the run
+    holds no Google key to check it against."""
+
+    iss: str
+    scope: str | None = None
+    sub: str | None = None
+    aud: str | None = None
+    exp: int | None = None
+    iat: int | None = None
+    target_audience: str | None = None
+
+
+def jwt_claims(assertion: str) -> JwtClaims | None:
+    """The claims of a JWT, or None when it is not one."""
+    parts = assertion.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        decoded = json.loads(raw)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    known = {name: value for name, value in decoded.items() if name in JwtClaims.model_fields}
+    try:
+        return JwtClaims.model_validate(known)
+    except ValidationError:
+        return None
 
 
 JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 REFRESH_TOKEN = "refresh_token"
+AUTHORIZATION_CODE = "authorization_code"
+TOKEN_LIFETIME = 3599
 
 
 class TokenAnswer(Model):
     access_token: str
-    expires_in: int = 3599
+    expires_in: int = TOKEN_LIFETIME
     token_type: Literal["Bearer"] = "Bearer"
     scope: str | None = None
+
+
+class Userinfo(Model):
+    """`oauth2/v2/userinfo`."""
+
+    id: str
+    email: str
+    verified_email: bool = True
+    name: str
+    given_name: str | None = None
+    family_name: str | None = None
+    picture: str | None = None
+
+
+class AllowedLocations(Model):
+    """`iamcredentials`' regional access boundary lookup, which google-auth makes after a service account signs in:
+    no boundary."""
+
+    locations: list[str] = []
+    encodedLocations: str = "0x0"
 
 
 class OAuthError(Model):
@@ -529,6 +746,57 @@ class About(Model):
     user: DriveUser
 
 
+class DriveList(Model):
+    kind: Literal["drive#driveList"] = "drive#driveList"
+    nextPageToken: str | None = None
+    drives: list[SharedDrive]
+
+
+class StartPageToken(Model):
+    kind: Literal["drive#startPageToken"] = "drive#startPageToken"
+    startPageToken: str
+
+
+class Change(Model):
+    kind: Literal["drive#change"] = "drive#change"
+    changeType: Literal["file"] = "file"
+    time: str
+    removed: bool
+    fileId: str
+    file: DriveFile | None = None
+    driveId: str | None = None
+
+
+class ChangeList(Model):
+    kind: Literal["drive#changeList"] = "drive#changeList"
+    nextPageToken: str | None = None
+    newStartPageToken: str | None = None
+    changes: list[Change]
+
+
+class ChannelWrite(Model):
+    id: str = ""
+    type: str = ""
+    address: str = ""
+    expiration: str | None = Field(default=None, description="Milliseconds since the epoch, as a string")
+    token: str | None = None
+    params: dict[str, str] | None = None
+
+
+class ChannelAnswer(Model):
+    kind: Literal["api#channel"] = "api#channel"
+    id: str
+    resourceId: str
+    resourceUri: str
+    expiration: str
+    token: str | None = None
+
+
+class ChannelStop(Model):
+    id: str = ""
+    resourceId: str = ""
+
+
 def encode_page(offset: int) -> str:
     return base64.urlsafe_b64encode(f"offset:{offset}".encode()).decode().rstrip("=")
 
@@ -557,82 +825,7 @@ def page_size(raw: str | None, *, default: int, most: int) -> int:
     return size
 
 
-# --------------------------------------------------------------------------- docs v1
-
-
-class TextStyle(Model):
-    pass
-
-
-class TextRun(Model):
-    content: str
-    textStyle: TextStyle = TextStyle()
-
-
-class ParagraphElement(Model):
-    startIndex: int
-    endIndex: int
-    textRun: TextRun
-
-
-class ParagraphStyle(Model):
-    namedStyleType: Literal["NORMAL_TEXT"] = "NORMAL_TEXT"
-    direction: Literal["LEFT_TO_RIGHT"] = "LEFT_TO_RIGHT"
-
-
-class Paragraph(Model):
-    elements: list[ParagraphElement]
-    paragraphStyle: ParagraphStyle = ParagraphStyle()
-
-
-class SectionStyle(Model):
-    columnSeparatorStyle: Literal["NONE"] = "NONE"
-    contentDirection: Literal["LEFT_TO_RIGHT"] = "LEFT_TO_RIGHT"
-    sectionType: Literal["CONTINUOUS"] = "CONTINUOUS"
-
-
-class SectionBreak(Model):
-    sectionStyle: SectionStyle = SectionStyle()
-
-
-class StructuralElement(Model):
-    startIndex: int | None = Field(default=None, description="Absent on the opening section break, as Docs sends it")
-    endIndex: int
-    paragraph: Paragraph | None = None
-    sectionBreak: SectionBreak | None = None
-
-
-class DocumentBody(Model):
-    content: list[StructuralElement]
-
-
-class Document(Model):
-    documentId: str
-    title: str
-    revisionId: str
-    body: DocumentBody
-
-
-def utf16_units(text: str) -> int:
-    """A Docs index counts UTF-16 code units: an emoji is two."""
-    return len(text.encode("utf-16-le")) // 2
-
-
-def document(document_id: str, title: str, revision: str, text: str) -> Document:
-    """A Docs body for plain text: a section break at 0, then one paragraph per line, each with one text run.
-
-    A document always ends in a newline, so text without one gets one.
-    """
-    if not text.endswith("\n"):
-        text += "\n"
-    content = [StructuralElement(endIndex=1, sectionBreak=SectionBreak())]
-    index = 1
-    for line in text.splitlines(keepends=True):
-        end = index + utf16_units(line)
-        run = ParagraphElement(startIndex=index, endIndex=end, textRun=TextRun(content=line))
-        content.append(StructuralElement(startIndex=index, endIndex=end, paragraph=Paragraph(elements=[run])))
-        index = end
-    return Document(documentId=document_id, title=title, revisionId=revision, body=DocumentBody(content=content))
+# --------------------------------------------------------------------------- exports
 
 
 def plain_text_export(text: str) -> bytes:
@@ -773,7 +966,10 @@ def selection(fields: str | None, model: type[BaseModel], default: str) -> Mask 
     return mask
 
 
-FILE_DEFAULT = "kind,id,name,mimeType"
-LIST_DEFAULT = "kind,nextPageToken,incompleteSearch,files(kind,id,name,mimeType)"
+FILE_DEFAULT = "kind,id,name,mimeType,driveId"
+LIST_DEFAULT = "kind,nextPageToken,incompleteSearch,files(kind,id,name,mimeType,driveId)"
+CHANGE_LIST_DEFAULT = "kind,nextPageToken,newStartPageToken,changes(kind,changeType,time,removed,fileId,file(kind,id,name,mimeType,driveId),driveId)"
+DRIVE_LIST_DEFAULT = "kind,nextPageToken,drives(kind,id,name)"
+DRIVE_DEFAULT = "kind,id,name"
 PERMISSION_DEFAULT = "kind,id,type,role"
 PERMISSION_LIST_DEFAULT = "kind,nextPageToken,permissions(kind,id,type,role)"

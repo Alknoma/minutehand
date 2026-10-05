@@ -11,7 +11,6 @@ import pytest
 
 from minutehand.adapters.providers.google_drive import state
 from minutehand.adapters.providers.google_drive.provider import build
-from minutehand.adapters.providers.google_drive.state import ROOT_ID
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, Operation, RecordSnapshot
@@ -20,13 +19,17 @@ from tests.providers.google_drive.drive_world import (
     DOC,
     FOLDER,
     LATER,
+    OWNER,
+    ROOT_ID,
     SCENARIO,
     START,
+    TOKEN,
     Drive,
     answer,
     client_for,
     create_doc,
     files_of,
+    issue,
     listed,
     multipart,
     names_of,
@@ -181,6 +184,7 @@ async def test_file_ids_come_from_the_event_sequence(drive: Drive, api: httpx.As
 
     again = SqliteStore(tmp_path / "again.db", "root", RunClock(START))
     build().seed(SCENARIO, again)
+    issue(again, TOKEN, OWNER)
     async with client_for(build(), again, RunClock(START)) as replay:
         remade = await create_doc(replay, "Minutes", "text")
 
@@ -290,7 +294,7 @@ async def test_a_get_answers_only_the_fields_asked_for(api: httpx.AsyncClient) -
     every = answer(await api.get(f"/drive/v3/files/{made['id']}", params={"fields": "*"}, headers=AUTH))
 
     assert set(default) == {"kind", "id", "name", "mimeType"}
-    assert narrow == {"id": made["id"], "owners": [{"emailAddress": state.AGENT_EMAIL}]}
+    assert narrow == {"id": made["id"], "owners": [{"emailAddress": OWNER}]}
     assert {"parents", "createdTime", "modifiedTime", "version", "webViewLink", "trashed"} <= set(every)
 
 
@@ -364,7 +368,7 @@ def roles(permissions: dict[str, object]) -> list[tuple[str, str]]:
     return sorted((str(p["role"]), str(p["emailAddress"])) for p in found)
 
 
-async def test_permissions_list_the_owner_and_what_my_drive_shares_and_take_a_new_grant(
+async def test_permissions_list_the_owner_and_take_a_new_grant(
     drive: Drive,
     api: httpx.AsyncClient,
 ) -> None:
@@ -391,14 +395,10 @@ async def test_permissions_list_the_owner_and_what_my_drive_shares_and_take_a_ne
         )
     )
 
-    assert roles(before) == [
-        ("owner", "mara@example.com"),
-        ("writer", state.AGENT_EMAIL),
-        ("writer", "dov@example.com"),
-    ]
+    assert roles(before) == [("owner", "mara@example.com")], "nobody else was granted it, nor its folders"
     assert set(granted) == {"kind", "id", "type", "role"} and granted["role"] == "reader"
     assert ("reader", "auditor@example.org") in roles(after)
-    event = drive.store.events()[-2]
+    event = drive.store.events()[-3]
     assert (event.actor, event.operation, event.after) == (
         Actor.AGENT,
         Operation.CREATE,
@@ -423,7 +423,7 @@ async def test_a_comment_is_recorded_as_a_comment_and_listed(drive: Drive, api: 
     )
 
     assert posted["content"] == "Is this final?" and posted["createdTime"] == "2026-09-14T11:37:11.250Z"
-    assert posted["author"] == {"displayName": state.AGENT_NAME, "me": True}
+    assert posted["author"] == {"displayName": "Mara Lindqvist", "me": True}
     assert (event.actor, event.operation, event.entity.kind) == (Actor.AGENT, Operation.CREATE, EntityKind.COMMENT)
     stored = drive.store.get(state.comment_ref(str(posted["id"])))
     assert stored is not None and stored.parent == made["id"]
@@ -435,9 +435,9 @@ async def test_about_answers_the_caller(api: httpx.AsyncClient) -> None:
     assert about == {
         "user": {
             "kind": "drive#user",
-            "displayName": state.AGENT_NAME,
-            "emailAddress": state.AGENT_EMAIL,
-            "permissionId": state.permission_id(state.AGENT_EMAIL),
+            "displayName": "Mara Lindqvist",
+            "emailAddress": OWNER,
+            "permissionId": state.permission_id(OWNER),
             "me": True,
         }
     }
