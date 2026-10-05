@@ -1,0 +1,15 @@
+# A private Firestore emulator for one agent under test. Run through hooks.py, which names the project
+# (MINUTEHAND_FIRESTORE_PROJECT) and the directory exports are shared through (FIRESTORE_EXPORTS).
+services:
+  firestore:
+    image: ${FIRESTORE_IMAGE:-minutehand-firestore-emulator:13.35.1}
+    build: .
+    entrypoint: ["sh", "/recipe/start.sh"]
+    working_dir: /recipe
+    volumes:
+      - ./firebase.json:/recipe/firebase.json:ro
+      - ./start.sh:/recipe/start.sh:ro
+      - ${FIRESTORE_EXPORTS:?set FIRESTORE_EXPORTS to a directory to share exports through}:/exports
+    ports:
+      - "127.0.0.1:${FIRESTORE_PORT:-8080}:8080"
+      - "127.0.0.1:${FIRESTORE_HUB_PORT:-4400}:4400"
