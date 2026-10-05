@@ -257,6 +257,7 @@ def create_app(serving: Serving) -> Starlette:
 
     async def create(request: Request) -> Response:
         spec = CreateWorld.model_validate_json(await request.body())
+        await standing.start_emulators(spec)
         return _json(_view(standing.create(spec)), 201)
 
     async def world(request: Request) -> Response:

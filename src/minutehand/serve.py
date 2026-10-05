@@ -52,6 +52,8 @@ from pydantic import Field
 from starlette.applications import Starlette
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
+from minutehand.adapters.emulator.fleet import Emulators
+from minutehand.adapters.emulator.process import EmulatorRefused
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -59,16 +61,19 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.worlds import Mounted
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.forward import Forwarding
-from minutehand.adapters.telemetry.receiver import Receiver
-from minutehand.application.outbound import outbound_uses
+from minutehand.adapters.telemetry.receiver import Receiver, exporter_environment
+from minutehand.application.emulators import findings as emulator_findings
+from minutehand.application.emulators import record_health
+from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import StandingWorld, Unsupported, WorldRefused
 from minutehand.checks.runner import RunResult
+from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Model, ProviderKey
-from minutehand.domain.world import Exchange
+from minutehand.domain.world import CallOutcome, Exchange
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import (
     ASGIApp,
@@ -222,6 +227,23 @@ class Standing:
         `ProxyAddon.activity_in`, once it routes to these worlds."""
         self._closed: list[_Closed] = []
         self._handed: set[str] = set()
+        self.emulators = Emulators(state / "emulators", {}, self._emulator_changed)
+        """Every external emulator a world has declared: one per server, shared by every world declaring it the
+        same, started with the first and stopped with the server."""
+
+    def _emulator_changed(self, change: EmulatorChange) -> None:
+        """A health change, recorded in every open world that declares the emulator."""
+        for world in self.worlds.values():
+            if any(e.name == change.emulator for e in world.spec.emulators):
+                record_health(world.store, change)
+
+    async def start_emulators(self, spec: CreateWorld) -> None:
+        """The emulators `spec` declares, running and ready before the world opens; refused (409) with the end of
+        one's log when it does not come up, or when another world runs one of that name declared otherwise."""
+        try:
+            await self.emulators.start(spec.emulators)
+        except EmulatorRefused as e:
+            raise WorldRefused(str(e)) from e
 
     def shared(self, host: str) -> bool:
         """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
@@ -308,7 +330,14 @@ class Standing:
             refuse_claimed(
                 spec.outbound, self._registry, [*self.routing.model_hosts, *(m.host for m in spec.model_hosts)]
             )
-            capturing = Capturing(spec.outbound, replaying=replaying_for(spec.outbound, state=self._state))
+            capturing = Capturing(
+                spec.outbound,
+                replaying=replaying_for(spec.outbound, state=self._state),
+                emulators=self.emulators.running,
+            )
+            stopped = sorted({e.name for e in spec.emulators} - set(self.emulators.running))
+            if stopped:
+                raise FileNotFoundError(f"emulator {', '.join(stopped)} is not running: start it first")
         except (ProviderConflict, FileNotFoundError) as e:
             raise WorldRefused(f"this world's outbound hosts: {e}") from e
         try:
@@ -536,7 +565,10 @@ class Standing:
         quieted = await self.quiet(world_id, quiet) if quiet is not None else None
         world = self.get(world_id)
         self.flush_in(world.mounted)
-        result = await world.standing.checks(stop=StopReason.CLOSED)
+        environment = any(c.exchange.outcome is CallOutcome.UNAVAILABLE for c in world.store.calls())
+        stop = StopReason.ENVIRONMENT_FAILED if environment else StopReason.CLOSED
+        result = await world.standing.checks(stop=stop)
+        result = result.model_copy(update={"findings": [*result.findings, *emulator_findings(world.store)]})
         world.standing.close()
         record = RunRecord(
             run_id=world_id,
@@ -545,9 +577,10 @@ class Standing:
             started_at=world.standing.scenario.starts_at,
             ended_at=world.standing.clock.now(),
             wall_seconds=time.monotonic() - world.opened,
-            stop=StopReason.CLOSED,
+            stop=stop,
             providers=list(dict.fromkeys(c.provider for c in world.store.calls() if c.provider is not None)),
             outbound=outbound_uses(world.store.calls()),
+            emulators=emulator_uses(world.store.calls()),
             wakes=[],
         )
         directory = run_dir(self._state, world_id)
@@ -580,6 +613,7 @@ class Standing:
     async def close_all(self) -> None:
         for world_id in list(self.worlds):
             await self.close(world_id)
+        await self.emulators.stop()
         self.lobby_store.close()
 
     def _retain(self) -> Collected:
@@ -745,6 +779,8 @@ async def _receiver(standing: Standing, options: ServeOptions) -> AsyncIterator[
     )
     receiver.route(standing.by_trace)
     async with receiver:
+        # An emulator exports to the receiver as the services do; its spans follow the forwarded trace to a world.
+        standing.emulators.environment = exporter_environment(f"http://127.0.0.1:{receiver.port}")
         yield receiver
 
 

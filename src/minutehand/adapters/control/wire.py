@@ -14,7 +14,8 @@ from typing import Annotated, Literal, Self
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from minutehand.checks.runner import RunResult
-from minutehand.domain.outbound import OutboundHost, refuse_repeats
+from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
+from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundCredential, InboundCredentialAsk, InboundTarget, PermissionGrant, Press
 from minutehand.domain.provider import PersonChange
 from minutehand.domain.scenario import (
@@ -140,10 +141,16 @@ class CreateWorld(Model):
         description="Model APIs this world declares, each tunnelled or recorded as it says; a host belongs to one "
         "open world, and one a provider claims or this world captures is refused",
     )
+    emulators: list[ExternalEmulator] = Field(
+        default=[],
+        description="External emulators this world's `forward` hosts go to: one per server shared by every world "
+        "that declares it the same, unless it says `per_world`",
+    )
 
     @model_validator(mode="after")
     def _one_declaration_per_host(self) -> Self:
         refuse_repeats(self.outbound)
+        refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
         hosts = [m.host for m in self.model_hosts]
         repeated = sorted({h for h in hosts if hosts.count(h) > 1})
         if repeated:

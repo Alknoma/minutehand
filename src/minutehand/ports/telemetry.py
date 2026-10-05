@@ -7,6 +7,7 @@ from typing import Protocol
 
 from minutehand.domain.agent import WakeReason
 from minutehand.domain.checks import Effectiveness, Finding
+from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import RecordedCall, WorldEvent
@@ -23,6 +24,10 @@ class Telemetry(Protocol):
 
     def captured(self, call: RecordedCall) -> None:
         """One call to a host no provider claims was captured (`call.exchange.captured`); never its bodies."""
+        ...
+
+    def emulator_changed(self, change: EmulatorChange) -> None:
+        """An external emulator's health changed (ready, unhealthy, died, restarted, stopped), as it happens."""
         ...
 
     def wake_ended(self, wake: int) -> None: ...

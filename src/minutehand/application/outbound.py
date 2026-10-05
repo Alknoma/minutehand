@@ -14,8 +14,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from minutehand.domain.run import OutboundUse
-from minutehand.domain.world import AnsweredBy, CaptureMode, RecordedCall
+from minutehand.domain.run import EmulatorUse, OperationCount, OutboundUse
+from minutehand.domain.world import AnsweredBy, CallOutcome, CaptureMode, RecordedCall
 
 PATHS_SHOWN = 5
 
@@ -82,6 +82,7 @@ def described(use: OutboundUse) -> str:
         CaptureMode.PASS_THROUGH: "passed through to the real host",
         CaptureMode.REPLAY: "replayed from a recording",
         CaptureMode.DISCOVERED: "passed through, undeclared (--capture-unknown)",
+        CaptureMode.FORWARD: "forwarded to its external emulator",
     }[use.mode]
     parts = [f"{use.host}: {use.calls} call{'s' if use.calls != 1 else ''}, {how}"]
     if use.mode is CaptureMode.REPLAY:
@@ -107,3 +108,57 @@ def suggested(uses: Sequence[OutboundUse]) -> str:
         kind = CaptureMode.ACKNOWLEDGE if methods and methods <= WRITES else CaptureMode.PASS_THROUGH
         entries.append({"host": host, "kind": kind.value})
     return yaml.safe_dump({"outbound": entries}, sort_keys=False)
+
+
+def emulator_uses(calls: Sequence[RecordedCall]) -> list[EmulatorUse]:
+    """Each external emulator the calls were forwarded to, in the order of its first call, by what its answers
+    were; the operations it had no answer for, each counted."""
+    uses: dict[str, EmulatorUse] = {}
+    missing: dict[str, dict[str, int]] = {}
+    for call in calls:
+        captured = call.exchange.captured
+        if captured is None or captured.emulator is None:
+            continue
+        name = captured.emulator
+        found = uses[name] if name in uses else EmulatorUse(emulator=name, calls=0)
+        outcome = call.exchange.outcome
+        said = f"{call.exchange.method} {call.exchange.host}{urlsplit(call.exchange.path).path} (wake {call.wake})"
+        if outcome is CallOutcome.NOT_IMPLEMENTED:
+            counted = missing.setdefault(name, {})
+            what = captured.operation or said
+            counted[what] = (counted[what] if what in counted else 0) + 1
+        uses[name] = found.model_copy(
+            update={
+                "calls": found.calls + 1,
+                "answered": found.answered + (outcome is CallOutcome.ANSWERED),
+                "refused": found.refused + (outcome is CallOutcome.REFUSED),
+                "internal_errors": found.internal_errors + (outcome is CallOutcome.INTERNAL_ERROR),
+                "unavailable": found.unavailable + (outcome is CallOutcome.UNAVAILABLE),
+                "first_unavailable": found.first_unavailable or (said if outcome is CallOutcome.UNAVAILABLE else None),
+            }
+        )
+    return [
+        use.model_copy(
+            update={
+                "not_implemented": [
+                    OperationCount(operation=o, calls=n) for o, n in (missing[name] if name in missing else {}).items()
+                ]
+            }
+        )
+        for name, use in uses.items()
+    ]
+
+
+def emulator_described(use: EmulatorUse) -> str:
+    """One line for an emulator: its calls by what each answer was."""
+    parts = [f"{use.emulator}: {use.calls} call{'s' if use.calls != 1 else ''}, {use.answered} answered"]
+    if use.refused:
+        parts.append(f"{use.refused} refused as the real service would")
+    if use.internal_errors:
+        parts.append(f"{use.internal_errors} failed inside the emulator")
+    if use.unavailable:
+        parts.append(f"{use.unavailable} unanswered: the emulator was unavailable, first {use.first_unavailable}")
+    if use.not_implemented:
+        named = ", ".join(f"{o.operation} ({o.calls})" for o in use.not_implemented)
+        parts.append(f"not implemented by the emulator: {named}")
+    return "; ".join(parts)
