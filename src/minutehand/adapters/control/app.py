@@ -39,6 +39,8 @@ stretch before each reset first, and says in `resets` where each reset falls.
     GET    /v1/cases/{case_id}                         `CaseView`
     POST   /v1/cases/{case_id}/steps                   `MarkStep` -> `StepView`: a step of every world of the case
     GET    /v1/cases/{case_id}/checks                  `Checked`: the case scored as one run
+    POST   /v1/worlds/{id}/report                      `AgentReport` -> `Checked`: the agent's own report of its work,
+                                                relayed by whoever drives it (a case's, for a world of a case)
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
     GET    /v1/unmatched?since=N[&late_for=W][&kind=K]... `Unmatched`: the lobby; by default only `unclaimed` calls
                                                 (no world claimed them, nothing declared them); `kind` names others
@@ -124,6 +126,7 @@ from minutehand.adapters.control.wire import (
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.standing import NotFound, StandingWorld, Unsupported
 from minutehand.application.steps import STEP, StepEdge, Stepping
+from minutehand.domain.agent import AgentReport
 from minutehand.domain.people import Decides
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import (
@@ -517,6 +520,11 @@ def create_app(serving: Serving) -> Starlette:
         members = list(found.case.members.values()) if found.case is not None else [found.standing]
         return await mark(found.steps, members, request)
 
+    async def report(request: Request) -> Response:
+        found = world_of(request)
+        standing.report(found.world_id, AgentReport.model_validate_json(await request.body()))
+        return _json(Checked(result=await standing.checks(found.world_id)))
+
     async def read_inboxes(request: Request) -> Response:
         live = world_of(request).standing
         looked = await live.look()
@@ -624,6 +632,7 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/state", state, ["GET"]),
             route("/worlds/{world_id}/checks", checks, ["GET"]),
             route("/worlds/{world_id}/steps", world_steps, ["POST"]),
+            route("/worlds/{world_id}/report", report, ["POST"]),
             route("/worlds/{world_id}/inboxes/read", read_inboxes, ["POST"]),
             route("/worlds/{world_id}/inboxes/due", perform_due, ["POST"]),
             route("/worlds/{world_id}/inboxes/decide", decide, ["POST"]),
