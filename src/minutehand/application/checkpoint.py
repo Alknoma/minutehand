@@ -83,6 +83,14 @@ class Restorable(Model):
         description="What the agent reported once settled, which a restore must bring back; None when the agent "
         "had not reported and cannot be asked"
     )
+    fingerprint: str | None = Field(
+        default=None, description="What the agent's `fingerprint` printed once settled; None when it declares none"
+    )
+    unconfirmed: str | None = Field(
+        default=None,
+        description="Why this snapshot may hold work in flight: settling saw only the report and the proxy, and "
+        "nothing asked about work the proxy cannot see. None: the agent's own `busy` said it was idle",
+    )
 
 
 class NotRestorable(Model):

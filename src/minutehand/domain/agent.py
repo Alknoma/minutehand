@@ -174,17 +174,31 @@ class StateHooks(Model):
 
     Every command receives MINUTEHAND_SNAPSHOT_DIR, the directory one checkpoint's snapshot lives in.
 
-    A checkpoint is snapshotted only once the agent has settled: it reports it is not working, and no outbound
-    call of its has been seen for `quiet`. One that has not settled after `settle_limit` is recorded as not
-    restorable, with the reason, and is never snapshotted.
+    A checkpoint is snapshotted only once the agent has settled: it reports it is not working, no outbound call of
+    its has been seen for `quiet`, none it sent is still awaiting its answer, and, when it declares `busy`, that
+    command says it is idle. One that has not settled after `settle_limit` is recorded as not restorable, with the
+    reason, and is never snapshotted. Without `busy`, work the proxy cannot see (writes to a database on this
+    machine, a process computing) is not asked about, and each checkpoint says it was not confirmed.
 
     A restore is a sequence: `stop`, `restore`, `start`, then the agent's report endpoint must answer within
-    `answer_limit`, and its report must equal the one recorded at the checkpoint. Any command running longer
-    than `step_limit` fails its step.
+    `answer_limit`, and its report must equal the one recorded at the checkpoint, and its `fingerprint`, when it
+    declares one, the one taken there. Any command running longer than `step_limit` fails its step.
     """
 
     snapshot: list[str] = Field(min_length=1)
     restore: list[str] = Field(min_length=1)
+    busy: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="Asks the agent whether any of its work is still in flight: exit 0 means busy, 1 idle, "
+        "anything else that it could not tell",
+    )
+    fingerprint: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="Prints a digest of the agent's state (its database, and what its processes hold); taken at "
+        "each checkpoint and compared after a restore, beside the report. Its last line of output is the digest",
+    )
     stop: list[str] | None = Field(default=None, min_length=1, description="Stops the agent's processes")
     start: list[str] | None = Field(default=None, min_length=1, description="Starts them again after `restore`")
     quiet: timedelta = Field(
