@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
+from typing import Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityKind
@@ -40,6 +42,39 @@ class DocumentChange(StrEnum):
     FIELD_SET = "field_set"
 
 
+class WorldKey(Model):
+    """A part of a request's URL that names whose service it is, with no credential needed to say so: a site's
+    own host label (`acme` of `acme.atlassian.net`), or a path segment (a Microsoft tenant in
+    `/{tenant}/oauth2/v2.0/token`, an Atlassian cloud id in `/ex/jira/{cloudId}/`). `minutehand serve` routes a
+    call carrying one to the world that claims that key, as it routes a token. Exactly one of the two."""
+
+    host: str | None = Field(
+        default=None, pattern=r"^[^/]*\{key\}[^/]*$", description="A host with `{key}` in place of one label"
+    )
+    path: str | None = Field(
+        default=None,
+        pattern=r"^/.*\{key\}",
+        description="A path prefix with `{key}` in place of one segment; the query is not read",
+    )
+
+    @model_validator(mode="after")
+    def _one(self) -> Self:
+        if (self.host is None) == (self.path is None):
+            raise ValueError("a world key is read from the host or from the path; give exactly one")
+        return self
+
+    def found(self, host: str, path: str) -> str | None:
+        """The key this request's host or path carries, or None when it does not have this shape."""
+        if self.host is not None:
+            pattern = re.escape(self.host.lower()).replace(re.escape("{key}"), "([^./]+)")
+            matched = re.fullmatch(pattern, host.lower())
+        else:
+            assert self.path is not None
+            pattern = re.escape(self.path).replace(re.escape("{key}"), "([^/?#]+)")
+            matched = re.match(pattern, path.split("?", 1)[0])
+        return matched.group(1) if matched else None
+
+
 class Manifest(Model):
     key: ProviderKey
     tier: Tier
@@ -55,8 +90,19 @@ class Manifest(Model):
         description="The optional `SeededTicket` fields its tickets hold; a scenario that sets any other on one of "
         "its tickets is refused at load, since the provider would drop it in silence",
     )
+    world_keys: list[WorldKey] = Field(
+        default=[],
+        description="Where a request to this provider names its world without a credential: per-customer hosts, "
+        "tenant or site ids in the path",
+    )
     document_changes: list[DocumentChange] = Field(
         default=[],
         description="What a person can do to its seeded documents; a scenario whose document happening does any "
         "other is refused at load, since the provider could not show it",
     )
+
+
+def world_keys(manifest: Manifest, host: str, path: str) -> list[str]:
+    """Every world key a request to this provider carries in its host or path, in the manifest's order."""
+    found = [k.found(host, path) for k in manifest.world_keys]
+    return list(dict.fromkeys(k for k in found if k is not None))
