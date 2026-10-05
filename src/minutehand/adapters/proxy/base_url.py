@@ -9,7 +9,7 @@ with the real host's name, the world a standing proxy routes it to — is what a
 
 The answer is then rewritten for the client that came in this way: every absolute URL in `Location`,
 `Content-Location` and `Link`, and in a text body the proxy answered itself, whose host a provider claims (and whose
-path is under that provider's `path_prefix`) or which is the call's own host, is put in the same base-URL form, so a
+path is under that provider's `path_prefix`) or, claimed by none, is the call's own host, is put in the same form, so a
 pagination link, an upload session, a redirect or a download URL leads back through the proxy. The record keeps the
 answer as the provider gave it: an answered call is recorded before the `response` hook, which this addon reaches
 only after `ProxyAddon` (it is added after it).

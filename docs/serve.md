@@ -355,8 +355,6 @@ script over the same code:
 
 ## What it does not do
 
-- **Base-URL mode.** A service that reaches a fake by a base URL it is configured with (`SLACK_API_URL`) rather
-  than through a proxy is not served: every call must go through the proxy.
 - **A channel archived** by a person: no act.
 - **Retries of a pushed event or webhook.** Slack's retries are sent; Notion's and Graph's deliveries are sent
   once.
