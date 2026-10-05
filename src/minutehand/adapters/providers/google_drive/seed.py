@@ -77,7 +77,7 @@ def _seed_document(
             name=document.title,
             mimeType=mime,
             parents=[parent.file.id],
-            owners=[owner] if root.file.driveId is None else [],
+            owners=[owner] if root.file.driveId is None else None,
             createdTime=changed,
             modifiedTime=changed,
             version=str(seq),

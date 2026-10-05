@@ -351,7 +351,7 @@ class DriveWorld:
         or a folder above it. None: the file is not theirs to see. `searching` leaves out a grant to anyone
         that does not allow discovery, which opens a file but does not put it in a search."""
         best: str | None = None
-        if any(owner.emailAddress == email for owner in stored.file.owners):
+        if any(owner.emailAddress == email for owner in stored.file.owners or []):
             best = "owner"
         domain = email.rsplit("@", 1)[-1].lower()
         for holder in [stored, *self.ancestors(stored)]:
@@ -513,7 +513,7 @@ def folder_file(
             name=name,
             mimeType=wire.FOLDER,
             parents=[parent] if parent is not None else None,
-            owners=[owner] if owner is not None and drive_id is None else [],
+            owners=[owner] if owner is not None and drive_id is None else None,
             createdTime=stamp,
             modifiedTime=stamp,
             version=str(version),

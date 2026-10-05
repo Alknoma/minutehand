@@ -214,7 +214,7 @@ class DriveFile(Model):
     trashed: bool = Field(default=False, description="Stored as set on this file; served true under a trashed folder")
     explicitlyTrashed: bool = False
     parents: list[str] | None = None
-    owners: list[DriveUser] = []
+    owners: list[DriveUser] | None = Field(default=None, description="None in a shared drive, which owns its files")
     createdTime: str
     modifiedTime: str
     version: str

@@ -31,7 +31,7 @@ import io
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from enum import StrEnum
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 from pydantic import JsonValue, ValidationError
@@ -583,7 +583,7 @@ class DriveApi:
                 trashed=trashed,
                 explicitlyTrashed=trashed,
                 parents=[parent.file.id],
-                owners=[] if drive_id else [caller.user],
+                owners=None if drive_id else [caller.user],
                 createdTime=now,
                 modifiedTime=now,
                 version=str(seq),
@@ -781,7 +781,7 @@ class DriveApi:
                     "starred": bool(meta.starred),
                     "trashed": False,
                     "explicitlyTrashed": False,
-                    "owners": [] if parent.file.driveId else [caller.user],
+                    "owners": None if parent.file.driveId else [caller.user],
                     "driveId": parent.file.driveId,
                     "createdTime": now,
                     "modifiedTime": now,
@@ -801,7 +801,7 @@ class DriveApi:
     def _permissions(self, stored: wire.StoredFile) -> list[wire.Permission]:
         """The owner, then what was granted on the file, then what it inherits from the folders above it."""
         found: dict[str, wire.Permission] = {}
-        for owner in stored.file.owners:
+        for owner in stored.file.owners or []:
             found.setdefault(
                 owner.permissionId,
                 wire.Permission(
@@ -859,7 +859,7 @@ class DriveApi:
     async def permissions_delete(self, request: Request, call: wire.CallQuery, caller: Caller) -> Response:
         stored = self._file(request.path_params["file_id"], caller, call, need="writer")
         permission_id = request.path_params["permission_id"]
-        if any(owner.permissionId == permission_id for owner in stored.file.owners):
+        if any(owner.permissionId == permission_id for owner in stored.file.owners or []):
             raise wire.forbidden("cannotRemoveOwner", "The owner of a file cannot be removed.")
         if not any(p.id == permission_id for p in self._drive.grants(stored.file.id)):
             raise wire.drive_refusal(
@@ -1442,12 +1442,16 @@ class DriveApi:
             if self._drive.user(acting) is None:
                 return _oauth_failed("invalid_grant", "Invalid email or User ID")
             email = acting
+        key = self._drive.credential_key(secret)
+        if key == state.ANY_CREDENTIAL:
+            key = state.secret_digest(secret)
+            self._drive.keep_credential(key, credential, operation=Operation.CREATE)
         seq = self._drive.next_seq()
         access = "ya29.a0" + hashlib.sha256(f"access\x1f{secret}\x1f{seq}".encode()).hexdigest()
         expires = self._clock.now() + timedelta(seconds=wire.TOKEN_LIFETIME)
         self._drive.keep_token(
             access,
-            wire.AccessToken(email=email, expires=wire.rfc3339(expires), credential=self._drive.credential_key(secret)),
+            wire.AccessToken(email=email, expires=wire.rfc3339(expires), credential=key),
         )
         return _json(wire.TokenAnswer(access_token=access, scope=scope))
 
@@ -1460,13 +1464,15 @@ class DriveApi:
         if not spelled:
             return _oauth_failed("invalid_request", "Missing required parameter: token")
         issued = self._drive.token(spelled)
-        if issued is not None and not issued.revoked:
+        if issued is not None:
+            if issued.revoked:
+                return _oauth_failed("invalid_token", "Token expired or revoked")
             key = issued.credential
         else:
-            known = self._drive.credential(spelled)
+            key = state.secret_digest(spelled)
+            known = self._drive.credential_by_key(key)
             if known is None or known.revoked or known.service_account:
                 return _oauth_failed("invalid_token", "Token expired or revoked")
-            key = self._drive.credential_key(spelled)
         credential = self._drive.credential_by_key(key)
         if credential is not None and not credential.service_account and key != state.ANY_CREDENTIAL:
             self._drive.keep_credential(key, credential.model_copy(update={"revoked": True}))
@@ -1603,7 +1609,10 @@ def _sort_key(key: str) -> Callable[[wire.DriveFile], str | bool]:
 
 
 class HostRouter:
-    """Send each request to its host's routes, or to every route when the host is not one of Google's."""
+    """Send each request to its host's routes, or to every route when the host is not one of Google's.
+
+    The path is matched decoded, as ASGI says it arrives: mitmproxy hands the app a percent-encoded one, which
+    turns Docs' `/v1/documents/{id}:batchUpdate` into `{id}%3AbatchUpdate`."""
 
     def __init__(self, by_host: dict[str, Router], every: Router) -> None:
         self._by_host = by_host
@@ -1614,6 +1623,9 @@ class HostRouter:
         host = next((value for name, value in headers if name == b"host"), b"").decode("latin-1").lower()
         if not host.startswith("["):
             host = host.rsplit(":", 1)[0]
+        path = scope["path"] if "path" in scope else ""
+        if isinstance(path, str) and "%" in path:
+            scope = {**scope, "path": unquote(path)}
         await (self._by_host[host] if host in self._by_host else self._every)(scope, receive, send)
 
 
