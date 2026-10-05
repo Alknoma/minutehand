@@ -100,8 +100,10 @@ def project_gid(name: str) -> str:
     return _derived("13", "project", name)
 
 
-def section_gid(project: str, name: str) -> str:
-    return _derived("14", "section", project, name)
+def section_gid(project: str, position: int) -> str:
+    """A seeded section's gid: its project's, then its place on the board, so a project's sections list in
+    board order, before any the API adds."""
+    return f"14{project[-10:]}{position:04d}"
 
 
 def team_gid(name: str) -> str:

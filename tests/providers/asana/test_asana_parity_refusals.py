@@ -195,7 +195,7 @@ async def test_a_tag_or_parent_that_names_nothing_is_refused(agent: httpx.AsyncC
 
 async def test_a_section_move_needs_a_task_that_exists(agent: httpx.AsyncClient) -> None:
     unknown = "1999999999999999"
-    section = state.section_gid(BACKEND, "Done")
+    section = state.section_gid(BACKEND, 3)
     assert error(await agent.post(f"/sections/{section}/addTask", json={"data": {"task": unknown}}), 400) == (
         f"task: Unknown object: {unknown}"
     )

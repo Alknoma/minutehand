@@ -96,7 +96,7 @@ async def test_a_list_is_compact_and_opt_fields_narrows_it(client: httpx.AsyncCl
         "name": "Return the old keys",
         "completed": True,
         "assignee": {"gid": state.user_gid("noor"), "email": "noor@example.com"},
-        "memberships": [{"section": {"gid": state.section_gid(VENUE, "Done"), "name": "Done"}}],
+        "memberships": [{"section": {"gid": state.section_gid(VENUE, 1), "name": "Done"}}],
     }
 
 

@@ -406,10 +406,10 @@ class _Seeding:
             actor=Actor.SCENARIO,
         )
         sections = project.sections or [SeedSection(name=n, means=m) for n, m in state.DEFAULT_SECTIONS]
-        for section in sections:
+        for position, section in enumerate(sections):
             self.asana.put_record(
                 wire.AsanaSection(
-                    gid=state.section_gid(gid, section.name),
+                    gid=state.section_gid(gid, position),
                     name=section.name,
                     project=gid,
                     means=section.means,
@@ -463,7 +463,9 @@ class _Seeding:
             if detail.section not in names:
                 raise ValueError(f"the asana project {ticket.project!r} has no section {detail.section!r}")
             gid = state.project_gid(ticket.project)
-            update["memberships"] = [wire.AsanaMembership(project=gid, section=state.section_gid(gid, detail.section))]
+            update["memberships"] = [
+                wire.AsanaMembership(project=gid, section=state.section_gid(gid, names.index(detail.section)))
+            ]
         if detail.completed is not None:
             update["completed"] = detail.completed
             update["completed_at"] = self.at if detail.completed else None

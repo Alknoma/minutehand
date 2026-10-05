@@ -820,9 +820,10 @@ class Query:
         value = self.text(name)
         if value is None:
             return None
-        if value not in ("true", "false"):
+        spelled = value.lower()  # Asana's own SDK sends Python's `False`
+        if spelled not in ("true", "false"):
             raise bad(f"{name}: Not a boolean")
-        return value == "true"
+        return spelled == "true"
 
     def count(self, name: str) -> int | None:
         value = self.text(name)

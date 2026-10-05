@@ -58,9 +58,9 @@ async def test_by_default_state_is_what_the_section_means_and_the_box_is_its_flo
     made = await create(client, name="Order chairs", projects=[VENUE])
     gid = str(made["gid"])
     assert state_of(workspace, gid) is TicketState.OPEN
-    await client.post(f"/sections/{state.section_gid(VENUE, 'Cancelled')}/addTask", json={"data": {"task": gid}})
+    await client.post(f"/sections/{state.section_gid(VENUE, 2)}/addTask", json={"data": {"task": gid}})
     assert state_of(workspace, gid) is TicketState.CANCELLED, "the Cancelled section says cancelled, ticked or not"
-    await client.post(f"/sections/{state.section_gid(VENUE, 'To do')}/addTask", json={"data": {"task": gid}})
+    await client.post(f"/sections/{state.section_gid(VENUE, 0)}/addTask", json={"data": {"task": gid}})
     await client.put(f"/tasks/{gid}", json={"data": {"completed": True}})
     assert state_of(workspace, gid) is TicketState.DONE, "a ticked task in To do is done: the box is the floor"
 
@@ -88,9 +88,7 @@ def test_with_the_completed_box_as_the_source_a_section_says_nothing(tmp_path: P
     task = ws.asana.task(done)
     assert task is not None
     moved = task.model_copy(
-        update={
-            "memberships": [state.wire.AsanaMembership(project=VENUE, section=state.section_gid(VENUE, "Cancelled"))]
-        }
+        update={"memberships": [state.wire.AsanaMembership(project=VENUE, section=state.section_gid(VENUE, 2))]}
     )
     assert ws.asana.snapshot(moved).state is TicketState.DONE
     reopened = task.model_copy(update={"completed": False})

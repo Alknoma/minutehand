@@ -133,7 +133,7 @@ def option(field: str, name: str) -> str:
 
 
 def section(name: str, project: str = BACKEND) -> str:
-    return state.section_gid(project, name)
+    return state.section_gid(project, STATUS.index(name))
 
 
 @pytest.fixture

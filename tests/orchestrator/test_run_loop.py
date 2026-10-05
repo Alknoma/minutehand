@@ -12,7 +12,7 @@ from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from tests.orchestrator.rig import T0, Rig, scenario
-from tests.orchestrator.world import SECRET
+from tests.orchestrator.world import SECRET, RecordingClock
 
 
 async def test_a_36_hour_reply_and_a_3_day_ticket_fate_move_the_clock_exactly_there(rig: Rig) -> None:
@@ -118,3 +118,4 @@ async def test_a_happening_on_a_provider_that_cannot_act_is_refused_before_the_r
     )
     with pytest.raises(RunRefused, match="testsched has no tickets a person can act on"):
         await rig.run(scn, rig.agent("ask_silent"))
+    assert rig.open("root", RecordingClock(T0)).events() == [], "refused before anything was seeded or woken"

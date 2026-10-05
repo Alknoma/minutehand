@@ -164,7 +164,7 @@ async def test_a_person_cancels_a_task(workspace: Workspace, client: httpx.Async
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.CANCELLED
     read = data(await client.get(f"/tasks/{made['gid']}", params={"opt_fields": "completed,memberships.section.name"}))
     assert read["completed"] is True
-    assert read["memberships"] == [{"section": {"gid": state.section_gid(VENUE, "Cancelled"), "name": "Cancelled"}}]
+    assert read["memberships"] == [{"section": {"gid": state.section_gid(VENUE, 2), "name": "Cancelled"}}]
 
 
 async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, client: httpx.AsyncClient) -> None:
