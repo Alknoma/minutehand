@@ -32,7 +32,13 @@ stretch before each reset first, and says in `resets` where each reset falls.
     POST   /v1/worlds/{id}/inbound-credential          `MintInbound` -> `Minted`: headers for a request a test builds
     POST   /v1/worlds/{id}/reset                       -> `WorldView`: back to its seed, same id and claims
     GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
-    GET    /v1/worlds/{id}/checks                      `Checked`
+    GET    /v1/worlds/{id}/checks                      `Checked`; for a world of a case, the case's
+    POST   /v1/worlds/{id}/steps                       `MarkStep` -> `StepView`: a step begins or ends (a case's, for
+                                                a world of a case)
+    GET    /v1/cases                                   `CaseList`: every open case
+    GET    /v1/cases/{case_id}                         `CaseView`
+    POST   /v1/cases/{case_id}/steps                   `MarkStep` -> `StepView`: a step of every world of the case
+    GET    /v1/cases/{case_id}/checks                  `Checked`: the case scored as one run
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
     GET    /v1/unmatched?since=N[&late_for=W][&kind=K]... `Unmatched`: the lobby; by default only `unclaimed` calls
                                                 (no world claimed them, nothing declared them); `kind` names others
@@ -70,6 +76,8 @@ from minutehand.adapters.control.wire import (
     Advance,
     Advanced,
     CallsPage,
+    CaseList,
+    CaseView,
     ChangePerson,
     Checked,
     CreateWorld,
@@ -84,6 +92,7 @@ from minutehand.adapters.control.wire import (
     FurtherSeed,
     Happen,
     LobbyKind,
+    MarkStep,
     Minted,
     MintInbound,
     MoveTicket,
@@ -100,6 +109,7 @@ from minutehand.adapters.control.wire import (
     Say,
     Seeded,
     SpansPage,
+    StepView,
     Unmatched,
     WorldList,
     WorldView,
@@ -107,13 +117,14 @@ from minutehand.adapters.control.wire import (
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.standing import NotFound, Unsupported
+from minutehand.application.steps import STEP, StepEdge, Stepping
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordedCall, Stored, WorldEvent
 from minutehand.ports.store import Store
 from minutehand.session import reading_file
 
 if TYPE_CHECKING:
-    from minutehand.serve import Serving, World
+    from minutehand.serve import Case, Serving, World
 
 Handler = Callable[[Request], Awaitable[Response]]
 
@@ -168,6 +179,23 @@ def _view(world: World) -> WorldView:
         head=world.store.head(),
         owed=[OwedView(at=at, what=what) for at, what in standing.owed()],
         resets=world.resets,
+        case_id=world.case.case_id if world.case is not None else None,
+        case=world.case.name if world.case is not None else None,
+        step=standing.clock.wake(),
+    )
+
+
+def _steps(stepping: Stepping) -> StepView:
+    return StepView(step=stepping.wake, open=stepping.open, by_hand=stepping.by_hand, at=stepping.at)
+
+
+def _case(case: Case) -> CaseView:
+    return CaseView(
+        case_id=case.case_id,
+        name=case.name,
+        worlds=list(case.worlds),
+        open_worlds=list(case.members),
+        steps=_steps(case.stepping),
     )
 
 
@@ -311,7 +339,7 @@ def create_app(serving: Serving) -> Starlette:
             )
 
         def read(store: Store) -> list[WorldEvent]:
-            return [e for e in store.events(since=since if store is found.store else 0) if keep(e)]
+            return [e for e in store.events(since=since if store is found.store else 0) if keep(e) and e.entity != STEP]
 
         found_events, resets = _across(earlier(request, found), found, read)
         return _json(EventsPage(events=found_events, head=found.store.head(), resets=resets))
@@ -323,6 +351,8 @@ def create_app(serving: Serving) -> Starlette:
         refs: dict[EntityRef, None] = {}
         for event in found.store.events():
             ref = event.entity
+            if ref == STEP:
+                continue
             if (provider is None or ref.provider == provider) and (wanted_kind is None or ref.kind is wanted_kind):
                 refs[ref] = None
         current: list[Stored] = [s for s in (found.store.get(r) for r in refs) if s is not None]
@@ -429,7 +459,7 @@ def create_app(serving: Serving) -> Starlette:
         else:
             assert asked.by is not None
             to = live.clock.now() + asked.by
-        fired = await live.advance(to)
+        fired = await standing.advance(found.world_id, to)
         return _json(
             Advanced(now=live.clock.now(), fired=[FiredView(at=f.at, what=f.what, events=f.events) for f in fired])
         )
@@ -446,7 +476,31 @@ def create_app(serving: Serving) -> Starlette:
         return _json(_view(found))
 
     async def checks(request: Request) -> Response:
-        return _json(Checked(result=await world_of(request).standing.checks(stop=None)))
+        return _json(Checked(result=await standing.checks(world_of(request).world_id)))
+
+    async def mark(stepping: Stepping, request: Request) -> Response:
+        asked = MarkStep.model_validate_json(await request.body())
+        if asked.edge is StepEdge.BEGAN:
+            stepping.begin(asked.at, asked.reason)
+        else:
+            stepping.end()
+        return _json(_steps(stepping))
+
+    async def world_steps(request: Request) -> Response:
+        return await mark(world_of(request).steps, request)
+
+    async def cases(_: Request) -> Response:
+        return _json(CaseList(cases=[_case(c) for c in standing.cases.values()]))
+
+    async def case(request: Request) -> Response:
+        return _json(_case(standing.case(request.path_params["case_id"])))
+
+    async def case_steps(request: Request) -> Response:
+        return await mark(standing.case(request.path_params["case_id"]).stepping, request)
+
+    async def case_checks(request: Request) -> Response:
+        found = standing.case(request.path_params["case_id"])
+        return _json(Checked(result=await standing.case_checks(found, stop=None)))
 
     async def unmatched(request: Request) -> Response:
         since = _count(request, "since")
@@ -498,6 +552,11 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/reset", reset, ["POST"]),
             route("/worlds/{world_id}/state", state, ["GET"]),
             route("/worlds/{world_id}/checks", checks, ["GET"]),
+            route("/worlds/{world_id}/steps", world_steps, ["POST"]),
+            route("/cases", cases, ["GET"]),
+            route("/cases/{case_id}", case, ["GET"]),
+            route("/cases/{case_id}/steps", case_steps, ["POST"]),
+            route("/cases/{case_id}/checks", case_checks, ["GET"]),
             route("/providers", providers, ["GET"]),
             route("/unmatched", unmatched, ["GET"]),
         ]

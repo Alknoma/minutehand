@@ -3,7 +3,8 @@ says what the world last did, so the failure explains itself."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from minutehand.adapters.control.wire import (
@@ -12,6 +13,7 @@ from minutehand.adapters.control.wire import (
     Advanced,
     ChangePerson,
     Checked,
+    CreateWorld,
     DeclareFaults,
     DeleteTicket,
     EditTicket,
@@ -28,6 +30,7 @@ from minutehand.adapters.control.wire import (
     Reply,
     Say,
     Seeded,
+    StepView,
     WorldView,
 )
 from minutehand.domain.people import InboundCredential, InboundCredentialAsk, PermissionGrant, Press
@@ -164,7 +167,30 @@ class OpenWorld:
         return self.client.world(self.world_id).now
 
     def checks(self) -> Checked:
+        """The world's checks as it stands; for a world of a case, the case's."""
         return self.client.checks(self.world_id)
+
+    @property
+    def case_id(self) -> str | None:
+        """The case this world belongs to (`CreateWorld.case`), None for a world of its own."""
+        return self.view.case_id
+
+    def begin_step(self, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins (in every world of its case, for a world of one); the clock is not moved."""
+        return self.client.begin_step(self.world_id, at=at, reason=reason)
+
+    def end_step(self) -> StepView:
+        return self.client.end_step(self.world_id)
+
+    @contextmanager
+    def step(self, *, at: datetime | None = None, reason: str | None = None) -> Iterator[StepView]:
+        """One step of the agent, begun on entering and ended on leaving."""
+        began = self.begin_step(at=at, reason=reason)
+        try:
+            yield began
+        finally:
+            if self.closed is None:
+                self.end_step()
 
     # -- acting -------------------------------------------------------------------------------------------------
 
@@ -322,3 +348,61 @@ class OpenWorld:
             )
 
         return self.assert_events(where, at_least=at_least, what=f"ticket writes titled {titled!r}")
+
+
+class OpenCase:
+    """Several worlds a test opened under one case label (`CreateWorld.case`): one run, stepped and scored as one.
+    `open_case` opens it; closing its last world closes it."""
+
+    def __init__(self, client: MinutehandClient, case_id: str, worlds: Sequence[OpenWorld]) -> None:
+        self._client = client
+        self.case_id = case_id
+        self.worlds = list(worlds)
+
+    def begin_step(self, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins in every world of the case; the clocks are not moved."""
+        return self._client.begin_case_step(self.case_id, at=at, reason=reason)
+
+    def end_step(self) -> StepView:
+        return self._client.end_case_step(self.case_id)
+
+    @contextmanager
+    def step(self, *, at: datetime | None = None, reason: str | None = None) -> Iterator[StepView]:
+        """One step of the agent across the case, begun on entering and ended on leaving."""
+        began = self.begin_step(at=at, reason=reason)
+        try:
+            yield began
+        finally:
+            if any(w.closed is None for w in self.worlds):
+                self.end_step()
+
+    def advance(self, by: timedelta | None = None, *, to: datetime | None = None) -> None:
+        """Move every world's clock to the same moment: `to`, or `by` past the latest of them."""
+        if to is None:
+            assert by is not None, "give by or to"
+            to = max(w.client.world(w.world_id).now for w in self.worlds) + by
+        for world in self.worlds:
+            world.advance(to=to)
+
+    def checks(self) -> Checked:
+        """The case scored as one run, as it stands."""
+        return self._client.case_checks(self.case_id)
+
+    def close(self, *, quiet: Quiet | bool = True) -> Checked:
+        """Close every world still open, in the order opened: the last close answers the case's final checks."""
+        found: Checked | None = None
+        for world in self.worlds:
+            if world.closed is None:
+                found = world.close(quiet=quiet)
+        if found is None:
+            raise ClosedWorld(f"every world of case {self.case_id} was already closed")
+        return found
+
+
+def open_case(client: MinutehandClient, case: str, specs: Sequence[CreateWorld]) -> OpenCase:
+    """Open one world per spec under the case label `case` (each spec's own `case` is set to it): a case of them."""
+    worlds = [OpenWorld(client, client.create_world(spec.model_copy(update={"case": case}))) for spec in specs]
+    case_ids = {w.view.case_id for w in worlds}
+    if len(case_ids) != 1 or None in case_ids:
+        raise AssertionError(f"the worlds opened under {case!r} are in cases {sorted(map(str, case_ids))}")
+    return OpenCase(client, next(iter(case_ids)) or "", worlds)

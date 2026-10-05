@@ -26,3 +26,9 @@ class RunClock:
     def begin_wake(self) -> int:
         self._wake += 1
         return self._wake
+
+    def enter(self, wake: int) -> None:
+        """Enter wake `wake`, skipping any between: a standing world's step, numbered by the case it belongs to."""
+        if wake <= self._wake:
+            raise ValueError(f"wakes only move forward: {wake} is not after {self._wake}")
+        self._wake = wake
