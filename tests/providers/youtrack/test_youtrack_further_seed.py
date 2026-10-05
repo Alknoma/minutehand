@@ -224,19 +224,29 @@ async def test_what_was_seeded_lists_before_what_the_agent_made_at_the_same_inst
     assert [i["idReadable"] for i in found.json()] == ["LAUNCH-1", "LAUNCH-2", "LAUNCH-3"]
 
 
-async def test_a_ticket_added_where_the_agent_already_took_its_number_is_refused_naming_the_number(
+async def test_a_ticket_added_where_the_agent_already_took_its_number_is_numbered_after_the_agents_issue(
     world: StandingWorld, tmp_path: Path
 ) -> None:
     """A seeded issue's readable number is worked out from the seed alone, so where the agent has made LAUNCH-3
-    since the world opened, a ticket added to Launch would be LAUNCH-3 too: refused, naming it."""
+    since the world opened, a ticket added to Launch would be LAUNCH-3 too; YouTrack places it at the project's next
+    number, as it would the agent's next issue, and the agent's issue keeps its readable id."""
     async with await _agent(world) as http:
         created = await http.post("/api/issues", json={"project": {"id": "0-1000"}, "summary": "Agent's own"})
     assert created.status_code == 200
-    head = world.store.head()
-    with pytest.raises(WorldRefused, match="LAUNCH-3"):
-        world.extend(
-            tickets=[SeededTicket(provider="youtrack", project="Launch", title="Hire a band")],
-            directory=tmp_path,
-            scratch=_scratch,
-        )
-    assert world.store.head() == head
+    before = _held(world.store)
+    world.extend(
+        tickets=[SeededTicket(provider="youtrack", project="Launch", title="Hire a band")],
+        directory=tmp_path,
+        scratch=_scratch,
+    )
+    after = _held(world.store)
+    assert all(after[k] == v for k, v in before.items())
+    async with await _agent(world) as http:
+        added = await http.get("/api/issues/LAUNCH-4", params={"fields": "idReadable,numberInProject,summary"})
+        agents = await http.get("/api/issues/LAUNCH-3", params={"fields": "summary"})
+        later = await http.post("/api/issues", json={"project": {"id": "0-1000"}, "summary": "Later"},
+                                params={"fields": "idReadable"})  # fmt: skip
+    assert added.json() | {"$type": None} == {"idReadable": "LAUNCH-4", "numberInProject": 4,
+                                               "summary": "Hire a band", "$type": None}  # fmt: skip
+    assert agents.json()["summary"] == "Agent's own"
+    assert later.json()["idReadable"] == "LAUNCH-5"

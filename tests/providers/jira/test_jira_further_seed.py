@@ -19,7 +19,7 @@ import pytest
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.application.standing import StandingWorld, WorldRefused
+from minutehand.application.standing import StandingWorld
 from minutehand.domain.scenario import Person, ProviderSeed, Seed, SeededTicket
 from minutehand.domain.world import EntityKind
 from minutehand.ports.clock import Clock
@@ -171,9 +171,12 @@ async def test_a_ticket_added_to_an_open_world_is_numbered_after_its_projects_se
         assert venue["fields"]["summary"] == "Book the venue" and venue["id"] == "1000"
 
 
-async def test_a_ticket_added_where_the_agent_already_took_its_key_is_refused_naming_the_key(tmp_path: Path) -> None:
-    """The seed numbers a project's tickets in order, and it cannot see an issue the agent made since: a ticket
-    added to that project would take the key the agent's issue holds, so it is refused, naming the key."""
+async def test_a_ticket_added_where_the_agent_already_took_its_key_is_numbered_after_the_agents_issue(
+    tmp_path: Path,
+) -> None:
+    """The seed numbers a project's tickets from the scenario alone, so a ticket added where the agent has made
+    LAUNCH-3 since would take LAUNCH-3 too; Jira places it at the project's next number, as it would the agent's
+    next issue, and the agent's issue keeps its key."""
     with _opened(tmp_path) as world:
         async with _client(world) as http:
             made = await http.post(
@@ -181,7 +184,16 @@ async def test_a_ticket_added_where_the_agent_already_took_its_key_is_refused_na
                 json={"fields": {"project": {"key": "LAUNCH"}, "summary": "Agent's", "issuetype": {"name": "Task"}}},
             )
             assert made.status_code == 201 and made.json()["key"] == "LAUNCH-3", made.text
-        head = world.store.head()
-        with pytest.raises(WorldRefused, match="key:LAUNCH-3"):
-            _extend(world, tmp_path, tickets=[{"provider": "jira", "project": "Launch", "title": "Hire a band"}])
-        assert world.store.head() == head
+        bodies = {e.entity: world.store.get(e.entity) for e in world.store.events()}
+        _extend(world, tmp_path, tickets=[{"provider": "jira", "project": "Launch", "title": "Hire a band"}])
+        async with _client(world) as http:
+            added = (await http.get(f"{API}/issue/LAUNCH-4")).json()
+            agents = (await http.get(f"{API}/issue/LAUNCH-3")).json()
+            next_one = await http.post(
+                f"{API}/issue",
+                json={"fields": {"project": {"key": "LAUNCH"}, "summary": "Later", "issuetype": {"name": "Task"}}},
+            )
+        assert added["fields"]["summary"] == "Hire a band" and added["key"] == "LAUNCH-4"
+        assert agents["fields"]["summary"] == "Agent's"
+        assert next_one.json()["key"] == "LAUNCH-5"
+        assert all(world.store.get(r) == held for r, held in bodies.items())
