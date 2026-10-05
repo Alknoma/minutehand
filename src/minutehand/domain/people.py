@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field
@@ -33,6 +34,11 @@ class PersonReply(Model):
         default=None, description="The model and prompt that wrote it; None is scripted"
     )
     press: Press | None = Field(default=None, description="Set when the reply is a control used, not a message")
+    patience: timedelta | None = Field(
+        default=None,
+        description="The longest delay the person had when this reply was decided: how long the agent's wait on it "
+        "may take before silence is the agent's to act on. None: the person's delay in the scenario as it stands",
+    )
 
 
 class PersonMessage(Model):
