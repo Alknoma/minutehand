@@ -1,20 +1,29 @@
-"""An external emulator of the test's own: any program on a port. It answers every call 200 with what it was asked,
-and with a limit given, it dies (exit 1, no answer) on the call after that many.
+"""An echo server of the test's own, standing for an external emulator or a real upstream: it answers every call 200
+with exactly what it received (method, path, every header in order, the body as base64). With a limit it dies (exit
+1, no answer) on the call after that many; with a certificate it serves HTTPS.
 
-    python emulator.py PORT [LIMIT]
+    python emulator.py PORT [--limit N] [--tls CERT KEY]
 """
 
+import argparse
+import base64
 import json
 import os
 import socketserver
-import sys
+import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else None
+parser = argparse.ArgumentParser()
+parser.add_argument("port", type=int)
+parser.add_argument("--limit", type=int)
+parser.add_argument("--tls", nargs=2)
+ARGS = parser.parse_args()
 answered = 0
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, format: str, *args: object) -> None:
         pass
 
@@ -22,17 +31,24 @@ class Handler(BaseHTTPRequestHandler):
         global answered
         body = self.rfile.read(int(self.headers["Content-Length"] or 0))
         if self.path != "/health":
-            if LIMIT is not None and answered >= LIMIT:
+            if ARGS.limit is not None and answered >= ARGS.limit:
                 os._exit(1)
             answered += 1
-        said = json.dumps({"method": self.command, "path": self.path, "body": body.decode(errors="replace")}).encode()
+        said = json.dumps(
+            {
+                "method": self.command,
+                "path": self.path,
+                "headers": [[k, v] for k, v in self.headers.items()],
+                "body": base64.b64encode(body).decode(),
+            }
+        ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(said)))
         self.end_headers()
         self.wfile.write(said)
 
-    do_GET = do_POST = do_DELETE = answer
+    do_GET = do_POST = do_PUT = do_DELETE = answer
 
 
 class Server(ThreadingHTTPServer):
@@ -44,4 +60,9 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
-    Server(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+    server = Server(("127.0.0.1", ARGS.port), Handler)
+    if ARGS.tls:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(*ARGS.tls)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    server.serve_forever()

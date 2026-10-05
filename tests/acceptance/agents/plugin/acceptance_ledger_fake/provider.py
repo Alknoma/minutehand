@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from minutehand.domain.provider import Manifest
@@ -35,6 +35,10 @@ async def removed(request: Request) -> JSONResponse:
     raise NotImplementedError(f"deleting entry {request.path_params['entry']}")
 
 
+async def echo(request: Request) -> Response:
+    return Response(await request.body(), media_type=request.headers.get("content-type"))
+
+
 class LedgerProvider:
     manifest: Manifest = MANIFEST
 
@@ -45,6 +49,7 @@ class LedgerProvider:
                 Route("/entries", listed, methods=["GET"]),
                 Route("/entries", added, methods=["POST"]),
                 Route("/entries/{entry}", removed, methods=["DELETE"]),
+                Route("/echo", echo, methods=["POST"]),
             ]
         )
 

@@ -23,9 +23,26 @@ fails the run. `test_known_failures.py` holds this page's table to that file.
 - A run with nothing expected and nothing done is never passed.
 - A late follow-up on a question the person answers only when chased is scored late and fails the run.
 
+### 2. A run you drive yourself is scored like a run Minutehand drives (`test_driven_parity.py`)
+
+- One story (ask, two follow-ups, the answer, a relay) through `minutehand run` and through `serve` driven as
+  `docs/serve.md` says: the same verdict, scorecard and findings. Documented differences: the stop (`agent_done`
+  against `closed`) and so the verdict's sentence; seq numbers, which are positions in two different logs.
+- A case across three worlds (Slack, Asana, GitHub) is one run in `minutehand runs`, `findings` and the viewer.
+
+### 3. The record is complete and unchanged (`test_record.py`)
+
+- Every call is kept once, in order, its text, binary, invalid-charset and over-512-byte bodies byte for byte.
+- No credential in a header, cookie, query, form or JSON body reaches any stored file, decompressed or not.
+- A forwarded call reaches its emulator unchanged but for `x-minutehand-world`, `-wake`, `-time` and `traceparent`.
+- A passed-through call reaches its upstream unchanged, and is kept.
+- A model call on a tunnel is kept as a connection with its byte counts, and nothing it said.
+- Only a call to an undeclared host is unclaimed; model traffic to a host no world declared is not.
+
 ## Known failures
 
 | Test | Observed | Promised |
 |---|---|---|
 | `test_verdicts.py::test_a_run_with_nothing_expected_and_nothing_done_is_never_passed` | no expectation, no wait, no message, one wake that changed nothing: verdict passed, exit 0 | design.md, The verdict: NOT_JUDGED when nothing was there to judge, never PASSED; a `run` always has a wake, so as written the rule never fires outside `serve` |
 | `test_verdicts.py::test_a_late_follow_up_on_a_question_answered_only_when_chased_is_scored_and_failed` | Rosa answers only her 2nd message; a follow-up 36 h after her answer fell due scores 0 made, 0 due, 0 late and the run passes | design.md, Pillar one: a follow-up is any agent write the person could see while the wait is open, and one more than GRACE after it fell due is late_follow_up, FAIL |
+| `test_driven_parity.py::test_the_same_story_driven_through_serve_gets_the_verdict_scorecard_and_findings_run_gives` | driven as serve.md's recipe says (advance, then a step around the wake), Rosa's answer lands on the advance outside every step: idle_wakes 1 and an idle_wake review, where `run` scores 0 and none | serve.md, Scoring a run you drive yourself: a step is recorded as the run loop records a wake, and the checks and scorecard read it as one |

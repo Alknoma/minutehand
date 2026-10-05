@@ -29,5 +29,11 @@ KNOWN_FAILURES: Final[dict[str, KnownFailure]] = {
         promised="design.md, Pillar one: a follow-up is any agent write the person could see while the wait is "
         "open, and one more than GRACE after it fell due is late_follow_up, FAIL",
     ),
+    "test_driven_parity.py::test_the_same_story_driven_through_serve_gets_the_verdict_scorecard_and_findings_run_gives": KnownFailure(
+        observed="driven as serve.md's recipe says (advance, then a step around the wake), Rosa's answer lands on "
+        "the advance outside every step: idle_wakes 1 and an idle_wake review, where `run` scores 0 and none",
+        promised="serve.md, Scoring a run you drive yourself: a step is recorded as the run loop records a wake, "
+        "and the checks and scorecard read it as one",
+    ),
 }
 """Keyed by `<file>.py::<test function>`, the file relative to `tests/acceptance/`."""

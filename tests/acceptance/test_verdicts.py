@@ -108,7 +108,7 @@ def test_an_emulator_that_dies_is_the_environments_failure_not_the_agents_and_ex
             {
                 "name": "payments",
                 "upstream": {"url": "http://127.0.0.1:{port}"},
-                "command": [PYTHON, str(EMULATOR), "{port}", "1"],
+                "command": [PYTHON, str(EMULATOR), "{port}", "--limit", "1"],
                 "ready": {"kind": "http", "path": "/health", "status": 200},
                 "ready_within": "PT20S",
                 "health": {"every": "PT0.2S", "fails": 1, "path": "/health"},

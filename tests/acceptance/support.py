@@ -262,7 +262,7 @@ class Served:
 
 
 @contextmanager
-def served(tmp_path: Path, *options: str) -> Iterator[Served]:
+def served(tmp_path: Path, *options: str, env: Mapping[str, str] | None = None) -> Iterator[Served]:
     """`minutehand serve` on ports of its own, stopped and reaped afterwards."""
     state = tmp_path / "served"
     state.mkdir(parents=True, exist_ok=True)
@@ -285,7 +285,7 @@ def served(tmp_path: Path, *options: str) -> Iterator[Served]:
                 str(telemetry),
                 *options,
             ],
-            env=clean_environment(),
+            env=clean_environment(env),
             stdout=out,
             stderr=subprocess.STDOUT,
         )
@@ -388,3 +388,114 @@ def command_agent(
 def seen(tmp_path: Path) -> list[dict[str, object]]:
     """What `agents/command_agent.py` was answered, call by call."""
     return [json.loads(line) for line in (tmp_path / "seen.jsonl").read_text().splitlines()]
+
+
+@dataclass(frozen=True)
+class Authority:
+    """A certificate authority of the test's own and one server certificate it signed."""
+
+    ca: Path
+    cert: Path
+    key: Path
+
+
+def authority(directory: Path, *names: str) -> Authority:
+    """A CA, and a certificate for `names` signed by it: a real host's TLS, on this machine."""
+    from datetime import UTC, datetime, timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    directory.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "acceptance upstream CA")])
+    ca = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, content_commitment=False, key_encipherment=False, data_encipherment=False,
+                key_agreement=False, key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )  # fmt: skip
+    key = ec.generate_private_key(ec.SECP256R1())
+    leaf = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])]))
+        .issuer_name(ca_name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+        .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    made = Authority(directory / "ca.pem", directory / "server.pem", directory / "server.key")
+    made.ca.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    made.cert.write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+    made.key.write_bytes(
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    )
+    return made
+
+
+@contextmanager
+def echo_server(tmp_path: Path, *, tls: Authority | None = None) -> Iterator[int]:
+    """`agents/emulator.py` as a real upstream on a port of its own (HTTPS with `tls`), reaped afterwards."""
+    port = free_port()
+    scheme = "https" if tls else "http"
+    command = [PYTHON, str(EMULATOR), str(port), *(["--tls", str(tls.cert), str(tls.key)] if tls else [])]
+    log = tmp_path / f"echo-{port}.log"
+    with log.open("wb") as out:
+        process = subprocess.Popen(command, env=clean_environment(), stdout=out, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    break
+            except OSError:
+                if process.poll() is not None or time.monotonic() > deadline:
+                    raise AssertionError(f"{scheme} echo did not start: {log.read_text()}") from None
+                time.sleep(0.05)
+        yield port
+    finally:
+        _reap(process)
+
+
+def stored_bytes(state: Path) -> bytes:
+    """Every byte a state directory holds, with each zstd-compressed body or file decompressed, as
+    `docs/design.md` ("Bytes kept once") says the store keeps them."""
+    import sqlite3
+
+    import zstandard
+
+    found = bytearray()
+    for path in sorted(p for p in state.rglob("*") if p.is_file()):
+        raw = path.read_bytes()
+        found += raw
+        if raw.startswith(b"\x28\xb5\x2f\xfd"):
+            found += zstandard.ZstdDecompressor().decompressobj().decompress(raw)
+        if path.suffix == ".db":
+            with sqlite3.connect(path) as db:
+                for (blob,) in db.execute("SELECT stored FROM content"):
+                    found += blob
+                    if blob.startswith(b"\x28\xb5\x2f\xfd"):
+                        found += zstandard.ZstdDecompressor().decompressobj().decompress(blob)
+    return bytes(found)
