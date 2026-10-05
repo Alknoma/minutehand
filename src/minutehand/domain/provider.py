@@ -106,3 +106,16 @@ def world_keys(manifest: Manifest, host: str, path: str) -> list[str]:
     """Every world key a request to this provider carries in its host or path, in the manifest's order."""
     found = [k.found(host, path) for k in manifest.world_keys]
     return list(dict.fromkeys(k for k in found if k is not None))
+
+
+def fault_fragment[M: Model](seed: type[M], text: str, fields: frozenset[str]) -> M:
+    """A provider's own seed model read from a fragment that may set only `fields` (those declaring faults), for
+    `ports.provider.DeclaresFaults.declare`; a fragment setting anything else is refused, naming it, since a world
+    already open cannot be re-seeded."""
+    fragment = seed.model_validate_json(text)
+    others = sorted(set(fragment.model_fields_set) - fields)
+    if others:
+        raise ValueError(
+            f"a fault declaration on an open world may set only {', '.join(sorted(fields))}; it sets {', '.join(others)}"
+        )
+    return fragment
