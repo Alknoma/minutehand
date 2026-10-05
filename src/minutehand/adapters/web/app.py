@@ -69,8 +69,17 @@ from minutehand.application.steps import STEP
 from minutehand.checks._waits import chases, ended_at
 from minutehand.checks.runner import view_of
 from minutehand.domain.checks import FindingKind
+from minutehand.domain.inboxes import item_words
 from minutehand.domain.scenario import Model
-from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation
+from minutehand.domain.world import (
+    Actor,
+    EntityRef,
+    InboxItemSnapshot,
+    ItemStatus,
+    MessageSnapshot,
+    Operation,
+    WorldEvent,
+)
 from minutehand.session import Logged
 
 PAGE = Path(__file__).with_name("viewer.html")
@@ -212,6 +221,9 @@ def create_app(state: Path) -> Starlette:
             lines: list[MessageLine] = []
             for event in world.events():
                 after = event.after
+                if isinstance(after, InboxItemSnapshot):
+                    lines.append(_item_line(event, after, names))
+                    continue
                 if not isinstance(after, MessageSnapshot) or event.operation not in WRITES:
                     continue
                 before = said.get(event.entity)
@@ -371,3 +383,25 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
 def serve(state: Path, *, port: int) -> None:
     """Serve the viewer on 127.0.0.1 until interrupted."""
     uvicorn.run(create_app(state), host=HOST, port=port, log_level="warning")
+
+
+def _item_line(event: WorldEvent, item: InboxItemSnapshot, names: dict[str, str]) -> MessageLine:
+    """An item in the agent's own product as a line of what was said: the ask, the decision, a refusal of it, or the
+    agent taking it back."""
+    who = names[item.waits_on] if item.waits_on in names else item.waits_on
+    if event.actor is Actor.PERSON:
+        change = MessageChange.DECIDED if item.status is ItemStatus.DECIDED else MessageChange.REFUSED
+    else:
+        change = MessageChange.WITHDRAWN if item.status is ItemStatus.WITHDRAWN else MessageChange.ASKED
+    return MessageLine(
+        seq=event.seq,
+        at=event.sim_time,
+        wake=event.wake,
+        actor=event.actor,
+        change=change,
+        to=[who],
+        text=item.summary,
+        before=None,
+        thread=False,
+        words=item_words(item, event.actor, who),
+    )

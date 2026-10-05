@@ -63,6 +63,10 @@ class MessageChange(StrEnum):
     SENT = "sent"
     EDITED = "edited"  # rewritten in place after it was sent
     DELETED = "deleted"
+    ASKED = "asked"  # an item left waiting on a person in the agent's own product
+    DECIDED = "decided"  # the person decided it
+    REFUSED = "refused"  # the person decided it, and the product did not take the decision
+    WITHDRAWN = "withdrawn"  # the agent took it back undecided
 
 
 class WrittenBy(Model):
@@ -86,6 +90,9 @@ class MessageLine(Model):
     before: str | None = Field(description="An edit: the text it replaced")
     thread: bool = Field(description="Sent in a thread")
     written_by: WrittenBy | None = Field(default=None, description="The agent's model call that wrote it, if joined")
+    words: str | None = Field(
+        default=None, description="An item in the agent's own product, said whole: 'asked Nadia Ek to approve: ...'"
+    )
 
 
 class MessagesResponse(Model):
