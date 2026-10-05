@@ -7,7 +7,10 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     GET    /v1/worlds                                  `WorldList`
     POST   /v1/worlds                                  `CreateWorld` -> 201 `WorldView`
     GET    /v1/worlds/{id}                             `WorldView`
-    DELETE /v1/worlds/{id}                             close it: `Checked`, as it stood when closed
+    DELETE /v1/worlds/{id}[?quiet=false][&quiet_for=S][&quiet_at_most=S]
+                                                close it once it is quiet (`Quiet`, its defaults unless the
+                                                query says otherwise): `Checked`, as it stood when closed
+    POST   /v1/worlds/{id}/quiet                       `Quiet` -> `Quieted`: wait until the world goes quiet
     GET    /v1/worlds/{id}/events?provider&kind&actor&operation&since&since_reset    `EventsPage`
     GET    /v1/worlds/{id}/entities?provider&kind      `EntitiesPage`: each entity's latest version
     GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true][?since_reset=false]
@@ -31,7 +34,8 @@ stretch before each reset first, and says in `resets` where each reset falls.
     GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
     GET    /v1/worlds/{id}/checks                      `Checked`
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
-    GET    /v1/unmatched?since=N                       `Unmatched`: calls no open world claimed, tunnels among them
+    GET    /v1/unmatched?since=N[&late_for=W]          `Unmatched`: calls no open world claimed, tunnels among them;
+                                                `late_for`: only those that came for world W after it closed
 
 A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
 `unsupported` when the provider cannot do it in any world), 422 for a body that is not the model, 502 when the
@@ -41,6 +45,7 @@ service an event was pushed to refused it.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,6 +57,8 @@ from starlette.routing import Route
 
 from minutehand.adapters.control.wire import (
     API,
+    QUIET_AT_MOST,
+    QUIET_FOR,
     Acted,
     ActRequest,
     Advance,
@@ -77,6 +84,7 @@ from minutehand.adapters.control.wire import (
     Permit,
     PressControl,
     ProvidersView,
+    Quiet,
     RawEntity,
     RawState,
     Refusal,
@@ -162,6 +170,20 @@ def _flag(request: Request, name: str, *, default: bool) -> bool:
     return given == "true"
 
 
+def _seconds(request: Request, name: str, default: timedelta) -> timedelta:
+    """A query parameter in seconds, a number at least 0."""
+    given = _query(request, name)
+    if given is None:
+        return default
+    try:
+        found = float(given)
+    except ValueError:
+        raise _BadQuery(f"?{name}= is a number of seconds, not {given!r}") from None
+    if found < 0:
+        raise _BadQuery(f"?{name}= is at least 0 seconds, not {given}")
+    return timedelta(seconds=found)
+
+
 def _across[T](stretches: Sequence[Path], world: World, read: Callable[[Store], list[T]]) -> tuple[list[T], list[int]]:
     """What `read` finds in each stretch of the world's record before a reset, oldest first, then in the world as
     it stands; and, for each reset, the index of the first item after it."""
@@ -215,7 +237,21 @@ def create_app(serving: Serving) -> Starlette:
         return _json(_view(world_of(request)))
 
     async def close(request: Request) -> Response:
-        return _json(Checked(result=await standing.close(world_of(request).world_id)))
+        found = world_of(request)
+        quiet: Quiet | None = None
+        if _flag(request, "quiet", default=True):
+            quiet = Quiet(
+                quiet_for=_seconds(request, "quiet_for", QUIET_FOR),
+                at_most=_seconds(request, "quiet_at_most", QUIET_AT_MOST),
+            )
+        result, quieted = await standing.close(found.world_id, quiet=quiet)
+        return _json(Checked(result=result, quiet=quieted))
+
+    async def quiet(request: Request) -> Response:
+        found = world_of(request)
+        body = await request.body()
+        asked = Quiet.model_validate_json(body) if body.strip() else Quiet()
+        return _json(await standing.quiet(found.world_id, asked))
 
     async def events(request: Request) -> Response:
         found = world_of(request)
@@ -374,10 +410,14 @@ def create_app(serving: Serving) -> Starlette:
 
     async def unmatched(request: Request) -> Response:
         since = int(_query(request, "since") or 0)
+        late_for = _query(request, "late_for")
         recorded = standing.lobby_store.calls()
-        return _json(
-            Unmatched(calls=[c for c in recorded[since:] if not standing.shared(c.exchange.host)], head=len(recorded))
-        )
+        kept = [
+            c
+            for c in recorded[since:]
+            if not standing.shared(c.exchange.host) and (late_for is None or c.exchange.late_for == late_for)
+        ]
+        return _json(Unmatched(calls=kept, head=len(recorded)))
 
     def route(path: str, handler: Handler, methods: list[str]) -> Route:
         return Route(f"{API}{path}", _guarded(handler), methods=methods)
@@ -391,6 +431,7 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds", create, ["POST"]),
             route("/worlds/{world_id}", world, ["GET"]),
             route("/worlds/{world_id}", close, ["DELETE"]),
+            route("/worlds/{world_id}/quiet", quiet, ["POST"]),
             route("/worlds/{world_id}/events", events, ["GET"]),
             route("/worlds/{world_id}/entities", entities, ["GET"]),
             route("/worlds/{world_id}/calls", calls, ["GET"]),

@@ -881,6 +881,10 @@ class NotionApp:
         async with self._one_at_a_time:
             await webhooks.deliver(self._world, self._clock)
 
+    def delivering(self) -> int:
+        """`DeliversInBackground`: webhook deliveries started and not yet answered."""
+        return len(self._sending)
+
     async def settled(self) -> None:
         """Wait for every delivery already started."""
         while self._sending:

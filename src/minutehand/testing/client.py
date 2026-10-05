@@ -31,6 +31,8 @@ from minutehand.adapters.control.wire import (
     Permit,
     ProvidersView,
     ProviderView,
+    Quiet,
+    Quieted,
     RawState,
     Refusal,
     RefusalKind,
@@ -121,6 +123,19 @@ def _spans_query(since_reset: bool) -> dict[str, str] | None:
     return None if since_reset else {"since_reset": "false"}
 
 
+def _close_query(quiet: Quiet | bool) -> dict[str, str]:
+    """Close once the world is quiet (`True`: the server's defaults; a `Quiet`: as it says), or at once (`False`)."""
+    if quiet is False:
+        return {"quiet": "false"}
+    if quiet is True:
+        return {}
+    return {"quiet_for": str(quiet.quiet_for.total_seconds()), "quiet_at_most": str(quiet.at_most.total_seconds())}
+
+
+def _unmatched_query(since: int, late_for: str | None) -> dict[str, str]:
+    return {"since": str(since)} | ({"late_for": late_for} if late_for is not None else {})
+
+
 class MinutehandClient:
     """Synchronous. `url` is the control API's root, e.g. `http://minutehand:8081`."""
 
@@ -166,8 +181,14 @@ class MinutehandClient:
     def world(self, world_id: str) -> WorldView:
         return self._get(f"/worlds/{world_id}", WorldView)
 
-    def close_world(self, world_id: str) -> Checked:
-        return _read(self._http.delete(f"/worlds/{world_id}"), Checked)
+    def close_world(self, world_id: str, *, quiet: Quiet | bool = True) -> Checked:
+        """Close the world once no call has reached it for a moment and nothing pushed to the service still awaits
+        its answer (`Checked.quiet` says how that wait ended), or at once with `quiet=False`."""
+        return _read(self._http.delete(f"/worlds/{world_id}", params=_close_query(quiet)), Checked)
+
+    def quiet(self, world_id: str, ask: Quiet | None = None) -> Quieted:
+        """Wait until the world has had no call for `ask.quiet_for` and no delivery still awaits its answer."""
+        return self._post(f"/worlds/{world_id}/quiet", (ask or Quiet()).model_dump_json(), Quieted)
 
     def events(
         self,
@@ -246,8 +267,9 @@ class MinutehandClient:
     def checks(self, world_id: str) -> Checked:
         return self._get(f"/worlds/{world_id}/checks", Checked)
 
-    def unmatched(self, *, since: int = 0) -> Unmatched:
-        return self._get("/unmatched", Unmatched, {"since": str(since)})
+    def unmatched(self, *, since: int = 0, late_for: str | None = None) -> Unmatched:
+        """Calls no open world claimed; with `late_for`, only those that came for that world after it closed."""
+        return self._get("/unmatched", Unmatched, _unmatched_query(since, late_for))
 
 
 class AsyncMinutehandClient:
@@ -285,8 +307,11 @@ class AsyncMinutehandClient:
     async def world(self, world_id: str) -> WorldView:
         return await self._get(f"/worlds/{world_id}", WorldView)
 
-    async def close_world(self, world_id: str) -> Checked:
-        return _read(await self._http.delete(f"/worlds/{world_id}"), Checked)
+    async def close_world(self, world_id: str, *, quiet: Quiet | bool = True) -> Checked:
+        return _read(await self._http.delete(f"/worlds/{world_id}", params=_close_query(quiet)), Checked)
+
+    async def quiet(self, world_id: str, ask: Quiet | None = None) -> Quieted:
+        return await self._post(f"/worlds/{world_id}/quiet", (ask or Quiet()).model_dump_json(), Quieted)
 
     async def events(
         self,
@@ -365,5 +390,5 @@ class AsyncMinutehandClient:
     async def checks(self, world_id: str) -> Checked:
         return await self._get(f"/worlds/{world_id}/checks", Checked)
 
-    async def unmatched(self, *, since: int = 0) -> Unmatched:
-        return await self._get("/unmatched", Unmatched, {"since": str(since)})
+    async def unmatched(self, *, since: int = 0, late_for: str | None = None) -> Unmatched:
+        return await self._get("/unmatched", Unmatched, _unmatched_query(since, late_for))

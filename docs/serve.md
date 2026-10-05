@@ -47,7 +47,10 @@ Tests run in parallel against one stack, so the proxy decides per call. In order
    `access_token` and `refresh_token` are claimed by that world from then on. A Google service account claimed
    by its email signs in and its Drive calls follow it (`test_a_service_account_signs_in_and_its_minted_token_is_routed_to_the_same_world`).
 5. **The default world**, when one is open (`claims.default: true`; at most one).
-6. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`.
+6. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`. A call that
+   carries a claim of a world already closed (one of the last 1,000 closed) is kept there as that world's late
+   call: `Exchange.late_for` names the world, its 502 says the world was closed before it came, and
+   `GET /v1/unmatched?late_for=<world_id>` (`OpenWorld.late_calls()`, usable after the close) reads them.
 
 A token, key or host is claimed by one open world at a time; a second claim is refused (409).
 
@@ -90,7 +93,8 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `GET /v1/worlds` | → `WorldList` | Every open world |
 | `POST /v1/worlds` | `CreateWorld` → 201 `WorldView` | Open a world from a seed, with its claims, inbound targets, faults, outbound hosts, and whether scripted people speak |
 | `GET /v1/worlds/{id}` | → `WorldView` | Its clock, its head, what it owes |
-| `DELETE /v1/worlds/{id}` | → `Checked` | Close it: the checks as it stood, its record written, its claims released |
+| `DELETE /v1/worlds/{id}[?quiet=false][&quiet_for=S][&quiet_at_most=S]` | → `Checked` | Close it once it is quiet (below; `Checked.quiet` says how the wait ended): the checks as it stood, its record written, its claims released |
+| `POST /v1/worlds/{id}/quiet` | `Quiet` → `Quieted` | Wait until no call routed to the world has been seen for `quiet_for` and nothing pushed to the service still awaits its answer, or `at_most` has passed |
 | `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since[&since_reset=false]` | → `EventsPage` | The log, filtered; `since` is a seq |
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
 | `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true][?tunnelled=true][?since_reset=false]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts; `tunnelled`: bursts on tunnels to a model host the world declared, relayed and never opened (`Exchange.tunnelled`: bytes each way, when, never what was said) |
@@ -108,7 +112,7 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
-| `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
+| `GET /v1/unmatched?since=N[&late_for=W]` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
 
 A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
 opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A
@@ -302,10 +306,22 @@ def test_the_reminder_reaches_sofia(minutehand_world, gateway):
 |---|---|---|
 | `minutehand` | session | `MinutehandClient` to `$MINUTEHAND_URL`, or to a server started in this process |
 | `minutehand_spec` | test | The suite defines it; the default fails with how to |
-| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `raw_state()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
+| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `spans()` (each since the last reset, or `since_reset=False`), `late_calls()`, `raw_state()`; `quiet()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
 
 A failed `assert_*` prints the world's latest changes. `AsyncMinutehandClient` is the same client for an async
 suite.
+
+### Closing a world while a turn is still running
+
+A service may still be working when the test is done with it: a turn that answers an event at once and goes on
+calling the fakes afterwards. Its calls would land in the lobby once the world closed. So closing a world waits for
+it to go **quiet** first: no call routed to it seen for `quiet_for` (default 250 ms) and no delivery from
+Minutehand to the service (an event, a reply, a press, a happening, a Notion webhook, a Drive channel notification)
+still awaiting the service's answer, for at most `at_most` (default 5 s), then closes it either way;
+`Checked.quiet` says whether it went quiet and, if not, what was still going on. A world no call ever reached is
+quiet at once. `close_world(id, quiet=False)` closes at once; `quiet=Quiet(...)` sets both bounds; `OpenWorld.quiet()`
+waits without closing. A turn that is silent for longer than `quiet_for` between two calls (waiting on a model, say)
+needs a longer `quiet_for`; what still comes after the close is kept as the world's late call, never lost.
 
 ## One container in a stack
 

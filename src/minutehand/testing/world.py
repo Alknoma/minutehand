@@ -7,6 +7,8 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from minutehand.adapters.control.wire import (
+    QUIET_AT_MOST,
+    QUIET_FOR,
     Advanced,
     ChangePerson,
     Checked,
@@ -20,6 +22,8 @@ from minutehand.adapters.control.wire import (
     MoveTicket,
     Permit,
     PressControl,
+    Quiet,
+    Quieted,
     RawState,
     Reply,
     Say,
@@ -111,6 +115,15 @@ class OpenWorld:
     def spans(self, *, since_reset: bool = True) -> list[StoredSpan]:
         """Spans the services exported in traces this world's calls carried, and model calls it recorded."""
         return self.client.spans(self.world_id, since_reset=since_reset).spans
+
+    def late_calls(self) -> list[RecordedCall]:
+        """Calls that came for this world after it was closed, refused into the lobby (`Exchange.late_for`)."""
+        return self.client.unmatched(late_for=self.world_id).calls
+
+    def quiet(self, *, quiet_for: timedelta = QUIET_FOR, at_most: timedelta = QUIET_AT_MOST) -> Quieted:
+        """Return once no call has reached this world for `quiet_for` and nothing Minutehand pushed to the service
+        still awaits its answer, or once `at_most` has passed; `Quieted.quiet` says which."""
+        return self.client.quiet(self.world_id, Quiet(quiet_for=quiet_for, at_most=at_most))
 
     def now(self) -> datetime:
         return self.client.world(self.world_id).now

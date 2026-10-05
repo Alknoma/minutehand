@@ -203,6 +203,10 @@ class DriveApi:
         self._clock = clock
         self._background: set[asyncio.Task[bool]] = set()
 
+    def delivering(self) -> int:
+        """Notifications pushed to a channel's address that have not had its answer yet."""
+        return len(self._background)
+
     @property
     def drive(self) -> DriveWorld:
         return self._drive
@@ -1642,11 +1646,16 @@ def _sort_key(key: str) -> Callable[[wire.DriveFile], str | bool]:
 
 
 class HostRouter:
-    """Send each request to its host's routes, or to every route when the host is not one of Google's."""
+    """Send each request to its host's routes, or to every route when the host is not one of Google's.
+    `DeliversInBackground`: a channel's notifications are pushed after the call that set them off is answered."""
 
-    def __init__(self, by_host: dict[str, Router], every: Router) -> None:
+    def __init__(self, by_host: dict[str, Router], every: Router, api: DriveApi) -> None:
         self._by_host = by_host
         self._every = every
+        self._api = api
+
+    def delivering(self) -> int:
+        return self._api.delivering()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         headers: list[tuple[bytes, bytes]] = scope["headers"] if "headers" in scope else []
@@ -1744,4 +1753,5 @@ def build_app(api: DriveApi) -> HostRouter:
             IAM_HOST: Router(routes=iam),
         },
         Router(routes=[*routes, *oauth, *documents, *presentations, *iam]),
+        api,
     )

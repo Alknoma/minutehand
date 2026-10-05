@@ -33,6 +33,10 @@ class Mounted:
     app_for: Callable[[Manifest], ASGIApp]
     capturing: Capturing = field(default_factory=Capturing)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    seen: float | None = None
+    """When a call routed to this world was last seen beginning or ending, as `time.monotonic()`; None: never."""
+    last: str | None = None
+    """That call, for a person (`GET slack.com/api/auth.test`)."""
 
 
 class Worlds(Protocol):
@@ -59,6 +63,11 @@ class Worlds(Protocol):
         model host, else the world whose calls carried `trace_id`, else `lobby`."""
         ...
 
+    def late_for(self, host: str, credentials: Sequence[str], keys: Sequence[str]) -> str | None:
+        """For a call no open world claims: the world, closed already, whose claims it carries, so the lobby
+        records it as that world's late call; None when it carries no closed world's claim either."""
+        ...
+
 
 class One:
     """Every call is the one run's: `minutehand run` and `minutehand fork`, moved from run to run by `mount`."""
@@ -78,6 +87,10 @@ class One:
 
     def keeping(self, host: str, trace_id: str | None) -> Mounted:
         return self._world
+
+    def late_for(self, host: str, credentials: Sequence[str], keys: Sequence[str]) -> str | None:
+        """Every call is the one run's: none is ever late for another."""
+        return None
 
 
 def one_run(

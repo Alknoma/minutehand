@@ -4,6 +4,7 @@ and an endpoint standing in for a service's Slack event receiver."""
 from __future__ import annotations
 
 import json
+import socketserver
 import ssl
 import threading
 from collections.abc import Iterator
@@ -107,22 +108,32 @@ class Receiver:
         return [json.loads(p.body)["event"]["text"] for p in self.pushed]
 
 
+class _Loopback(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        """Skip the reverse DNS lookup of this machine's name `HTTPServer.server_bind` makes, slow on macOS."""
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
 @contextmanager
-def event_receiver() -> Iterator[Receiver]:
-    """A service's Slack events endpoint on loopback, keeping each push with its signature headers."""
+def event_receiver(*, answers_after: threading.Event | None = None) -> Iterator[Receiver]:
+    """A service's Slack events endpoint on loopback, keeping each push with its signature headers. With
+    `answers_after`, it answers a push only once that event is set: a service still working on what it was sent."""
     found: list[Pushed] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             body = self.rfile.read(int(self.headers["Content-Length"]))
             found.append(Pushed(body, self.headers["X-Slack-Request-Timestamp"], self.headers["X-Slack-Signature"]))
+            if answers_after is not None:
+                answers_after.wait(30)
             self.send_response(200)
             self.end_headers()
 
         def log_message(self, format: str, *args: object) -> None:
             return
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = _Loopback(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

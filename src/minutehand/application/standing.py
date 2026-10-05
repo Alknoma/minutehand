@@ -14,7 +14,8 @@ only in the run loop.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -67,6 +68,7 @@ from minutehand.ports.provider import (
     ChangesPeople,
     DeclaresFaults,
     DeletesTickets,
+    DeliversInBackground,
     EditsTickets,
     GrantsPermissions,
     HoldsTickets,
@@ -152,6 +154,7 @@ class StandingWorld:
         self._fated: set[EntityRef] = set()
         self._seen = 0
         self._acted: list[Happening] = []
+        self._pushing: dict[int, str] = {}
 
     # -- the world as the proxy answers it --------------------------------------------------------------------
 
@@ -175,6 +178,25 @@ class StandingWorld:
 
     def close(self) -> None:
         self.store.wake_ended(STANDING_WAKE)
+
+    def delivering(self) -> list[str]:
+        """Each delivery to the agent's service still awaiting its answer: an event, reply, press or happening this
+        world is pushing now, and what a provider's app pushes in the background (`DeliversInBackground`)."""
+        found = list(self._pushing.values())
+        for key, app in self._apps.items():
+            if isinstance(app, DeliversInBackground) and (count := app.delivering()):
+                found.append(f"{count} delivery(ies) {key} is pushing in the background")
+        return found
+
+    @asynccontextmanager
+    async def _push(self, what: str) -> AsyncIterator[None]:
+        """`what` is being delivered to the agent's service until the block ends."""
+        token = object()
+        self._pushing[id(token)] = what
+        try:
+            yield
+        finally:
+            del self._pushing[id(token)]
 
     def provider(self, key: ProviderKey) -> Provider:
         """The provider, built and seeded with the scenario the first time this world has it, unless the world
@@ -209,7 +231,8 @@ class StandingWorld:
             self._owed.remove(owed)
             self.clock.jump(max(owed.at, self.clock.now()))
             before = self.store.head()
-            await self._fire(owed)
+            async with self._push(owed.what):
+                await self._fire(owed)
             fired.append(
                 Fired(at=self.clock.now(), what=owed.what, events=list(range(before + 1, self.store.head() + 1)))
             )
@@ -325,9 +348,10 @@ class StandingWorld:
         self._person(person)
         before = self.store.head()
         message = PersonMessage(person=person, text=text, at=self.clock.now())
-        await self._pushes(provider).say(
-            message, self._target(provider), self.store, self.clock, secret=self._signing[provider]
-        )
+        async with self._push(f"{person} says {text[:40]!r} on {provider}"):
+            await self._pushes(provider).say(
+                message, self._target(provider), self.store, self.clock, secret=self._signing[provider]
+            )
         return self._written(before)
 
     async def reply(self, person: str, text: str, *, to: EntityRef) -> WorldEvent:
@@ -336,9 +360,10 @@ class StandingWorld:
         before = self.store.head()
         answer = PersonReply(person=person, in_reply_to=to, text=text, at=self.clock.now())
         self.store.remember(answer)
-        await self._pushes(to.provider).deliver(
-            answer, self._target(to.provider), self.store, self.clock, secret=self._signing[to.provider]
-        )
+        async with self._push(f"{person} replies {text[:40]!r} on {to.provider}"):
+            await self._pushes(to.provider).deliver(
+                answer, self._target(to.provider), self.store, self.clock, secret=self._signing[to.provider]
+            )
         return self._written(before)
 
     async def happen_now(self, happening: Happening) -> WorldEvent:
@@ -355,7 +380,8 @@ class StandingWorld:
             raise WorldRefused(f"this happening cannot land here: {e}") from e
         self._lands(happening, 1)
         before = self.store.head()
-        await self._happen(happening)
+        async with self._push(f"{happening.person} {_doing(happening)}"):
+            await self._happen(happening)
         self._acted.append(happening)
         return self._written(before, reads=True)
 
@@ -369,7 +395,10 @@ class StandingWorld:
         before = self.store.head()
         answer = PersonReply(person=person, in_reply_to=on, text=press.label, at=self.clock.now(), press=press)
         self.store.remember(answer)
-        await found.press(answer, self._target(on.provider), self.store, self.clock, secret=self._signing[on.provider])
+        async with self._push(f"{person} presses {press.label!r} on {on.provider}"):
+            await found.press(
+                answer, self._target(on.provider), self.store, self.clock, secret=self._signing[on.provider]
+            )
         return self._written(before)
 
     def declare_faults(self, provider: ProviderKey, faults: str) -> None:
