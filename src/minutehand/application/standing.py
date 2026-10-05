@@ -49,6 +49,7 @@ from minutehand.ports.provider import (
     ASGIApp,
     ChangesDocuments,
     DeclaresFaults,
+    DeletesTickets,
     EditsTickets,
     HoldsTickets,
     NotifiesChanges,
@@ -80,7 +81,7 @@ class _Owed:
     at: datetime
     what: str
     reply: PersonReply | None = None
-    fate: tuple[EntityRef, TicketState] | None = None
+    fate: tuple[EntityRef, TicketState | None] | None = None
     direction: str | None = None
     happening: Happening | None = None
 
@@ -233,7 +234,12 @@ class StandingWorld:
         self._owed.append(
             _Owed(
                 at=assigned.sim_time + fate.after,
-                what=f"{person.key} moves {assigned.entity.external_id} to {fate.becomes.value}",
+                what=f"{person.key} "
+                + (
+                    f"moves {assigned.entity.external_id} to {fate.becomes.value}"
+                    if fate.becomes is not None
+                    else f"deletes {assigned.entity.external_id}"
+                ),
                 fate=(assigned.entity, fate.becomes),
             )
         )
@@ -248,7 +254,10 @@ class StandingWorld:
             )
         elif owed.fate is not None:
             ticket, becomes = owed.fate
-            self._holds(ticket.provider).transition(ticket, becomes, self.store, self.clock)
+            if becomes is None:
+                self._deletes(ticket.provider).delete_ticket(ticket, self.store, self.clock)
+            else:
+                self._holds(ticket.provider).transition(ticket, becomes, self.store, self.clock)
         elif owed.direction is not None:
             await self.say(self.scenario.owner, owed.direction, provider=self._only_inbound())
 
@@ -411,6 +420,12 @@ class StandingWorld:
                 "a direction is said on the world's one inbound target, and it declares " + str(len(self._inbound))
             )
         return next(iter(self._inbound))
+
+    def _deletes(self, provider: ProviderKey) -> DeletesTickets:
+        found = self.provider(provider)
+        if not isinstance(found, DeletesTickets):
+            raise WorldRefused(f"{provider} holds no tickets a person can delete")
+        return found
 
     def _holds(self, provider: ProviderKey) -> HoldsTickets:
         found = self.provider(provider)

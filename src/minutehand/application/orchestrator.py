@@ -59,6 +59,7 @@ from minutehand.ports.provider import (
     ASGIApp,
     BooksWakes,
     ChangesDocuments,
+    DeletesTickets,
     EditsTickets,
     HoldsTickets,
     NotifiesChanges,
@@ -454,7 +455,11 @@ class Orchestrator:
         """Change the world for what is due, in a fixed order: tickets, then replies (a message written back, or a
         control used), then what people do unprompted, then directions sent by message, then bookings."""
         for item in fired:
-            if isinstance(item, PendingFate):
+            if not isinstance(item, PendingFate):
+                continue
+            if item.becomes is None:
+                self._deletes(item.ticket.provider).delete_ticket(item.ticket, self._store, self._clock)
+            else:
                 self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
         for item in fired:
             if isinstance(item, PendingReply):
@@ -749,7 +754,10 @@ class Orchestrator:
         fate = next((f for f in self._scenario.ticket_fates if f.assignee == person.key), None)
         if fate is None:
             return
-        self._tickets(assigned.entity.provider)
+        if fate.deleted:
+            self._deletes(assigned.entity.provider)
+        else:
+            self._tickets(assigned.entity.provider)
         self._fated.append(assigned.entity)
         ticket = assigned.entity
         self._pending.append(
@@ -842,6 +850,12 @@ class Orchestrator:
         if provider not in self._services.tickets:
             raise RunRefused(f"a ticket fate is due on {provider}, which holds no tickets a person can move")
         return self._services.tickets[provider]
+
+    def _deletes(self, provider: ProviderKey) -> DeletesTickets:
+        found = next((p for p in self._services.providers if p.manifest.key == provider), None)
+        if not isinstance(found, DeletesTickets):
+            raise RunRefused(f"a ticket fate deletes a {provider} ticket, and {provider} cannot delete one")
+        return found
 
     def _acts(self, provider: ProviderKey) -> ActsOnTickets:
         found = next((p for p in self._services.providers if p.manifest.key == provider), None)

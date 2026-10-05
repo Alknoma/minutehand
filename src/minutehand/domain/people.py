@@ -81,3 +81,36 @@ class InboundTarget(Model):
         description="Where the secret that signs pushed events comes from; None signs with one made per run "
         "and given to no one, for an agent that does not verify",
     )
+
+
+class PermissionGrant(Model):
+    """A named permission held or withheld for a person on one project (or across the instance), changed while the
+    world is open. The permission is named as the provider names it (YouTrack's `jetbrains.youtrack.updateIssue`)."""
+
+    person: str = Field(description="Person.key")
+    permission: str = Field(min_length=1, description="The provider's own name for the permission")
+    project: str | None = Field(default=None, description="The project's own key; None: across the instance")
+    held: bool = Field(description="True grants it, False withholds it")
+
+
+class InboundCredentialAsk(Model):
+    """What a test that builds a pushed request itself needs signed or minted, the way the provider's real service
+    would sign the request it pushes. Each provider reads the fields its own scheme needs and refuses a request
+    missing one: Slack signs `body` at `timestamp` (seconds since the epoch, as `X-Slack-Request-Timestamp` carries
+    it); the Bot Framework mints a token for `service_url` addressed to `audience` (the bot's app id)."""
+
+    body: str = Field(default="", description="The request body exactly as it will be sent")
+    timestamp: int | None = Field(default=None, ge=0, description="Seconds since the epoch, as the request states")
+    service_url: str | None = Field(default=None, description="The Bot Framework `serviceUrl` the activity names")
+    audience: str | None = Field(default=None, description="Who the token is for: the bot's app (client) id")
+
+
+class Header(Model):
+    name: str
+    value: str
+
+
+class InboundCredential(Model):
+    """The headers that make a request the test builds look pushed by the provider's own service."""
+
+    headers: list[Header] = Field(min_length=1)
