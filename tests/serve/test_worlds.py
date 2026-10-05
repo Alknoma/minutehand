@@ -71,8 +71,11 @@ def test_a_call_with_a_token_no_world_claims_is_refused_and_readable(served: Ser
         served.slack("xoxb-nobody-claims-this").auth_test()
     assert raised.value.response.status_code == 502
     found = served.client.unmatched(since=before)
-    assert [(c.provider, c.exchange.path, c.exchange.status) for c in found.calls] == [("slack", "/api/auth.test", 502)]
-    assert "nobody-claims-this" not in (found.calls[0].exchange.request_body or "")
+    # The lobby is the whole server's: a call another test's client library makes late, after its world closed,
+    # lands here too. This test answers for its own call.
+    mine = [c for c in found.calls if c.provider == "slack"]
+    assert [(c.exchange.path, c.exchange.status) for c in mine] == [("/api/auth.test", 502)]
+    assert "nobody-claims-this" not in (mine[0].exchange.request_body or "")
 
 
 def test_a_seeded_world_is_read_and_written_through_the_real_sdk_and_inspected(served: Served) -> None:
