@@ -63,12 +63,12 @@ cannot do, 422 for a body that is not the model, 502 when the service an event w
 | `GET /v1/ca.pem` | → PEM | The bundle a service trusts: public roots, then the proxy's CA |
 | `GET /v1/environment[?ca_path=P]` | → `Environment` | The variables a service needs: proxy, `NO_PROXY`, the CA variable of each HTTP library, OTLP |
 | `GET /v1/worlds` | → `WorldList` | Every open world |
-| `POST /v1/worlds` | `CreateWorld` → 201 `WorldView` | Open a world from a seed, with its claims, inbound targets, faults, and whether scripted people speak |
+| `POST /v1/worlds` | `CreateWorld` → 201 `WorldView` | Open a world from a seed, with its claims, inbound targets, faults, outbound hosts, and whether scripted people speak |
 | `GET /v1/worlds/{id}` | → `WorldView` | Its clock, its head, what it owes |
 | `DELETE /v1/worlds/{id}` | → `Checked` | Close it: the checks as it stood, its record written, its claims released |
 | `GET /v1/worlds/{id}/events?provider&kind&actor&operation&since` | → `EventsPage` | The log, filtered; `since` is a seq |
 | `GET /v1/worlds/{id}/entities?provider&kind` | → `EntitiesPage` | Each entity's latest version, in the provider's own JSON |
-| `GET /v1/worlds/{id}/calls[?unmatched=true]` | → `CallsPage` | Every call, or those of this world to hosts no provider claims |
+| `GET /v1/worlds/{id}/calls[?unmatched=true][?captured=true]` | → `CallsPage` | Every call; `unmatched`: those refused because no provider claims and no declaration captures their host; `captured`: those to the world's outbound hosts |
 | `GET /v1/worlds/{id}/spans` | → `SpansPage` | Spans the services exported in traces this world's calls carried |
 | `POST /v1/worlds/{id}/act` | `ActRequest` → `Acted` | A person acts: `say`, `reply`, `move_ticket`, `edit_ticket` |
 | `GET /v1/worlds/{id}/clock` | → `WorldView` | |
@@ -78,7 +78,18 @@ cannot do, 422 for a body that is not the model, 502 when the service an event w
 | `GET /v1/unmatched?since=N` | → `Unmatched` | Calls no open world claimed; `head` is the position to read on from |
 
 A provider the seed names (its tickets', documents' and inbound targets' providers) is seeded when the world
-opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`).
+opens; any other is seeded on the first call to it, or the first read that names it (`?provider=`). A
+`?provider=` that names one of the world's outbound declarations reads the messages its sends wrote.
+
+### Outbound hosts
+
+`CreateWorld.outbound` takes the entries an agent file's `outbound` does (`docs/capture.md`): an email API
+acknowledged without sending, a search passed through, a lookup replayed from a closed world or run under the
+server's state directory. A call reaches a world's declarations only once it is that world's by its claims, so
+a service's email client that carries the world's token (or posts to a host the world claims) is answered by
+its own world's declaration; another world may declare the same host differently, and a world that declares
+nothing refuses it. A declared host a provider claims is refused with 409, naming both. `serve
+--capture-unknown` passes every undeclared call through instead, kept in its world or the lobby.
 
 ### A seed
 

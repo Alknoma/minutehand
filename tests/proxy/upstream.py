@@ -70,7 +70,13 @@ def make_authority(directory: Path) -> Authority:
         .not_valid_before(now - timedelta(days=1))
         .not_valid_after(now + timedelta(days=30))
         .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("localhost"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                    x509.IPAddress(ipaddress.ip_address("::1")),
+                ]
+            ),
             critical=False,
         )
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
@@ -159,9 +165,12 @@ async def _serve(
 
 
 @asynccontextmanager
-async def model_api(authority: Authority, answer: Answer | None = None) -> AsyncIterator[Upstream]:
-    """An HTTPS server on 127.0.0.1 that records each request and answers 200: with `answer` when given, else
-    with a count of the requests so far."""
+async def model_api(
+    authority: Authority, answer: Answer | None = None, *, host: str = "127.0.0.1"
+) -> AsyncIterator[Upstream]:
+    """An HTTPS server on `host` that records each request and answers 200: with `answer` when given, else
+    with a count of the requests so far. On `::1` it is a real host the proxy is not bypassed for: the
+    environment Minutehand hands an agent sends `localhost` and `127.0.0.1` direct."""
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     context.load_cert_chain(authority.server_cert, authority.server_key)
     upstream = Upstream()
@@ -174,7 +183,7 @@ async def model_api(authority: Authority, answer: Answer | None = None) -> Async
         finally:
             open_writers.discard(writer)
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0, ssl=context)
+    server = await asyncio.start_server(handle, host, 0, ssl=context)
     upstream.port = server.sockets[0].getsockname()[1]
     try:
         yield upstream

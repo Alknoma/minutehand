@@ -12,6 +12,7 @@ from typing import Annotated, Literal, Self
 from pydantic import AwareDatetime, Field, model_validator
 
 from minutehand.checks.runner import RunResult
+from minutehand.domain.outbound import OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Model, ProviderKey, Seed, TicketState
 from minutehand.domain.telemetry import StoredSpan
@@ -79,6 +80,16 @@ class CreateWorld(Model):
         "passes each. False: nobody speaks but the caller.",
     )
     faults: list[Fault] = []
+    outbound: list[OutboundHost] = Field(
+        default=[],
+        description="Hosts no provider claims that this world captures (acknowledge, pass_through, replay), as an "
+        "agent file declares them; a call reaches them only once it is this world's, by its claims",
+    )
+
+    @model_validator(mode="after")
+    def _one_declaration_per_host(self) -> Self:
+        refuse_repeats(self.outbound)
+        return self
 
 
 class OwedView(Model):

@@ -84,7 +84,7 @@ async def test_a_call_to_a_host_no_provider_claims_is_refused_recorded_and_found
     assert "hush" not in refused.exchange.path
     [found] = [f for f in outcome.result.findings if f.check == "unmatched_call"]
     assert found.kind is FindingKind.REVIEW
-    assert found.message.startswith("GET api.unclaimed.example/v1/ping") and found.message.endswith("answered 502")
+    assert found.message.startswith("GET api.unclaimed.example/v1/ping") and "answered 502." in found.message
 
 
 async def test_the_run_is_exported_as_spans_and_the_agents_own_span_parents_its_calls(

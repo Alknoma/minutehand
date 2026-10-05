@@ -43,7 +43,7 @@ from minutehand.domain.agent import WakeReason
 from minutehand.domain.checks import Effectiveness, Finding, Severity
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario
-from minutehand.domain.world import Actor, Operation, WorldEvent
+from minutehand.domain.world import Actor, Operation, RecordedCall, WorldEvent
 
 SCOPE = "minutehand"
 ENDPOINT_VARIABLE = "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -202,6 +202,52 @@ class OtelTelemetry:
 
         if event.actor == Actor.AGENT and event.operation not in _NOT_A_CHANGE and event.wake in self._changes:
             self._changes[event.wake] += 1
+
+    def captured(self, call: RecordedCall) -> None:
+        """One span per captured call, `SpanKind.CLIENT`, at the real moments it began and ended; never its
+        bodies, whatever `MINUTEHAND_EXPORT_BODIES` says: an outbound call's bodies are another service's data."""
+        exchange = call.exchange
+        captured = exchange.captured
+        if captured is None:
+            return
+        caller = _caller(exchange.traceparent)
+        wake_span = self._wake_spans.get(call.wake)
+        links: list[Link] = []
+        if caller is not None:
+            parent = set_span_in_context(NonRecordingSpan(caller))
+            if wake_span is not None:
+                links.append(Link(wake_span.get_span_context()))
+        elif wake_span is not None:
+            parent = set_span_in_context(wake_span)
+        elif self._run is not None:
+            parent = set_span_in_context(self._run)
+        else:
+            parent = Context()
+        attributes: dict[str, str | int] = {
+            "http.request.method": exchange.method,
+            "server.address": exchange.host,
+            "url.path": exchange.path.split("?", 1)[0],
+            "http.response.status_code": exchange.status,
+            "minutehand.wake": call.wake,
+            "minutehand.capture.mode": captured.mode.value,
+            "minutehand.capture.answered_by": captured.answered_by.value,
+            **_sim_time(call.sim_time),
+        }
+        if captured.declared_as is not None:
+            attributes["minutehand.capture.declared_as"] = captured.declared_as
+        if captured.replayed_from is not None:
+            attributes["minutehand.capture.replayed_from"] = captured.replayed_from
+        span = self._tracer.start_span(
+            f"{exchange.method} {exchange.host}",
+            context=parent,
+            kind=SpanKind.CLIENT,
+            attributes=attributes,
+            links=links,
+            start_time=unix_nano(captured.started),
+        )
+        if exchange.status >= 500:
+            span.set_status(Status(StatusCode.ERROR, f"answered {exchange.status}"))
+        span.end(end_time=unix_nano(captured.ended))
 
     def wake_ended(self, wake: int) -> None:
         span = self._wake_spans.pop(wake, None)

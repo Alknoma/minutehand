@@ -44,13 +44,15 @@ from pydantic import Field
 from starlette.applications import Starlette
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault
-from minutehand.adapters.proxy.policy import Routing
-from minutehand.adapters.proxy.registry import Registry
+from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
+from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
+from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.worlds import Mounted
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import Receiver
+from minutehand.application.outbound import outbound_uses
 from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import StandingWorld, WorldRefused
@@ -92,6 +94,12 @@ class ServeOptions(Model):
     )
     no_proxy: list[str] = Field(default=[], description="Hosts services reach directly")
     keep: int = Field(default=DEFAULT_KEEP, ge=0, description="Closed worlds kept; older ones are removed")
+    capture_unknown: bool = Field(
+        default=False, description="Pass through and keep a call to a host nobody claims or declares, not refuse it"
+    )
+    upstream_ca: Path | None = Field(
+        default=None, description="The CAs a real host is verified against when a call is passed through"
+    )
 
 
 @dataclass
@@ -184,6 +192,11 @@ class Standing:
             raise WorldRefused(
                 f"no installed provider is named {', '.join(unknown)}; installed: {', '.join(sorted(self._manifests))}"
             )
+        try:
+            refuse_claimed(spec.outbound, self._registry, DEFAULT_MODEL_HOSTS)
+            capturing = Capturing(spec.outbound, replaying=replaying_for(spec.outbound, state=self._state))
+        except (ProviderConflict, FileNotFoundError) as e:
+            raise WorldRefused(f"this world's outbound hosts: {e}") from e
         world_id = secrets.token_hex(6)
         scenario = spec.seed.starting(_now())
         directory = run_dir(self._state, world_id)
@@ -221,7 +234,10 @@ class Standing:
             standing=standing,
             store=store,
             mounted=Mounted(
-                store=store, clock=clock, app_for=lambda m: self._faulted(world_id, standing.app_for(m), m)
+                store=store,
+                clock=clock,
+                app_for=lambda m: self._faulted(world_id, standing.app_for(m), m),
+                capturing=capturing.for_people(scenario.people),
             ),
             opened=time.monotonic(),
             faults=[_Armed(f, f.times) for f in spec.faults],
@@ -268,9 +284,11 @@ class Standing:
             wall_seconds=time.monotonic() - world.opened,
             stop=StopReason.CLOSED,
             providers=list(dict.fromkeys(c.provider for c in world.store.calls() if c.provider is not None)),
+            outbound=outbound_uses(world.store.calls()),
             wakes=[],
         )
         directory = run_dir(self._state, world_id)
+        write_recordings(directory, world.store.calls())
         (directory / RECORD).write_text(record.model_dump_json(indent=2), encoding="utf-8")
         (directory / RESULT).write_text(result.model_dump_json(indent=2), encoding="utf-8")
         world.store.close()
@@ -403,6 +421,8 @@ async def serving(state: Path, options: ServeOptions) -> AsyncIterator[Serving]:
             confdir=state / "ca",
             host=options.host,
             port=options.proxy_port,
+            upstream_ca=options.upstream_ca,
+            capture_unknown=options.capture_unknown,
         ) as proxy:
             proxy.addon.route(standing)
             async with _receiver(standing, options) as receiver:

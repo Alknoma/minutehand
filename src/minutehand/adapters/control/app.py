@@ -10,7 +10,9 @@ move their clocks, arm faults, and run the checks. Every body is a model of `wir
     DELETE /v1/worlds/{id}                             close it: `Checked`, as it stood when closed
     GET    /v1/worlds/{id}/events?provider&kind&actor&operation&since    `EventsPage`
     GET    /v1/worlds/{id}/entities?provider&kind      `EntitiesPage`: each entity's latest version
-    GET    /v1/worlds/{id}/calls[?unmatched=true]      `CallsPage`: every call, or those to hosts nobody claims
+    GET    /v1/worlds/{id}/calls[?unmatched=true][?captured=true]
+                                                `CallsPage`: every call; those refused because nobody claims or
+                                                declares their host; or those captured (`Exchange.captured`)
     GET    /v1/worlds/{id}/spans                       `SpansPage`
     POST   /v1/worlds/{id}/act                         `ActRequest` -> `Acted`
     GET    /v1/worlds/{id}/clock                       `WorldView` (its `now` and `owed`)
@@ -118,9 +120,11 @@ def create_app(serving: Serving) -> Starlette:
 
     def provider_of(request: Request, world: World) -> str | None:
         """The provider a read names, seeded into the world first if nothing has called it yet: the world a
-        service would find on its first call is the world a test reads."""
+        service would find on its first call is the world a test reads. A name an outbound declaration of the
+        world records its sends under is read as it is: nothing seeds a captured host."""
         provider = _query(request, "provider")
-        if provider is not None:
+        captured = {d.key for d in world.mounted.capturing.declared}
+        if provider is not None and provider not in captured:
             world.standing.provider(standing.installed(provider))
         return provider
 
@@ -182,7 +186,9 @@ def create_app(serving: Serving) -> Starlette:
         found = world_of(request)
         recorded = found.store.calls()
         if _query(request, "unmatched") == "true":
-            recorded = [c for c in recorded if c.provider is None]
+            recorded = [c for c in recorded if c.refused]
+        if _query(request, "captured") == "true":
+            recorded = [c for c in recorded if c.exchange.captured is not None]
         return _json(CallsPage(calls=recorded))
 
     async def spans(request: Request) -> Response:

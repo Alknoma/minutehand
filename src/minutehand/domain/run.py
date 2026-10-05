@@ -8,6 +8,7 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.scenario import Model, ProviderKey
+from minutehand.domain.world import CaptureMode
 
 
 class StopReason(StrEnum):
@@ -52,6 +53,22 @@ class Verdict(Model):
         return EXIT_CODES[self.kind]
 
 
+class OutboundUse(Model):
+    """The agent's calls to one host no provider claims: captured as declared, discovered, or refused."""
+
+    host: str
+    mode: CaptureMode | None = Field(description="None: nobody declared it and the run refused it")
+    declared_as: str | None = Field(default=None, description="The declaration's host pattern, when one matched")
+    calls: int = Field(ge=0)
+    replayed: int = Field(default=0, ge=0, description="Answered from a recording")
+    refused: int = Field(default=0, ge=0, description="Answered 502: undeclared, or a replay that missed")
+    methods: list[str] = Field(default=[], description="Each method it was called with, in order of first use")
+    paths: list[str] = Field(default=[], description="Up to five paths it was called at, without their query")
+    unknown_recipients: list[str] = Field(
+        default=[], description="Addresses its sends named that match no person in the scenario"
+    )
+
+
 class RunRecord(Model):
     run_id: str
     scenario: str
@@ -65,5 +82,8 @@ class RunRecord(Model):
     failure: str | None = Field(default=None, description="Why, when the run stopped AGENT_FAILED")
     providers: list[ProviderKey] = Field(
         default=[], description="Every provider the agent called, in the order of its first call"
+    )
+    outbound: list[OutboundUse] = Field(
+        default=[], description="Every host no provider claims that the agent called, in the order of its first call"
     )
     wakes: list[WakeRecord]

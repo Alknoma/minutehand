@@ -20,7 +20,7 @@ from minutehand.domain.agent import WakeReason
 from minutehand.domain.checks import Effectiveness, Finding
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario
-from minutehand.domain.world import Actor, EntityKind, Operation, WorldEvent
+from minutehand.domain.world import Actor, EntityKind, Operation, RecordedCall, WorldEvent
 from tests.proxy.support import PROVIDERS, START, client, exchanges, stored_bytes
 
 
@@ -38,6 +38,9 @@ class RecordingTelemetry:
 
     def recorded(self, event: WorldEvent) -> None:
         self.events.append(event)
+
+    def captured(self, call: RecordedCall) -> None:
+        raise AssertionError("the proxy hands captured calls to the run loop, which tells telemetry")
 
     def wake_ended(self, wake: int) -> None:
         raise AssertionError("the proxy never ends a wake")

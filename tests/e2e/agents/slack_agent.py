@@ -16,7 +16,9 @@ Behaviour, from AGENT_BEHAVIOUR:
               does on the answer
 
 Other variables: AGENT_SLACK_SIGNING_SECRET (the signing secret), TRACEPARENT (sent on every Slack call when
-set), STRAY_URL (fetched once when the goal arrives).
+set), STRAY_URL (fetched once when the goal arrives), LOOKUP_URL (fetched when the goal arrives and again on
+the answer), MAIL_URL (an email API, posted to once when the goal arrives, to MAIL_TO, in the shape a
+SendGrid-like API takes: the text as HTML, MAIL_TEXT when set).
 
 With --trace it traces itself with the stock OpenTelemetry SDK, exported over OTLP/HTTP to wherever its
 environment's OTEL_* variables point: each message it sends is a span `agent turn`, under which a GenAI span
@@ -58,6 +60,7 @@ from slack_sdk.web import SlackResponse
 TOKEN = "xoxb-agent-under-test"
 FOLLOW_UP_AFTER = timedelta(days=2)
 QUESTION = "Could you confirm the partner pricing, please?"
+MAILED = "I have asked Sofia to confirm the partner pricing and will report back."
 FOLLOW_UP = "Following up on the partner pricing: could you confirm it?"
 THANKS = "Thank you!"
 MODEL = "model-test"
@@ -146,6 +149,16 @@ class Agent:
         channel = answered(self.slack.conversations_open(users=[self.user_id(email)]))["channel"]["id"]
         self.slack.chat_postMessage(channel=channel, text=text)
 
+    def look_up(self, state: dict[str, object]) -> None:
+        """A lookup the agent makes and keeps no state at: the answer goes into its state file, for the test."""
+        if "LOOKUP_URL" not in os.environ:
+            return
+        with urllib.request.urlopen(os.environ["LOOKUP_URL"], timeout=10) as answer:
+            looked = state["looked_up"] if "looked_up" in state else []
+            assert isinstance(looked, list)
+            looked.append(answer.read().decode())
+            state["looked_up"] = looked
+
     def flush(self) -> None:
         if self.traces is not None:
             self.traces.force_flush()
@@ -158,6 +171,21 @@ class Agent:
                 urllib.request.urlopen(os.environ["STRAY_URL"], timeout=10)
             except urllib.error.HTTPError as refused:
                 print(f"stray call answered {refused.code}", flush=True)
+        self.look_up(state)
+        if "MAIL_URL" in os.environ:
+            sent = {
+                "personalizations": [{"to": [{"email": env("MAIL_TO")}]}],
+                "subject": "Partner pricing",
+                "content": [{"type": "text/html", "value": f"<p>{os.environ.get('MAIL_TEXT', MAILED)}</p>"}],
+                "api_key": "sg-key-in-body",
+            }
+            mail = urllib.request.Request(
+                os.environ["MAIL_URL"],
+                data=json.dumps(sent).encode(),
+                headers={"content-type": "application/json", "authorization": "Bearer sg-key-in-header"},
+            )
+            with urllib.request.urlopen(mail, timeout=10) as answer:
+                state["mailed"] = answer.status
         self.dm(env("ASK_EMAIL"), QUESTION)
         if self.behaviour == "forgetful":
             state["next_wake"] = None
@@ -205,6 +233,7 @@ class Agent:
         when = datetime.fromtimestamp(callback["event_time"]).astimezone()
         if event["user"] == self.user_id(env("ASK_EMAIL")):
             state["answer"] = event["text"]
+            self.look_up(state)
             self.slack.chat_postMessage(channel=event["channel"], text=THANKS)
             self.dm(env("OWNER_EMAIL"), f"Thanks: the pricing is confirmed ({event['text']}).")
             state["status"] = "done"

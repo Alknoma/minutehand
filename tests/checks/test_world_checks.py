@@ -106,8 +106,18 @@ REFUSED = Exchange(method="GET", host="api.unclaimed.example", path="/v1/things"
 
 def test_a_call_no_provider_claimed_is_flagged_for_review() -> None:
     [finding] = UnmatchedCall().run(view(scenario(OWNER), Log(), unmatched=[REFUSED])).findings
-    assert finding.message == "GET api.unclaimed.example/v1/things reached no provider and was answered 502"
+    assert finding.message.startswith("GET api.unclaimed.example/v1/things reached no provider and was answered 502.")
     assert finding.kind is FindingKind.REVIEW
+
+
+def test_a_refused_host_is_told_how_to_declare_it_whatever_its_name() -> None:
+    """Said for every refused host, never guessed from its name: a tracker-looking host is told the same."""
+    for host in ("api.unclaimed.example", "mail.vendor.example", "tracker.internal.example"):
+        refused = REFUSED.model_copy(update={"host": host})
+        [finding] = UnmatchedCall().run(view(scenario(OWNER), Log(), unmatched=[refused])).findings
+        assert f"If {host} is not a place the agent keeps state" in finding.message
+        assert all(word in finding.message for word in ("`outbound`", "acknowledge", "pass_through", "replay"))
+        assert "--capture-unknown" in finding.message
 
 
 def test_no_unmatched_calls_is_clean_and_an_unknown_list_is_blocked() -> None:

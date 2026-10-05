@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field, model_validator
 
+from minutehand.domain.outbound import OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityRef
@@ -240,9 +241,13 @@ class AgentUnderTest(Model):
     human_actions: list[HumanAction] = []
     inbox: Inbox | None = None
     state: StateHooks | None = None
+    outbound: list[OutboundHost] = Field(
+        default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"
+    )
 
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
+        refuse_repeats(self.outbound)
         if isinstance(self.goal, GoalByMessage):
             if not any(t.provider == self.goal.provider for t in self.inbound):
                 raise ValueError(

@@ -12,7 +12,10 @@ contract every agent under Minutehand answers to, and nothing else:
 
 It never reads the machine's clock: the time is whatever the last wake said it is. Its outbound calls go
 to slack.com as they would in production; Minutehand routes them to its fake Slack through the proxy
-settings it puts in this process's environment.
+settings it puts in this process's environment. When Rosa answers, it emails Owen through an email API
+(api.mail.example, in the shape SendGrid takes), and, given LOOKUP_URL, looks the venue up first. Neither is
+a place the agent keeps anything, so Minutehand fakes neither: agent.yaml declares them, and Minutehand
+acknowledges the email without sending it and passes the lookup through to the real host.
 
     python agent.py
 
@@ -21,6 +24,9 @@ Environment:
                                 "forgetful" asks once and never follows up
     AGENT_SLACK_SIGNING_SECRET  the secret Slack signs its events with; Minutehand makes one per run
     PORT                        where to listen (default 8700, the port agent.yaml names)
+    MAIL_API                    the email API (default https://api.mail.example/v3/mail/send)
+    MAIL_API_KEY                its key, sent as a bearer token (default a made-up one)
+    LOOKUP_URL                  a venue search, the venue's name appended to it; none by default
 
 Everything it knows lives in this process and is gone when it exits, which is fine for one run.
 """
@@ -31,6 +37,8 @@ import json
 import os
 import socketserver
 import threading
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -43,6 +51,7 @@ FOLLOW_UP_AFTER = timedelta(days=2)
 
 QUESTION = "Hi Rosa, could you confirm the venue for the team offsite, please?"
 FOLLOW_UP = "Hi Rosa, following up on the offsite venue: could you confirm it?"
+MAIL_API = os.environ.get("MAIL_API", "https://api.mail.example/v3/mail/send")
 
 
 class Agent:
@@ -85,9 +94,35 @@ class Agent:
             return
         self.answer = event["text"]
         self.slack.chat_postMessage(channel=event["channel"], text="Thank you!")
-        self.send(OWNER, f"The offsite venue is confirmed: {self.answer}")
+        found = self.look_up(self.answer)
+        self.email(OWNER, "Offsite venue", f"The offsite venue is confirmed: {self.answer}{found}")
         self.status = "done"
         self.next_wake = None
+
+    def look_up(self, venue: str) -> str:
+        """What a venue search says about it, as a sentence; nothing without LOOKUP_URL."""
+        if "LOOKUP_URL" not in os.environ:
+            return ""
+        with urllib.request.urlopen(os.environ["LOOKUP_URL"] + urllib.parse.quote(venue), timeout=10) as found:
+            return f" ({json.loads(found.read())['summary']})"
+
+    def email(self, to: str, subject: str, text: str) -> None:
+        """An email through the email API, the way any mail-sending service sends one."""
+        sent = {
+            "personalizations": [{"to": [{"email": to}]}],
+            "from": {"email": "agent@example.com"},
+            "subject": subject,
+            "content": [{"type": "text/plain", "value": text}],
+        }
+        request = urllib.request.Request(
+            MAIL_API,
+            data=json.dumps(sent).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {os.environ.get('MAIL_API_KEY', 'SG.example-key')}",
+            },
+        )
+        urllib.request.urlopen(request, timeout=10).close()
 
 
 agent = Agent()
