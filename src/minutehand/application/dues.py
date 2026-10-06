@@ -19,6 +19,7 @@ from minutehand.application.checkpoint import (
     PendingDirection,
     PendingFate,
     PendingHappening,
+    PendingMachine,
     PendingReply,
     PendingWake,
 )
@@ -41,6 +42,8 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.FATE
     if isinstance(pending, PendingHappening):
         return DueSource.HAPPENING
+    if isinstance(pending, PendingMachine):
+        return DueSource.MACHINE
     assert isinstance(pending, PendingDirection)
     return DueSource.DIRECTION
 

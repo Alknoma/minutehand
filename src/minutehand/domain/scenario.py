@@ -720,6 +720,17 @@ Expectation = Annotated[
 ]
 
 
+class MachineCommand(Model):
+    """Something that happens to the agent's own machine at a moment: a file appears, a cache grows, a repository
+    goes stale. Minutehand runs the command then, in the folder the run was started from, with MINUTEHAND_NOW set
+    to the simulated moment (ISO 8601), so it can stamp what it makes; nobody is woken, as on a real machine."""
+
+    after: timedelta = Field(ge=timedelta(0), description="Offset from the scenario's start")
+    argv: list[str] = Field(min_length=1)
+    said: str = Field(min_length=1, description="What it does, in the run's record")
+    limit: timedelta = Field(default=timedelta(seconds=60), gt=timedelta(0), description="Real time it may take")
+
+
 class PlannedBy(StrEnum):
     """How the agent asked for one of its own wakes: which of them a dispatch rule is about."""
 
@@ -791,6 +802,9 @@ class _ScenarioBody(Model):
         default=[], description="Each provider's own seed beyond people, tickets and documents; one per provider"
     )
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
+    machine: list[MachineCommand] = Field(
+        default=[], description="What happens to the agent's own machine, at moments the scenario sets"
+    )
     dispatch: list[DispatchRule] = Field(
         default=[],
         description="Faults in delivering the agent's own wakes: late, twice or dropped. Without any, each is "
@@ -1059,6 +1073,11 @@ class Seed(WrittenScenario):
 
     @model_validator(mode="after")
     def _no_dispatch(self) -> Self:
+        if self.machine:
+            raise ValueError(
+                "machine commands run at moments of the run loop's clock, and a standing world's is driven from "
+                "outside: play this scenario with `minutehand run`, or leave `machine` out of the seed"
+            )
         if self.dispatch:
             raise ValueError(
                 "dispatch rules need the run loop's clock, and a standing world's is driven from outside: play this "

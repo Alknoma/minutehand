@@ -57,6 +57,14 @@ class PendingWake(Model):
     )
 
 
+class PendingMachine(Model):
+    """A command the scenario runs on the agent's machine (`Scenario.machine`), not yet run."""
+
+    kind: Literal["machine"] = "machine"
+    due: Due
+    command: int = Field(ge=0, description="Position in the scenario's `machine`")
+
+
 class PendingDirection(Model):
     kind: Literal["direction"] = "direction"
     due: Due
@@ -78,7 +86,7 @@ class PendingBooking(Model):
 
 
 Pending = Annotated[
-    PendingReply | PendingFate | PendingHappening | PendingWake | PendingDirection | PendingBooking,
+    PendingReply | PendingFate | PendingHappening | PendingWake | PendingDirection | PendingBooking | PendingMachine,
     Field(discriminator="kind"),
 ]
 

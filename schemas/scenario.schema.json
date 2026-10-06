@@ -684,6 +684,46 @@
       "title": "Helpfulness",
       "type": "string"
     },
+    "MachineCommand": {
+      "additionalProperties": false,
+      "description": "Something that happens to the agent's own machine at a moment: a file appears, a cache grows, a repository\ngoes stale. Minutehand runs the command then, in the folder the run was started from, with MINUTEHAND_NOW set\nto the simulated moment (ISO 8601), so it can stamp what it makes; nobody is woken, as on a real machine.",
+      "properties": {
+        "after": {
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Argv",
+          "type": "array"
+        },
+        "limit": {
+          "default": "PT1M",
+          "description": "Real time it may take",
+          "format": "duration",
+          "title": "Limit",
+          "type": "string"
+        },
+        "said": {
+          "description": "What it does, in the run's record",
+          "minLength": 1,
+          "title": "Said",
+          "type": "string"
+        }
+      },
+      "required": [
+        "after",
+        "argv",
+        "said"
+      ],
+      "title": "MachineCommand",
+      "type": "object"
+    },
     "Moved": {
       "additionalProperties": false,
       "properties": {
@@ -2699,6 +2739,15 @@
         ]
       },
       "title": "Happenings",
+      "type": "array"
+    },
+    "machine": {
+      "default": [],
+      "description": "What happens to the agent's own machine, at moments the scenario sets",
+      "items": {
+        "$ref": "#/$defs/MachineCommand"
+      },
+      "title": "Machine",
       "type": "array"
     },
     "max_wakes": {

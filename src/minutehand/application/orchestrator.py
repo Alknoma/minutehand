@@ -25,6 +25,7 @@ from minutehand.application.checkpoint import (
     PendingDirection,
     PendingFate,
     PendingHappening,
+    PendingMachine,
     PendingReply,
     PendingWake,
     Restorable,
@@ -32,6 +33,7 @@ from minutehand.application.checkpoint import (
 )
 from minutehand.application.dues import Dues
 from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_undecided
+from minutehand.application.machine import record_machine, run_machine
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
@@ -264,6 +266,7 @@ class Orchestrator:
         self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._dues = Dues(store, clock, scenario.dispatch)
+        self._machine_failed: str | None = None
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
@@ -303,6 +306,13 @@ class Orchestrator:
                         at=self._scenario.starts_at + direction.after, kind=DueKind.DIRECTION, ref=f"direction:{i}"
                     ),
                     text=direction.text,
+                )
+            )
+        for i, command in enumerate(self._scenario.machine):
+            self._dues.enter(
+                PendingMachine(
+                    due=Due(at=self._scenario.starts_at + command.after, kind=DueKind.MACHINE, ref=f"machine:{i}"),
+                    command=i,
                 )
             )
         for i, happening in enumerate(self._scenario.happenings):
@@ -452,6 +462,13 @@ class Orchestrator:
                 # a dropped occurrence of a booking is over undelivered: the schedule books its next, or completes
                 await self._services.schedulers[item.provider].advance_booking(item.ref, self._store, self._clock)
             fired = dispatched.delivered
+            if not await self._machine([p for p in fired if isinstance(p, PendingMachine)]):
+                self._failure = self._machine_failed
+                return StopReason.ENVIRONMENT_FAILED
+            rest: list[Pending] = [p for p in fired if not isinstance(p, PendingMachine)]
+            fired = rest
+            if not fired:
+                continue
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
                 await self._fire(fired)
                 watched = self._watched(fired)
@@ -546,6 +563,22 @@ class Orchestrator:
         for item in fired:
             if isinstance(item, PendingWake) and item.reason is WakeReason.TICK and not item.repeat:
                 self._schedule_tick()
+
+    async def _machine(self, due: list[PendingMachine]) -> bool:
+        """Run what the scenario does to the agent's machine at this moment, before anything else due then, and
+        record each. A change to the machine wakes nobody: the agent finds it when it next looks. False when one
+        failed, which stops the run as the environment's failure, before anyone is woken."""
+        for item in due:
+            command = self._scenario.machine[item.command]
+            ran = await run_machine(command, self._clock.now())
+            record_machine(self._store, item.command, ran)
+            if ran.exit_code != 0:
+                self._machine_failed = (
+                    f"the scenario's machine command {command.said!r} exited {ran.exit_code}: "
+                    f"{ran.output.strip()[-300:]}"
+                )
+                return False
+        return True
 
     async def _happen(self, happening: Happening) -> None:
         """What a person does by themselves lands through the port its family has: a ticket happening through the

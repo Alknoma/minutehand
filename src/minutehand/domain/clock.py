@@ -16,6 +16,7 @@ class DueKind(StrEnum):
     DIRECTION = "direction"
     TICKET_FATE = "ticket_fate"
     HAPPENING = "happening"
+    MACHINE = "machine"
 
 
 class Due(Model):
@@ -34,6 +35,7 @@ class DueSource(StrEnum):
     FATE = "fate"  # what becomes of a ticket assigned to a person
     HAPPENING = "happening"  # something the scenario has a person do by themselves
     DIRECTION = "direction"  # something the scenario's owner says to the agent
+    MACHINE = "machine"  # something the scenario does to the agent's own machine
 
 
 PLANNED_BY = {

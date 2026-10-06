@@ -78,5 +78,5 @@ def _woken_by(dues: list[DueEntry], since: datetime, until: datetime) -> str:
         and d.closed_at is not None
         and since <= d.closed_at <= until
     ]
-    names = list(dict.fromkeys(_WOKEN_BY[d.source] for d in fired))
+    names = list(dict.fromkeys(_WOKEN_BY[d.source] for d in fired if d.source in _WOKEN_BY))
     return " and ".join(names) if names else "something other than its own plan"
