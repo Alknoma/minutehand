@@ -75,7 +75,7 @@ from minutehand.adapters.model.openai_compatible import from_environment as mode
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
-from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
+from minutehand.application.checkpoint import NoHooks, NotRestorable, Replayable, Restorable
 from minutehand.application.files import FileKind, FileRefused, load_agent, load_fork, load_scenario, problems, schema
 from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
@@ -720,8 +720,8 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
         return "no checkpoints"
     if all(isinstance(p.agent, NoHooks) for p in points):
         return "no checkpoint is restorable: the agent declares no state hooks"
-    can = [str(p.seq) for p in points if isinstance(p.agent, Restorable)]
-    cannot = [str(p.seq) for p in points if not isinstance(p.agent, Restorable)]
+    can = [str(p.seq) for p in points if isinstance(p.agent, Restorable | Replayable)]
+    cannot = [str(p.seq) for p in points if not isinstance(p.agent, Restorable | Replayable)]
     parts = [f"restorable at seq {', '.join(can)}" if can else "no checkpoint is restorable"]
     if cannot:
         parts.append(f"not restorable at seq {', '.join(cannot)} (`minutehand findings` says why)")
@@ -844,6 +844,8 @@ def _point(point: ForkPoint) -> str:
     agent = point.agent
     if isinstance(agent, Restorable):
         return "restorable" if agent.unconfirmed is None else f"restorable, unconfirmed: {agent.unconfirmed}"
+    if isinstance(agent, Replayable):
+        return "restorable: its databases are replayed from their base"
     if isinstance(agent, NotRestorable):
         return f"not restorable: {agent.reason}"
     return "not restorable: the agent declares no state hooks"

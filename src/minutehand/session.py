@@ -45,6 +45,7 @@ from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
+from minutehand.adapters.database.postgres.relay import PostgresFront
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
@@ -64,10 +65,12 @@ from minutehand.application.checkpoint import (
     AgentState,
     NoHooks,
     NotRestorable,
+    Replayable,
     Restorable,
     checkpoints,
     read_checkpoint,
 )
+from minutehand.application.databases import Recorder, start_again, take_bases
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
@@ -239,19 +242,29 @@ async def play(
     async with (
         intercepting(routing, first[0], first[1], state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
+        fronting(agent, proxy.recorder) as fronts,
     ):
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0:
                 opened.append(store)
+            proxy.recorder.mount(store)
+            if sample == 0:
+                await take_bases(fronts, proxy.recorder, store.run_id)
+            else:
+                await start_again(fronts, first[0], proxy.recorder)
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(scenario, model if judge else None, judging=judge, own=own_checks)
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
-            env = agent_environment(
-                listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-            ) | base_url_environment(agent, listen.proxy_url(proxy.port))
+            env = (
+                agent_environment(
+                    listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+                )
+                | base_url_environment(agent, listen.proxy_url(proxy.port))
+                | database_environment(fronts)
+            )
             reach = reach_for(agent, env=env)
             async with _agent_process(command, env, agent, directory / AGENT_LOG) as own:
                 if sample > 0 and agent.state is not None:
@@ -298,8 +311,8 @@ async def _restore_start(
         raise RunRefused(f"run {first.run_id} has no checkpoint at its start to restore the next sample from")
     seq, checkpoint = start
     restorable = checkpoint.agent
-    if isinstance(restorable, NotRestorable | NoHooks):
-        why = restorable.reason if isinstance(restorable, NotRestorable) else "no state hooks"
+    if isinstance(restorable, NotRestorable | NoHooks | Replayable):
+        why = restorable.reason if isinstance(restorable, NotRestorable) else "no snapshot of the agent was kept"
         raise RunRefused(
             f"the next sample cannot start where run {first.run_id} started: its start is not restorable: {why}"
         )
@@ -379,11 +392,17 @@ async def fork(
     async with (
         intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, child_id), telemetry, routes) as emulators,
+        fronting(agent, proxy.recorder) as fronts,
     ):
         scorer.receiver = proxy.receiver
-        env = agent_environment(
-            listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-        ) | base_url_environment(agent, listen.proxy_url(proxy.port))
+        proxy.recorder.hold()  # until the child is mounted, the agent writes to a database its restore makes again
+        env = (
+            agent_environment(
+                listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+            )
+            | base_url_environment(agent, listen.proxy_url(proxy.port))
+            | database_environment(fronts)
+        )
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -411,6 +430,7 @@ async def fork(
                     manifests=registry.manifests,
                     environment=emulators,
                     inboxes=inboxes_for(agent, changed, signing),
+                    databases=fronts,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -1271,6 +1291,8 @@ class Intercepting:
 
     proxy: Proxy
     receiver: Receiver | None
+    recorder: Recorder = field(default_factory=Recorder)
+    """Where the relays of the agent's fronted databases write: moved to the next run with the proxy."""
 
     @property
     def port(self) -> int:
@@ -1300,6 +1322,7 @@ class Intercepting:
         self.proxy.mount(world, clock, apps, scenario=scenario)
         if self.receiver is not None:
             self.receiver.mount(world, clock)
+        self.recorder.mount(world)
 
 
 @asynccontextmanager
@@ -1371,6 +1394,27 @@ async def emulating(
         yield emulators
     finally:
         await emulators.stop()
+
+
+@asynccontextmanager
+async def fronting(agent: AgentUnderTest, recorder: Recorder) -> AsyncIterator[list[PostgresFront]]:
+    """A relay for each database the agent file fronts (`AgentUnderTest.databases`), listening before the agent
+    starts and recording into whatever run `recorder` is mounted on, and stopped when the run ends."""
+    fronts = [PostgresFront(database, recorder) for database in agent.databases]
+    started: list[PostgresFront] = []
+    try:
+        for front in fronts:
+            await front.start()
+            started.append(front)
+        yield fronts
+    finally:
+        for front in started:
+            await front.stop()
+
+
+def database_environment(fronts: Sequence[PostgresFront]) -> dict[str, str]:
+    """Each fronted database's URL, pointed at its relay, in the variable its declaration names."""
+    return {front.database.env: front.agent_url() for front in fronts if front.database.env is not None}
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:

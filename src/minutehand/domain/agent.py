@@ -12,6 +12,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
+from minutehand.domain.database import Database, refuse_repeated_databases
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -172,6 +173,9 @@ class Contained(Model):
 
 WakeSource = Annotated[Reported | Booked | Polled | Command | Contained, Field(discriminator="kind")]
 
+ANSWER_LIMIT = timedelta(seconds=120)
+"""How long after a restore the agent's report endpoint has to answer, unless its `StateHooks` say otherwise."""
+
 
 class StateHooks(Model):
     """How the agent's own state is saved and put back, so a run can be rewound. Without hooks a run cannot be
@@ -220,7 +224,7 @@ class StateHooks(Model):
         description="How long a checkpoint waits to settle before it is recorded as not restorable",
     )
     answer_limit: timedelta = Field(
-        default=timedelta(seconds=120),
+        default=ANSWER_LIMIT,
         gt=timedelta(0),
         description="How long after `start` the agent's report endpoint has to answer",
     )
@@ -316,6 +320,11 @@ class AgentUnderTest(Model):
     emulators: list[ExternalEmulator] = Field(
         default=[], description="Fakes outside Minutehand that `forward` hosts are sent to, started or attached to"
     )
+    databases: list[Database] = Field(
+        default=[],
+        description="The agent's own databases Minutehand fronts: it relays every connection, records the agent's "
+        "committed writes, and puts each back for a fork from a base and those writes, with no state hooks",
+    )
 
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
@@ -330,6 +339,7 @@ class AgentUnderTest(Model):
         if clash:
             raise ValueError(f"an inbox and an outbound host are both recorded as {', '.join(clash)}")
         refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
+        refuse_repeated_databases(self.databases)
         named = [b.env for b in self.base_urls]
         if len(named) != len(set(named)):
             raise ValueError(
