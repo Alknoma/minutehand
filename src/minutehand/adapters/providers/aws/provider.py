@@ -249,7 +249,7 @@ class AwsProvider:
             raise RuntimeError(f"schedule {ref} fired with nothing booked: it is disabled or complete")
         return record
 
-    async def deliver(self, ref: str, world: Store, clock: Clock) -> None:
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
         record = self._due(ref, world)
         queue = sqs_target(record.target_arn)
         if queue.account != self.account:
@@ -279,7 +279,7 @@ class AwsProvider:
             )
         )
 
-    async def advance(self, ref: str, world: Store, clock: Clock) -> None:
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
         record = self._due(ref, world)
         assert record.next_at is not None
         following = record.occurrence_after(max(clock.now(), record.next_at))

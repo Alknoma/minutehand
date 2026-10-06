@@ -359,11 +359,11 @@ class Scheduler:
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scheduler starts with no bookings: a scenario has nothing to seed here."""
 
-    async def advance(self, ref: str, world: Store, clock: Clock) -> None:
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
         """Every booking here is one-off: the occurrence is over, and nothing more is booked."""
         self.advanced.append((ref, clock.now()))
 
-    async def deliver(self, ref: str, world: Store, clock: Clock) -> None:
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
         self.fired.append((ref, clock.now()))
         self.delivered.append(ref)
         world.apply(

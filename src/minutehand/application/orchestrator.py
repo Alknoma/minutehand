@@ -450,7 +450,7 @@ class Orchestrator:
                     self._schedule_tick()  # the rhythm goes on from the tick the scheduler held back
             for item in dispatched.finished:
                 # a dropped occurrence of a booking is over undelivered: the schedule books its next, or completes
-                await self._services.schedulers[item.provider].advance(item.ref, self._store, self._clock)
+                await self._services.schedulers[item.provider].advance_booking(item.ref, self._store, self._clock)
             fired = dispatched.delivered
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
                 await self._fire(fired)
@@ -540,9 +540,9 @@ class Orchestrator:
             if isinstance(item, PendingBooking):
                 scheduler = self._services.schedulers[item.provider]
                 if item.deliver:
-                    await scheduler.deliver(item.ref, self._store, self._clock)
+                    await scheduler.deliver_booking(item.ref, self._store, self._clock)
                 if item.advance:
-                    await scheduler.advance(item.ref, self._store, self._clock)
+                    await scheduler.advance_booking(item.ref, self._store, self._clock)
         for item in fired:
             if isinstance(item, PendingWake) and item.reason is WakeReason.TICK and not item.repeat:
                 self._schedule_tick()

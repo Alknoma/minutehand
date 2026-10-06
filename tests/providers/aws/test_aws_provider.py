@@ -85,8 +85,8 @@ class AwsRun:
         self.clock.begin_wake()
         for due in jump.firing:
             self.wakes.pending.remove(due)
-            self.proxy.await_on_loop(self.provider.deliver(due.ref, self.store, self.clock))
-            self.proxy.await_on_loop(self.provider.advance(due.ref, self.store, self.clock))
+            self.proxy.await_on_loop(self.provider.deliver_booking(due.ref, self.store, self.clock))
+            self.proxy.await_on_loop(self.provider.advance_booking(due.ref, self.store, self.clock))
         return jump.firing
 
     def log(self) -> list[tuple[Actor, Operation, str | None]]:
@@ -208,7 +208,7 @@ def test_a_delete_cancels(run: AwsRun) -> None:
     run.scheduler.delete_schedule(Name="follow-up")
     assert run.wakes.pending == []
     with pytest.raises(LookupError, match=arn):
-        run.proxy.await_on_loop(run.provider.deliver(arn, run.store, run.clock))
+        run.proxy.await_on_loop(run.provider.deliver_booking(arn, run.store, run.clock))
     assert run.poll(url) == []
 
 
@@ -343,10 +343,10 @@ def test_a_rate_schedule_delivered_twice_sends_its_input_twice_and_books_its_nex
     [due] = run.wakes.pending
     run.wakes.pending.remove(due)
     run.clock.jump(due.at)
-    run.proxy.await_on_loop(run.provider.deliver(arn, run.store, run.clock))
+    run.proxy.await_on_loop(run.provider.deliver_booking(arn, run.store, run.clock))
     run.clock.jump(due.at + timedelta(minutes=1))
-    run.proxy.await_on_loop(run.provider.deliver(arn, run.store, run.clock))
-    run.proxy.await_on_loop(run.provider.advance(arn, run.store, run.clock))
+    run.proxy.await_on_loop(run.provider.deliver_booking(arn, run.store, run.clock))
+    run.proxy.await_on_loop(run.provider.advance_booking(arn, run.store, run.clock))
 
     assert run.poll(url) + run.poll(url) == ['{"wake": "hourly"}'] * 2  # SQS hands out one at a time
     assert [d.at for d in run.wakes.pending] == [due.at + timedelta(hours=1)]
@@ -358,7 +358,7 @@ def test_a_dropped_occurrence_sends_nothing_and_the_schedule_still_moves_on(run:
     [due] = run.wakes.pending
     run.wakes.pending.remove(due)
     run.clock.jump(due.at)
-    run.proxy.await_on_loop(run.provider.advance(arn, run.store, run.clock))
+    run.proxy.await_on_loop(run.provider.advance_booking(arn, run.store, run.clock))
 
     assert run.poll(url) == []
     assert [d.at for d in run.wakes.pending] == [due.at + timedelta(hours=1)]

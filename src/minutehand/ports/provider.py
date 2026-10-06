@@ -172,13 +172,13 @@ class BooksWakes(Protocol):
         """Called once before the run; the provider books through `wakes` as the agent's calls arrive."""
         ...
 
-    async def deliver(self, ref: str, world: Store, clock: Clock) -> None:
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
         """Deliver this occurrence of the booking the way the real scheduler would: put what it carries where the
         agent finds it. Called once when the clock reaches it, and again when the scenario delivers it twice
         (`DispatchFault.TWICE`); it leaves the booking as it was, so the second delivery carries the same."""
         ...
 
-    async def advance(self, ref: str, world: Store, clock: Clock) -> None:
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
         """This occurrence is over, delivered or dropped: book the next occurrence of a recurring schedule under the
         same `ref` (the first after now, as a real scheduler skips what it missed), or complete a one-off one. The
         booking has already left the pending set when this is called."""
