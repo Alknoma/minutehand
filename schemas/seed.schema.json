@@ -2598,6 +2598,96 @@
       "title": "TicketState",
       "type": "string"
     },
+    "ToolCalled": {
+      "additionalProperties": false,
+      "description": "The agent called this tool on an MCP server (`ToolCallSnapshot`), with these words in its arguments.",
+      "properties": {
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "tool_called",
+          "default": "tool_called",
+          "title": "Kind",
+          "type": "string"
+        },
+        "mentions": {
+          "default": [],
+          "description": "Words the arguments must contain, any case",
+          "items": {
+            "type": "string"
+          },
+          "title": "Mentions",
+          "type": "array"
+        },
+        "server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The server's host, or its relay's --name; None: any",
+          "title": "Server"
+        },
+        "succeeded": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: only calls the server did not answer with an error",
+          "title": "Succeeded"
+        },
+        "tool": {
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "ToolCalled",
+      "type": "object"
+    },
     "Trashed": {
       "additionalProperties": false,
       "properties": {
@@ -2707,7 +2797,8 @@
             "relayed": "#/$defs/Relayed",
             "ticket_created": "#/$defs/TicketCreated",
             "ticket_deleted": "#/$defs/TicketDeleted",
-            "ticket_in_state": "#/$defs/TicketInState"
+            "ticket_in_state": "#/$defs/TicketInState",
+            "tool_called": "#/$defs/ToolCalled"
           },
           "propertyName": "kind"
         },
@@ -2735,6 +2826,9 @@
           },
           {
             "$ref": "#/$defs/FileRemoved"
+          },
+          {
+            "$ref": "#/$defs/ToolCalled"
           }
         ]
       },

@@ -722,6 +722,16 @@ class FileRemoved(Bound):
     path: str = Field(min_length=1, description="A glob the file's absolute path must match, e.g. '*/Downloads/*.zip'")
 
 
+class ToolCalled(Bound):
+    """The agent called this tool on an MCP server (`ToolCallSnapshot`), with these words in its arguments."""
+
+    kind: Literal["tool_called"] = "tool_called"
+    tool: str = Field(min_length=1)
+    server: str | None = Field(default=None, description="The server's host, or its relay's --name; None: any")
+    mentions: list[str] = Field(default=[], description="Words the arguments must contain, any case")
+    succeeded: bool | None = Field(default=None, description="True: only calls the server did not answer with an error")
+
+
 Expectation = Annotated[
     PersonAsked
     | TicketCreated
@@ -730,7 +740,8 @@ Expectation = Annotated[
     | Relayed
     | DocumentCreated
     | DocumentShared
-    | FileRemoved,
+    | FileRemoved
+    | ToolCalled,
     Field(discriminator="kind"),
 ]
 

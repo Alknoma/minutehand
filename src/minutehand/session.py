@@ -57,7 +57,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
-from minutehand.adapters.telemetry.receiver import Receiver, exporter_environment
+from minutehand.adapters.telemetry.receiver import MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
 from minutehand.application.cases import CASE, CaseKept, CaseStore
 from minutehand.application.checkpoint import (
     CHECKPOINT,
@@ -1190,6 +1190,8 @@ def agent_environment(
     proxy = listen.proxy_url(port)
     direct = ",".join(listen.direct())
     exporter = exporter_environment(listen.telemetry_url(telemetry_port)) if telemetry_port is not None else {}
+    if telemetry_port is not None:
+        exporter = {**exporter, MCP_URL_ENV: listen.telemetry_url(telemetry_port) + MCP_PATH}
     return {
         "HTTPS_PROXY": proxy,
         "HTTP_PROXY": proxy,

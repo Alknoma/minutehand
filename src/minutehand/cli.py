@@ -67,7 +67,7 @@ from pathlib import Path
 
 import yaml
 
-from minutehand import agent_api, session
+from minutehand import agent_api, mcp_relay, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
@@ -295,6 +295,13 @@ def _parser() -> argparse.ArgumentParser:
     capture(served)
     state(served)
 
+    relayed = commands.add_parser(
+        "mcp-relay",
+        help="run an MCP server on standard input and output (-- <command>), passing every line through and "
+        "reporting each tool call to the run (MINUTEHAND_MCP_URL)",
+    )
+    relayed.add_argument("--name", required=True, help="the server's name in the run's record")
+
     doctor = commands.add_parser(
         "doctor", help="which HTTP clients in the agent's interpreter would go around the proxy (-- <command>)"
     )
@@ -366,6 +373,11 @@ def _main(args_in: list[str]) -> int:
             print("minutehand: nothing follows --; give the agent's command or leave -- out", file=sys.stderr)
             return 2
     args = _parser().parse_args(args_in)
+    if args.command == "mcp-relay":
+        if not command:
+            print("minutehand mcp-relay: give the MCP server's command after --", file=sys.stderr)
+            return 2
+        return mcp_relay.main(args.name, command)
     if args.command == "doctor":
         if not command:
             print("minutehand doctor: give the agent's command after --", file=sys.stderr)

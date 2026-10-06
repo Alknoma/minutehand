@@ -20,6 +20,7 @@ class EntityKind(StrEnum):
     INBOX_ITEM = "inbox_item"  # something waiting on a person in the agent's own product (`domain.inboxes`)
     DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
     FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
+    TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
 
 
 class Operation(StrEnum):
@@ -381,8 +382,20 @@ class FileSnapshot(Model):
     size: int = Field(ge=0, description="Bytes, as the file system reports them")
 
 
+class ToolCallSnapshot(Model):
+    """A tool the agent called on an MCP server (`tools/call`), with what the server answered."""
+
+    kind: Literal["tool_call"] = "tool_call"
+    server: str = Field(description="The server's host, or the name its relay was started with")
+    tool: str
+    arguments: str = Field(description="The call's arguments, as JSON text")
+    result: str | None = Field(default=None, description="The text of the result's content; None when none came")
+    is_error: bool = Field(default=False, description="The server answered an error, or a result marked isError")
+
+
 Snapshot = Annotated[
-    FileSnapshot
+    ToolCallSnapshot
+    | FileSnapshot
     | TicketSnapshot
     | MessageSnapshot
     | DocumentSnapshot

@@ -36,7 +36,7 @@ from mitmproxy.proxy.layers import modes
 
 from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, kind_of
 from minutehand.adapters.emulator import answers
-from minutehand.adapters.proxy import capture, connect, credentials, modeled, redact
+from minutehand.adapters.proxy import capture, connect, credentials, mcp, modeled, redact
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.hosts import loopback_name
@@ -1107,8 +1107,27 @@ class ProxyAddon:
             ),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
+        before = world.store.head()
+        for n, call in enumerate(
+            mcp.tool_calls(
+                host,
+                asked.text,
+                _first_header(request, "content-type"),
+                answered.text,
+                _first_header(response, "content-type"),
+            )
+        ):
+            world.store.apply(
+                Change(
+                    entity=EntityRef(provider="mcp", kind=EntityKind.TOOL_CALL, external_id=f"{host}/{before + 1}/{n}"),
+                    operation=Operation.CREATE,
+                    actor=Actor.AGENT,
+                    body=call.model_dump_json(),
+                    after=call,
+                )
+            )
         head = world.store.head()
-        world.store.attach(exchange, first_seq=first if first is not None else head + 1, last_seq=head)
+        world.store.attach(exchange, first_seq=first if first is not None else before + 1, last_seq=head)
         self.worlds.answered(world, exchange, [])
         return exchange
 

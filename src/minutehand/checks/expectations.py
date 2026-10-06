@@ -36,6 +36,7 @@ from minutehand.domain.scenario import (
     TicketCreated,
     TicketDeleted,
     TicketInState,
+    ToolCalled,
 )
 from minutehand.domain.world import (
     Actor,
@@ -48,6 +49,7 @@ from minutehand.domain.world import (
     Operation,
     RecordSnapshot,
     TicketSnapshot,
+    ToolCallSnapshot,
     WorldEvent,
 )
 
@@ -182,6 +184,15 @@ class Expectations:
                 and _ROLES.index(after.role) >= _ROLES.index(expected.role)
                 and has_words(after.document, expected.titled)
             )
+        if isinstance(expected, ToolCalled):
+            return (
+                event.actor is Actor.AGENT
+                and isinstance(after, ToolCallSnapshot)
+                and after.tool == expected.tool
+                and (expected.server is None or after.server == expected.server)
+                and has_words(after.arguments, expected.mentions)
+                and (expected.succeeded is None or expected.succeeded is not after.is_error)
+            )
         if isinstance(expected, FileRemoved):
             return (
                 event.actor is Actor.AGENT
@@ -212,6 +223,10 @@ class Expectations:
             return "ticket deleted"
         if isinstance(expected, FileRemoved):
             return f"file removed matching {expected.path!r}"
+        if isinstance(expected, ToolCalled):
+            words = f" mentioning {expected.mentions}" if expected.mentions else ""
+            on = f" on {expected.server}" if expected.server is not None else ""
+            return f"tool {expected.tool!r} called{on}{words}"
         if isinstance(expected, Relayed):
             return f"{expected.to} told what {expected.said_by} said ({expected.tell!r})"
         if isinstance(expected, DocumentCreated):
