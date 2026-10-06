@@ -268,6 +268,12 @@ class AgentUnderTest(Model):
         "own page), read and decided as each person (`domain.inboxes`)",
     )
     state: StateHooks | None = None
+    watches: list[str] = Field(
+        default=[],
+        description="Folders of the agent's own machine whose files Minutehand records: what the agent creates, "
+        "changes or removes in a wake, and what a scenario's machine commands do. A relative path is read from the "
+        "agent file's folder",
+    )
     checks: list[str] = Field(
         default=[],
         description="Python files holding checks of the agent's own, written as Minutehand's are: a class with `id`, "

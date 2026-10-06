@@ -261,7 +261,8 @@
           "channel",
           "record",
           "inbox_item",
-          "due"
+          "due",
+          "file"
         ],
         "title": "EntityKind",
         "type": "string"

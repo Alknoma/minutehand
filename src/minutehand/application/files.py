@@ -67,7 +67,12 @@ def load_agent(path: Path) -> AgentUnderTest:
 
 def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
     base = path.resolve().parent
-    return agent.model_copy(update={"checks": [str((base / c).resolve()) for c in agent.checks]})
+    return agent.model_copy(
+        update={
+            "checks": [str((base / c).resolve()) for c in agent.checks],
+            "watches": [str((base / w).resolve()) for w in agent.watches],
+        }
+    )
 
 
 def load_fork(path: Path, *, parent_run: str, at_seq: int) -> Fork:

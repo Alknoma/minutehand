@@ -19,6 +19,7 @@ class EntityKind(StrEnum):
     RECORD = "record"
     INBOX_ITEM = "inbox_item"  # something waiting on a person in the agent's own product (`domain.inboxes`)
     DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
+    FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
 
 
 class Operation(StrEnum):
@@ -370,8 +371,17 @@ class InboxItemSnapshot(Model):
     refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
 
 
+class FileSnapshot(Model):
+    """A file in a watched folder of the agent's machine (`AgentUnderTest.watches`), as it stood after a change."""
+
+    kind: Literal["file"] = "file"
+    path: str = Field(description="Absolute")
+    size: int = Field(ge=0, description="Bytes, as the file system reports them")
+
+
 Snapshot = Annotated[
-    TicketSnapshot
+    FileSnapshot
+    | TicketSnapshot
     | MessageSnapshot
     | DocumentSnapshot
     | GrantSnapshot

@@ -714,8 +714,23 @@ class DocumentShared(Bound):
     role: AccessRole = Field(default=AccessRole.READER, description="The least access that counts")
 
 
+class FileRemoved(Bound):
+    """The agent removed a file from a watched folder of its machine (`AgentUnderTest.watches`): moved it away or
+    deleted it. `at_most: 0` says it must not."""
+
+    kind: Literal["file_removed"] = "file_removed"
+    path: str = Field(min_length=1, description="A glob the file's absolute path must match, e.g. '*/Downloads/*.zip'")
+
+
 Expectation = Annotated[
-    PersonAsked | TicketCreated | TicketDeleted | TicketInState | Relayed | DocumentCreated | DocumentShared,
+    PersonAsked
+    | TicketCreated
+    | TicketDeleted
+    | TicketInState
+    | Relayed
+    | DocumentCreated
+    | DocumentShared
+    | FileRemoved,
     Field(discriminator="kind"),
 ]
 

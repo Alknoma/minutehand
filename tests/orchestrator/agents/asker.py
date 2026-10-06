@@ -126,6 +126,14 @@ def keep_writing(reason: str, now: datetime, state: dict[str, object]) -> None:
     report("idle", now + timedelta(hours=2))
 
 
+def tidy(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: remove $TIDY_FILE, and wake again in a day. DUE: nothing."""
+    if reason == "start":
+        Path(os.environ["TIDY_FILE"]).unlink()
+    save(state)
+    report("idle", now + timedelta(days=1) if reason == "start" else None)
+
+
 def book(reason: str, now: datetime, state: dict[str, object]) -> None:
     if reason == "start":
         call("POST", "/testsched/schedules", {"ref": "kept", "at": (now + timedelta(hours=5)).isoformat()})
@@ -208,6 +216,7 @@ BEHAVIOURS = {
         ask_and_keep_calling,
         keep_waking,
         keep_writing,
+        tidy,
         book,
         book_and_poll,
         fail,

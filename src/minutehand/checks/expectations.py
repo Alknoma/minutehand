@@ -20,6 +20,7 @@ answer: it is left to the judged check `asked_about`, and noted here as left.
 
 from __future__ import annotations
 
+import fnmatch
 from datetime import datetime
 
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
@@ -28,6 +29,7 @@ from minutehand.domain.scenario import (
     DocumentCreated,
     DocumentShared,
     Expectation,
+    FileRemoved,
     PersonAsked,
     Relayed,
     Scenario,
@@ -180,6 +182,13 @@ class Expectations:
                 and _ROLES.index(after.role) >= _ROLES.index(expected.role)
                 and has_words(after.document, expected.titled)
             )
+        if isinstance(expected, FileRemoved):
+            return (
+                event.actor is Actor.AGENT
+                and event.operation is Operation.DELETE
+                and event.entity.kind is EntityKind.FILE
+                and fnmatch.fnmatchcase(event.entity.external_id, expected.path)
+            )
         if isinstance(expected, Relayed):
             return (
                 event.actor is Actor.AGENT
@@ -201,6 +210,8 @@ class Expectations:
             return f"ticket created for {expected.assignee or 'anyone'}{words}"
         if isinstance(expected, TicketDeleted):
             return "ticket deleted"
+        if isinstance(expected, FileRemoved):
+            return f"file removed matching {expected.path!r}"
         if isinstance(expected, Relayed):
             return f"{expected.to} told what {expected.said_by} said ({expected.tell!r})"
         if isinstance(expected, DocumentCreated):

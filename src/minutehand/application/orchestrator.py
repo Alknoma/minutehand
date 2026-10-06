@@ -39,6 +39,7 @@ from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import take_snapshot, wake_dir
+from minutehand.application.watching import Watcher
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import (
     AgentReport,
@@ -267,6 +268,7 @@ class Orchestrator:
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._dues = Dues(store, clock, scenario.dispatch)
         self._machine_failed: str | None = None
+        self._watcher = Watcher(agent.watches)
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
@@ -326,6 +328,7 @@ class Orchestrator:
             )
         if self._reach.every is not None:
             self._schedule_tick()
+        self._watcher.look()
         self._record_new()
         try:
             await self._checkpoint()
@@ -359,6 +362,7 @@ class Orchestrator:
         if isinstance(checkpoint.agent, Restorable):
             self._last_report = checkpoint.agent.report
         self._seen = self._store.head()
+        self._watcher.look()
         stop = await self._start() if checkpoint.wake == 0 else None
         if stop is None:
             stop = await self._loop()
@@ -572,6 +576,7 @@ class Orchestrator:
             command = self._scenario.machine[item.command]
             ran = await run_machine(command, self._clock.now())
             record_machine(self._store, item.command, ran)
+            self._watcher.record(self._store, Actor.SCENARIO)
             if ran.exit_code != 0:
                 self._machine_failed = (
                     f"the scenario's machine command {command.said!r} exited {ran.exit_code}: "
@@ -724,6 +729,7 @@ class Orchestrator:
             commitments_changed = self._adopt(settled.report) or commitments_changed
             done = done or settled.report.status is AgentStatus.DONE
         if not failed:
+            self._watcher.record(self._store, Actor.AGENT)
             await self._look()
         new = self._record_new()
         if not failed:

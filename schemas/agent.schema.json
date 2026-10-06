@@ -2101,6 +2101,15 @@
       },
       "title": "Wakes",
       "type": "array"
+    },
+    "watches": {
+      "default": [],
+      "description": "Folders of the agent's own machine whose files Minutehand records: what the agent creates, changes or removes in a wake, and what a scenario's machine commands do. A relative path is read from the agent file's folder",
+      "items": {
+        "type": "string"
+      },
+      "title": "Watches",
+      "type": "array"
     }
   },
   "required": [

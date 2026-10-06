@@ -621,6 +621,62 @@
       "title": "FieldSet",
       "type": "object"
     },
+    "FileRemoved": {
+      "additionalProperties": false,
+      "description": "The agent removed a file from a watched folder of its machine (`AgentUnderTest.watches`): moved it away or\ndeleted it. `at_most: 0` says it must not.",
+      "properties": {
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "file_removed",
+          "default": "file_removed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "description": "A glob the file's absolute path must match, e.g. '*/Downloads/*.zip'",
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "FileRemoved",
+      "type": "object"
+    },
     "FormInput": {
       "additionalProperties": false,
       "description": "What a person types into one field of a form the agent opens for them.",
@@ -2646,6 +2702,7 @@
           "mapping": {
             "document_created": "#/$defs/DocumentCreated",
             "document_shared": "#/$defs/DocumentShared",
+            "file_removed": "#/$defs/FileRemoved",
             "person_asked": "#/$defs/PersonAsked",
             "relayed": "#/$defs/Relayed",
             "ticket_created": "#/$defs/TicketCreated",
@@ -2675,6 +2732,9 @@
           },
           {
             "$ref": "#/$defs/DocumentShared"
+          },
+          {
+            "$ref": "#/$defs/FileRemoved"
           }
         ]
       },
