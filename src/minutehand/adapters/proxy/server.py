@@ -34,6 +34,7 @@ from minutehand.application.restore import SeenCall
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -62,6 +63,7 @@ class Proxy:
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
         capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
+        model: LanguageModel | None = None,
     ) -> None:
         """`upstream_ca` replaces the system trust store when verifying the hosts an edited, recorded or
         passed-through call is sent on to. `public_roots` replaces certifi's roots in the bundle the agent is
@@ -76,6 +78,7 @@ class Proxy:
             record_model_calls=record_model_calls,
             capturing=capturing,
             capture_unknown=capture_unknown,
+            model=model,
         )
         self.base_urls = BaseUrls(routing)
         self._confdir = confdir

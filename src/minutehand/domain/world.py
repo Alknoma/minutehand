@@ -50,6 +50,7 @@ class CaptureMode(StrEnum):
     REPLAY = "replay"
     DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
     FORWARD = "forward"  # sent to an external emulator the agent file or world declares (`domain.emulator`)
+    MODELED = "modeled"  # declared by nobody; answered by a model standing in for the service (`UnknownHosts.MODEL`)
 
 
 class AnsweredBy(StrEnum):
@@ -58,6 +59,7 @@ class AnsweredBy(StrEnum):
     RECORDING = "recording"  # an earlier run's recording of the same call
     REFUSAL = "refusal"  # nobody: a replay that missed, declared to refuse, or an emulator that was unavailable
     EMULATOR = "emulator"  # an external emulator, named in `Captured.emulator`
+    MODEL = "model"  # a language model standing in for a service nobody declared; never sent
 
 
 class BodyKept(StrEnum):

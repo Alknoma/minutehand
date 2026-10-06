@@ -42,12 +42,15 @@ class UnknownHosts(StrEnum):
     REFUSE = "refuse"  # answered 502 and recorded: the default
     READS = "reads"  # a GET, HEAD or OPTIONS passed through and kept; anything else refused as above
     ALL = "all"  # passed through and kept, whatever it is: a first run, to see what an agent calls
+    MODEL = "model"  # a read passed through and kept until the host is written to; a write, and every call after
+    #                  it, answered by a model standing in for the service, never sent
 
     def captures(self, method: str) -> bool:
-        """Whether a call with this method is passed through and kept rather than refused."""
+        """Whether a call with this method is passed through and kept rather than refused, before a model answers
+        anything of its host."""
         if self is UnknownHosts.ALL:
             return True
-        return self is UnknownHosts.READS and method.upper() in READ_METHODS
+        return self in (UnknownHosts.READS, UnknownHosts.MODEL) and method.upper() in READ_METHODS
 
 
 READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})

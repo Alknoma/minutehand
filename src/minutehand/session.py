@@ -222,6 +222,7 @@ async def play(
     _refuse_unwritten(scenario, model)
     own_checks = _own_checks(agent)
     listen = listen or Listen()
+    _refuse_unmodeled(listen, model)
     registry = Registry.installed()
     routing = _routing(registry, listen)
     services = _services(scenario, agent, registry)
@@ -231,7 +232,7 @@ async def play(
     first = _open(state, _new_run_id(), scenario)
     opened = [first[0]]
     async with (
-        intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy,
+        intercepting(routing, first[0], first[1], state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
     ):
         for sample in range(samples):
@@ -348,6 +349,7 @@ async def fork(
     _refuse_unwritten(changed, model)
     own_checks = _own_checks(agent)
     listen = listen or Listen()
+    _refuse_unmodeled(listen, model)
     registry = Registry.installed()
     routing = _routing(registry, listen)
     services = _services(changed, agent, registry)
@@ -366,7 +368,7 @@ async def fork(
     routes: dict[str, Running] = {}
     capturing = capturing.with_emulators(routes)
     async with (
-        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy,
+        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, child_id), telemetry, routes) as emulators,
     ):
         scorer.receiver = proxy.receiver
@@ -852,6 +854,15 @@ def reported_of(world: Store) -> list[CommitmentsReported] | None:
     return said or None
 
 
+def _refuse_unmodeled(listen: Listen, model: LanguageModel | None) -> None:
+    """`--capture-unknown model` with no model configured would refuse every write it means to answer."""
+    if listen.capture_unknown is UnknownHosts.MODEL and model is None:
+        raise RunRefused(
+            "--capture-unknown model needs a model to stand in for undeclared services: set MINUTEHAND_MODEL and "
+            "MINUTEHAND_MODEL_API_KEY, and MINUTEHAND_MODEL_BASE_URL for a service other than OpenAI's"
+        )
+
+
 def _own_checks(agent: AgentUnderTest) -> list[Check]:
     """The agent's own checks, loaded before anything of a run starts, so a file that cannot load refuses it."""
     try:
@@ -1285,6 +1296,7 @@ async def intercepting(
     listen: Listen,
     *,
     capturing: Capturing | None = None,
+    model: LanguageModel | None = None,
 ) -> AsyncIterator[Intercepting]:
     """The proxy and, unless `listen` turns it off, the receiver, on the same host. The receiver passes what it
     takes on to wherever this process's own environment sent OTLP before (`Forwarding.from_environment`).
@@ -1300,6 +1312,7 @@ async def intercepting(
         record_model_calls=listen.record_model_calls,
         capturing=capturing,
         capture_unknown=listen.capture_unknown,
+        model=model,
     ) as proxy:
         if not listen.receive_telemetry:
             yield Intercepting(proxy, None)
