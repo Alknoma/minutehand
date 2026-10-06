@@ -1327,6 +1327,7 @@ From least to most invasive; the fakes are on Minutehand's clock in every case.
 1. `WakeRequest.now`. The agent uses it as its "now" for the wake. Built.
 2. `GET :8081/clock`. For agents that read the time more than once per wake. Not built.
 3. The system clock, faked from outside with `libfaketime`. No code change in the agent. Not built; see "Evidence" for the spike that tried it.
+4. The agent in a gVisor sandbox whose clock Minutehand owns: every timer the agent's own scheduler arms is read from the sandbox's kernel, and time inside the sandbox is released to the earliest. No code change in the agent, any in-process scheduler, and the machine's clock untouched. Spiked, not built; see "Evidence".
 
 What follows from that spike:
 
@@ -1672,6 +1673,19 @@ Still true of mitmproxy and kept as a limit: its app host buffers each response 
 | Does a program asleep on its own timer wake when the clock jumps? | No. `asyncio.sleep(8)` took 8 real seconds across a two-hour jump. |
 
 **A production Teams and SharePoint client against the Microsoft provider** (2026-10-04, a throwaway driver run in its own virtualenv from that client's requirement files, through the proxy, with only its credential stores stubbed). 75 of 80 checks passed: the Teams messaging adapter's sends, replies, card sends and updates, deletes, DMs, history, members, search and workspace discovery; the Graph client's delegated and app-only tokens, item reads and writes, `delta` and subscriptions with the validation handshake; the SharePoint change watch; and the SharePoint document adapter's probes, moves, shares, deletes and containers. The five that failed are the client's, not the fake's: it reads a group or personal chat's history at `/teams/{group}/channels/{chat}/messages` (answered 404, which it swallows into an empty list); it downloads content with `httpx` without following the 302 Graph answers (the old emulator answered 200, which hid this); and its document adapter refuses a rename itself and fails its content update on the same 302.
+
+**A sandbox whose clock Minutehand owns** (2026-10-07; gVisor `go` branch at `fdfbe30` with a 191-line patch, run with `runsc do` inside a privileged container on Docker Desktop's arm64 Linux VM; the patch, the driver and the test programs are outside this repo). Decides that "the agent's next wake, from any in-process scheduler" can be captured and dispatched with no change to the agent, and what that costs.
+
+The patch adds an offset to the sandbox's realtime and monotonic clocks, applied on the syscall path and in the VDSO parameters, and makes the timekeeper's clocks tell their timers when it moves, so an armed sleep, futex, epoll or poll timeout re-checks at once (`Timekeeper.Advance`). Two control calls expose it: `runsc debug --advance-clock=<d>` and `runsc debug --deadlines`, which reads every task's state and blocking deadline at once (`Kernel.Deadlines`). The driver waits until every task is blocked, asks for the earliest deadline, releases time to it, and repeats.
+
+| Question | Result |
+|---|---|
+| Is an unmodified program's next wake readable from outside? | Yes, as the earliest blocking deadline: Python `asyncio.sleep(3600)` (an `epoll_pwait` timeout), `threading.Timer(7200)` (an absolute `FUTEX_WAIT_BITSET`), `time.sleep(1800)` (an absolute `clock_nanosleep`), Node `setTimeout` for 90 minutes (an `epoll_pwait` timeout, after two start-up timers of 8.1 s and 0.6 s). Read first from the syscall trace (five Node runs in six; parsing a trace races a thread between two calls), then from `--deadlines` (every run). |
+| Does releasing time fire the timer, and only then? | Released to ten seconds short of each deadline: none fired. Released past it: each fired 5 to 14 ms of real time later, reading the box's clock exactly the released amount ahead of the host's, whose own clock did not move. |
+| Does the whole loop run unattended? | Python's three: one jump each, 0.2 s of real time for up to two simulated hours. Node: two start-up jumps and one to its timer, 0.5 to 0.9 s, six runs in six. Go (`time.AfterFunc` for two hours): fired every time, but in 120 jumps of about 60 s, the runtime's own periodic wake, 21 s of real time; a fortnight would take about an hour unless jumps that wake only the runtime are merged. |
+| Does a real model API still answer after a jump? | `api.anthropic.com` over HTTPS from inside the sandbox: answered 401 (no key was sent) with the box's clock 0, 7 and 30 days ahead; 400 days ahead, "certificate has expired". Terminating the model API's TLS at the proxy, as `EDIT` and `RECORD` already do, removes that horizon. |
+
+What it took beyond the patch: the release's own sidecar binaries do not match a build of the `go` branch (the sentry and its prewarmer are separate binaries now), so the patched sentry (`runsc/cmd/sentry/sentry_main.go`, absent from the `go` branch) and the prewarmer (`runsc/prewarmer/prewarmer.c`) were built from the same source; `runsc do` needs `--ignore-cgroups` nested in a container, and `iptables` and `sysctl` to reach the network. Not tried: a container image as the agent's root, the sandbox's network routed through Minutehand's proxy, a pending real call holding time still, checkpoint and restore as a fork, and x86-64.
 
 ## Known issues / limitations
 
