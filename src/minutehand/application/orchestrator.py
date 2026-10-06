@@ -497,6 +497,8 @@ class Orchestrator:
                     return stop
                 continue
             wake = self._clock.begin_wake()
+            if all(isinstance(p, PendingTimer) for p in fired) and not await self._timer_did_something(wake):
+                continue
             requests, reason = self._requests(fired)
             settle = [d for d, _ in requests] or self._delivered_to(fired)
 
@@ -523,6 +525,20 @@ class Orchestrator:
         if self._reach.sandbox is not None and self._sandbox_owed > 0:
             owed, self._sandbox_owed = self._sandbox_owed, 0
             await self._reach.sandbox.advance(owed)
+
+    async def _timer_did_something(self, wake: int) -> bool:
+        """Release the sandbox's clock to a timer and let it settle. A timer that wrote nothing and called nothing
+        (a runtime's own housekeeping: an HTTP server's poll, a garbage collector's tick) is no wake of the agent's,
+        and `wake` is withdrawn; one that did something is a wake, played on as one."""
+        head, calls = self._store.head(), len(self._store.calls())
+        await self._release()
+        sandbox = self._reach.sandbox
+        assert sandbox is not None
+        await sandbox.settle(self._traffic)
+        if self._store.head() == head and len(self._store.calls()) == calls:
+            self._clock.withdraw(wake)
+            return False
+        return True
 
     async def _plan_timer(self) -> bool:
         """For a contained agent, its earliest timer, read from the sandbox once it is idle and nothing of its is in

@@ -224,7 +224,12 @@ class Plan(Model):
         )
 
 
-_PLANNED = {DueSource.REPORTED: "reported", DueSource.BOOKED: "booked", DueSource.POLLED: "its declared rhythm, set"}
+_PLANNED = {
+    DueSource.REPORTED: "reported",
+    DueSource.BOOKED: "booked",
+    DueSource.POLLED: "its declared rhythm, set",
+    DueSource.TIMER: "its own timer, read from its sandbox",
+}
 
 
 def plan_at(dues: list[DueEntry], moment: datetime) -> Plan:

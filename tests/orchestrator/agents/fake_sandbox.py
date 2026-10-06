@@ -15,12 +15,14 @@ state_file = Path(sys.argv[1])
 state = json.loads(state_file.read_text())
 if sys.argv[2] == "deadlines":
     ahead = [t - state["now_ns"] for t in state["timers"] if t > state["now_ns"]]
-    print(json.dumps({"idle": True, "earliest_ns": min(ahead) if ahead else -1}))
+    print(json.dumps({"idle": True, "tasks": 2, "timed": len(ahead), "earliest_ns": min(ahead) if ahead else -1}))
 else:
     state["now_ns"] += int(sys.argv[3])
     due = [t for t in state["timers"] if t <= state["now_ns"]]
     state["timers"] = [t for t in state["timers"] if t > state["now_ns"]]
-    for _ in due:
+    for t in due:
+        if t in state.get("quiet_timers", []):
+            continue  # a runtime's own timer: it fires and does nothing the run can see
         body = json.dumps({"to": "dania@example.com", "text": "Following up on the contract."}).encode()
         request = urllib.request.Request(
             state["base"] + "/testchat/messages", data=body, headers={"content-type": "application/json"}

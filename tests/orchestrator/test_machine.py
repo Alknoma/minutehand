@@ -32,7 +32,7 @@ async def test_a_machine_command_runs_at_its_moment_knowing_it_and_wakes_nobody(
     assert [w.sim_time for w in record.wakes] == [T0], "the agent is not woken: it finds the change when it looks"
     [ran] = [e for e in store.events() if isinstance(e.after, RecordSnapshot) and e.after.resource == "machine"]
     assert ran.actor is Actor.SCENARIO and ran.sim_time == T0 + timedelta(days=3)
-    assert ran.after is not None and ran.after.text == "the cache grows by 4 GB: exit 0"
+    assert isinstance(ran.after, RecordSnapshot) and ran.after.text == "the cache grows by 4 GB: exit 0"
     [entry] = [e for e in due_entries(store) if e.source is DueSource.MACHINE]
     assert (entry.closed, entry.closed_at) == (DueClosed.FIRED, T0 + timedelta(days=3))
 

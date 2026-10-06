@@ -16,7 +16,7 @@ from datetime import timedelta
 
 from minutehand.checks._waits import VISIBLE, span
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
-from minutehand.domain.clock import AGENT_SOURCES, PLANNED_BY, REACHED, DueClosed, DueEntry
+from minutehand.domain.clock import PLANNED_BY, REACHED, DueClosed, DueEntry
 from minutehand.domain.scenario import DispatchFault, DispatchRule, PlannedBy
 from minutehand.domain.world import Actor
 
@@ -67,7 +67,7 @@ class ActedOnRepeatedWake:
 def _unapplied(rules: list[DispatchRule], dues: list[DueEntry]) -> list[str]:
     reached: dict[PlannedBy, int] = {}
     for d in dues:
-        if d.source in AGENT_SOURCES and d.asked_for is None and d.closed in REACHED:
+        if d.source in PLANNED_BY and d.asked_for is None and d.closed in REACHED:
             reached[PLANNED_BY[d.source]] = reached.get(PLANNED_BY[d.source], 0) + 1
     notes = []
     for i, rule in enumerate(rules):

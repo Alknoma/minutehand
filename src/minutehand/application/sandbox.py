@@ -7,7 +7,7 @@ import asyncio
 import json
 import time
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from minutehand.application.restore import Traffic
 from minutehand.domain.agent import Contained
@@ -19,6 +19,10 @@ class SandboxFailed(RuntimeError):
 
 
 class SandboxDeadlines(Model):
+    """As `Contained.deadlines` prints them; anything else it prints (a task count) is the sandbox's, and ignored."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
     idle: bool
     earliest_ns: int = Field(description="Until the earliest deadline any blocked task waits for; -1 for none")
 
