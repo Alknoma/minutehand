@@ -105,6 +105,20 @@ class PushesInteractions(Protocol):
 
 
 @runtime_checkable
+class LandsReplies(Protocol):
+    """A provider where a person's answer lands where the agent reads it, and nothing is pushed: a reply email in the
+    agent's mailbox, an attendee's response on the agent's calendar event. The agent finds it on its next read, as it
+    finds a ticket's fate, so its landing wakes nobody."""
+
+    def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
+        """Write the person's answer to `reply.in_reply_to` as the real service would, recorded as actor PERSON: what
+        they wrote as their message, a control they used (`reply.press`) as its effect. A message no longer there
+        is left alone and nothing is written. A press on a control the message does not carry raises
+        `ValueError`: the replier offered what the provider never showed."""
+        ...
+
+
+@runtime_checkable
 class HoldsTickets(Protocol):
     """A provider with tickets a person can finish or cancel. This is how a `TicketFate` lands."""
 
