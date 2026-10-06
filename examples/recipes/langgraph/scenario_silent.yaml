@@ -1,0 +1,20 @@
+# Rosa never answers. The agent asks, follows up once when its date passes, and tells Owen when the second passes.
+name: recipe_venue_silent
+goal: Confirm the venue for the team offsite with Rosa.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P14D
+
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    reply: {kind: scripted, replies: []}
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    reply: {kind: silent}
+
+expect:
+  - kind: person_asked
+    person: rosa

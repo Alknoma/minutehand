@@ -230,3 +230,6 @@ __marimo__/
 
 # Throwaway files of a working session, never committed
 .scratch/
+
+# The Node recipe's packages, installed by npm ci in its folder
+node_modules/
