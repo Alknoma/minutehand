@@ -1,7 +1,7 @@
-# Google Drive, Docs and Slides: where each behaviour comes from
+# Google Workspace (Drive, Docs, Slides, Gmail, Calendar): where each behaviour comes from
 
-Facts about the real services that an older, separately written stand-in for Drive was tested against, carried
-here so the fake keeps them. **Documented** means Google's public reference says so (the page is linked; read it
+For Drive, Docs and Slides: facts about the real services that an older, separately written stand-in for Drive was
+tested against, carried here so the fake keeps them. For Gmail and Calendar: what this fake was written from. **Documented** means Google's public reference says so (the page is linked; read it
 there). **Observed** means no page says so and the fact rests on someone having seen the real service do it.
 
 Tests named `vendor_claims` live in `tests/providers/google_workspace/test_google_workspace_vendor_claims.py` (Drive) and
@@ -84,3 +84,71 @@ that test instead.
   the upload endpoint only.
 - **A health route, and admin routes that seed files or reset the store.** Drive has neither; a scenario seeds this
   fake.
+
+## Gmail v1
+
+Tests are in `tests/providers/google_workspace/test_gmail_through_proxy.py`, each driving Google's own client in a
+process of its own through the proxy, and `tests/e2e/test_mail_and_calendar_run.py`, a whole run.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| `users.messages.send` takes the whole RFC 2822 message, base64url, in `raw`, and answers its `id`, `threadId` and `labelIds` (`SENT`) | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/guides/sending |
+| A send joins a thread only when it names the `threadId` and its `Subject` matches the thread's; otherwise it starts a thread of its own | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/guides/threads |
+| A message arriving in a mailbox joins the thread holding the message its `In-Reply-To` or `References` names, when the subjects match | observed | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up`, `test_search_operators_find_the_seeded_mail_they_name` | |
+| A send without `From`, `Date` or `Message-ID` is given them; a `From` that is not the account's own address is replaced by it | observed | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | |
+| A message sent to another account in the domain is a second message, with its own id, in that account's mailbox, labelled `INBOX` and `UNREAD` | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/guides/labels |
+| A send with no recipient is a 400 "Recipient address required"; one with no `raw` a 400 naming `raw` | observed | `test_a_bad_id_another_mailbox_no_recipient_and_an_account_without_mail_are_refused` | |
+| `users.messages.list` answers `{id, threadId}` a page at a time with `resultSizeEstimate`, newest first, leaving out spam and trash unless asked | documented | `test_search_operators_find_the_seeded_mail_they_name` | https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list |
+| `q` takes Gmail's search operators: `from:`, `to:`, `subject:`, `is:unread`, `is:read`, `in:sent`, `newer_than:`, `OR`, `-`, words and quoted phrases; `from:me` is the account | documented | `test_search_operators_find_the_seeded_mail_they_name` | https://support.google.com/mail/answer/7190 |
+| `format` is `full` (the MIME tree with each part's bytes base64url), `metadata` (headers, filtered by `metadataHeaders`), `minimal` or `raw` | documented | `test_search_operators_find_the_seeded_mail_they_name`, `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/reference/rest/v1/Format |
+| `snippet` is the start of the text, HTML-escaped (`&#39;`) | observed | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | |
+| `users.threads.get` answers the thread's messages oldest first; `users.threads.list` a thread once however many of its messages match | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.threads |
+| `users.history.list` answers what changed after `startHistoryId` (`messagesAdded`, `labelsAdded`, `labelsRemoved`, `messagesDeleted`), narrowed by `historyTypes`, and the mailbox's current `historyId` | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/guides/sync |
+| A message is marked read by removing `UNREAD` with `users.messages.modify` | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/guides/labels |
+| A label the mailbox does not have is a 400 "Invalid label" | observed | `test_an_unknown_label_on_a_held_message_is_refused` | |
+| An id that is not one is a 400 "Invalid id value"; one not in the mailbox a 404 "Requested entity was not found." | observed | `test_a_bad_id_another_mailbox_no_recipient_and_an_account_without_mail_are_refused` | |
+| Another account's mailbox is a 403 "Delegation denied" | observed | `test_a_bad_id_another_mailbox_no_recipient_and_an_account_without_mail_are_refused` | |
+| An account with no mailbox (a service account impersonating nobody) is a 400 `failedPrecondition` "Precondition check failed." | observed | `test_a_bad_id_another_mailbox_no_recipient_and_an_account_without_mail_are_refused` | |
+| `users.getProfile` answers the address, the message and thread counts and the `historyId` to start a sync from | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/reference/rest/v1/users/getProfile |
+| `users.labels.list` names the system labels (`INBOX`, `SENT`, `UNREAD`, `STARRED`, `TRASH`, ...) | documented | `test_a_sent_question_is_answered_in_its_thread_found_by_history_marked_read_and_followed_up` | https://developers.google.com/workspace/gmail/api/guides/labels |
+
+## Calendar v3
+
+Tests are in `tests/providers/google_workspace/test_calendar_through_proxy.py`, each driving Google's own client in a
+process of its own through the proxy, and `tests/e2e/test_mail_and_calendar_run.py`, a whole run.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| `calendarList.list` answers the account's primary calendar, whose id is its address, with its time zone | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/calendarList |
+| `events.insert` takes guests in `attendees`, each `needsAction` until they answer; the organizer is `self` on their own calendar | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/events |
+| A `dateTime` without an offset is read in its `timeZone`, and is answered with its offset | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/events |
+| An attendee's `responseStatus` is `needsAction`, `declined`, `tentative` or `accepted`; a guest may answer with a `comment` | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/events |
+| An invitation offers its guest Yes, Maybe and No | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://support.google.com/calendar/answer/37135 |
+| `events.list` bounds an event's end by `timeMin` and its start by `timeMax`; `orderBy=startTime` needs `singleEvents=true` | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/events/list |
+| `freeBusy.query` answers each calendar's busy ranges, a calendar it cannot find as an `errors` entry `notFound`, and a `transparent` event as free | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query |
+| `events.patch` sets what the body names, a list as a whole; a guest keeps the answer they gave | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/guides/performance#patch |
+| A sync token answers every event changed since, a deleted one as `cancelled`, and cannot be combined with `timeMin`, `q` or `orderBy` | documented | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/guides/sync |
+| A deleted event deleted again is a 410 `deleted` | observed | `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | |
+| An end at or before the start is a 400 `timeRangeEmpty` | observed | `test_an_empty_range_another_calendar_a_guests_change_a_taken_id_and_recurrence_are_refused` | |
+| A calendar not shared with the caller is a 404 `notFound` | documented | `test_an_empty_range_another_calendar_a_guests_change_a_taken_id_and_recurrence_are_refused` | https://developers.google.com/workspace/calendar/api/guides/errors#404_not_found |
+| A guest changing an event's shared properties is a 403 `forbiddenForNonOrganizer` | documented | `test_an_empty_range_another_calendar_a_guests_change_a_taken_id_and_recurrence_are_refused` | https://developers.google.com/workspace/calendar/api/guides/errors#403_forbidden_for_non_organizer |
+| A client-chosen event id already used is a 409 `duplicate` | documented | `test_an_empty_range_another_calendar_a_guests_change_a_taken_id_and_recurrence_are_refused` | https://developers.google.com/workspace/calendar/api/guides/errors#409_the_requested_identifier_already_exists |
+
+## Gmail and Calendar: not served, or not verified
+
+- **Pushed notifications.** `users.watch` (Gmail to Pub/Sub) and `events.watch` answer 501: an agent finds new mail
+  and answers by polling (`users.history.list`, `events.list` with a sync token, `events.get`). A person's reply
+  lands at its moment and wakes nobody (`LandsReplies`).
+- **Drafts, user labels, filters, settings, `messages.insert`, `import`, `trash`, `delete`, `batchModify`,
+  attachments by `attachmentId`, the `/upload/` media path, and `has:`, `filename:`, `size:`, `category:` or
+  grouped search terms** answer 501. A part's bytes are served inline in `body.data`, never as an attachment id.
+- **A history id never expires.** Gmail answers a `startHistoryId` outside the range it keeps with a 404; this fake
+  keeps the whole log.
+- **Recurring events, `events.instances`, `quickAdd`, `move`, `import`, ACLs, other calendars than each account's
+  primary, Meet links, reminders beyond `useDefault`, and an attendee answering through the API** are not served.
+- **`sendUpdates`** is checked; no invitation or update email is written to guests' mailboxes, and a guest in the
+  world sees the event whatever it says. No reply email reaches the organizer when a guest answers.
+- **A deleted event's `get`** is answered 410 `deleted`, as a second delete is; whether Calendar instead serves it
+  as `cancelled` for a while is not verified.
+- **Guests added by a patch** are asked by the run (the snapshot's text changes), but the ledger opens a wait only
+  for an event's guests as it was created.

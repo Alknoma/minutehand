@@ -504,6 +504,10 @@ class DriveWorld:
     def person(self, key: str) -> wire.DriveUser | None:
         return self._record(wire.DriveUser, f"person.{key}", PEOPLE)
 
+    def people(self) -> list[wire.DriveUser]:
+        """Every scenario person's Google account: who has a mailbox and a calendar."""
+        return [wire.parse(wire.DriveUser, s.body) for s in self._records(PEOPLE)]
+
     # ------------------------------------------------------------------ comments
 
     def comments(self, file: str) -> list[wire.Comment]:

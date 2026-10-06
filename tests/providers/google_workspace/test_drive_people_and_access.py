@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from minutehand.adapters.providers.google_workspace.provider import build
-from minutehand.adapters.providers.google_workspace.seed import DriveSeed, FaultSeed
+from minutehand.adapters.providers.google_workspace.seed import FaultSeed, WorkspaceSeed
 from minutehand.adapters.providers.google_workspace.wire import FaultKind
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
@@ -48,7 +48,7 @@ DOV = {"Authorization": "Bearer ya29.dov"}
 
 def faults_seed(*faults: FaultSeed) -> ProviderSeed:
     """Drive's own seed, declaring these faults."""
-    return ProviderSeed(provider="google_workspace", body=DriveSeed(faults=list(faults)).model_dump_json())
+    return ProviderSeed(provider="google_workspace", body=WorkspaceSeed(faults=list(faults)).model_dump_json())
 
 
 @pytest.fixture
@@ -141,7 +141,9 @@ def test_a_fault_naming_a_call_this_fake_does_not_answer_is_refused_at_seeding(t
     faulty = SCENARIO.model_copy(
         update={"provider_seeds": [faults_seed(FaultSeed(operation="files.watch", kind=FaultKind.NOT_FOUND))]}
     )
-    with pytest.raises(ValueError, match=r"'files\.watch', which is not a Google Drive, Docs or Slides call"):
+    with pytest.raises(
+        ValueError, match=r"'files\.watch', which is not a Google Drive, Docs, Slides, Gmail or Calendar call"
+    ):
         build().seed(faulty, SqliteStore(tmp_path / "w.db", "root", RunClock(START)))
 
 

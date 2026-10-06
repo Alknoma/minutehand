@@ -18,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from minutehand.adapters.providers.google_workspace.seed import DriveSeed, FaultSeed
+from minutehand.adapters.providers.google_workspace.seed import FaultSeed, WorkspaceSeed
 from minutehand.adapters.providers.google_workspace.wire import FaultKind
 from minutehand.domain.scenario import DocumentHappening, Edited, ProviderSeed, Trashed
 from minutehand.domain.world import Actor, DocumentSnapshot, Operation
@@ -33,7 +33,7 @@ FOLDER = "application/vnd.google-apps.folder"
 
 def faults_seed(*faults: FaultSeed) -> ProviderSeed:
     """Drive's own seed, declaring these faults."""
-    return ProviderSeed(provider="google_workspace", body=DriveSeed(faults=list(faults)).model_dump_json())
+    return ProviderSeed(provider="google_workspace", body=WorkspaceSeed(faults=list(faults)).model_dump_json())
 
 
 async def test_httplib2_reaches_drive_only_through_the_proxy_it_is_handed_and_every_call_is_answered(

@@ -163,11 +163,14 @@ def test_the_provider_is_registered_and_its_manifest_imports_nothing_else() -> N
     assert MANIFEST.hosts == [
         "www.googleapis.com",
         "oauth2.googleapis.com",
+        "gmail.googleapis.com",
         "docs.googleapis.com",
         "slides.googleapis.com",
         "iamcredentials.googleapis.com",
     ]
-    assert MANIFEST.kinds == [EntityKind.DOCUMENT, EntityKind.COMMENT] and not MANIFEST.pushes_events
+    assert (
+        MANIFEST.kinds == [EntityKind.DOCUMENT, EntityKind.COMMENT, EntityKind.MESSAGE] and not MANIFEST.pushes_events
+    )
     loaded = subprocess.run(
         [
             sys.executable,
