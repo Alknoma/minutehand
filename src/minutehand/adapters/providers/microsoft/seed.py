@@ -10,6 +10,9 @@
   this provider add named channels to the team, or chats with no name, with their history.
 - **Files**: a team site with its document library, and a OneDrive for each person; every document the scenario
   seeds for this provider is a Word file (`.docx`, real bytes) in the library, in its folder.
+- **Mail and calendars**: every user has a mailbox and a calendar. `MicrosoftSeed.mailbox` adds one of the agent's
+  own; `emails` are already sent (in the sender's Sent Items and each recipient's Inbox) and `events` already in
+  their organizer's calendar, with each attendee's answer. Every name they use must be a person or the mailbox.
 - **Faults** the scenario's Microsoft seed (`MicrosoftSeed.faults`) declares, each answered in front of the surface its
   `call` names.
 """
@@ -17,12 +20,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import Field
 
 from minutehand.adapters.providers.microsoft import docx, wire
 from minutehand.adapters.providers.microsoft.cards import message_actions
+from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
+from minutehand.adapters.providers.microsoft.graph_mail import Composed, Mail, outlook_id, recipient_of
 from minutehand.adapters.providers.microsoft.graph_files import Files, item_id, mime_of
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
@@ -124,9 +130,70 @@ class HoldSeed(Model):
     lasts: timedelta | None = Field(default=None, gt=timedelta(0), description="None: for good")
 
 
+class AgentMailbox(Model):
+    """A mailbox of the agent's own: a user of the tenant who is no person of the scenario, whom the agent signs in
+    as (`login_hint`) or names in `/users/{id}`, and whom seeded emails and events name by `key`."""
+
+    key: str = Field(default="agent", pattern=r"^[a-z][a-z0-9_]*$", description="How the seed names this mailbox")
+    name: str = Field(default="Agent", min_length=1)
+    local: str = Field(
+        default="agent", pattern=r"^[A-Za-z0-9._-]+$", description="Before the @; the address is at the tenant's domain"
+    )
+
+
+class EmailSeed(Model):
+    """An email already sent when the run starts: in its sender's Sent Items and each recipient's Inbox."""
+
+    key: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]*$", description="How a later email names it")
+    by: str = Field(description="Person.key, or the agent mailbox's key")
+    to: list[str] = Field(min_length=1, description="Person.key or the agent mailbox's key of each recipient")
+    cc: list[str] = []
+    subject: str
+    text: str = ""
+    ago: timedelta = Field(gt=timedelta(0), description="How long before the start it was sent")
+    read: bool = Field(default=False, description="Whether its recipients have read it")
+    in_reply_to: str | None = Field(default=None, description="An earlier email's key: this one is in its conversation")
+
+
+class SeededResponse(StrEnum):
+    NONE = "none"
+    ACCEPTED = "accepted"
+    TENTATIVE = "tentativelyAccepted"
+    DECLINED = "declined"
+
+
+_RESPONSES = {
+    SeededResponse.NONE: wire.ResponseKind.NONE,
+    SeededResponse.ACCEPTED: wire.ResponseKind.ACCEPTED,
+    SeededResponse.TENTATIVE: wire.ResponseKind.TENTATIVE,
+    SeededResponse.DECLINED: wire.ResponseKind.DECLINED,
+}
+
+
+class AttendeeSeed(Model):
+    person: str = Field(description="Person.key, or the agent mailbox's key")
+    response: SeededResponse = SeededResponse.NONE
+    optional: bool = False
+
+
+class EventSeed(Model):
+    """An event already in its organizer's calendar when the run starts, with its attendees' answers."""
+
+    organizer: str = Field(description="Person.key, or the agent mailbox's key")
+    attendees: list[AttendeeSeed] = []
+    subject: str
+    text: str = ""
+    location: str = ""
+    at: timedelta = Field(description="When it starts, from the scenario's start; before it when negative")
+    lasts: timedelta = Field(gt=timedelta(0))
+
+
 class MicrosoftSeed(Model):
     """What only Microsoft seeds, as the body of the scenario's `ProviderSeed` for `microsoft`."""
 
+    mailbox: AgentMailbox | None = None
+    emails: list[EmailSeed] = []
+    events: list[EventSeed] = []
     faults: list[FaultSeed] = []
     holds: list[HoldSeed] = []
     not_installed_for: list[str] = Field(
@@ -463,7 +530,100 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
             owner_id=user.user.id,
         )
     _documents(world, scenario, library, owner)
+    _mail_and_calendars(world, scenario, spec, users, directory)
     _faults(world, scenario)
+
+
+def _mail_and_calendars(
+    world: MicrosoftWorld, scenario: Scenario, spec: MicrosoftSeed, users: dict[str, UserRecord], directory: Directory
+) -> None:
+    """The agent's own mailbox, then each seeded email and event; every name each uses is refused before anything
+    of them is written when it is no person and not the mailbox."""
+    named = dict(users)
+    if spec.mailbox is not None:
+        if spec.mailbox.key in users:
+            raise ValueError(f"the Microsoft seed's mailbox key {spec.mailbox.key!r} is a person's key")
+        address = f"{spec.mailbox.local}@{directory.tenant_domain}"
+        mailbox = UserRecord(
+            user=wire.GraphUser(
+                id=derived_uuid(directory.tenant_id, "mailbox", spec.mailbox.key),
+                displayName=spec.mailbox.name,
+                mail=address,
+                userPrincipalName=address,
+            ),
+            tenant_id=directory.tenant_id,
+        )
+        world.write(user_ref(mailbox.user.id), mailbox, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=USERS)
+        named[spec.mailbox.key] = mailbox
+    keys: list[str] = []
+    for email in spec.emails:
+        unknown = [k for k in (email.by, *email.to, *email.cc) if k not in named]
+        if unknown:
+            raise ValueError(f"the seeded email {email.subject!r} names no user of the tenant: {', '.join(unknown)}")
+        if email.in_reply_to is not None and email.in_reply_to not in keys:
+            raise ValueError(f"the seeded email {email.subject!r} answers {email.in_reply_to!r}, no earlier email")
+        if email.key is not None:
+            if email.key in keys:
+                raise ValueError(f"two seeded emails are both {email.key!r}")
+            keys.append(email.key)
+    for event in spec.events:
+        people = [event.organizer, *(a.person for a in event.attendees)]
+        unknown = [k for k in people if k not in named]
+        if unknown:
+            raise ValueError(f"the seeded event {event.subject!r} names no user of the tenant: {', '.join(unknown)}")
+        if len(set(people)) != len(people):
+            raise ValueError(
+                f"the seeded event {event.subject!r} names someone twice among its organizer and attendees"
+            )
+    conversations: dict[str, str] = {}
+    for position, email in enumerate(spec.emails):
+        sender = named[email.by]
+        conversation = (
+            conversations[email.in_reply_to]
+            if email.in_reply_to is not None
+            else outlook_id(directory.tenant_id, "seeded conversation", str(position))
+        )
+        if email.key is not None:
+            conversations[email.key] = conversation
+        Mail(world, _At(scenario.starts_at - email.ago)).put(
+            Composed(
+                sender=sender,
+                subject=email.subject,
+                body=wire.ItemBody(contentType="text", content=email.text),
+                to=[recipient_of(named[k]) for k in email.to],
+                cc=[recipient_of(named[k]) for k in email.cc],
+                conversation=conversation,
+            ),
+            actor=Actor.SCENARIO,
+            read=email.read,
+            seeded=str(position),
+        )
+    at = _At(scenario.starts_at)
+    calendar = Calendar(world, at, Mail(world, at))
+    for position, event in enumerate(spec.events):
+        calendar.make(
+            named[event.organizer],
+            subject=event.subject,
+            body=wire.ItemBody(contentType="text", content=event.text),
+            starts=scenario.starts_at + event.at,
+            ends=scenario.starts_at + event.at + event.lasts,
+            location=event.location,
+            attendees=[
+                wire.Attendee(
+                    type="optional" if a.optional else "required",
+                    status=wire.ResponseStatus(
+                        response=_RESPONSES[a.response],
+                        time=graph_time(scenario.starts_at)
+                        if a.response is not SeededResponse.NONE
+                        else "0001-01-01T00:00:00Z",
+                    ),
+                    emailAddress=recipient_of(named[a.person]).emailAddress,
+                )
+                for a in event.attendees
+            ],
+            actor=Actor.SCENARIO,
+            seeded=str(position),
+        )
 
 
 def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, owner: wire.IdentitySet) -> None:

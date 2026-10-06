@@ -2,8 +2,10 @@
 the run's clock, and notified when anyone, the agent or a person, changes what they watch.
 
 What can be watched: a drive's root (`/drives/{id}/root`, `/me/drive/root`, `/sites/{id}/drive/root`), which every
-change to an item in the drive notifies; and a chat's or a channel's messages (`/chats/{id}/messages`,
-`/teams/{id}/channels/{id}/messages`). Anything else is refused as Graph refuses a resource it cannot watch.
+change to an item in the drive notifies; a chat's or a channel's messages (`/chats/{id}/messages`,
+`/teams/{id}/channels/{id}/messages`); a mailbox's messages, all of them or one folder's (`/me/messages`,
+`/users/{id}/mailFolders('Inbox')/messages`), each message written there notifying; and a mailbox's events
+(`/me/events`, `/users/{id}/events`). Anything else is refused as Graph refuses a resource it cannot watch.
 
 **Validation.** Creating one, Graph POSTs to `notificationUrl` (and `lifecycleNotificationUrl`) with a
 `validationToken` query parameter and requires it echoed as `text/plain` with 200; anything else refuses the
@@ -36,6 +38,8 @@ from minutehand.ports.clock import Clock
 
 DRIVE_LIMIT = timedelta(minutes=42300)
 MESSAGES_LIMIT = timedelta(minutes=60)
+OUTLOOK_LIMIT = timedelta(minutes=10080)
+"""The longest an Outlook message or event subscription may last."""
 VALIDATION_TIMEOUT_SECONDS = 10
 
 
@@ -45,6 +49,15 @@ def drive_watch(drive: str) -> str:
 
 def conversation_watch(conversation: str) -> str:
     return f"conversation {conversation}"
+
+
+def mail_watch(user: str, folder: str | None) -> str:
+    """A mailbox's messages: one folder's (a well-known folder's name), or with None every folder's."""
+    return f"mail {user}" if folder is None else f"mail {user} {folder}"
+
+
+def calendar_watch(user: str) -> str:
+    return f"calendar {user}"
 
 
 def parse_time(text: str) -> datetime:
