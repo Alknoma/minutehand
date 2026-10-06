@@ -86,6 +86,7 @@ from minutehand.application.steps import Stepping, steps
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import AgentReport, AgentStatus
 from minutehand.domain.emulator import EmulatorChange
+from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scenario
@@ -154,8 +155,9 @@ class ServeOptions(Model):
     )
     no_proxy: list[str] = Field(default=[], description="Hosts services reach directly")
     keep: int = Field(default=DEFAULT_KEEP, ge=0, description="Closed worlds kept; older ones are removed")
-    capture_unknown: bool = Field(
-        default=False, description="Pass through and keep a call to a host nobody claims or declares, not refuse it"
+    capture_unknown: UnknownHosts = Field(
+        default=UnknownHosts.REFUSE,
+        description="Which calls to a host nobody claims or declares are passed through and kept: none, reads, or all",
     )
     upstream_ca: Path | None = Field(
         default=None, description="The CAs a real host is verified against when a call is passed through"

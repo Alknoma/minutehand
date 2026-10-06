@@ -86,6 +86,7 @@ from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
+from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
 from minutehand.domain.scenario import Model
 from minutehand.ports.model import ModelFailed
@@ -186,9 +187,13 @@ def _parser() -> argparse.ArgumentParser:
     def capture(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
             "--capture-unknown",
-            action="store_true",
-            help="pass through and keep every call to a host nobody claims or declares, rather than refusing it; "
-            "the run ends with the hosts it saw and a declaration for each",
+            nargs="?",
+            const=UnknownHosts.ALL.value,
+            default=UnknownHosts.REFUSE.value,
+            choices=[u.value for u in UnknownHosts],
+            help="pass through and keep calls to a host nobody claims or declares, rather than refusing them: 'all' "
+            "(the default when the flag is given) or only 'reads' (GET, HEAD, OPTIONS; a write is refused, so nothing "
+            "is sent anywhere real); the run ends with the hosts it saw and a declaration for each",
         )
         sub.add_argument(
             "--upstream-ca",
@@ -453,7 +458,7 @@ def _listen(args: argparse.Namespace) -> session.Listen:
         telemetry_port=args.telemetry_port,
         receive_telemetry=not args.no_receive_telemetry,
         record_model_calls=args.record_model_calls,
-        capture_unknown=args.capture_unknown,
+        capture_unknown=UnknownHosts(args.capture_unknown),
         upstream_ca=args.upstream_ca,
         model_hosts=list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host])),
     )
@@ -740,7 +745,7 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
         agent_host=args.agent_host,
         no_proxy=args.no_proxy,
         keep=args.keep,
-        capture_unknown=args.capture_unknown,
+        capture_unknown=UnknownHosts(args.capture_unknown),
         upstream_ca=args.upstream_ca,
         model_hosts=args.model_host,
         record_model_calls=args.record_model_calls,

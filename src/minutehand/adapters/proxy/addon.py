@@ -46,7 +46,15 @@ from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.application.restore import SeenCall
 from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
-from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, Forward, HostHeader, OnMiss, PassThrough
+from minutehand.domain.outbound import (
+    BODY_LIMIT,
+    Acknowledge,
+    Forward,
+    HostHeader,
+    OnMiss,
+    PassThrough,
+    UnknownHosts,
+)
 from minutehand.domain.provider import Manifest, world_keys
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.telemetry import SpanSource
@@ -177,7 +185,7 @@ class ProxyAddon:
         *,
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
-        capture_unknown: bool = False,
+        capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
     ) -> None:
         self.routing = routing
         self.capturing = capturing or Capturing()
@@ -472,7 +480,7 @@ class ProxyAddon:
             return
         held = world or self.worlds.lobby
         declaration = held.capturing.find(host) if manifest is None else None
-        if declaration is not None or (manifest is None and self.capture_unknown):
+        if declaration is not None or (manifest is None and self.capture_unknown.captures(request.method)):
             await self._capture(flow, host, held, declaration)
             return
         refused = held

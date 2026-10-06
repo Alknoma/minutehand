@@ -35,6 +35,24 @@ from pydantic import ConfigDict, Field, JsonValue, model_validator
 
 from minutehand.domain.scenario import Model, ProviderKey, SigningSecret
 
+
+class UnknownHosts(StrEnum):
+    """What becomes of a call to a host no provider claims and nothing declares."""
+
+    REFUSE = "refuse"  # answered 502 and recorded: the default
+    READS = "reads"  # a GET, HEAD or OPTIONS passed through and kept; anything else refused as above
+    ALL = "all"  # passed through and kept, whatever it is: a first run, to see what an agent calls
+
+    def captures(self, method: str) -> bool:
+        """Whether a call with this method is passed through and kept rather than refused."""
+        if self is UnknownHosts.ALL:
+            return True
+        return self is UnknownHosts.READS and method.upper() in READ_METHODS
+
+
+READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+"""Methods that read by HTTP's own definition. A read sent as a POST (GraphQL, an RPC) is not one of them."""
+
 BODY_LIMIT = 1024 * 1024
 """Bytes of a text or JSON body kept by default. A longer body is kept up to this and marked truncated."""
 

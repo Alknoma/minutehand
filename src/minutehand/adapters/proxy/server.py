@@ -31,6 +31,7 @@ from minutehand.adapters.proxy.capture import Capturing
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
 from minutehand.application.restore import SeenCall
+from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -60,13 +61,13 @@ class Proxy:
         telemetry: Telemetry | None = None,
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
-        capture_unknown: bool = False,
+        capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
     ) -> None:
         """`upstream_ca` replaces the system trust store when verifying the hosts an edited, recorded or
         passed-through call is sent on to. `public_roots` replaces certifi's roots in the bundle the agent is
         handed (`ca_bundle`). `record_model_calls` opens the agent's calls to model APIs and keeps each as a span.
         `capturing` is what every run mounted on this proxy captures of the hosts nobody claims;
-        `capture_unknown` passes through and keeps an undeclared one rather than refusing it."""
+        `capture_unknown` says which calls to an undeclared host are passed through and kept rather than refused."""
         self.addon = ProxyAddon(
             routing,
             store,

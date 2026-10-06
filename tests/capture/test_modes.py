@@ -8,13 +8,15 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from minutehand.adapters.proxy.capture import Capturing, write_recordings
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.outbound import Acknowledge, Answer, PassThrough, Route
+from minutehand.domain.outbound import Acknowledge, Answer, PassThrough, Route, UnknownHosts
 from minutehand.domain.world import AnsweredBy, BodyKept, CaptureMode
 from tests.capture.support import (
     SECRET_API_KEY,
@@ -44,7 +46,7 @@ def _proxy(
     tmp_path: Path,
     authority: Authority,
     *declared: Acknowledge | PassThrough,
-    capture_unknown: bool = False,
+    capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
 ) -> Proxy:
     return Proxy(
         Routing(registry),
@@ -172,13 +174,34 @@ async def test_capture_unknown_passes_an_undeclared_host_through_and_keeps_it(
 ) -> None:
     async with (
         model_api(authority, host=V6) as real,
-        _proxy(registry, store, clock, tmp_path, authority, capture_unknown=True) as proxy,
+        _proxy(registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.ALL) as proxy,
     ):
         [found] = await by_environment(proxy, [Call("GET", f"https://[::1]:{real.port}/search?q=x")])
     assert found.status == 200 and len(real.received) == 1
     [call] = store.calls()
     assert not call.refused and call.exchange.captured is not None
     assert (call.exchange.captured.mode, call.exchange.captured.declared_as) == (CaptureMode.DISCOVERED, None)
+
+
+async def test_capturing_unknown_reads_passes_a_get_through_and_a_post_to_the_same_host_is_refused(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    async with (
+        model_api(authority, host=V6) as real,
+        _proxy(registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.READS) as proxy,
+    ):
+        read, write = await by_environment(
+            proxy,
+            [
+                Call("GET", f"https://[::1]:{real.port}/search?q=x"),
+                Call("POST", f"https://[::1]:{real.port}/charges", json.dumps({"amount": 500})),
+            ],
+        )
+    assert (read.status, write.status) == (200, 502)
+    assert len(real.received) == 1, "the write never reached the real host"
+    kept, refused = store.calls()
+    assert kept.exchange.captured is not None and kept.exchange.captured.mode is CaptureMode.DISCOVERED
+    assert refused.refused and refused.exchange.method == "POST"
 
 
 async def test_no_secret_reaches_the_store_from_headers_query_or_bodies(
@@ -254,3 +277,18 @@ async def test_a_body_past_the_limit_is_cut_and_a_binary_one_is_kept_as_its_byte
     assert binary.exchange.captured.request.size == 8
     assert too_long.exchange.captured is not None and too_long.exchange.request_bytes is None
     assert (too_long.exchange.captured.request.kept, too_long.exchange.captured.request.size) == (BodyKept.BINARY, 100)
+
+
+@pytest.mark.parametrize(
+    ("flags", "means"),
+    [
+        ([], UnknownHosts.REFUSE),
+        (["--capture-unknown"], UnknownHosts.ALL),
+        (["--capture-unknown", "reads"], UnknownHosts.READS),
+    ],
+)
+def test_the_capture_unknown_flag_says_which_calls_pass(flags: list[str], means: UnknownHosts) -> None:
+    from minutehand.cli import _parser
+
+    args = _parser().parse_args(["run", "scenario.yaml", "--agent", "agent.yaml", *flags])
+    assert UnknownHosts(args.capture_unknown) is means

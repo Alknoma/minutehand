@@ -146,7 +146,7 @@ server's state directory. A call reaches a world's declarations only once it is 
 a service's email client that carries the world's token (or posts to a host the world claims) is answered by
 its own world's declaration; another world may declare the same host differently, and a world that declares
 nothing refuses it. A declared host a provider claims is refused with 409, naming both. `serve
---capture-unknown` passes every undeclared call through instead, kept in its world or the lobby.
+--capture-unknown` passes every undeclared call through instead, kept in its world or the lobby; `--capture-unknown reads` passes only GET, HEAD and OPTIONS.
 
 ### Model hosts
 

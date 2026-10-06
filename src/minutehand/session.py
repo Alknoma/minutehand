@@ -104,7 +104,7 @@ from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polle
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
-from minutehand.domain.outbound import Acknowledge
+from minutehand.domain.outbound import Acknowledge, UnknownHosts
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import (
     Answers,
@@ -1115,10 +1115,10 @@ class Listen(Model):
         default=False,
         description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span",
     )
-    capture_unknown: bool = Field(
-        default=False,
-        description="Pass through and keep every call to a host no provider claims and no declaration names, "
-        "rather than refusing it: the first run of an agent, to see what it calls",
+    capture_unknown: UnknownHosts = Field(
+        default=UnknownHosts.REFUSE,
+        description="Which calls to a host no provider claims and no declaration names are passed through and kept "
+        "rather than refused: none, reads (GET, HEAD, OPTIONS), or all, the first run of an agent, to see what it calls",
     )
     upstream_ca: Path | None = Field(
         default=None,
