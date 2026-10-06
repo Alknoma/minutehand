@@ -273,6 +273,10 @@ class Orchestrator:
         self._dues = Dues(store, clock, scenario.dispatch)
         self._machine_failed: str | None = None
         self._sandbox_owed = 0
+        self._quiet_tasks: dict[int, int] = {}
+        """A task's housekeeping period: its timer fired at this distance and did nothing."""
+        self._timer_tasks: set[int] = set()
+        self._timer_ns = -1
         self._watcher = Watcher(agent.watches)
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
@@ -537,6 +541,10 @@ class Orchestrator:
         await sandbox.settle(self._traffic)
         if self._store.head() == head and len(self._store.calls()) == calls:
             self._clock.withdraw(wake)
+            # a task whose timer fired and did nothing is a runtime's own (an HTTP server's poll): planned no more,
+            # it fires once and re-arms whenever the clock is released past it
+            for task in self._timer_tasks:
+                self._quiet_tasks[task] = max(self._quiet_tasks.get(task, 0), self._timer_ns)
             return False
         return True
 
@@ -551,10 +559,13 @@ class Orchestrator:
         if found is None:
             self._failure = "the agent's sandbox did not fall idle within its settle limit"
             return False
-        if found.earliest_ns < 0:
+        earliest = found.earliest(self._quiet_tasks)
+        self._timer_tasks = found.tasks_at(earliest)
+        self._timer_ns = earliest
+        if earliest < 0:
             self._dues.cancel(_timer)
             return True
-        at = self._clock.now() + timedelta(microseconds=found.earliest_ns / 1000)
+        at = self._clock.now() + timedelta(microseconds=earliest / 1000)
         self._dues.replace(_timer, PendingTimer(due=Due(at=at, kind=DueKind.AGENT_WAKE, ref="timer")))
         return True
 

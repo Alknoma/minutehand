@@ -15,9 +15,19 @@ state_file = Path(sys.argv[1])
 state = json.loads(state_file.read_text())
 if sys.argv[2] == "deadlines":
     ahead = [t - state["now_ns"] for t in state["timers"] if t > state["now_ns"]]
-    print(json.dumps({"idle": True, "tasks": 2, "timed": len(ahead), "earliest_ns": min(ahead) if ahead else -1}))
+    waits = [{"task": 1, "ns": t} for t in ahead]
+    if "poll_ns" in state:  # a runtime's own periodic wake, on a task of its own
+        left = state["poll_ns"] - state["now_ns"] % state["poll_ns"]
+        waits.append({"task": 2, "ns": left})
+        ahead.append(left)
+    print(
+        json.dumps(
+            {"idle": True, "tasks": 2, "timed": len(ahead), "earliest_ns": min(ahead) if ahead else -1, "waits": waits}
+        )
+    )
 else:
     state["now_ns"] += int(sys.argv[3])
+    state["advances"] = state.get("advances", 0) + 1
     due = [t for t in state["timers"] if t <= state["now_ns"]]
     state["timers"] = [t for t in state["timers"] if t > state["now_ns"]]
     for t in due:

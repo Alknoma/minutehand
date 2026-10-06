@@ -18,6 +18,19 @@ class SandboxFailed(RuntimeError):
     """A sandbox command could not be run, or did not answer as `Contained` says."""
 
 
+HOUSEKEEPING_SLACK = 1.02
+"""How far past a task's housekeeping period a deadline still reads as that housekeeping re-armed."""
+
+
+class TaskWait(Model):
+    """One blocked task's deadline, as the sandbox reports it."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    task: int
+    ns: int
+
+
 class SandboxDeadlines(Model):
     """As `Contained.deadlines` prints them; anything else it prints (a task count) is the sandbox's, and ignored."""
 
@@ -25,6 +38,23 @@ class SandboxDeadlines(Model):
 
     idle: bool
     earliest_ns: int = Field(description="Until the earliest deadline any blocked task waits for; -1 for none")
+    waits: list[TaskWait] | None = Field(
+        default=None,
+        description="Every blocked task's deadline, when the sandbox says; None when it says only the earliest",
+    )
+
+    def earliest(self, quiet: dict[int, int]) -> int:
+        """Until the earliest deadline that is not a task's own housekeeping: one no further than the period that
+        task's timer was seen to fire at and do nothing (`quiet`, task to nanoseconds). A longer deadline on the
+        same task is the agent's own timer. -1 for none."""
+        if self.waits is None:
+            return self.earliest_ns
+        mine = [w.ns for w in self.waits if w.task not in quiet or w.ns > quiet[w.task] * HOUSEKEEPING_SLACK]
+        return min(mine) if mine else -1
+
+    def tasks_at(self, ns: int) -> set[int]:
+        """The tasks whose deadline is `ns` away."""
+        return {w.task for w in self.waits or [] if w.ns == ns}
 
 
 async def _run(argv: list[str]) -> str:

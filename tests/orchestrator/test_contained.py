@@ -80,3 +80,16 @@ async def test_a_timer_that_does_nothing_is_no_wake_and_the_one_that_acts_is(rig
 
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=36)]
     assert [w.index for w in record.wakes] == [1, 2], "the housekeeping took no wake's number"
+
+
+async def test_a_runtimes_periodic_wake_is_learned_and_not_stopped_at_again(rig: Rig, tmp_path: Path) -> None:
+    state = tmp_path / "sandbox.json"
+    agent = rig.agent("ask_silent", extra=[sandbox(rig, state, 36)])
+    held = json.loads(state.read_text())
+    held["poll_ns"] = HOUR_NS // 2  # an HTTP server's poll, every half hour of the sandbox's clock
+    state.write_text(json.dumps(held))
+    record, _, _ = await rig.run(scenario(ticket_fates=[], deadline_after=timedelta(days=3)), agent)
+
+    assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=36)]
+    advances = json.loads(state.read_text())["advances"]
+    assert advances <= 4, f"the poll was stopped at once, then passed over: {advances} releases, not 144"
