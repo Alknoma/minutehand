@@ -1,6 +1,6 @@
 # An expiry on every wait
 
-**Found by:** `late_follow_up`, `no_follow_up`, `slow_to_react`.
+**Found by:** `late_follow_up`, `no_follow_up`, `slow_to_react`, `planned_past_due`.
 
 ## The failure
 

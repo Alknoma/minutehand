@@ -29,6 +29,7 @@ CHECKS = {
     "nagged",
     "near_miss_name",
     "no_follow_up",
+    "planned_past_due",
     "repeated_message",
     "slow_to_react",
     "unmatched_call",
@@ -87,6 +88,7 @@ def test_the_reference_capture_fails_with_the_known_findings_and_names_what_did_
         "late_follow_up",
         "nagged",
         "no_follow_up",
+        "planned_past_due",
         "slow_to_react",
         "unmatched_call",
     }

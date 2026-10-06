@@ -30,6 +30,7 @@ from minutehand.application.checkpoint import (
     Restorable,
     write_checkpoint,
 )
+from minutehand.application.dues import Dues
 from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_undecided
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
@@ -262,7 +263,7 @@ class Orchestrator:
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
-        self._pending: list[Pending] = []
+        self._dues = Dues(store, clock)
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
@@ -275,19 +276,17 @@ class Orchestrator:
     # -- Wakes, for scheduler providers ---------------------------------------------------------------------
 
     def book(self, provider: ProviderKey, due: Due) -> None:
-        self.cancel(provider, due.ref)
-        self._pending.append(
+        self._dues.replace(
+            lambda p: isinstance(p, PendingBooking) and p.provider == provider and p.ref == due.ref,
             PendingBooking(
                 due=Due(at=due.at, kind=DueKind.AGENT_WAKE, ref=f"booking:{provider}:{due.ref}"),
                 provider=provider,
                 ref=due.ref,
-            )
+            ),
         )
 
     def cancel(self, provider: ProviderKey, ref: str) -> None:
-        self._pending = [
-            p for p in self._pending if not (isinstance(p, PendingBooking) and p.provider == provider and p.ref == ref)
-        ]
+        self._dues.cancel(lambda p: isinstance(p, PendingBooking) and p.provider == provider and p.ref == ref)
 
     # -- the run ------------------------------------------------------------------------------------------------
 
@@ -298,7 +297,7 @@ class Orchestrator:
         for provider in self._services.providers:
             provider.seed(self._scenario, self._store)
         for i, direction in enumerate(self._scenario.directions):
-            self._pending.append(
+            self._dues.enter(
                 PendingDirection(
                     due=Due(
                         at=self._scenario.starts_at + direction.after, kind=DueKind.DIRECTION, ref=f"direction:{i}"
@@ -307,7 +306,7 @@ class Orchestrator:
                 )
             )
         for i, happening in enumerate(self._scenario.happenings):
-            self._pending.append(
+            self._dues.enter(
                 PendingHappening(
                     due=Due(
                         at=self._scenario.starts_at + happening.after, kind=DueKind.HAPPENING, ref=f"happening:{i}"
@@ -343,7 +342,7 @@ class Orchestrator:
             raise RunRefused(
                 f"the checkpoint counts {checkpoint.replies} replies; the store holds {len(self._replies)}"
             )
-        self._pending = list(checkpoint.pending)
+        self._dues.resume(list(checkpoint.pending))
         self._fated = list(checkpoint.fated)
         self._commitments = checkpoint.commitments
         self._agent_state = checkpoint.agent
@@ -437,16 +436,15 @@ class Orchestrator:
         while True:
             await self._look()  # what waits on people now, before the clock moves past what they owe
             await self._schedule(self._record_new())
-            jump = next_jump(self._clock.now(), [p.due for p in self._pending])
+            jump = next_jump(self._clock.now(), [p.due for p in self._dues.items])
             if jump is None:
                 self._run_on_to(deadline)
                 return StopReason.NOTHING_PENDING
             if deadline is not None and jump.now > deadline:
                 self._run_on_to(deadline)
                 return StopReason.DEADLINE_PASSED
-            fired = [p for p in self._pending if p.due in jump.firing]
-            self._pending = [p for p in self._pending if p.due not in jump.firing]
             self._clock.jump(jump.now)
+            fired = self._dues.fire(jump.firing)
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
                 await self._fire(fired)
                 watched = self._watched(fired)
@@ -491,7 +489,7 @@ class Orchestrator:
                 withdrawn=self._withdrawn,
                 fated=self._fated,
                 commitments=self._commitments,
-                pending=self._pending,
+                pending=self._dues.items,
                 agent=self._agent_state,
             ),
         )
@@ -713,13 +711,14 @@ class Orchestrator:
 
     def _adopt(self, report: AgentReport) -> bool:
         """Take the agent's next wake, replacing the one it named before. Answers whether its commitments changed."""
-        self._pending = [p for p in self._pending if not (isinstance(p, PendingWake) and p.reason is WakeReason.DUE)]
-        if report.next_wake is not None:
-            self._pending.append(
+        if report.next_wake is None:
+            self._dues.cancel(_reported_wake)
+        else:
+            self._dues.replace(
+                _reported_wake,
                 PendingWake(
-                    due=Due(at=report.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"),
-                    reason=WakeReason.DUE,
-                )
+                    due=Due(at=report.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE
+                ),
             )
         changed = report.commitments != self._commitments
         self._commitments = report.commitments
@@ -728,7 +727,7 @@ class Orchestrator:
 
     def _schedule_tick(self) -> None:
         assert self._reach.every is not None
-        self._pending.append(
+        self._dues.enter(
             PendingWake(
                 due=Due(at=self._clock.now() + self._reach.every, kind=DueKind.AGENT_WAKE, ref="tick"),
                 reason=WakeReason.TICK,
@@ -803,9 +802,9 @@ class Orchestrator:
         looked = await self._inboxes.look(self._store, self._clock)
         for item in looked.withdrawn:
             mine = [i for i, r in enumerate(self._replies) if r.in_reply_to == item and i not in self._withdrawn]
-            waiting = {p.reply for p in self._pending if isinstance(p, PendingReply)}
+            waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
             unsaid = [i for i in mine if i in waiting]
-            self._pending = [p for p in self._pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
+            self._dues.cancel(lambda p, unsaid=unsaid: isinstance(p, PendingReply) and p.reply in unsaid)
             self._withdrawn += unsaid
 
     def _withdraw(self, message: EntityRef, person: Person) -> bool:
@@ -817,10 +816,10 @@ class Orchestrator:
             for i, r in enumerate(self._replies)
             if r.in_reply_to == message and r.person == person.key and i not in self._withdrawn
         ]
-        waiting = {p.reply for p in self._pending if isinstance(p, PendingReply)}
+        waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
         if any(i not in waiting for i in mine):
             return False
-        self._pending = [p for p in self._pending if not (isinstance(p, PendingReply) and p.reply in mine)]
+        self._dues.cancel(lambda p: isinstance(p, PendingReply) and p.reply in mine)
         self._withdrawn += mine
         return True
 
@@ -846,7 +845,7 @@ class Orchestrator:
         self._store.remember(reply)
         position = len(self._replies)
         self._replies.append(reply)
-        self._pending.append(
+        self._dues.enter(
             PendingReply(
                 due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{position}"),
                 reply=position,
@@ -863,7 +862,7 @@ class Orchestrator:
             self._tickets(assigned.entity.provider)
         self._fated.append(assigned.entity)
         ticket = assigned.entity
-        self._pending.append(
+        self._dues.enter(
             PendingFate(
                 due=Due(
                     at=assigned.sim_time + fate.after,
@@ -903,7 +902,7 @@ class Orchestrator:
                 withdrawn=self._withdrawn,
                 fated=self._fated,
                 commitments=self._commitments,
-                pending=self._pending,
+                pending=self._dues.items,
                 agent=self._agent_state,
             ),
         )
@@ -1029,6 +1028,11 @@ def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, servi
                 continue
             what = f"{happening.person} {happening.kind}"
         raise RunRefused(f"happening {n} ({what}) lands on {provider}, which {why}")
+
+
+def _reported_wake(pending: Pending) -> bool:
+    """The wake the agent last named in its report, which the next one it names replaces."""
+    return isinstance(pending, PendingWake) and pending.reason is WakeReason.DUE
 
 
 def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:

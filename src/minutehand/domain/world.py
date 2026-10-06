@@ -18,6 +18,7 @@ class EntityKind(StrEnum):
     CHANNEL = "channel"
     RECORD = "record"
     INBOX_ITEM = "inbox_item"  # something waiting on a person in the agent's own product (`domain.inboxes`)
+    DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
 
 
 class Operation(StrEnum):

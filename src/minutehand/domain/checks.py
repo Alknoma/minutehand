@@ -11,6 +11,7 @@ from typing import Protocol
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
+from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Scenario
@@ -228,6 +229,11 @@ class RunView(Model):
         default=[],
         description="Calls Minutehand made as a person to the agent's own product whose answer departed from the "
         "agent's own API description (`InboxCall.contract`): the agent's contract changed",
+    )
+    dues: list[DueEntry] | None = Field(
+        default=None,
+        description="Every entry of the run loop's table of what is due next, as each last stood: what the agent "
+        "planned and when, and what else was due; None when the run kept no table (a captured run, a standing world)",
     )
     broken_calls: list[Exchange] = Field(
         default=[],

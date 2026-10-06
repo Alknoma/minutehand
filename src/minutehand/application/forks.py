@@ -46,6 +46,7 @@ from minutehand.domain.telemetry import StoredSpan
 from minutehand.domain.world import (
     Actor,
     DocumentSnapshot,
+    EntityKind,
     GrantSnapshot,
     InboxItemSnapshot,
     InteractionSnapshot,
@@ -464,8 +465,8 @@ def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> 
     for e in record.events:
         if e.seq <= at_seq or e.operation in (Operation.READ, Operation.SEARCH):
             continue
-        if e.entity == CHECKPOINT:
-            continue
+        if e.entity == CHECKPOINT or e.entity.kind is EntityKind.DUE:
+            continue  # the run loop's own rows: the agent's plan is compared through its report, below
         key = (e.actor, e.operation, e.entity, e.after, e.sim_time)
         found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))
     for seq, checkpoint in ((q, c) for q, c in record.checkpoints.items() if q > at_seq):

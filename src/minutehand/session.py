@@ -68,6 +68,7 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
+from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
 from minutehand.application.forks import (
@@ -855,6 +856,7 @@ class _Judge:
             model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
             broken_calls=broken(world.calls()),
             contract_breaks=contract_breaks(world.calls()),
+            dues=due_entries(world),
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop)

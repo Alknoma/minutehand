@@ -8,7 +8,7 @@ then abandoned it, and the finding says when the one follow-up went out.
 
 from __future__ import annotations
 
-from minutehand.checks._waits import Chase, Expiry, blocked, chase, ended_at, span
+from minutehand.checks._waits import Chase, Expiry, blocked, chase, ended_at, plan_at, span
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, ObligationKind, RunView, Severity
 
 _TIMES = {1: "once", 2: "twice"}
@@ -38,7 +38,12 @@ class NoFollowUp:
                     check=self.id,
                     severity=Severity.ERROR,
                     kind=FindingKind.FAIL,
-                    message=_message(chased, left),
+                    message=_message(chased, left)
+                    + (
+                        f"; when it fell due, {plan_at(view.dues, left.expired).said()}"
+                        if view.dues is not None
+                        else ""
+                    ),
                     at=left.expired,
                     evidence=[s for s in (o.opened_by, *chased.follow_ups) if s in by_seq],
                     pattern=self.pattern,

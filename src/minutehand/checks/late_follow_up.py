@@ -10,7 +10,7 @@ pass it; the cost is the stretch between expiry and the reminder.
 
 from __future__ import annotations
 
-from minutehand.checks._waits import GRACE, blocked, chase, ended_at
+from minutehand.checks._waits import GRACE, blocked, chase, ended_at, plan_at
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 
 
@@ -39,7 +39,12 @@ class LateFollowUp:
                         check=self.id,
                         severity=Severity.WARNING,
                         kind=FindingKind.FAIL,
-                        message=f"followed up {_hours(expiry.gap.total_seconds())} after the wait expired",
+                        message=f"followed up {_hours(expiry.gap.total_seconds())} after the wait expired"
+                        + (
+                            f"; when it expired, {plan_at(view.dues, expiry.expired).said()}"
+                            if view.dues is not None
+                            else ""
+                        ),
                         at=expiry.touched_at,
                         wake=by_seq[expiry.touch].wake,
                         evidence=[o.opened_by, expiry.touch] if o.opened_by in by_seq else [expiry.touch],

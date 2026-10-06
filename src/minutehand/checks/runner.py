@@ -43,6 +43,7 @@ from minutehand.domain.checks import (
     WakeModelCalls,
     WakeRecord,
 )
+from minutehand.domain.clock import DueEntry
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, PersonAsked, Scenario, Silent
@@ -393,6 +394,7 @@ def view_of(
     model_calls: list[WakeModelCalls] | None = None,
     broken_calls: list[Exchange] | None = None,
     contract_breaks: list[Exchange] | None = None,
+    dues: list[DueEntry] | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -407,6 +409,7 @@ def view_of(
         model_calls=model_calls,
         broken_calls=broken_calls or [],
         contract_breaks=contract_breaks or [],
+        dues=dues,
     )
 
 

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
+from minutehand.domain.clock import AGENT_SOURCES, DueEntry, DueSource
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Operation, WorldEvent
 
@@ -180,3 +181,36 @@ def span(delta: timedelta) -> str:
     if hours or not days:
         parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
     return " ".join(parts)
+
+
+class Plan(Model):
+    """The agent's own plan to come back to work as it stood at one moment: the earliest wake it had reported,
+    booked or declared a rhythm for that was still in the run loop's table then (`DueEntry`)."""
+
+    moment: AwareDatetime
+    earliest: DueEntry | None = Field(description="None: the agent had asked for no wake of its own")
+
+    @property
+    def past_due(self) -> bool:
+        """Whether the agent planned to be away more than the grace past `moment`."""
+        return self.earliest is None or self.earliest.due.at - self.moment > GRACE
+
+    def said(self) -> str:
+        if self.earliest is None:
+            return "the agent had asked for no wake of its own"
+        how = _PLANNED[self.earliest.source]
+        if not self.past_due:
+            return f"the agent's own next wake was due then ({how} in wake {self.earliest.entered_wake})"
+        return (
+            f"the agent's own next wake was {span(self.earliest.due.at - self.moment)} later "
+            f"({how} in wake {self.earliest.entered_wake})"
+        )
+
+
+_PLANNED = {DueSource.REPORTED: "reported", DueSource.BOOKED: "booked", DueSource.POLLED: "its declared rhythm, set"}
+
+
+def plan_at(dues: list[DueEntry], moment: datetime) -> Plan:
+    """What the agent had planned at `moment`, read from the table as the log recorded it."""
+    planned = [d for d in dues if d.source in AGENT_SOURCES and d.open_at(moment)]
+    return Plan(moment=moment, earliest=min(planned, key=lambda d: d.due.at, default=None))
