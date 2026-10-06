@@ -101,7 +101,7 @@ from minutehand.checks.runner import (
     view_of,
 )
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
-from minutehand.domain.checks import Check, Finding, FindingKind, Severity, WakeRecord
+from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
@@ -842,6 +842,16 @@ def _read_only(path: Path) -> sqlite3.Connection:
 # -- the parts of a run ---------------------------------------------------------------------------------------
 
 
+def reported_of(world: Store) -> list[CommitmentsReported] | None:
+    """The agent's commitments as each wake ended, read from the checkpoints; None when it never reported any."""
+    said = [
+        CommitmentsReported(wake=c.wake, at=c.now, commitments=c.commitments)
+        for c in checkpoints(world).values()
+        if c.commitments is not None
+    ]
+    return said or None
+
+
 def _own_checks(agent: AgentUnderTest) -> list[Check]:
     """The agent's own checks, loaded before anything of a run starts, so a file that cannot load refuses it."""
     try:
@@ -879,6 +889,7 @@ class _Judge:
             broken_calls=broken(world.calls()),
             contract_breaks=contract_breaks(world.calls()),
             dues=due_entries(world),
+            reported=reported_of(world),
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop, own=self._own)

@@ -32,6 +32,7 @@ CHECKS = {
     "no_follow_up",
     "planned_past_due",
     "repeated_message",
+    "reported_against_world",
     "slow_to_react",
     "unmatched_call",
 }

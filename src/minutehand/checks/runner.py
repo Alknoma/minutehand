@@ -36,6 +36,7 @@ from minutehand.domain.agent import Commitment, CommitmentStatus
 from minutehand.domain.checks import (
     Check,
     CheckReport,
+    CommitmentsReported,
     Effectiveness,
     Finding,
     FindingKind,
@@ -432,6 +433,7 @@ def view_of(
     broken_calls: list[Exchange] | None = None,
     contract_breaks: list[Exchange] | None = None,
     dues: list[DueEntry] | None = None,
+    reported: list[CommitmentsReported] | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -447,6 +449,7 @@ def view_of(
         broken_calls=broken_calls or [],
         contract_breaks=contract_breaks or [],
         dues=dues,
+        reported=reported,
     )
 
 
