@@ -263,7 +263,8 @@
           "inbox_item",
           "due",
           "file",
-          "tool_call"
+          "tool_call",
+          "database"
         ],
         "title": "EntityKind",
         "type": "string"

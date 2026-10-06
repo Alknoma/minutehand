@@ -29,6 +29,7 @@ from minutehand.application.checkpoint import (
     PendingReply,
     PendingTimer,
     PendingWake,
+    Replayable,
     Restorable,
     write_checkpoint,
 )
@@ -369,7 +370,7 @@ class Orchestrator:
         self._fated = list(checkpoint.fated)
         self._commitments = checkpoint.commitments
         self._agent_state = checkpoint.agent
-        if isinstance(checkpoint.agent, Restorable):
+        if isinstance(checkpoint.agent, Restorable | Replayable):
             self._last_report = checkpoint.agent.report
         self._seen = self._store.head()
         self._watcher.look()
@@ -1042,7 +1043,7 @@ class Orchestrator:
         restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
         hooks = self._agent.state
         if hooks is None:
-            return NoHooks()
+            return Replayable(report=self._last_report) if self._agent.databases else NoHooks()
         assert self._state_dir is not None
         directory = wake_dir(self._state_dir, self._store.run_id, wake)
         if settled is None:

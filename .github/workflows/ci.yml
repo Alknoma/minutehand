@@ -135,6 +135,38 @@ jobs:
         env:
           RECIPES_NODE_REQUIRED: "1"
 
+  # The agent's database fronted by Minutehand's relay (tests/state/test_postgres_recipe.py): a run records the
+  # agent's committed writes, a fork puts the database back from the base and replays them. Against a real
+  # PostgreSQL in a service container; the default run skips these (`-m docker`).
+  postgres:
+    name: PostgreSQL relay (record, fork, replay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py -s
+        env:
+          MINUTEHAND_TEST_POSTGRES: postgresql://postgres:secret@127.0.0.1:5432
+
   # What a user installs, as they would install it: the wheel in an environment with none of the
   # dev dependencies, and the image, each running examples/follow_up end to end. Nothing is pushed.
   build:
@@ -245,7 +277,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, build, action, promotion]
+    needs: [types, style, lints, workflows, tests, recipes, postgres, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

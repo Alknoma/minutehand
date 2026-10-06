@@ -233,6 +233,40 @@
       "title": "Command",
       "type": "object"
     },
+    "CommandBase": {
+      "additionalProperties": false,
+      "description": "The base is made and put back by commands of the agent's: a copy-on-write branch (Neon, a ZFS or btrfs\nsnapshot, a cloud volume snapshot) for a database too large to copy. Each command gets MINUTEHAND_DB_URL (the\nupstream) and MINUTEHAND_DB_BASE.\n\n`take` runs at the run's start with MINUTEHAND_DB_BASE set to a name Minutehand suggests; the last line it\nprints names the base it made. `put_back` runs before a fork's replay with MINUTEHAND_DB_BASE set to that name,\nand must leave the agent's database exactly as the base holds it.",
+      "properties": {
+        "kind": {
+          "const": "command",
+          "default": "command",
+          "title": "Kind",
+          "type": "string"
+        },
+        "put_back": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Put Back",
+          "type": "array"
+        },
+        "take": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Take",
+          "type": "array"
+        }
+      },
+      "required": [
+        "take",
+        "put_back"
+      ],
+      "title": "CommandBase",
+      "type": "object"
+    },
     "Contained": {
       "additionalProperties": false,
       "description": "The agent runs in a sandbox whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox whose\nclock Minutehand owns\"), so its own in-process timers are its next wakes, with no code of Minutehand's in it.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, `{\"idle\": bool, \"earliest_ns\": int}`\n(whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and\n`advance` moves the sandbox's clock forward by `{nanoseconds}`. Minutehand moves it with every jump of the\nrun's clock, so the two agree, and when the sandbox is idle and no call of the agent's is in flight, its\nearliest deadline is a wake the agent asked for.",
@@ -280,6 +314,78 @@
         "advance"
       ],
       "title": "Contained",
+      "type": "object"
+    },
+    "Database": {
+      "additionalProperties": false,
+      "description": "A PostgreSQL database of the agent's that Minutehand fronts. The relay speaks PostgreSQL's wire protocol in\nthe clear only: a client asking for `sslmode=require` is told the server does not support SSL, and an upstream\nasking for it is refused here.",
+      "properties": {
+        "base": {
+          "default": {
+            "kind": "template"
+          },
+          "discriminator": {
+            "mapping": {
+              "command": "#/$defs/CommandBase",
+              "template": "#/$defs/TemplateBase"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TemplateBase"
+            },
+            {
+              "$ref": "#/$defs/CommandBase"
+            }
+          ],
+          "title": "Base"
+        },
+        "env": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A variable set, for the agent's program, to the upstream's URL pointed at the relay",
+          "title": "Env"
+        },
+        "kind": {
+          "const": "postgres",
+          "default": "postgres",
+          "title": "Kind",
+          "type": "string"
+        },
+        "listen": {
+          "description": "host:port the relay listens on for the agent",
+          "pattern": "^[A-Za-z0-9.\\-]+:[0-9]{1,5}$",
+          "title": "Listen",
+          "type": "string"
+        },
+        "name": {
+          "description": "What the run's records call this database",
+          "pattern": "^[a-z][a-z0-9_]{0,30}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "postgres://user:password@host:port/database: the real database, reached by the relay and by Minutehand's own connections (the base, the replay)",
+          "minLength": 1,
+          "title": "Upstream",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "listen",
+        "upstream"
+      ],
+      "title": "Database",
       "type": "object"
     },
     "Decision": {
@@ -1908,6 +2014,20 @@
       "title": "Succeeds",
       "type": "object"
     },
+    "TemplateBase": {
+      "additionalProperties": false,
+      "description": "The base is a copy of the agent's database made by PostgreSQL itself at the run's start:\n`CREATE DATABASE <base> TEMPLATE <database>`, a file-level copy. Quick for a database of a few gigabytes; it\nneeds no other connection to the agent's database while it is made, so it is made before the agent starts.",
+      "properties": {
+        "kind": {
+          "const": "template",
+          "default": "template",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "TemplateBase",
+      "type": "object"
+    },
     "TemplateRequest": {
       "additionalProperties": false,
       "description": "A request written out: method, URL, headers and a body as structure, each string a template.",
@@ -2012,6 +2132,15 @@
         "type": "string"
       },
       "title": "Checks",
+      "type": "array"
+    },
+    "databases": {
+      "default": [],
+      "description": "The agent's own databases Minutehand fronts: it relays every connection, records the agent's committed writes, and puts each back for a fork from a base and those writes, with no state hooks",
+      "items": {
+        "$ref": "#/$defs/Database"
+      },
+      "title": "Databases",
       "type": "array"
     },
     "emulators": {

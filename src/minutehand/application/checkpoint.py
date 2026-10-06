@@ -132,13 +132,23 @@ class NotRestorable(Model):
     reason: str
 
 
+class Replayable(Model):
+    """The agent declares no state hooks and keeps its state in databases Minutehand fronts
+    (`AgentUnderTest.databases`): a fork puts each back from its base and the writes recorded up to here, restarts
+    the agent's program, and compares its report with this one. Nothing waits for it to settle: a transaction still
+    open here commits after this checkpoint's seq, so it is not part of it."""
+
+    kind: Literal["replayable"] = "replayable"
+    report: AgentReport | None = Field(description="The agent's last report, which a restore must bring back")
+
+
 class NoHooks(Model):
     """The agent declares no `StateHooks`: nothing of its own state was kept."""
 
     kind: Literal["no_hooks"] = "no_hooks"
 
 
-AgentState = Annotated[Restorable | NotRestorable | NoHooks, Field(discriminator="kind")]
+AgentState = Annotated[Restorable | Replayable | NotRestorable | NoHooks, Field(discriminator="kind")]
 
 
 class Checkpoint(Model):

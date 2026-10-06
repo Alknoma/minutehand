@@ -7,9 +7,12 @@ Minutehand owns the procedure; the agent supplies the commands (`StateHooks`).
   call, or bytes on a tunnel), nothing it sent is still awaiting an answer, and its `busy` command, when it
   declares one, says it is idle. One that has not settled after `StateHooks.settle_limit` is recorded as
   `NotRestorable`, with the reason; one settled with no `busy` to ask is marked unconfirmed.
-- **Restore.** `stop` (the agent's program, when Minutehand started it, then the agent's own `stop`), `restore`,
-  `start` (the agent's own `start`, then its program), then the report endpoint must answer within
-  `StateHooks.answer_limit`. A failing step stops the fork, naming the step and showing its output.
+- **Restore.** `stop` (the agent's program, when Minutehand started it, then the agent's own `stop`), `database`
+  (each database Minutehand fronts made again from its base and the writes recorded up to the checkpoint,
+  `application.databases`), `restore`, `start` (the agent's own `start`, then its program), then the report endpoint
+  must answer within `StateHooks.answer_limit`. A failing step stops the fork, naming the step and showing its
+  output. An agent whose state is all in fronted databases declares no hooks: only its program, the databases and
+  the report are restored and compared.
 - **Verify.** The report after the restore must equal the report recorded at the checkpoint (`differences`).
 
 What the report cannot show, the comparison cannot see: see `differences`.
@@ -33,7 +36,7 @@ from pydantic import Field
 from minutehand.application.checkpoint import NotRestorable
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.state_hooks import SNAPSHOT_DIR_ENV
-from minutehand.domain.agent import AgentReport, AgentStatus, StateHooks
+from minutehand.domain.agent import ANSWER_LIMIT, AgentReport, AgentStatus, StateHooks
 from minutehand.domain.scenario import Model
 from minutehand.ports.agent import Reports
 
@@ -71,6 +74,14 @@ class Traffic(Protocol):
     def waiting(self) -> list[str]:
         """What the agent sent and is still awaiting an answer to, for a person: a call sent on to a real host, or a
         tunnel whose last bytes went from the agent."""
+        ...
+
+
+class PutsBack(Protocol):
+    """The agent's databases Minutehand fronts, put back as they were at the checkpoint (`application.databases`)."""
+
+    async def put_back(self) -> str:
+        """Put every one back; answers what was done, for a person. Raises `RunRefused` saying why one could not be."""
         ...
 
 
@@ -245,6 +256,7 @@ class RestoreStep(StrEnum):
     BUSY = "busy"
     FINGERPRINT = "fingerprint"
     STOP = "stop"
+    DATABASE = "database"
     RESTORE = "restore"
     START = "start"
     ANSWER = "answer"
@@ -270,7 +282,7 @@ class Restored(Model):
     """One restore of the agent, kept with the run it started (`restore.json`)."""
 
     checkpoint_seq: int
-    snapshot: str = Field(description="The snapshot directory restored from")
+    snapshot: str | None = Field(description="The snapshot directory restored from; None when no hooks were run")
     steps: list[StepResult]
     verified: bool
     verified_by: list[Verification] = Field(description="What it was compared by; empty when it was not verified")
@@ -289,8 +301,8 @@ Progress = Callable[[str], None]
 
 
 async def restore_agent(
-    hooks: StateHooks,
-    snapshot: Path,
+    hooks: StateHooks | None,
+    snapshot: Path | None,
     *,
     checkpoint_seq: int,
     recorded: AgentReport | None,
@@ -298,17 +310,21 @@ async def restore_agent(
     own: OwnProgram | None = None,
     progress: Progress | None = None,
     fingerprint: str | None = None,
+    databases: PutsBack | None = None,
 ) -> Restored:
-    """Put the agent back as it was at the checkpoint at `checkpoint_seq`, from `snapshot`, and prove it: its
-    report against `recorded`, and, when the hooks declare `fingerprint`, its state against `fingerprint`, the
-    digest taken at the checkpoint.
+    """Put the agent back as it was at the checkpoint at `checkpoint_seq`, from `snapshot` through `hooks` and
+    from `databases`, and prove it: its report against `recorded`, and, when the hooks declare `fingerprint`, its
+    state against `fingerprint`, the digest taken at the checkpoint. `hooks` and `snapshot` are None together, for
+    an agent whose state is all in the databases Minutehand fronts.
 
     Raises `RestoreFailed` naming the step that failed and showing its output, or listing field by field how
     the restored agent's report differs from `recorded`."""
     say = progress or (lambda _: None)
     steps: list[StepResult] = []
+    answer_limit = (hooks.answer_limit if hooks is not None else ANSWER_LIMIT).total_seconds()
 
     async def command(step: RestoreStep, argv: list[str]) -> None:
+        assert hooks is not None and snapshot is not None
         say(f"{step.value}: {shlex.join(argv)}")
         result = await run_command(step, argv, snapshot, hooks.step_limit.total_seconds())
         steps.append(result)
@@ -330,17 +346,38 @@ async def restore_agent(
             raise RestoreFailed(_failed(checkpoint_seq, result), steps) from e
         steps.append(StepResult(step=step, command=list(own.command), seconds=time.monotonic() - began))
 
+    async def put_back(databases: PutsBack) -> None:
+        say(f"{RestoreStep.DATABASE.value}: putting back the databases Minutehand fronts")
+        began = time.monotonic()
+        try:
+            done = await databases.put_back()
+        except RunRefused as e:
+            result = StepResult(
+                step=RestoreStep.DATABASE, output=str(e)[-OUTPUT_KEPT:], seconds=time.monotonic() - began
+            )
+            steps.append(result)
+            raise RestoreFailed(
+                f"the restore of the agent from the checkpoint at seq {checkpoint_seq} failed at step "
+                f"`{RestoreStep.DATABASE.value}`: {e}",
+                steps,
+            ) from e
+        steps.append(StepResult(step=RestoreStep.DATABASE, output=done, seconds=time.monotonic() - began))
+        say(f"{RestoreStep.DATABASE.value}: {done}")
+
     if own is not None:
         await program(RestoreStep.STOP, own.stop, own)
-    if hooks.stop is not None:
+    if hooks is not None and hooks.stop is not None:
         await command(RestoreStep.STOP, hooks.stop)
-    await command(RestoreStep.RESTORE, hooks.restore)
-    if hooks.start is not None:
+    if databases is not None:
+        await put_back(databases)
+    if hooks is not None:
+        await command(RestoreStep.RESTORE, hooks.restore)
+    if hooks is not None and hooks.start is not None:
         await command(RestoreStep.START, hooks.start)
     if own is not None:
         await program(RestoreStep.START, own.start, own)
     printed: str | None = None
-    if hooks.fingerprint is not None and reports is None:
+    if hooks is not None and snapshot is not None and hooks.fingerprint is not None and reports is None:
         printed = await _fingerprint(hooks, snapshot, steps, checkpoint_seq)
     if reports is None:
         if printed is not None and fingerprint is not None:
@@ -348,7 +385,7 @@ async def restore_agent(
             say(f"{RestoreStep.VERIFY.value}: the fingerprint equals the one at the checkpoint")
             return Restored(
                 checkpoint_seq=checkpoint_seq,
-                snapshot=str(snapshot),
+                snapshot=str(snapshot) if snapshot is not None else None,
                 steps=steps,
                 verified=True,
                 verified_by=[Verification.FINGERPRINT],
@@ -360,23 +397,23 @@ async def restore_agent(
         say(f"{RestoreStep.VERIFY.value}: not verified: {reason}")
         return Restored(
             checkpoint_seq=checkpoint_seq,
-            snapshot=str(snapshot),
+            snapshot=str(snapshot) if snapshot is not None else None,
             steps=steps,
             verified=False,
             verified_by=[],
             unverified=reason,
         )
     say(f"{RestoreStep.ANSWER.value}: waiting for the agent's report endpoint")
-    report = await _answer(hooks, reports, checkpoint_seq, steps)
+    report = await _answer(answer_limit, reports, checkpoint_seq, steps)
     say(f"{RestoreStep.ANSWER.value}: answered in {_span(steps[-1].seconds)}")
-    if hooks.fingerprint is not None:
+    if hooks is not None and snapshot is not None and hooks.fingerprint is not None:
         printed = await _fingerprint(hooks, snapshot, steps, checkpoint_seq)
     if recorded is None:
         reason = "no report was recorded at the checkpoint to compare with"
         say(f"{RestoreStep.VERIFY.value}: not verified: {reason}")
         return Restored(
             checkpoint_seq=checkpoint_seq,
-            snapshot=str(snapshot),
+            snapshot=str(snapshot) if snapshot is not None else None,
             steps=steps,
             verified=False,
             verified_by=[],
@@ -390,7 +427,7 @@ async def restore_agent(
     )
     return Restored(
         checkpoint_seq=checkpoint_seq,
-        snapshot=str(snapshot),
+        snapshot=str(snapshot) if snapshot is not None else None,
         steps=steps,
         verified=True,
         verified_by=[Verification.REPORT, *([Verification.FINGERPRINT] if by_fingerprint else [])],
@@ -431,9 +468,9 @@ def _compare(
         )
 
 
-async def _answer(hooks: StateHooks, reports: Reports, checkpoint_seq: int, steps: list[StepResult]) -> AgentReport:
+async def _answer(limit: float, reports: Reports, checkpoint_seq: int, steps: list[StepResult]) -> AgentReport:
     began = time.monotonic()
-    give_up = began + hooks.answer_limit.total_seconds()
+    give_up = began + limit
     while True:
         try:
             report = await reports.report()
@@ -444,7 +481,7 @@ async def _answer(hooks: StateHooks, reports: Reports, checkpoint_seq: int, step
                 raise RestoreFailed(
                     f"the restore of the agent from the checkpoint at seq {checkpoint_seq} failed at step "
                     f"`answer`: its report endpoint did not answer within the answer limit "
-                    f"({_span(hooks.answer_limit.total_seconds())}). The last attempt: {e}",
+                    f"({_span(limit)}). The last attempt: {e}",
                     steps,
                 ) from e
             await asyncio.sleep(ANSWER_EVERY)

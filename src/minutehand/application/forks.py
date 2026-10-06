@@ -15,7 +15,7 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Restorable
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Replayable, Restorable
 from minutehand.application.model_calls import is_model_call, model_call
 from minutehand.application.restore import Restored, Verification
 from minutehand.checks.runner import RunResult
@@ -484,12 +484,12 @@ def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> 
     for e in record.events:
         if e.seq <= at_seq or e.operation in (Operation.READ, Operation.SEARCH):
             continue
-        if e.entity == CHECKPOINT or e.entity.kind is EntityKind.DUE:
-            continue  # the run loop's own rows: the agent's plan is compared through its report, below
+        if e.entity == CHECKPOINT or e.entity.kind in (EntityKind.DUE, EntityKind.DATABASE):
+            continue  # the run's own rows: the agent's plan is compared through its report, below
         key = (e.actor, e.operation, e.entity, e.after, e.sim_time)
         found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))
     for seq, checkpoint in ((q, c) for q, c in record.checkpoints.items() if q > at_seq):
-        report = checkpoint.agent.report if isinstance(checkpoint.agent, Restorable) else None
+        report = checkpoint.agent.report if isinstance(checkpoint.agent, Restorable | Replayable) else None
         key = (checkpoint.wake, json.dumps([c.model_dump(mode="json") for c in checkpoint.commitments or []]),
                report.model_dump_json() if report is not None else None)  # fmt: skip
         status = f"{report.status.value}" if report is not None else "nothing of its status"

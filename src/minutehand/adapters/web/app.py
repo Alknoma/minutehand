@@ -147,7 +147,8 @@ def create_app(state: Path) -> Starlette:
                     events=[
                         e
                         for e in world.events()
-                        if e.entity not in (CHECKPOINT, STEP) and e.entity.kind is not EntityKind.DUE
+                        if e.entity not in (CHECKPOINT, STEP)
+                        and e.entity.kind not in (EntityKind.DUE, EntityKind.DATABASE)
                     ]
                 )
             )

@@ -41,7 +41,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "pyright>=1.1.390", "ruff>=0.8", "bo
        "uvicorn>=0.30", "asana>=5", "google-api-python-client>=2.150", "google-auth>=2.35", "google-cloud-tasks>=2.16",
        "pytest-socket>=0.7", "pytest-timeout>=2.3", "pytest-randomly>=3.15", "pytest-xdist>=3.6", "aiohttp>=3.10", "pysocks>=1.7",
        "notion-client==2.2.1", "pyjwt[crypto]>=2.10", "python-docx==1.2.0",
-       "opentelemetry-exporter-otlp-proto-grpc>=1.27"]
+       "opentelemetry-exporter-otlp-proto-grpc>=1.27", "psycopg[binary]>=3.2"]
 recipes = [
     "anthropic>=1.11.0",
     "claude-agent-sdk>=0.2.163",
@@ -85,8 +85,8 @@ addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0
 markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
-    "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
     "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
+    "docker: runs a downloaded open-source emulator, or PostgreSQL, in a container named minutehand-ext-* (or the server MINUTEHAND_TEST_POSTGRES names); needs Docker; run with -m docker",
     "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
 ]
 filterwarnings = [
