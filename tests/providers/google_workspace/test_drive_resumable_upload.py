@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import httpx
 
-from tests.providers.google_drive.drive_world import AUTH, answer, reason_of
+from tests.providers.google_workspace.drive_world import AUTH, answer, reason_of
 
 
 async def _begin(api: httpx.AsyncClient, name: str, **headers: str) -> str:

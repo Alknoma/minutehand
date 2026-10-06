@@ -2,7 +2,7 @@
 
 Every test names its class in its docstring: DOCUMENTED (Google's public reference says so; the page is cited) or
 OBSERVED (no page says so; the older stand-in asserted it from someone's sighting of the real service).
-`src/minutehand/adapters/providers/google_drive/CLAIMS.md` is the index."""
+`src/minutehand/adapters/providers/google_workspace/CLAIMS.md` is the index."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from minutehand.adapters.providers.google_drive import wire
-from minutehand.adapters.providers.google_drive.provider import build
+from minutehand.adapters.providers.google_workspace import wire
+from minutehand.adapters.providers.google_workspace.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Access, AccessRole, SeededDocument, SharedSpace
-from tests.providers.google_drive.drive_world import (
+from tests.providers.google_workspace.drive_world import (
     AUTH,
     DOC,
     FOLDER,
@@ -37,7 +37,7 @@ from tests.providers.google_drive.drive_world import (
     names_of,
     reason_of,
 )
-from tests.providers.google_drive.test_docs_batch_update import content, get, text_of
+from tests.providers.google_workspace.test_docs_batch_update import content, get, text_of
 
 SHEET = "application/vnd.google-apps.spreadsheet"
 
@@ -55,14 +55,14 @@ async def spaced(tmp_path: Path) -> AsyncIterator[Spaced]:
         update={
             "spaces": [
                 SharedSpace(
-                    provider="google_drive",
+                    provider="google_workspace",
                     name="Harbour Works",
                     members=[Access(person="mara", role=AccessRole.ORGANIZER)],
                 )
             ],
             "documents": [
                 SeededDocument(
-                    provider="google_drive", title="Berth Schedule", text="Pier 4 opens.", space="Harbour Works"
+                    provider="google_workspace", title="Berth Schedule", text="Pier 4 opens.", space="Harbour Works"
                 )
             ],
         }
@@ -155,7 +155,7 @@ async def test_a_create_in_a_shared_drive_needs_no_drive_id_in_its_body(spaced: 
 async def test_a_page_of_a_thousand_is_answered_whole_with_a_token_for_the_rest(tmp_path: Path) -> None:
     """DOCUMENTED: `pageSize` reaches 1000, and a folder past one page says so with `nextPageToken`.
     https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list"""
-    many = [SeededDocument(provider="google_drive", title=f"Manifest {n:04d}", folder="Cargo") for n in range(1003)]
+    many = [SeededDocument(provider="google_workspace", title=f"Manifest {n:04d}", folder="Cargo") for n in range(1003)]
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "many.db", "root", clock)
     provider = build()
@@ -243,7 +243,7 @@ async def test_exporting_a_doc_over_ten_megabytes_is_refused_403_export_size_lim
     """DOCUMENTED that exported content is limited to 10 MB
     (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export); OBSERVED that the refusal is
     a 403 with reason `exportSizeLimitExceeded`."""
-    huge = SeededDocument(provider="google_drive", title="Full Ledger", text="x" * wire.EXPORT_LIMIT_BYTES)
+    huge = SeededDocument(provider="google_workspace", title="Full Ledger", text="x" * wire.EXPORT_LIMIT_BYTES)
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "huge.db", "root", clock)
     provider = build()

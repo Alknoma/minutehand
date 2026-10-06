@@ -41,9 +41,9 @@ from starlette.routing import Route, Router
 from starlette.types import Receive, Scope, Send
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.google_drive import docs, slides, state, wire
-from minutehand.adapters.providers.google_drive import query as drive_query
-from minutehand.adapters.providers.google_drive.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
+from minutehand.adapters.providers.google_workspace import docs, slides, state, wire
+from minutehand.adapters.providers.google_workspace import query as drive_query
+from minutehand.adapters.providers.google_workspace.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
 from minutehand.domain.scenario import Commented, DocumentHappening, Edited, FieldSet, Model, Moved, Renamed, Shared
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock

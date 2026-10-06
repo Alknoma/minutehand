@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from tests.providers.google_drive.drive_world import (
+from tests.providers.google_workspace.drive_world import (
     AUTH,
     DOC,
     FOLDER,

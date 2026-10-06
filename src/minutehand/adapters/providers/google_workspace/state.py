@@ -33,8 +33,8 @@ import hashlib
 from collections.abc import Iterator
 from datetime import datetime
 
-from minutehand.adapters.providers.google_drive import docs, slides, wire
-from minutehand.adapters.providers.google_drive.manifest import MANIFEST
+from minutehand.adapters.providers.google_workspace import docs, slides, wire
+from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.domain.scenario import AccessRole, Model
 from minutehand.domain.world import (
     Actor,

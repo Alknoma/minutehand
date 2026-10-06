@@ -18,11 +18,11 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from minutehand.adapters.providers.google_drive.seed import DriveSeed, FaultSeed
-from minutehand.adapters.providers.google_drive.wire import FaultKind
+from minutehand.adapters.providers.google_workspace.seed import DriveSeed, FaultSeed
+from minutehand.adapters.providers.google_workspace.wire import FaultKind
 from minutehand.domain.scenario import DocumentHappening, Edited, ProviderSeed, Trashed
 from minutehand.domain.world import Actor, DocumentSnapshot, Operation
-from tests.providers.google_drive.proxied import REFRESH, ROBOT, SCENARIO, START, SUPPLIERS, Google, google, serving
+from tests.providers.google_workspace.proxied import REFRESH, ROBOT, SCENARIO, START, SUPPLIERS, Google, google, serving
 
 __all__ = ["google"]
 
@@ -33,7 +33,7 @@ FOLDER = "application/vnd.google-apps.folder"
 
 def faults_seed(*faults: FaultSeed) -> ProviderSeed:
     """Drive's own seed, declaring these faults."""
-    return ProviderSeed(provider="google_drive", body=DriveSeed(faults=list(faults)).model_dump_json())
+    return ProviderSeed(provider="google_workspace", body=DriveSeed(faults=list(faults)).model_dump_json())
 
 
 async def test_httplib2_reaches_drive_only_through_the_proxy_it_is_handed_and_every_call_is_answered(
@@ -123,8 +123,8 @@ say(procurement=procurement, found=sorted(f["name"] for f in found["files"]), ro
     assert isinstance(me, dict) and (me["email"], me["name"]) == ("mara@example.com", "Mara Lindqvist")
 
     calls = google.exchanges()
-    assert calls and all(provider == "google_drive" for provider, _ in calls), [
-        (p, e.host, e.path, e.status) for p, e in calls if p != "google_drive"
+    assert calls and all(provider == "google_workspace" for provider, _ in calls), [
+        (p, e.host, e.path, e.status) for p, e in calls if p != "google_workspace"
     ]
     assert {e.host for _, e in calls} == {"oauth2.googleapis.com", "www.googleapis.com"}
     assert all(e.status < 500 for _, e in calls)

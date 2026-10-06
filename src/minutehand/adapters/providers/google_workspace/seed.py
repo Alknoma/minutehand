@@ -10,7 +10,7 @@ how the agent signs in, and the faults the scenario declared.
   Slides deck; a FILE an uploaded file of its `mime_type`. It was last changed `modified_before_start`
   before the scenario starts, by `modified_by`.
 - With no `SignIn` for this provider, any credential signs in as the scenario's owner.
-- Its own seed (`DriveSeed`, the scenario's `ProviderSeed` for `google_drive`) declares the faults: the next
+- Its own seed (`DriveSeed`, the scenario's `ProviderSeed` for `google_workspace`) declares the faults: the next
   `times` calls of a Google operation, from `after` on, refused with a `wire.FaultKind`.
 
 Everything is written as actor SCENARIO.
@@ -22,10 +22,10 @@ from datetime import datetime, timedelta
 
 from pydantic import Field
 
-from minutehand.adapters.providers.google_drive import docs, slides, state, wire
-from minutehand.adapters.providers.google_drive.app import OPERATIONS
-from minutehand.adapters.providers.google_drive.manifest import MANIFEST
-from minutehand.adapters.providers.google_drive.state import (
+from minutehand.adapters.providers.google_workspace import docs, slides, state, wire
+from minutehand.adapters.providers.google_workspace.app import OPERATIONS
+from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
+from minutehand.adapters.providers.google_workspace.state import (
     ROLES,
     ROOT_NAME,
     DriveWorld,
@@ -48,7 +48,7 @@ class FaultSeed(Model):
 
 
 class DriveSeed(Model):
-    """What only Drive seeds, as the body of the scenario's `ProviderSeed` for `google_drive`."""
+    """What only Drive seeds, as the body of the scenario's `ProviderSeed` for `google_workspace`."""
 
     faults: list[FaultSeed] = []
 

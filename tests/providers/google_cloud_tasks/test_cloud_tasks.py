@@ -32,7 +32,7 @@ from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Scripted
 from minutehand.domain.world import Actor, RecordSnapshot
 from minutehand.ports.provider import BooksWakes, ConfirmsDelivery
 from tests.orchestrator.world import serving as handler_at
-from tests.providers.google_drive.proxied import Client, client_environment
+from tests.providers.google_workspace.proxied import Client, client_environment
 
 pytestmark = pytest.mark.timeout(120)
 

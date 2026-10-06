@@ -8,11 +8,11 @@ notifications do.
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.google_drive import wire
-from minutehand.adapters.providers.google_drive.app import DriveApi, build_app
-from minutehand.adapters.providers.google_drive.manifest import MANIFEST
-from minutehand.adapters.providers.google_drive.seed import DriveSeed, seed, write_faults
-from minutehand.adapters.providers.google_drive.state import DriveWorld
+from minutehand.adapters.providers.google_workspace import wire
+from minutehand.adapters.providers.google_workspace.app import DriveApi, build_app
+from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
+from minutehand.adapters.providers.google_workspace.seed import DriveSeed, seed, write_faults
+from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import DocumentHappening, Scenario
@@ -21,7 +21,7 @@ from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
 
 
-class GoogleDriveProvider:
+class GoogleWorkspaceProvider:
     manifest: Manifest = MANIFEST
     seed_model = DriveSeed
 
@@ -53,5 +53,5 @@ class GoogleDriveProvider:
         )
 
 
-def build() -> GoogleDriveProvider:
-    return GoogleDriveProvider()
+def build() -> GoogleWorkspaceProvider:
+    return GoogleWorkspaceProvider()

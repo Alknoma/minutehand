@@ -6,7 +6,7 @@ from minutehand.domain.provider import DocumentChange, Manifest, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
-    key="google_drive",
+    key="google_workspace",
     tier=Tier.FINISHED,
     hosts=[
         "www.googleapis.com",

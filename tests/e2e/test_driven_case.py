@@ -117,8 +117,8 @@ def _specs(inbound: str, suffix: str, *, expect: list[dict[str, Any]]) -> list[C
         seed=Seed.model_validate(
             {
                 **_seed(expect=[]),
-                "documents": [{"provider": "google_drive", "title": "Sync notes", "text": "# Sync notes"}],
-                "sign_ins": [{"provider": "google_drive", "credential": refresh, "person": "owen"}],
+                "documents": [{"provider": "google_workspace", "title": "Sync notes", "text": "# Sync notes"}],
+                "sign_ins": [{"provider": "google_workspace", "credential": refresh, "person": "owen"}],
             }
         ),
         claims=Claims(tokens=[refresh]),

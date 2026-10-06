@@ -4,8 +4,8 @@ Facts about the real services that an older, separately written stand-in for Dri
 here so the fake keeps them. **Documented** means Google's public reference says so (the page is linked; read it
 there). **Observed** means no page says so and the fact rests on someone having seen the real service do it.
 
-Tests named `vendor_claims` live in `tests/providers/google_drive/test_google_drive_vendor_claims.py` (Drive) and
-`test_google_drive_vendor_claims_docs_and_slides.py` (Docs, Slides). A claim an earlier test already pinned names
+Tests named `vendor_claims` live in `tests/providers/google_workspace/test_google_workspace_vendor_claims.py` (Drive) and
+`test_google_workspace_vendor_claims_docs_and_slides.py` (Docs, Slides). A claim an earlier test already pinned names
 that test instead.
 
 ## Drive v3
