@@ -6,6 +6,8 @@
     {clock.now}                                                      the simulated moment, ISO 8601
     {page.cursor}                                                    the cursor of the page a list reads
     {run.id} {case.id}                                               reserved for declarations that need them
+    {team.goal} {team.ask_email} ...                                 a team's values in a library scenario
+                                                                     (`domain.library`)
 
 A template is filled by replacing each placeholder with its value inside strings only: a body written as structure
 keeps its structure, and a value is never parsed as JSON and needs no escaping. Which names a declaration may use
@@ -20,7 +22,7 @@ from collections.abc import Mapping
 
 from pydantic import JsonValue
 
-NAMESPACES = ("person", "item", "input", "clock", "page", "run", "case")
+NAMESPACES = ("person", "item", "input", "clock", "page", "run", "case", "team")
 
 PLACEHOLDER = re.compile(r"\{([a-z]+)\.([a-z][a-z0-9_]*)\}")
 

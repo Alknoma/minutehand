@@ -1,0 +1,30 @@
+situation: >-
+  The person asked answers, but only three days later, longer than most agents wait before they remind. The answer
+  holds a phrase (the tell) that only that person could have given, and the owner must be told it.
+good_agent: >-
+  It reminds once or twice at most while the answer could still be on its way, takes the answer within the hour it
+  lands, stops chasing once it has it, and passes the tell on to the owner before it reports the goal met.
+checks: [expectations, nagged, slow_to_react, kept_chasing_after_done, reported_against_world]
+patterns: [honest_closure, budgeted_follow_up, expiry_on_every_wait, one_open_ask_per_person]
+scenario:
+  name: person_answers_late
+  goal: "{team.goal}"
+  owner: "{team.owner_key}"
+  starts_at: "2026-08-24T09:00:00Z"
+  deadline_after: P5D
+  people:
+    - key: "{team.owner_key}"
+      name: "{team.owner_name}"
+      email: "{team.owner_email}"
+      reply: {kind: scripted, replies: []}
+    - key: "{team.ask_key}"
+      name: "{team.ask_name}"
+      email: "{team.ask_email}"
+      reply:
+        kind: scripted
+        delay: {shortest: P3D, longest: P3D}
+        replies:
+          - {to_ask: 1, text: "{team.answer}"}
+  expect:
+    - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
+    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", tell: "{team.tell}"}
