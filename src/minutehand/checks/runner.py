@@ -14,11 +14,14 @@ when `asked_about` judged it so.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import importlib.util
 import inspect
 import pkgutil
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from datetime import datetime
+from pathlib import Path
 from types import ModuleType
 from typing import Protocol
 
@@ -118,10 +121,37 @@ def _unique[C: _Identified](found: list[C]) -> list[C]:
     return sorted(found, key=lambda c: c.id)
 
 
-def discover() -> list[Check]:
-    """One instance of every check class defined in this package, ordered by id."""
+def discover(own: Sequence[Check] = ()) -> list[Check]:
+    """One instance of every check class defined in this package, and `own`, the agent's (`load_checks`), ordered
+    by id. An agent's check may not take an id of Minutehand's."""
     found: list[Check] = [cls() for cls in _classes(package, _is_check)]
-    return _unique(found)
+    return _unique([*found, *own])
+
+
+class ChecksRefused(ValueError):
+    """An agent's check file that could not be loaded, or holds no check."""
+
+
+def load_checks(paths: Sequence[str]) -> list[Check]:
+    """One instance of every check class defined in each of the agent's check files (`AgentUnderTest.checks`),
+    loaded as a module of its own. Refused, naming the file, when it cannot be read or run, or defines no check."""
+    found: list[Check] = []
+    for path in paths:
+        source = Path(path)
+        name = "minutehand_agent_checks_" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
+        spec = importlib.util.spec_from_file_location(name, source)
+        if spec is None or spec.loader is None or not source.is_file():
+            raise ChecksRefused(f"{path}: no such check file")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as e:
+            raise ChecksRefused(f"{path}: could not be loaded: {type(e).__name__}: {e}") from e
+        mine = [cls for _, cls in inspect.getmembers(module, _is_check) if cls.__module__ == name]
+        if not mine:
+            raise ChecksRefused(f"{path}: defines no check (a class with `id`, `needs` and `run`)")
+        found += [cls() for cls in mine]
+    return found
 
 
 def discover_judged() -> list[JudgedCheck]:
@@ -311,9 +341,9 @@ def _count(n: int, thing: str) -> str:
     return f"{n} {thing}{'' if n == 1 else 's'}"
 
 
-def _deterministic(view: RunView) -> _Tally:
+def _deterministic(view: RunView, own: Sequence[Check] = ()) -> _Tally:
     tally = _Tally(view)
-    for check in discover():
+    for check in discover(own):
         report: CheckReport = check.run(view)
         tally.add(check.id, report)
         if isinstance(check, Expectations):
@@ -327,19 +357,26 @@ def failed_entities(view: RunView, findings: list[Finding]) -> frozenset[EntityR
     return frozenset(e.entity for e in view.events if e.seq in seqs)
 
 
-def evaluate(view: RunView, *, stop: StopReason | None, ended: datetime | None = None) -> RunResult:
+def evaluate(
+    view: RunView, *, stop: StopReason | None, ended: datetime | None = None, own: Sequence[Check] = ()
+) -> RunResult:
     """Every deterministic check over a view that is already built. Judged checks are not run, and an `about`
     expectation, which only `asked_about` can settle, is not counted as met. `stop` is how the run ended, None
     for a run captured elsewhere that does not say."""
-    return _deterministic(view).result(view, ended, stop)
+    return _deterministic(view, own).result(view, ended, stop)
 
 
 async def evaluate_judged(
-    view: RunView, model: LanguageModel | None, *, stop: StopReason | None, ended: datetime | None = None
+    view: RunView,
+    model: LanguageModel | None,
+    *,
+    stop: StopReason | None,
+    ended: datetime | None = None,
+    own: Sequence[Check] = (),
 ) -> RunResult:
     """Every deterministic check, then every judged check on what they did not fail. With no model, each judged
     check is blocked; a model that fails partway blocks the check it failed in."""
-    tally = _deterministic(view)
+    tally = _deterministic(view, own)
     failed = failed_entities(view, tally.findings)
     for check in discover_judged():
         if model is None:

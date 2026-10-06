@@ -268,6 +268,12 @@ class AgentUnderTest(Model):
         "own page), read and decided as each person (`domain.inboxes`)",
     )
     state: StateHooks | None = None
+    checks: list[str] = Field(
+        default=[],
+        description="Python files holding checks of the agent's own, written as Minutehand's are: a class with `id`, "
+        "`needs` and `run(view) -> CheckReport`. Run with Minutehand's after every run and fork. A relative path is "
+        "read from the agent file's folder",
+    )
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"
     )

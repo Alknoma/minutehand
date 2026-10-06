@@ -60,7 +60,14 @@ def load_scenario(path: Path) -> WrittenScenario:
 
 
 def load_agent(path: Path) -> AgentUnderTest:
-    return _load(path, AgentUnderTest)
+    """An agent file, its `checks` made absolute from the file's own folder, so a fork that reads the agent back
+    from its run's folder finds them."""
+    return _with_checks_from(path, _load(path, AgentUnderTest))
+
+
+def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
+    base = path.resolve().parent
+    return agent.model_copy(update={"checks": [str((base / c).resolve()) for c in agent.checks]})
 
 
 def load_fork(path: Path, *, parent_run: str, at_seq: int) -> Fork:
@@ -166,6 +173,7 @@ def problems(path: Path, kind: FileKind | None = None) -> tuple[FileKind | None,
         return kind, None, [str(e)]
     kind = kind or kind_of(raw)
     try:
-        return kind, MODELS[kind].model_validate(raw), []
+        read = MODELS[kind].model_validate(raw)
+        return kind, _with_checks_from(path, read) if isinstance(read, AgentUnderTest) else read, []
     except ValidationError as e:
         return kind, None, [f"{path}: {where(tuple(err['loc']))}: {err['msg']}" for err in e.errors()]

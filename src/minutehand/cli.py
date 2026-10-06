@@ -83,7 +83,7 @@ from minutehand.application.outbound import described, emulator_described, sugge
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
-from minutehand.checks.runner import exit_code, stability
+from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
@@ -422,6 +422,10 @@ def _validate(paths: Sequence[Path], kind: FileKind | None) -> int:
     for path in paths:
         read_as, model, said = problems(path, kind)
         if isinstance(model, AgentUnderTest):
+            try:
+                load_checks(model.checks)
+            except ChecksRefused as e:
+                said.append(f"{path}: checks: {e}")
             for n, declared in enumerate(model.inboxes):
                 try:
                     HttpInboxReach(declared, {})

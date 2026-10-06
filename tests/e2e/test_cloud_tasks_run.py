@@ -72,3 +72,40 @@ async def test_a_task_the_scenario_delivers_twice_calls_the_agent_twice(tmp_path
     held = await play(tmp_path, scenario(dispatch=[rule]))
 
     assert [h["retry"] for h in held["handled"]] == ["0", "1"]
+
+
+async def test_a_check_the_agents_repository_keeps_runs_after_the_run_and_its_finding_is_kept(tmp_path: Path) -> None:
+    (tmp_path / "team_checks.py").write_text(
+        """
+from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, Severity
+
+
+class NoTaskWithoutAName:
+    id = "no_task_without_a_name"
+    needs = frozenset({Needs.WORLD})
+
+    def run(self, view):
+        made = [e for e in view.events if e.entity.provider == "google_cloud_tasks" and e.actor.value == "agent"]
+        unnamed = [e.seq for e in made if e.entity.external_id.rsplit("/", 1)[1].isdigit()]
+        if not unnamed:
+            return CheckReport()
+        return CheckReport(findings=[Finding(check=self.id, severity=Severity.WARNING, kind=FindingKind.REVIEW,
+            message="a task was created without a name, so a retried create would not be deduplicated",
+            evidence=unnamed)])
+"""
+    )
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+    agent = AgentUnderTest(
+        name="tasks_agent",
+        wakes=[Reported(wake_url=f"{base}/wake", report_url=f"{base}/report"), Booked()],
+        checks=[str(tmp_path / "team_checks.py")],
+    )
+    command = [sys.executable, str(AGENT), "--port", str(port), "--state", str(tmp_path / "s.json"), "--queue", QUEUE]
+
+    [outcome] = await session.play(scenario(), agent, state=tmp_path / "state", command=command)
+
+    [finding] = [f for f in outcome.result.findings if f.check == "no_task_without_a_name"]
+    assert finding.message.startswith("a task was created without a name") and finding.evidence
+    kept = session.load(tmp_path / "state", outcome.record.run_id).result
+    assert "no_task_without_a_name" in {f.check for f in kept.findings}

@@ -1956,6 +1956,15 @@
       "title": "Base Urls",
       "type": "array"
     },
+    "checks": {
+      "default": [],
+      "description": "Python files holding checks of the agent's own, written as Minutehand's are: a class with `id`, `needs` and `run(view) -> CheckReport`. Run with Minutehand's after every run and fork. A relative path is read from the agent file's folder",
+      "items": {
+        "type": "string"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
     "emulators": {
       "default": [],
       "description": "Fakes outside Minutehand that `forward` hosts are sent to, started or attached to",

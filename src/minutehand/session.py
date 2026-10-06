@@ -90,9 +90,18 @@ from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_s
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.application.steps import steps
-from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, evaluate_judged, view_of
+from minutehand.checks.runner import (
+    ChecksRefused,
+    RunResult,
+    broken,
+    contract_breaks,
+    evaluate,
+    evaluate_judged,
+    load_checks,
+    view_of,
+)
 from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
-from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
+from minutehand.domain.checks import Check, Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge
@@ -211,6 +220,7 @@ async def play(
         raise RunRefused(f"a run needs at least one sample, not {samples}")
     scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
+    own_checks = _own_checks(agent)
     listen = listen or Listen()
     registry = Registry.installed()
     routing = _routing(registry, listen)
@@ -230,7 +240,7 @@ async def play(
                 opened.append(store)
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
-            scorer = _Judge(scenario, model if judge else None, judging=judge)
+            scorer = _Judge(scenario, model if judge else None, judging=judge, own=own_checks)
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
             env = agent_environment(
@@ -336,6 +346,7 @@ async def fork(
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, model)
+    own_checks = _own_checks(agent)
     listen = listen or Listen()
     registry = Registry.installed()
     routing = _routing(registry, listen)
@@ -345,7 +356,7 @@ async def fork(
         agent, registry, state=state, parent=parent_run, after_wake=forked_after, model_hosts=listen.model_hosts
     )
     child_id = _new_run_id()
-    scorer = _Judge(changed, model if judge else None, judging=judge)
+    scorer = _Judge(changed, model if judge else None, judging=judge, own=own_checks)
     signing = signing_for(agent, changed.people)
 
     def open_parent(clock: Clock) -> Store:
@@ -831,12 +842,23 @@ def _read_only(path: Path) -> sqlite3.Connection:
 # -- the parts of a run ---------------------------------------------------------------------------------------
 
 
+def _own_checks(agent: AgentUnderTest) -> list[Check]:
+    """The agent's own checks, loaded before anything of a run starts, so a file that cannot load refuses it."""
+    try:
+        return load_checks(agent.checks)
+    except ChecksRefused as e:
+        raise RunRefused(f"the agent's checks: {e}") from e
+
+
 class _Judge:
     """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it;
     with `judging`, the judged checks too, by `model` or blocked for want of one."""
 
-    def __init__(self, scenario: Scenario, model: LanguageModel | None, *, judging: bool) -> None:
+    def __init__(
+        self, scenario: Scenario, model: LanguageModel | None, *, judging: bool, own: Sequence[Check] = ()
+    ) -> None:
         self._scenario = scenario
+        self._own = list(own)
         self._model = model
         self._judging = judging
         self.results: dict[str, RunResult] = {}
@@ -859,9 +881,9 @@ class _Judge:
             dues=due_entries(world),
         )
         result = (
-            await evaluate_judged(view, self._model, stop=record.stop)
+            await evaluate_judged(view, self._model, stop=record.stop, own=self._own)
             if self._judging
-            else evaluate(view, stop=record.stop)
+            else evaluate(view, stop=record.stop, own=self._own)
         )
         result = result.model_copy(update={"findings": [*result.findings, *emulator_findings(world)]})
         heard = self.receiver.notices if self.receiver is not None else []

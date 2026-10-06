@@ -1077,7 +1077,7 @@ What the rule gets wrong:
 | Verdict (`Verdict`) | Did the checks hold, and did the agent finish | Built and tested; ends every run and sets the exit code |
 | Stability (`Stability`) | How often, over several samples | Built: `--samples N` reports "passed k of N"; a sample that did not finish did not pass |
 
-The checks, discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, `needs` and `run`; no registration):
+The checks, discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, `needs` and `run`; no registration). An agent's repository adds its own the same way: the agent file names Python files (`AgentUnderTest.checks`, a relative path read from the file's folder and kept absolute, so a fork finds them), each class in them is loaded as a check (`load_checks`), run after Minutehand's on every run and fork, and counted as they are; a file that cannot load, defines no check, or holds a check with one of Minutehand's ids refuses the run before it starts, and `minutehand validate` says so (`tests/checks/test_own_checks.py`, `tests/e2e/test_cloud_tasks_run.py`). Standing worlds (`serve`) do not run them yet:
 
 | `id` | Kind of finding | `Pattern.key` |
 |---|---|---|
