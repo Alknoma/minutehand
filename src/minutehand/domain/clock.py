@@ -36,6 +36,7 @@ class DueSource(StrEnum):
     HAPPENING = "happening"  # something the scenario has a person do by themselves
     DIRECTION = "direction"  # something the scenario's owner says to the agent
     MACHINE = "machine"  # something the scenario does to the agent's own machine
+    TIMER = "timer"  # the agent's own in-process timer, read from the sandbox its clock is owned in (`Contained`)
 
 
 PLANNED_BY = {
@@ -45,7 +46,7 @@ PLANNED_BY = {
 }
 """The agent's own wakes, by how it asked for them: what a dispatch rule can be about."""
 
-AGENT_SOURCES = frozenset(PLANNED_BY)
+AGENT_SOURCES = frozenset({*PLANNED_BY, DueSource.TIMER})
 """The entries that are the agent's own plan to come back to work, whoever else may wake it first."""
 
 

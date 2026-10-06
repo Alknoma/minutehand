@@ -100,7 +100,7 @@ from minutehand.checks.runner import (
     load_checks,
     view_of,
 )
-from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
+from minutehand.domain.agent import AgentUnderTest, Booked, Contained, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
@@ -218,6 +218,11 @@ async def play(
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
+    if _contained(agent) and written.starts_at is not None:
+        raise RunRefused(
+            "a contained agent's sandbox clock starts at the real present and only moves forward: leave starts_at out "
+            "of the scenario, so the run starts now"
+        )
     scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
     own_checks = _own_checks(agent)
@@ -340,6 +345,10 @@ async def fork(
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
+    if _contained(AgentUnderTest.model_validate_json((run_dir(state, parent_run) / AGENT).read_text(encoding="utf-8"))):
+        raise RunRefused(
+            "a contained agent's sandbox clock cannot go back to a checkpoint, so its run cannot be forked"
+        )
     parent = load(state, parent_run)
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
@@ -852,6 +861,10 @@ def reported_of(world: Store) -> list[CommitmentsReported] | None:
         if c.commitments is not None
     ]
     return said or None
+
+
+def _contained(agent: AgentUnderTest) -> bool:
+    return any(isinstance(w, Contained) for w in agent.wakes)
 
 
 def _refuse_unmodeled(listen: Listen, model: LanguageModel | None) -> None:

@@ -233,6 +233,55 @@
       "title": "Command",
       "type": "object"
     },
+    "Contained": {
+      "additionalProperties": false,
+      "description": "The agent runs in a sandbox whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox whose\nclock Minutehand owns\"), so its own in-process timers are its next wakes, with no code of Minutehand's in it.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, `{\"idle\": bool, \"earliest_ns\": int}`\n(whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and\n`advance` moves the sandbox's clock forward by `{nanoseconds}`. Minutehand moves it with every jump of the\nrun's clock, so the two agree, and when the sandbox is idle and no call of the agent's is in flight, its\nearliest deadline is a wake the agent asked for.",
+      "properties": {
+        "advance": {
+          "description": "Holds {nanoseconds} where the step goes",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Advance",
+          "type": "array"
+        },
+        "deadlines": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Deadlines",
+          "type": "array"
+        },
+        "kind": {
+          "const": "contained",
+          "default": "contained",
+          "title": "Kind",
+          "type": "string"
+        },
+        "quiet": {
+          "default": "PT0.05S",
+          "description": "Idle on two reads this far apart is idle",
+          "format": "duration",
+          "title": "Quiet",
+          "type": "string"
+        },
+        "settle_limit": {
+          "default": "PT30S",
+          "description": "Real time a wake may take to fall idle",
+          "format": "duration",
+          "title": "Settle Limit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deadlines",
+        "advance"
+      ],
+      "title": "Contained",
+      "type": "object"
+    },
     "Decision": {
       "additionalProperties": false,
       "description": "One decision a person can make on an item: the request the product's own page sends when they make it.",
@@ -2079,6 +2128,7 @@
           "mapping": {
             "booked": "#/$defs/Booked",
             "command": "#/$defs/Command",
+            "contained": "#/$defs/Contained",
             "polled": "#/$defs/Polled",
             "reported": "#/$defs/Reported"
           },
@@ -2096,6 +2146,9 @@
           },
           {
             "$ref": "#/$defs/Command"
+          },
+          {
+            "$ref": "#/$defs/Contained"
           }
         ]
       },

@@ -27,6 +27,7 @@ from minutehand.application.checkpoint import (
     PendingHappening,
     PendingMachine,
     PendingReply,
+    PendingTimer,
     PendingWake,
     Restorable,
     write_checkpoint,
@@ -38,6 +39,7 @@ from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
+from minutehand.application.sandbox import SandboxClock
 from minutehand.application.state_hooks import take_snapshot, wake_dir
 from minutehand.application.watching import Watcher
 from minutehand.checks.runner import RunResult
@@ -170,6 +172,8 @@ class Reach:
     main: AgentDriver | None
     ticks: AgentDriver | None = None
     every: timedelta | None = None
+    sandbox: SandboxClock | None = None
+    """The sandbox whose clock Minutehand owns (`Contained`): moved with every jump, its timers read as wakes."""
 
     def __post_init__(self) -> None:
         if (self.ticks is None) != (self.every is None):
@@ -268,6 +272,7 @@ class Orchestrator:
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._dues = Dues(store, clock, scenario.dispatch)
         self._machine_failed: str | None = None
+        self._sandbox_owed = 0
         self._watcher = Watcher(agent.watches)
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
@@ -450,14 +455,16 @@ class Orchestrator:
         while True:
             await self._look()  # what waits on people now, before the clock moves past what they owe
             await self._schedule(self._record_new())
+            if not await self._plan_timer():
+                return StopReason.AGENT_FAILED
             jump = next_jump(self._clock.now(), [p.due for p in self._dues.items])
             if jump is None:
-                self._run_on_to(deadline)
+                await self._run_on_to(deadline)
                 return StopReason.NOTHING_PENDING
             if deadline is not None and jump.now > deadline:
-                self._run_on_to(deadline)
+                await self._run_on_to(deadline)
                 return StopReason.DEADLINE_PASSED
-            self._clock.jump(jump.now)
+            await self._jump(jump.now)
             dispatched = self._dues.dispatch(jump.firing)
             for item in dispatched.withheld:
                 if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
@@ -474,6 +481,7 @@ class Orchestrator:
             if not fired:
                 continue
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
+                await self._release()
                 await self._fire(fired)
                 watched = self._watched(fired)
                 if not watched:
@@ -493,6 +501,7 @@ class Orchestrator:
             settle = [d for d, _ in requests] or self._delivered_to(fired)
 
             async def fire(due: list[Pending] = fired) -> None:
+                await self._release()
                 await self._fire(due)
                 await self._notify(self._watched(due))
                 await self._taken(due)
@@ -501,13 +510,46 @@ class Orchestrator:
             if stop is not None:
                 return stop
 
-    def _run_on_to(self, deadline: datetime | None) -> None:
+    async def _jump(self, to: datetime) -> None:
+        """Move the run's clock. A contained agent's sandbox is owed the same step, released (`_release`) once the
+        wake it may start has begun, so what the agent's timers do is that wake's."""
+        was = self._clock.now()
+        self._clock.jump(to)
+        if self._reach.sandbox is not None and to > was:
+            self._sandbox_owed += int((to - was).total_seconds() * 1e9)
+
+    async def _release(self) -> None:
+        """Move the sandbox's clock by what the run's has moved since, so the two agree again."""
+        if self._reach.sandbox is not None and self._sandbox_owed > 0:
+            owed, self._sandbox_owed = self._sandbox_owed, 0
+            await self._reach.sandbox.advance(owed)
+
+    async def _plan_timer(self) -> bool:
+        """For a contained agent, its earliest timer, read from the sandbox once it is idle and nothing of its is in
+        flight, is the wake it asked for, in place of the one read before. False when it never fell idle."""
+        sandbox = self._reach.sandbox
+        if sandbox is None:
+            return True
+        await self._release()  # a deadline is read from the sandbox's clock, which must be the run's
+        found = await sandbox.settle(self._traffic)
+        if found is None:
+            self._failure = "the agent's sandbox did not fall idle within its settle limit"
+            return False
+        if found.earliest_ns < 0:
+            self._dues.cancel(_timer)
+            return True
+        at = self._clock.now() + timedelta(microseconds=found.earliest_ns / 1000)
+        self._dues.replace(_timer, PendingTimer(due=Due(at=at, kind=DueKind.AGENT_WAKE, ref="timer")))
+        return True
+
+    async def _run_on_to(self, deadline: datetime | None) -> None:
         """The world does not stop when the agent goes quiet: with nothing more due before it, the clock runs on
         to the scenario's deadline, and a checkpoint there records the moment the run reached. Without it a run
         would end where the agent stopped, and a wait it abandoned would never be seen to expire."""
         if deadline is None or self._clock.now() >= deadline:
             return
-        self._clock.jump(deadline)
+        await self._jump(deadline)
+        await self._release()
         write_checkpoint(
             self._store,
             Checkpoint(
@@ -714,6 +756,8 @@ class Orchestrator:
             await fire()
             for driver, request in requests:
                 await driver.wake(request)
+            if self._reach.sandbox is not None and await self._reach.sandbox.settle(self._traffic) is None:
+                raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
             for driver in settle:
                 report = await driver.settled()
                 done = done or report.status is AgentStatus.DONE
@@ -1078,6 +1122,11 @@ def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, servi
                 continue
             what = f"{happening.person} {happening.kind}"
         raise RunRefused(f"happening {n} ({what}) lands on {provider}, which {why}")
+
+
+def _timer(pending: Pending) -> bool:
+    """The agent's earliest timer as last read from its sandbox, which the next reading replaces."""
+    return isinstance(pending, PendingTimer)
 
 
 def _reported_wake(pending: Pending) -> bool:

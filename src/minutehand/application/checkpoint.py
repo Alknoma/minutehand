@@ -57,6 +57,13 @@ class PendingWake(Model):
     )
 
 
+class PendingTimer(Model):
+    """The earliest deadline of the agent's own timers, read from its sandbox (`Contained`)."""
+
+    kind: Literal["timer"] = "timer"
+    due: Due
+
+
 class PendingMachine(Model):
     """A command the scenario runs on the agent's machine (`Scenario.machine`), not yet run."""
 
@@ -86,7 +93,14 @@ class PendingBooking(Model):
 
 
 Pending = Annotated[
-    PendingReply | PendingFate | PendingHappening | PendingWake | PendingDirection | PendingBooking | PendingMachine,
+    PendingReply
+    | PendingFate
+    | PendingHappening
+    | PendingWake
+    | PendingDirection
+    | PendingBooking
+    | PendingMachine
+    | PendingTimer,
     Field(discriminator="kind"),
 ]
 

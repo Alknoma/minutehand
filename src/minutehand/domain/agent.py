@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
@@ -143,7 +143,34 @@ class Command(Model):
     argv: list[str]
 
 
-WakeSource = Annotated[Reported | Booked | Polled | Command, Field(discriminator="kind")]
+class Contained(Model):
+    """The agent runs in a sandbox whose clock Minutehand owns (a patched gVisor; docs/design.md, "A sandbox whose
+    clock Minutehand owns"), so its own in-process timers are its next wakes, with no code of Minutehand's in it.
+
+    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "earliest_ns": int}`
+    (whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and
+    `advance` moves the sandbox's clock forward by `{nanoseconds}`. Minutehand moves it with every jump of the
+    run's clock, so the two agree, and when the sandbox is idle and no call of the agent's is in flight, its
+    earliest deadline is a wake the agent asked for."""
+
+    kind: Literal["contained"] = "contained"
+    deadlines: list[str] = Field(min_length=1)
+    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step goes")
+    quiet: timedelta = Field(
+        default=timedelta(milliseconds=50), gt=timedelta(0), description="Idle on two reads this far apart is idle"
+    )
+    settle_limit: timedelta = Field(
+        default=timedelta(seconds=30), gt=timedelta(0), description="Real time a wake may take to fall idle"
+    )
+
+    @model_validator(mode="after")
+    def _steps(self) -> Self:
+        if not any("{nanoseconds}" in part for part in self.advance):
+            raise ValueError("`advance` must hold {nanoseconds}, where the step it moves the clock by goes")
+        return self
+
+
+WakeSource = Annotated[Reported | Booked | Polled | Command | Contained, Field(discriminator="kind")]
 
 
 class StateHooks(Model):
