@@ -106,6 +106,13 @@ built.
 | `docs/inboxes.md` | Work that waits on a person in the agent's own product |
 | `docs/reference-agent.md` | A larger example: two processes, a job queue, email, a model API |
 
+## Scenarios to start from
+
+`minutehand scenarios` lists a library of ready-made situations (a person goes quiet, answers late, is away with a
+delegate; an approval is rejected or never decided; a deadline moves; a scheduled wake comes late, twice or never).
+`minutehand scenarios new --all --goal ... --owner 'Name <email>' --ask 'Name <email>'` writes each out with your
+values. See `docs/scenarios.md`.
+
 ## Develop
 
 From a checkout:

@@ -1,0 +1,30 @@
+situation: >-
+  The person asked lets the first message slide and answers only when reminded, within a few hours of the
+  reminder. Their answer holds the tell, which must reach the owner.
+good_agent: >-
+  When no answer comes it reminds, once the answer is overdue, rather than waiting forever on the first message;
+  then it takes the answer and tells the owner.
+checks: [expectations, slow_to_react, reported_against_world]
+patterns: [expiry_on_every_wait, honest_closure]
+scenario:
+  name: person_answers_when_reminded
+  goal: "{team.goal}"
+  owner: "{team.owner_key}"
+  starts_at: "2026-08-24T09:00:00Z"
+  deadline_after: P5D
+  people:
+    - key: "{team.owner_key}"
+      name: "{team.owner_name}"
+      email: "{team.owner_email}"
+      reply: {kind: scripted, replies: []}
+    - key: "{team.ask_key}"
+      name: "{team.ask_name}"
+      email: "{team.ask_email}"
+      reply:
+        kind: scripted
+        delay: {shortest: PT2H, longest: PT6H}
+        replies:
+          - {to_ask: 2, text: "{team.answer}"}   # nothing to the first message; the reminder is answered
+  expect:
+    - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
+    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", tell: "{team.tell}"}

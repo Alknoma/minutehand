@@ -112,6 +112,15 @@ def _read(path: Path, model: type[BaseModel], *, called: str | None = None) -> o
     return raw
 
 
+def read_yaml(text: str, said: str) -> object:
+    """YAML text as this module reads every file: no implicit timestamps or base-60 numbers. `said` names it in a
+    refusal."""
+    try:
+        return yaml.load(text, Loader=_Loader)
+    except yaml.YAMLError as e:
+        raise FileRefused(f"{said}: not valid YAML: {e}") from e
+
+
 def _validate(path: Path, raw: object, model: type[_M], *, called: str | None = None) -> _M:
     try:
         return model.model_validate(raw)
