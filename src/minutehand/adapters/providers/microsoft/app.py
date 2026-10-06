@@ -5,7 +5,7 @@
 | `login.microsoftonline.com` | sign-in (`signin.py`) |
 | `login.botframework.com` | the Bot Framework's OpenID metadata and keys |
 | `smba.trafficmanager.net` | the Bot Framework connector (`connector.py`) |
-| `graph.microsoft.com` | Graph `v1.0`: users, Teams, chats (`graph_teams.py`), files (`graph_files.py`), subscriptions |
+| `graph.microsoft.com` | Graph `v1.0`: users, Teams, chats (`graph_teams.py`), files (`graph_files.py`), mail (`graph_mail.py`), calendars (`graph_calendar.py`), subscriptions |
 | `*.sharepoint.com` | pre-authenticated downloads, upload sessions and copy monitors handed out by Graph |
 
 A path's repeated slashes are folded into one before routing: a bot that joins `serviceUrl` (which ends in `/`)
@@ -30,7 +30,9 @@ from minutehand.adapters import answering
 from minutehand.adapters.providers.microsoft import tokens, wire
 from minutehand.adapters.providers.microsoft.common import JSON, GraphRefusal, graph_error
 from minutehand.adapters.providers.microsoft.connector import connector_router
+from minutehand.adapters.providers.microsoft.graph_calendar import CALENDAR_SEGMENTS, Calendar
 from minutehand.adapters.providers.microsoft.graph_files import Caller, Files
+from minutehand.adapters.providers.microsoft.graph_mail import MAIL_SEGMENTS, Mail, split_segments
 from minutehand.adapters.providers.microsoft.graph_teams import TeamsGraph
 from minutehand.adapters.providers.microsoft.signin import bot_framework_router, login_router
 from minutehand.adapters.providers.microsoft.state import (
@@ -42,9 +44,12 @@ from minutehand.adapters.providers.microsoft.state import (
 from minutehand.adapters.providers.microsoft.subscriptions import (
     DRIVE_LIMIT,
     MESSAGES_LIMIT,
+    OUTLOOK_LIMIT,
     Subscriptions,
+    calendar_watch,
     conversation_watch,
     drive_watch,
+    mail_watch,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
@@ -67,10 +72,46 @@ class GraphApp:
         self._clock = clock
         self.files = Files(self._world, clock)
         self._teams = TeamsGraph(self._world, clock)
+        self.mail = Mail(self._world, clock)
+        self.calendar = Calendar(self._world, clock, self.mail)
         self._subscriptions = Subscriptions(self._world, clock, self._watchable)
+
+    def _outlook(self, resource: str, claims: wire.Claims | None) -> str | None:
+        """What a subscription to a mailbox's messages (all, or one folder's) or its events watches; None when the
+        resource is neither."""
+        parts = split_segments([p for p in resource.strip("/").split("/") if p])
+        lowered = [p.lower() for p in parts]
+        if lowered[0] == "me":
+            key, rest = (claims.oid if claims is not None else None), lowered[1:]
+        elif lowered[0] == "users" and len(parts) >= 2:
+            key, rest = parts[1], lowered[2:]
+        else:
+            return None
+        if rest not in (["messages"], ["events"], ["calendar", "events"]) and not (
+            len(rest) == 3 and rest[0] == "mailfolders" and rest[2] == "messages"
+        ):
+            return None
+        if key is None:
+            found = next((s for s in self._world.subscriptions() if s.subscription.resource == resource), None)
+            if found is None:
+                raise GraphRefusal(404, "ResourceNotFound", "The subscription's resource is no longer known.")
+            return found.watches
+        user = self._world.user_by(key)
+        if user is None:
+            raise GraphRefusal(404, "ResourceNotFound", f"The resource '{resource}' could not be found.")
+        if claims is not None and claims.oid is not None and claims.oid != user.user.id:
+            raise GraphRefusal(403, "ExtensionError", "Access is denied to another user's mailbox.")
+        if rest[-1] == "events":
+            return calendar_watch(user.user.id)
+        if rest == ["messages"]:  # enum-lint: exempt Graph's path segment
+            return mail_watch(user.user.id, None)
+        return mail_watch(user.user.id, self.mail.folder(user, parts[-2]).value)
 
     def _watchable(self, resource: str, claims: wire.Claims | None) -> tuple[str, timedelta]:
         parts = [p for p in resource.strip("/").split("/") if p]
+        outlook = self._outlook(resource, claims)
+        if outlook is not None:
+            return outlook, OUTLOOK_LIMIT
         if parts[-1:] == ["root"] and len(parts) >= 2:
             drive_parts = parts[:-1]
             if drive_parts[0] == "me" and claims is None:
@@ -123,6 +164,12 @@ class GraphApp:
         ):
             return await self.files.answer(request, parts)
         if head in ("users", "me"):
+            after = parts[1:2] if head == "me" else parts[2:3]
+            segment = after[0].split("(")[0] if after else ""
+            if segment in MAIL_SEGMENTS:
+                return await self.mail.answer(request, parts)
+            if segment in CALENDAR_SEGMENTS:
+                return await self.calendar.answer(request, parts)
             return await self._teams.users(request, parts)
         if head == "teams":
             return await self._teams.teams(request, parts)
