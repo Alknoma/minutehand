@@ -170,6 +170,22 @@ jobs:
             -- "$RUNNER_TEMP/venv/bin/python" agent.py
       - name: The image the action built
         run: docker run --rm minutehand:action --help
+      # What a caller's runner holds: this commit's files, no .git, unpacked into a folder named by the
+      # ref, reached with an empty `github.action_ref` (a remote action inside a composite step). `uses:`
+      # takes no expression, so the folder is named by a fixed 40-hex ref, and that is what must come back.
+      - name: The action as a remote caller's runner unpacks it
+        run: |
+          mkdir -p _actions/minutehand/0123456789abcdef0123456789abcdef01234567
+          git archive HEAD | tar -x -C _actions/minutehand/0123456789abcdef0123456789abcdef01234567
+      - id: unpacked
+        uses: ./_actions/minutehand/0123456789abcdef0123456789abcdef01234567/.github/actions/setup-minutehand # zizmor: ignore[self-repository]
+        with:
+          python: ${{ runner.temp }}/venv/bin/python
+          installer: pip
+      - name: The unpacked copy names the ref it was unpacked at
+        env:
+          COMMIT: ${{ steps.unpacked.outputs.commit }}
+        run: test "$COMMIT" = 0123456789abcdef0123456789abcdef01234567
 
   # main takes pull requests from integration-main and from nowhere else. A branch rule can
   # only constrain the branch being written to, never the branch a pull request comes from,
