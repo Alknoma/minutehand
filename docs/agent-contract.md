@@ -108,6 +108,7 @@ New declarations (inboxes) use the following.
 | `clock` | `now` |
 | `page` | `cursor` |
 | `run`, `case` | reserved |
+| `team` | a team's values in a library scenario: `goal`, `owner_key`, `owner_name`, `owner_email`, the same for `ask` and `other`, `answer`, `tell`, `credential_env`, `provider`, `wakes` (`docs/scenarios.md`) |
 
 **Paths** are JSONPath (RFC 9535), in the subset `domain/jsonpath.py` reads: names, indexes, wildcards, several
 selectors in one bracket, and descendants. Filters and slices are refused at load.

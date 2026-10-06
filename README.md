@@ -40,6 +40,13 @@ docker run --rm -v "$PWD/examples:/examples:ro" -w /examples/follow_up \
 `docker build -t minutehand .` builds the image without the example's library. `examples/follow_up/README.md`
 walks through both runs.
 
+## Scenarios to start from
+
+`minutehand scenarios` lists a library of ready-made situations (a person goes quiet, answers late, is away with a
+delegate; an approval is rejected or never decided; a deadline moves; a scheduled wake comes late, twice or never).
+`minutehand scenarios new --all --goal ... --owner 'Name <email>' --ask 'Name <email>'` writes each out with your
+values. See `docs/scenarios.md`.
+
 ## Develop
 
 ```bash
