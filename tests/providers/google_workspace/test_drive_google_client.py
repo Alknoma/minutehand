@@ -33,9 +33,9 @@ from googleapiclient.discovery import build as discover
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload, MediaUpload
 
-from minutehand.adapters.providers.google_drive import state
+from minutehand.adapters.providers.google_workspace import state
 from minutehand.domain.world import Actor, DocumentSnapshot, EntityRef, Operation
-from tests.providers.google_drive.drive_world import DOC, LATER, OWNER, Drive
+from tests.providers.google_workspace.drive_world import DOC, LATER, OWNER, Drive
 
 T = TypeVar("T")
 SCOPE = "https://www.googleapis.com/auth/drive"

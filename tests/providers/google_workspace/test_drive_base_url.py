@@ -12,14 +12,14 @@ from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
-from tests.providers.google_drive.drive_world import AUTH, Drive
+from tests.providers.google_workspace.drive_world import AUTH, Drive
 
 
 async def test_a_resumable_uploads_session_location_leads_back_through_the_base_url(
     drive: Drive, tmp_path: Path
 ) -> None:
     async with Proxy(Routing(Registry.installed()), drive.store, drive.clock, confdir=tmp_path / "ca") as proxy:
-        proxy.mount(drive.store, drive.clock, {"google_drive": drive.provider.app(drive.store, drive.clock)})
+        proxy.mount(drive.store, drive.clock, {"google_workspace": drive.provider.app(drive.store, drive.clock)})
         base = base_url(proxy.url, "www.googleapis.com")
         async with httpx.AsyncClient(base_url=base, headers=AUTH, trust_env=False) as http:
             begun = await http.post(

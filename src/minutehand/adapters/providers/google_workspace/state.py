@@ -33,8 +33,8 @@ import hashlib
 from collections.abc import Iterator
 from datetime import datetime
 
-from minutehand.adapters.providers.google_drive import docs, slides, wire
-from minutehand.adapters.providers.google_drive.manifest import MANIFEST
+from minutehand.adapters.providers.google_workspace import docs, slides, wire
+from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.domain.scenario import AccessRole, Model
 from minutehand.domain.world import (
     Actor,
@@ -503,6 +503,10 @@ class DriveWorld:
 
     def person(self, key: str) -> wire.DriveUser | None:
         return self._record(wire.DriveUser, f"person.{key}", PEOPLE)
+
+    def people(self) -> list[wire.DriveUser]:
+        """Every scenario person's Google account: who has a mailbox and a calendar."""
+        return [wire.parse(wire.DriveUser, s.body) for s in self._records(PEOPLE)]
 
     # ------------------------------------------------------------------ comments
 

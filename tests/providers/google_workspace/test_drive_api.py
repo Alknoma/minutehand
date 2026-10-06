@@ -9,13 +9,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from minutehand.adapters.providers.google_drive import state
-from minutehand.adapters.providers.google_drive.provider import build
+from minutehand.adapters.providers.google_workspace import state
+from minutehand.adapters.providers.google_workspace.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import AccessRole
 from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, GrantSnapshot, Operation
-from tests.providers.google_drive.drive_world import (
+from tests.providers.google_workspace.drive_world import (
     AUTH,
     DOC,
     FOLDER,

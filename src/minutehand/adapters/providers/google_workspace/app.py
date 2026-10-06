@@ -1,4 +1,5 @@
-"""Drive v3, Docs v1, Slides v1 and Google's sign-in endpoints, as one ASGI app over the run's store and clock.
+"""Drive v3, Docs v1, Slides v1, Gmail v1 (`gmail.py`), Calendar v3 (`calendars.py`) and Google's sign-in
+endpoints, as one ASGI app over the run's store and clock.
 
 **Hosts.** A request whose `Host` is one of the manifest's hosts is answered only by that host's routes:
 `/token` on `www.googleapis.com` is a 404, as it is at Google. Any other host (a client reaching the
@@ -40,10 +41,12 @@ from starlette.responses import Response
 from starlette.routing import Route, Router
 from starlette.types import Receive, Scope, Send
 
-from minutehand.adapters import answering
-from minutehand.adapters.providers.google_drive import docs, slides, state, wire
-from minutehand.adapters.providers.google_drive import query as drive_query
-from minutehand.adapters.providers.google_drive.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
+from minutehand.adapters.providers.google_workspace import docs, slides, state, wire
+from minutehand.adapters.providers.google_workspace import query as drive_query
+from minutehand.adapters.providers.google_workspace.access import Caller, bearer, due_fault, signed_in
+from minutehand.adapters.providers.google_workspace.calendars import CalendarApi
+from minutehand.adapters.providers.google_workspace.gmail import GMAIL_HOST, GmailApi
+from minutehand.adapters.providers.google_workspace.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
 from minutehand.domain.scenario import Commented, DocumentHappening, Edited, FieldSet, Model, Moved, Renamed, Shared
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
@@ -103,25 +106,12 @@ class Api(StrEnum):
 Handler = Callable[[Request], Awaitable[Response]]
 
 
-class Caller(Model):
-    email: str
-    user: wire.DriveUser
-
-
 def _json(answer: Model, mask: wire.Mask | None = None, status: int = 200) -> Response:
     return Response(wire.respond(answer, mask), status_code=status, media_type=JSON)
 
 
 def _refused(refusal: wire.Refusal) -> Response:
     return Response(wire.error_body(refusal), status_code=refusal.code, media_type=JSON, headers=refusal.headers)
-
-
-def _bearer(request: Request, call: wire.CallQuery) -> str | None:
-    authorization = request.headers["authorization"] if "authorization" in request.headers else ""
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() == "bearer" and token.strip():
-        return token.strip()
-    return call.access_token or None
 
 
 def _status_refusal(code: int, status: str, message: str) -> wire.Refusal:
@@ -227,7 +217,12 @@ class DriveApi:
             try:
                 try:
                     call = wire.read_query(request.url.query)
-                    caller = self._caller(_bearer(request, call), api)
+                    caller = signed_in(
+                        self._drive,
+                        self._clock,
+                        bearer(request, call.access_token),
+                        missing=wire.login_required() if api is Api.DRIVE else wire.docs_login_required(),
+                    )
                     self._fault(operation, api, request)
                     return await handler(request, call, caller)
                 except docs.Refused as refused:
@@ -241,26 +236,11 @@ class DriveApi:
 
         return endpoint
 
-    def _caller(self, token: str | None, api: Api) -> Caller:
-        if token is None:
-            raise wire.login_required() if api is Api.DRIVE else wire.docs_login_required()
-        issued = self._drive.token(token)
-        if issued is None or issued.revoked or wire.moment(issued.expires) <= self._clock.now():
-            raise wire.invalid_credentials()
-        user = self._drive.user(issued.email)
-        if user is None:
-            raise wire.invalid_credentials()
-        return Caller(email=issued.email, user=user)
-
     def _fault(self, operation: str, api: Api, request: Request) -> None:
-        now = self._clock.now()
-        for key, fault in self._drive.faults():
-            if fault.operation != operation or fault.remaining < 1 or wire.moment(fault.after) > now:
-                continue
-            self._drive.keep_fault(key, fault.model_copy(update={"remaining": fault.remaining - 1}))
-            answering.injected()
+        kind = due_fault(self._drive, self._clock, operation)
+        if kind is not None:
             ids = [v for k, v in request.path_params.items() if isinstance(v, str) and k.endswith("_id")]
-            raise _fault_refusal(api, fault.kind, ids[0] if ids else None)
+            raise _fault_refusal(api, kind, ids[0] if ids else None)
 
     # ------------------------------------------------------------------ lookups
 
@@ -1667,7 +1647,7 @@ class HostRouter:
         await (self._by_host[host] if host in self._by_host else self._every)(scope, receive, send)
 
 
-def build_app(api: DriveApi) -> HostRouter:
+def build_app(api: DriveApi, gmail: GmailApi, calendar: CalendarApi) -> HostRouter:
     def drive(handler: Callable[[Request, wire.CallQuery, Caller], Awaitable[Response]], operation: str) -> Handler:
         return api.guarded(handler, Api.DRIVE, operation)
 
@@ -1746,14 +1726,17 @@ def build_app(api: DriveApi) -> HostRouter:
             "/v1/projects/{project}/serviceAccounts/{account}/allowedLocations", api.allowed_locations, methods=["GET"]
         )
     ]
+    mail = gmail.routes()
+    calendars = calendar.routes()
     return HostRouter(
         {
-            DRIVE_HOST: Router(routes=routes),
+            DRIVE_HOST: Router(routes=[*routes, *calendars]),
+            GMAIL_HOST: Router(routes=mail),
             OAUTH_HOST: Router(routes=oauth),
             DOCS_HOST: Router(routes=documents),
             SLIDES_HOST: Router(routes=presentations),
             IAM_HOST: Router(routes=iam),
         },
-        Router(routes=[*routes, *oauth, *documents, *presentations, *iam]),
+        Router(routes=[*routes, *calendars, *mail, *oauth, *documents, *presentations, *iam]),
         api,
     )

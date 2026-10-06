@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from minutehand.adapters.providers.google_drive import state, wire
-from minutehand.adapters.providers.google_drive.state import DriveWorld
+from minutehand.adapters.providers.google_workspace import state, wire
+from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
@@ -53,11 +53,11 @@ def _open(tmp_path: Path) -> Iterator[StandingWorld]:
             "starts_at": START.isoformat(),
             "people": PEOPLE,
             "documents": [
-                {"provider": "google_drive", "title": "Plan", "text": "hello", "folder": "Launch/Docs"},
-                {"provider": "google_drive", "title": "Budget", "kind": "spreadsheet", "rows": [["a"]]},
+                {"provider": "google_workspace", "title": "Plan", "text": "hello", "folder": "Launch/Docs"},
+                {"provider": "google_workspace", "title": "Budget", "kind": "spreadsheet", "rows": [["a"]]},
             ],
-            "spaces": [{"provider": "google_drive", "name": "Team", "members": [{"person": "sofia"}]}],
-            "sign_ins": [{"provider": "google_drive", "credential": "refresh-owen", "person": "owen"}],
+            "spaces": [{"provider": "google_workspace", "name": "Team", "members": [{"person": "sofia"}]}],
+            "sign_ins": [{"provider": "google_workspace", "credential": "refresh-owen", "person": "owen"}],
         }
     )
     scenario = seed.starting(START)
@@ -75,7 +75,7 @@ def _open(tmp_path: Path) -> Iterator[StandingWorld]:
         scripted=False,
     )
     try:
-        world.open(["google_drive"])
+        world.open(["google_workspace"])
         yield world
     finally:
         store.close()
@@ -84,7 +84,7 @@ def _open(tmp_path: Path) -> Iterator[StandingWorld]:
 def _files(world: StandingWorld) -> dict[str, wire.StoredFile]:
     found: dict[str, wire.StoredFile] = {}
     for event in world.store.events():
-        if event.entity.provider == "google_drive" and event.entity.kind is EntityKind.DOCUMENT:
+        if event.entity.provider == "google_workspace" and event.entity.kind is EntityKind.DOCUMENT:
             stored = world.store.get(event.entity)
             if stored is not None:
                 found[event.entity.external_id] = wire.parse(wire.StoredFile, stored.body)
@@ -96,13 +96,13 @@ def _extend(world: StandingWorld, tmp_path: Path, **added: object) -> dict[str, 
 
 
 DOCUMENTS = [
-    SeededDocument(provider="google_drive", title="Notes", text="# Notes\nbody"),
-    SeededDocument(provider="google_drive", title="Sheet", kind="spreadsheet", rows=[["x", "y"]]),  # type: ignore[arg-type]
-    SeededDocument(provider="google_drive", title="Deck", kind="presentation", text="Slide one"),  # type: ignore[arg-type]
-    SeededDocument(provider="google_drive", title="notes.txt", kind="file", text="plain", mime_type="text/plain"),  # type: ignore[arg-type]
-    SeededDocument(provider="google_drive", title="Agenda", text="in a seeded folder", folder="Launch/Docs"),
-    SeededDocument(provider="google_drive", title="Minutes", text="in a new folder", folder="Launch/Minutes"),
-    SeededDocument(provider="google_drive", title="Team plan", text="in the shared drive", space="Team"),
+    SeededDocument(provider="google_workspace", title="Notes", text="# Notes\nbody"),
+    SeededDocument(provider="google_workspace", title="Sheet", kind="spreadsheet", rows=[["x", "y"]]),  # type: ignore[arg-type]
+    SeededDocument(provider="google_workspace", title="Deck", kind="presentation", text="Slide one"),  # type: ignore[arg-type]
+    SeededDocument(provider="google_workspace", title="notes.txt", kind="file", text="plain", mime_type="text/plain"),  # type: ignore[arg-type]
+    SeededDocument(provider="google_workspace", title="Agenda", text="in a seeded folder", folder="Launch/Docs"),
+    SeededDocument(provider="google_workspace", title="Minutes", text="in a new folder", folder="Launch/Minutes"),
+    SeededDocument(provider="google_workspace", title="Team plan", text="in the shared drive", space="Team"),
 ]
 
 
@@ -112,7 +112,7 @@ def test_a_document_of_each_kind_lands_and_moves_nothing_seeded(document: Seeded
         before = _files(world)
         written = _extend(world, tmp_path, documents=[document])
         after = _files(world)
-        assert written["google_drive"] > 0
+        assert written["google_workspace"] > 0
         assert {k: v for k, v in after.items() if k in before} == before
         drive = DriveWorld(world.store)
         made = drive.seeded(document.title)
@@ -139,17 +139,17 @@ def test_a_shared_drive_a_sign_in_and_a_fault_land(tmp_path: Path) -> None:
         written = _extend(
             world,
             tmp_path,
-            spaces=[SharedSpace(provider="google_drive", name="Ops", members=[{"person": "owen"}])],  # type: ignore[list-item]
-            sign_ins=[SignIn(provider="google_drive", credential="robot@project.iam.gserviceaccount.com")],
+            spaces=[SharedSpace(provider="google_workspace", name="Ops", members=[{"person": "owen"}])],  # type: ignore[list-item]
+            sign_ins=[SignIn(provider="google_workspace", credential="robot@project.iam.gserviceaccount.com")],
             provider_seeds=[
                 ProviderSeed(
-                    provider="google_drive",
+                    provider="google_workspace",
                     body=json.dumps({"faults": [{"operation": "files.list", "kind": "rate_limited"}]}),
                 )
             ],
         )
         drive = DriveWorld(world.store)
-        assert written["google_drive"] >= 4
+        assert written["google_workspace"] >= 4
         assert {d.name for d in drive.drives()} == {"Team", "Ops"}
         assert state.root_id("robot@project.iam.gserviceaccount.com") in _files(world)
         assert len(drive.faults()) == 1
@@ -168,5 +168,7 @@ def test_a_document_whose_title_is_seeded_already_is_refused(tmp_path: Path) -> 
     with _open(tmp_path) as world:
         head = world.store.head()
         with pytest.raises(WorldRefused):
-            _extend(world, tmp_path, documents=[SeededDocument(provider="google_drive", title="Plan", text="other")])
+            _extend(
+                world, tmp_path, documents=[SeededDocument(provider="google_workspace", title="Plan", text="other")]
+            )
         assert world.store.head() == head

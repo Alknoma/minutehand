@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import httpx
 
-from minutehand.adapters.providers.google_drive import docs as docs_module
-from minutehand.adapters.providers.google_drive import state
+from minutehand.adapters.providers.google_workspace import docs as docs_module
+from minutehand.adapters.providers.google_workspace import state
 from minutehand.domain.world import Actor, Operation
-from tests.providers.google_drive.drive_world import AUTH, LATER, Answer, Drive, answer, create_doc, issue
+from tests.providers.google_workspace.drive_world import AUTH, LATER, Answer, Drive, answer, create_doc, issue
 
 JsonObject = dict[str, object]
 

@@ -1,14 +1,14 @@
 """Facts about real Google Docs v1 and Slides v1 that an older stand-in kept, each held here against this fake.
 
 Each docstring names the class: DOCUMENTED (the cited page says so) or OBSERVED (asserted from a sighting of the
-real service, no page says so). `src/minutehand/adapters/providers/google_drive/CLAIMS.md` is the index."""
+real service, no page says so). `src/minutehand/adapters/providers/google_workspace/CLAIMS.md` is the index."""
 
 from __future__ import annotations
 
 import httpx
 
-from tests.providers.google_drive.drive_world import AUTH, Answer, answer
-from tests.providers.google_drive.test_docs_batch_update import batch, content, get, new_doc, spans, text_of
+from tests.providers.google_workspace.drive_world import AUTH, Answer, answer
+from tests.providers.google_workspace.test_docs_batch_update import batch, content, get, new_doc, spans, text_of
 
 JsonObject = dict[str, object]
 SHIP = "\U0001f6a2"

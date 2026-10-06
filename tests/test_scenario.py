@@ -237,7 +237,7 @@ def test_a_thread_reply_older_than_its_post_is_rejected() -> None:
         )
 
 
-DOC = {"provider": "google_drive", "title": "Plan"}
+DOC = {"provider": "google_workspace", "title": "Plan"}
 
 
 def test_a_document_change_or_share_naming_nobody_real_is_rejected() -> None:

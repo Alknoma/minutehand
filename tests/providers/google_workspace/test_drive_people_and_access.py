@@ -8,9 +8,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from minutehand.adapters.providers.google_drive.provider import build
-from minutehand.adapters.providers.google_drive.seed import DriveSeed, FaultSeed
-from minutehand.adapters.providers.google_drive.wire import FaultKind
+from minutehand.adapters.providers.google_workspace.provider import build
+from minutehand.adapters.providers.google_workspace.seed import FaultSeed, WorkspaceSeed
+from minutehand.adapters.providers.google_workspace.wire import FaultKind
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import (
@@ -28,7 +28,7 @@ from minutehand.domain.scenario import (
     SignIn,
 )
 from minutehand.domain.world import Actor, Operation
-from tests.providers.google_drive.drive_world import (
+from tests.providers.google_workspace.drive_world import (
     AUTH,
     SCENARIO,
     START,
@@ -48,7 +48,7 @@ DOV = {"Authorization": "Bearer ya29.dov"}
 
 def faults_seed(*faults: FaultSeed) -> ProviderSeed:
     """Drive's own seed, declaring these faults."""
-    return ProviderSeed(provider="google_drive", body=DriveSeed(faults=list(faults)).model_dump_json())
+    return ProviderSeed(provider="google_workspace", body=WorkspaceSeed(faults=list(faults)).model_dump_json())
 
 
 @pytest.fixture
@@ -125,7 +125,7 @@ async def test_an_unknown_expired_or_revoked_token_is_refused_401(
 
 async def test_a_credential_the_scenario_does_not_name_is_refused_invalid_grant(tmp_path: Path) -> None:
     named = SCENARIO.model_copy(
-        update={"sign_ins": [SignIn(provider="google_drive", credential="1//known", person="mara")]}
+        update={"sign_ins": [SignIn(provider="google_workspace", credential="1//known", person="mara")]}
     )
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "w.db", "root", clock)
@@ -141,7 +141,9 @@ def test_a_fault_naming_a_call_this_fake_does_not_answer_is_refused_at_seeding(t
     faulty = SCENARIO.model_copy(
         update={"provider_seeds": [faults_seed(FaultSeed(operation="files.watch", kind=FaultKind.NOT_FOUND))]}
     )
-    with pytest.raises(ValueError, match=r"'files\.watch', which is not a Google Drive, Docs or Slides call"):
+    with pytest.raises(
+        ValueError, match=r"'files\.watch', which is not a Google Drive, Docs, Slides, Gmail or Calendar call"
+    ):
         build().seed(faulty, SqliteStore(tmp_path / "w.db", "root", RunClock(START)))
 
 
@@ -320,10 +322,10 @@ async def test_a_shared_drive_member_reads_its_files_and_a_stranger_does_not(tmp
         update={
             "spaces": [
                 SharedSpace(
-                    provider="google_drive", name="Team", members=[Access(person="dov", role=AccessRole.READER)]
+                    provider="google_workspace", name="Team", members=[Access(person="dov", role=AccessRole.READER)]
                 )
             ],
-            "documents": [SeededDocument(provider="google_drive", title="Team Plan", text="hi", space="Team")],
+            "documents": [SeededDocument(provider="google_workspace", title="Team Plan", text="hi", space="Team")],
         }
     )
     clock = RunClock(START)

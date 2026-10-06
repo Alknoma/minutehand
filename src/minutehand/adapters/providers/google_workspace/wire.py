@@ -29,8 +29,8 @@ from urllib.parse import parse_qsl
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
-from minutehand.adapters.providers.google_drive.docs import DocBody
-from minutehand.adapters.providers.google_drive.slides import Deck
+from minutehand.adapters.providers.google_workspace.docs import DocBody
+from minutehand.adapters.providers.google_workspace.slides import Deck
 from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 

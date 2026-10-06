@@ -8,14 +8,14 @@ from pathlib import Path
 
 import httpx
 
-from minutehand.adapters.providers.google_drive import state
-from minutehand.adapters.providers.google_drive.manifest import MANIFEST
-from minutehand.adapters.providers.google_drive.provider import build
+from minutehand.adapters.providers.google_workspace import state
+from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
+from minutehand.adapters.providers.google_workspace.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
 from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, Operation
-from tests.providers.google_drive.drive_world import (
+from tests.providers.google_workspace.drive_world import (
     AUTH,
     DOC,
     FOLDER,
@@ -159,25 +159,28 @@ async def test_the_token_endpoint_rejects_an_unknown_grant_or_a_missing_assertio
 
 
 def test_the_provider_is_registered_and_its_manifest_imports_nothing_else() -> None:
-    assert (MANIFEST.key, MANIFEST.tier) == ("google_drive", Tier.FINISHED)
+    assert (MANIFEST.key, MANIFEST.tier) == ("google_workspace", Tier.FINISHED)
     assert MANIFEST.hosts == [
         "www.googleapis.com",
         "oauth2.googleapis.com",
+        "gmail.googleapis.com",
         "docs.googleapis.com",
         "slides.googleapis.com",
         "iamcredentials.googleapis.com",
     ]
-    assert MANIFEST.kinds == [EntityKind.DOCUMENT, EntityKind.COMMENT] and not MANIFEST.pushes_events
+    assert (
+        MANIFEST.kinds == [EntityKind.DOCUMENT, EntityKind.COMMENT, EntityKind.MESSAGE] and not MANIFEST.pushes_events
+    )
     loaded = subprocess.run(
         [
             sys.executable,
             "-c",
             "import sys; from minutehand.adapters.proxy.registry import Registry; r = Registry.installed();"
             "print(r.claimant('docs.googleapis.com').key,"
-            " sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.google_drive.')))",
+            " sorted(m for m in sys.modules if m.startswith('minutehand.adapters.providers.google_workspace.')))",
         ],
         capture_output=True,
         text=True,
         check=True,
     )
-    assert loaded.stdout.strip() == "google_drive ['minutehand.adapters.providers.google_drive.manifest']"
+    assert loaded.stdout.strip() == "google_workspace ['minutehand.adapters.providers.google_workspace.manifest']"

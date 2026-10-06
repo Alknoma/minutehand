@@ -12,10 +12,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from minutehand.adapters.providers.google_drive import state, wire
-from minutehand.adapters.providers.google_drive.app import DOCS_HOST, DRIVE_HOST, OAUTH_HOST, SLIDES_HOST
-from minutehand.adapters.providers.google_drive.provider import GoogleDriveProvider, build
-from minutehand.adapters.providers.google_drive.state import DriveWorld
+from minutehand.adapters.providers.google_workspace import state, wire
+from minutehand.adapters.providers.google_workspace.app import DOCS_HOST, DRIVE_HOST, OAUTH_HOST, SLIDES_HOST
+from minutehand.adapters.providers.google_workspace.provider import GoogleWorkspaceProvider, build
+from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, Scenario, SeededDocument
@@ -42,12 +42,12 @@ SCENARIO = Scenario(
     ],
     documents=[
         SeededDocument(
-            provider="google_drive",
+            provider="google_workspace",
             title="Supplier Shortlist",
             text="Three suppliers remain.\nPrices due Friday.",
             folder="Procurement",
         ),
-        SeededDocument(provider="google_drive", title="Kickoff Notes", text="The review starts in September."),
+        SeededDocument(provider="google_workspace", title="Kickoff Notes", text="The review starts in September."),
         SeededDocument(provider="slack", title="Not a Drive file", text="belongs to another provider"),
     ],
 )
@@ -55,7 +55,7 @@ SCENARIO = Scenario(
 
 @dataclass
 class Drive:
-    provider: GoogleDriveProvider
+    provider: GoogleWorkspaceProvider
     store: SqliteStore
     clock: RunClock
     path: Path
@@ -85,7 +85,7 @@ def issue(store: SqliteStore, token: str, email: str, *, lasts: timedelta = time
 
 
 def client_for(
-    provider: GoogleDriveProvider, store: SqliteStore, clock: RunClock, host: str = DRIVE_HOST
+    provider: GoogleWorkspaceProvider, store: SqliteStore, clock: RunClock, host: str = DRIVE_HOST
 ) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=provider.app(store, clock)), base_url=f"https://{host}")
 

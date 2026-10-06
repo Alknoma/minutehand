@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from minutehand.adapters.providers.google_drive.provider import GoogleDriveProvider, build
+from minutehand.adapters.providers.google_workspace.provider import GoogleWorkspaceProvider, build
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -51,7 +51,7 @@ ROBOT = "robot@sim-project.iam.gserviceaccount.com"
 OFFLINE = Path(__file__).parent / "offline"
 
 SUPPLIERS = SeededDocument(
-    provider="google_drive",
+    provider="google_workspace",
     title="Supplier Shortlist",
     text="# Shortlist\nThree suppliers remain.\n- Acme\n- Globex\n",
     folder="Procurement/2026",
@@ -71,12 +71,12 @@ SCENARIO = Scenario(
         Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(replies=[])),
     ],
     sign_ins=[
-        SignIn(provider="google_drive", credential=REFRESH, person="mara"),
-        SignIn(provider="google_drive", credential=ROBOT),
+        SignIn(provider="google_workspace", credential=REFRESH, person="mara"),
+        SignIn(provider="google_workspace", credential=ROBOT),
     ],
     spaces=[
         SharedSpace(
-            provider="google_drive",
+            provider="google_workspace",
             name="Partners",
             members=[Access(person="mara", role=AccessRole.ORGANIZER), Access(person="rosa", role=AccessRole.READER)],
         )
@@ -84,18 +84,18 @@ SCENARIO = Scenario(
     documents=[
         SUPPLIERS,
         SeededDocument(
-            provider="google_drive",
+            provider="google_workspace",
             title="Rates",
             kind=DocumentKind.SPREADSHEET,
             rows=[["supplier", "rate"], ["Acme", "12"], ["Globex, Ltd", "14"]],
             folder="Procurement",
         ),
         SeededDocument(
-            provider="google_drive", title="Kickoff Deck", kind=DocumentKind.PRESENTATION, text="Kickoff\nWhy now"
+            provider="google_workspace", title="Kickoff Deck", kind=DocumentKind.PRESENTATION, text="Kickoff\nWhy now"
         ),
-        SeededDocument(provider="google_drive", title="notes.txt", kind=DocumentKind.FILE, text="call Acme back\n"),
+        SeededDocument(provider="google_workspace", title="notes.txt", kind=DocumentKind.FILE, text="call Acme back\n"),
         SeededDocument(
-            provider="google_drive", title="Partner Plan", text="Partners sign by October.", space="Partners"
+            provider="google_workspace", title="Partner Plan", text="Partners sign by October.", space="Partners"
         ),
     ],
 )
@@ -139,7 +139,7 @@ class Google:
     proxy: Proxy
     store: SqliteStore
     clock: RunClock
-    provider: GoogleDriveProvider
+    provider: GoogleWorkspaceProvider
     environment: dict[str, str]
 
     def exchanges(self) -> list[tuple[str | None, Exchange]]:
@@ -213,5 +213,5 @@ async def serving(tmp_path: Path, scenario: Scenario) -> AsyncIterator[Google]:
     registry = Registry()
     registry.discover("minutehand.adapters.providers")
     async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
-        proxy.mount(store, clock, {"google_drive": provider.app(store, clock)}, scenario=scenario)
+        proxy.mount(store, clock, {"google_workspace": provider.app(store, clock)}, scenario=scenario)
         yield Google(proxy, store, clock, provider, client_environment(proxy))
