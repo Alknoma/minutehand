@@ -147,3 +147,20 @@ async def test_a_wake_delivered_twice_to_an_agent_that_writes_nothing_on_it_is_n
     assert len(record.wakes) == 3
     view = view_of(scn, store.events(), record.wakes, store.replies(), dues=due_entries(store))
     assert ActedOnRepeatedWake().run(view).findings == []
+
+
+async def test_a_booking_delivered_twice_reaches_the_queue_twice_and_finishes_its_occurrence_once(rig: Rig) -> None:
+    scn = scenario(ticket_fates=[], dispatch=[rule(PlannedBy.BOOKED, DispatchFault.TWICE, minutes=1)])
+    await rig.run(scn, rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))]))
+
+    five = T0 + timedelta(hours=5)
+    assert rig.sched.fired == [("kept", five), ("kept", five + timedelta(minutes=1))]
+    assert rig.sched.advanced == [("kept", five + timedelta(minutes=1))]
+
+
+async def test_a_booking_dropped_reaches_no_queue_and_its_occurrence_is_still_finished(rig: Rig) -> None:
+    scn = scenario(ticket_fates=[], dispatch=[rule(PlannedBy.BOOKED, DispatchFault.DROPPED)])
+    record, _, _ = await rig.run(scn, rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))]))
+
+    assert rig.sched.fired == [] and rig.sched.advanced == [("kept", T0 + timedelta(hours=5))]
+    assert [w.sim_time for w in record.wakes] == [T0]

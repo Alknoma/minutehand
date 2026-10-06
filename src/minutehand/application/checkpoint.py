@@ -70,6 +70,11 @@ class PendingBooking(Model):
     due: Due
     provider: ProviderKey
     ref: str = Field(description="The scheduler's own reference for the booking")
+    deliver: bool = Field(default=True, description="Deliver this occurrence when it fires")
+    advance: bool = Field(
+        default=True,
+        description="Then finish the occurrence: False on the first of two deliveries, whose second finishes it",
+    )
 
 
 Pending = Annotated[

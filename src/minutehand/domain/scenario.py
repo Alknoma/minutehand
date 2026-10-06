@@ -754,11 +754,6 @@ class DispatchRule(Model):
             raise ValueError("a dropped wake is never delivered, so it takes no `by`")
         if self.fault is not DispatchFault.DROPPED and (self.by is None or self.by <= timedelta(0)):
             raise ValueError(f"a {self.fault.value} wake needs `by`, a duration after the moment it was asked for")
-        if self.wakes is PlannedBy.BOOKED and self.fault is not DispatchFault.LATE:
-            raise ValueError(
-                f"a booking can only be made late: delivering it {self.fault.value} needs its scheduler provider to "
-                "redeliver or skip one occurrence, and no scheduler port can yet"
-            )
         return self
 
 

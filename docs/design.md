@@ -421,7 +421,8 @@ class Wakes(Protocol):
 class BooksWakes(Protocol):
     def bind(self, wakes: Wakes) -> None: ...
 
-    async def fire(self, ref: str, world: Store, clock: Clock) -> None: ...
+    async def deliver(self, ref: str, world: Store, clock: Clock) -> None: ...
+    async def advance(self, ref: str, world: Store, clock: Clock) -> None: ...
 ```
 
 | Provider | `Manifest.key` | Hosts (`path_prefix`) | Ports beyond `Provider` |
@@ -598,7 +599,7 @@ Orchestrator.run():
                      reply that uses a control), happenings (ActsOnTickets.act for a ticket,
                      ChangesDocuments.change for a document, PushesEvents.happen for a message), directions by
                      message (say),
-                     bookings (BooksWakes.fire), the next Polled tick
+                     bookings (BooksWakes.deliver, .advance), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
       read the new events: an agent message to a person, as its text reads when the wake ends
                            -> Replier.decide -> a pending reply
@@ -1268,9 +1269,9 @@ The decision is made when the wake's moment comes, and recorded on its entry (`D
 |---|---|---|---|
 | `reported` | ✓ | ✓ | ✓ |
 | `polled` | ✓ | ✓ | ✓ |
-| `booked` | ✓ | refused | refused |
+| `booked` | ✓ | ✓ | ✓ |
 
-A booking delivered twice, or one occurrence of a recurring one dropped, needs the scheduler provider to redeliver or to skip an occurrence, and `BooksWakes.fire` does both delivering and booking the next occurrence: the port would have to split, so both are refused when the scenario loads, saying why. A seed refuses `dispatch` (a standing world's clock is driven from outside). Only the agent's own wakes are covered: a person's pace is their `reply`, a ticket's its fate.
+A scheduler provider delivers and finishes an occurrence in two steps (`BooksWakes.deliver`, `advance`), so a booking can go wrong as a real scheduler's does: delivered twice (`deliver` now and again, `advance` once, after the second), or dropped (`advance` only, so a recurring schedule still books its next occurrence). `advance` books the first occurrence after now, as a real scheduler skips what it missed. A seed refuses `dispatch` (a standing world's clock is driven from outside). Only the agent's own wakes are covered: a person's pace is their `reply`, a ticket's its fate.
 
 What the checks make of it: the follow-up checks' account of the agent's plan (`plan_at`) counts only wakes delivered or on their way, so a wait missed because the scenario held the agent's wake back says that the delivery failed the plan, not that the agent had none; `acted_on_repeated_wake` reviews a second delivery after which the agent changed the world again, and notes each rule that never applied.
 

@@ -65,6 +65,9 @@ class Dispatched(Model):
 
     delivered: list[Pending] = Field(description="Dispatched now")
     withheld: list[Pending] = Field(description="The agent's own wakes a dispatch rule made late or dropped")
+    finished: list[PendingBooking] = Field(
+        default=[], description="Bookings dropped: their occurrence is over undelivered, and the scheduler moves on"
+    )
 
 
 def key_of(due: Due) -> Key:
@@ -130,6 +133,7 @@ class Dues:
         self._items = [p for p in self._items if id(p) not in gone]
         delivered: list[Pending] = []
         withheld: list[Pending] = []
+        finished: list[PendingBooking] = []
         for p in reached:
             ref, entry = self._open.pop(key_of(p.due))
             planned = PLANNED_BY.get(entry.source)
@@ -141,6 +145,8 @@ class Dues:
             if rule.fault is DispatchFault.DROPPED:
                 self._close(ref, entry, DueClosed.DROPPED, fault=rule.fault)
                 withheld.append(p)
+                if isinstance(p, PendingBooking):
+                    finished.append(p)
                 continue
             assert rule.by is not None
             if rule.fault is DispatchFault.LATE:
@@ -148,9 +154,10 @@ class Dues:
                 withheld.append(p)
             else:
                 self._close(ref, entry, DueClosed.FIRED, fault=rule.fault)
-                delivered.append(p)
+                # the first of two deliveries leaves the occurrence open: the second finishes it
+                delivered.append(p.model_copy(update={"advance": False}) if isinstance(p, PendingBooking) else p)
             self.enter(_again(p, self._clock.now() + rule.by, rule.fault), fault=rule.fault, asked_for=entry.due.at)
-        return Dispatched(delivered=delivered, withheld=withheld)
+        return Dispatched(delivered=delivered, withheld=withheld, finished=finished)
 
     def _rule(self, planned: PlannedBy) -> DispatchRule | None:
         """Count one more of the agent's wakes of this kind reaching its moment, and the rule for it: one for the

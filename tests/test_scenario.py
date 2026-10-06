@@ -389,8 +389,6 @@ def test_dispatch_rules_load_with_their_durations() -> None:
         ({"wakes": "reported", "fault": "late"}, "a late wake needs `by`"),
         ({"wakes": "reported", "fault": "twice", "by": "PT0S"}, "a twice wake needs `by`"),
         ({"wakes": "polled", "fault": "dropped", "by": "PT1H"}, "a dropped wake is never delivered"),
-        ({"wakes": "booked", "fault": "twice", "by": "PT1M"}, "a booking can only be made late"),
-        ({"wakes": "booked", "fault": "dropped"}, "a booking can only be made late"),
     ],
 )
 def test_a_dispatch_rule_that_cannot_be_delivered_is_refused(rule: dict[str, object], says: str) -> None:
