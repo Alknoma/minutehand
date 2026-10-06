@@ -257,6 +257,62 @@
       "title": "Direction",
       "type": "object"
     },
+    "DispatchFault": {
+      "description": "What goes wrong delivering one of the agent's own wakes, as real schedulers go wrong.",
+      "enum": [
+        "late",
+        "twice",
+        "dropped"
+      ],
+      "title": "DispatchFault",
+      "type": "string"
+    },
+    "DispatchRule": {
+      "additionalProperties": false,
+      "description": "A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.\n\nOnly the agent's own wakes are covered: when a person answers is their `reply`, and a ticket's pace its fate.",
+      "properties": {
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How late, or how long after the first the second delivery comes; not for dropped",
+          "title": "By"
+        },
+        "fault": {
+          "$ref": "#/$defs/DispatchFault"
+        },
+        "nth": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The nth wake of that kind to fall due, from 1; None: each",
+          "title": "Nth"
+        },
+        "wakes": {
+          "$ref": "#/$defs/PlannedBy"
+        }
+      },
+      "required": [
+        "wakes",
+        "fault"
+      ],
+      "title": "DispatchRule",
+      "type": "object"
+    },
     "DocumentCreated": {
       "additionalProperties": false,
       "description": "The agent created a document: with these words in its title, in this shared place, owned by this person, and\nholding these words as it last read (by `by`, when given). One document counts once, however often it changed.",
@@ -1317,6 +1373,16 @@
       ],
       "title": "PersonReacts",
       "type": "object"
+    },
+    "PlannedBy": {
+      "description": "How the agent asked for one of its own wakes: which of them a dispatch rule is about.",
+      "enum": [
+        "reported",
+        "booked",
+        "polled"
+      ],
+      "title": "PlannedBy",
+      "type": "string"
     },
     "ProviderSeed": {
       "additionalProperties": false,
@@ -2513,6 +2579,15 @@
         "$ref": "#/$defs/Direction"
       },
       "title": "Directions",
+      "type": "array"
+    },
+    "dispatch": {
+      "default": [],
+      "description": "Faults in delivering the agent's own wakes: late, twice or dropped. Without any, each is delivered at the moment it was asked for",
+      "items": {
+        "$ref": "#/$defs/DispatchRule"
+      },
+      "title": "Dispatch",
       "type": "array"
     },
     "documents": {

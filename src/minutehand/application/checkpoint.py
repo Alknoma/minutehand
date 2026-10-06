@@ -50,6 +50,11 @@ class PendingWake(Model):
     kind: Literal["wake"] = "wake"
     due: Due
     reason: WakeReason
+    repeat: bool = Field(
+        default=False,
+        description="A late or second delivery the scenario's dispatch rules made of a wake already due: a tick of "
+        "it books no next tick, which the wake it repeats already did",
+    )
 
 
 class PendingDirection(Model):

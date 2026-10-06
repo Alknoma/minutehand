@@ -8,8 +8,10 @@ at its checkpoint. Nothing here decides what is due: it records what the loop pu
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
+
+from pydantic import Field
 
 from minutehand.application.checkpoint import (
     Pending,
@@ -21,7 +23,8 @@ from minutehand.application.checkpoint import (
     PendingWake,
 )
 from minutehand.domain.agent import WakeReason
-from minutehand.domain.clock import Due, DueClosed, DueEntry, DueSource
+from minutehand.domain.clock import PLANNED_BY, REACHED, Due, DueClosed, DueEntry, DueSource
+from minutehand.domain.scenario import DispatchFault, DispatchRule, Model, PlannedBy
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -57,6 +60,13 @@ def due_events(events: list[WorldEvent]) -> list[WorldEvent]:
 Key = tuple[str, str, datetime]
 
 
+class Dispatched(Model):
+    """What the run loop does with the entries the clock has reached."""
+
+    delivered: list[Pending] = Field(description="Dispatched now")
+    withheld: list[Pending] = Field(description="The agent's own wakes a dispatch rule made late or dropped")
+
+
 def key_of(due: Due) -> Key:
     """What makes two entries the same: what is due, whose, and when."""
     return (due.kind.value, due.ref, due.at)
@@ -65,20 +75,23 @@ def key_of(due: Due) -> Key:
 class Dues:
     """What the run loop holds pending, recorded as it changes."""
 
-    def __init__(self, store: Store, clock: Clock) -> None:
+    def __init__(self, store: Store, clock: Clock, rules: Sequence[DispatchRule] = ()) -> None:
         self._store = store
         self._clock = clock
+        self._rules = list(rules)
         self._items: list[Pending] = []
         self._open: dict[Key, tuple[EntityRef, DueEntry]] = {}
         self._made = 0
+        self._reached: dict[PlannedBy, int] = {}
 
     @property
     def items(self) -> list[Pending]:
         return list(self._items)
 
-    def enter(self, pending: Pending) -> None:
+    def enter(self, pending: Pending, *, fault: DispatchFault | None = None, asked_for: datetime | None = None) -> None:
         """Put an entry in the table. One that names the same moment as an entry already there from the same
-        source is that entry, unchanged: an agent that reports the same next wake after every wake planned it once."""
+        source is that entry, unchanged: an agent that reports the same next wake after every wake planned it once.
+        `fault` and `asked_for` mark a late or second delivery a dispatch rule entered."""
         if key_of(pending.due) in self._open:
             return
         self._items.append(pending)
@@ -89,6 +102,8 @@ class Dues:
             source=source_of(pending),
             entered_at=self._clock.now(),
             entered_wake=self._clock.wake(),
+            fault=fault,
+            asked_for=asked_for,
         )
         self._write(ref, entry, Operation.CREATE)
         self._open[key_of(pending.due)] = (ref, entry)
@@ -105,12 +120,45 @@ class Dues:
         """Take out every entry `where` holds, undispatched."""
         self._leave([p for p in self._items if where(p)], DueClosed.CANCELLED)
 
-    def fire(self, firing: list[Due]) -> list[Pending]:
-        """Take out what the clock has reached, as dispatched, and answer it."""
+    def dispatch(self, firing: list[Due]) -> Dispatched:
+        """Take out what the clock has reached and decide each: an agent's own wake by the scenario's dispatch rule
+        for it, if any (late: held back and a late delivery entered; twice: delivered, and a second delivery
+        entered; dropped: never delivered); anything else, and a late or second delivery itself, delivered as is."""
         due = {key_of(d) for d in firing}
-        fired = [p for p in self._items if key_of(p.due) in due]
-        self._leave(fired, DueClosed.FIRED)
-        return fired
+        reached = [p for p in self._items if key_of(p.due) in due]
+        gone = {id(p) for p in reached}
+        self._items = [p for p in self._items if id(p) not in gone]
+        delivered: list[Pending] = []
+        withheld: list[Pending] = []
+        for p in reached:
+            ref, entry = self._open.pop(key_of(p.due))
+            planned = PLANNED_BY.get(entry.source)
+            rule = self._rule(planned) if planned is not None and entry.asked_for is None else None
+            if rule is None:
+                self._close(ref, entry, DueClosed.FIRED)
+                delivered.append(p)
+                continue
+            if rule.fault is DispatchFault.DROPPED:
+                self._close(ref, entry, DueClosed.DROPPED, fault=rule.fault)
+                withheld.append(p)
+                continue
+            assert rule.by is not None
+            if rule.fault is DispatchFault.LATE:
+                self._close(ref, entry, DueClosed.DELAYED, fault=rule.fault)
+                withheld.append(p)
+            else:
+                self._close(ref, entry, DueClosed.FIRED, fault=rule.fault)
+                delivered.append(p)
+            self.enter(_again(p, self._clock.now() + rule.by, rule.fault), fault=rule.fault, asked_for=entry.due.at)
+        return Dispatched(delivered=delivered, withheld=withheld)
+
+    def _rule(self, planned: PlannedBy) -> DispatchRule | None:
+        """Count one more of the agent's wakes of this kind reaching its moment, and the rule for it: one for the
+        nth wins over one for each."""
+        n = self._reached.get(planned, 0) + 1
+        self._reached[planned] = n
+        mine = [r for r in self._rules if r.wakes is planned]
+        return next((r for r in mine if r.nth == n), None) or next((r for r in mine if r.nth is None), None)
 
     def resume(self, pending: list[Pending]) -> None:
         """Take up the table a fork's checkpoint holds. The log as the fork shares it says what was open: an entry
@@ -119,9 +167,13 @@ class Dues:
         self._open = {}
         refs = list(dict.fromkeys(e.entity for e in self._store.events() if e.entity.kind is EntityKind.DUE))
         self._made = len(refs)
+        self._reached = {}
         logged: dict[Key, tuple[EntityRef, DueEntry]] = {}
         for ref in refs:
             entry = DueEntry.model_validate_json(self._store.versions(ref)[-1].body)
+            planned = PLANNED_BY.get(entry.source)
+            if planned is not None and entry.asked_for is None and entry.closed in REACHED:
+                self._reached[planned] = self._reached.get(planned, 0) + 1
             if entry.closed is None:
                 logged[key_of(entry.due)] = (ref, entry)
         wanted = {key_of(p.due) for p in pending}
@@ -146,11 +198,25 @@ class Dues:
             if opened is not None:
                 self._close(*opened, how)
 
-    def _close(self, ref: EntityRef, entry: DueEntry, how: DueClosed) -> None:
+    def _close(self, ref: EntityRef, entry: DueEntry, how: DueClosed, fault: DispatchFault | None = None) -> None:
         closed = entry.model_copy(
-            update={"closed": how, "closed_at": self._clock.now(), "closed_wake": self._clock.wake()}
+            update={
+                "closed": how,
+                "closed_at": self._clock.now(),
+                "closed_wake": self._clock.wake(),
+                "fault": fault or entry.fault,
+            }
         )
         self._write(ref, closed, Operation.UPDATE)
 
     def _write(self, ref: EntityRef, entry: DueEntry, operation: Operation) -> None:
         self._store.apply(Change(entity=ref, operation=operation, actor=Actor.SCENARIO, body=entry.model_dump_json()))
+
+
+def _again(pending: Pending, at: datetime, fault: DispatchFault) -> Pending:
+    """The late or second delivery of one of the agent's own wakes, at `at`. It keeps whatever its delivery needs
+    (a booking's own reference), and a tick of it books no next tick."""
+    due = Due(at=at, kind=pending.due.kind, ref=f"{pending.due.ref}~{fault.value}")
+    if isinstance(pending, PendingWake):
+        return pending.model_copy(update={"due": due, "repeat": True})
+    return pending.model_copy(update={"due": due})

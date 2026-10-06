@@ -720,6 +720,48 @@ Expectation = Annotated[
 ]
 
 
+class PlannedBy(StrEnum):
+    """How the agent asked for one of its own wakes: which of them a dispatch rule is about."""
+
+    REPORTED = "reported"  # `AgentReport.next_wake`
+    BOOKED = "booked"  # a booking with a scheduler provider
+    POLLED = "polled"  # the declared rhythm of a `Polled` agent
+
+
+class DispatchFault(StrEnum):
+    """What goes wrong delivering one of the agent's own wakes, as real schedulers go wrong."""
+
+    LATE = "late"  # delivered `by` after the moment it was asked for
+    TWICE = "twice"  # delivered at its moment, and again `by` after: an at-least-once queue
+    DROPPED = "dropped"  # never delivered
+
+
+class DispatchRule(Model):
+    """A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.
+
+    Only the agent's own wakes are covered: when a person answers is their `reply`, and a ticket's pace its fate."""
+
+    wakes: PlannedBy
+    nth: int | None = Field(default=None, ge=1, description="The nth wake of that kind to fall due, from 1; None: each")
+    fault: DispatchFault
+    by: timedelta | None = Field(
+        default=None, description="How late, or how long after the first the second delivery comes; not for dropped"
+    )
+
+    @model_validator(mode="after")
+    def _deliverable(self) -> Self:
+        if self.fault is DispatchFault.DROPPED and self.by is not None:
+            raise ValueError("a dropped wake is never delivered, so it takes no `by`")
+        if self.fault is not DispatchFault.DROPPED and (self.by is None or self.by <= timedelta(0)):
+            raise ValueError(f"a {self.fault.value} wake needs `by`, a duration after the moment it was asked for")
+        if self.wakes is PlannedBy.BOOKED and self.fault is not DispatchFault.LATE:
+            raise ValueError(
+                f"a booking can only be made late: delivering it {self.fault.value} needs its scheduler provider to "
+                "redeliver or skip one occurrence, and no scheduler port can yet"
+            )
+        return self
+
+
 class _ScenarioBody(Model):
     """Everything a scenario says but when it starts."""
 
@@ -745,6 +787,18 @@ class _ScenarioBody(Model):
         default=[], description="Each provider's own seed beyond people, tickets and documents; one per provider"
     )
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
+    dispatch: list[DispatchRule] = Field(
+        default=[],
+        description="Faults in delivering the agent's own wakes: late, twice or dropped. Without any, each is "
+        "delivered at the moment it was asked for",
+    )
+
+    @model_validator(mode="after")
+    def _one_rule_per_wake(self) -> Self:
+        said = [(r.wakes, r.nth) for r in self.dispatch]
+        if len(said) != len(set(said)):
+            raise ValueError("two dispatch rules name the same wake; a rule for the nth wins over one for each")
+        return self
 
     @model_validator(mode="after")
     def _keys_resolve(self) -> Self:
@@ -998,6 +1052,15 @@ class Seed(WrittenScenario):
     name: str = Field(default="world", pattern=r"^[a-z][a-z0-9_]*$")
     goal: str = Field(default="", description="Handed to nobody: a standing world has no run loop")
     people: list[Person] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _no_dispatch(self) -> Self:
+        if self.dispatch:
+            raise ValueError(
+                "dispatch rules need the run loop's clock, and a standing world's is driven from outside: play this "
+                "scenario with `minutehand run`, or leave `dispatch` out of the seed"
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod

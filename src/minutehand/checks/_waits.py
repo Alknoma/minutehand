@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
-from minutehand.domain.clock import AGENT_SOURCES, DueEntry, DueSource
-from minutehand.domain.scenario import Model
+from minutehand.domain.clock import AGENT_SOURCES, DueClosed, DueEntry, DueSource
+from minutehand.domain.scenario import DispatchFault, Model
 from minutehand.domain.world import Operation, WorldEvent
 
 GRACE = timedelta(hours=1)
@@ -189,6 +189,11 @@ class Plan(Model):
 
     moment: AwareDatetime
     earliest: DueEntry | None = Field(description="None: the agent had asked for no wake of its own")
+    dropped: DueEntry | None = Field(
+        default=None,
+        description="A wake the agent had asked for within the grace of `moment` that the scenario's dispatch rules "
+        "dropped: the agent's plan was right and the delivery failed it",
+    )
 
     @property
     def past_due(self) -> bool:
@@ -196,14 +201,26 @@ class Plan(Model):
         return self.earliest is None or self.earliest.due.at - self.moment > GRACE
 
     def said(self) -> str:
+        lost = (
+            f", though it had asked for one then ({_PLANNED[self.dropped.source]} in wake {self.dropped.entered_wake}) "
+            "that the scenario's dispatch rules dropped"
+            if self.dropped is not None and self.past_due
+            else ""
+        )
         if self.earliest is None:
-            return "the agent had asked for no wake of its own"
+            return f"the agent had asked for no wake of its own{lost}"
         how = _PLANNED[self.earliest.source]
         if not self.past_due:
             return f"the agent's own next wake was due then ({how} in wake {self.earliest.entered_wake})"
+        late = self.earliest.asked_for
+        if late is not None and self.earliest.fault is DispatchFault.LATE and late - self.moment <= GRACE:
+            return (
+                f"the agent's own next wake was {span(self.earliest.due.at - self.moment)} later: it had asked for one "
+                f"then ({how} in wake {self.earliest.entered_wake}) that the scenario's dispatch rules delivered late"
+            )
         return (
             f"the agent's own next wake was {span(self.earliest.due.at - self.moment)} later "
-            f"({how} in wake {self.earliest.entered_wake})"
+            f"({how} in wake {self.earliest.entered_wake}){lost}"
         )
 
 
@@ -212,5 +229,23 @@ _PLANNED = {DueSource.REPORTED: "reported", DueSource.BOOKED: "booked", DueSourc
 
 def plan_at(dues: list[DueEntry], moment: datetime) -> Plan:
     """What the agent had planned at `moment`, read from the table as the log recorded it."""
-    planned = [d for d in dues if d.source in AGENT_SOURCES and d.open_at(moment)]
-    return Plan(moment=moment, earliest=min(planned, key=lambda d: d.due.at, default=None))
+    planned = [
+        d
+        for d in dues
+        if d.source in AGENT_SOURCES
+        and d.open_at(moment)
+        and d.closed not in (DueClosed.DELAYED, DueClosed.DROPPED)  # never delivered at that moment
+    ]
+    dropped = [
+        d
+        for d in dues
+        if d.source in AGENT_SOURCES
+        and d.closed is DueClosed.DROPPED
+        and d.entered_at <= moment
+        and abs(d.due.at - moment) <= GRACE
+    ]
+    return Plan(
+        moment=moment,
+        earliest=min(planned, key=lambda d: d.due.at, default=None),
+        dropped=max(dropped, key=lambda d: d.due.at, default=None),
+    )

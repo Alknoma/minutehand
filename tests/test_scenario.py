@@ -359,3 +359,52 @@ def test_a_moment_that_names_no_duration_is_rejected_at_load() -> None:
                 "people": [{"key": "o", "name": "O", "email": "o@x"}],
             }
         )
+
+
+def _with_dispatch(*rules: dict[str, object]) -> dict[str, object]:
+    return {
+        "name": "dispatched",
+        "goal": "g",
+        "owner": "owen",
+        "starts_at": "2026-08-24T09:00:00Z",
+        "people": [{"key": "owen", "name": "Owen", "email": "owen@example.com", "reply": {"kind": "silent"}}],
+        "dispatch": list(rules),
+    }
+
+
+def test_dispatch_rules_load_with_their_durations() -> None:
+    scn = Scenario.model_validate(
+        _with_dispatch(
+            {"wakes": "reported", "fault": "late", "by": "PT2H"},
+            {"wakes": "polled", "nth": 3, "fault": "dropped"},
+            {"wakes": "booked", "nth": 1, "fault": "late", "by": "PT10M"},
+        )
+    )
+    assert [r.by for r in scn.dispatch] == [timedelta(hours=2), None, timedelta(minutes=10)]
+
+
+@pytest.mark.parametrize(
+    ("rule", "says"),
+    [
+        ({"wakes": "reported", "fault": "late"}, "a late wake needs `by`"),
+        ({"wakes": "reported", "fault": "twice", "by": "PT0S"}, "a twice wake needs `by`"),
+        ({"wakes": "polled", "fault": "dropped", "by": "PT1H"}, "a dropped wake is never delivered"),
+        ({"wakes": "booked", "fault": "twice", "by": "PT1M"}, "a booking can only be made late"),
+        ({"wakes": "booked", "fault": "dropped"}, "a booking can only be made late"),
+    ],
+)
+def test_a_dispatch_rule_that_cannot_be_delivered_is_refused(rule: dict[str, object], says: str) -> None:
+    with pytest.raises(ValidationError, match=says):
+        Scenario.model_validate(_with_dispatch(rule))
+
+
+def test_two_dispatch_rules_for_the_same_wake_are_refused() -> None:
+    rule = {"wakes": "reported", "nth": 2, "fault": "dropped"}
+    with pytest.raises(ValidationError, match="two dispatch rules name the same wake"):
+        Scenario.model_validate(_with_dispatch(rule, rule))
+
+
+def test_a_seed_with_dispatch_rules_is_refused() -> None:
+    written = _with_dispatch({"wakes": "reported", "fault": "dropped"})
+    with pytest.raises(ValidationError, match="dispatch rules need the run loop's clock"):
+        Seed.model_validate(written)

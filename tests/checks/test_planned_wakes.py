@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from minutehand.checks.late_follow_up import LateFollowUp
 from minutehand.checks.no_follow_up import NoFollowUp
 from minutehand.checks.planned_past_due import PlannedPastDue
 from minutehand.domain.checks import FindingKind, RunView
 from minutehand.domain.clock import Due, DueClosed, DueEntry, DueKind, DueSource
-from minutehand.domain.scenario import Silent
+from minutehand.domain.scenario import DispatchFault, Silent
 from tests.checks.world import Log, at, person, reply, scenario, view
 
 OWNER, SOFIA = person("owner"), person("sofia")
@@ -85,3 +85,39 @@ def test_a_wait_never_followed_up_says_the_agent_had_asked_for_no_wake() -> None
     built = view(scenario(OWNER, DANIA), log, []).model_copy(update={"dues": []})
     [finding] = NoFollowUp().run(built).findings
     assert finding.message.endswith("; when it fell due, the agent had asked for no wake of its own")
+
+
+def test_a_wait_due_when_the_scenario_delivered_the_agents_wake_late_says_so() -> None:
+    held = planned(at(2)).model_copy(
+        update={"closed": DueClosed.DELAYED, "closed_at": at(2), "fault": DispatchFault.LATE}
+    )
+    late = planned(at(10)).model_copy(update={"asked_for": at(2), "fault": DispatchFault.LATE, "entered_at": at(2)})
+    [finding] = LateFollowUp().run(_sofia_chased_at(10, held, fired(late))).findings
+    assert finding.message.endswith(
+        "the agent's own next wake was 8 hours later: it had asked for one then (reported in wake 1) that the "
+        "scenario's dispatch rules delivered late"
+    )
+
+
+def test_a_wait_due_when_the_scenario_dropped_the_agents_wake_says_so() -> None:
+    dropped = planned(at(2)).model_copy(
+        update={"closed": DueClosed.DROPPED, "closed_at": at(2), "fault": DispatchFault.DROPPED}
+    )
+    [finding] = LateFollowUp().run(_sofia_chased_at(10, dropped)).findings
+    assert finding.message.endswith(
+        "the agent had asked for no wake of its own, though it had asked for one then (reported in wake 1) that the "
+        "scenario's dispatch rules dropped"
+    )
+
+
+def test_a_dispatch_rule_that_never_applied_is_noted() -> None:
+    from minutehand.checks.acted_on_repeated_wake import ActedOnRepeatedWake
+    from minutehand.domain.scenario import DispatchRule, PlannedBy
+
+    rules = [DispatchRule(wakes=PlannedBy.BOOKED, fault=DispatchFault.LATE, nth=3, by=timedelta(hours=1))]
+    built = _sofia_chased_at(2.5, fired(planned(at(2.5))))
+    built = built.model_copy(update={"scenario": built.scenario.model_copy(update={"dispatch": rules})})
+    report = ActedOnRepeatedWake().run(built)
+    assert report.findings == [] and report.notes == [
+        "dispatch rule 1 (the 3rd booked wake late) never applied: 0 booked wakes fell due"
+    ]

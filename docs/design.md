@@ -34,7 +34,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
 | Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. Only `Scripted` and `Silent` people: `Answers` is refused. |
 | Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step compares the report and, when the hooks declare `fingerprint`, a digest of the agent's state; what the fingerprint command does not cover it cannot see. An agent with neither a `Reported` source nor a fingerprint is restored unverified, and says so. Without a `busy` command, settling sees only the report and the proxy, and each checkpoint says it is unconfirmed. PostgreSQL is described, not tested. |
-| Checks, ledger, scorecard, patterns: `checks/` | 16 checks (`planned_past_due` added), the obligations ledger, `Effectiveness`, 10 patterns | Built and tested | 132 (`tests/checks/` 125, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
+| Checks, ledger, scorecard, patterns: `checks/` | 17 checks (`planned_past_due`, `acted_on_repeated_wake` added), the obligations ledger, `Effectiveness`, 10 patterns | Built and tested | 135 (`tests/checks/` 128, `tests/test_checks_on_reference_run.py` 7) | `repeated_message` measures its window in wall time. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP and, with `minutehand[grpc]`, gRPC on the same port. Metrics are dropped; a log record is kept only when it carries GenAI content. A span is placed in a wake by comparing its SDK's clock with this machine's. |
 | Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers is untested. Samples without `StateHooks` are not independent. |
@@ -1079,6 +1079,7 @@ The checks, discovered by `checks/runner.py` (any class in a module of `checks/`
 | `id` | Kind of finding | `Pattern.key` |
 |---|---|---|
 | `acted_after_deadline` | `FAIL`; `REVIEW` for a wake whose late writes are all messages | `budgeted_follow_up` |
+| `acted_on_repeated_wake` | `REVIEW`: a wake the scenario delivered a second time (`dispatch`, `twice`) in which the agent changed the world again; notes each dispatch rule that never applied | `no_double_tick` |
 | `nagged` | `FAIL`: more follow-ups on one ask, each before the answer was due, than the person's `early_follow_ups` (default 2) | `budgeted_follow_up` |
 | `chased_absent_person` | `FAIL`: messaged someone away while a delegate covered | `absence_aware` |
 | `duplicate_ticket` | `FAIL`: the same normalised title filed twice in one project while the first was open | `one_open_ask_per_person` |
@@ -1249,7 +1250,29 @@ Built and tested (`application/dues.py`, `tests/orchestrator/test_dues.py`, `tes
 | A fork takes up its checkpoint's table against the log it shares: an entry the checkpoint dropped (a reply a `PersonChange` withdrew) is cancelled at the fork, and one it added is entered | The fork's table and its log agree from its first event |
 | The rows are left out of the viewer's event list, as checkpoints are, and no check counts them as the agent's | They are the run loop's own record, not the world |
 
-`RunView.dues` carries every entry as it last stood; None for a run that kept none (a captured run, a standing world, whose clock is driven from outside). `checks/_waits.plan_at` reads the agent's own plan at any moment from it: the earliest entry of the agent's own sources open then. What it cannot see: a plan the agent holds and never reports or books (an in-process scheduler), which reads as no plan. The run loop dispatches every entry as it falls due; deciding otherwise (late, twice, never) is designed, not built.
+`RunView.dues` carries every entry as it last stood; None for a run that kept none (a captured run, a standing world, whose clock is driven from outside). `checks/_waits.plan_at` reads the agent's own plan at any moment from it: the earliest entry of the agent's own sources open then. What it cannot see: a plan the agent holds and never reports or books (an in-process scheduler), which reads as no plan. 
+#### Deciding what to dispatch
+
+Built and tested (`DispatchRule`, `Dues.dispatch`, `tests/orchestrator/test_dispatch.py`). Real schedulers deliver late, twice (an at-least-once queue) and not at all, and a scenario can say so of the agent's own wakes:
+
+```yaml
+dispatch:
+  - {wakes: reported, nth: 2, fault: late, by: PT3H}   # the agent's second reported wake comes 3 hours late
+  - {wakes: polled, fault: twice, by: PT1M}             # every tick is delivered again a minute after
+  - {wakes: reported, nth: 4, fault: dropped}           # the fourth never comes
+```
+
+The decision is made when the wake's moment comes, and recorded on its entry (`DueEntry.fault`, closed `DELAYED` or `DROPPED`, or `FIRED` for the first of two). A late or second delivery is an entry of its own carrying the moment the agent asked for (`asked_for`): it is on its way, so a new report from the agent does not take it back, and a tick of it books no next tick. A late or dropped tick leaves the rhythm going from the moment it was due. A rule for the nth wake of a kind wins over one for each; a fork counts the wakes that fell due before it from the log it shares.
+
+| Wakes | late | twice | dropped |
+|---|---|---|---|
+| `reported` | ✓ | ✓ | ✓ |
+| `polled` | ✓ | ✓ | ✓ |
+| `booked` | ✓ | refused | refused |
+
+A booking delivered twice, or one occurrence of a recurring one dropped, needs the scheduler provider to redeliver or to skip an occurrence, and `BooksWakes.fire` does both delivering and booking the next occurrence: the port would have to split, so both are refused when the scenario loads, saying why. A seed refuses `dispatch` (a standing world's clock is driven from outside). Only the agent's own wakes are covered: a person's pace is their `reply`, a ticket's its fate.
+
+What the checks make of it: the follow-up checks' account of the agent's plan (`plan_at`) counts only wakes delivered or on their way, so a wait missed because the scenario held the agent's wake back says that the delivery failed the plan, not that the agent had none; `acted_on_repeated_wake` reviews a second delivery after which the agent changed the world again, and notes each rule that never applied.
 
 ### What the agent is waiting on
 
@@ -1491,7 +1514,7 @@ Nine, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/patter
 | `budgeted_follow_up` | Follows up too often, or too late | Space reminders across the time left before the deadline | `acted_after_deadline`, `nagged` | The next reminder computed from the time remaining and the number already sent |
 | `bounded_asking` | Asks for input indefinitely | After a fixed number of attempts, stop asking and deliver the best available version | none | A count of attempts per unmet need and a pivot to best-effort delivery past a threshold |
 | `one_open_ask_per_person` | Sends the same question twice | Track what is already open with each person before asking | `repeated_message`, `duplicate_ticket`, `kept_chasing_after_done` | A judge that compares each outgoing question with those already open with the same person |
-| `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | none | A check for an existing instance in the current period before each cadence tick creates anything |
+| `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | `acted_on_repeated_wake` | A check for an existing instance in the current period before each cadence tick creates anything |
 | `honest_closure` | Reports done when it is not | Closing is decided from the state of the world, not from the agent's last message | `expectations` | Closure evaluated against the recorded state of every piece of work the goal depends on |
 | `confirm_names` | Acts on a name it guessed | A name that matters is carried exactly as given, and an assumption is asked about before it is acted on | `near_miss_name` | None. Run `f431fc97f427` is the evidence one is needed. |
 

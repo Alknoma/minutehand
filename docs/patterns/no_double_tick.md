@@ -1,6 +1,6 @@
 # One instance per period
 
-**Found by:** no deterministic check yet.
+**Found by:** `acted_on_repeated_wake` (a REVIEW: a scenario that delivers a wake twice, `dispatch`, and an agent that writes again on the second).
 
 ## The failure
 

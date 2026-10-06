@@ -18,6 +18,7 @@ OWNER, SOFIA = person("owner"), person("sofia")
 
 CHECKS = {
     "acted_after_deadline",
+    "acted_on_repeated_wake",
     "acted_without_approval",
     "agent_contract_changed",
     "chased_absent_person",
@@ -83,6 +84,7 @@ def test_the_reference_capture_fails_with_the_known_findings_and_names_what_did_
     assert sorted({f.check for f in result.findings}) == ["expectations", "near_miss_name", "repeated_message"]
     assert result.effectiveness.expectations_met == 3 and result.effectiveness.failed_checks == 5
     assert {b.split(":")[0] for b in result.blocked} == {
+        "acted_on_repeated_wake",
         "idle_wake",
         "kept_chasing_after_done",
         "late_follow_up",

@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.domain.scenario import Model
+from minutehand.domain.scenario import DispatchFault, Model, PlannedBy
 
 
 class DueKind(StrEnum):
@@ -36,7 +36,14 @@ class DueSource(StrEnum):
     DIRECTION = "direction"  # something the scenario's owner says to the agent
 
 
-AGENT_SOURCES = frozenset({DueSource.REPORTED, DueSource.BOOKED, DueSource.POLLED})
+PLANNED_BY = {
+    DueSource.REPORTED: PlannedBy.REPORTED,
+    DueSource.BOOKED: PlannedBy.BOOKED,
+    DueSource.POLLED: PlannedBy.POLLED,
+}
+"""The agent's own wakes, by how it asked for them: what a dispatch rule can be about."""
+
+AGENT_SOURCES = frozenset(PLANNED_BY)
 """The entries that are the agent's own plan to come back to work, whoever else may wake it first."""
 
 
@@ -46,6 +53,8 @@ class DueClosed(StrEnum):
     FIRED = "fired"  # the clock reached it and the run loop dispatched it
     REPLACED = "replaced"  # its source named another moment in its place: a new next wake, a booking changed
     CANCELLED = "cancelled"  # taken out undispatched: a booking deleted, a reply withdrawn, a fork that drops it
+    DELAYED = "delayed"  # its moment came and a dispatch rule held it back: a late delivery entered in its place
+    DROPPED = "dropped"  # its moment came and a dispatch rule dropped it: never delivered
 
 
 class DueEntry(Model):
@@ -61,6 +70,15 @@ class DueEntry(Model):
     closed: DueClosed | None = Field(default=None, description="None while it is still in the table")
     closed_at: AwareDatetime | None = None
     closed_wake: int | None = Field(default=None, ge=0)
+    fault: DispatchFault | None = Field(
+        default=None,
+        description="The scenario's dispatch rule that applied: on the agent's own wake when its moment came, and on "
+        "the late or second delivery that rule entered",
+    )
+    asked_for: AwareDatetime | None = Field(
+        default=None,
+        description="Set on a late or second delivery: the moment the agent asked for, which the entry repeats",
+    )
 
     def open_at(self, moment: datetime) -> bool:
         """Whether it was in the table at `moment`: entered by then, and not yet gone. One that fired at `moment`
@@ -69,7 +87,11 @@ class DueEntry(Model):
             return False
         if self.closed_at is None:
             return True
-        return self.closed_at > moment or (self.closed is DueClosed.FIRED and self.closed_at == moment)
+        return self.closed_at > moment or (self.closed in REACHED and self.closed_at == moment)
+
+
+REACHED = frozenset({DueClosed.FIRED, DueClosed.DELAYED, DueClosed.DROPPED})
+"""How an entry leaves once its moment has come: whatever was then done with it, it stood until that moment."""
 
 
 class Jump(Model):

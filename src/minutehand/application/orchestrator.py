@@ -263,7 +263,7 @@ class Orchestrator:
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
-        self._dues = Dues(store, clock)
+        self._dues = Dues(store, clock, scenario.dispatch)
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
@@ -444,7 +444,11 @@ class Orchestrator:
                 self._run_on_to(deadline)
                 return StopReason.DEADLINE_PASSED
             self._clock.jump(jump.now)
-            fired = self._dues.fire(jump.firing)
+            dispatched = self._dues.dispatch(jump.firing)
+            for item in dispatched.withheld:
+                if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
+                    self._schedule_tick()  # the rhythm goes on from the tick the scheduler held back
+            fired = dispatched.delivered
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
                 await self._fire(fired)
                 watched = self._watched(fired)
@@ -533,7 +537,7 @@ class Orchestrator:
             if isinstance(item, PendingBooking):
                 await self._services.schedulers[item.provider].fire(item.ref, self._store, self._clock)
         for item in fired:
-            if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
+            if isinstance(item, PendingWake) and item.reason is WakeReason.TICK and not item.repeat:
                 self._schedule_tick()
 
     async def _happen(self, happening: Happening) -> None:
@@ -1031,8 +1035,9 @@ def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, servi
 
 
 def _reported_wake(pending: Pending) -> bool:
-    """The wake the agent last named in its report, which the next one it names replaces."""
-    return isinstance(pending, PendingWake) and pending.reason is WakeReason.DUE
+    """The wake the agent last named in its report, which the next one it names replaces. A late or second delivery
+    of one is already on its way, as a real scheduler's is, and a new report does not take it back."""
+    return isinstance(pending, PendingWake) and pending.reason is WakeReason.DUE and not pending.repeat
 
 
 def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:
