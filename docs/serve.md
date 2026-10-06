@@ -451,6 +451,10 @@ A container that cannot share a volume downloads the bundle at start from `GET h
 (`tests/packaging/test_stack.py` does exactly that from a second container on the same network). The test
 process on the host reaches the control API at the published port and sets `MINUTEHAND_URL`.
 
+A service started with `docker run --env-file` instead loses its `NO_PROXY` to the Docker client config's
+`noProxy`, which Docker Desktop sets to `*`: see `docs/containers.md`, "The NO_PROXY trap". An agent in a container
+under `minutehand run`, with Minutehand on the host, is in the same page.
+
 ## Measured
 
 On the development machine (macOS, Python 3.13), 2026-10-04, `tests/serve/test_footprint.py` and a throwaway

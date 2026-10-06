@@ -494,6 +494,10 @@ def _env(args: argparse.Namespace, state: Path) -> int:
         return 2
     agent = load_agent(args.agent)
     listen = _listen(args)
+    from minutehand import doctor  # loaded only here and for `doctor`: it starts nothing, but imports the proxy
+
+    for warning in doctor.docker_warnings(doctor.claimed_hosts(agent), os.environ):
+        print(f"minutehand env: warning: {warning}", file=sys.stderr)
     if EnvFormat(args.format) is EnvFormat.SHELL:
         if args.service:
             print("minutehand env: --service is for --format compose", file=sys.stderr)
