@@ -1,0 +1,26 @@
+# One run across the three newer providers: a person moves a Jira issue, edits a Notion page, renames a Microsoft
+# file, posts to the agent in Teams, and presses a button on the card the agent sent her there.
+name: every_new_provider
+goal: Keep the launch moving.
+owner: owen
+starts_at: "2026-09-07T09:00:00Z"
+deadline_after: P5D
+people:
+  - {key: owen, name: Owen Hale, email: owen@example.com, reply: {kind: silent}}
+  - key: nadia
+    name: Nadia Rahman
+    email: nadia@example.com
+    reply:
+      kind: scripted
+      delay: {shortest: PT2H, longest: PT2H}
+      replies: [{to_ask: 1, press: {label: Approve}}]
+tickets:
+  - {key: venue, provider: jira, project: Launch, title: Book the venue, assignee: nadia, labels: [launch]}
+documents:
+  - {provider: notion, title: Launch notes, text: "Venue first."}
+  - {provider: microsoft, title: Launch plan, text: "Book the venue."}
+happenings:
+  - {kind: ticket, person: nadia, ticket: Book the venue, after: P1D, action: {kind: moves, to: done}}
+  - {kind: document, person: nadia, document: Launch notes, after: P2D, action: {kind: edited, append: Venue booked.}}
+  - {kind: document, person: nadia, document: Launch plan, after: P3D, action: {kind: renamed, to: Launch plan (final)}}
+  - {kind: posts, provider: microsoft, person: nadia, text: All three are done on my side, after: P4D}

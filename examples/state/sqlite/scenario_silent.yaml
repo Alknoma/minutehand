@@ -1,0 +1,24 @@
+# Rosa never answers: the agent asks, follows up once after two days, and gives up two days later.
+# A fork from the end of the first wake can make her answer instead (fork_rosa_answers.yaml).
+name: offsite_venue_silent
+goal: Confirm the venue for the team offsite with Rosa.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P14D
+
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    reply: {kind: scripted, replies: []}
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    reply: {kind: silent}
+
+expect:
+  - kind: person_asked
+    person: rosa
+  - kind: person_asked
+    person: owen
+    mentions: [confirmed]

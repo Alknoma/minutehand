@@ -1,0 +1,24 @@
+# Rosa never answers. An agent that asked once and stopped leaves the job waiting forever.
+name: offsite_venue_silent
+goal: Confirm the venue for the team offsite with Rosa.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P14D
+
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    reply:                            # Owen is told the outcome and owes no answer: nothing is scripted for him.
+      kind: scripted                  # (`silent` would make every message to him a question he leaves unanswered.)
+      replies: []
+
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    reply:
+      kind: silent
+
+expect:
+  - kind: person_asked
+    person: rosa

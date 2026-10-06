@@ -1,0 +1,2731 @@
+{
+  "$defs": {
+    "Absence": {
+      "additionalProperties": false,
+      "description": "A stretch during which a person does not answer.",
+      "properties": {
+        "delegate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key who covers",
+          "title": "Delegate"
+        },
+        "lasts": {
+          "format": "duration",
+          "title": "Lasts",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "starts_after": {
+          "default": "PT0S",
+          "format": "duration",
+          "title": "Starts After",
+          "type": "string"
+        },
+        "trigger": {
+          "$ref": "#/$defs/AbsenceTrigger",
+          "default": "at_start"
+        }
+      },
+      "required": [
+        "lasts"
+      ],
+      "title": "Absence",
+      "type": "object"
+    },
+    "AbsenceTrigger": {
+      "enum": [
+        "at_start",
+        "on_first_ask"
+      ],
+      "title": "AbsenceTrigger",
+      "type": "string"
+    },
+    "Access": {
+      "additionalProperties": false,
+      "properties": {
+        "person": {
+          "description": "Person.key",
+          "title": "Person",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/AccessRole",
+          "default": "writer"
+        }
+      },
+      "required": [
+        "person"
+      ],
+      "title": "Access",
+      "type": "object"
+    },
+    "AccessRole": {
+      "description": "What a person may do with a document or a shared space, from least to most.",
+      "enum": [
+        "reader",
+        "commenter",
+        "writer",
+        "organizer"
+      ],
+      "title": "AccessRole",
+      "type": "string"
+    },
+    "Account": {
+      "description": "What kind of account a person holds in the services the run fakes.",
+      "enum": [
+        "member",
+        "guest",
+        "deactivated",
+        "bot"
+      ],
+      "title": "Account",
+      "type": "string"
+    },
+    "Answers": {
+      "additionalProperties": false,
+      "description": "Replies are written by a model from this person's facts.\n\nThe first reply to each ask is stored with the run; a rerun replays it, so\nonly a new ask costs a model call.",
+      "properties": {
+        "delay": {
+          "$ref": "#/$defs/DelayRange",
+          "default": {
+            "longest": "P2DT18H",
+            "shortest": "PT6H"
+          }
+        },
+        "helpfulness": {
+          "$ref": "#/$defs/Helpfulness",
+          "default": "full"
+        },
+        "kind": {
+          "const": "answers",
+          "default": "answers",
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None uses the run's default model",
+          "title": "Model"
+        },
+        "temperature": {
+          "default": 0.6,
+          "maximum": 2,
+          "minimum": 0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How they write: terse, formal, chatty",
+          "title": "Voice"
+        }
+      },
+      "title": "Answers",
+      "type": "object"
+    },
+    "Commented": {
+      "additionalProperties": false,
+      "description": "The person writes a comment on the document, not in it.",
+      "properties": {
+        "kind": {
+          "const": "commented",
+          "default": "commented",
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "Commented",
+      "type": "object"
+    },
+    "Comments": {
+      "additionalProperties": false,
+      "description": "The person writes a comment on the ticket.",
+      "properties": {
+        "kind": {
+          "const": "comments",
+          "default": "comments",
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "Comments",
+      "type": "object"
+    },
+    "DelayRange": {
+      "additionalProperties": false,
+      "description": "How long a person takes to answer, in simulated time.",
+      "properties": {
+        "longest": {
+          "default": "P2DT18H",
+          "format": "duration",
+          "title": "Longest",
+          "type": "string"
+        },
+        "shortest": {
+          "default": "PT6H",
+          "format": "duration",
+          "title": "Shortest",
+          "type": "string"
+        }
+      },
+      "title": "DelayRange",
+      "type": "object"
+    },
+    "Deletes": {
+      "additionalProperties": false,
+      "description": "The person deletes the ticket.",
+      "properties": {
+        "kind": {
+          "const": "deletes",
+          "default": "deletes",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "Deletes",
+      "type": "object"
+    },
+    "Direction": {
+      "additionalProperties": false,
+      "description": "Something the owner says to the agent partway through.",
+      "properties": {
+        "after": {
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "after"
+      ],
+      "title": "Direction",
+      "type": "object"
+    },
+    "DocumentCreated": {
+      "additionalProperties": false,
+      "description": "The agent created a document: with these words in its title, in this shared place, owned by this person, and\nholding these words as it last read (by `by`, when given). One document counts once, however often it changed.",
+      "properties": {
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "holds": {
+          "default": [],
+          "description": "Words its text must hold, any case, as it last read: a tell only one answer carries",
+          "items": {
+            "type": "string"
+          },
+          "title": "Holds",
+          "type": "array"
+        },
+        "kind": {
+          "const": "document_created",
+          "default": "document_created",
+          "title": "Kind",
+          "type": "string"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key who must own it; None matches any owner",
+          "title": "Owner"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None matches any document provider",
+          "title": "Provider"
+        },
+        "space": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SharedSpace.name it must be in; None matches anywhere",
+          "title": "Space"
+        },
+        "titled": {
+          "default": [],
+          "description": "Words the title must contain, any case",
+          "items": {
+            "type": "string"
+          },
+          "title": "Titled",
+          "type": "array"
+        }
+      },
+      "title": "DocumentCreated",
+      "type": "object"
+    },
+    "DocumentHappening": {
+      "additionalProperties": false,
+      "description": "A person changes a seeded document at a moment, with no agent involved: edits, renames, moves, shares,\ntrashes, comments on it, or sets one of its fields.\n\nIt lands on the run's clock through the provider that holds the document (`ports.provider.ChangesDocuments`),\nrecorded as that person's change. It wakes nobody, unless the agent asked that provider to be told of changes\n(`ports.provider.NotifiesChanges`): then telling it is a wake, as a pushed event is.",
+      "properties": {
+        "action": {
+          "discriminator": {
+            "mapping": {
+              "commented": "#/$defs/Commented",
+              "edited": "#/$defs/Edited",
+              "field_set": "#/$defs/FieldSet",
+              "moved": "#/$defs/Moved",
+              "renamed": "#/$defs/Renamed",
+              "shared": "#/$defs/Shared",
+              "trashed": "#/$defs/Trashed"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Edited"
+            },
+            {
+              "$ref": "#/$defs/Renamed"
+            },
+            {
+              "$ref": "#/$defs/Moved"
+            },
+            {
+              "$ref": "#/$defs/Shared"
+            },
+            {
+              "$ref": "#/$defs/Trashed"
+            },
+            {
+              "$ref": "#/$defs/Commented"
+            },
+            {
+              "$ref": "#/$defs/FieldSet"
+            }
+          ],
+          "title": "Action"
+        },
+        "after": {
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "document": {
+          "description": "The title of the seeded document changed; it names exactly one",
+          "title": "Document",
+          "type": "string"
+        },
+        "kind": {
+          "const": "document",
+          "default": "document",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever changes it",
+          "title": "Person",
+          "type": "string"
+        }
+      },
+      "required": [
+        "person",
+        "document",
+        "after",
+        "action"
+      ],
+      "title": "DocumentHappening",
+      "type": "object"
+    },
+    "DocumentKind": {
+      "description": "What a seeded document is, whatever its provider calls it.",
+      "enum": [
+        "document",
+        "spreadsheet",
+        "presentation",
+        "file"
+      ],
+      "title": "DocumentKind",
+      "type": "string"
+    },
+    "DocumentShared": {
+      "additionalProperties": false,
+      "description": "The agent gave this person access to a document, at least as `role`.",
+      "properties": {
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "document_shared",
+          "default": "document_shared",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key",
+          "title": "Person",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/AccessRole",
+          "default": "reader",
+          "description": "The least access that counts"
+        },
+        "titled": {
+          "default": [],
+          "description": "Words the document's title must contain, any case",
+          "items": {
+            "type": "string"
+          },
+          "title": "Titled",
+          "type": "array"
+        }
+      },
+      "required": [
+        "person"
+      ],
+      "title": "DocumentShared",
+      "type": "object"
+    },
+    "Edited": {
+      "additionalProperties": false,
+      "description": "The person adds a paragraph at the end of the document.",
+      "properties": {
+        "append": {
+          "minLength": 1,
+          "title": "Append",
+          "type": "string"
+        },
+        "kind": {
+          "const": "edited",
+          "default": "edited",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "append"
+      ],
+      "title": "Edited",
+      "type": "object"
+    },
+    "FieldSet": {
+      "additionalProperties": false,
+      "description": "The person sets one field of a record-shaped document (a database row's property) to a value, written as\ntext the provider reads by the field's type: an option's name, a number, a date, `true` or `false`, or\ncomma-separated names for a field that holds several.",
+      "properties": {
+        "field": {
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "kind": {
+          "const": "field_set",
+          "default": "field_set",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "value"
+      ],
+      "title": "FieldSet",
+      "type": "object"
+    },
+    "FormInput": {
+      "additionalProperties": false,
+      "description": "What a person types into one field of a form the agent opens for them.",
+      "properties": {
+        "input_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The provider's own id for the field; None is the form's only text field",
+          "title": "Input Id"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "FormInput",
+      "type": "object"
+    },
+    "GeneratedSecret": {
+      "additionalProperties": false,
+      "description": "A fresh secret made for every run and handed to the agent's command in the variable `env`.\n\nOnly a command Minutehand starts receives it; an agent already running has a secret of its own.",
+      "properties": {
+        "env": {
+          "description": "The variable the agent reads its signing secret from",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Env",
+          "type": "string"
+        },
+        "kind": {
+          "const": "generated",
+          "default": "generated",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "env"
+      ],
+      "title": "GeneratedSecret",
+      "type": "object"
+    },
+    "Helpfulness": {
+      "description": "What this person does with a question.",
+      "enum": [
+        "full",
+        "partial",
+        "asks_back",
+        "declines",
+        "mistaken"
+      ],
+      "title": "Helpfulness",
+      "type": "string"
+    },
+    "Moved": {
+      "additionalProperties": false,
+      "properties": {
+        "folder": {
+          "description": "A folder path in the same place, made if it is not there",
+          "title": "Folder",
+          "type": "string"
+        },
+        "kind": {
+          "const": "moved",
+          "default": "moved",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "folder"
+      ],
+      "title": "Moved",
+      "type": "object"
+    },
+    "Moves": {
+      "additionalProperties": false,
+      "description": "The person moves the ticket to a state: ticks it done, cancels it, or reopens it.",
+      "properties": {
+        "kind": {
+          "const": "moves",
+          "default": "moves",
+          "title": "Kind",
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/TicketState"
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "title": "Moves",
+      "type": "object"
+    },
+    "Person": {
+      "additionalProperties": false,
+      "properties": {
+        "absences": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Absence"
+          },
+          "title": "Absences",
+          "type": "array"
+        },
+        "account": {
+          "$ref": "#/$defs/Account",
+          "default": "member"
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "from_env": "#/$defs/SecretFromEnvironment",
+                  "generated": "#/$defs/GeneratedSecret"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/GeneratedSecret"
+                },
+                {
+                  "$ref": "#/$defs/SecretFromEnvironment"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How Minutehand signs in to the agent's own product as this person, to read what waits on them and decide it (`AgentUnderTest.inboxes`, `{credential}` in `as_person`): generated per run and handed to the agent's command in its variable, or read from Minutehand's own environment. Never stored",
+          "title": "Credential"
+        },
+        "early_follow_ups": {
+          "default": 2,
+          "description": "How many follow-ups on one ask this person takes, each sent before their answer was due, before it is nagging",
+          "minimum": 0,
+          "title": "Early Follow Ups",
+          "type": "integer"
+        },
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "facts": {
+          "default": [],
+          "description": "What this person knows; all a model reply may draw on",
+          "items": {
+            "type": "string"
+          },
+          "title": "Facts",
+          "type": "array"
+        },
+        "key": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "reply": {
+          "default": {
+            "delay": {
+              "longest": "P2DT18H",
+              "shortest": "PT6H"
+            },
+            "helpfulness": "full",
+            "kind": "answers",
+            "model": null,
+            "temperature": 0.6,
+            "voice": null
+          },
+          "discriminator": {
+            "mapping": {
+              "answers": "#/$defs/Answers",
+              "scripted": "#/$defs/Scripted",
+              "silent": "#/$defs/Silent"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Answers"
+            },
+            {
+              "$ref": "#/$defs/Scripted"
+            },
+            {
+              "$ref": "#/$defs/Silent"
+            }
+          ],
+          "title": "Reply"
+        },
+        "stale_facts": {
+          "default": [],
+          "description": "What they believe that is no longer true",
+          "items": {
+            "type": "string"
+          },
+          "title": "Stale Facts",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "working_hours": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkingHours"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "email"
+      ],
+      "title": "Person",
+      "type": "object"
+    },
+    "PersonAddsAgent": {
+      "additionalProperties": false,
+      "description": "A person adds the agent to a conversation it is not in: invites its bot to a channel (Slack), or installs\nits app in a team, a chat, or with no channel their own chat with it (Teams).",
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "kind": {
+          "const": "adds_agent",
+          "default": "adds_agent",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person"
+      ],
+      "title": "PersonAddsAgent",
+      "type": "object"
+    },
+    "PersonAsked": {
+      "additionalProperties": false,
+      "description": "The agent sent this person a message; with `about`, one that asks them about that, as a model judges it.",
+      "properties": {
+        "about": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the message asks this person about, in meaning rather than words; a model judges it",
+          "title": "About"
+        },
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "person_asked",
+          "default": "person_asked",
+          "title": "Kind",
+          "type": "string"
+        },
+        "mentions": {
+          "default": [],
+          "description": "Words the message must contain, any case",
+          "items": {
+            "type": "string"
+          },
+          "title": "Mentions",
+          "type": "array"
+        },
+        "person": {
+          "description": "Person.key",
+          "title": "Person",
+          "type": "string"
+        }
+      },
+      "required": [
+        "person"
+      ],
+      "title": "PersonAsked",
+      "type": "object"
+    },
+    "PersonCommands": {
+      "additionalProperties": false,
+      "description": "A person runs one of the agent's commands (a Slack slash command), in a channel or their DM with it.",
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "command": {
+          "pattern": "^/[a-z0-9_-]+$",
+          "title": "Command",
+          "type": "string"
+        },
+        "kind": {
+          "const": "commands",
+          "default": "commands",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person",
+        "command"
+      ],
+      "title": "PersonCommands",
+      "type": "object"
+    },
+    "PersonDeletes": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "kind": {
+          "const": "deletes",
+          "default": "deletes",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "post": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Post",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person",
+        "post"
+      ],
+      "title": "PersonDeletes",
+      "type": "object"
+    },
+    "PersonEdits": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "kind": {
+          "const": "edits",
+          "default": "edits",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "post": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Post",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person",
+        "post",
+        "text"
+      ],
+      "title": "PersonEdits",
+      "type": "object"
+    },
+    "PersonJoins": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "channel": {
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Channel",
+          "type": "string"
+        },
+        "kind": {
+          "const": "joins",
+          "default": "joins",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person",
+        "channel"
+      ],
+      "title": "PersonJoins",
+      "type": "object"
+    },
+    "PersonOpensAgent": {
+      "additionalProperties": false,
+      "description": "A person opens the agent's own page inside the service (Slack's App Home).",
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "kind": {
+          "const": "opens_agent",
+          "default": "opens_agent",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person"
+      ],
+      "title": "PersonOpensAgent",
+      "type": "object"
+    },
+    "PersonPosts": {
+      "additionalProperties": false,
+      "description": "A person writes, unprompted: in a channel, or with no channel in their DM with the agent.",
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SeededFile"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "in_thread_of": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "In Thread Of"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "kind": {
+          "const": "posts",
+          "default": "posts",
+          "title": "Kind",
+          "type": "string"
+        },
+        "mentions_agent": {
+          "default": false,
+          "description": "The message names the agent, as an @-mention",
+          "title": "Mentions Agent",
+          "type": "boolean"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person",
+        "text"
+      ],
+      "title": "PersonPosts",
+      "type": "object"
+    },
+    "PersonReacts": {
+      "additionalProperties": false,
+      "description": "A reaction on a post, or with none named, on the agent's latest message in `channel` (None: their DM).",
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "kind": {
+          "const": "reacts",
+          "default": "reacts",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "post": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Post"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "reaction": {
+          "pattern": "^[a-z0-9_+-]+$",
+          "title": "Reaction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "person",
+        "reaction"
+      ],
+      "title": "PersonReacts",
+      "type": "object"
+    },
+    "ProviderSeed": {
+      "additionalProperties": false,
+      "description": "What one provider seeds beyond the shared people, tickets and documents, in that provider's own shape.\n\nThe shared model cannot name a provider's types (`domain` imports no adapter), so the shape crosses as\nthe provider's own JSON text, as a stored entity's body does, and only that provider parses it: it\nvalidates `body` against its own seed model when it seeds, and refuses what it cannot read. A scenario\nfile writes the shape as YAML or JSON structure; it is kept as its JSON text.",
+      "properties": {
+        "body": {
+          "description": "The provider's own seed model, as JSON text",
+          "title": "Body",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "body"
+      ],
+      "title": "ProviderSeed",
+      "type": "object"
+    },
+    "Reassigns": {
+      "additionalProperties": false,
+      "description": "The person hands the ticket to someone else, or takes everyone off it.",
+      "properties": {
+        "kind": {
+          "const": "reassigns",
+          "default": "reassigns",
+          "title": "Kind",
+          "type": "string"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Person.key; None leaves it unassigned",
+          "title": "To"
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "title": "Reassigns",
+      "type": "object"
+    },
+    "Relayed": {
+      "additionalProperties": false,
+      "description": "The agent passed on what a person said: a message from the agent to `to` carries the `tell`, a phrase the\nscenario's author picks from what `said_by` will say, matched in any case.\n\nThe tell is what makes this mechanical rather than a guess at meaning. A scenario is refused when its goal, a\ndirection, a seeded ticket or document, or anyone else's scripted reply or facts holds the tell, and when\n`said_by` could never say it: silent, or none of their scripted replies (or, written by a model, none of their\nfacts) holds it. In a run, the first thing in the world to hold the tell must be `said_by`'s own reply; an\nagent message that held it before means the agent did not hear it from them, and no message counts.",
+      "properties": {
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "relayed",
+          "default": "relayed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "said_by": {
+          "description": "Person.key of whoever says the tell",
+          "title": "Said By",
+          "type": "string"
+        },
+        "tell": {
+          "description": "A phrase only `said_by`'s answer holds",
+          "minLength": 1,
+          "title": "Tell",
+          "type": "string"
+        },
+        "to": {
+          "description": "Person.key the agent must pass it on to",
+          "title": "To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "said_by",
+        "to",
+        "tell"
+      ],
+      "title": "Relayed",
+      "type": "object"
+    },
+    "Renamed": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "renamed",
+          "default": "renamed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "to": {
+          "minLength": 1,
+          "title": "To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "title": "Renamed",
+      "type": "object"
+    },
+    "Scripted": {
+      "additionalProperties": false,
+      "description": "Replies are fixed text. No model call, fully repeatable.",
+      "properties": {
+        "decisions": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ScriptedDecision"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What they decide on items waiting on them in the agent's own product, after their delay like a reply. None says nothing, and a run whose agent declares an inbox they can receive items in is refused: there is no default decision. `[]` leaves every item pending",
+          "title": "Decisions"
+        },
+        "delay": {
+          "$ref": "#/$defs/DelayRange",
+          "default": {
+            "longest": "P2DT18H",
+            "shortest": "PT6H"
+          }
+        },
+        "kind": {
+          "const": "scripted",
+          "default": "scripted",
+          "title": "Kind",
+          "type": "string"
+        },
+        "presses_every": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScriptedPress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On every message the agent sends them that carries a control reading this label (an approval card's Approve), they press it after their delay, however many there are; a scripted reply to that ask is used instead when there is one"
+        },
+        "replies": {
+          "items": {
+            "$ref": "#/$defs/ScriptedReply"
+          },
+          "title": "Replies",
+          "type": "array"
+        }
+      },
+      "required": [
+        "replies"
+      ],
+      "title": "Scripted",
+      "type": "object"
+    },
+    "ScriptedDecision": {
+      "additionalProperties": false,
+      "description": "What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth\nsuch item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins\nover one for every item. `inputs` fill what the decision asks for (a reason, an answer).",
+      "properties": {
+        "decision": {
+          "description": "The name of one of the inbox's decisions",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Decision",
+          "type": "string"
+        },
+        "inbox": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The inbox's `name`; None: any. With one, `to_item` counts that inbox's items only",
+          "title": "Inbox"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Each input the decision takes, by its name",
+          "title": "Inputs",
+          "type": "object"
+        },
+        "to_item": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The nth item waiting on them, from 1; None: every one",
+          "title": "To Item"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "title": "ScriptedDecision",
+      "type": "object"
+    },
+    "ScriptedPress": {
+      "additionalProperties": false,
+      "description": "Use a control on the message being answered instead of writing back: the one whose label reads `label`, as\nthe person sees it, in any case. When the agent answers the press by opening a form, the person fills it with\n`form` and submits it.",
+      "properties": {
+        "form": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FormInput"
+          },
+          "title": "Form",
+          "type": "array"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "picks": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key chosen, when the control picks a person",
+          "title": "Picks"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "ScriptedPress",
+      "type": "object"
+    },
+    "ScriptedReply": {
+      "additionalProperties": false,
+      "description": "One fixed answer, given to the nth question this person receives: text written back, or a control used.",
+      "properties": {
+        "press": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScriptedPress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "to_ask": {
+          "minimum": 1,
+          "title": "To Ask",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "to_ask"
+      ],
+      "title": "ScriptedReply",
+      "type": "object"
+    },
+    "SecretFromEnvironment": {
+      "additionalProperties": false,
+      "description": "The agent's own secret, configured where it already runs: Minutehand reads the same value from its own\nvariable `env` when the run starts, and refuses the run when it is not set.",
+      "properties": {
+        "env": {
+          "description": "The variable in Minutehand's own environment that holds the secret",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Env",
+          "type": "string"
+        },
+        "kind": {
+          "const": "from_env",
+          "default": "from_env",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "env"
+      ],
+      "title": "SecretFromEnvironment",
+      "type": "object"
+    },
+    "SeededChannel": {
+      "additionalProperties": false,
+      "description": "A conversation that exists when the run starts: a named channel, or with no name, the direct conversation\nbetween the agent and its members (one member: a DM; more: a group DM).",
+      "properties": {
+        "agent_member": {
+          "default": true,
+          "description": "Whether the agent's own account is in it",
+          "title": "Agent Member",
+          "type": "boolean"
+        },
+        "archived": {
+          "default": false,
+          "title": "Archived",
+          "type": "boolean"
+        },
+        "history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SeededPost"
+          },
+          "title": "History",
+          "type": "array"
+        },
+        "members": {
+          "default": [],
+          "description": "Person.key of each human member",
+          "items": {
+            "type": "string"
+          },
+          "title": "Members",
+          "type": "array"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "private": {
+          "default": false,
+          "title": "Private",
+          "type": "boolean"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "purpose": {
+          "default": "",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "topic": {
+          "default": "",
+          "title": "Topic",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "title": "SeededChannel",
+      "type": "object"
+    },
+    "SeededComment": {
+      "additionalProperties": false,
+      "description": "A comment already on a seeded ticket when the run starts.",
+      "properties": {
+        "by": {
+          "description": "Person.key",
+          "title": "By",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "by",
+        "text"
+      ],
+      "title": "SeededComment",
+      "type": "object"
+    },
+    "SeededDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "folder": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A folder path, '/'-separated, made the first time it is named",
+          "title": "Folder"
+        },
+        "kind": {
+          "$ref": "#/$defs/DocumentKind",
+          "default": "document"
+        },
+        "mime_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A FILE's media type; text/plain when None",
+          "title": "Mime Type"
+        },
+        "modified_before_start": {
+          "default": "PT0S",
+          "description": "How long before the scenario starts it was last changed",
+          "format": "duration",
+          "title": "Modified Before Start",
+          "type": "string"
+        },
+        "modified_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key who changed it last; None is its owner",
+          "title": "Modified By"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key; None is the scenario's owner",
+          "title": "Owner"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "rows": {
+          "default": [],
+          "description": "A spreadsheet's cells, row by row",
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "shared_with": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Access"
+          },
+          "title": "Shared With",
+          "type": "array"
+        },
+        "space": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SharedSpace.name it lives in; None is its owner's own",
+          "title": "Space"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "title"
+      ],
+      "title": "SeededDocument",
+      "type": "object"
+    },
+    "SeededFile": {
+      "additionalProperties": false,
+      "description": "A file attached to a message, with its content, downloadable by the agent.",
+      "properties": {
+        "mime_type": {
+          "default": "text/plain",
+          "title": "Mime Type",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "name",
+        "text"
+      ],
+      "title": "SeededFile",
+      "type": "object"
+    },
+    "SeededPost": {
+      "additionalProperties": false,
+      "description": "A message already in a conversation when the run starts, with the thread under it.",
+      "properties": {
+        "ago": {
+          "description": "How long before the scenario starts it was posted",
+          "format": "duration",
+          "title": "Ago",
+          "type": "string"
+        },
+        "by": {
+          "description": "Person.key",
+          "title": "By",
+          "type": "string"
+        },
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SeededFile"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How a happening names this post",
+          "title": "Key"
+        },
+        "replies": {
+          "default": [],
+          "description": "Its thread, each reply posted after it",
+          "items": {
+            "$ref": "#/$defs/SeededPost"
+          },
+          "title": "Replies",
+          "type": "array"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "by",
+        "text",
+        "ago"
+      ],
+      "title": "SeededPost",
+      "type": "object"
+    },
+    "SeededTicket": {
+      "additionalProperties": false,
+      "properties": {
+        "assignee": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key",
+          "title": "Assignee"
+        },
+        "body": {
+          "default": "",
+          "title": "Body",
+          "type": "string"
+        },
+        "comments": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SeededComment"
+          },
+          "title": "Comments",
+          "type": "array"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The scenario's own name for this ticket, by which a provider's seed names it; only a provider whose manifest holds ticket keys accepts one",
+          "title": "Key"
+        },
+        "labels": {
+          "default": [],
+          "description": "Tags or labels the ticket carries",
+          "items": {
+            "type": "string"
+          },
+          "title": "Labels",
+          "type": "array"
+        },
+        "project": {
+          "title": "Project",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/TicketState",
+          "default": "open"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "project",
+        "title"
+      ],
+      "title": "SeededTicket",
+      "type": "object"
+    },
+    "Shared": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/Access"
+        },
+        "kind": {
+          "const": "shared",
+          "default": "shared",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "access"
+      ],
+      "title": "Shared",
+      "type": "object"
+    },
+    "SharedSpace": {
+      "additionalProperties": false,
+      "description": "A place documents live that no one person owns: a shared drive.",
+      "properties": {
+        "members": {
+          "items": {
+            "$ref": "#/$defs/Access"
+          },
+          "minItems": 1,
+          "title": "Members",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "name",
+        "members"
+      ],
+      "title": "SharedSpace",
+      "type": "object"
+    },
+    "SignIn": {
+      "additionalProperties": false,
+      "description": "A credential the agent signs in to a provider with, and whom it signs in as.\n\nThe provider decides what the credential is: for Google, a refresh token or a service account's email.\nOnce a scenario names any sign-in for a provider, a credential it does not name is refused.",
+      "properties": {
+        "credential": {
+          "minLength": 1,
+          "title": "Credential",
+          "type": "string"
+        },
+        "person": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key; None: an account of its own, not a person's",
+          "title": "Person"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "credential"
+      ],
+      "title": "SignIn",
+      "type": "object"
+    },
+    "Silent": {
+      "additionalProperties": false,
+      "description": "This person never answers.",
+      "properties": {
+        "kind": {
+          "const": "silent",
+          "default": "silent",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "Silent",
+      "type": "object"
+    },
+    "TicketCreated": {
+      "additionalProperties": false,
+      "description": "The agent filed a ticket.",
+      "properties": {
+        "assignee": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key; None matches any",
+          "title": "Assignee"
+        },
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "ticket_created",
+          "default": "ticket_created",
+          "title": "Kind",
+          "type": "string"
+        },
+        "mentions": {
+          "default": [],
+          "description": "Words the title or body must contain",
+          "items": {
+            "type": "string"
+          },
+          "title": "Mentions",
+          "type": "array"
+        }
+      },
+      "title": "TicketCreated",
+      "type": "object"
+    },
+    "TicketDeleted": {
+      "additionalProperties": false,
+      "description": "The agent deleted a ticket. The default says it must not.",
+      "properties": {
+        "at_least": {
+          "default": 0,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "ticket_deleted",
+          "default": "ticket_deleted",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "TicketDeleted",
+      "type": "object"
+    },
+    "TicketFate": {
+      "additionalProperties": false,
+      "description": "What happens to a ticket the agent hands to a person: it reaches a state, or its assignee deletes it.",
+      "properties": {
+        "after": {
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "assignee": {
+          "description": "Person.key",
+          "title": "Assignee",
+          "type": "string"
+        },
+        "becomes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The state it reaches; None when it is deleted"
+        },
+        "deleted": {
+          "default": false,
+          "description": "Its assignee deletes it instead, through `DeletesTickets`",
+          "title": "Deleted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "assignee",
+        "after"
+      ],
+      "title": "TicketFate",
+      "type": "object"
+    },
+    "TicketHappening": {
+      "additionalProperties": false,
+      "description": "A person acts on a seeded ticket at a moment, with no agent involved: the agent finds it on its next read.\n\nIt lands on the run's clock through the provider that holds the ticket (`ports.provider.ActsOnTickets`),\nrecorded as that person's change, and wakes nobody, as a ticket fate does not. A ticket already deleted by\nthen is left alone.",
+      "properties": {
+        "action": {
+          "discriminator": {
+            "mapping": {
+              "comments": "#/$defs/Comments",
+              "deletes": "#/$defs/Deletes",
+              "moves": "#/$defs/Moves",
+              "reassigns": "#/$defs/Reassigns"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Moves"
+            },
+            {
+              "$ref": "#/$defs/Reassigns"
+            },
+            {
+              "$ref": "#/$defs/Comments"
+            },
+            {
+              "$ref": "#/$defs/Deletes"
+            }
+          ],
+          "title": "Action"
+        },
+        "after": {
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "kind": {
+          "const": "ticket",
+          "default": "ticket",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever acts",
+          "title": "Person",
+          "type": "string"
+        },
+        "ticket": {
+          "description": "The title of the seeded ticket acted on; it names exactly one",
+          "title": "Ticket",
+          "type": "string"
+        }
+      },
+      "required": [
+        "person",
+        "ticket",
+        "after",
+        "action"
+      ],
+      "title": "TicketHappening",
+      "type": "object"
+    },
+    "TicketInState": {
+      "additionalProperties": false,
+      "description": "A ticket assigned to this person reached this state.",
+      "properties": {
+        "assignee": {
+          "description": "Person.key",
+          "title": "Assignee",
+          "type": "string"
+        },
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "ticket_in_state",
+          "default": "ticket_in_state",
+          "title": "Kind",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/TicketState"
+        }
+      },
+      "required": [
+        "assignee",
+        "state"
+      ],
+      "title": "TicketInState",
+      "type": "object"
+    },
+    "TicketState": {
+      "enum": [
+        "open",
+        "done",
+        "cancelled"
+      ],
+      "title": "TicketState",
+      "type": "string"
+    },
+    "Trashed": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "trashed",
+          "default": "trashed",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "Trashed",
+      "type": "object"
+    },
+    "WorkingHours": {
+      "additionalProperties": false,
+      "description": "Replies land only inside these hours, in this person's own timezone.",
+      "properties": {
+        "closes": {
+          "default": "17:00:00",
+          "format": "time",
+          "title": "Closes",
+          "type": "string"
+        },
+        "opens": {
+          "default": "09:00:00",
+          "format": "time",
+          "title": "Opens",
+          "type": "string"
+        },
+        "timezone": {
+          "default": "UTC",
+          "title": "Timezone",
+          "type": "string"
+        },
+        "weekdays_only": {
+          "default": true,
+          "title": "Weekdays Only",
+          "type": "boolean"
+        }
+      },
+      "title": "WorkingHours",
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/seed.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What a standing world (`minutehand serve`) starts from: a scenario file's people, tickets, documents,\nfates and directions, with nothing to achieve. The goal and the expectations may be left out, so a scenario\nfile without them loads, and a whole scenario file loads too: its expectations are what the checks hold the\nworld to when they are asked. The owner, when not named, is the first person; a seed names at least one,\nsince every provider writes the world as someone.",
+  "properties": {
+    "channels": {
+      "default": [],
+      "description": "Conversations that exist when the run starts",
+      "items": {
+        "$ref": "#/$defs/SeededChannel"
+      },
+      "title": "Channels",
+      "type": "array"
+    },
+    "deadline_after": {
+      "anyOf": [
+        {
+          "format": "duration",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Deadline After"
+    },
+    "directions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Direction"
+      },
+      "title": "Directions",
+      "type": "array"
+    },
+    "documents": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SeededDocument"
+      },
+      "title": "Documents",
+      "type": "array"
+    },
+    "expect": {
+      "default": [],
+      "description": "What must be true of the world for this run to be right",
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "document_created": "#/$defs/DocumentCreated",
+            "document_shared": "#/$defs/DocumentShared",
+            "person_asked": "#/$defs/PersonAsked",
+            "relayed": "#/$defs/Relayed",
+            "ticket_created": "#/$defs/TicketCreated",
+            "ticket_deleted": "#/$defs/TicketDeleted",
+            "ticket_in_state": "#/$defs/TicketInState"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/PersonAsked"
+          },
+          {
+            "$ref": "#/$defs/TicketCreated"
+          },
+          {
+            "$ref": "#/$defs/TicketDeleted"
+          },
+          {
+            "$ref": "#/$defs/TicketInState"
+          },
+          {
+            "$ref": "#/$defs/Relayed"
+          },
+          {
+            "$ref": "#/$defs/DocumentCreated"
+          },
+          {
+            "$ref": "#/$defs/DocumentShared"
+          }
+        ]
+      },
+      "title": "Expect",
+      "type": "array"
+    },
+    "goal": {
+      "default": "",
+      "description": "Handed to nobody: a standing world has no run loop",
+      "title": "Goal",
+      "type": "string"
+    },
+    "happenings": {
+      "default": [],
+      "description": "What people do by themselves, unprompted, at moments the scenario sets",
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "adds_agent": "#/$defs/PersonAddsAgent",
+            "commands": "#/$defs/PersonCommands",
+            "deletes": "#/$defs/PersonDeletes",
+            "document": "#/$defs/DocumentHappening",
+            "edits": "#/$defs/PersonEdits",
+            "joins": "#/$defs/PersonJoins",
+            "opens_agent": "#/$defs/PersonOpensAgent",
+            "posts": "#/$defs/PersonPosts",
+            "reacts": "#/$defs/PersonReacts",
+            "ticket": "#/$defs/TicketHappening"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/TicketHappening"
+          },
+          {
+            "$ref": "#/$defs/DocumentHappening"
+          },
+          {
+            "$ref": "#/$defs/PersonPosts"
+          },
+          {
+            "$ref": "#/$defs/PersonEdits"
+          },
+          {
+            "$ref": "#/$defs/PersonDeletes"
+          },
+          {
+            "$ref": "#/$defs/PersonReacts"
+          },
+          {
+            "$ref": "#/$defs/PersonJoins"
+          },
+          {
+            "$ref": "#/$defs/PersonAddsAgent"
+          },
+          {
+            "$ref": "#/$defs/PersonOpensAgent"
+          },
+          {
+            "$ref": "#/$defs/PersonCommands"
+          }
+        ]
+      },
+      "title": "Happenings",
+      "type": "array"
+    },
+    "max_wakes": {
+      "default": 20,
+      "minimum": 1,
+      "title": "Max Wakes",
+      "type": "integer"
+    },
+    "name": {
+      "default": "world",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "owner": {
+      "description": "Person.key of whoever gave the goal",
+      "title": "Owner",
+      "type": "string"
+    },
+    "people": {
+      "items": {
+        "$ref": "#/$defs/Person"
+      },
+      "minItems": 1,
+      "title": "People",
+      "type": "array"
+    },
+    "protected_names": {
+      "default": [],
+      "description": "Names the agent must spell exactly as given",
+      "items": {
+        "type": "string"
+      },
+      "title": "Protected Names",
+      "type": "array"
+    },
+    "provider_seeds": {
+      "default": [],
+      "description": "Each provider's own seed beyond people, tickets and documents; one per provider",
+      "items": {
+        "$ref": "#/$defs/ProviderSeed"
+      },
+      "title": "Provider Seeds",
+      "type": "array"
+    },
+    "seed": {
+      "default": 17,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "sign_ins": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SignIn"
+      },
+      "title": "Sign Ins",
+      "type": "array"
+    },
+    "spaces": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SharedSpace"
+      },
+      "title": "Spaces",
+      "type": "array"
+    },
+    "starts_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "None: the moment the run starts",
+      "title": "Starts At"
+    },
+    "ticket_fates": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TicketFate"
+      },
+      "title": "Ticket Fates",
+      "type": "array"
+    },
+    "tickets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SeededTicket"
+      },
+      "title": "Tickets",
+      "type": "array"
+    }
+  },
+  "required": [
+    "owner",
+    "people"
+  ],
+  "title": "Seed",
+  "type": "object"
+}

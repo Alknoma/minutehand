@@ -1,0 +1,221 @@
+name: ci
+
+# Every pull request and every push to a protected branch runs all of this. There is no
+# path filter on purpose: a workflow that does not start reports nothing, and the one
+# required check (`gate`) must always report.
+on:
+  pull_request:
+  push:
+    branches: [main, integration-main]
+  merge_group:
+
+# Nothing here needs a secret or write access, so a pull request from a fork gets the
+# same checks as one from a maintainer.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_LOCKED: "1"
+
+jobs:
+  types:
+    name: Type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pyright
+
+  style:
+    name: Format and style
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+
+  lints:
+    name: House lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      # The directory is the registration: a lint added to lints/ runs here with no edit to this file.
+      - run: uv run python -m lints
+
+  workflows:
+    name: Workflow files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      - name: Conditions, expressions and syntax
+        run: uvx --from actionlint-py==1.7.12.24 actionlint
+      - name: Permissions, pinning and injection
+        run: uvx zizmor==1.30.1 --offline .github/workflows .github/actions
+
+  tests:
+    name: Tests (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync
+      # Random order, in parallel, with no network beyond this machine (pyproject.toml).
+      # The seed is printed at the top of the output; rerun with -p randomly -p "randomly_seed=N".
+      - run: uv run pytest -q -n auto
+
+  # What a user installs, as they would install it: the wheel in an environment with none of the
+  # dev dependencies, and the image, each running examples/follow_up end to end. Nothing is pushed.
+  build:
+    name: Package and image (install and run the example)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - name: Build the sdist and the wheel
+        run: uv build
+      - name: Install the wheel into a clean environment and run both examples with it
+        run: uv run pytest -q -m packaging tests/packaging/test_installed_package.py
+      - name: Build the image and run both examples through it
+        run: uv run pytest -q -m packaging tests/packaging/test_container_image.py
+
+  # How another repository gets Minutehand (docs/ci.md): the composite action, used by its local path, on a
+  # runner with nothing set up but the checkout. It installs into a plain venv with pip, builds the image,
+  # and then the installed command and the image each run.
+  action:
+    name: Setup action (install, run the example, build the image)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A plain environment of the runner's own Python
+        run: python3 -m venv "$RUNNER_TEMP/venv"
+      - id: minutehand
+        # The checkout's own copy, by path: what this job tests is the action in this commit as files on disk.
+        uses: ./.github/actions/setup-minutehand # zizmor: ignore[self-repository]
+        with:
+          python: ${{ runner.temp }}/venv/bin/python
+          installer: pip
+          image-tag: minutehand:action
+      - name: The outputs name this commit and the installed version
+        env:
+          COMMIT: ${{ steps.minutehand.outputs.commit }}
+          VERSION: ${{ steps.minutehand.outputs.version }}
+        run: |
+          test "$COMMIT" = "$(git rev-parse HEAD)"
+          test -n "$VERSION"
+          "$RUNNER_TEMP/venv/bin/minutehand" --help
+      - name: The example, with the installed command
+        working-directory: examples/follow_up
+        env:
+          AGENT_BEHAVIOUR: diligent
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
+          "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \
+            -- "$RUNNER_TEMP/venv/bin/python" agent.py
+      - name: The image the action built
+        run: docker run --rm minutehand:action --help
+
+  # main takes pull requests from integration-main and from nowhere else. A branch rule can
+  # only constrain the branch being written to, never the branch a pull request comes from,
+  # so this has to be a check. It has no `if`: it runs on every event and says yes on all but
+  # the one it exists for, because a job that is skipped is a job the gate cannot count on.
+  promotion:
+    name: Promotion source
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Only integration-main may merge into main
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" = "pull_request" ] && [ "$BASE_REF" = "main" ]; then
+            if [ "$HEAD_REF" != "integration-main" ] || [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+              echo "::error::'$HEAD_REPO:$HEAD_REF' cannot merge into main. main takes pull requests from integration-main only. Retarget this pull request at integration-main."
+              exit 1
+            fi
+            echo "Promotion from integration-main."
+          else
+            echo "Not a pull request into main; nothing to check."
+          fi
+
+  # The ONE required status check. Branch rules name this job and nothing else, so a job
+  # above can be renamed, split or added without touching the rules. It runs always: a
+  # gate that is skipped reports nothing, which a branch rule cannot tell from "still running".
+  gate:
+    name: gate
+    if: always()
+    needs: [types, style, lints, workflows, tests, build, action, promotion]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every job above succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | python3 -c '
+          import json, sys
+          needs = json.load(sys.stdin)
+          bad = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
+          for name, result in bad.items():
+              print(f"::error::{name}: {result}")
+          sys.exit(1 if bad else 0)'

@@ -1,0 +1,92 @@
+# Minutehand for another repository's CI, from this repository's own checkout: no package index, no registry,
+# no secret. The runner fetches this action at the commit the caller pins, and that fetch is the source that is
+# installed, so the version under test is exactly the pinned commit.
+#
+#   - id: minutehand
+#     uses: <org>/minutehand/.github/actions/setup-minutehand@<commit sha>
+#     with:
+#       python: ${{ runner.temp }}/venv/bin/python   # where to install; default: `python` on PATH
+#       image-tag: minutehand:ci                       # also build the image and load it into Docker
+#
+# docs/ci.md says what it relies on: the repository's Actions access must allow use from repositories in
+# the organisation.
+name: Set up Minutehand
+description: Install Minutehand from this action's own commit, and optionally build its image into the job's Docker.
+
+inputs:
+  python:
+    description: The interpreter to install into (a path or a command on PATH).
+    required: false
+    default: python
+  installer:
+    description: "auto (uv when on PATH, else pip), uv, or pip."
+    required: false
+    default: auto
+  image-tag:
+    description: When set, the image is built from the same commit and loaded into Docker under this tag.
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: The installed package's version.
+    value: ${{ steps.install.outputs.version }}
+  commit:
+    description: The commit of Minutehand that was installed.
+    value: ${{ steps.source.outputs.commit }}
+
+runs:
+  using: composite
+  steps:
+    - id: source
+      name: Find the source this action was fetched with
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        if [[ "$ACTION_REF" =~ ^[0-9a-f]{40}$ ]]; then
+          commit="$ACTION_REF"
+        elif git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
+          commit="$(git -C "$root" rev-parse HEAD)"
+        else
+          echo "::error::the action was not pinned by a commit SHA ('$ACTION_REF') and its checkout has no git history; pin it by SHA"
+          exit 1
+        fi
+        echo "root=$root" >> "$GITHUB_OUTPUT"
+        echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+    - id: install
+      name: Install Minutehand into the job's Python
+      shell: bash
+      env:
+        ROOT: ${{ steps.source.outputs.root }}
+        PYTHON_GIVEN: ${{ inputs.python }}
+        INSTALLER: ${{ inputs.installer }}
+      run: |
+        python_path="$(command -v "$PYTHON_GIVEN" || true)"
+        if [ -z "$python_path" ]; then
+          echo "::error::no interpreter '$PYTHON_GIVEN'"
+          exit 1
+        fi
+        case "$INSTALLER" in
+          auto) if command -v uv >/dev/null 2>&1; then INSTALLER=uv; else INSTALLER=pip; fi ;;
+          uv|pip) ;;
+          *) echo "::error::installer is auto, uv or pip, not '$INSTALLER'"; exit 1 ;;
+        esac
+        if [ "$INSTALLER" = uv ]; then
+          uv pip install --python "$python_path" "$ROOT"
+        else
+          "$python_path" -m pip install --disable-pip-version-check "$ROOT"
+        fi
+        version="$("$python_path" -c 'import importlib.metadata as m; print(m.version("minutehand"))')"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Installed minutehand $version with $INSTALLER into $python_path"
+
+    - name: Build the image and load it into Docker
+      if: inputs.image-tag != ''
+      shell: bash
+      env:
+        ROOT: ${{ steps.source.outputs.root }}
+        TAG: ${{ inputs.image-tag }}
+      run: docker build --tag "$TAG" "$ROOT"

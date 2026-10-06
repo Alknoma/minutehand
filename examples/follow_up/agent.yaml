@@ -1,0 +1,41 @@
+# How Minutehand reaches the agent in agent.py. The port is the one agent.py listens on.
+name: follow_up_agent
+
+# The goal arrives on the first wake (POST /wake with reason "start").
+goal:
+  kind: by_wake
+
+# The agent says when it next wants waking: Minutehand asks GET /report after every wake
+# and wakes it again (POST /wake with reason "due") when the simulated clock gets there.
+wakes:
+  - kind: reported
+    wake_url: http://127.0.0.1:8700/wake
+    report_url: http://127.0.0.1:8700/report
+
+# Messages people send the agent in Slack are pushed here, signed with a secret Minutehand
+# makes for each run and hands to the agent in this environment variable. An agent already
+# running with a secret of its own says `kind: from_env` instead, and Minutehand reads that
+# secret from the variable it names in Minutehand's own environment.
+inbound:
+  - provider: slack
+    url: http://127.0.0.1:8700/slack/events
+    secret:
+      kind: generated
+      env: AGENT_SLACK_SIGNING_SECRET
+
+# Hosts that are not places the agent keeps anything: not faked, captured. Every other host no fake
+# answers is refused (run once with --capture-unknown to see what an agent calls).
+outbound:
+  # The email to Owen never leaves the machine: it is answered 202 here, kept with the run, and read as a
+  # message from the agent to the person it names, so the expectations see it as they see a Slack message.
+  - host: api.mail.example
+    kind: acknowledge
+    answer: {status: 202, json_body: {}}
+    message:
+      recipients: ["personalizations[*].to[*].email"]
+      text: ["content[0].value"]
+      subject: [subject]
+  # A venue search is a lookup: sent to the real host, and the request and answer kept. A fork of a run
+  # answers the same search from the parent's recording instead (in_forks), so it differs only by its change.
+  - host: places.example
+    kind: pass_through

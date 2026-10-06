@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minutehand Runs</title>
+<style>
+:root{
+  --page:#f4f5f7; --surface:#ffffff; --ink:#14171c; --ink-2:#48505c; --muted:#77808c;
+  --grid:#e4e7ec; --axis:#c3cad4; --wash:#eef1f5;
+  --agent:#2a64c8; --person:#c2611f; --scenario:#7a8391;
+  --wait:#3f8f6b; --fail:#c63434; --review:#9a6a00; --focus:#2a64c8;
+  --fail-wash:rgba(198,52,52,.10); --review-wash:rgba(214,158,0,.16); --ok-wash:rgba(63,143,107,.12); --ok:#2f7a57;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --page:#0f1114; --surface:#171a1f; --ink:#eef1f5; --ink-2:#b5bcc7; --muted:#8a93a0;
+    --grid:#262b33; --axis:#3b424d; --wash:#1d2128;
+    --agent:#6d9df0; --person:#e48a4a; --scenario:#8f98a6;
+    --wait:#4fb386; --fail:#ec6a6a; --review:#e5b23a; --focus:#6d9df0;
+    --fail-wash:rgba(236,106,106,.16); --review-wash:rgba(229,178,58,.16); --ok-wash:rgba(79,179,134,.16); --ok:#5cc394;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5}
+body{overflow-x:hidden}
+.shell{max-width:1240px;margin:0 auto;padding:20px 16px 56px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:28px}
+@media (max-width:820px){.shell{grid-template-columns:minmax(0,1fr);gap:20px}}
+h1{font-size:24px;line-height:1.2;font-weight:600;margin:0;overflow-wrap:anywhere}
+h2{font-size:16px;font-weight:600;margin:0}
+p{margin:0}
+.eyebrow{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+nav{display:flex;flex-direction:column;gap:10px;min-width:0}
+nav ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+nav li ul{margin-left:14px;margin-top:4px;border-left:1px solid var(--axis);padding-left:8px}
+nav button{all:unset;box-sizing:border-box;display:block;width:100%;padding:8px 10px;border-radius:6px;cursor:pointer;min-width:0}
+nav button:hover{background:var(--wash)}
+nav button:focus-visible{outline:2px solid var(--focus)}
+nav button[aria-current="true"]{background:var(--surface);box-shadow:inset 0 0 0 1px var(--axis)}
+nav b{display:block;font-weight:500;overflow-wrap:anywhere}
+nav small{display:block;color:var(--ink-2);font-size:13px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.fail{background:var(--fail)} .dot.ok{background:var(--ok)} .dot.review{background:var(--review)} .dot.run{background:var(--agent);animation:pulse 1.4s infinite}
+@keyframes pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.dot.run{animation:none}}
+main{display:flex;flex-direction:column;gap:26px;min-width:0}
+.head{display:flex;flex-direction:column;gap:8px}
+.verdict{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1px;background:var(--grid);border:1px solid var(--grid);border-radius:8px;overflow:hidden}
+.verdict>div{background:var(--surface);padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.verdict strong{font-size:18px;font-weight:600}
+.verdict .fail{color:var(--fail)} .verdict .ok{color:var(--ok)} .verdict .review{color:var(--review)}
+.verdict span{color:var(--ink-2);font-size:14px}
+.card ul{margin:0;padding-left:18px;color:var(--ink-2)}
+.card li{margin:2px 0}
+section{display:flex;flex-direction:column;gap:12px;min-width:0}
+.sub{color:var(--ink-2);font-size:14px}
+ol.findings{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:10px}
+.finding{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;min-width:0;cursor:pointer}
+.finding:hover,.finding:focus-visible,.finding.pinned{border-color:var(--axis);outline:none}
+.finding:focus-visible{box-shadow:0 0 0 2px var(--focus)}
+.finding h3{margin:0;font-size:15px;font-weight:600;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.finding p{font-size:14px;color:var(--ink-2);overflow-wrap:anywhere}
+.finding .design{border-left:2px solid var(--wait);padding-left:10px;color:var(--ink)}
+.finding .asked{border-left:2px solid var(--agent);padding-left:10px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.finding .asked b{font-size:14px;font-weight:600}
+.finding .asked details{font-size:13px;color:var(--ink-2);min-width:0}
+.finding .asked pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
+.chip{font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:1px 7px;border-radius:3px;font-weight:600;white-space:nowrap}
+.chip.fail{background:var(--fail-wash);color:var(--fail)}
+.chip.review{background:var(--review-wash);color:var(--review)}
+.chip.informational{background:var(--wash);color:var(--ink-2)}
+.empty{color:var(--ink-2);font-size:14px;background:var(--surface);border:1px dashed var(--axis);border-radius:8px;padding:12px 14px}
+.chart{background:var(--surface);border:1px solid var(--grid);border-radius:8px;position:relative;min-width:0}
+.scroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+.scroll svg{display:block}
+svg text{font-family:var(--mono);fill:var(--muted);font-size:10.5px}
+svg text.lane{font-family:var(--sans);font-size:12px;font-weight:600;fill:var(--ink)}
+svg text.lbl{font-family:var(--sans);font-size:11.5px;fill:var(--ink-2);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
+svg text.jump{fill:var(--ink-2)}
+.m{cursor:pointer;transition:opacity .12s}
+.m:focus{outline:none}
+.m:focus-visible .ring,.m.hit .ring{stroke:var(--focus);stroke-width:2}
+.dim{opacity:.15}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;padding:10px 14px 12px;border-top:1px solid var(--grid);font-size:13px;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+#tip{position:absolute;z-index:3;pointer-events:none;max-width:min(320px,80vw);background:var(--ink);color:var(--surface);padding:8px 10px;border-radius:6px;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+#tip b{display:block;font-weight:600}
+#tip i{font-style:normal;font-size:12px;opacity:.75;display:block;margin-top:2px}
+.note{font-size:13px;color:var(--muted)}
+ol.outbound{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+ol.outbound details{border:1px solid var(--grid);border-radius:8px;padding:8px 10px;font-size:13px;min-width:0}
+ol.outbound summary{cursor:pointer;overflow-wrap:anywhere}
+ol.outbound .replayed{font-weight:700;color:var(--fail)}
+ol.outbound pre{margin:4px 0 0;padding:8px;background:var(--wash);border-radius:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
+.fork{background:var(--surface);border:1px solid var(--grid);border-left:3px solid var(--agent);border-radius:8px;padding:14px 16px;gap:14px}
+.fork h3{margin:0;font-size:14px;font-weight:600}
+.fork dl{margin:0;display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px 16px;font-size:14px}
+.fork dt{color:var(--muted)}
+.fork dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.fork dd ul{margin:0;padding-left:18px}
+.fork a{color:var(--agent)}
+.fork table{border-collapse:collapse;font-size:14px;width:100%}
+.fork th{text-align:left;font-weight:500;color:var(--muted);padding:4px 10px 4px 0;border-bottom:1px solid var(--grid)}
+.fork td{padding:4px 10px 4px 0;border-bottom:1px solid var(--grid);vertical-align:top;overflow-wrap:anywhere}
+.fork .moved{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:14px}
+.fork ul.found{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.fork ul.found li{display:flex;gap:8px;align-items:baseline;min-width:0}
+.fork ul.found li span:last-child{min-width:0;overflow-wrap:anywhere;color:var(--ink-2)}
+.fork .part{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;font-size:14px}
+.fork .part b{font-weight:500;color:var(--muted)}
+.chip.ok{background:var(--ok-wash);color:var(--ok)}
+.chip.gained{background:var(--fail-wash);color:var(--fail)}
+.chip.lost{background:var(--ok-wash);color:var(--ok)}
+.chip.changed{background:var(--wash);color:var(--ink-2)}
+ol.said{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:14px}
+ol.said li{display:grid;grid-template-columns:110px minmax(0,1fr);gap:2px 12px;padding:6px 10px;background:var(--surface);border:1px solid var(--grid);border-radius:6px;min-width:0}
+ol.said time{font-family:var(--mono);font-size:12px;color:var(--muted);padding-top:2px}
+ol.said .who{overflow-wrap:anywhere}
+ol.said .who.agent{color:var(--ink)} ol.said .who.person{color:var(--person)} ol.said .who.scenario{color:var(--ink-2)}
+ol.said .who.edited{font-style:italic} ol.said .who.deleted{text-decoration:line-through}
+ol.said .note{grid-column:2}
+ol.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px}
+ol.steps details{border:1px solid var(--grid);border-radius:8px;padding:8px 10px;background:var(--surface)}
+ol.steps summary{cursor:pointer}
+ol.steps ul{margin:6px 0 0;padding-left:18px;color:var(--ink-2)}
+ol.steps .wrote{color:var(--ink)}
+ul.why{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
+.toggle{font-size:13px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+.m.shared{opacity:.45}
+@media (max-width:560px){h1{font-size:20px}.fork dl,.fork .part{grid-template-columns:minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav aria-label="Runs">
+    <div class="eyebrow">Minutehand</div>
+    <h2>Runs</h2>
+    <ul id="runs"><li class="note">Loading…</li></ul>
+  </nav>
+  <main id="main">
+    <div class="empty" id="welcome">Pick a run to see how the agent did.</div>
+  </main>
+</div>
+<svg width="0" height="0" aria-hidden="true" id="ns"></svg>
+<script>
+(function () {
+  "use strict";
+  var API = {
+    runs: "/api/runs",
+    run: "/api/runs/{run}",
+    wakes: "/api/runs/{run}/wakes",
+    events: "/api/runs/{run}/events",
+    obligations: "/api/runs/{run}/obligations",
+    findings: "/api/runs/{run}/findings",
+    scorecard: "/api/runs/{run}/scorecard",
+    modelCalls: "/api/runs/{run}/model-calls",
+    calls: "/api/runs/{run}/calls",
+    messages: "/api/runs/{run}/messages",
+    modelTraffic: "/api/runs/{run}/model-traffic"
+  };
+  var CAPTURED_AS = {
+    acknowledge: "acknowledged here, never sent",
+    pass_through: "passed through to the real host",
+    replay: "declared to replay",
+    discovered: "passed through, undeclared (--capture-unknown)"
+  };
+  var ANSWERED_BY = {
+    declaration: "answered as declared",
+    real_host: "answered by the real host",
+    recording: "REPLAYED from a recording",
+    refusal: "refused: no recording held it"
+  };
+  var NS = document.getElementById("ns").namespaceURI;
+  var RUNNING_REFRESH = 2000, LIST_REFRESH = 5000;
+  var KIND_LABEL = { fail: "Fail", review: "To review", informational: "Note" };
+  var KIND_ORDER = { fail: 0, review: 1, informational: 2 };
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var state = { list: [], selected: null, view: null, pinned: null, timer: null, compare: true };
+  var OPEN_ALL = /(^|[?&])open(=|&|$)/.test(location.search.slice(1));
+
+  function apiPath(path, run) { return path.replace("{run}", encodeURIComponent(run)); }
+  function get(path, run) {
+    return fetch(apiPath(path, run), { headers: { Accept: "application/json" } }).then(function (r) {
+      if (!r.ok) { return r.json().then(function (b) { throw new Error(b.error || ("answered " + r.status)); }); }
+      return r.json();
+    });
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function words(name) { return String(name).replace(/_/g, " "); }
+  function ms(iso) { return Date.parse(iso); }
+  function when(iso) {
+    var d = new Date(iso);
+    var hh = String(d.getUTCHours()).padStart(2, "0"), mm = String(d.getUTCMinutes()).padStart(2, "0");
+    return d.getUTCDate() + " " + MONTHS[d.getUTCMonth()] + " " + hh + ":" + mm;
+  }
+  function seconds(duration) {
+    var m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?$/.exec(duration || "");
+    if (!m) { return 0; }
+    return (+(m[1] || 0)) * 86400 + (+(m[2] || 0)) * 3600 + (+(m[3] || 0)) * 60 + (+(m[4] || 0));
+  }
+  function span(secs) {
+    if (secs < 90) { return Math.round(secs) + " seconds"; }
+    if (secs < 5400) { return Math.round(secs / 60) + " minutes"; }
+    if (secs < 172800) { var h = Math.round(secs / 3600); return h + (h === 1 ? " hour" : " hours"); }
+    return tenths(secs / 86400) + " days";
+  }
+  // one decimal, a tie to the even digit, as the server's text rounds it, so the scorecard and a fork's
+  // comparison of it never disagree on the same page
+  function tenths(v) {
+    var t = v * 10, f = Math.floor(t), n = t - f === 0.5 ? (f % 2 === 0 ? f : f + 1) : Math.round(t);
+    return (n / 10).toFixed(1);
+  }
+  function gap(secs) {
+    var d = Math.floor(secs / 86400), h = Math.floor((secs % 86400) / 3600), m = Math.round((secs % 3600) / 60);
+    var parts = [];
+    if (d) { parts.push(d + "d"); }
+    if (h) { parts.push(h + "h"); }
+    if (!d && m) { parts.push(m + "m"); }
+    return "+" + (parts.join(" ") || "0m");
+  }
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
+  /* ---------- the list of runs ---------- */
+
+  function loadList() {
+    return get(API.runs).then(function (body) {
+      state.list = body.runs;
+      drawList();
+      if (!state.selected) {
+        var wanted = decodeURIComponent(location.hash.slice(1));
+        var known = state.list.filter(function (r) { return r.run_id === wanted; })[0];
+        if (known) { select(known.run_id); }
+      }
+    }).catch(function (e) {
+      document.getElementById("runs").innerHTML = '<li class="note">Could not read the runs: ' + esc(e.message) + "</li>";
+    });
+  }
+
+  function runLabel(row) {
+    if (row.case !== null && row.case !== undefined) { return row.case; }
+    var roots = state.list.filter(function (r) { return r.parent_run === null && r.scenario === row.scenario; });
+    var name = words(row.scenario);
+    if (row.parent_run !== null) { return row.changed || "Rerun"; }
+    return roots.length > 1 ? name + ", run " + (roots.indexOf(row) + 1) : name;
+  }
+  function splitLabel(row) {
+    return row.forked_after_wake === null ? "" : (row.forked_after_wake === 0 ? "from setup · " : "after wake " + row.forked_after_wake + (row.forked_ran_on ? ", clock run on" : "") + " · ");
+  }
+  function runStatus(row) {
+    if (!row.finished) { return ["run", "Running…"]; }
+    if (row.verdict === "tool_failed") { return ["fail", "Not scored: Minutehand broke"]; }
+    if (row.verdict === "failed") { return ["fail", "Failed: " + plural(row.failed, "problem", "problems")]; }
+    if (row.verdict === "unfinished") { return ["review", "Not finished"]; }
+    if (row.verdict === "not_judged") { return ["review", "Not judged"]; }
+    if (row.to_review > 0) { return ["ok", "Passed, " + row.to_review + " to look at"]; }
+    return ["ok", "Passed"];
+  }
+
+  function drawList() {
+    var byParent = {};
+    state.list.forEach(function (r) { (byParent[r.parent_run || ""] = byParent[r.parent_run || ""] || []).push(r); });
+    function items(parent) {
+      return (byParent[parent] || []).map(function (r) {
+        var s = runStatus(r);
+        var kids = byParent[r.run_id] ? "<ul>" + items(r.run_id) + "</ul>" : "";
+        return '<li><button type="button" data-run="' + esc(r.run_id) + '" aria-current="' + (r.run_id === state.selected) + '">' +
+          "<b>" + esc(runLabel(r)) + "</b><small><span class=\"dot " + s[0] + "\"></span>" + esc(splitLabel(r) + s[1]) + "</small></button>" + kids + "</li>";
+      }).join("");
+    }
+    var html = items("");
+    document.getElementById("runs").innerHTML = html || '<li class="note">No runs yet. Play a scenario with <code>minutehand run</code>.</li>';
+  }
+
+  document.getElementById("runs").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-run]");
+    if (b) { select(b.getAttribute("data-run")); }
+  });
+
+  function select(run) {
+    state.selected = run;
+    state.pinned = null;
+    location.hash = encodeURIComponent(run);
+    drawList();
+    loadRun(run, true);
+  }
+
+  /* ---------- one run ---------- */
+
+  function loadRun(run, fresh) {
+    clearTimeout(state.timer);
+    Promise.all([
+      get(API.run, run), get(API.wakes, run), get(API.events, run), get(API.obligations, run),
+      get(API.findings, run), get(API.scorecard, run), get(API.modelCalls, run), get(API.calls, run),
+      get(API.messages, run), get(API.modelTraffic, run)
+    ]).then(function (parts) {
+      if (state.selected !== run) { return; }
+      state.view = {
+        run: parts[0], wakes: parts[1].wakes, events: parts[2].events, obligations: parts[3].obligations,
+        findings: parts[4], scorecard: parts[5].scorecard, modelCalls: parts[6],
+        // a model host's tunnels are summarised under "Model calls", one line per host, never listed call by call
+        outbound: parts[7].calls.filter(function (c) {
+          return (c.exchange.captured !== null || c.provider === null) && !c.exchange.tunnelled;
+        }),
+        messages: parts[8].messages, traffic: parts[9]
+      };
+      var view = state.view, fork = view.run.fork;
+      var parent = fork
+        ? Promise.all([get(API.wakes, fork.parent_run), get(API.events, fork.parent_run)]).then(function (more) {
+          view.parent = { wakes: more[0].wakes, events: more[1].events };
+        })
+        : Promise.resolve();
+      return parent.then(function () {
+        if (state.selected !== run) { return; }
+        drawRun(fresh);
+        if (!view.run.finished) {
+          state.timer = setTimeout(function () { loadRun(run, false); }, RUNNING_REFRESH);
+        }
+      });
+    }).catch(function (e) {
+      document.getElementById("main").innerHTML = '<div class="empty">Could not read this run: ' + esc(e.message) + "</div>";
+    });
+  }
+
+  function people(scenario) {
+    var byEmail = {}, byKey = {};
+    scenario.people.forEach(function (p) { byEmail[p.email] = p.name; byKey[p.key] = p.name; });
+    return { email: function (e) { return byEmail[e] || e; }, key: function (k) { return byKey[k] || words(k); } };
+  }
+
+  function verdict(view) {
+    var run = view.run, f = view.findings.findings;
+    var fails = f.filter(function (x) { return x.finding.kind === "fail"; }).length;
+    var reviews = f.filter(function (x) { return x.finding.kind === "review"; }).length;
+    if (!run.finished) {
+      return ['review', "Still running", "Reached " + when(run.reached) + " on the simulated clock. This page follows it."];
+    }
+    var v = view.findings.verdict, why = v.words;
+    if (v.kind === "tool_failed") { return ["fail", "Not scored: Minutehand broke", why]; }
+    if (v.kind === "failed") { return ["fail", "Failed: " + plural(fails, "problem", "problems") + " found", why]; }
+    if (v.kind === "unfinished") { return ["review", "Not finished", why]; }
+    if (v.kind === "not_judged") { return ["review", "Not judged", "No check failed, but this run could not be judged:"]; }
+    if (reviews) { return ["ok", "Passed, with " + reviews + " to look at", why]; }
+    return ["ok", "Passed", why];
+  }
+
+  function scoreLines(card) {
+    var lines = [];
+    lines.push(card.expectations_met + " of " + card.expectations_total + " of the scenario's expectations were met.");
+    lines.push(plural(card.waits_opened, "wait was", "waits were") + " opened" +
+      (card.waits_open_at_end ? "; " + card.waits_open_at_end + " still open at the end." : "; none was left open."));
+    if (card.follow_ups_due) {
+      lines.push(plural(card.follow_ups_due, "wait", "waits") + " passed the time an answer was due. Follow-ups made: " +
+        card.follow_ups_made + "; late or never made: " + card.follow_ups_late + ".");
+    } else {
+      lines.push("No wait passed the time an answer was due.");
+    }
+    var lost = seconds(card.time_lost);
+    lines.push(lost ? "The agent itself added " + span(lost) + " of delay." : "The agent added no delay of its own.");
+    if (card.slowest_follow_up) { lines.push("Its slowest follow-up came " + span(seconds(card.slowest_follow_up)) + " after the wait expired."); }
+    if (card.reactions_slow) { lines.push("It was slow to act on " + plural(card.reactions_slow, "answer", "answers") + "."); }
+    if (state.view.run.driven) {
+      var inferred = state.view.wakes.filter(function (w) { return w.inferred; }).length;
+      lines.push(card.wakes
+        ? "It took " + plural(card.wakes, "step", "steps") + (inferred ? " (inferred from the clock's moves)" : "") +
+          (card.idle_wakes ? "; " + card.idle_wakes + " of those changed nothing." : ", and every step changed something.")
+        : "No step was recorded: nobody marked one and the clock never moved forward.");
+    } else {
+      lines.push("It woke " + plural(card.wakes, "time", "times") + (card.idle_wakes ? "; " + card.idle_wakes + " of those changed nothing." : ", and every wake changed something."));
+    }
+    lines.push("It sent " + plural(card.messages_to_people, "message", "messages") + " to people" +
+      (card.messages_edited || card.messages_deleted
+        ? "; " + plural(card.messages_edited, "rewrite", "rewrites") + " of a message already sent, " + card.messages_deleted + " deleted."
+        : "; none was rewritten or deleted after it was sent."));
+    if (card.decisions_asked) {
+      lines.push("It left " + plural(card.decisions_asked, "decision", "decisions") + " waiting on people in its own product: " +
+        card.decisions_made + " decided, " + card.decisions_pending + " still pending at the end.");
+    }
+    return lines;
+  }
+
+  function drawRun(fresh) {
+    var view = state.view, run = view.run, sc = run.scenario;
+    var v = verdict(view);
+    var parent = state.list.filter(function (r) { return r.run_id === run.run_id; })[0];
+    var eyebrow = (parent && parent.case ? "case " + parent.case + " · " + plural(parent.worlds.length, "world", "worlds") : words(sc.name)) + " · started " + when(sc.starts_at) + " simulated" +
+      (parent && parent.parent_run !== null ? " · a fork" : "");
+    var findings = view.findings.findings.slice().sort(function (a, b) {
+      return KIND_ORDER[a.finding.kind] - KIND_ORDER[b.finding.kind] || a.number - b.number;
+    });
+    var html = '<header class="head"><div class="eyebrow">' + esc(eyebrow) + "</div><h1>" + esc(sc.goal) + "</h1></header>";
+    if (run.fork) { html += forkPanel(run.fork); }
+    var unjudged = view.findings.verdict && view.findings.verdict.kind === "not_judged" ? view.findings.verdict.unjudged : [];
+    html += '<div class="verdict"><div><span>Verdict</span><strong class="' + v[0] + '">' + esc(v[1]) + "</strong><span>" + esc(v[2]) + "</span>" +
+      (unjudged.length ? '<ul class="why">' + unjudged.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>" : "") + "</div>";
+    html += '<div class="card"><span>Scorecard</span>' + (view.scorecard
+      ? "<ul>" + scoreLines(view.scorecard).map(function (l) { return "<li>" + esc(l) + "</li>"; }).join("") + "</ul>"
+      : "<span>Written when the run finishes.</span>") + "</div></div>";
+    html += '<section><h2>Findings</h2>';
+    if (!view.findings.finished) {
+      html += '<div class="empty">The checks run when the run finishes.</div>';
+    } else if (!findings.length) {
+      html += '<div class="empty">No check found anything wrong.</div>';
+    } else {
+      html += '<p class="sub">Point at or tap a finding to light up its evidence on the timeline.</p><ol class="findings">' +
+        findings.map(findingCard).join("") + "</ol>";
+    }
+    if (view.findings.blocked.length) {
+      html += '<p class="note">' + plural(view.findings.blocked.length, "check", "checks") + " could not read what they needed and did not run.</p>";
+    }
+    html += "</section>";
+    html += '<section><h2>The run on the simulated clock</h2><p class="sub">Every mark sits at its simulated time. ' +
+      "Dashed arcs are the clock jumping ahead to the next moment something was due." +
+      (run.fork ? " The shaded part, left of the split, is the parent's record, which this fork shares; faded marks are the parent's." : "") + "</p>" +
+      (run.fork ? '<label class="toggle"><input type="checkbox" id="compare"' + (state.compare ? " checked" : "") + "> Show what the parent did after the split, in a lane of its own</label>" : "") +
+      '<div class="chart" id="chart"><div class="scroll" id="scroll"><svg id="timeline" role="img" aria-label="Timeline of the agent\'s wakes, what it waited on, and changes in the world"></svg></div>' +
+      '<div class="legend" id="legend"></div><div id="tip" hidden></div></div></section>';
+    html += messageList(view);
+    html += modelTraffic(view);
+    if (view.outbound.length) {
+      html += '<section><h2>Outbound calls</h2><p class="sub">Calls to hosts no fake answers: an email API, a search, a page. ' +
+        "Open one to read what was sent and answered, with credentials and declared fields redacted.</p>" +
+        '<ol class="outbound">' + view.outbound.map(outboundItem).join("") + "</ol></section>";
+    }
+    var scrollLeft = fresh ? 0 : (document.getElementById("scroll") || { scrollLeft: 0 }).scrollLeft;
+    document.getElementById("main").innerHTML = html;
+    timeline(view);
+    document.getElementById("scroll").scrollLeft = scrollLeft;
+    var compare = document.getElementById("compare");
+    if (compare) { compare.addEventListener("change", function () { state.compare = compare.checked; drawRun(false); }); }
+    if (OPEN_ALL) { document.querySelectorAll("main details").forEach(function (d) { d.open = true; }); }
+    wireFindings();
+    if (state.pinned !== null) { highlight(state.pinned); }
+  }
+
+  var VERDICT_LABEL = { passed: ["ok", "Passed"], failed: ["fail", "Failed"], unfinished: ["review", "Not finished"], tool_failed: ["fail", "Not scored"], not_judged: ["review", "Not judged"] };
+
+  /* ---------- what was said, and the model calls behind it ---------- */
+
+  var JOINED = { trace: "joined by its trace", content: "joined by content: the model answered this text verbatim", wake: "the nearest model call in the same step, not proven" };
+
+  function stepWord() { return state.view.run.driven ? "step" : "wake"; }
+
+  function messageWords(m) {
+    if (m.words) { return (m.actor === "agent" ? "→ " : "") + m.words; }
+    var to = m.to.length ? m.to.join(", ") : (m.actor === "agent" ? "nobody in the scenario" : "the agent");
+    var who = m.actor === "agent" ? "" : (m.actor === "person" ? "a person" : "the scenario");
+    if (m.change === "edited") {
+      return (who ? who + " rewrote" : "rewrote") + " the message to " + to + " from “" + m.before + "” to “" + m.text + "”";
+    }
+    if (m.change === "deleted") { return (who ? who + " deleted" : "deleted") + " the message to " + to + ": “" + m.text + "”"; }
+    return (who ? who + " → " : "→ ") + to + (m.thread ? " (in a thread)" : "") + ": " + m.text;
+  }
+
+  function messageList(view) {
+    if (!view.messages.length) { return ""; }
+    var items = view.messages.map(function (m) {
+      var wrote = m.written_by ? '<span class="note"> Written by ' + esc(m.written_by.model || "a model call") + ", " + esc(JOINED[m.written_by.joined_by]) + ".</span>" : "";
+      return '<li data-seq="' + m.seq + '"><time>' + esc(when(m.at)) + "</time>" +
+        '<span class="who ' + esc(m.actor) + (m.change !== "sent" ? " " + esc(m.change) : "") + '">' +
+        esc(messageWords(m)) + "</span>" + wrote + "</li>";
+    }).join("");
+    return '<section><h2>What was said</h2><p class="sub">Every message, and every decision left waiting on a person in the agent’s own product and made, in the order the record holds them; a rewrite of one already sent shows both texts.</p><ol class="said">' + items + "</ol></section>";
+  }
+
+  function tokens(c) {
+    if (c.input_tokens === null && c.output_tokens === null) { return ""; }
+    return (c.input_tokens === null ? "?" : c.input_tokens) + " in, " + (c.output_tokens === null ? "?" : c.output_tokens) + " out";
+  }
+
+  function modelTraffic(view) {
+    var t = view.traffic;
+    if (!t.calls.length && !t.hosts.length) { return ""; }
+    var bySeq = {};
+    view.messages.forEach(function (m) { bySeq[m.seq] = m; });
+    var html = '<section><h2>Model calls</h2>';
+    t.hosts.forEach(function (h) {
+      html += '<p class="sub">' + esc(h.host) + ": " + plural(h.calls, "call", "calls") + " on " + plural(h.connections, "connection", "connections") +
+        ", relayed and never opened (" + h.bytes_sent + " bytes sent, " + h.bytes_received + " received). What was asked and answered is not kept; the spans below are what the agent's own telemetry sent.</p>";
+    });
+    if (!t.calls.length) { return html + '<p class="note">No span of a model call was received, so the calls cannot be listed one by one.</p></section>'; }
+    var steps = [], byStep = {};
+    t.calls.forEach(function (c) { if (!byStep[c.step]) { byStep[c.step] = []; steps.push(c.step); } byStep[c.step].push(c); });
+    html += '<p class="sub">' + plural(t.calls.length, "model call", "model calls") + ", by the " + stepWord() + " each is placed in.</p><ol class=\"steps\">";
+    steps.forEach(function (n) {
+      var calls = byStep[n], wrote = calls.filter(function (c) { return c.wrote.length; }).length;
+      var stepped = !view.run.driven || view.wakes.some(function (w) { return w.index === n; });
+      var title = !n ? "Setup" : stepped ? stepWord().charAt(0).toUpperCase() + stepWord().slice(1) + " " + n : "Outside any step";
+      html += "<li><details" + (wrote ? " open" : "") + "><summary>" + esc(title + ": " + plural(calls.length, "call", "calls") + (wrote ? ", " + wrote + " of them wrote a message" : "")) + "</summary><ul>" +
+        calls.map(function (c) {
+          var msgs = c.wrote.map(function (seq) {
+            var m = bySeq[seq];
+            return m ? "“" + m.text.slice(0, 120) + "” (" + JOINED[m.written_by ? m.written_by.joined_by : c.joined_by] + ")" : "#" + seq;
+          }).join("; ");
+          return "<li>" + esc(when(c.started).slice(-5) + " real · " + (c.model || "model not named") + (tokens(c) ? " · " + tokens(c) : "")) +
+            (msgs ? '<span class="wrote"> wrote ' + esc(msgs) + "</span>" : "") + "</li>";
+        }).join("") + "</ul></details></li>";
+    });
+    return html + "</ol></section>";
+  }
+
+  function forkPanel(f) {
+    var parentRow = state.list.filter(function (r) { return r.run_id === f.parent_run; })[0];
+    var parentName = parentRow ? runLabel(parentRow) : f.parent_run;
+    var where = f.after_wake === 0 ? "at setup, before the first wake"
+      : (f.ran_on ? "after wake " + f.after_wake + ", once the clock had run on with nothing due to" : "at the end of wake " + f.after_wake);
+    var html = '<section class="fork" aria-label="What this fork is"><h2>What this fork is</h2><dl>';
+    html += "<dt>Split from</dt><dd><a href=\"#" + esc(encodeURIComponent(f.parent_run)) + "\">" + esc(parentName) + "</a> " +
+      esc(where) + (f.ran_on && f.after_wake !== 0 ? " " : ", ") + esc(when(f.at)) + " simulated (checkpoint seq " + f.at_seq + ")</dd>";
+    html += "<dt>What it changed</dt><dd>" + (f.changes.length
+      ? "<ul>" + f.changes.map(function (c) { return "<li>" + esc(c) + "</li>"; }).join("") + "</ul>"
+      : "Nothing: a rerun from the same moment, to see how much the agent varies.") + "</dd>";
+    html += "<dt>Agent restored</dt><dd>" + (f.restore
+      ? '<span class="chip ' + (f.restore.verified ? "ok" : "review") + '">' + (f.restore.verified ? "Verified" : "Not verified") + "</span> " +
+        esc(f.restore.words.replace(/^(not )?verified: /, ""))
+      : "No restore was recorded with this fork.") + "</dd></dl>";
+    var o = f.outcome;
+    html += "<h3>Against its parent, from the split on</h3>";
+    if (!o) { return html + '<p class="note">Compared once both runs have finished.</p></section>'; }
+    var a = VERDICT_LABEL[o.parent_verdict.kind], b = VERDICT_LABEL[o.fork_verdict.kind];
+    html += '<div class="moved"><span>Verdict:</span><span class="chip ' + a[0] + '">' + a[1] + "</span>" +
+      (o.verdict_changed ? '<span aria-hidden="true">→</span><span class="chip ' + b[0] + '">' + b[1] + "</span>" : "<span>in both</span>") + "</div>";
+    if (o.scorecard.length) {
+      html += "<table><thead><tr><th>Scorecard</th><th>Parent</th><th>This fork</th></tr></thead><tbody>" +
+        o.scorecard.map(function (d) { return "<tr><td>" + esc(d.label) + "</td><td>" + esc(d.parent) + "</td><td>" + esc(d.fork) + "</td></tr>"; }).join("") +
+        "</tbody></table>";
+    } else {
+      html += '<p class="note">Every line of the scorecard is the same.</p>';
+    }
+    var found = [];
+    o.findings_gained.forEach(function (x) { found.push(["gained", "Gained", words(x.check) + ": " + x.message]); });
+    o.findings_lost.forEach(function (x) { found.push(["lost", "Gone", words(x.check) + ": " + x.message]); });
+    o.findings_changed.forEach(function (x) { found.push(["changed", "Changed", words(x.fork.check) + ": " + x.parent.message + " → " + x.fork.message]); });
+    html += found.length
+      ? '<ul class="found">' + found.map(function (x) { return '<li><span class="chip ' + x[0] + '">' + x[1] + "</span><span>" + esc(x[2]) + "</span></li>"; }).join("") + "</ul>"
+      : '<p class="note">The same findings in both.</p>';
+    var split = o.first_divergence;
+    var kinds = {change: "change in the world", call: "call", report: "report of the agent's", model_call: "model call"};
+    if (!split) {
+      html += '<p class="note">From the split on, both records made the same changes and calls at the same moments, the agent reported alike and its models were asked and answered alike.</p>';
+    } else {
+      html += '<div class="part"><b>First difference</b><span>' + (split.shared
+        ? "a " + kinds[split.kind] + ", after " + plural(split.shared, "thing", "things") + " both did alike"
+        : "the very first " + kinds[split.kind] + " after the split") + ": " + esc(split.differs) + "</span>" +
+        "<b>The parent</b><span>" + esc(split.parent ? split.parent.words : "had nothing more of it") + "</span>" +
+        "<b>This fork</b><span>" + esc(split.fork ? split.fork.words : "had nothing more of it") + "</span></div>";
+    }
+    return html + "</section>";
+  }
+
+  function outboundHow(call) {
+    var c = call.exchange.captured, t = call.exchange.tunnelled;
+    if (t) {
+      return "relayed on a tunnel and never opened: " + t.bytes_sent + " bytes sent, " + t.bytes_received +
+        " received (call " + t.burst + " on its connection" + (t.closed ? ", which then closed" : "") + ")" +
+        (t.route === "none" ? "; no world claims this host" : "");
+    }
+    if (c === null) { return "refused: no fake answers it and the agent file does not declare it"; }
+    return CAPTURED_AS[c.mode] + ", " + ANSWERED_BY[c.answered_by] + (c.replayed_from ? " (" + c.replayed_from + ")" : "");
+  }
+
+  function outboundBody(text, body) {
+    if (body && body.kept === "binary") { return "(" + body.size + " bytes of " + (body.content_type || "unknown type") + ", not kept)"; }
+    if (text === null || text === undefined) { return "(empty)"; }
+    return text + (body && body.kept === "truncated" ? "\n… cut at the declared size; " + body.size + " bytes in all" : "");
+  }
+
+  function outboundItem(call) {
+    var e = call.exchange, c = e.captured;
+    var replayed = c !== null && c.answered_by === "recording";
+    var head = esc(e.method + " " + (e.tunnelled ? e.path : e.host + e.path)) + " · " + esc(String(e.status)) + " · wake " + call.wake + " · " + esc(when(call.sim_time));
+    var how = '<span class="' + (replayed ? "replayed" : "") + '">' + esc(outboundHow(call)) + "</span>";
+    var body = "";
+    if (c !== null) {
+      body += (c.note ? '<p class="note">' + esc(c.note) + "</p>" : "");
+      body += (c.recipients.length ? '<p class="note">To: ' + c.recipients.map(function (r) {
+        return esc(r.address) + (r.person ? "" : " (nobody in the scenario)");
+      }).join(", ") + "</p>" : "");
+      body += "<div>Request</div><pre>" + esc(outboundBody(e.request_body, c.request)) + "</pre>";
+      body += "<div>Answer</div><pre>" + esc(outboundBody(e.response_body, c.response)) + "</pre>";
+    }
+    if (e.tunnelled) {
+      body += '<p class="note">Its request and answer were not opened: the proxy relays this host\'s bytes ' +
+        "encrypted, so only that the call happened, when, and its size are kept.</p>";
+    }
+    return "<li><details><summary>" + head + " — " + how + "</summary>" + body + "</details></li>";
+  }
+
+  function findingCard(x) {
+    var f = x.finding, p = x.pattern;
+    var title = p ? p.title : words(f.check);
+    var place = [];
+    if (f.at) { place.push(when(f.at)); }
+    if (f.wake !== null) {
+      var inStep = !state.view.run.driven || state.view.wakes.some(function (w) { return w.index === f.wake; });
+      place.push(inStep ? stepWord() + " " + f.wake : "outside any step");
+    }
+    return '<li class="finding" tabindex="0" data-number="' + x.number + '">' +
+      '<h3><span class="chip ' + f.kind + '">' + KIND_LABEL[f.kind] + "</span>" + esc(title) + "</h3>" +
+      "<p>" + esc(f.message) + (place.length ? " (" + esc(place.join(", ")) + ")" : "") + "</p>" +
+      (p ? '<p class="design"><b>What stops it:</b> ' + esc(p.design) + "</p>" : "") + asked(f) +
+      (!f.evidence.length && f.wake === null ? '<p class="note">It is about the run as a whole, so nothing on the timeline lights up.</p>' : "") + "</li>";
+  }
+
+  /* ---------- the agent's side: the model call behind the evidence ---------- */
+
+  // a part that is itself JSON (a structured prompt, a JSON answer) is laid out on lines, so it can be read
+  function pretty(content) {
+    var s = String(content), t = s.trim();
+    if (t.charAt(0) !== "{" && t.charAt(0) !== "[") { return s; }
+    try { return JSON.stringify(JSON.parse(t), null, 2); } catch (e) { return s; }
+  }
+  function messages(text) {
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return text; }
+    if (!Array.isArray(parsed)) { return pretty(text); }
+    return parsed.map(function (m) {
+      if (m.type === "text" && m.content !== undefined) { return pretty(m.content); }
+      var parts = (m.parts || []).map(function (part) {
+        if (part.type === "text") { return pretty(part.content); }
+        if (part.type === "tool_call") { return "[calls " + part.name + "]"; }
+        return "[" + part.type + "]";
+      });
+      return (m.role ? m.role + ":\n" : "") + parts.join("\n");
+    }).join("\n\n");
+  }
+
+  function asked(f) {
+    var known = state.view.modelCalls;
+    if (!f.evidence.length) { return ""; }
+    if (known.received === 0) {
+      return '<p class="note">No telemetry was received from the agent in this run, so what its model was asked and answered is not known.</p>';
+    }
+    var calls = known.events.filter(function (t) { return f.evidence.indexOf(t.seq) >= 0 && t.model_call; });
+    if (!calls.length) {
+      return '<p class="note">The agent\'s telemetry was received, and no model call in it led to this evidence.</p>';
+    }
+    return calls.map(function (t) {
+      var c = t.model_call, about = [];
+      if (c.model) { about.push(c.model); }
+      if (c.input_tokens !== null || c.output_tokens !== null) {
+        about.push((c.input_tokens === null ? "?" : c.input_tokens) + " tokens in, " + (c.output_tokens === null ? "?" : c.output_tokens) + " out");
+      }
+      if (t.joined_by !== "trace") { about.push(JOINED[t.joined_by]); }
+      return '<div class="asked"><b>What the model was asked and answered</b>' +
+        (about.length ? "<span>" + esc(about.join(" · ")) + "</span>" : "") +
+        (c.system_instructions ? "<details><summary>System prompt</summary><pre>" + esc(messages(c.system_instructions)) + "</pre></details>" : "") +
+        (c.input_messages ? "<details><summary>Asked</summary><pre>" + esc(messages(c.input_messages)) + "</pre></details>" : "<span>The span does not carry what it was asked.</span>") +
+        (c.output_messages ? "<details><summary>Answered</summary><pre>" + esc(messages(c.output_messages)) + "</pre></details>" : "<span>The span does not carry what it answered.</span>") +
+        "</div>";
+    }).join("");
+  }
+
+  /* ---------- the timeline ---------- */
+
+  function el(name, attrs, parent, text) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) { e.setAttribute(k, attrs[k]); }
+    if (text !== undefined && text !== null) { e.textContent = text; }
+    parent.appendChild(e);
+    return e;
+  }
+
+  function describe(ev, who) {
+    var a = ev.after, actor = ev.actor === "agent" ? "The agent" : ev.actor === "person" ? "Someone" : "The scenario";
+    var verb = { create: "created", update: "changed", "delete": "deleted" }[ev.operation] || ev.operation;
+    var line = state.view.messages.filter(function (m) { return m.seq === ev.seq; })[0];
+    if (line && line.words) { return [(line.actor === "agent" ? "The agent " : "") + line.words.split(": ")[0], line.text, false]; }
+    if (line && line.change !== "sent") {
+      var whom = line.to.length ? line.to.join(", ") : "a channel";
+      return [actor + (line.change === "edited" ? " rewrote the message to " : " deleted the message to ") + whom,
+        line.change === "edited" ? "from “" + line.before.slice(0, 160) + "” to “" + line.text.slice(0, 160) + "”" : "“" + line.text.slice(0, 220) + "”", true];
+    }
+    if (a && a.kind === "message") {
+      var to = a.recipient_emails.map(who.email).join(", ");
+      if (ev.actor === "agent") { return ["Message to " + (to || "a channel"), a.text]; }
+      return [(to ? "Message to " + to : "Message") + (ev.actor === "person" ? ", from a person" : ", set up by the scenario"), a.text];
+    }
+    if (a && a.kind === "ticket") {
+      var holder = a.assignee_email ? " for " + who.email(a.assignee_email) : "";
+      return [actor + " " + verb + " a ticket" + holder, "“" + a.title + "”, " + a.state];
+    }
+    if (a && a.kind === "document") { return [actor + " " + verb + " a document", "“" + a.title + "”"]; }
+    if (a && a.kind === "record") { return [actor + " " + verb + " a " + a.resource + " record", a.text]; }
+    if (a && a.kind === "interaction") {
+      return [who.key(a.person) + (a.interaction === "press" ? " pressed “" : " submitted “") + a.label + "”", a.form.join("\n")];
+    }
+    return [actor + " " + verb + " a " + ev.entity.kind + " in " + ev.entity.provider, ""];
+  }
+
+  function obligationLabel(o, who) {
+    if (o.kind === "answer_from_person") { return "An answer from " + who.key(o.person); }
+    if (o.kind === "work_with_person") { return "Work handed to " + who.key(o.person); }
+    return "The scenario's deadline";
+  }
+
+  function timeline(view) {
+    var svg = document.getElementById("timeline"), scroll = document.getElementById("scroll");
+    var who = people(view.run.scenario);
+    function changed(e) { return e.operation !== "read" && e.operation !== "search"; }
+    var changes = view.events.filter(changed);
+    var fork = view.run.fork, splitT = fork ? ms(fork.at) : null;
+    var theirs = fork && state.compare && view.parent ? {
+      wakes: view.parent.wakes.filter(function (w) { return w.index > fork.after_wake; }),
+      events: view.parent.events.filter(function (e) { return e.seq > fork.at_seq && changed(e); })
+    } : null;
+    var t0 = ms(view.run.scenario.starts_at), reached = ms(view.run.reached), t1 = reached;
+    if (theirs) {
+      theirs.wakes.forEach(function (w) { t1 = Math.max(t1, ms(w.sim_time)); });
+      theirs.events.forEach(function (e) { t1 = Math.max(t1, ms(e.sim_time)); });
+    }
+    view.wakes.forEach(function (w) { t1 = Math.max(t1, ms(w.sim_time)); });
+    changes.forEach(function (e) { t1 = Math.max(t1, ms(e.sim_time)); });
+    // a wait still open stretches the axis to when it was due; a settled one's date, never reached, does not
+    view.obligations.forEach(function (w) {
+      if (w.obligation.expected_by && !w.obligation.settled_at) { t1 = Math.max(t1, ms(w.obligation.expected_by)); }
+    });
+    if (t1 - t0 < 600e3) { t1 = t0 + 600e3; }  // under ten minutes, or one instant: ten minutes wide
+    var W = Math.max(scroll.clientWidth || 720, 720, view.wakes.length * 56), X0 = 18, X1 = W - 28;
+    function x(t) { return X0 + (t - t0) / (t1 - t0) * (X1 - X0); }
+
+    var rows = [["message", "Messages"], ["inbox_item", "Decisions in the agent's product"], ["ticket", "Tickets"], ["document", "Documents"], ["other", "Other records"]];
+    var present = rows.filter(function (r) {
+      return changes.some(function (e) { return rowOf(e) === r[0]; });
+    });
+    if (!present.length) { present = [rows[0]]; }
+    var L1 = 70, L2 = 170, OB = 28, L3 = L2 + 22 + Math.max(1, view.obligations.length) * OB + 18, ROW = 48;
+    var L4 = L3 + 24 + present.length * ROW + 10;
+    var L5 = view.outbound.length ? L4 + 24 + ROW : L4;
+    var H = theirs ? L5 + 24 + 2 * ROW + 10 : L5;
+    svg.setAttribute("width", W); svg.setAttribute("height", H);
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+    // a fork: the parent's record it shares, up to the split, shaded behind every lane
+    if (fork && x(splitT) > X0) {
+      el("rect", { x: X0, y: 24, width: x(splitT) - X0, height: H - 30, fill: "var(--wash)" }, svg);
+    }
+
+    // the axis
+    // ticks from a minute up to a fortnight apart, so a run that spans minutes, or one simulated instant, still has
+    // an axis; its start is always labelled
+    var stepH = [1 / 60, 5 / 60, 10 / 60, 15 / 60, 0.5, 1, 3, 6, 12, 24, 48, 168].filter(function (h) { return (t1 - t0) / (h * 3600e3) <= W / 90; })[0] || 336;
+    var first = Math.ceil(t0 / (stepH * 3600e3)) * stepH * 3600e3;
+    if (x(first) - X0 > 70) { el("text", { x: X0 + 3, y: 18 }, svg, when(new Date(t0).toISOString())); }
+    for (var t = first; t <= t1; t += stepH * 3600e3) {
+      var gx = x(t);
+      if (gx > X1 - 40) { break; }
+      el("line", { x1: gx, y1: 24, x2: gx, y2: H - 6, stroke: "var(--grid)" }, svg);
+      el("text", { x: gx + 3, y: 18 }, svg, stepH >= 24 ? when(new Date(t).toISOString()).replace(/ 00:00$/, "") : when(new Date(t).toISOString()));
+    }
+    el("line", { x1: X0, y1: 24, x2: X1, y2: 24, stroke: "var(--axis)" }, svg);
+    // the labels of the vertical lines, each in the first of three rows where it overlaps no other
+    var flags = [];
+    function flag(text, at, anchor) {
+      var w = text.length * 6.4 + 6, a = anchor === "end" ? at - w : at, b = anchor === "end" ? at : at + w, row = 0;
+      while (row < 2 && flags.some(function (f) { return f[0] === row && a < f[2] && f[1] < b; })) { row++; }
+      flags.push([row, a, b]);
+      el("text", { x: at, y: 36 + row * 13, "text-anchor": anchor, class: "lbl" }, svg, text);
+    }
+    if (fork) {
+      el("line", { x1: x(splitT), y1: 24, x2: x(splitT), y2: H - 6, stroke: "var(--agent)", "stroke-width": 1.5, "stroke-dasharray": "6 3" }, svg);
+      var late = x(splitT) > X1 - 260;
+      flag("Split from the parent after wake " + fork.after_wake, x(splitT) + (late ? -4 : 4), late ? "end" : "start");
+    }
+    if (view.run.scenario.deadline_after) {
+      var dl = t0 + seconds(view.run.scenario.deadline_after) * 1000;
+      if (dl <= t1) {
+        el("line", { x1: x(dl), y1: 24, x2: x(dl), y2: H - 6, stroke: "var(--fail)", "stroke-dasharray": "5 3" }, svg);
+        flag("Deadline", x(dl) - 4, "end");
+      }
+    }
+    el("line", { x1: x(reached), y1: 24, x2: x(reached), y2: H - 6, stroke: "var(--ink)" }, svg);
+    var early = x(reached) < X0 + 90;
+    flag(view.run.finished ? "Run ended" : "Now", x(reached) + (early ? 4 : -4), early ? "start" : "end");
+
+    var marks = [];
+    function mark(g, title, body, whenText, seqs, wake) {
+      g.setAttribute("class", "m"); g.setAttribute("tabindex", "0");
+      g.setAttribute("aria-label", title + ". " + body + (whenText ? ". " + whenText : ""));
+      g.__tip = { title: title, body: body, when: whenText }; g.__seqs = seqs; g.__wake = wake;
+      marks.push(g);
+      return g;
+    }
+
+    // lane 1: the agent's wakes, and the clock's jumps between them
+    el("text", { x: X0, y: L1 + 12, class: "lane" }, svg, view.run.driven ? "The agent's steps" : "The agent's wakes");
+    var WY = L1 + 72;
+    var stops = view.wakes.map(function (w) { return ms(w.sim_time); });
+    if (view.run.finished && stops.length && reached > stops[stops.length - 1]) { stops.push(reached); }
+    for (var i = 0; i + 1 < stops.length; i++) {
+      var a = x(stops[i]), b = x(stops[i + 1]), mid = (a + b) / 2, secs = (stops[i + 1] - stops[i]) / 1000;
+      if (b - a < 4) { continue; }
+      el("path", { d: "M" + a + " " + WY + " Q" + mid + " " + (WY - 34) + " " + b + " " + WY, fill: "none", stroke: "var(--muted)", "stroke-dasharray": "3 3" }, svg);
+      if (b - a > 34) { el("text", { x: mid, y: WY - 22, "text-anchor": "middle", class: "jump" }, svg, gap(secs)); }
+    }
+    view.wakes.forEach(function (w, j) {
+      var g = el("g", {}, svg), wx = x(ms(w.sim_time)), idle = w.world_changes === 0 && !w.commitments_changed;
+      el("circle", { cx: wx, cy: WY, r: 12, fill: "transparent" }, g);
+      el("circle", { class: "ring", cx: wx, cy: WY, r: 6, fill: idle ? "var(--surface)" : "var(--agent)", stroke: "var(--agent)", "stroke-width": 1.6 }, g);
+      el("text", { x: wx, y: WY + 22, "text-anchor": "middle" }, g, String(w.index));
+      var jumped = j > 0 ? " The clock jumped " + gap((ms(w.sim_time) - ms(view.wakes[j - 1].sim_time)) / 1000).slice(1) + " to get here." : "";
+      var sharedWake = fork && w.index <= fork.after_wake;
+      var named = view.run.driven ? "Step " + w.index + (w.inferred ? ", inferred from the clock moving" : "") + (w.reason ? ": " + w.reason : "") : "Wake " + w.index;
+      mark(g, named, (idle ? "Changed nothing in the world." : "Changed " + plural(w.world_changes, "thing", "things") + " in the world.") + jumped +
+        (sharedWake ? " The parent's wake, which this fork shares." : ""), when(w.sim_time), [], w.index);
+      if (sharedWake) { g.setAttribute("class", "m shared"); }
+    });
+    if (!view.wakes.length) {
+      el("text", { x: X0, y: WY + 4, class: "lbl" }, svg, view.run.driven
+        ? "No step was recorded: nobody marked one, and the clock never moved forward."
+        : "No wake has finished yet.");
+    }
+
+    // lane 2: what the world was waiting on
+    el("text", { x: X0, y: L2 + 12, class: "lane" }, svg, "What the agent was waiting on");
+    if (!view.obligations.length) { el("text", { x: X0, y: L2 + 38, class: "lbl" }, svg, "Nothing yet."); }
+    view.obligations.forEach(function (w, k) {
+      var o = w.obligation, y = L2 + 22 + k * OB, a = x(ms(o.opened_at)), open = !o.settled_at;
+      var endT = open ? reached : ms(o.settled_at), b = Math.max(x(endT), a + 3), g = el("g", {}, svg);
+      el("rect", { x: a - 4, y: y, width: b - a + 20, height: OB - 2, fill: "transparent" }, g);
+      var label = obligationLabel(o, who);
+      el("text", { x: a > W - 220 ? b : a, y: y + 9, class: "lbl", "text-anchor": a > W - 220 ? "end" : "start" }, g, label);
+      el("rect", { class: "ring", x: a, y: y + 13, width: b - a, height: 7, rx: 2, fill: "var(--wait)", "fill-opacity": open ? 0.55 : 1 }, g);
+      if (open) { el("line", { x1: b, y1: y + 16.5, x2: b + 14, y2: y + 16.5, stroke: "var(--wait)", "stroke-width": 2, "stroke-dasharray": "3 3" }, g); }
+      var detail = "Opened " + when(o.opened_at) + ".";
+      if (o.expected_by) {
+        var e = x(ms(o.expected_by));
+        detail += " Expected by " + when(o.expected_by) + ".";
+        // Drawn only on the wait's own bar: a date the wait never reached (it settled, or the run ended, first)
+        // would stand alone on the timeline attached to nothing.
+        if (ms(o.expected_by) <= endT) {
+          el("line", { class: "due", x1: e, y1: y + 10, x2: e, y2: y + 25, stroke: "var(--ink)", "stroke-width": 1.5 }, g);
+        }
+      }
+      // Overdue is drawn only where the scorecard counts a wait as due: the server reads both from the ledger.
+      w.fell_due.forEach(function (d) {
+        el("line", { x1: Math.max(x(ms(d.at)), a), y1: y + 23, x2: Math.max(x(ms(d.until)), a + 1), y2: y + 23, stroke: "var(--fail)", "stroke-width": 2 }, g);
+        detail += " Due " + when(d.at) + (d.followed_up ? ", followed up " + when(d.until) + (d.late ? ", late." : ".") : ", never followed up.");
+      });
+      detail += open ? " Still open." : " Settled " + when(o.settled_at) + ".";
+      if (o.agent_touches.length) { detail += " The agent came back to it " + plural(o.agent_touches.length, "time", "times") + " while it was open."; }
+      var seqs = [o.opened_by].concat(o.agent_touches);
+      if (o.first_touch_after_settled !== null) { seqs.push(o.first_touch_after_settled); }
+      mark(g, label, detail, "", seqs, null);
+    });
+
+    // lane 3: changes in the world, by kind of thing, coloured by who made them
+    el("text", { x: X0, y: L3 + 12, class: "lane" }, svg, "Changes in the world");
+    var taken = {};
+    present.forEach(function (r, k) {
+      var y = L3 + 24 + k * ROW;
+      el("text", { x: X0, y: y + 4, class: "lbl" }, svg, r[1]);
+      el("line", { x1: X0, y1: y + 40, x2: X1, y2: y + 40, stroke: "var(--grid)" }, svg);
+      taken[r[0]] = { y: y + 40, used: [] };
+    });
+    changes.forEach(function (ev) {
+      var row = taken[rowOf(ev)], cx = x(ms(ev.sim_time)), level = 0;
+      while (row.used.some(function (u) { return u[1] === level && Math.abs(u[0] - cx) < 10; }) && level < 2) { level++; }
+      row.used.push([cx, level]);
+      var cy = row.y - 6 - level * 11, g = el("g", {}, svg), d = describe(ev, who);
+      var colour = ev.actor === "agent" ? "var(--agent)" : ev.actor === "person" ? "var(--person)" : "var(--scenario)";
+      el("circle", { cx: cx, cy: cy, r: 10, fill: "transparent" }, g);
+      if (ev.operation === "delete") {
+        el("path", { class: "ring", d: "M" + (cx - 4) + " " + (cy - 4) + "L" + (cx + 4) + " " + (cy + 4) + "M" + (cx + 4) + " " + (cy - 4) + "L" + (cx - 4) + " " + (cy + 4), stroke: colour, "stroke-width": 2 }, g);
+      } else {
+        el("circle", { class: "ring", cx: cx, cy: cy, r: 4.5, fill: ev.operation === "create" ? colour : "var(--surface)", stroke: colour, "stroke-width": 1.6 }, g);
+      }
+      var call = ev.exchange ? " " + ev.exchange.method + " " + ev.exchange.host + ev.exchange.path.split("?")[0] + ", answered " + ev.exchange.status + "." : "";
+      var by = ev.actor === "agent" ? "By the agent" : ev.actor === "person" ? "By a person" : "By the scenario";
+      var sharedEvent = fork && ev.seq <= fork.at_seq;
+      var quoted = d[1] ? (d[2] ? d[1] : "“" + d[1].slice(0, 220) + "”") : "";
+      mark(g, d[0], quoted + " " + by + (ev.wake ? ", in " + stepWord() + " " + ev.wake : ", at setup") + "." + call +
+        (sharedEvent ? " In the parent's record, which this fork shares." : ""), when(ev.sim_time), [ev.seq], null);
+      if (sharedEvent) { g.setAttribute("class", "m shared"); }
+    });
+
+    // lane 4: calls to hosts no fake answers, each at its simulated time; a replayed one hollow, a refused one red
+    if (view.outbound.length) {
+      el("text", { x: X0, y: L4 + 12, class: "lane" }, svg, "Outbound calls");
+      var oy = L4 + 24 + 30, used = [];
+      el("line", { x1: X0, y1: oy + 10, x2: X1, y2: oy + 10, stroke: "var(--grid)" }, svg);
+      view.outbound.forEach(function (call) {
+        var e = call.exchange, c = e.captured, cx = x(ms(call.sim_time)), level = 0;
+        while (used.some(function (u) { return u[1] === level && Math.abs(u[0] - cx) < 10; }) && level < 2) { level++; }
+        used.push([cx, level]);
+        var cy = oy - level * 11, g = el("g", {}, svg);
+        var refused = (c === null && !e.tunnelled) || (c !== null && c.answered_by === "refusal"), replayed = c !== null && c.answered_by === "recording";
+        var colour = refused ? "var(--fail)" : "var(--agent)";
+        el("rect", { x: cx - 10, y: cy - 10, width: 20, height: 20, fill: "transparent" }, g);
+        el("rect", { class: "ring", x: cx - 4, y: cy - 4, width: 8, height: 8, fill: replayed ? "var(--surface)" : colour, stroke: colour, "stroke-width": 1.6 }, g);
+        mark(g, e.method + " " + (e.tunnelled ? e.path : e.host + e.path.split("?")[0]), outboundHow(call) + "; answered " + e.status + ".",
+          when(call.sim_time), call.first_seq <= call.last_seq ? [call.first_seq] : [], null);
+      });
+    }
+
+    // lane 5: what the parent did after the split, to compare with this fork's own lanes above
+    if (theirs) {
+      el("line", { x1: X0, y1: L5 + 4, x2: X1, y2: L5 + 4, stroke: "var(--axis)" }, svg);
+      el("text", { x: X0, y: L5 + 20, class: "lane" }, svg, "The parent, after the split");
+      var py = L5 + 24, rowW = py + 30, rowC = py + ROW + 30;
+      el("text", { x: X0, y: py + 10, class: "lbl" }, svg, "Its wakes");
+      el("text", { x: X0, y: py + ROW + 10, class: "lbl" }, svg, "Its changes in the world");
+      el("line", { x1: X0, y1: rowC + 6, x2: X1, y2: rowC + 6, stroke: "var(--grid)" }, svg);
+      if (!theirs.wakes.length) { el("text", { x: x(splitT) + 8, y: rowW + 4, class: "lbl" }, svg, "No further wake."); }
+      theirs.wakes.forEach(function (w) {
+        var g = el("g", {}, svg), wx = x(ms(w.sim_time));
+        el("circle", { cx: wx, cy: rowW, r: 12, fill: "transparent" }, g);
+        el("circle", { class: "ring", cx: wx, cy: rowW, r: 6, fill: "var(--surface)", stroke: "var(--muted)", "stroke-width": 1.6, "stroke-dasharray": "2 2" }, g);
+        el("text", { x: wx, y: rowW + 22, "text-anchor": "middle" }, g, String(w.index));
+        mark(g, "The parent's wake " + w.index, "Changed " + plural(w.world_changes, "thing", "things") + " in the parent's world.", when(w.sim_time), [], null);
+      });
+      if (!theirs.events.length) { el("text", { x: x(splitT) + 8, y: rowC, class: "lbl" }, svg, "No further change."); }
+      var usedP = [];
+      theirs.events.forEach(function (ev) {
+        var cx = x(ms(ev.sim_time)), level = 0;
+        while (usedP.some(function (u) { return u[1] === level && Math.abs(u[0] - cx) < 10; }) && level < 2) { level++; }
+        usedP.push([cx, level]);
+        var cy = rowC - level * 11, g = el("g", {}, svg), d = describe(ev, who);
+        var colour = ev.actor === "agent" ? "var(--agent)" : ev.actor === "person" ? "var(--person)" : "var(--scenario)";
+        el("circle", { cx: cx, cy: cy, r: 10, fill: "transparent" }, g);
+        el("circle", { class: "ring", cx: cx, cy: cy, r: 4.5, fill: "var(--surface)", stroke: colour, "stroke-width": 1.6, "stroke-dasharray": "2 1.5" }, g);
+        mark(g, "In the parent: " + d[0], d[1] ? "“" + d[1].slice(0, 220) + "”" : "", when(ev.sim_time), [], null);
+      });
+    }
+
+    legend(fork, theirs);
+    tips(marks);
+    state.marks = marks;
+  }
+
+  function rowOf(ev) {
+    var k = ev.after ? ev.after.kind : ev.entity.kind;
+    return k === "message" || k === "ticket" || k === "document" || k === "inbox_item" ? k : "other";
+  }
+
+  function legend(fork, theirs) {
+    function swatch(fill, stroke) {
+      return '<svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.6"/></svg>';
+    }
+    document.getElementById("legend").innerHTML = [
+      "<span>" + swatch("var(--agent)", "var(--agent)") + "A " + stepWord() + " that changed something</span>",
+      "<span>" + swatch("var(--surface)", "var(--agent)") + "A " + stepWord() + " that changed nothing</span>",
+      '<span><svg width="22" height="12" aria-hidden="true"><rect x="0" y="3" width="22" height="6" rx="2" fill="var(--wait)"/></svg>Waiting, from asked to settled</span>',
+      '<span><svg width="22" height="12" aria-hidden="true"><line x1="11" y1="0" x2="11" y2="12" stroke="var(--ink)" stroke-width="1.5"/></svg>When it was due</span>',
+      '<span><svg width="22" height="12" aria-hidden="true"><line x1="0" y1="6" x2="22" y2="6" stroke="var(--fail)" stroke-width="2"/></svg>Overdue</span>',
+      "<span>" + swatch("var(--agent)", "var(--agent)") + "Made by the agent</span>",
+      "<span>" + swatch("var(--person)", "var(--person)") + "Made by a person</span>",
+      "<span>" + swatch("var(--scenario)", "var(--scenario)") + "Set by the scenario</span>",
+      "<span>" + swatch("var(--surface)", "var(--muted)") + "A change to something that existed</span>"
+    ].concat(fork ? [
+      '<span><svg width="22" height="12" aria-hidden="true"><rect x="0" y="0" width="22" height="12" fill="var(--wash)" stroke="var(--axis)"/></svg>Shared with the parent, before the split</span>',
+      '<span><svg width="22" height="12" aria-hidden="true"><line x1="11" y1="0" x2="11" y2="12" stroke="var(--agent)" stroke-width="1.5" stroke-dasharray="4 2"/></svg>The split</span>'
+    ] : []).concat(theirs ? [
+      '<span><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="var(--surface)" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="2 1.5"/></svg>What the parent did instead</span>'
+    ] : []).join("");
+  }
+
+  function tips(marks) {
+    var chart = document.getElementById("chart"), tip = document.getElementById("tip");
+    function show(g) {
+      var t = g.__tip;
+      tip.innerHTML = "<b>" + esc(t.title) + "</b>" + esc(t.body) + (t.when ? "<i>" + esc(t.when) + " simulated</i>" : "");
+      tip.hidden = false;
+      var box = g.getBoundingClientRect(), outer = chart.getBoundingClientRect();
+      var left = Math.min(Math.max(box.left - outer.left + box.width / 2 - 140, 6), outer.width - tip.offsetWidth - 6);
+      var top = box.top - outer.top - tip.offsetHeight - 8;
+      if (top < 4) { top = box.bottom - outer.top + 8; }
+      tip.style.left = left + "px"; tip.style.top = top + "px";
+    }
+    function hide() { tip.hidden = true; }
+    marks.forEach(function (g) {
+      g.addEventListener("mouseenter", function () { show(g); });
+      g.addEventListener("mouseleave", hide);
+      g.addEventListener("focus", function () { show(g); });
+      g.addEventListener("blur", hide);
+      g.addEventListener("click", function () { show(g); });
+    });
+  }
+
+  function highlight(number) {
+    var x = state.view.findings.findings.filter(function (f) { return f.number === number; })[0];
+    if (!x) { return clear(); }
+    var seqs = x.finding.evidence, wake = x.finding.wake;
+    if (!seqs.length && wake === null) { return clear(); }
+    (state.marks || []).forEach(function (g) {
+      var hit = g.__seqs.some(function (s) { return seqs.indexOf(s) >= 0; }) || (wake !== null && g.__wake === wake);
+      g.classList.toggle("dim", !hit);
+      g.classList.toggle("hit", hit);
+    });
+  }
+  function clear() {
+    (state.marks || []).forEach(function (g) { g.classList.remove("dim"); g.classList.remove("hit"); });
+  }
+
+  function wireFindings() {
+    document.querySelectorAll(".finding").forEach(function (li) {
+      var n = +li.getAttribute("data-number");
+      li.classList.toggle("pinned", state.pinned === n);
+      li.addEventListener("mouseenter", function () { highlight(n); });
+      li.addEventListener("mouseleave", function () { if (state.pinned === null) { clear(); } else { highlight(state.pinned); } });
+      li.addEventListener("focus", function () { highlight(n); });
+      li.addEventListener("click", function () {
+        state.pinned = state.pinned === n ? null : n;
+        document.querySelectorAll(".finding").forEach(function (o) { o.classList.toggle("pinned", +o.getAttribute("data-number") === state.pinned); });
+        if (state.pinned === null) { clear(); } else { highlight(n); }
+      });
+    });
+  }
+
+  window.addEventListener("hashchange", function () {
+    var run = decodeURIComponent(location.hash.slice(1));
+    if (run && run !== state.selected) { select(run); }
+  });
+  var resizing = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizing);
+    resizing = setTimeout(function () { if (state.view) { drawRun(false); } }, 150);
+  });
+
+  loadList();
+  setInterval(loadList, LIST_REFRESH);
+})();
+</script>
+</body>
+</html>

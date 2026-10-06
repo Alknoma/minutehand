@@ -1,0 +1,23 @@
+# One run in which people act by themselves in all three families of happening: a ticket on Asana and one on
+# YouTrack, a document on Google Drive, and a message on Slack. Nobody asks them to; the agent finds the tickets
+# and the document on its next read and hears the Slack post pushed to it.
+name: every_happening_family
+goal: Keep the launch moving.
+owner: owen
+starts_at: "2026-09-07T09:00:00Z"
+deadline_after: P5D
+people:
+  - {key: owen, name: Owen Hale, email: owen@example.com, reply: {kind: silent}}
+  - {key: nadia, name: Nadia Rahman, email: nadia@example.com, reply: {kind: silent}}
+tickets:
+  - {provider: asana, project: Launch, title: Book the venue, assignee: nadia}
+  - {key: notes, provider: youtrack, project: Launch, title: Write the release notes, assignee: nadia,
+     labels: [docs], comments: [{by: owen, text: Due before the partner call}]}
+documents:
+  - {provider: google_drive, title: Launch plan, text: "# Launch plan"}
+happenings:
+  - {kind: ticket, person: nadia, ticket: Book the venue, after: P1D, action: {kind: moves, to: done}}
+  - {kind: ticket, person: nadia, ticket: Write the release notes, after: P2D,
+     action: {kind: comments, text: Draft is in the shared folder}}
+  - {kind: document, person: nadia, document: Launch plan, after: P3D, action: {kind: renamed, to: Launch plan (final)}}
+  - {kind: posts, provider: slack, person: nadia, text: All three are done on my side, after: P4D}
