@@ -73,7 +73,7 @@ def _unapplied(rules: list[DispatchRule], dues: list[DueEntry]) -> list[str]:
     for i, rule in enumerate(rules):
         count = reached.get(rule.wakes, 0)
         if count == 0 or (rule.nth is not None and rule.nth > count):
-            which = f"the {_nth(rule.nth)} {rule.wakes.value} wake" if rule.nth else f"each {rule.wakes.value} wake"
+            which = rule.which
             notes.append(
                 f"dispatch rule {i + 1} ({which} {rule.fault.value}) never applied: "
                 f"{count} {rule.wakes.value} wake{'s' if count != 1 else ''} fell due"
@@ -84,7 +84,3 @@ def _unapplied(rules: list[DispatchRule], dues: list[DueEntry]) -> list[str]:
 def _gap(delta: timedelta) -> str:
     minutes = round(delta.total_seconds() / 60)
     return f"{minutes} minute{'s' if minutes != 1 else ''}" if minutes < 60 else span(delta)
-
-
-def _nth(n: int) -> str:
-    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"

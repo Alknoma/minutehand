@@ -748,6 +748,15 @@ class DispatchRule(Model):
         default=None, description="How late, or how long after the first the second delivery comes; not for dropped"
     )
 
+    @property
+    def which(self) -> str:
+        """The wakes it is about, as a reader says it: "the 2nd reported wake", "each polled wake"."""
+        if self.nth is None:
+            return f"each {self.wakes.value} wake"
+        n = self.nth
+        suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"the {n}{suffix} {self.wakes.value} wake"
+
     @model_validator(mode="after")
     def _deliverable(self) -> Self:
         if self.fault is DispatchFault.DROPPED and self.by is not None:

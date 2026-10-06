@@ -229,7 +229,7 @@ src/minutehand/
                       InboundCredential
     provider.py       Manifest, Tier, TicketField, DocumentChange, PersonChange, WorldKey, world_keys(),
                       fault_fragment(), merged_seed()
-    experiment.py     Fork, CallMatch, PromptPatch, ModelSwap, PersonChange, TicketEdit, DeadlineShift
+    experiment.py     Fork, CallMatch, PromptPatch, ModelSwap, PersonChange, TicketEdit, DeadlineShift, DispatchChange
     checks.py         Finding, CheckReport, Pattern, Obligation, Stability, Effectiveness, PersonBurden,
                       WakeRecord, RunView, Check
     clock.py          Due, Jump, next_jump()
@@ -1164,7 +1164,9 @@ Without `StateHooks`, `fork_run` is refused: a world rewound under an agent that
 A fork can change something, and none of it touches the agent's code:
 
 ```python
-Override = Annotated[PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift, Field(discriminator="kind")]
+Override = Annotated[
+    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift | DispatchChange, Field(discriminator="kind")
+]
 
 
 class Fork(Model):
@@ -1179,6 +1181,7 @@ class Fork(Model):
 | `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every message to them not answered by the fork is put to them again; a reply decided before the fork that had not landed by it is withdrawn first, since it was never said | `changed_scenario`, `_ask_again` in `application/rewind.py` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
 | `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | `EditsTickets.edit` | `tests/orchestrator/test_rewind.py` |
 | `DeadlineShift` | The scenario's deadline | `changed_scenario` | `tests/orchestrator/test_rewind.py` |
+| `DispatchChange` | The scenario's dispatch rules, from the fork on: the same run with the agent's wakes delivered late, twice or dropped; an nth counts the wakes before the fork | `changed_scenario` | `tests/orchestrator/test_dispatch.py` |
 | `PromptPatch`, `ModelSwap` | The agent's prompt or model | On the wire: the proxy's `EDIT` policy rewrites the body of the agent's request to its model API | At the proxy only (`tests/proxy/test_model_hosts.py`); not through a whole run |
 
 - `adapters/proxy/edit.py` knows three wire shapes that carry a system prompt: OpenAI chat completions (`messages[0]` with role `system` or `developer`), OpenAI responses (`instructions`), Anthropic messages (`system`). A body no edit applies to goes on byte for byte. Edits match the request as the agent sent it, so a model swap cannot change which prompt patches apply.

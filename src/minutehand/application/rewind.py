@@ -43,7 +43,15 @@ from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
+from minutehand.domain.experiment import (
+    DeadlineShift,
+    DispatchChange,
+    Fork,
+    ModelSwap,
+    PersonChange,
+    PromptPatch,
+    TicketEdit,
+)
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
@@ -76,9 +84,10 @@ class OnTheWire(Protocol):
 
 
 def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
-    """The scenario the child runs: people and deadline as the fork's overrides say."""
+    """The scenario the child runs: people, deadline and dispatch rules as the fork's overrides say."""
     people = {p.key: p for p in scenario.people}
     deadline_after = scenario.deadline_after
+    dispatch = scenario.dispatch
     for override in fork.overrides:
         if isinstance(override, PersonChange):
             if override.person not in people:
@@ -88,12 +97,15 @@ def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
             if deadline_after is None:
                 raise RunRefused(f"the fork shifts the deadline of scenario {scenario.name}, which has none")
             deadline_after += override.by
+        elif isinstance(override, DispatchChange):
+            dispatch = override.rules
     try:
         return Scenario.model_validate(
             {
                 **scenario.model_dump(),
                 "people": [p.model_dump() for p in people.values()],
                 "deadline_after": deadline_after,
+                "dispatch": [r.model_dump() for r in dispatch],
             }
         )
     except ValidationError as e:

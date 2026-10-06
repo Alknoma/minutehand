@@ -23,6 +23,7 @@ from minutehand.domain.checks import Effectiveness, Finding
 from minutehand.domain.experiment import (
     CallMatch,
     DeadlineShift,
+    DispatchChange,
     Fork,
     ModelSwap,
     Override,
@@ -34,6 +35,8 @@ from minutehand.domain.inboxes import item_words
 from minutehand.domain.run import Verdict
 from minutehand.domain.scenario import (
     Answers,
+    DispatchFault,
+    DispatchRule,
     Helpfulness,
     Model,
     Person,
@@ -273,6 +276,10 @@ def change_words(
             was = (by_email[holder].name if holder in by_email else holder) if holder else "nobody"
             said.append(f"assignee {was} to {_person(people, override.assignee)}")
         return f"edits ticket {name} at the fork: " + (", ".join(said) or "nothing")
+    if isinstance(override, DispatchChange):
+        before = "; ".join(rule_words(r) for r in scenario.dispatch) or "every wake delivered as asked"
+        after = "; ".join(rule_words(r) for r in override.rules) or "every wake delivered as asked"
+        return f"delivers the agent's own wakes by other rules from the fork on: {after}; before, {before}"
     assert isinstance(override, DeadlineShift)
     which = "later" if override.by >= timedelta(0) else "earlier"
     deadline = scenario.deadline
@@ -281,6 +288,16 @@ def change_words(
     return (
         f"moves the deadline {span(override.by)} {which}: from {_moment(deadline)} to {_moment(deadline + override.by)}"
     )
+
+
+def rule_words(rule: DispatchRule) -> str:
+    """One dispatch rule as a reader says it: "the 2nd reported wake 3 hours late"."""
+    which = rule.which
+    if rule.fault is DispatchFault.DROPPED:
+        return f"{which} dropped"
+    assert rule.by is not None
+    how = "late" if rule.fault is DispatchFault.LATE else "after, again"
+    return f"{which} {span(rule.by)} {how}"
 
 
 def short_words(override: Override, scenario: Scenario) -> str:
@@ -299,6 +316,8 @@ def short_words(override: Override, scenario: Scenario) -> str:
         to = [override.state.value] if override.state is not None else []
         to += [f"to {override.assignee}"] if override.assignee is not None else []
         return f"ticket {override.entity.external_id} {' '.join(to)}".rstrip()
+    if isinstance(override, DispatchChange):
+        return "dispatch: " + ("; ".join(rule_words(r) for r in override.rules) or "as asked")
     assert isinstance(override, DeadlineShift)
     sign = "+" if override.by >= timedelta(0) else "-"
     return f"deadline {sign}{span(override.by)}"
