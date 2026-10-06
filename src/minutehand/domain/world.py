@@ -21,6 +21,7 @@ class EntityKind(StrEnum):
     DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
     FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
     TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
+    DATABASE = "database"  # a record of a database of the agent's that Minutehand fronts (`domain.database`)
 
 
 class Operation(StrEnum):
