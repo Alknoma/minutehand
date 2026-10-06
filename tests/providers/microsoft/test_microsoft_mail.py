@@ -17,7 +17,6 @@ from minutehand.domain.world import Actor, MessageSnapshot
 from tests.providers.microsoft.outlook import AGENT, OUTLOOK, reply, sent_by_agent, signed_in
 from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, seeded, token
 
-
 NEVER_PUSHED = InboundTarget(provider="microsoft", url="http://127.0.0.1:9/never-pushed")
 """Where Teams would push; nothing is pushed for an email, and a push here would fail."""
 
@@ -234,3 +233,26 @@ def test_a_seeded_email_naming_nobody_is_refused(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="names no user of the tenant: nobody"):
         seeded(tmp_path / "world.db", scenario)
+
+
+async def test_a_mail_subscription_past_seven_days_or_on_a_folder_that_is_none_is_refused(
+    tenant: Tenant, microsoft: Intercepted, webhook: Webhook
+) -> None:
+    base = {"changeType": "created", "notificationUrl": webhook.url, "resource": f"/users/{AGENT}/messages"}
+    async with microsoft.http() as http:
+        auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
+        week = await http.post(
+            f"{GRAPH}/subscriptions", json={**base, "expirationDateTime": _at(tenant, timedelta(days=8))}, headers=auth
+        )
+        assert week.status_code == 400 and "10080 minutes" in week.json()["error"]["message"]
+        nowhere = await http.post(
+            f"{GRAPH}/subscriptions",
+            json={**base, "resource": f"/users/{AGENT}/mailFolders('Archive2')/messages",
+                  "expirationDateTime": _at(tenant, timedelta(days=1))},
+            headers=auth,
+        )  # fmt: skip
+        assert nowhere.status_code == 404
+        held = await http.post(
+            f"{GRAPH}/subscriptions", json={**base, "expirationDateTime": _at(tenant, timedelta(days=6))}, headers=auth
+        )
+        assert held.status_code == 201, held.text

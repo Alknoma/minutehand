@@ -103,7 +103,7 @@ class GraphApp:
             raise GraphRefusal(403, "ExtensionError", "Access is denied to another user's mailbox.")
         if rest[-1] == "events":
             return calendar_watch(user.user.id)
-        if rest == ["messages"]:
+        if rest == ["messages"]:  # enum-lint: exempt Graph's path segment
             return mail_watch(user.user.id, None)
         return mail_watch(user.user.id, self.mail.folder(user, parts[-2]).value)
 

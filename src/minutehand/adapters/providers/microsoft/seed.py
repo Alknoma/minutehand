@@ -28,8 +28,8 @@ from pydantic import Field
 from minutehand.adapters.providers.microsoft import docx, wire
 from minutehand.adapters.providers.microsoft.cards import message_actions
 from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
-from minutehand.adapters.providers.microsoft.graph_mail import Composed, Mail, outlook_id, recipient_of
 from minutehand.adapters.providers.microsoft.graph_files import Files, item_id, mime_of
+from minutehand.adapters.providers.microsoft.graph_mail import Composed, Mail, outlook_id, recipient_of
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
     APPS,

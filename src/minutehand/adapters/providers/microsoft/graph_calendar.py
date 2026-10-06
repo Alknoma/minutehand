@@ -242,7 +242,8 @@ class Calendar:
             if when is not None:
                 side, compare = when.group(1), _COMPARE[when.group(2)]
                 at = moment(wire.SentDateTime(dateTime=when.group(3)))
-                found = [e for e in found if compare(e.starts if side == "start" else e.ends, at)]
+                starting = side == "start"  # enum-lint: exempt Graph's start/dateTime property
+                found = [e for e in found if compare(e.starts if starting else e.ends, at)]
             elif subject is not None:
                 wanted = subject.group(1).replace("''", "'")
                 found = [e for e in found if e.event.subject == wanted]

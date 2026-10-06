@@ -352,9 +352,9 @@ class Mail:
                     f"{GRAPH}/$metadata#users('{owner.user.id}')/mailFolders/$entity",
                 )
             rest = rest[2:]
-        if rest == ["messages"] and method == "GET":
+        if rest == ["messages"] and method == "GET":  # enum-lint: exempt Graph's path segment
             return self._list(request, owner, folder)
-        if rest == ["messages", "delta"] and method == "GET":
+        if rest == ["messages", "delta"] and method == "GET":  # enum-lint: exempt Graph's path segment
             if folder is None:
                 raise bad_request("Delta is answered for one folder's messages: mailFolders/{id}/messages/delta.")
             return self._delta(request, owner, folder)
