@@ -31,6 +31,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.application.steps import STEP, steps
 from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, view_of
 from minutehand.domain.agent import AgentReport
+from minutehand.domain.clock import Due
 from minutehand.domain.people import (
     Decides,
     InboundCredential,
@@ -72,6 +73,7 @@ from minutehand.domain.world import (
 from minutehand.ports.provider import (
     ActsOnTickets,
     ASGIApp,
+    BooksWakes,
     ChangesDocuments,
     ChangesPeople,
     DeclaresFaults,
@@ -137,6 +139,18 @@ class Fired:
     at: datetime
     what: str
     events: list[int]
+
+
+class _Unfired:
+    """`ports.provider.Wakes` for a scheduler provider in a standing world: what the agent books is the provider's
+    own record in the log, and it never fires, since a booking becomes a wake only in the run loop
+    (docs/serve.md, "Booked wakes")."""
+
+    def book(self, due: Due) -> None:
+        """Booked: the provider has recorded it; a standing world fires no booking."""
+
+    def cancel(self, ref: str) -> None:
+        """Cancelled: nothing was pending to drop."""
 
 
 @dataclass
@@ -264,6 +278,8 @@ class StandingWorld:
         already holds anything of it."""
         if key not in self._built:
             found = self._provider(key)
+            if isinstance(found, BooksWakes):
+                found.bind(_Unfired())
             if not any(e.entity.provider == key for e in self.store.events()):
                 with _refusing():
                     found.seed(self.scenario, self.store)
