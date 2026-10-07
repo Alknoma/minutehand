@@ -8,6 +8,7 @@ and a note says how many were left unread, so a rule can never pass by being ski
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import pairwise
@@ -29,7 +30,7 @@ from minutehand.domain.assessments import (
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, ObligationKind, RunView, Severity
 from minutehand.domain.scenario import Person
 from minutehand.domain.templates import fill
-from minutehand.domain.world import EntityKind, Operation
+from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, WorldEvent
 
 _KIND = {Judged.FAIL: FindingKind.FAIL, Judged.REVIEW: FindingKind.REVIEW}
 _SEVERITY = {Judged.FAIL: Severity.ERROR, Judged.REVIEW: Severity.WARNING}
@@ -314,6 +315,8 @@ class _Reader:
                 for r in self.said
                 if (not states or r.status in states) and (not emails or r.person_email in emails)
             ]
+        if count.memory is not None:
+            return self._memory(rule, subject, at)
         assert count.asks is not None
         a = count.asks
         of = {self._key(w, subject) for w in a.of}
@@ -323,6 +326,55 @@ class _Reader:
             for x in self.asks
             if (not of or x.person in of) and (open_at is None or x.open_at(open_at))
         ]
+
+    def _memory(self, rule: Rule, subject: _Subject, at: str | None) -> list[Fact]:
+        """Each key of the agent's memory the rule picks, as it stood at the count's `until` (the end without one),
+        counted at the moment its value there was written."""
+        m = rule.count.memory
+        assert m is not None
+        until = self._when(rule.count.until, subject, at, past_end=True) if rule.count.until is not None else self.end
+        named = {"person.key": subject.person.key if subject.person is not None else ""}
+        key = str(fill(m.key, named)) if m.key is not None else None
+        prefix = str(fill(m.prefix, named)) if m.prefix is not None else None
+        held: dict[str, WorldEvent] = {}
+        for event in self.view.events:
+            after = event.after
+            if (
+                event.entity.kind is not EntityKind.MEMORY
+                or not isinstance(after, MemorySnapshot)
+                or after.collection != m.collection
+                or event.sim_time > until
+            ):
+                continue
+            if event.operation is Operation.DELETE:
+                held.pop(after.key, None)
+            elif event.operation in (Operation.CREATE, Operation.UPDATE) and after.value is not None:
+                held[after.key] = event
+        return [
+            Fact(at=event.sim_time, seqs=[event.seq])
+            for name, event in sorted(held.items())
+            if (key is None or name == key)
+            and (prefix is None or name.startswith(prefix))
+            and _matches(event, m.values)
+        ]
+
+
+def _matches(event: WorldEvent, wanted: dict[str, str | int | float | bool | None]) -> bool:
+    """Whether the value a memory write left has each field as the rule wants it."""
+    if not wanted:
+        return True
+    after = event.after
+    assert isinstance(after, MemorySnapshot) and after.value is not None
+    value: object = json.loads(after.value)
+    for path, expected in wanted.items():
+        here = value
+        for part in path.split("."):
+            if not isinstance(here, dict) or part not in here:
+                return False
+            here = here[part]
+        if here != expected or isinstance(here, bool) != isinstance(expected, bool):
+            return False
+    return True
 
 
 def _broken(rule: Rule, counted: list[Fact]) -> str | None:

@@ -224,6 +224,30 @@ class Asks(Model):
     open_at: MomentText | None = Field(default=None, description="Still unanswered at this moment")
 
 
+Scalar = str | int | float | bool | None
+
+
+class Memory(Model):
+    """Keys of the agent's memory (`minutehand.agent.store`) as they stood at the count's `until` (the run's end
+    without one): each key holding a value there is one fact, counted at the moment that value was written, so
+    `since` keeps only those written from then on. `key` and `prefix` may hold `{person.key}`."""
+
+    collection: str = Field(default="default", pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    key: str | None = Field(default=None, description="Exactly this key")
+    prefix: str | None = Field(default=None, description="Every key starting with this")
+    values: dict[str, Scalar] = Field(
+        default={},
+        description="Each field of the value (a dotted path into it, `venue.city`) equal to this; a value that is "
+        "not an object, or lacks the field, does not match",
+    )
+
+    @model_validator(mode="after")
+    def _one_way(self) -> Self:
+        if self.key is not None and self.prefix is not None:
+            raise ValueError("memory: name a `key` or a `prefix`, not both")
+        return self
+
+
 class Count(Model):
     """Which facts a rule counts, and between which moments."""
 
@@ -235,6 +259,7 @@ class Count(Model):
     planned_wakes: PlannedWakes | None = None
     commitments: Commitments | None = None
     asks: Asks | None = None
+    memory: Memory | None = None
     since: MomentText | None = Field(default=None, description="From this moment, inclusive; absent: the start")
     until: MomentText | None = Field(default=None, description="To this moment, inclusive; absent: the end")
 
@@ -255,6 +280,7 @@ class Count(Model):
             ("planned_wakes", self.planned_wakes),
             ("commitments", self.commitments),
             ("asks", self.asks),
+            ("memory", self.memory),
         ]
 
     @property
@@ -263,7 +289,7 @@ class Count(Model):
         return next(k for k, v in self._kinds() if v is not None)
 
 
-_COUNTED = ("follow_ups", "touches", "messages", "writes", "wakes", "planned_wakes", "commitments", "asks")
+_COUNTED = ("follow_ups", "touches", "messages", "writes", "wakes", "planned_wakes", "commitments", "asks", "memory")
 _ON_AN_ASK = ("follow_ups", "touches")
 
 
@@ -370,6 +396,11 @@ class Rule(Model):
             )
             if "ask.answer" in str(self.count.messages.holding) and self.each is not Each.ASK:
                 raise ValueError(f"rule {self.id}: {{ask.answer}} is the answer to an ask: write `each: ask`")
+        if self.count.memory is not None:
+            named = [n for n in (self.count.memory.key, self.count.memory.prefix) if n is not None]
+            refuse_unknown(f"rule {self.id}: memory", list(named), ("person.key",))
+            if "{person.key}" in " ".join(named) and self.each is Each.RUN:
+                raise ValueError(f"rule {self.id}: {{person.key}} is the person the rule is read for: write `each`")
         return self
 
     def moments(self) -> list[str]:
