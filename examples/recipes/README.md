@@ -40,7 +40,7 @@ and keeps the same shape of state: the goal, and for each person who owes an ans
 
 ## What they remember, and where
 
-Each keeps that state in `minutehand.agent.store` (the Node recipe in `minutehand-store.ts`, its twin over the same
+Each keeps that state in `minutehand_agent.store` (the Node recipe in `minutehand-store.ts`, its twin over the same
 wire), never in the framework's own objects past a wake: the goal under `goal`, each wait under its person's email in
 the collection `waits`. Each reads it back before every wake, Slack event and report, and writes it back in one batch
 after every wake and event.

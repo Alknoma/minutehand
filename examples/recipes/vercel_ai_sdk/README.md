@@ -55,7 +55,7 @@ function report() {                                          // GET /report, aft
 
 The goal and the waits are kept in a store (`minutehand-store.ts`): `recall()` reads them into `memory` before every
 wake, Slack event and report, and `keep()` writes them back, in one batch, after every wake and event (`remembering`).
-It is the TypeScript twin of Python's `minutehand.agent.store`, about eighty lines over the same wire: in production
+It is the TypeScript twin of Python's `minutehand_agent.store`, about eighty lines over the same wire: in production
 a `Map` in this process (swap it for an adapter over your own database to keep it across restarts); under Minutehand
 (`MINUTEHAND_ON` and `MINUTEHAND_AGENT_URL` set by `minutehand run`) a `POST` to the run's `/store` for every call,
 retried a few times when the run cannot be reached and then thrown, never answered from the `Map`. So every run

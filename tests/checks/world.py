@@ -172,7 +172,7 @@ class Log:
         return self._add(hours, Actor.AGENT, Operation.READ, entity, None, wake)
 
     def memory(self, key: str, value: object | None, hours: float, *, wake: int = 1) -> WorldEvent:
-        """The agent writes one key of its memory (`minutehand.agent.store`); None deletes it."""
+        """The agent writes one key of its memory (`minutehand_agent.store`); None deletes it."""
         ref = EntityRef(provider="memory", kind=EntityKind.MEMORY, external_id=f"default/{key}")
         operation = Operation.DELETE if value is None else Operation.UPDATE
         text = None if value is None else json.dumps(value, sort_keys=True, separators=(",", ":"))

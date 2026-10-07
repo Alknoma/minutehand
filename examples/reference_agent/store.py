@@ -1,11 +1,11 @@
-"""Where the reference agent keeps everything it knows: `minutehand.agent.store`, shared by its API and its worker.
+"""Where the reference agent keeps everything it knows: `minutehand_agent.store`, shared by its API and its worker.
 
     REFERENCE_DB=path/to/agent.db       where the memory lives in production: a SQLite file both processes open
                                         (the default, `agent.db` in REFERENCE_HOME)
 
 Under Minutehand (MINUTEHAND_ON set) the file is never opened: the memory is the run's, recorded in its log, so a fork
 starts from the agent's memory as it stood at the checkpoint with no hooks. Any other database is another adapter
-of three methods (`minutehand.agent.store.Backend`); a Firestore one is a few lines over its client.
+of three methods (`minutehand_agent.store.Backend`); a Firestore one is a few lines over its client.
 
 Six collections, each holding JSON objects of strings:
 
@@ -28,7 +28,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from minutehand.agent import store
+from minutehand_agent import store
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ def _number(found: object) -> int:
 
 
 class Store:
-    """The agent's six collections over `minutehand.agent.store`."""
+    """The agent's six collections over `minutehand_agent.store`."""
 
     def __init__(self) -> None:
         self._facts = store.collection("facts")

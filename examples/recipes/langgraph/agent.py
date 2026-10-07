@@ -3,7 +3,7 @@
 The graph is the usual model-and-tools loop: a chat model with tools bound, a `ToolNode`, and `tools_condition`
 between them. What makes it proactive is one more key in the graph's state, `waits`: each person who owes an
 answer and the moment it is expected by. The tools write it (`remember_wait`, `close_wait`). Between wakes the
-goal and `waits` are kept in `minutehand.agent.store`: each wake or Slack event runs the graph once, from the goal and
+goal and `waits` are kept in `minutehand_agent.store`: each wake or Slack event runs the graph once, from the goal and
 waits the store holds, and writes the waits it ends with back; the report Minutehand asks for after every wake reads
 the store: `next_wake` is the earliest moment in `waits`. A wake's conversation is not kept past it: the situation the
 agent writes for each run carries what the model needs.
@@ -40,10 +40,9 @@ from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
 from langgraph.types import Command
+from minutehand_agent import store
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
-
-from minutehand.agent import store
 
 OWNER = "owen@example.com"  # who gives the agent its goal
 ASK = "rosa@example.com"  # who knows the answer
@@ -130,7 +129,7 @@ graph = (
     .compile()
 )
 
-# What it remembers between wakes, in `minutehand.agent.store`: the goal, and each wait under its email. Production
+# What it remembers between wakes, in `minutehand_agent.store`: the goal, and each wait under its email. Production
 # keeps it in this process (swap in `store.SqliteBackend(path)` to keep it across restarts); under Minutehand it is
 # the run's own memory, which a fork starts from as it stood at its checkpoint.
 store.configure(store.MemoryBackend())

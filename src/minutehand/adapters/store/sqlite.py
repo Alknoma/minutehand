@@ -10,7 +10,7 @@ the hash. Entity versions, event snapshots, request and response bodies and the 
 attributes all go through the same door (`_keep`), so the same bytes written by any of them, in any run of the
 file, are one row. Every read puts the text back exactly as it was written.
 
-The agent's memory (`minutehand.agent.store`) is entity versions like any other (`EntityKind.MEMORY`), so it needs
+The agent's memory (`minutehand_agent.store`) is entity versions like any other (`EntityKind.MEMORY`), so it needs
 nothing of its own here: a fork reads it as of its seq as it reads the world.
 """
 

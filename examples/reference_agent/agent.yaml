@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json
-# The reference agent: an API and a worker over one memory (store.py, minutehand.agent.store), started together by
+# The reference agent: an API and a worker over one memory (store.py, minutehand_agent.store), started together by
 # run.py. Under Minutehand the memory is the run's, so a fork needs no hooks.
 # From this folder, with the outside world running (python outside.py prints its addresses):
 #   REFERENCE_MODEL_URL=https://model.localhost:<port> REFERENCE_SEARCH_URL=https://search.localhost:<port> \

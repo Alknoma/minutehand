@@ -228,7 +228,7 @@ Scalar = str | int | float | bool | None
 
 
 class Memory(Model):
-    """Keys of the agent's memory (`minutehand.agent.store`) as they stood at the count's `until` (the run's end
+    """Keys of the agent's memory (`minutehand_agent.store`) as they stood at the count's `until` (the run's end
     without one): each key holding a value there is one fact, counted at the moment that value was written, so
     `since` keeps only those written from then on. `key` and `prefix` may hold `{person.key}`."""
 

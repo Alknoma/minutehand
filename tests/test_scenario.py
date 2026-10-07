@@ -321,7 +321,7 @@ def test_a_tell_a_person_edits_into_a_document_is_refused() -> None:
 
 @pytest.mark.parametrize("old", ["state", "databases"])
 def test_an_agent_file_with_state_hooks_or_fronted_databases_is_refused_naming_the_store(old: str) -> None:
-    with pytest.raises(ValidationError, match=r"minutehand\.agent\.store"):
+    with pytest.raises(ValidationError, match=r"minutehand_agent\.store"):
         AgentUnderTest.model_validate({"name": "a", "wakes": [{"kind": "command", "argv": ["x"]}], old: {}})
 
 

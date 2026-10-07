@@ -1,4 +1,4 @@
-"""`minutehand.agent.store` in both of its modes: in production a pass-through to the agent's own backend that records
+"""`minutehand_agent.store` in both of its modes: in production a pass-through to the agent's own backend that records
 nothing, and under Minutehand the run's own memory, recorded in the run's log, that never touches the agent's
 database."""
 
@@ -8,21 +8,24 @@ import asyncio
 import json
 import subprocess
 import sys
+import tomllib
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from minutehand_agent import _store, _wire, store, wake
 
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, Receiver
-from minutehand.agent import _store, _wire, store, wake
 from minutehand.application.memory import memory_of
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.memory import MEMORY_PROVIDER
 from minutehand.domain.world import Actor, EntityKind, NextWakeSnapshot, Operation
 
 T0 = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+PACKAGE = Path(__file__).resolve().parents[2] / "packages" / "minutehand-agent"
+"""The distribution `minutehand-agent`, which an agent installs in its own environment."""
 
 
 @pytest.fixture
@@ -115,11 +118,13 @@ def test_two_processes_share_one_sqlite_file(tmp_path: Path, production: None) -
     store.configure(store.SqliteBackend(path))
     store.put("from/test", 1)
     other = (
-        "from minutehand.agent import store\n"
+        "from minutehand_agent import store\n"
         f"store.configure(store.SqliteBackend({str(path)!r}))\n"
         "store.put('from/child', store.get('from/test') + 1)\n"
     )
-    subprocess.run([sys.executable, "-c", other], check=True, env={"PATH": "", "PYTHONPATH": "src"}, timeout=30)
+    subprocess.run(
+        [sys.executable, "-c", other], check=True, env={"PATH": "", "PYTHONPATH": str(PACKAGE / "src")}, timeout=30
+    )
     assert store.list("from/") == [("from/child", 2), ("from/test", 1)]
 
 
@@ -240,22 +245,29 @@ async def test_a_call_minutehand_cannot_read_is_refused_saying_why(run: SqliteSt
 
 
 def test_the_agent_package_imports_nothing_but_the_standard_library() -> None:
-    """What a production agent pays for the import: no module of Minutehand's beyond the package itself, and no
-    third-party module at all."""
+    """What a production agent pays for the import: nothing but the standard library and the package itself. Run
+    isolated (`-I -S`: no site-packages, no user path, no PYTHONPATH) with only the package's own source on the path,
+    so a third-party import, or one of `minutehand`'s, fails rather than being found in this checkout's environment."""
     probe = (
         "import sys, json\n"
+        f"sys.path.insert(0, {str(PACKAGE / 'src')!r})\n"
         "before = set(sys.modules)\n"
-        "from minutehand.agent import store, wake\n"
+        "from minutehand_agent import store, wake\n"
         "print(json.dumps(sorted(set(sys.modules) - before)))\n"
     )
-    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=30)
+    done = subprocess.run([sys.executable, "-I", "-S", "-c", probe], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
     loaded = json.loads(done.stdout)
-    ours = [m for m in loaded if m.startswith("minutehand") and not m.startswith("minutehand.agent")]
-    assert ours == ["minutehand"], ours
     standard = set(sys.stdlib_module_names)
-    foreign = [m for m in loaded if not m.startswith("minutehand") and m.split(".")[0] not in standard]
+    foreign = [m for m in loaded if m.split(".")[0] not in standard and m.split(".")[0] != "minutehand_agent"]
     assert foreign == [], foreign
-    assert "asyncio" not in loaded and "sqlite3" in loaded
+    assert "minutehand_agent" in loaded and "asyncio" not in loaded and "sqlite3" in loaded
+
+
+def test_the_agent_distribution_declares_no_dependency() -> None:
+    """`pip install minutehand-agent` brings nothing else into the agent's environment."""
+    declared = tomllib.loads((PACKAGE / "pyproject.toml").read_text())["project"]
+    assert declared["name"] == "minutehand-agent" and declared["dependencies"] == []
 
 
 async def test_a_held_receiver_answers_the_agent_only_from_the_run_mounted_next(run: SqliteStore) -> None:

@@ -30,7 +30,7 @@ Environment:
     AGENT_DB                    where it remembers things in production (default follow_up.db)
 
 What it remembers (its status, its next wake, whether it followed up, Rosa's answer) it keeps in
-`minutehand.agent.store`, read afresh on every wake, event and report: in production a SQLite file, and under
+`minutehand_agent.store`, read afresh on every wake, event and report: in production a SQLite file, and under
 Minutehand the run's own memory, so a fork from any checkpoint starts from what it remembered there.
 """
 
@@ -45,10 +45,9 @@ import urllib.request
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from minutehand_agent import store
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
-
-from minutehand.agent import store
 
 COLLEAGUE = "rosa@example.com"  # who knows the answer
 OWNER = "owen@example.com"  # who gave the agent its goal

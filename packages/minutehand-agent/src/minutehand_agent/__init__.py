@@ -1,6 +1,6 @@
 """What an agent imports: the whole of its contact with Minutehand.
 
-    from minutehand.agent import store, wake
+    from minutehand_agent import store, wake
 
     store.put("asks/sam", {"status": "asked", "expected_by": "2026-09-03T09:00:00+00:00"})
     wake.at(expected_by)
@@ -12,6 +12,7 @@ MINUTEHAND_AGENT_URL) both go to the run instead: every write is recorded in the
 from the run's state, so each run and each fork has a memory of its own and the agent's own database is never
 opened.
 
-This package imports nothing but the standard library and nothing else of Minutehand's, so an agent pays nothing for
-it in production; `tests/agent/test_agent_package.py` holds it to that.
+It is the distribution `minutehand-agent`, installed in the agent's own environment (`pip install minutehand-agent`),
+and imports nothing but the standard library, so an agent pays nothing for it in production and never installs
+`minutehand` itself; `tests/agent/test_store.py` holds it to that.
 """

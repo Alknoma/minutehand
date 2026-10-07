@@ -867,7 +867,7 @@ class Orchestrator:
         return changed
 
     def _marked(self, new: list[WorldEvent], wake: int) -> None:
-        """The last next wake the agent marked in this wake (`minutehand.agent.wake`), taken as its next wake: it
+        """The last next wake the agent marked in this wake (`minutehand_agent.wake`), taken as its next wake: it
         replaces the one it marked or reported before, and a mark of none cancels it."""
         said = [e.after for e in new if e.wake == wake and isinstance(e.after, NextWakeSnapshot)]
         if not said:

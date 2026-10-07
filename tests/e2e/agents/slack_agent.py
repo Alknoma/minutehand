@@ -1,7 +1,7 @@
 """A small proactive agent: a program of its own that knows Slack and the wake contract, and nothing else.
 
 It talks to Slack with the stock `slack_sdk.WebClient` and its default base URL, verifies every pushed
-event with the stock `SignatureVerifier`, and keeps everything it knows under one key of `minutehand.agent.store`,
+event with the stock `SignatureVerifier`, and keeps everything it knows under one key of `minutehand_agent.store`,
 read and written on every request: the run's memory under Minutehand, the SQLite file FILE in production. A fork
 needs nothing from it.
 
@@ -51,6 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from minutehand_agent import store
 from opentelemetry import propagate
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -59,8 +60,6 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web import SlackResponse
-
-from minutehand.agent import store
 
 TOKEN = "xoxb-agent-under-test"
 FOLLOW_UP_AFTER = timedelta(days=2)

@@ -1,5 +1,5 @@
 """The store's machinery: the adapter interface, the two adapters shipped, Minutehand's own backend, and the store
-itself. `minutehand.agent.store` is the public face of it."""
+itself. `minutehand_agent.store` is the public face of it."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Protocol, TypeVar
 
-from minutehand.agent import _wire
+from minutehand_agent import _wire
 
 DEFAULT = "default"
 """The collection a key lives in when none is named."""
@@ -248,7 +248,7 @@ class Store:
         backend = self._backend or _Configured.backend
         if backend is None:
             raise NotConfigured(
-                "the store has no backend: call minutehand.agent.store.configure(...) once at start with "
+                "the store has no backend: call minutehand_agent.store.configure(...) once at start with "
                 "store.SqliteBackend(path), store.MemoryBackend(), or an adapter of your own (docs/agent-contract.md)"
             )
         return backend

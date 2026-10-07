@@ -1271,7 +1271,7 @@
     },
     "Marked": {
       "additionalProperties": false,
-      "description": "The agent is woken at `wake_url`, and a wake is over when the call returns. Its next wake is the moment it\nmarked with `minutehand.agent.wake` in that wake, or none: nothing else is asked of it.",
+      "description": "The agent is woken at `wake_url`, and a wake is over when the call returns. Its next wake is the moment it\nmarked with `minutehand_agent.wake` in that wake, or none: nothing else is asked of it.",
       "properties": {
         "kind": {
           "const": "marked",
@@ -1299,7 +1299,7 @@
     },
     "Memory": {
       "additionalProperties": false,
-      "description": "Keys of the agent's memory (`minutehand.agent.store`) as they stood at the count's `until` (the run's end\nwithout one): each key holding a value there is one fact, counted at the moment that value was written, so\n`since` keeps only those written from then on. `key` and `prefix` may hold `{person.key}`.",
+      "description": "Keys of the agent's memory (`minutehand_agent.store`) as they stood at the count's `until` (the run's end\nwithout one): each key holding a value there is one fact, counted at the moment that value was written, so\n`since` keeps only those written from then on. `key` and `prefix` may hold `{person.key}`.",
       "properties": {
         "collection": {
           "default": "default",
@@ -1557,7 +1557,7 @@
     },
     "OwnDatabase": {
       "additionalProperties": false,
-      "description": "A database the agent keeps state in outside `minutehand.agent.store`, by the variable it reads its location\nfrom. Minutehand hands every run, and every fork, a fresh empty SQLite file in that variable, so no run reads\nanother's or production's, and notes in the run that it is outside forks: a fork starts with an empty one, not\nthe parent's at the checkpoint. Any other database (PostgreSQL, a cloud one) is the team's to provide per run.",
+      "description": "A database the agent keeps state in outside `minutehand_agent.store`, by the variable it reads its location\nfrom. Minutehand hands every run, and every fork, a fresh empty SQLite file in that variable, so no run reads\nanother's or production's, and notes in the run that it is outside forks: a fork starts with an empty one, not\nthe parent's at the checkpoint. Any other database (PostgreSQL, a cloud one) is the team's to provide per run.",
       "properties": {
         "env": {
           "description": "The variable the agent reads its location from",

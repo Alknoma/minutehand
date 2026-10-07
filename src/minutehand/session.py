@@ -39,6 +39,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from minutehand_agent._wire import ON as AGENT_ON
+from minutehand_agent._wire import URL as AGENT_URL
 from pydantic import Field
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
@@ -58,8 +60,6 @@ from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
-from minutehand.agent._wire import ON as AGENT_ON
-from minutehand.agent._wire import URL as AGENT_URL
 from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.application.cases import CASE, CaseKept, CaseStore
 from minutehand.application.checkpoint import CHECKPOINT, AgentState, checkpoints, read_checkpoint
@@ -232,7 +232,7 @@ async def play(
     CA and the run's signing secrets added to this process's environment, waited for until it accepts
     connections, and stopped when the run ends.
 
-    Each sample is a run of its own, so its memory (`minutehand.agent.store`) starts from the scenario's and
+    Each sample is a run of its own, so its memory (`minutehand_agent.store`) starts from the scenario's and
     nothing else, and so does every own database the agent file names. What the agent keeps anywhere else, in a
     process Minutehand did not start, is carried from one sample into the next.
 
@@ -1269,7 +1269,7 @@ def agent_environment(
     (`NODE_PROXY`), the one CA file in each library's variable
     (`ca_bundle`, as the agent sees the path), the signing secrets it is handed, unless `telemetry_port`
     is None (receiving is off) its OTLP exporter pointed at the receiver, and, when `agent_url` is given,
-    MINUTEHAND_ON and the URL `minutehand.agent` reaches the run at (`AGENT_URL`)."""
+    MINUTEHAND_ON and the URL `minutehand_agent` reaches the run at (`AGENT_URL`)."""
     proxy = listen.proxy_url(port)
     direct = ",".join(listen.direct())
     exporter = exporter_environment(listen.telemetry_url(telemetry_port)) if telemetry_port is not None else {}
@@ -1339,7 +1339,7 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
     )
     if listen.telemetry_port == 0:
         # No receiver port to name: the agent is still told it is played, so its store refuses rather than writing
-        # to its own database (`minutehand.agent._wire`), and says which port to give.
+        # to its own database (`minutehand_agent._wire`), and says which port to give.
         handed[AGENT_ON] = "1"
     return handed | base_url_environment(agent, listen.proxy_url(listen.port))
 
@@ -1375,7 +1375,7 @@ class Intercepting:
         return self.receiver.port if self.telemetry else None
 
     def agent_url(self, listen: Listen) -> str:
-        """Where `minutehand.agent` reaches the run, as the agent reaches this machine."""
+        """Where `minutehand_agent` reaches the run, as the agent reaches this machine."""
         return listen.telemetry_url(self.receiver.port) + AGENT_PATH
 
     def hold(self) -> None:

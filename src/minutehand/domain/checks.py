@@ -191,7 +191,7 @@ class WakeRecord(Model):
     )
     reason: str | None = Field(default=None, description="Why the step began, as whoever marked it said")
     memory_reads: int = Field(
-        default=0, ge=0, description="Gets and listings of the agent's memory (`minutehand.agent.store`) in the wake"
+        default=0, ge=0, description="Gets and listings of the agent's memory (`minutehand_agent.store`) in the wake"
     )
     memory_writes: int = Field(default=0, ge=0, description="Keys of the agent's memory written or deleted in the wake")
 

@@ -4,7 +4,7 @@ A small agent, `agent.py`, gets a goal: confirm the venue for the team offsite w
 Slack, waits two days, follows up once if she has not answered, and emails Owen, who gave it the goal, when
 she does. It is an ordinary program: a web server from the standard library and the stock `slack_sdk`.
 Its one line of Minutehand is what it remembers (its status, its next wake, whether it followed up, Rosa's
-answer), kept in `minutehand.agent.store`: a SQLite file (`AGENT_DB`, default `follow_up.db`) in production, and
+answer), kept in `minutehand_agent.store`: a SQLite file (`AGENT_DB`, default `follow_up.db`) in production, and
 the run's own memory under Minutehand, so every run starts empty and a fork from any checkpoint starts from what
 the agent remembered there, with nothing to snapshot or restore.
 
@@ -19,8 +19,8 @@ must behave on the way (`assess:`, `docs/assessments.md`). Those rules are this 
 | `scenario.yaml` | Rosa answers 36 hours after she is asked. Owen is told the outcome and owes no answer. |
 | `scenario_silent.yaml` | Rosa never answers. Its rule `follows_up_when_due` says the agent must follow her up within the hour of when her answer was due. |
 
-The agent needs `slack_sdk` and `minutehand` (for `minutehand.agent`, which imports only the standard library)
-in the Python that runs it.
+The agent needs `slack_sdk` and `minutehand-agent` (`minutehand_agent`, which imports only the standard library)
+in the Python that runs it: `pip install slack_sdk minutehand-agent`. Minutehand itself is installed apart.
 
 ## 1. Rosa answers
 

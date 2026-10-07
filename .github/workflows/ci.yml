@@ -168,9 +168,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync
-      - name: Build the sdist and the wheel
-        run: uv build
-      - name: Install the wheel into a clean environment and run both examples with it
+      - name: Build the sdists and the wheels of minutehand and minutehand-agent
+        run: uv build --all-packages
+      - name: Install the wheels into clean environments (Minutehand in one, the agent's in another) and run both examples
         run: uv run pytest -q -m packaging tests/packaging/test_installed_package.py
       - name: Build the image and run both examples through it
         run: uv run pytest -q -m packaging tests/packaging/test_container_image.py
@@ -203,14 +203,17 @@ jobs:
           test "$COMMIT" = "$(git rev-parse HEAD)"
           test -n "$VERSION"
           "$RUNNER_TEMP/venv/bin/minutehand" --help
-      - name: The example, with the installed command
+      - name: The example, with the installed command and the agent in an environment of its own
         working-directory: examples/follow_up
         env:
           AGENT_BEHAVIOUR: diligent
+        # The agent's environment as its README makes it, minutehand-agent from this commit since it is not
+        # released with it yet: its Slack client and minutehand-agent, and not Minutehand.
         run: |
-          "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
+          python3 -m venv "$RUNNER_TEMP/agent"
+          "$RUNNER_TEMP/agent/bin/python" -m pip install --disable-pip-version-check slack_sdk ../../packages/minutehand-agent
           "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \
-            -- "$RUNNER_TEMP/venv/bin/python" agent.py
+            -- "$RUNNER_TEMP/agent/bin/python" agent.py
       - name: The image the action built
         run: docker run --rm minutehand:action --help
       # What a caller's runner holds: this commit's files, no .git, unpacked into a folder named by the

@@ -7,6 +7,12 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+members = [
+    "minutehand",
+    "minutehand-agent",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -2023,6 +2029,7 @@ dependencies = [
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "mcp" },
+    { name = "minutehand-agent" },
     { name = "mitmproxy" },
     { name = "moto", extra = ["server"] },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -2092,6 +2099,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.20" },
     { name = "mcp", specifier = ">=1.2,<2" },
+    { name = "minutehand-agent", editable = "packages/minutehand-agent" },
     { name = "mitmproxy", specifier = ">=12,<13" },
     { name = "moto", extras = ["server"], specifier = ">=5.2" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
@@ -2141,6 +2149,11 @@ recipes = [
     { name = "openai-agents", specifier = ">=0.4.2" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=1.60.0" },
 ]
+
+[[package]]
+name = "minutehand-agent"
+version = "0.0.1"
+source = { editable = "packages/minutehand-agent" }
 
 [[package]]
 name = "mitmproxy"

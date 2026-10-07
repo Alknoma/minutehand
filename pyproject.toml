@@ -1,7 +1,9 @@
 [project]
 name = "minutehand"
 # The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
-# installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
+# installed package's metadata; a release's tag is `v` and this (docs/releasing.md). `minutehand-agent` is released
+# with it: packages/minutehand-agent/pyproject.toml and the pin below repeat it, and tests/test_version.py and the
+# release workflow refuse any difference.
 version = "0.0.1"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
@@ -28,6 +30,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    # What the agent imports (`minutehand_agent`), released with this at the same version; this package reads the
+    # names of the variables it hands the agent from it. From the workspace in development ([tool.uv.sources]).
+    "minutehand-agent==0.0.1",
     "pydantic>=2.9",
     "mitmproxy>=12,<13",
     "asgiref>=3.8",
@@ -102,6 +107,12 @@ recipes = [
     "pydantic-ai-slim[openai]>=1.60.0",
 ]
 
+[tool.uv.workspace]
+members = ["packages/minutehand-agent"]
+
+[tool.uv.sources]
+minutehand-agent = { workspace = true }
+
 [build-system]
 # hatchling 1.27 writes PEP 639 licence metadata (Metadata-Version 2.4 and later); packaging 26 is the first to know
 # FSL-1.1-ALv2, and hatchling refuses an expression its packaging does not know.
@@ -153,7 +164,7 @@ filterwarnings = [
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-include = ["src", "lints", "tests", "scripts"]
+include = ["src", "packages/minutehand-agent/src", "lints", "tests", "scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 

@@ -42,7 +42,7 @@ ANSWER_EVERY = 0.2
 
 OUTSIDE = (
     "Its memory is the checkpoint's, so what differs comes from state the agent keeps outside "
-    "`minutehand.agent.store` (a database of its own, a file, a cache, or a process holding another moment), which "
+    "`minutehand_agent.store` (a database of its own, a file, a cache, or a process holding another moment), which "
     "no fork puts back. Keep that state in the store, or rerun from the beginning."
 )
 
