@@ -51,8 +51,8 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     assert child.record.stop is StopReason.AGENT_DONE
     assert (child.record.parent_run, child.record.forked_at) == (parent.record.run_id, after_first_wake.seq)
     assert [w.sim_time for w in child.record.wakes] == [T0, T0 + timedelta(hours=36)]
-    assert [f for f in child.result.findings if f.check == "no_follow_up"] == []
-    assert [f.check for f in parent.result.findings if f.kind is FindingKind.FAIL].count("no_follow_up") == 1
+    assert [f for f in child.result.findings if f.check == "follows_up_when_due"] == []
+    assert [f.check for f in parent.result.findings if f.kind is FindingKind.FAIL].count("follows_up_when_due") == 1
     child_events = world(state, child.record.run_id, root=parent.record.run_id).events()
     assert [e for e in child_events if e.seq <= after_first_wake.seq] == [
         e for e in parent_events if e.seq <= after_first_wake.seq
