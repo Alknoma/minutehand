@@ -28,6 +28,7 @@ from pathlib import Path
 from pydantic import Field, ValidationError
 
 from minutehand import session
+from minutehand.adapters.proxy.trust import authority
 from minutehand.application.files import FileKind, FileRefused, kind_of, load_scenario, read_yaml
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import ExpectedOutcome, Model, Scenario
@@ -37,6 +38,8 @@ PORT = "{run.port}"
 DIR = "{run.dir}"
 PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
 DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
+CA = "ca"
+"""The proxy's CA folder under the state directory, as `session` names it."""
 BATCHES = "run-all"
 """The folder under the state directory that holds each batch's per-scenario folders and logs."""
 
@@ -100,10 +103,26 @@ def scenarios_in(folder: Path) -> list[Path]:
     return found
 
 
+_HANDED: set[int] = set()
+PORTS = range(20000, 32768)
+"""Where an agent's port is picked: below the ephemeral range, so a run's own proxy, which takes any free port the
+system hands out, never takes the port an agent is about to listen on."""
+
+
 def free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
+    """A port nobody listens on now and no scenario of this batch was handed."""
+    for _ in range(1000):
+        port = secrets.choice(PORTS)
+        if port in _HANDED:
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        _HANDED.add(port)
+        return port
+    raise OSError(f"no free port between {PORTS.start} and {PORTS.stop - 1}")
 
 
 def _filled(text: str, port: int, folder: Path) -> str:
@@ -117,6 +136,7 @@ async def play_all(
     found = scenarios_in(folder)
     if not found:
         raise FileRefused(f"{folder}: holds no scenario file")
+    authority(state / CA)  # made once here: runs started together would each make one, and trust another's
     batch = state / BATCHES / secrets.token_hex(4)
     gate = asyncio.Semaphore(max(1, jobs))
 
@@ -179,26 +199,31 @@ async def _play(
 
 
 def timeline(state: Path, run_id: str) -> list[Timeline]:
-    """What passed between the agent and each person, in order: each message the agent sent them, each of theirs."""
+    """What passed between the agent and each person, in order: each message the agent sent them, each of theirs. At
+    one instant a person's reply comes before what the agent wrote on hearing it."""
     scenario: Scenario = session.scenario_of(state, run_id)
     by_email = {p.email: p.key for p in scenario.people}
-    moments: dict[str, list[Moment]] = {p.key: [] for p in scenario.people}
+    moments: dict[str, list[tuple[timedelta, int, Moment]]] = {p.key: [] for p in scenario.people}
     with session.reading(state, run_id) as world:
         for event in world.events():
             after = event.after
             if not isinstance(after, MessageSnapshot) or event.operation is not Operation.CREATE:
                 continue
+            if event.actor is not Actor.AGENT:
+                continue
             at = event.sim_time - scenario.starts_at
-            if event.actor is Actor.AGENT:
-                for email in after.recipient_emails:
-                    if email in by_email:
-                        moments[by_email[email]].append(Moment(after=at, what=f"agent: {_clip(after.text)}"))
+            for email in after.recipient_emails:
+                if email in by_email:
+                    moments[by_email[email]].append((at, 1, Moment(after=at, what=f"agent: {_clip(after.text)}")))
         for reply in world.replies():
             if reply.person in moments:
-                moments[reply.person].append(
-                    Moment(after=reply.at - scenario.starts_at, what=f"they: {_clip(reply.text)}")
-                )
-    return [Timeline(person=k, moments=sorted(v, key=lambda m: m.after)) for k, v in moments.items() if v]
+                at = reply.at - scenario.starts_at
+                moments[reply.person].append((at, 0, Moment(after=at, what=f"they: {_clip(reply.text)}")))
+    return [
+        Timeline(person=k, moments=[m for _, _, m in sorted(v, key=lambda t: (t[0], t[1]))])
+        for k, v in moments.items()
+        if v
+    ]
 
 
 def _clip(text: str, most: int = 60) -> str:
