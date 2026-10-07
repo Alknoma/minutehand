@@ -31,7 +31,8 @@ class LateFollowUp:
         ended = ended_at(view)
         findings: list[Finding] = []
         for o in view.obligations:
-            for expiry in chase(o, by_seq, ended).expiries:
+            chased = chase(o, by_seq, ended)
+            for expiry in chased.expiries:
                 if expiry.touch is None or expiry.touched_at is None or expiry.gap <= GRACE:
                     continue
                 findings.append(
@@ -41,7 +42,7 @@ class LateFollowUp:
                         kind=FindingKind.FAIL,
                         message=f"followed up {_hours(expiry.gap.total_seconds())} after the wait expired"
                         + (
-                            f"; when it expired, {plan_at(view.dues, expiry.expired).said()}"
+                            f"; when it expired, {plan_at(view.dues, expiry.expired, since=chased.since(expiry.expired)).said()}"
                             if view.dues is not None
                             else ""
                         ),

@@ -140,5 +140,8 @@ What no behaviour of either example exercises, so the library's checks for it ar
 - `person_away_with_delegate`: neither agent chases the person while away (each takes the automatic reply as the
   answer and stops), so `chased_absent_person` never fires.
 
-When a planned wake is dropped, `no_follow_up` says "when it fell due, the agent had asked for no wake of its own":
-after the drop the agent's table holds nothing, and the finding does not name the dropped delivery as the cause.
+When a planned wake is dropped, `no_follow_up` names the dropped delivery as the cause: "when it fell due, the
+scenario's dispatch rules had dropped the wake the agent asked for (reported in wake 1, due 18 hours before), and it
+had asked for no other". A dropped wake is named when it was due after the agent last did something on the wait and
+no later than an hour past the moment the wait fell due (`checks/_waits.plan_at`), so a reminder planned ahead of the
+due moment counts as well as one planned for it.

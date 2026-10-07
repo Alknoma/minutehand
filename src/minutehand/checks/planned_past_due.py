@@ -44,10 +44,11 @@ class PlannedPastDue:
         ended = ended_at(view)
         findings: list[Finding] = []
         for o in view.obligations:
-            for expiry in chase(o, by_seq, ended).expiries:
+            chased = chase(o, by_seq, ended)
+            for expiry in chased.expiries:
                 if expiry.touch is None or expiry.touched_at is None or expiry.gap > GRACE:
                     continue
-                plan = plan_at(dues, expiry.expired)
+                plan = plan_at(dues, expiry.expired, since=chased.since(expiry.expired))
                 if not plan.past_due:
                     continue
                 whom = f" on {o.person}" if o.person else ""

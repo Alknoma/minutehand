@@ -1075,7 +1075,7 @@ Exit 3 is not a failure: a scenario whose point is that nobody answers ends at i
 
 What the rule gets wrong:
 
-- **It trusts `DONE` as far as the ledger lets it.** An agent that reports done while a question it asked is unanswered and was never followed up is `UNFINISHED`, naming whom; one that reports done with every question answered or chased passes unless an expectation or a check says otherwise. Whether a `DONE` whose expectations are met is true to the goal's meaning, and whether a message was a question at all, are left to judged checks.
+- **It trusts `DONE` as far as the ledger lets it.** An agent that reports done while a question it asked is unanswered and was never followed up is `UNFINISHED`, naming whom; a "follow-up" sent in the same wake as the ask, less than `GRACE` after it, chased nothing (the agent never waited) and does not count (`Chase.instant`, `tests/orchestrator/test_done_while_waiting.py`); one that reports done with every question answered or chased passes unless an expectation or a check says otherwise. Whether a `DONE` whose expectations are met is true to the goal's meaning, and whether a message was a question at all, are left to judged checks.
 - **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question. The one exception: once every expectation is met, a message to a `Silent` owner sent with or after the last of them is the result being reported, and keeps nothing open. A silent person other than the owner still leaves the run `UNFINISHED`.
 - **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
 - **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
@@ -1095,7 +1095,7 @@ The checks, discovered by `checks/runner.py` (any class in a module of `checks/`
 |---|---|---|
 | `acted_after_deadline` | `FAIL`; `REVIEW` for a wake whose late writes are all messages | `budgeted_follow_up` |
 | `acted_on_repeated_wake` | `REVIEW`: a wake the scenario delivered a second time (`dispatch`, `twice`) in which the agent changed the world again; notes each dispatch rule that never applied | `no_double_tick` |
-| `nagged` | `FAIL`: more follow-ups on one ask, each before the answer was due, than the person's `early_follow_ups` (default 2) | `budgeted_follow_up` |
+| `nagged` | `FAIL`: more follow-ups on one ask, each before the answer was due, than the person's `early_follow_ups` (default 2); `REVIEW`, within that budget, for a new message sent as a follow-up in the same wake as the ask and less than `GRACE` after it, before the person could have answered (a second message seconds later may add what the first forgot, which only its words say) | `budgeted_follow_up` |
 | `chased_absent_person` | `FAIL`: messaged someone away while a delegate covered | `absence_aware` |
 | `duplicate_ticket` | `FAIL`: the same normalised title filed twice in one project while the first was open | `one_open_ask_per_person` |
 | `expectations` | `FAIL` per unmet expectation | `honest_closure` |
