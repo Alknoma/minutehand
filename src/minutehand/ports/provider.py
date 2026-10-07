@@ -106,15 +106,27 @@ class PushesInteractions(Protocol):
 
 @runtime_checkable
 class LandsReplies(Protocol):
-    """A provider where a person's answer lands where the agent reads it, and nothing is pushed: a reply email in the
-    agent's mailbox, an attendee's response on the agent's calendar event. The agent finds it on its next read, as it
-    finds a ticket's fate, so its landing wakes nobody."""
+    """A provider where a person's answer lands where the agent reads it, and nothing is pushed to the agent's inbound
+    target: a reply email in the agent's mailbox, an attendee's response on the agent's calendar event. The agent
+    needs no inbound target for it. It finds the answer on its next read, as it finds a ticket's fate, so its landing
+    wakes nobody, unless the service itself tells the agent of it (`heard`). A provider that also `PushesEvents`
+    lands only the replies `lands` names and pushes the rest."""
 
-    def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
+    def lands(self, reply: PersonReply, world: Store) -> bool:
+        """Whether `reply` lands here rather than being pushed: it answers something the agent reads by polling (an
+        email in a mailbox, an invitation), not a message the service pushes answers to."""
+        ...
+
+    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool:
+        """Whether landing `reply` tells the agent, by a push of the service's own that the agent asked for (a live
+        Graph subscription on the mailbox it lands in): that push is a wake, as a pushed reply's is."""
+        ...
+
+    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
         """Write the person's answer to `reply.in_reply_to` as the real service would, recorded as actor PERSON: what
-        they wrote as their message, a control they used (`reply.press`) as its effect. A message no longer there
-        is left alone and nothing is written. A press on a control the message does not carry raises
-        `ValueError`: the replier offered what the provider never showed."""
+        they wrote as their message, a control they used (`reply.press`) as its effect, and tell whoever `heard`
+        names. A message no longer there is left alone and nothing is written. A press on a control the message
+        does not carry raises `ValueError`: the replier offered what the provider never showed."""
         ...
 
 

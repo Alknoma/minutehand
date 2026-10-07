@@ -134,7 +134,7 @@ say(history=history, reply_id=reply_id, thread=[(headers(m)["From"], headers(m)[
         assert question.after.text == "Supplier rates\n\nCould you confirm Acme's hourly rate?"
 
         google.clock.jump(START + timedelta(hours=3))
-        google.provider.land(
+        await google.provider.land(
             PersonReply(
                 person="dov",
                 in_reply_to=question.entity,

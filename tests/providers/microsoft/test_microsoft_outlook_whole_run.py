@@ -1,7 +1,8 @@
 """One whole run of an agent that chases a person by email and books them in Outlook, through the real proxy with
 plain `httpx`: it emails Sofia from its own mailbox, she answers by email four hours later, it sends her an
 invitation, and she accepts it four hours after that. Every step of hers lands at its moment, the agent's
-subscription on its Inbox is notified of both, and the expectations and the scorecard read the run."""
+subscription on its Inbox is notified of both, and the expectations and the scorecard read the run. The agent talks to
+people only by email, so it declares no Teams inbound target; without a subscription her email wakes nobody."""
 
 from __future__ import annotations
 
@@ -24,8 +25,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.checks.runner import evaluate_run
 from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Command, WakeReason, WakeRequest
 from minutehand.domain.checks import FindingKind
-from minutehand.domain.people import InboundTarget
-from minutehand.domain.run import StopReason
+from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import Actor, InteractionSnapshot, MessageSnapshot
 from tests.providers.microsoft.tenant import GRAPH, LOGIN, START, Webhook
@@ -65,6 +65,7 @@ class Booker:
     proxy: str
     trust: ssl.SSLContext
     notify_url: str
+    subscribe: bool = True
     woken: list[WakeRequest] = field(default_factory=list)
     event: str | None = None
     report: AgentReport = field(default_factory=lambda: AgentReport(status=AgentStatus.IDLE))
@@ -97,13 +98,8 @@ class Booker:
 
     async def _start(self, http: httpx.AsyncClient, auth: dict[str, str], request: WakeRequest) -> None:
         later = (request.now + timedelta(days=3)).isoformat().replace("+00:00", "Z")
-        watched = await http.post(
-            f"{GRAPH}/subscriptions",
-            json={"changeType": "created", "notificationUrl": self.notify_url, "clientState": "inbox",
-                  "resource": f"/users/{AGENT}/mailFolders('Inbox')/messages", "expirationDateTime": later},
-            headers=auth,
-        )  # fmt: skip
-        assert watched.status_code == 201, watched.text
+        if self.subscribe:
+            await self._watch(http, auth, later)
         sent = await http.post(
             f"{GRAPH}/users/{AGENT}/sendMail",
             json={"message": {"subject": "Vendor review", "toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}],
@@ -111,6 +107,15 @@ class Booker:
             headers=auth,
         )  # fmt: skip
         assert sent.status_code == 202, sent.text
+
+    async def _watch(self, http: httpx.AsyncClient, auth: dict[str, str], later: str) -> None:
+        watched = await http.post(
+            f"{GRAPH}/subscriptions",
+            json={"changeType": "created", "notificationUrl": self.notify_url, "clientState": "inbox",
+                  "resource": f"/users/{AGENT}/mailFolders('Inbox')/messages", "expirationDateTime": later},
+            headers=auth,
+        )  # fmt: skip
+        assert watched.status_code == 201, watched.text
 
     async def _book(self, http: httpx.AsyncClient, auth: dict[str, str]) -> None:
         unread = await http.get(
@@ -152,31 +157,36 @@ class Booker:
         assert sent.status_code == 202, sent.text
 
 
-async def test_an_agent_emails_a_person_hears_back_by_email_invites_her_and_she_accepts(
-    tmp_path: Path, webhook: Webhook
-) -> None:
+async def _run(tmp_path: Path, webhook: Webhook, *, subscribe: bool) -> tuple[RunRecord, Booker, SqliteStore]:
+    """The run, with an agent that declares no inbound target: nothing of Sofia's is pushed to a bot."""
     clock = RunClock(SCENARIO.starts_at)
     store = SqliteStore(tmp_path / "world.db", "run", clock)
     provider = microsoft()
     async with Proxy(Routing(Registry.installed()), store, clock, confdir=tmp_path / "ca") as proxy:
         booker = Booker(
-            proxy=proxy.url, trust=ssl.create_default_context(cafile=str(proxy.ca_bundle)), notify_url=webhook.url
+            proxy=proxy.url,
+            trust=ssl.create_default_context(cafile=str(proxy.ca_bundle)),
+            notify_url=webhook.url,
+            subscribe=subscribe,
         )
         record = await run_scenario(
             scenario=SCENARIO,
-            agent=AgentUnderTest(
-                name="booker",
-                wakes=[Command(argv=["in-process"])],
-                inbound=[InboundTarget(provider="microsoft", url="http://127.0.0.1:9/teams-is-never-pushed")],
-            ),
+            agent=AgentUnderTest(name="booker", wakes=[Command(argv=["in-process"])], inbound=[]),
             reach=Reach(main=booker),
             store=store,
             clock=clock,
             services=Services(providers=[provider], pushes={"microsoft": provider}),
             replier=ScriptedReplier(SCENARIO),
             mounts=proxy,
-            signing={"microsoft": "the Bot Framework signs with its key, not a secret"},
+            signing={},
         )
+    return record, booker, store
+
+
+async def test_an_agent_emails_a_person_hears_back_by_email_invites_her_and_she_accepts(
+    tmp_path: Path, webhook: Webhook
+) -> None:
+    record, booker, store = await _run(tmp_path, webhook, subscribe=True)
 
     assert record.stop is StopReason.AGENT_DONE
     assert [(w.now - START, w.reason) for w in booker.woken] == [
@@ -211,3 +221,18 @@ async def test_an_agent_emails_a_person_hears_back_by_email_invites_her_and_she_
     result = evaluate_run(SCENARIO, events, record.wakes, store.replies(), stop=record.stop)
     assert [f.message for f in result.findings if f.kind is FindingKind.FAIL] == []
     assert (result.effectiveness.expectations_met, result.effectiveness.expectations_total) == (2, 2)
+
+
+async def test_an_email_reply_with_no_subscription_on_the_mailbox_lands_and_wakes_nobody(
+    tmp_path: Path, webhook: Webhook
+) -> None:
+    record, booker, store = await _run(tmp_path, webhook, subscribe=False)
+
+    assert [w.reason for w in booker.woken] == [WakeReason.START], (
+        "nothing told the agent: it finds her email by polling"
+    )
+    landed = [e for e in store.events() if e.actor is Actor.PERSON and isinstance(e.after, MessageSnapshot)]
+    assert [(e.sim_time - START, e.after.recipient_emails) for e in landed if isinstance(e.after, MessageSnapshot)] == [
+        (timedelta(hours=4), [AGENT])
+    ]
+    assert webhook.notifications == [] and record.stop is not StopReason.AGENT_DONE

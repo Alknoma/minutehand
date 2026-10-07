@@ -375,7 +375,11 @@ class PushesEvents(Protocol):
 
 @runtime_checkable
 class LandsReplies(Protocol):
-    def land(self, reply: PersonReply, world: Store, clock: Clock) -> None: ...
+    def lands(self, reply: PersonReply, world: Store) -> bool: ...
+
+    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool: ...
+
+    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None: ...
 
 
 @runtime_checkable
@@ -439,14 +443,14 @@ class BooksWakes(Protocol):
 | Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
 | YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
 | Google Workspace (Drive, Docs, Slides, Gmail, Calendar) | `google_workspace` | `www.googleapis.com` (Drive at `/drive/v3`, Calendar at `/calendar/v3`), `oauth2.googleapis.com`, `gmail.googleapis.com`, `docs.googleapis.com`, `slides.googleapis.com`, `iamcredentials.googleapis.com` | `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `OwnsSeed` |
-| Microsoft | `microsoft` | `login.microsoftonline.com`, `login.botframework.com`, `smba.trafficmanager.net`, `graph.microsoft.com`, `*.sharepoint.com` | `PushesEvents`, `PushesInteractions`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
+| Microsoft | `microsoft` | `login.microsoftonline.com`, `login.botframework.com`, `smba.trafficmanager.net`, `graph.microsoft.com`, `*.sharepoint.com` | `PushesEvents`, `PushesInteractions`, `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 | Google Cloud Tasks | `google_cloud_tasks` | `cloudtasks.googleapis.com` | `BooksWakes`, `ConfirmsDelivery`, `OwnsSeed` |
 | GitHub | `github` | `api.github.com` (REST and `/graphql`; no prefix) | none: repository reads only, see its `README.md` |
 | Jira Cloud | `jira` | `*.atlassian.net`, `api.atlassian.com`, `auth.atlassian.com` (none; the app reads the site path and `/ex/jira/{cloudId}` itself) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
 | Notion | `notion` | `api.notion.com` | `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
 
-Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. A person replying by email, or answering a calendar invitation, is a reply like any other, decided by the replier when the agent's message reaches them, but it lands through `LandsReplies.land` (Google Workspace): in the agent's mailbox, threaded with what it answers, or as the guest's `responseStatus` (the invitation offers Yes, Maybe and No as controls, so a scripted `press` answers it) or response comment. Nothing is pushed, so it wakes nobody: the agent finds it on its next poll, and `Orchestrator._unheard` counts it with ticket fates. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack and Jira hold all three (each one's own seed names a ticket by its `key`); Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`. `refusals.refuse_unheld` also refuses a document happening whose action is not in its provider's `Manifest.document_changes`, naming it: Drive shows every change but `field_set`; Notion `edited`, `renamed`, `trashed`, `commented` and `field_set`; Microsoft `edited`, `renamed`, `moved`, `shared` and `trashed`. `Manifest.world_keys` says which host label or path segment of a request names its world (a Microsoft tenant, an Atlassian site or cloud id, a YouTrack or SharePoint site), for `minutehand serve` (`docs/serve.md`).
+Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. A person replying by email, or answering a calendar invitation, is a reply like any other, decided by the replier when the agent's message reaches them, but it lands through `LandsReplies.land` (Google Workspace; Microsoft for a reply to an email or a meeting request, which `LandsReplies.lands` tells from a reply to a Teams message): in the agent's mailbox, threaded with what it answers, or as the guest's `responseStatus` (the invitation offers Yes, Maybe and No as controls, so a scripted `press` answers it) or response comment. Nothing is pushed to an inbound target, so the agent needs none for it. It wakes nobody unless the service itself tells the agent (`LandsReplies.heard`: a live Graph subscription on the mailbox or calendar it lands in, which Gmail and Calendar never have): otherwise the agent finds it on its next poll, and `Orchestrator._unheard` counts it with ticket fates. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack and Jira hold all three (each one's own seed names a ticket by its `key`); Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`. `refusals.refuse_unheld` also refuses a document happening whose action is not in its provider's `Manifest.document_changes`, naming it: Drive shows every change but `field_set`; Notion `edited`, `renamed`, `trashed`, `commented` and `field_set`; Microsoft `edited`, `renamed`, `moved`, `shared` and `trashed`. `Manifest.world_keys` says which host label or path segment of a request names its world (a Microsoft tenant, an Atlassian site or cloud id, a YouTrack or SharePoint site), for `minutehand serve` (`docs/serve.md`).
 
 ### Things people do by themselves
 
@@ -600,7 +604,7 @@ Orchestrator.run():
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
     clock.jump(jump.now)
-    only ticket fates, ticket or document happenings and landed replies fired -> HoldsTickets.transition,
+    only ticket fates, ticket or document happenings and unheard landed replies fired -> HoldsTickets.transition,
                      ActsOnTickets.act, ChangesDocuments.change, LandsReplies.land; no wake, unless the agent watches a changed provider's documents
                      (NotifiesChanges.watched), then a DUE wake in which NotifiesChanges.notify tells it
     otherwise, one wake:

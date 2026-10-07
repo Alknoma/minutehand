@@ -613,8 +613,8 @@ class Orchestrator:
                     await self._inboxes.decide(reply, self._store, self._clock)
                 elif provider in self._channels:
                     await self._channels[provider].deliver(reply, self._store, self._clock)
-                elif (lands := self._lands(provider)) is not None:
-                    lands.land(reply, self._store, self._clock)
+                elif (lands := self._lands(reply)) is not None:
+                    await lands.land(reply, self._store, self._clock)
                 elif reply.press is not None:
                     await self._interactions(provider).press(
                         reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
@@ -697,12 +697,15 @@ class Orchestrator:
     def _unheard(self, pending: Pending) -> bool:
         """Something due the agent is not told of as it lands: a happening on a ticket or a document, which the
         agent finds on its next read (a document's provider may then tell a watching agent, `_watched`), and a reply
-        that lands where the agent reads it (`LandsReplies`: a reply email, an attendee's response). A messaging
-        happening is pushed to the agent, and that push is a wake, as a pushed reply's is."""
+        that lands where the agent reads it (`LandsReplies`: a reply email, an attendee's response) and that the
+        service tells the agent nothing of. A messaging happening is pushed to the agent, and that push is a wake, as
+        a pushed reply's is, and so is the service's own notice of a landed reply (`LandsReplies.heard`)."""
         if isinstance(pending, PendingReply):
             reply = self._replies[pending.reply]
-            provider = reply.in_reply_to.provider
-            return reply.decides is None and provider not in self._channels and self._lands(provider) is not None
+            if reply.decides is not None or reply.in_reply_to.provider in self._channels:
+                return False
+            lands = self._lands(reply)
+            return lands is not None and not lands.heard(reply, self._store, self._clock)
         return isinstance(pending, PendingHappening) and isinstance(
             self._scenario.happenings[pending.happening], TicketHappening | DocumentHappening
         )
@@ -967,7 +970,7 @@ class Orchestrator:
         if reply.decides is not None:
             if self._inboxes is None or not self._inboxes.holds(reply.in_reply_to):
                 raise RunRefused(f"{person.key} decided on {reply.in_reply_to.provider}, which is no inbox of the run")
-        elif reply.in_reply_to.provider not in self._channels and self._lands(reply.in_reply_to.provider) is None:
+        elif reply.in_reply_to.provider not in self._channels and self._lands(reply) is None:
             self._pushes(reply.in_reply_to.provider)
             if reply.press is not None:
                 self._interactions(reply.in_reply_to.provider)
@@ -1095,10 +1098,11 @@ class Orchestrator:
             raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
         return self._signing[provider]
 
-    def _lands(self, provider: ProviderKey) -> LandsReplies | None:
-        """The provider a reply on `provider` lands in without a push, if it is one."""
+    def _lands(self, reply: PersonReply) -> LandsReplies | None:
+        """The provider `reply` lands in without a push, if it lands: then the agent needs no inbound target."""
+        provider = reply.in_reply_to.provider
         found = next((p for p in self._services.providers if p.manifest.key == provider), None)
-        return found if isinstance(found, LandsReplies) else None
+        return found if isinstance(found, LandsReplies) and found.lands(reply, self._store) else None
 
     def _changes(self, provider: ProviderKey) -> ChangesDocuments:
         found = next((p for p in self._services.providers if p.manifest.key == provider), None)
