@@ -80,15 +80,15 @@ run 6857256e8014: recipe_venue_silent
 scorecard
   expectations met: 1 of 1
   waits opened: 1, still open at the end: 1
-  follow-ups due: 0, made: 1, late: 0, early: 1
+  follow-ups made: 1
 ```
 
 Rosa's wait is still open at the end, as Minutehand counts it: she never answered. The agent closed its side by
-telling Owen. "early" counts the follow-up as sent before the date Minutehand itself expected her answer by; the
-agent's two days is its own choice.
+telling Owen. Whether one follow-up two days in was right is the scenario's rules' to say; the recipes' scenarios
+ask for a follow-up once her answer is due.
 
-Leave the agent's follow-up out (have `/report` answer `next_wake: null`) and the silent run fails with
-`no_follow_up`, naming the fix: an expected-by date on every wait, and a wake on it.
+Leave the agent's follow-up out (have `/report` answer `next_wake: null`) and the silent run fails the scenario's
+rule `follows_up_when_due`, naming the fix: an expected-by date on every wait, and a wake on it.
 
 `tests/recipes/test_recipes.py` runs every recipe through both scenarios (`uv run --group recipes pytest -m recipes`).
 

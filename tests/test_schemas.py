@@ -73,3 +73,56 @@ def test_validate_rejects_bad_files_naming_each_problem_with_its_place(
         for line in err
     ), err
     assert f"{seed}: people[0].key: String should match pattern '^[a-z][a-z0-9_]*$'" in err
+
+
+AGENT = "name: a\nwakes: [{kind: command, argv: [x]}]\n"
+SCENARIO = (
+    "name: s\ngoal: g\nowner: owen\npeople:\n"
+    "  - {key: owen, name: Owen, email: owen@example.com}\n"
+    "  - {key: rosa, name: Rosa, email: rosa@example.com}\n"
+)
+RULE = "  - {id: asks_rosa, count: {messages: {to: [%s]}}, at_least: 1%s}\n"
+
+
+def _validated(tmp_path: Path, capsys: pytest.CaptureFixture[str], agent: str, scenario: str) -> tuple[int, str]:
+    (tmp_path / "agent.yaml").write_text(agent)
+    (tmp_path / "scenario.yaml").write_text(scenario)
+    code = main(["validate", str(tmp_path / "agent.yaml"), str(tmp_path / "scenario.yaml")])
+    return code, capsys.readouterr().err
+
+
+def test_validate_accepts_an_agent_file_and_a_scenario_whose_rules_read_together(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    agent = AGENT + "assess:\n" + RULE % ("rosa", "")
+    assert _validated(tmp_path, capsys, agent, SCENARIO + "assess_off: [asks_rosa]\n") == (0, "")
+
+
+def test_validate_rejects_a_scenario_switching_off_a_rule_nobody_wrote(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, err = _validated(tmp_path, capsys, AGENT, SCENARIO + "assess_off: [asks_rosa]\n")
+    assert code == 1
+    assert "scenario.yaml with" in err and "switches off asks_rosa, which no rule of the agent file" in err
+
+
+def test_validate_rejects_an_agent_rule_naming_someone_the_scenario_does_not_have(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, err = _validated(tmp_path, capsys, AGENT + "assess:\n" + RULE % ("zed", ""), SCENARIO)
+    assert code == 1 and "rule asks_rosa names zed, who is not in the scenario" in err
+
+
+def test_validate_rejects_a_rule_naming_a_pattern_there_is_not(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, err = _validated(tmp_path, capsys, AGENT + "assess:\n" + RULE % ("rosa", ", pattern: be_nice"), SCENARIO)
+    assert code == 1 and "agent.yaml: assess[0].pattern: no pattern 'be_nice'" in err
+
+
+def test_validate_rejects_a_rule_whose_moment_its_each_does_not_have(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rule = "  - {id: r, count: {messages: {}, since: answer}, at_least: 1}\n"
+    code, err = _validated(tmp_path, capsys, AGENT + "assess:\n" + rule, SCENARIO)
+    assert code == 1 and "names answer, which only an ask or a hand-off has" in err

@@ -15,6 +15,7 @@ import pytest
 
 from minutehand import session
 from minutehand.application.steps import STEP
+from minutehand.checks.runner import NOTHING_ASSESSED
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.run import VerdictKind
 from minutehand.testing.background import serve_in_background
@@ -40,7 +41,8 @@ def _ask(served: Served, token: str, text: str) -> None:
 
 
 def test_marked_steps_are_the_worlds_wakes_and_an_idle_one_is_seen(served: Served) -> None:
-    world = OpenWorld(served.client, served.client.create_world(spec("xoxb-steps-marked")))
+    idle = "[{id: no_idle_steps, count: {wakes: {changed_world: false}}, at_most: 0, severity: review}]"
+    world = OpenWorld(served.client, served.client.create_world(spec("xoxb-steps-marked", assess=idle)))
     start = world.view.now
     with world.step(at=start, reason="morning run"):
         _ask(served, "xoxb-steps-marked", "Could you confirm the venue, please?")
@@ -54,9 +56,8 @@ def test_marked_steps_are_the_worlds_wakes_and_an_idle_one_is_seen(served: Serve
 
     assert closed.result.effectiveness.wakes == 2 and closed.result.effectiveness.idle_wakes == 1
     assert [e.wake for e in sent] == [1], "the message was written in the first step"
-    [idle] = [f for f in checked.findings if f.check == "idle_wake"]
-    assert idle.kind is FindingKind.REVIEW and idle.wake == 2
-    assert not any(b.startswith("no_follow_up") for b in closed.result.blocked)
+    [seen] = [f for f in checked.findings if f.check == "no_idle_steps"]
+    assert seen.kind is FindingKind.REVIEW and seen.at == start + timedelta(hours=1)
     assert closed.result.verdict.kind is VerdictKind.UNFINISHED, closed.result.verdict.words
 
 
@@ -86,9 +87,9 @@ def test_a_world_with_no_step_and_nothing_declared_is_not_judged_and_says_why(se
 
     verdict = closed.result.verdict
     assert verdict.kind is VerdictKind.NOT_JUDGED and closed.result.exit_code == 5
-    assert [r.split(" ")[0] for r in verdict.unjudged] == ["idle_wake"]
-    assert closed.result.effectiveness.waits_opened == 1, "the wait on the silent person was still judged"
-    assert "Not judged" in verdict.words and "no step was recorded" in verdict.words
+    assert verdict.unjudged == [NOTHING_ASSESSED]
+    assert closed.result.effectiveness.waits_opened == 1, "the wait on the silent person is still a fact"
+    assert verdict.words.startswith("Not assessed:")
 
 
 def test_ending_a_step_that_never_began_is_refused(served: Served) -> None:

@@ -60,5 +60,5 @@ def test_the_image_passes_the_example_and_fails_the_forgetful_agent(image: str) 
     out = failed.stdout
     assert "\nfail (1)\n" in out, out
     found = out[out.index("\nfail (1)") : out.index("\nscorecard")]
-    assert "no_follow_up: wait on rosa expired" in found
+    assert "follows_up_when_due: rosa's answer was due and no follow-up came by an hour later" in found
     assert "pattern expiry_on_every_wait: An expiry on every wait." in found

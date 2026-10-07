@@ -64,7 +64,7 @@ uv run --group recipes minutehand run scenario_late.yaml --agent agent.yaml -- p
 # exits 0: Rosa answers after the follow-up; the agent tells Owen "... says: The lakeside hall, booked for the 14th."
 
 uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
-# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no no_follow_up finding
+# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no follows_up_when_due finding
 ```
 
 Outside this checkout: `pip install langgraph langchain-openai slack_sdk` in the agent's Python, and Minutehand

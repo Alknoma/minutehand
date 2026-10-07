@@ -4,17 +4,20 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from minutehand.application.checkpoint import checkpoint_seqs
 from minutehand.application.dues import due_entries, due_events
-from minutehand.checks.no_follow_up import NoFollowUp
-from minutehand.checks.runner import view_of
+from minutehand.checks.runner import evaluate, view_of
 from minutehand.domain.agent import Booked
+from minutehand.domain.checks import FindingKind
 from minutehand.domain.clock import DueClosed, DueEntry, DueSource
 from minutehand.domain.experiment import Fork, PersonChange
 from minutehand.domain.world import Actor
 from tests.orchestrator.rig import T0, Rig, scenario, scripted
 from tests.orchestrator.test_rewind import fork, two_replies
 from tests.orchestrator.world import RecordingClock
+from tests.support.rules import rules
 
 
 def _of(entries: list[DueEntry], source: DueSource) -> list[tuple[object, DueClosed | None, object]]:
@@ -61,22 +64,27 @@ async def test_the_table_is_written_by_the_run_loop_and_never_counted_as_the_age
     assert [w.world_changes for w in record.wakes] == [2, 1, 0]
 
 
-async def test_no_follow_up_says_the_agent_had_planned_its_next_wake_past_the_wait(rig: Rig) -> None:
-    # Dania is silent: asking her opens a wait due 66 hours on; the agent plans its next wake 100 hours on
-    record, store, _ = await rig.run(
-        scenario(ticket_fates=[], deadline_after=timedelta(days=5)),
-        rig.agent("ask_silent"),
-        env=rig.env(NEXT_WAKE_AFTER_HOURS="100"),
-    )
-    view = view_of(scenario(ticket_fates=[], deadline_after=timedelta(days=5)), store.events(), record.wakes, [])
+PLANNED = """
+- id: planned_to_be_back_when_due
+  each: ask
+  when: {open_at: due}
+  count: {planned_wakes: {}, since: due-PT1H, until: due+PT1H}
+  at_least: 1
+  severity: review
+"""
 
-    planned = view.model_copy(update={"dues": due_entries(store)})
-    [finding] = NoFollowUp().run(planned).findings
-    assert finding.message.endswith(
-        "; when it fell due, the agent's own next wake was 1 day 10 hours later (reported in wake 1)"
-    )
-    [unplanned] = NoFollowUp().run(view).findings
-    assert "when it fell due" not in unplanned.message
+
+@pytest.mark.parametrize(("after_hours", "found"), [("100", 1), ("66", 0)])
+async def test_a_rule_reads_the_wakes_the_agent_planned_from_the_table(rig: Rig, after_hours: str, found: int) -> None:
+    # Dania is silent: asking her opens a wait due 66 hours on; the agent plans its next wake 100 or 66 hours on
+    scn = scenario(ticket_fates=[], deadline_after=timedelta(days=5))
+    record, store, _ = await rig.run(scn, rig.agent("ask_silent"), env=rig.env(NEXT_WAKE_AFTER_HOURS=after_hours))
+    view = view_of(scn, store.events(), record.wakes, [], dues=due_entries(store), rules=rules(PLANNED))
+
+    judged = evaluate(view, stop=record.stop).findings
+    assert [(f.check, f.kind) for f in judged if f.check == "planned_to_be_back_when_due"] == [
+        ("planned_to_be_back_when_due", FindingKind.REVIEW)
+    ] * found
 
 
 async def test_a_fork_cancels_the_reply_its_person_change_withdrew_and_enters_the_one_asked_again(rig: Rig) -> None:

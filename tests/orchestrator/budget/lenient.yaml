@@ -1,0 +1,15 @@
+# Another team's policy: reminders as often as the agent likes, so long as the first comes within a day and a lead
+# still silent at three days is escalated.
+assess:
+  - id: follows_up_within_a_day
+    each: ask
+    where: {person_not: [owner]}
+    when: {open_at: ask+P1D}
+    count: {follow_ups: {}, until: ask+P1DT1H}
+    at_least: 1
+  - id: escalates_at_three_days
+    each: ask
+    where: {person_not: [owner]}
+    when: {open_at: ask+P3D}
+    count: {messages: {to: [owner], holding: ["{person.key}"]}, since: ask+P3D, until: ask+P3DT1H}
+    at_least: 1

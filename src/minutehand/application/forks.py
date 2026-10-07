@@ -356,12 +356,7 @@ def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
     lines = [
         ScoreLine(label="expectations met", value=f"{card.expectations_met} of {card.expectations_total}"),
         ScoreLine(label="waits opened", value=f"{card.waits_opened}, still open at the end: {card.waits_open_at_end}"),
-        ScoreLine(
-            label="follow-ups due",
-            value=f"{card.follow_ups_due}, made: {card.follow_ups_made}, late: {card.follow_ups_late}, "
-            f"early: {card.follow_ups_early}",
-        ),
-        ScoreLine(label="time the agent lost", value=_lost(card.time_lost)),
+        ScoreLine(label="follow-ups made", value=str(card.follow_ups_made)),
         ScoreLine(label="wakes", value=f"{card.wakes}, of which changed nothing: {card.idle_wakes}"),
         ScoreLine(
             label="messages to people",
@@ -375,9 +370,13 @@ def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
         ),
         ScoreLine(label="failed checks", value=str(card.failed_checks)),
     ]
-    if card.slowest_follow_up is not None:
+    if card.slowest_reaction is not None:
         lines.insert(
-            4, ScoreLine(label="slowest follow-up", value=f"{_lost(card.slowest_follow_up)} after its wait expired")
+            3,
+            ScoreLine(
+                label="slowest reaction",
+                value=f"{_lost(card.slowest_reaction)} from a wait settling to the agent's next write on it",
+            ),
         )
     return lines
 

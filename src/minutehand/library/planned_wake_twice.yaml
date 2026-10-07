@@ -4,7 +4,6 @@ situation: >-
 good_agent: >-
   A second delivery of a wake it has already handled changes nothing: one reminder per due moment, one instance of a
   recurring task per period. It still reminds, takes the answer and tells the owner.
-checks: [acted_on_repeated_wake, repeated_message, expectations]
 patterns: [no_double_tick, one_open_ask_per_person, honest_closure]
 scenario:
   name: planned_wake_twice
@@ -30,3 +29,15 @@ scenario:
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
     - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", tell: "{team.tell}"}
+  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
+    - id: nothing_new_in_a_repeated_wake   # a wake delivered twice does its work once
+      count: {writes: {in_repeated_wake: true}}
+      at_most: 0
+      severity: review
+      pattern: no_double_tick
+    - id: no_two_messages_within_minutes   # the same person written to twice in a few minutes
+      each: person
+      count: {messages: {to: [person]}}
+      gap_at_least: PT5M
+      severity: review
+      pattern: one_open_ask_per_person

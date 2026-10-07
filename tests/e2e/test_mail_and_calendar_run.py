@@ -104,7 +104,6 @@ async def test_an_emailed_question_answered_by_email_and_an_accepted_invitation_
     assert [f.message for f in result.findings if f.kind is FindingKind.FAIL] == []
     assert (result.effectiveness.expectations_met, result.effectiveness.expectations_total) == (3, 3)
     assert result.effectiveness.waits_opened == 2 and result.effectiveness.waits_open_at_end == 0
-    assert result.effectiveness.follow_ups_late == 0
     assert outcome.record.stop is StopReason.AGENT_DONE
 
     store = world(tmp_path / "state", outcome.record.run_id)

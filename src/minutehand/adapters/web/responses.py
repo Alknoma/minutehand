@@ -183,28 +183,14 @@ class CallsResponse(Model):
     calls: list[RecordedCall]
 
 
-class FellDue(Model):
-    """One moment a wait fell due while it was still open, exactly as the scorecard counts it."""
-
-    at: AwareDatetime
-    until: AwareDatetime = Field(
-        description="The follow-up at or after it; with none, when the wait settled or the run ended"
-    )
-    followed_up: bool
-    late: bool = Field(description="Followed up more than the grace after, or never")
-
-
 class DrawnWait(Model):
     obligation: Obligation
-    fell_due: list[FellDue] = Field(
-        description="Empty for a wait that never fell due while open, and for the scenario's deadline"
-    )
 
 
 class ObligationsResponse(Model):
     obligations: list[DrawnWait] = Field(
-        description="What the world was waiting on (`checks.ledger`), each with the moments it fell due as "
-        "`checks._waits.chases` reads them for the scorecard: the viewer draws nothing as overdue on its own"
+        description="What the world was waiting on (`checks.ledger`), as facts: when each opened, what the agent did "
+        "while it was open, and when it settled. Whether anything was late is the team's rules' to say, in the findings"
     )
 
 

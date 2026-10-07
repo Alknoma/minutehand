@@ -1,6 +1,6 @@
 # An expiry on every wait
 
-**Found by:** `late_follow_up`, `no_follow_up`, `slow_to_react`, `planned_past_due`.
+**Found by:** a rule of the team's own (`docs/assessments.md`), such as `each: ask`, `when: {open_at: due}`, `count: {follow_ups: {}, since: due, until: due+PT1H}`, `at_least: 1`; and `when: {answered: true}`, `count: {touches: {}, since: answer, until: answer+PT1H}`, `at_least: 1` for an answer acted on.
 
 ## The failure
 
@@ -21,4 +21,4 @@ A reference agent keeps an expected-by date on every blocker and a single "next 
 - Where a wait is recorded, is there a date on it? A list of "pending questions" with no time beside each is the failure.
 - What wakes the agent when a date passes? If the answer is "the next poll", the follow-up is as late as the poll interval.
 - Does a reply wake the agent, or is it found on the next unrelated wake?
-- A wait falls due at its expected-by date and again, after each follow-up, the person's longest delay later. `late_follow_up` gives the gap in hours each time a follow-up came after a grace; `no_follow_up` lists waits still open whose last due date passed with nothing after it, and says how many follow-ups came before; `slow_to_react` lists answers that sat. A follow-up is a message or a write the person could see; reading the channel is not one.
+- When a wait is due, and how soon after it a follow-up must come, is the team's to say in its rules: the anchor `due` is when the scenario's person would have answered by, and `ask+P1D` any offset the team keeps. `follow_ups` counts every write the person could see while the wait was open; reading the channel is not one. `planned_wakes` counts the wakes the agent itself asked for, so a rule can say the agent's own plan, not luck, brought it back.

@@ -32,6 +32,7 @@ from minutehand.domain.scenario import (
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, WorldEvent
 from minutehand.session import RUNS, WORLD
 from tests.ports import free_port
+from tests.support.rules import rules
 
 AGENT = Path(__file__).parent / "agents" / "slack_agent.py"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
@@ -54,6 +55,19 @@ NEVER_EXPECTED_TO_ANSWER = Scripted(replies=[])
 """Someone who answers nothing and from whom no answer is expected: the owner, thanked at the end."""
 
 
+POLICY = """
+- id: follows_up_when_due
+  each: ask
+  where: {person_not: [owner]}
+  when: {open_at: due+PT1H}
+  count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
+  at_least: 1
+  message: "wait on {person.key} expired and the agent had not followed up an hour later"
+  pattern: expiry_on_every_wait
+"""
+"""The team's one rule these runs are judged by beside the expectations: a reminder by the time an answer is due."""
+
+
 def scenario(sofia: ReplyBehaviour, *, owner: ReplyBehaviour = Silent(), name: str = "partner_pricing") -> Scenario:  # noqa: B008 - a frozen model
     return Scenario(
         name=name,
@@ -66,6 +80,7 @@ def scenario(sofia: ReplyBehaviour, *, owner: ReplyBehaviour = Silent(), name: s
             Person(key="sofia", name="Sofia Romano", email=SOFIA, reply=sofia),
         ],
         expect=[PersonAsked(person="sofia"), PersonAsked(person="owner", mentions=["confirmed"])],
+        assess=rules(POLICY),
     )
 
 

@@ -24,7 +24,7 @@ from tests.packaging.conftest import (
 
 pytestmark = [pytest.mark.packaging, pytest.mark.timeout(900)]
 
-NO_FOLLOW_UP = "no_follow_up: wait on rosa expired"
+NO_FOLLOW_UP = "follows_up_when_due: rosa's answer was due and no follow-up came by an hour later"
 PATTERN = "pattern expiry_on_every_wait: An expiry on every wait."
 
 

@@ -1,6 +1,6 @@
 # Bounded asking
 
-**Found by:** no deterministic check yet.
+**Found by:** a rule of the team's own (`docs/assessments.md`) bounding its asks, such as `each: person`, `count: {asks: {of: [person]}}`, `at_most: 3`.
 
 ## The failure
 

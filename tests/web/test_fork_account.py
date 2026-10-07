@@ -71,7 +71,7 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_it_was_restored_an
     assert outcome is not None
     assert outcome.parent_verdict.kind is VerdictKind.FAILED and outcome.verdict_changed
     assert any(d.label == "expectations met" for d in outcome.scorecard)
-    assert outcome.findings_lost and not any(f.check == "no_follow_up" for f in outcome.findings_gained)
+    assert outcome.findings_lost and not any(f.check == "follows_up_when_due" for f in outcome.findings_gained)
     split = outcome.first_divergence
     assert split is not None and split.fork is not None
     assert ANSWER in split.fork.words and "Sofia" not in (split.parent.words if split.parent else "")

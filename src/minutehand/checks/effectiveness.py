@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from minutehand.checks._waits import chases, reaction
+from minutehand.checks.facts import asks
 from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
 from minutehand.domain.world import (
@@ -19,27 +19,20 @@ from minutehand.domain.world import (
 
 
 def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime) -> Effectiveness:
-    when = {e.seq: e.sim_time for e in view.events}
+    """Counts and times read from the world, none of them measured against what anyone thinks the agent should
+    have done: that is the team's rules (`domain/assessments.py`)."""
     waits = [o for o in view.obligations if o.kind is not ObligationKind.DATE]
-    due = late = 0
     made: set[int] = set()
-    early: set[int] = set()
-    lost = timedelta(0)
-    slowest: timedelta | None = None
-    for chased in chases(view, ended_at):
-        made.update(chased.follow_ups)  # one message chasing two waits is one follow-up
-        early.update(chased.early)
-        for expiry in chased.expiries:
-            due += 1
-            if not expiry.late:
-                continue
-            late += 1
-            lost += expiry.gap  # never followed up: the whole stretch is the agent's
-            if expiry.touch is not None:
-                slowest = expiry.gap if slowest is None or expiry.gap > slowest else slowest
-    reactions = [r for r in (reaction(o, when, ended_at) for o in view.obligations) if r is not None]
-    slow = [r for r in reactions if r.slow]
-    lost += sum((r.gap for r in slow), timedelta(0))
+    for kind in (ObligationKind.ANSWER_FROM_PERSON, ObligationKind.WORK_WITH_PERSON):
+        for ask in asks(view, kind):
+            made.update(s for f in ask.follow_ups for s in f.seqs)  # one message chasing two waits is one follow-up
+    when = {e.seq: e.sim_time for e in view.events}
+    reactions = [
+        (when[o.first_touch_after_settled] if o.first_touch_after_settled in when else max(ended_at, o.settled_at))
+        - o.settled_at
+        for o in waits
+        if o.settled_at is not None and (o.person is not None or o.entity is not None)
+    ]
     burden = _burden(view)
     sent = sum(b.messages for b in burden)
     edited, deleted = rewrites(view)
@@ -49,15 +42,9 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
         expectations_total=len(view.scenario.expect),
         waits_opened=len(waits),
         waits_open_at_end=sum(1 for o in waits if o.settled_at is None),
-        follow_ups_due=due,
         follow_ups_made=len(made),
-        follow_ups_late=late,
-        follow_ups_early=len(early),
-        time_lost=lost,
-        slowest_follow_up=slowest,
-        reactions_due=len(reactions),
-        reactions_slow=len(slow),
-        slowest_reaction=max((r.gap for r in slow), default=None),
+        waits_settled=len(reactions),
+        slowest_reaction=max(reactions, default=None),
         messages_to_people=sent,
         messages_edited=len(edited),
         messages_deleted=len(deleted),
