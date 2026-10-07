@@ -178,7 +178,9 @@ def test_scenarios_lists_every_library_scenario(capsys: pytest.CaptureFixture[st
 def test_scenarios_show_says_what_one_is_for(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["scenarios", "show", "approval_rejected"]) == 0
     out = capsys.readouterr().out
-    assert "rules: acts_only_once_approved, follows_up_when_due, not_done_while_waiting (in the scenario's `assess`" in out
+    assert (
+        "rules: acts_only_once_approved, follows_up_when_due, not_done_while_waiting (in the scenario's `assess`" in out
+    )
     assert "takes: --goal --owner --ask --other --answer --credential-env" in out
 
 
