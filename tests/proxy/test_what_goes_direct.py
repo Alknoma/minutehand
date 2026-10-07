@@ -64,7 +64,7 @@ class _Server(HTTPServer):
 def own_service() -> Iterator[int]:
     """A service of the agent's own on this machine."""
     server = _Server(("127.0.0.1", 0), _Here)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     try:
         yield server.server_port
