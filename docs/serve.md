@@ -146,7 +146,7 @@ server's state directory. A call reaches a world's declarations only once it is 
 a service's email client that carries the world's token (or posts to a host the world claims) is answered by
 its own world's declaration; another world may declare the same host differently, and a world that declares
 nothing refuses it. A declared host a provider claims is refused with 409, naming both. `serve
---capture-unknown` passes every undeclared call through instead, kept in its world or the lobby.
+--capture-unknown` passes every undeclared call through instead, kept in its world or the lobby; `--capture-unknown reads` passes only GET, HEAD and OPTIONS.
 
 ### Model hosts
 
@@ -450,6 +450,10 @@ volumes:
 A container that cannot share a volume downloads the bundle at start from `GET http://minutehand:8081/v1/ca.pem`
 (`tests/packaging/test_stack.py` does exactly that from a second container on the same network). The test
 process on the host reaches the control API at the published port and sets `MINUTEHAND_URL`.
+
+A service started with `docker run --env-file` instead loses its `NO_PROXY` to the Docker client config's
+`noProxy`, which Docker Desktop sets to `*`: see `docs/containers.md`, "The NO_PROXY trap". An agent in a container
+under `minutehand run`, with Minutehand on the host, is in the same page.
 
 ## Measured
 

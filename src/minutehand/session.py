@@ -45,6 +45,7 @@ from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
+from minutehand.adapters.database.postgres.relay import PostgresFront
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
@@ -57,17 +58,20 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
-from minutehand.adapters.telemetry.receiver import Receiver, exporter_environment
+from minutehand.adapters.telemetry.receiver import MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
 from minutehand.application.cases import CASE, CaseKept, CaseStore
 from minutehand.application.checkpoint import (
     CHECKPOINT,
     AgentState,
     NoHooks,
     NotRestorable,
+    Replayable,
     Restorable,
     checkpoints,
     read_checkpoint,
 )
+from minutehand.application.databases import Recorder, start_again, take_bases
+from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
 from minutehand.application.forks import (
@@ -89,12 +93,21 @@ from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_s
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.application.steps import steps
-from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, evaluate_judged, view_of
-from minutehand.domain.agent import AgentUnderTest, Booked, GoalByMessage, Polled, Reported
-from minutehand.domain.checks import Finding, FindingKind, Severity, WakeRecord
+from minutehand.checks.runner import (
+    ChecksRefused,
+    RunResult,
+    broken,
+    contract_breaks,
+    evaluate,
+    evaluate_judged,
+    load_checks,
+    view_of,
+)
+from minutehand.domain.agent import AgentUnderTest, Booked, Contained, GoalByMessage, Polled, Reported
+from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
-from minutehand.domain.outbound import Acknowledge
+from minutehand.domain.outbound import Acknowledge, UnknownHosts
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import (
     Answers,
@@ -208,9 +221,16 @@ async def play(
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
+    if _contained(agent) and written.starts_at is not None:
+        raise RunRefused(
+            "a contained agent's sandbox clock starts at the real present and only moves forward: leave starts_at out "
+            "of the scenario, so the run starts now"
+        )
     scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
+    own_checks = _own_checks(agent)
     listen = listen or Listen()
+    _refuse_unmodeled(listen, model)
     registry = Registry.installed()
     routing = _routing(registry, listen)
     services = _services(scenario, agent, registry)
@@ -220,21 +240,31 @@ async def play(
     first = _open(state, _new_run_id(), scenario)
     opened = [first[0]]
     async with (
-        intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy,
+        intercepting(routing, first[0], first[1], state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
+        fronting(agent, proxy.recorder) as fronts,
     ):
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0:
                 opened.append(store)
+            proxy.recorder.mount(store)
+            if sample == 0:
+                await take_bases(fronts, proxy.recorder, store.run_id)
+            else:
+                await start_again(fronts, first[0], proxy.recorder)
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
-            scorer = _Judge(scenario, model if judge else None, judging=judge)
+            scorer = _Judge(scenario, model if judge else None, judging=judge, own=own_checks)
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
-            env = agent_environment(
-                listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-            ) | base_url_environment(agent, listen.proxy_url(proxy.port))
+            env = (
+                agent_environment(
+                    listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+                )
+                | base_url_environment(agent, listen.proxy_url(proxy.port))
+                | database_environment(fronts)
+            )
             reach = reach_for(agent, env=env)
             async with _agent_process(command, env, agent, directory / AGENT_LOG) as own:
                 if sample > 0 and agent.state is not None:
@@ -281,8 +311,8 @@ async def _restore_start(
         raise RunRefused(f"run {first.run_id} has no checkpoint at its start to restore the next sample from")
     seq, checkpoint = start
     restorable = checkpoint.agent
-    if isinstance(restorable, NotRestorable | NoHooks):
-        why = restorable.reason if isinstance(restorable, NotRestorable) else "no state hooks"
+    if isinstance(restorable, NotRestorable | NoHooks | Replayable):
+        why = restorable.reason if isinstance(restorable, NotRestorable) else "no snapshot of the agent was kept"
         raise RunRefused(
             f"the next sample cannot start where run {first.run_id} started: its start is not restorable: {why}"
         )
@@ -328,6 +358,10 @@ async def fork(
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
+    if _contained(AgentUnderTest.model_validate_json((run_dir(state, parent_run) / AGENT).read_text(encoding="utf-8"))):
+        raise RunRefused(
+            "a contained agent's sandbox clock cannot go back to a checkpoint, so its run cannot be forked"
+        )
     parent = load(state, parent_run)
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
@@ -335,7 +369,9 @@ async def fork(
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, model)
+    own_checks = _own_checks(agent)
     listen = listen or Listen()
+    _refuse_unmodeled(listen, model)
     registry = Registry.installed()
     routing = _routing(registry, listen)
     services = _services(changed, agent, registry)
@@ -344,7 +380,7 @@ async def fork(
         agent, registry, state=state, parent=parent_run, after_wake=forked_after, model_hosts=listen.model_hosts
     )
     child_id = _new_run_id()
-    scorer = _Judge(changed, model if judge else None, judging=judge)
+    scorer = _Judge(changed, model if judge else None, judging=judge, own=own_checks)
     signing = signing_for(agent, changed.people)
 
     def open_parent(clock: Clock) -> Store:
@@ -354,13 +390,19 @@ async def fork(
     routes: dict[str, Running] = {}
     capturing = capturing.with_emulators(routes)
     async with (
-        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy,
+        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, child_id), telemetry, routes) as emulators,
+        fronting(agent, proxy.recorder) as fronts,
     ):
         scorer.receiver = proxy.receiver
-        env = agent_environment(
-            listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
-        ) | base_url_environment(agent, listen.proxy_url(proxy.port))
+        proxy.recorder.hold()  # until the child is mounted, the agent writes to a database its restore makes again
+        env = (
+            agent_environment(
+                listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+            )
+            | base_url_environment(agent, listen.proxy_url(proxy.port))
+            | database_environment(fronts)
+        )
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -388,6 +430,7 @@ async def fork(
                     manifests=registry.manifests,
                     environment=emulators,
                     inboxes=inboxes_for(agent, changed, signing),
+                    databases=fronts,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -830,12 +873,46 @@ def _read_only(path: Path) -> sqlite3.Connection:
 # -- the parts of a run ---------------------------------------------------------------------------------------
 
 
+def reported_of(world: Store) -> list[CommitmentsReported] | None:
+    """The agent's commitments as each wake ended, read from the checkpoints; None when it never reported any."""
+    said = [
+        CommitmentsReported(wake=c.wake, at=c.now, commitments=c.commitments)
+        for c in checkpoints(world).values()
+        if c.commitments is not None
+    ]
+    return said or None
+
+
+def _contained(agent: AgentUnderTest) -> bool:
+    return any(isinstance(w, Contained) for w in agent.wakes)
+
+
+def _refuse_unmodeled(listen: Listen, model: LanguageModel | None) -> None:
+    """`--capture-unknown model` with no model configured would refuse every write it means to answer."""
+    if listen.capture_unknown is UnknownHosts.MODEL and model is None:
+        raise RunRefused(
+            "--capture-unknown model needs a model to stand in for undeclared services: set MINUTEHAND_MODEL and "
+            "MINUTEHAND_MODEL_API_KEY, and MINUTEHAND_MODEL_BASE_URL for a service other than OpenAI's"
+        )
+
+
+def _own_checks(agent: AgentUnderTest) -> list[Check]:
+    """The agent's own checks, loaded before anything of a run starts, so a file that cannot load refuses it."""
+    try:
+        return load_checks(agent.checks)
+    except ChecksRefused as e:
+        raise RunRefused(f"the agent's checks: {e}") from e
+
+
 class _Judge:
     """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it;
     with `judging`, the judged checks too, by `model` or blocked for want of one."""
 
-    def __init__(self, scenario: Scenario, model: LanguageModel | None, *, judging: bool) -> None:
+    def __init__(
+        self, scenario: Scenario, model: LanguageModel | None, *, judging: bool, own: Sequence[Check] = ()
+    ) -> None:
         self._scenario = scenario
+        self._own = list(own)
         self._model = model
         self._judging = judging
         self.results: dict[str, RunResult] = {}
@@ -855,11 +932,13 @@ class _Judge:
             model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
             broken_calls=broken(world.calls()),
             contract_breaks=contract_breaks(world.calls()),
+            dues=due_entries(world),
+            reported=reported_of(world),
         )
         result = (
-            await evaluate_judged(view, self._model, stop=record.stop)
+            await evaluate_judged(view, self._model, stop=record.stop, own=self._own)
             if self._judging
-            else evaluate(view, stop=record.stop)
+            else evaluate(view, stop=record.stop, own=self._own)
         )
         result = result.model_copy(update={"findings": [*result.findings, *emulator_findings(world)]})
         heard = self.receiver.notices if self.receiver is not None else []
@@ -1080,10 +1159,10 @@ class Listen(Model):
         default=False,
         description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span",
     )
-    capture_unknown: bool = Field(
-        default=False,
-        description="Pass through and keep every call to a host no provider claims and no declaration names, "
-        "rather than refusing it: the first run of an agent, to see what it calls",
+    capture_unknown: UnknownHosts = Field(
+        default=UnknownHosts.REFUSE,
+        description="Which calls to a host no provider claims and no declaration names are passed through and kept "
+        "rather than refused: none, reads (GET, HEAD, OPTIONS), or all, the first run of an agent, to see what it calls",
     )
     upstream_ca: Path | None = Field(
         default=None,
@@ -1144,6 +1223,8 @@ def agent_environment(
     proxy = listen.proxy_url(port)
     direct = ",".join(listen.direct())
     exporter = exporter_environment(listen.telemetry_url(telemetry_port)) if telemetry_port is not None else {}
+    if telemetry_port is not None:
+        exporter = {**exporter, MCP_URL_ENV: listen.telemetry_url(telemetry_port) + MCP_PATH}
     return {
         "HTTPS_PROXY": proxy,
         "HTTP_PROXY": proxy,
@@ -1210,6 +1291,8 @@ class Intercepting:
 
     proxy: Proxy
     receiver: Receiver | None
+    recorder: Recorder = field(default_factory=Recorder)
+    """Where the relays of the agent's fronted databases write: moved to the next run with the proxy."""
 
     @property
     def port(self) -> int:
@@ -1239,6 +1322,7 @@ class Intercepting:
         self.proxy.mount(world, clock, apps, scenario=scenario)
         if self.receiver is not None:
             self.receiver.mount(world, clock)
+        self.recorder.mount(world)
 
 
 @asynccontextmanager
@@ -1250,6 +1334,7 @@ async def intercepting(
     listen: Listen,
     *,
     capturing: Capturing | None = None,
+    model: LanguageModel | None = None,
 ) -> AsyncIterator[Intercepting]:
     """The proxy and, unless `listen` turns it off, the receiver, on the same host. The receiver passes what it
     takes on to wherever this process's own environment sent OTLP before (`Forwarding.from_environment`).
@@ -1265,6 +1350,7 @@ async def intercepting(
         record_model_calls=listen.record_model_calls,
         capturing=capturing,
         capture_unknown=listen.capture_unknown,
+        model=model,
     ) as proxy:
         if not listen.receive_telemetry:
             yield Intercepting(proxy, None)
@@ -1308,6 +1394,27 @@ async def emulating(
         yield emulators
     finally:
         await emulators.stop()
+
+
+@asynccontextmanager
+async def fronting(agent: AgentUnderTest, recorder: Recorder) -> AsyncIterator[list[PostgresFront]]:
+    """A relay for each database the agent file fronts (`AgentUnderTest.databases`), listening before the agent
+    starts and recording into whatever run `recorder` is mounted on, and stopped when the run ends."""
+    fronts = [PostgresFront(database, recorder) for database in agent.databases]
+    started: list[PostgresFront] = []
+    try:
+        for front in fronts:
+            await front.start()
+            started.append(front)
+        yield fronts
+    finally:
+        for front in started:
+            await front.stop()
+
+
+def database_environment(fronts: Sequence[PostgresFront]) -> dict[str, str]:
+    """Each fronted database's URL, pointed at its relay, in the variable its declaration names."""
+    return {front.database.env: front.agent_url() for front in fronts if front.database.env is not None}
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:

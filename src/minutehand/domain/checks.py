@@ -11,6 +11,7 @@ from typing import Protocol
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
+from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Scenario
@@ -182,6 +183,14 @@ class Effectiveness(Model):
     failed_checks: int = Field(ge=0)
 
 
+class CommitmentsReported(Model):
+    """What the agent said it was committed to as one wake ended (`AgentReport.commitments`)."""
+
+    wake: int = Field(ge=0)
+    at: AwareDatetime = Field(description="Simulated time the wake ended")
+    commitments: list[Commitment]
+
+
 class WakeRecord(Model):
     """One wake of the agent; in a standing world, one step whoever drives the agent marked (or the server inferred
     from the clock): the stretch the checks read as one go of the agent's."""
@@ -228,6 +237,16 @@ class RunView(Model):
         default=[],
         description="Calls Minutehand made as a person to the agent's own product whose answer departed from the "
         "agent's own API description (`InboxCall.contract`): the agent's contract changed",
+    )
+    reported: list[CommitmentsReported] | None = Field(
+        default=None,
+        description="The agent's commitments as each wake ended, in order; None when the agent reported none, so "
+        "nothing it said can be held against the world",
+    )
+    dues: list[DueEntry] | None = Field(
+        default=None,
+        description="Every entry of the run loop's table of what is due next, as each last stood: what the agent "
+        "planned and when, and what else was due; None when the run kept no table (a captured run, a standing world)",
     )
     broken_calls: list[Exchange] = Field(
         default=[],

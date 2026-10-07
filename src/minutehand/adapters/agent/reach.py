@@ -9,7 +9,8 @@ from minutehand.adapters.agent.polled import PolledDriver
 from minutehand.adapters.agent.reported import ReportedDriver
 from minutehand.application.orchestrator import Reach
 from minutehand.application.refusals import RunRefused
-from minutehand.domain.agent import AgentUnderTest, Booked, Command, GoalByMessage, Polled, Reported
+from minutehand.application.sandbox import SandboxClock
+from minutehand.domain.agent import AgentUnderTest, Booked, Command, Contained, GoalByMessage, Polled, Reported
 from minutehand.ports.agent import AgentDriver
 
 
@@ -22,7 +23,12 @@ def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) ->
     """
     main: list[AgentDriver] = []
     polled: list[Polled] = []
+    contained = [s for s in agent.wakes if isinstance(s, Contained)]
+    if len(contained) > 1:
+        raise RunRefused(f"agent {agent.name} declares {len(contained)} Contained sources; it runs in one sandbox")
     for source in agent.wakes:
+        if isinstance(source, Contained):
+            continue
         if isinstance(source, Reported):
             main.append(ReportedDriver(source))
         elif isinstance(source, Command):
@@ -45,4 +51,5 @@ def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) ->
         main=main[0] if main else None,
         ticks=PolledDriver(tick.wake_url) if tick else None,
         every=tick.every if tick else None,
+        sandbox=SandboxClock(contained[0]) if contained else None,
     )

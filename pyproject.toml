@@ -38,24 +38,36 @@ minutehand = "minutehand.testing.plugin"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "pyright>=1.1.390", "ruff>=0.8", "boto3>=1.35", "slack_sdk>=3.33", "psutil>=6",
-       "uvicorn>=0.30", "asana>=5", "google-api-python-client>=2.150", "google-auth>=2.35",
+       "uvicorn>=0.30", "asana>=5", "google-api-python-client>=2.150", "google-auth>=2.35", "google-cloud-tasks>=2.16",
        "pytest-socket>=0.7", "pytest-timeout>=2.3", "pytest-randomly>=3.15", "pytest-xdist>=3.6", "aiohttp>=3.10", "pysocks>=1.7",
        "notion-client==2.2.1", "pyjwt[crypto]>=2.10", "python-docx==1.2.0",
-       "opentelemetry-exporter-otlp-proto-grpc>=1.27"]
+       "opentelemetry-exporter-otlp-proto-grpc>=1.27", "psycopg[binary]>=3.2"]
+recipes = [
+    "anthropic>=1.11.0",
+    "claude-agent-sdk>=0.2.163",
+    "langchain-openai>=1.0",
+    "langgraph>=1.2.14",
+    "openai-agents>=0.4.2",
+    # openai-agents 0.4, all that resolves beside mitmproxy on Python 3.12, fails on the usage field openai 2.45 made required.
+    "openai<2.45; python_full_version < '3.13'",
+    "pydantic-ai-slim[openai]>=1.60.0",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# What the installed command needs, by pattern: its code, the pages it serves, and each provider's notes. Nothing else under
-# src/minutehand/ ships; tests/packaging fails when a file git tracks there is left out of the wheel.
+# What the installed command needs, by pattern: its code, the pages it serves, each provider's notes and the scenario
+# library. Nothing else under src/minutehand/ ships; tests/packaging fails when a file git tracks there is left out of
+# the wheel.
 include = [
     "/src/minutehand/**/*.py",
     "/src/minutehand/**/*.html",
     "/src/minutehand/**/*.css",
     "/src/minutehand/**/*.js",
     "/src/minutehand/**/*.md",
+    "/src/minutehand/library/*.yaml",
 ]
 sources = ["src"]
 
@@ -69,11 +81,12 @@ asyncio_mode = "auto"
 pythonpath = ["src", "."]
 # A test that reaches a real service is a broken test: only this machine is reachable.
 # A test that hangs fails at 60 seconds. Tests run in a random order every time.
-addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not firestore and not benchmark and not docker'"
+addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not firestore and not benchmark and not docker and not recipes'"
 markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
-    "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
+    "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
+    "docker: runs a downloaded open-source emulator, or PostgreSQL, in a container named minutehand-ext-* (or the server MINUTEHAND_TEST_POSTGRES names); needs Docker; run with -m docker",
     "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
 ]
 filterwarnings = [

@@ -64,6 +64,8 @@ emulator is refused, since what it holds is outside the record (`docs/external-e
 
 ## Discovery: `--capture-unknown`
 
+**Only reads: `--capture-unknown reads`.** A GET, HEAD or OPTIONS to an undeclared host is passed through and kept, as below; any other method is refused with 502 and recorded, as without the flag, so nothing is written anywhere real. A read an API sends as a POST (GraphQL, an RPC) is refused: declare its host. `UnknownHosts.READS`, `tests/capture/test_modes.py`.
+
 For an agent's first run, when nobody knows yet what it calls: `minutehand run … --capture-unknown` (and `fork`,
 and `serve`) passes every undeclared, unclaimed host through and keeps the call, instead of refusing it. The
 run then ends with each host, its calls and how they were answered, and a declaration for each host nobody

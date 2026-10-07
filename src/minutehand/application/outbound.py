@@ -83,6 +83,7 @@ def described(use: OutboundUse) -> str:
         CaptureMode.REPLAY: "replayed from a recording",
         CaptureMode.DISCOVERED: "passed through, undeclared (--capture-unknown)",
         CaptureMode.FORWARD: "forwarded to its external emulator",
+        CaptureMode.MODELED: "answered by a model standing in for it (--capture-unknown model), never sent",
     }[use.mode]
     parts = [f"{use.host}: {use.calls} call{'s' if use.calls != 1 else ''}, {how}"]
     if use.mode is CaptureMode.REPLAY:
@@ -99,7 +100,8 @@ def suggested(uses: Sequence[OutboundUse]) -> str:
     change something is suggested as `acknowledge`, since a test must not send a real email; anything else as
     `pass_through`, to be turned into `acknowledge` or `replay` by whoever knows what it is. Empty when every
     host was declared."""
-    hosts = list(dict.fromkeys(u.host for u in uses if u.mode in (CaptureMode.DISCOVERED, None) and not u.tunnelled))
+    undeclared = (CaptureMode.DISCOVERED, CaptureMode.MODELED, None)
+    hosts = list(dict.fromkeys(u.host for u in uses if u.mode in undeclared and not u.tunnelled))
     if not hosts:
         return ""
     entries: list[dict[str, str]] = []

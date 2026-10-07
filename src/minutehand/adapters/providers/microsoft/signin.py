@@ -60,6 +60,9 @@ APPLICATION_ROLES = [
     "User.Read.All",
     "ChannelMessage.Read.All",
     "Chat.Read.All",
+    "Mail.ReadWrite",
+    "Mail.Send",
+    "Calendars.ReadWrite",
 ]
 
 

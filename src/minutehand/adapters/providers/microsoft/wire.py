@@ -1,12 +1,13 @@
 """Microsoft's own JSON: the only module that parses or builds it.
 
-Five families, one per surface the provider answers:
+Six families, one per surface the provider answers:
 
 - **Sign-in** — the identity platform's token answer and error, OpenID metadata, the JSON Web Key Set, and the
   claims of every token this provider issues.
 - **Bot Framework** — the activity in the shape the connector stores and pushes it, and the bodies a bot sends.
 - **Graph, Teams** — users, teams, channels, chats, chat messages, conversation members.
 - **Graph, files** — sites, drives, drive items, permissions, upload sessions.
+- **Graph, mail and calendar** — messages, mail folders, events, attendees and free/busy schedules.
 - **Graph, common** — the OData collection envelope, the error envelope, subscriptions and change notifications.
 
 What a caller SENDS is read with unknown fields ignored, as the real services ignore them; what this provider
@@ -23,7 +24,7 @@ from enum import StrEnum
 from typing import Literal, TypeVar
 from urllib.parse import parse_qs
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from pydantic import AliasChoices, AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from minutehand.domain.scenario import Model
 
@@ -910,6 +911,265 @@ def b64_bytes(text: str) -> bytes:
         return base64.b64decode(text)
     except binascii.Error as e:
         raise Unreadable("not base64") from e
+
+
+# =========================================================================== Graph, mail and calendar
+
+
+class EmailAddress(Aliased):
+    name: str | None = None
+    address: str
+
+
+class Recipient(Aliased):
+    emailAddress: EmailAddress
+
+
+class MailFolderName(StrEnum):
+    """The well-known folders a mailbox holds; Graph accepts each name in place of the folder's id."""
+
+    INBOX = "inbox"
+    SENT = "sentitems"
+    DRAFTS = "drafts"
+    DELETED = "deleteditems"
+
+
+class MeetingMessageType(StrEnum):
+    REQUEST = "meetingRequest"
+    ACCEPTED = "meetingAccepted"
+    TENTATIVE = "meetingTentativelyAccepted"
+    DECLINED = "meetingDeclined"
+
+
+class MailMessage(Aliased):
+    """A message as Graph reads it; an event message (a meeting request or a response) says so in `@odata.type`."""
+
+    odata_type: str | None = Field(
+        default=None, validation_alias=AliasChoices("odata_type", "@odata.type"), serialization_alias="@odata.type"
+    )
+    id: str
+    createdDateTime: str
+    lastModifiedDateTime: str
+    receivedDateTime: str
+    sentDateTime: str
+    hasAttachments: bool = False
+    internetMessageId: str
+    subject: str
+    bodyPreview: str
+    importance: Literal["low", "normal", "high"] = "normal"
+    parentFolderId: str
+    conversationId: str
+    isReadReceiptRequested: bool = False
+    isRead: bool
+    isDraft: bool = False
+    webLink: str
+    inferenceClassification: Literal["focused", "other"] = "focused"
+    body: ItemBody
+    sender: Recipient
+    from_: Recipient = Field(validation_alias=AliasChoices("from_", "from"), serialization_alias="from")
+    toRecipients: list[Recipient]
+    ccRecipients: list[Recipient] = []
+    bccRecipients: list[Recipient] = []
+    replyTo: list[Recipient] = []
+    meetingMessageType: MeetingMessageType | None = None
+
+
+class StoredMail(Model):
+    """Minutehand's own: a message in one mailbox's folder, and, for a meeting request, the event it invites to."""
+
+    message: MailMessage
+    folder: MailFolderName
+    event: str | None = Field(default=None, description="The event a meeting request invites to")
+
+
+class MailFolder(Aliased):
+    id: str
+    displayName: str
+    parentFolderId: str
+    childFolderCount: int = 0
+    unreadItemCount: int
+    totalItemCount: int
+    isHidden: bool = False
+
+
+class SentBody(Lenient):
+    contentType: str = "text"
+    content: str = ""
+
+
+class SentEmailAddress(Lenient):
+    address: str = ""
+    name: str | None = None
+
+
+class SentRecipient(Lenient):
+    emailAddress: SentEmailAddress
+
+
+class SentMessage(Lenient):
+    subject: str = ""
+    body: SentBody | None = None
+    toRecipients: list[SentRecipient] = []
+    ccRecipients: list[SentRecipient] = []
+    bccRecipients: list[SentRecipient] = []
+    importance: Literal["low", "normal", "high"] = "normal"
+
+
+class SendMailRequest(Lenient):
+    message: SentMessage | None = None
+    saveToSentItems: bool = True
+
+
+class ReplyRequest(Lenient):
+    comment: str = ""
+    message: SentMessage | None = None
+
+
+class MessagePatch(Lenient):
+    """What a PATCH of a message may change here: whether it is read. Anything else it names is not served."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    isRead: bool | None = None
+
+
+class ResponseKind(StrEnum):
+    NONE = "none"
+    ORGANIZER = "organizer"
+    TENTATIVE = "tentativelyAccepted"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    NOT_RESPONDED = "notResponded"
+
+
+class ResponseStatus(Aliased):
+    response: ResponseKind
+    time: str = "0001-01-01T00:00:00Z"
+
+
+class Attendee(Aliased):
+    type: Literal["required", "optional", "resource"] = "required"
+    status: ResponseStatus
+    emailAddress: EmailAddress
+
+
+class Location(Aliased):
+    displayName: str = ""
+
+
+class Event(Aliased):
+    """An event as Graph reads it from one mailbox: `isOrganizer` and `responseStatus` are that mailbox's own."""
+
+    id: str
+    createdDateTime: str
+    lastModifiedDateTime: str
+    changeKey: str
+    iCalUId: str
+    transactionId: str | None = None
+    subject: str
+    bodyPreview: str
+    body: ItemBody
+    start: DateTimeTimeZone
+    end: DateTimeTimeZone
+    location: Location
+    attendees: list[Attendee]
+    organizer: Recipient
+    isOrganizer: bool
+    responseStatus: ResponseStatus
+    responseRequested: bool = True
+    isAllDay: bool = False
+    isCancelled: bool = False
+    isOnlineMeeting: bool = False
+    showAs: Literal["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"] = "busy"
+    type: Literal["singleInstance", "occurrence", "exception", "seriesMaster"] = "singleInstance"
+    webLink: str
+
+
+class StoredEvent(Model):
+    """Minutehand's own: one event, in its organizer's calendar and seen from every attendee's, the moments it
+    spans in UTC, the conversation its messages share, and the meeting request it went out as."""
+
+    event: Event
+    organizer_id: str
+    starts: AwareDatetime
+    ends: AwareDatetime
+    conversation: str
+    request: str | None = Field(default=None, description="The meeting request message, when it invited anyone")
+
+
+class CalendarResource(Aliased):
+    """A user's one calendar, the default."""
+
+    id: str
+    name: str = "Calendar"
+    color: str = "auto"
+    isDefaultCalendar: bool = True
+    canEdit: bool = True
+    canShare: bool = True
+    canViewPrivateItems: bool = True
+    owner: EmailAddress
+
+
+class SentAttendee(Lenient):
+    emailAddress: SentEmailAddress
+    type: Literal["required", "optional", "resource"] = "required"
+
+
+class SentLocation(Lenient):
+    displayName: str = ""
+
+
+class SentDateTime(Lenient):
+    dateTime: str
+    timeZone: str = "UTC"
+
+
+class EventRequest(Lenient):
+    """An event a caller creates or changes: every field is optional, so a PATCH reads as what it names."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    subject: str | None = None
+    body: SentBody | None = None
+    start: SentDateTime | None = None
+    end: SentDateTime | None = None
+    location: SentLocation | None = None
+    attendees: list[SentAttendee] | None = None
+    transactionId: str | None = None
+    isOnlineMeeting: bool | None = None
+
+
+class EventResponseRequest(Lenient):
+    comment: str = ""
+    sendResponse: bool = True
+
+
+class ScheduleRequest(Lenient):
+    schedules: list[str] = Field(min_length=1)
+    startTime: SentDateTime
+    endTime: SentDateTime
+    availabilityViewInterval: int = 30
+
+
+class ScheduleItem(Aliased):
+    isPrivate: bool = False
+    status: Literal["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"]
+    subject: str | None = None
+    location: str | None = None
+    start: DateTimeTimeZone
+    end: DateTimeTimeZone
+
+
+class FreeBusyError(Aliased):
+    message: str
+    responseCode: str
+
+
+class ScheduleInformation(Aliased):
+    scheduleId: str
+    availabilityView: str = ""
+    scheduleItems: list[ScheduleItem] = []
+    error: FreeBusyError | None = None
 
 
 # =========================================================================== faults

@@ -135,7 +135,7 @@ FRAGMENTS = [
         "account_inactive",
     ),
     Fragment(
-        "google_drive",
+        "google_workspace",
         {"faults": [{"operation": "files.list", "kind": "rate_limited", "times": 2}]},
         Claims(tokens=["ya29.seedfrag"]),
         None,
@@ -383,7 +383,17 @@ def test_a_post_happened_through_the_control_api_can_be_edited_by_a_later_act(se
 
 def test_each_provider_says_what_it_can_be_asked_to_do_while_open(served: Served) -> None:
     found = {p.key: p for p in served.client.providers()}
-    assert set(found) >= {"slack", "asana", "jira", "youtrack", "google_drive", "notion", "microsoft", "github", "aws"}
+    assert set(found) >= {
+        "slack",
+        "asana",
+        "jira",
+        "youtrack",
+        "google_workspace",
+        "notion",
+        "microsoft",
+        "github",
+        "aws",
+    }
     assert found["github"].faults and found["github"].seed_model
     assert not found["aws"].seed_model and not found["aws"].people_changes and not found["aws"].faults
 
@@ -454,12 +464,12 @@ def test_a_press_goes_to_the_worlds_interactivity_url_when_it_declares_one(serve
 ADDITIONS = [
     ("youtrack", {"tickets": [{"provider": "youtrack", "project": "Launch", "title": "Second", "assignee": "owen"}]}),
     ("jira", {"tickets": [{"provider": "jira", "project": "Launch", "title": "Second", "assignee": "owen"}]}),
-    ("google_drive", {"documents": [{"provider": "google_drive", "title": "Second doc", "text": "x"}]}),
+    ("google_workspace", {"documents": [{"provider": "google_workspace", "title": "Second doc", "text": "x"}]}),
     ("notion", {"documents": [{"provider": "notion", "title": "Second doc", "text": "x"}]}),
     ("notion", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
     ("jira", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
     ("youtrack", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
-    ("google_drive", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
+    ("google_workspace", {"people": [{"key": "ivy", "name": "Ivy Ng", "email": "ivy@example.com"}]}),
 ]
 
 
@@ -476,7 +486,7 @@ def test_an_addition_lands_beside_what_a_provider_seeded_and_moves_none_of_it(
             "tickets": [{"provider": p, "project": "Launch", "title": "Book the venue", "assignee": "sofia"}
                         for p in ("jira", "youtrack") if p == provider],
             "documents": [{"provider": p, "title": "Plan", "text": "hello"}
-                          for p in ("google_drive", "notion") if p == provider],
+                          for p in ("google_workspace", "notion") if p == provider],
         }
     )  # fmt: skip
     world = OpenWorld(

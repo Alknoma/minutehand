@@ -19,7 +19,7 @@ START = datetime(2026, 9, 1, 9, tzinfo=UTC)
 
 FRAGMENTS = {
     "slack": ('{"faults": [{"answer": {"kind": "rate_limited"}}]}', '{"faults": [], "channels": []}'),
-    "google_drive": (
+    "google_workspace": (
         '{"faults": [{"operation": "files.list", "kind": "rate_limited"}]}',
         '{"faults": [], "sign_ins": []}',
     ),

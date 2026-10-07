@@ -30,9 +30,9 @@ def _drive(served: Served, *, expect: list[dict[str, object]]) -> Iterator[tuple
         {
             "starts_at": "2026-09-01T09:00:00Z",
             "people": PEOPLE,
-            "spaces": [{"provider": "google_drive", "name": "Launch Team",
+            "spaces": [{"provider": "google_workspace", "name": "Launch Team",
                         "members": [{"person": "owen", "role": "organizer"}]}],
-            "sign_ins": [{"provider": "google_drive", "credential": REFRESH, "person": "owen"}],
+            "sign_ins": [{"provider": "google_workspace", "credential": REFRESH, "person": "owen"}],
             "expect": expect,
         }
     )  # fmt: skip
@@ -82,12 +82,12 @@ def test_a_document_the_agent_creates_and_shares_carries_its_owner_space_and_gra
 
         created = {
             e.after.title: e.after
-            for e in world.events(provider="google_drive", actor=Actor.AGENT, operation=Operation.CREATE)
+            for e in world.events(provider="google_workspace", actor=Actor.AGENT, operation=Operation.CREATE)
             if isinstance(e.after, DocumentSnapshot)
         }
         assert created["Owen's notes"].owner == "owen@example.com" and created["Owen's notes"].space is None
         assert created["Launch plan"].space == "Launch Team" and created["Launch plan"].owner is None
-        grants = [e.after for e in world.events(provider="google_drive") if isinstance(e.after, GrantSnapshot)]
+        grants = [e.after for e in world.events(provider="google_workspace") if isinstance(e.after, GrantSnapshot)]
         assert GrantSnapshot(document="Launch plan", to="sofia@example.com", role=AccessRole.WRITER) in grants
         met = [f for f in world.checks().result.findings if f.check == "expectations"]
         assert met and all("met by" in f.message for f in met), [f.message for f in met]
