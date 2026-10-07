@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -9,20 +9,32 @@ from pathlib import Path
 
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.adapters.telemetry.receiver import AGENT_PATH, Receiver
+from minutehand.agent._wire import ON, URL
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.replier_scripted import ScriptedReplier
-from minutehand.domain.agent import AgentUnderTest, Command, StateHooks, WakeSource
+from minutehand.application.run_clock import RunClock
+from minutehand.domain.agent import AgentUnderTest, Command, WakeSource
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.run import RunRecord
-from minutehand.domain.scenario import DelayRange, Person, ReplyBehaviour, Scenario, Scripted, ScriptedReply, Silent
+from minutehand.domain.scenario import (
+    DelayRange,
+    Person,
+    ProviderKey,
+    ReplyBehaviour,
+    Scenario,
+    Scripted,
+    ScriptedReply,
+    Silent,
+)
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
+from minutehand.ports.provider import ASGIApp
+from minutehand.ports.store import Store
 from tests.orchestrator.world import CHAT, SECRET, Chat, RecordingClock, Scheduler, Switchboard, serving
 
 AGENTS = Path(__file__).parent / "agents"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
-QUIET = timedelta(milliseconds=20)
-"""The test agents' quiet period: each checkpoint waits this long after the agent's last call."""
 
 
 def person(key: str, reply: ReplyBehaviour) -> Person:
@@ -57,31 +69,50 @@ def scenario(**overrides: object) -> Scenario:
 
 
 @dataclass
+class Mounted:
+    """The switchboard and the receiver, mounted on each run together, as the proxy and its receiver are."""
+
+    board: Switchboard
+    receiver: Receiver
+
+    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
+        self.board.mount(world, clock, apps, scenario=scenario)
+        self.receiver.mount(world, clock)
+
+    def flush(self) -> None:
+        self.board.flush()
+
+
+@dataclass
 class Rig:
     base: str
     board: Switchboard
     chat: Chat
     sched: Scheduler
     tmp: Path
+    receiver: Receiver
 
-    def agent(self, behaviour: str, *, extra: list[WakeSource] | None = None, hooks: bool = False) -> AgentUnderTest:
-        state = None
-        if hooks:
-            hook = [sys.executable, str(AGENTS / "hooks.py")]
-            state = StateHooks(
-                snapshot=[*hook, "snapshot", str(self.tmp / "agent")],
-                restore=[*hook, "restore", str(self.tmp / "agent")],
-                quiet=QUIET,
-            )
+    @property
+    def mounts(self) -> Mounted:
+        return Mounted(self.board, self.receiver)
+
+    def agent(self, behaviour: str, *, extra: list[WakeSource] | None = None) -> AgentUnderTest:
         return AgentUnderTest(
             name="asker",
             wakes=[Command(argv=[sys.executable, str(AGENTS / "asker.py"), behaviour]), *(extra or [])],
             inbound=[InboundTarget(provider=CHAT, url=f"{self.base}/{CHAT}/pushed")],
-            state=state,
         )
 
     def env(self, **more: str) -> dict[str, str]:
-        return {"MH_BASE": self.base, "AGENT_STATE": str(self.tmp / "agent"), **more}
+        """What the test agents are handed: the test providers, where a file of their own goes, and the run's memory
+        (`minutehand.agent.store`), as `minutehand run` hands it."""
+        return {
+            "MH_BASE": self.base,
+            "AGENT_STATE": str(self.tmp / "agent"),
+            ON: "1",
+            URL: f"http://127.0.0.1:{self.receiver.port}{AGENT_PATH}",
+            **more,
+        }
 
     def services(self) -> Services:
         return Services(
@@ -114,8 +145,7 @@ class Rig:
             clock=clock,
             services=self.services(),
             replier=replier or ScriptedReplier(scn),
-            mounts=self.board,
-            state_dir=self.tmp / "state",
+            mounts=self.mounts,
             signing={CHAT: SECRET},
             traffic=self.board,
         )
@@ -125,5 +155,8 @@ class Rig:
 @asynccontextmanager
 async def rigged(tmp_path: Path) -> AsyncIterator[Rig]:
     board = Switchboard()
-    async with serving(board) as base:
-        yield Rig(base=base, board=board, chat=Chat(), sched=Scheduler(), tmp=tmp_path)
+    clock = RunClock(T0)
+    lobby = SqliteStore(tmp_path / "lobby.db", "lobby", clock)
+    async with serving(board) as base, Receiver(lobby, clock) as receiver:
+        yield Rig(base=base, board=board, chat=Chat(), sched=Scheduler(), tmp=tmp_path, receiver=receiver)
+    lobby.close()

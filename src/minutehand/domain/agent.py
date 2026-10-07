@@ -13,7 +13,6 @@ from typing import Annotated, Literal, Self
 from pydantic import AwareDatetime, Field, model_validator
 
 from minutehand.domain.assessments import Rule, refuse_repeated_rules
-from minutehand.domain.database import Database, refuse_repeated_databases
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -114,6 +113,17 @@ class Reported(Model):
         return self
 
 
+class Marked(Model):
+    """The agent is woken at `wake_url`, and a wake is over when the call returns. Its next wake is the moment it
+    marked with `minutehand.agent.wake` in that wake, or none: nothing else is asked of it."""
+
+    kind: Literal["marked"] = "marked"
+    wake_url: str
+    wake_timeout: timedelta = Field(
+        default=timedelta(minutes=5), gt=timedelta(0), description="How long one call to wake_url may take"
+    )
+
+
 class Booked(Model):
     """The agent books its own wake-ups with a scheduler the proxy intercepts.
 
@@ -172,78 +182,25 @@ class Contained(Model):
         return self
 
 
-WakeSource = Annotated[Reported | Booked | Polled | Command | Contained, Field(discriminator="kind")]
+WakeSource = Annotated[Reported | Marked | Booked | Polled | Command | Contained, Field(discriminator="kind")]
 
 ANSWER_LIMIT = timedelta(seconds=120)
-"""How long after a restore the agent's report endpoint has to answer, unless its `StateHooks` say otherwise."""
+"""How long the agent's report endpoint has to answer at the start of a fork."""
 
 
-class StateHooks(Model):
-    """How the agent's own state is saved and put back, so a run can be rewound. Without hooks a run cannot be
-    forked, and a sample after the first starts from whatever the agent remembers.
+class OwnDatabaseForm(StrEnum):
+    FILE = "file"  # the file's path: /…/runs/<run>/own/<VARIABLE>.sqlite
+    SQLITE_URL = "sqlite_url"  # the same file as a URL: sqlite:////…/runs/<run>/own/<VARIABLE>.sqlite
 
-    Every command receives MINUTEHAND_SNAPSHOT_DIR, the directory one checkpoint's snapshot lives in.
 
-    A checkpoint is snapshotted only once the agent has settled: it reports it is not working, no outbound call of
-    its has been seen for `quiet`, none it sent is still awaiting its answer, and, when it declares `busy`, that
-    command says it is idle. One that has not settled after `settle_limit` is recorded as not restorable, with the
-    reason, and is never snapshotted. Without `busy`, work the proxy cannot see (writes to a database on this
-    machine, a process computing) is not asked about, and each checkpoint says it was not confirmed.
+class OwnDatabase(Model):
+    """A database the agent keeps state in outside `minutehand.agent.store`, by the variable it reads its location
+    from. Minutehand hands every run, and every fork, a fresh empty SQLite file in that variable, so no run reads
+    another's or production's, and notes in the run that it is outside forks: a fork starts with an empty one, not
+    the parent's at the checkpoint. Any other database (PostgreSQL, a cloud one) is the team's to provide per run."""
 
-    A restore is a sequence: `stop`, `restore`, `start`, then the agent's report endpoint must answer within
-    `answer_limit`, and its report must equal the one recorded at the checkpoint, and its `fingerprint`, when it
-    declares one, the one taken there. Any command running longer than `step_limit` fails its step.
-
-    What the snapshot command writes is kept by the run's store, each file once across every snapshot of the run
-    and its forks, and written back out as a plain directory for `restore`. `keep` bounds how many are kept.
-    """
-
-    snapshot: list[str] = Field(min_length=1)
-    restore: list[str] = Field(min_length=1)
-    busy: list[str] | None = Field(
-        default=None,
-        min_length=1,
-        description="Asks the agent whether any of its work is still in flight: exit 0 means busy, 1 idle, "
-        "anything else that it could not tell",
-    )
-    fingerprint: list[str] | None = Field(
-        default=None,
-        min_length=1,
-        description="Prints a digest of the agent's state (its database, and what its processes hold); taken at "
-        "each checkpoint and compared after a restore, beside the report. Its last line of output is the digest",
-    )
-    stop: list[str] | None = Field(default=None, min_length=1, description="Stops the agent's processes")
-    start: list[str] | None = Field(default=None, min_length=1, description="Starts them again after `restore`")
-    quiet: timedelta = Field(
-        default=timedelta(seconds=1),
-        ge=timedelta(0),
-        description="How long no outbound call of the agent's must be seen before a checkpoint is taken",
-    )
-    settle_limit: timedelta = Field(
-        default=timedelta(seconds=60),
-        gt=timedelta(0),
-        description="How long a checkpoint waits to settle before it is recorded as not restorable",
-    )
-    answer_limit: timedelta = Field(
-        default=ANSWER_LIMIT,
-        gt=timedelta(0),
-        description="How long after `start` the agent's report endpoint has to answer",
-    )
-    step_limit: timedelta = Field(
-        default=timedelta(minutes=5), gt=timedelta(0), description="How long one hook command may run"
-    )
-    keep: int | None = Field(
-        default=None,
-        ge=1,
-        description="How many of the run's newest snapshots are kept restorable; older ones are pruned, except one "
-        "pinned (`minutehand pin`), the run's start and one a fork was taken from. None keeps every one",
-    )
-
-    @model_validator(mode="after")
-    def _can_settle(self) -> StateHooks:
-        if self.settle_limit < self.quiet:
-            raise ValueError("settle_limit is shorter than quiet, so no checkpoint could ever settle")
-        return self
+    env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", description="The variable the agent reads its location from")
+    form: OwnDatabaseForm = OwnDatabaseForm.FILE
 
 
 class GoalByWake(Model):
@@ -306,7 +263,6 @@ class AgentUnderTest(Model):
         description="Where work waits on a person inside the agent's own product (an approval, a question on its "
         "own page), read and decided as each person (`domain.inboxes`)",
     )
-    state: StateHooks | None = None
     watches: list[str] = Field(
         default=[],
         description="Folders of the agent's own machine whose files Minutehand records: what the agent creates, "
@@ -334,11 +290,22 @@ class AgentUnderTest(Model):
     emulators: list[ExternalEmulator] = Field(
         default=[], description="Fakes outside Minutehand that `forward` hosts are sent to, started or attached to"
     )
-    databases: list[Database] = Field(
+    own_databases: list[OwnDatabase] = Field(
         default=[],
-        description="The agent's own databases Minutehand fronts: it relays every connection, records the agent's "
-        "committed writes, and puts each back for a fork from a base and those writes, with no state hooks",
+        description="Databases the agent keeps state in beside its memory, by the variable it reads each from: each "
+        "run is handed a fresh empty SQLite file in each, outside forks",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_hooks(cls, written: object) -> object:
+        if isinstance(written, dict) and ("state" in written or "databases" in written):
+            raise ValueError(
+                "`state:` hooks and fronted `databases:` are gone: the agent keeps what it remembers in "
+                "`minutehand.agent.store`, which every run and fork holds for it (docs/agent-contract.md); a database "
+                "it keeps beside that is named under `own_databases`"
+            )
+        return written
 
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
@@ -354,7 +321,9 @@ class AgentUnderTest(Model):
         if clash:
             raise ValueError(f"an inbox and an outbound host are both recorded as {', '.join(clash)}")
         refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
-        refuse_repeated_databases(self.databases)
+        owned = [d.env for d in self.own_databases]
+        if len(owned) != len(set(owned)):
+            raise ValueError(f"two own databases are handed out in one variable: {sorted(set(owned))}")
         named = [b.env for b in self.base_urls]
         if len(named) != len(set(named)):
             raise ValueError(

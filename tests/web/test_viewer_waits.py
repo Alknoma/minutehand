@@ -14,7 +14,8 @@ from minutehand import session
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import ObligationsResponse, ScorecardResponse
-from minutehand.application.checkpoint import Checkpoint, NoHooks, write_checkpoint
+from minutehand.application.checkpoint import Checkpoint, Remembered, write_checkpoint
+from minutehand.application.memory import digest
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.checks import ObligationKind, WakeRecord
 from minutehand.domain.run import RunRecord, StopReason
@@ -44,7 +45,7 @@ async def _finished_run(state: Path, *, report_again: bool) -> None:
     (directory / session.SCENARIO).write_text(played.model_dump_json())
     clock = RunClock(T0)
     store = SqliteStore(directory / session.WORLD, RUN, clock)
-    checkpoint = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=NoHooks())
+    checkpoint = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=Remembered(report=None, memory=digest({})))
     write_checkpoint(store, checkpoint)
     wakes: list[WakeRecord] = []
     for hours, change in (

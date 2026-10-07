@@ -5,17 +5,18 @@ pending set come back by reading the log. Replies the parent's people had alread
 asked for again, except for a person a `PersonChange` changes: each message to them not answered by the fork
 (no reply decided, or one decided that had not landed yet) is put to them again under their new behaviour.
 
-The agent's own state comes back through the restore sequence in `application.restore`, and is verified there
-against the report recorded at the checkpoint: a database Minutehand fronts is made again from its base and the
-writes recorded up to the checkpoint (`application.databases`), and everything else through the agent's hooks. Without hooks the fork is refused, because a world rewound under
-an agent that remembers the future is not a rerun; so is a fork from a checkpoint at which the agent did not
-settle. Every refusal that can be decided from the parent is decided before the child run exists, and a child
-refused after it exists (its restore failed) is discarded, so no refusal leaves a run behind.
+The agent's memory (`minutehand.agent.store`) is part of the same log, so the child has its parent's memory as it
+stood at the checkpoint with nothing restored. `application.restore.start_fork` proves it (the memory's digest against
+the checkpoint's), starts the agent's program when Minutehand runs it, and compares the agent's report with the one
+recorded at the checkpoint: a report that differs means state outside the store, and the fork is refused, saying so.
+A checkpoint the agent went on writing its memory after, in the same wake, is not one a fork can start from. Every
+refusal that can be decided from the parent is decided before the child run exists, and a child refused after it
+exists is discarded, so no refusal leaves a run behind.
 
-What no fork can rewind, because it was never in the log or the snapshot: what a real third-party service the
-run reached keeps (the proxy refuses unclaimed hosts, but a model API is reached for real), what a model
-provider keeps on its side (a stored conversation, a cache, a batch), the AWS provider's queues and schedules
-(in moto's memory), and work the agent does in the background that outlives the quiet period. A provider that says
+What no fork can rewind, because it was never in the log: whatever the agent keeps outside the store (its own
+database, files, a cache, a process's memory), what a real third-party service the run reached keeps (the proxy
+refuses unclaimed hosts, but a model API is reached for real), what a model provider keeps on its side (a stored
+conversation, a cache, a batch), and the AWS provider's queues and schedules (in moto's memory). A provider that says
 it keeps state outside the log (`Manifest.state_outside_log`, AWS) refuses any fork after the parent first used it.
 """
 
@@ -27,29 +28,22 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from minutehand.application.checkpoint import (
-    Checkpoint,
-    NoHooks,
-    NotRestorable,
-    PendingBooking,
-    PendingReply,
-    Replayable,
-    Restorable,
-    checkpoints,
-)
-from minutehand.application.databases import PutBack, refuse_unreplayable
+from minutehand.application import memory
+from minutehand.application.checkpoint import Checkpoint, NotRestorable, PendingBooking, PendingReply, checkpoints
 from minutehand.application.inboxes import Inboxes, items_in
-from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, Reach, Scorer, Services
+from minutehand.application.memory import store_digest
+from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, OutsideState, Reach, Scorer, Services
 from minutehand.application.refusals import RunRefused
-from minutehand.application.restore import OwnProgram, Progress, Restored, Traffic, restore_agent
+from minutehand.application.restore import OwnProgram, Progress, Restored, start_fork
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
+from minutehand.application.traffic import Traffic
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.experiment import (
     DeadlineShift,
     DispatchChange,
     Fork,
+    MemoryEdit,
     ModelSwap,
     PersonChange,
     PromptPatch,
@@ -58,10 +52,18 @@ from minutehand.domain.experiment import (
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
-from minutehand.domain.world import Actor, InboxItemSnapshot, ItemStatus, MessageSnapshot, Operation, RecordedCall
+from minutehand.domain.world import (
+    Actor,
+    EntityKind,
+    InboxItemSnapshot,
+    ItemStatus,
+    MemorySnapshot,
+    MessageSnapshot,
+    Operation,
+    RecordedCall,
+)
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
-from minutehand.ports.database import FrontsDatabase
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -75,9 +77,9 @@ FORK_RECORD = "fork.json"
 """`Fork`, in the directory of each run it started: what the child changed, as it was asked for."""
 
 CANNOT_REWIND = (
-    "A fork rewinds the fakes' world and the agent's own state; it cannot rewind what a real third-party service "
-    "the run reached keeps, what a model provider keeps on its side, the AWS provider's queues and schedules, "
-    "what an external emulator holds, or work the agent does in the background after the quiet period."
+    "A fork rewinds the fakes' world and the agent's memory (`minutehand.agent.store`); it cannot rewind what the "
+    "agent keeps anywhere else, what a real third-party service the run reached keeps, what a model provider keeps on "
+    "its side, the AWS provider's queues and schedules, or what an external emulator holds."
 )
 
 
@@ -141,35 +143,21 @@ async def fork_run(
     manifests: Sequence[Manifest] = (),
     environment: Environment | None = None,
     inboxes: Inboxes | None = None,
-    databases: Sequence[FrontsDatabase] = (),
+    outside: OutsideState | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
     `open_parent` opens the parent run's store stamping from the clock it is given; the child the store's
     `fork` makes stamps from that same clock, which this function moves to the checkpoint. `own` is the agent's
-    program when Minutehand started it, stopped and started again around the restore; `progress` hears each
-    restore step as it is taken. Each child's restore is kept as `restore.json` in its directory.
+    program when Minutehand runs it, not yet started: it is started once the child exists, so it reads the child's
+    memory from its first call. `progress` hears each step as it is taken. How each child's agent was found at its
+    start is kept as `restore.json` in its directory.
 
     `manifests` are those of every installed provider, beside the run's own `services`: a provider the agent called
     without the scenario or agent file naming it is still one whose state may be outside the log.
-
-    `databases` are the relays of the agent's fronted databases (`AgentUnderTest.databases`): each is made again from
-    its base and the writes the child can see, between the agent's program stopping and starting.
     """
     if fork.parent_run != parent.run_id:
         raise RunRefused(f"the fork names parent {fork.parent_run}; the record given is {parent.run_id}")
-    hooks = agent.state
-    if [d.name for d in agent.databases] != [f.database.name for f in databases]:
-        raise RunRefused(
-            f"agent {agent.name} declares databases {[d.name for d in agent.databases]} and the fork was handed "
-            f"relays for {[f.database.name for f in databases]}"
-        )
-    if hooks is None and not databases:
-        raise RunRefused(
-            f"agent {agent.name} has no state hooks and fronts no database, so its own state cannot be rewound; "
-            "declare `state: {snapshot: [...], restore: [...]}` or `databases:`, or rerun from the beginning. "
-            + CANNOT_REWIND
-        )
     on_wire = [o for o in fork.overrides if isinstance(o, (PromptPatch, ModelSwap))]
     if on_wire and wire is None:
         raise RunRefused(
@@ -186,10 +174,12 @@ async def fork_run(
         clock = RunClock(scenario.starts_at)
         parent_store = open_parent(clock)
         checkpoint = _checkpoint_at(parent_store, parent.run_id, fork.at_seq)
-        restorable = _restorable(checkpoint, agent, parent.run_id, fork.at_seq)
-        if isinstance(restorable, Restorable):
-            _refuse_unkept(parent_store, restorable, agent, parent.run_id, fork.at_seq)
-        refuse_unreplayable(databases, parent_store, fork.at_seq)
+        unsettled = not_restorable(parent_store, fork.at_seq, checkpoint)
+        if unsettled is not None:
+            raise RunRefused(
+                f"the checkpoint at seq {fork.at_seq} of run {parent.run_id} is not restorable: {unsettled.reason}. "
+                "Fork from a checkpoint `minutehand findings` lists as restorable. " + CANNOT_REWIND
+            )
         _refuse_pending_bookings(checkpoint, parent.run_id, fork.at_seq)
         _refuse_state_outside_log(
             parent_store, [*manifests, *(p.manifest for p in services.providers)], checkpoint, fork.at_seq
@@ -212,7 +202,6 @@ async def fork_run(
                 telemetry=telemetry,
                 mounts=mounts,
                 scorer=scorer,
-                state_dir=state_dir,
                 signing=signing,
                 parent_run=parent.run_id,
                 forked_at=fork.at_seq,
@@ -221,37 +210,24 @@ async def fork_run(
                 channels=channels,
                 environment=environment,
                 inboxes=Inboxes(changed, list(inboxes.reaches.values())) if inboxes is not None else None,
-                databases=databases,
+                outside=outside,
             )
             orchestrator.mount()
-            put_back = PutBack(databases, child, restorable.digests) if databases else None
-            if isinstance(restorable, Restorable):
-                assert hooks is not None
-                with materialised(
-                    parent_store, restorable.snapshot_of, restorable.wake, restore_dir(state_dir, child_id)
-                ) as snapshot:
-                    restored = await restore_agent(
-                        hooks,
-                        snapshot,
-                        checkpoint_seq=fork.at_seq,
-                        recorded=restorable.report,
-                        reports=reports,
-                        own=own,
-                        progress=progress,
-                        fingerprint=restorable.fingerprint,
-                        databases=put_back,
-                    )
-            else:
-                restored = await restore_agent(
-                    None,
-                    None,
-                    checkpoint_seq=fork.at_seq,
-                    recorded=restorable.report,
-                    reports=reports,
-                    own=own,
-                    progress=progress,
-                    databases=put_back,
-                )
+            edits = [o for o in fork.overrides if isinstance(o, MemoryEdit)]
+
+            def edit(child: Store = child, edits: list[MemoryEdit] = edits) -> None:
+                for one in edits:
+                    memory.edit(child, one.put, [(k.collection, k.key) for k in one.delete])
+
+            restored = await start_fork(
+                checkpoint.agent,
+                memory=store_digest(child),
+                checkpoint_seq=fork.at_seq,
+                reports=reports,
+                own=own,
+                progress=progress,
+                edit=edit if edits else None,
+            )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)
             changed_people = {o.person for o in fork.overrides if isinstance(o, PersonChange)}
@@ -264,7 +240,7 @@ async def fork_run(
         _keep(state_dir / child_id, restored, fork)
         if wire is not None and on_wire:
             wire.apply(child_id, on_wire)
-        records.append(await orchestrator.resume(checkpoint))
+        records.append(await orchestrator.resume(checkpoint, replan=restored.replanned))
     return records
 
 
@@ -277,36 +253,27 @@ def _checkpoint_at(store: Store, parent: str, at_seq: int) -> Checkpoint:
     return found[at_seq]
 
 
-def _restorable(checkpoint: Checkpoint, agent: AgentUnderTest, parent: str, at_seq: int) -> Restorable | Replayable:
-    """The snapshot to restore from, or that the agent's state is all in its fronted databases, or the reason there
-    is neither, recorded when the checkpoint was taken."""
-    state = checkpoint.agent
-    if isinstance(state, NotRestorable):
-        raise RunRefused(
-            f"the checkpoint at seq {at_seq} of run {parent} is not restorable: {state.reason}. "
-            "Fork from a checkpoint `minutehand findings` lists as restorable. " + CANNOT_REWIND
-        )
-    if isinstance(state, NoHooks):
-        raise RunRefused(
-            f"run {parent} was played by an agent with no state hooks, so nothing of agent {agent.name}'s own "
-            f"state was kept at seq {at_seq}; declare `state:` and play the run again. " + CANNOT_REWIND
-        )
-    return state
-
-
-def _refuse_unkept(store: Store, restorable: Restorable, agent: AgentUnderTest, parent: str, at_seq: int) -> None:
-    """The snapshot a restorable checkpoint names must still be kept: one pruned, or never kept, is refused."""
-    kept = store.snapshot(restorable.snapshot_of, restorable.wake)
-    if kept is None:
-        raise RunRefused(
-            f"no snapshot of agent {agent.name} after wake {restorable.wake} of run {restorable.snapshot_of} is kept"
-        )
-    if kept.pruned:
-        raise RunRefused(
-            f"the checkpoint at seq {at_seq} of run {parent} is not restorable: {SNAPSHOT_PRUNED}. "
-            "Fork from a checkpoint `minutehand checkpoints` lists as restorable, or pin one before it is pruned. "
-            + CANNOT_REWIND
-        )
+def not_restorable(store: Store, at_seq: int, checkpoint: Checkpoint) -> NotRestorable | None:
+    """Why a fork cannot start at the checkpoint at `at_seq`, or None when it can. The agent's memory there is its
+    log up to `at_seq`; one the agent went on writing in the same wake, after it said it was no longer working, was
+    caught half written, and a fork from it would start from memory the agent never finished."""
+    late = [
+        e
+        for e in store.events(since=at_seq)
+        if e.wake == checkpoint.wake
+        and e.actor is Actor.AGENT
+        and e.entity.kind is EntityKind.MEMORY
+        and e.operation not in (Operation.READ, Operation.SEARCH)
+    ]
+    if not late:
+        return None
+    first = late[0].after
+    key = f"{first.collection}/{first.key}" if isinstance(first, MemorySnapshot) else late[0].entity.external_id
+    return NotRestorable(
+        reason=f"the agent went on writing its memory after this checkpoint, in the same wake ({len(late)} write(s), "
+        f"the first to {key} at seq {late[0].seq}): its memory here was half written. Report WORKING until the "
+        "wake's writes are done"
+    )
 
 
 def _refuse_ticket_edits(fork: Fork, services: Services, scenario: Scenario) -> None:

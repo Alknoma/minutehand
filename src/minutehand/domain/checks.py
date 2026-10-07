@@ -190,6 +190,10 @@ class WakeRecord(Model):
         description="A standing world's step nobody marked: the stretch between two forward moves of its clock",
     )
     reason: str | None = Field(default=None, description="Why the step began, as whoever marked it said")
+    memory_reads: int = Field(
+        default=0, ge=0, description="Gets and listings of the agent's memory (`minutehand.agent.store`) in the wake"
+    )
+    memory_writes: int = Field(default=0, ge=0, description="Keys of the agent's memory written or deleted in the wake")
 
 
 class WakeModelCalls(Model):

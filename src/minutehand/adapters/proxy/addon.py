@@ -54,7 +54,7 @@ from minutehand.adapters.proxy.redirected import Redirected
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.adapters.telemetry.receiver import grpc_installed
-from minutehand.application.restore import SeenCall
+from minutehand.application.traffic import SeenCall
 from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
 from minutehand.domain.outbound import (
     BODY_LIMIT,

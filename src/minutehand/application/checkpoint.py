@@ -13,7 +13,6 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import AgentReport, Commitment, WakeReason
 from minutehand.domain.clock import Due
-from minutehand.domain.database import DatabaseDigest
 from minutehand.domain.scenario import Model, ProviderKey, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.store import Store
@@ -106,56 +105,32 @@ Pending = Annotated[
 ]
 
 
-class Restorable(Model):
-    """The agent settled and its state was snapshotted: a fork from here can put it back."""
+class Remembered(Model):
+    """The agent's state at this checkpoint, as far as the run holds it: its memory is the run's log up to here
+    (`application.memory`), so a fork from here starts from exactly that memory, and its report, which the agent
+    must give again once the fork is made."""
 
-    kind: Literal["restorable"] = "restorable"
-    snapshot_of: str = Field(description="The run whose directory holds the snapshot (a fork inherits its parent's)")
-    wake: int = Field(ge=0, description="The wake whose snapshot directory holds it")
+    kind: Literal["remembered"] = "remembered"
     report: AgentReport | None = Field(
-        description="What the agent reported once settled, which a restore must bring back; None when the agent "
-        "had not reported and cannot be asked"
+        description="What the agent last reported, which it must report again after a fork from here; None when it "
+        "has not reported and cannot be asked"
     )
-    fingerprint: str | None = Field(
-        default=None, description="What the agent's `fingerprint` printed once settled; None when it declares none"
-    )
-    digests: list[DatabaseDigest] = Field(
-        default=[], description="Each fronted database that declares `digest`, as it stood here"
-    )
-    unconfirmed: str | None = Field(
-        default=None,
-        description="Why this snapshot may hold work in flight: settling saw only the report and the proxy, and "
-        "nothing asked about work the proxy cannot see. None: the agent's own `busy` said it was idle",
+    memory: str = Field(description="The agent's memory here, as one SHA-256 (`application.memory.digest`)")
+    outside: list[str] = Field(
+        default=[],
+        description="State the agent kept outside its memory that the run saw here (a database of its own the agent "
+        "file names, not empty): a fork does not put it back",
     )
 
 
 class NotRestorable(Model):
-    """The agent did not settle in time, so no snapshot was taken: a fork from here is refused, saying why."""
+    """A checkpoint a fork cannot start from, and why: said wherever checkpoints are listed, never written in one."""
 
     kind: Literal["not_restorable"] = "not_restorable"
     reason: str
 
 
-class Replayable(Model):
-    """The agent declares no state hooks and keeps its state in databases Minutehand fronts
-    (`AgentUnderTest.databases`): a fork puts each back from its base and the writes recorded up to here, restarts
-    the agent's program, and compares its report with this one. Nothing waits for it to settle: a transaction still
-    open here commits after this checkpoint's seq, so it is not part of it."""
-
-    kind: Literal["replayable"] = "replayable"
-    report: AgentReport | None = Field(description="The agent's last report, which a restore must bring back")
-    digests: list[DatabaseDigest] = Field(
-        default=[], description="Each fronted database that declares `digest`, as it stood here"
-    )
-
-
-class NoHooks(Model):
-    """The agent declares no `StateHooks`: nothing of its own state was kept."""
-
-    kind: Literal["no_hooks"] = "no_hooks"
-
-
-AgentState = Annotated[Restorable | Replayable | NotRestorable | NoHooks, Field(discriminator="kind")]
+AgentState = Annotated[Remembered | NotRestorable, Field(discriminator="kind")]
 
 
 class Checkpoint(Model):
@@ -170,7 +145,7 @@ class Checkpoint(Model):
     fated: list[EntityRef] = Field(default=[], description="Tickets whose fate is already scheduled or landed")
     commitments: list[Commitment] | None = None
     pending: list[Pending]
-    agent: AgentState = Field(description="Whether the agent's own state at this moment can be put back")
+    agent: Remembered = Field(description="The agent's memory and report at this moment")
 
 
 def write_checkpoint(store: Store, checkpoint: Checkpoint) -> int:

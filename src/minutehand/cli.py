@@ -12,12 +12,9 @@
                                                  the environment an agent Minutehand does not start needs
     minutehand runs [--state DIR]               every finished run, with what it costs on disk
     minutehand checkpoints <run_id> [--state DIR]
-                                                 a run's checkpoints, whether each is restorable, its snapshot's size
-    minutehand pin <run_id> <seq> [--state DIR]  keep a checkpoint's snapshot whatever `state: keep` says
-    minutehand unpin <run_id> <seq> [--state DIR]
-    minutehand gc [--state DIR] [--agent FILE]   remove stored bodies and snapshot files nothing refers to; with
-                                                 --agent, the agent's database bases no run needs
-    minutehand rm <run_id>... [--state DIR]      remove runs with their forks, and the database bases nobody needs
+                                                 a run's checkpoints, and whether a fork can start at each
+    minutehand gc [--state DIR]                  remove stored bodies nothing refers to
+    minutehand rm <run_id>... [--state DIR]      remove runs with their forks
     minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--agent-host H] [--no-proxy H]... [--json] -- <command...>
                                                  which HTTP clients in the agent's interpreter would go around the
                                                  proxy, and which declared hosts NO_PROXY would send directly
@@ -98,7 +95,7 @@ from minutehand.adapters.model.openai_compatible import from_environment as mode
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
-from minutehand.application.checkpoint import NoHooks, NotRestorable, Replayable, Restorable
+from minutehand.application.checkpoint import NotRestorable, Remembered
 from minutehand.application.files import FileKind, FileRefused, load_agent, load_fork, load_scenario, problems, schema
 from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
@@ -202,7 +199,8 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument(
             "--no-receive-telemetry",
             action="store_true",
-            help="serve no OTLP receiver and leave the agent's OTLP exporter where it points",
+            help="receive none of the agent's telemetry and leave its OTLP exporter where it points (the receiver "
+            "still holds the agent's memory)",
         )
         models(sub)
         capture(sub)
@@ -306,29 +304,14 @@ def _parser() -> argparse.ArgumentParser:
     listing = commands.add_parser("runs", help="every finished run, with what it costs on disk")
     state(listing)
 
-    kept = commands.add_parser("checkpoints", help="a run's checkpoints, and the size of each snapshot")
+    kept = commands.add_parser("checkpoints", help="a run's checkpoints, and whether a fork can start at each")
     kept.add_argument("run_id")
     state(kept)
 
-    for verb, said in (("pin", "keep a checkpoint's snapshot whatever the agent's `keep` says"), ("unpin", "undo pin")):
-        pinning = commands.add_parser(verb, help=said)
-        pinning.add_argument("run_id")
-        pinning.add_argument("seq", type=int, help="the checkpoint's seq (listed by `checkpoints`)")
-        state(pinning)
-
-    swept = commands.add_parser("gc", help="remove stored bodies and snapshot files nothing refers to")
-    swept.add_argument(
-        "--agent",
-        type=Path,
-        default=None,
-        help="also drop every base of this agent file's fronted databases left on their server that no run under "
-        "--state needs (a run directory removed by hand leaves its base behind)",
-    )
+    swept = commands.add_parser("gc", help="remove stored bodies nothing refers to")
     state(swept)
 
-    removing = commands.add_parser(
-        "rm", help="remove runs with every fork of each, and drop the database bases no run left needs"
-    )
+    removing = commands.add_parser("rm", help="remove runs with every fork of each")
     removing.add_argument("run_ids", nargs="+", metavar="run_id")
     state(removing)
 
@@ -525,10 +508,8 @@ def _main(args_in: list[str]) -> int:
             return _serve(args, state)
         if args.command == "checkpoints":
             return _checkpoints(state, args.run_id)
-        if args.command in ("pin", "unpin"):
-            return _pin(state, args.run_id, args.seq, pinned=args.command == "pin")
         if args.command == "gc":
-            return _gc(state, load_agent(args.agent) if args.agent is not None else None)
+            return _gc(state)
         if args.command == "rm":
             return _rm(state, args.run_ids)
         return _runs(state)
@@ -921,10 +902,7 @@ def _runs(state: Path) -> int:
             )
         print(f"  {_restorable_summary(session.fork_points(state, record.run_id))}")
         used = session.usage_of(state, record.run_id)
-        print(
-            f"  on disk: {_size(used.rows)} of rows, {_size(used.bodies)} of bodies it alone holds, "
-            f"{_size(used.snapshots)} of snapshots it alone holds"
-        )
+        print(f"  on disk: {_size(used.rows)} of rows, {_size(used.bodies)} of bodies it alone holds")
     return 0
 
 
@@ -940,46 +918,23 @@ def _checkpoints(state: Path, run_id: str) -> int:
     if not found:
         print(f"run {run_id} has no checkpoints")
         return 0
-    for one in found:
-        point, snapshot = one.point, one.snapshot
-        line = f"seq {point.seq}, after wake {point.wake}: {_point(point)}"
-        if snapshot is not None and not snapshot.pruned:
-            line += (
-                f"; snapshot of {snapshot.files} files, {_size(snapshot.size)}, "
-                f"{_size(snapshot.held)} on disk held by it alone"
-            )
-            if snapshot.pinned:
-                line += "; pinned"
-        print(line)
+    for point in found:
+        print(f"seq {point.seq}, after wake {point.wake}: {_point(point)}")
     return 0
 
 
-def _pin(state: Path, run_id: str, seq: int, *, pinned: bool) -> int:
-    snapshot = session.pin(state, run_id, seq, pinned=pinned)
-    said = "pinned: pruning keeps it" if snapshot.pinned else "unpinned: the agent's `keep` may prune it"
-    print(f"the snapshot at seq {seq} of run {run_id} is {said}")
-    return 0
-
-
-def _gc(state: Path, agent: AgentUnderTest | None) -> int:
+def _gc(state: Path) -> int:
     collected = session.collect(state)
     freed = collected.freed
-    print(
-        f"freed {freed.bodies} stored bodies ({_size(freed.body_bytes)}) and {freed.files} snapshot files "
-        f"({_size(freed.file_bytes)}) across {collected.swept} world files"
-    )
+    print(f"freed {freed.bodies} stored bodies ({_size(freed.body_bytes)}) across {collected.swept} world files")
     for skipped in collected.skipped:
         print(f"  not swept: {skipped}")
-    for said in session.drop_orphans(state, agent) if agent is not None else []:
-        print(f"  {said}")
     return 0
 
 
 def _rm(state: Path, run_ids: list[str]) -> int:
     collected = session.remove(state, run_ids)
     print(f"removed {len(collected.removed)} runs ({_size(collected.removed_bytes)}): {', '.join(collected.removed)}")
-    for said in collected.bases:
-        print(f"  {said}")
     return 0
 
 
@@ -987,10 +942,8 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
     """One line: the seqs a fork can be taken from, and those it cannot."""
     if not points:
         return "no checkpoints"
-    if all(isinstance(p.agent, NoHooks) for p in points):
-        return "no checkpoint is restorable: the agent declares no state hooks"
-    can = [str(p.seq) for p in points if isinstance(p.agent, Restorable | Replayable)]
-    cannot = [str(p.seq) for p in points if not isinstance(p.agent, Restorable | Replayable)]
+    can = [str(p.seq) for p in points if isinstance(p.agent, Remembered)]
+    cannot = [str(p.seq) for p in points if isinstance(p.agent, NotRestorable)]
     parts = [f"restorable at seq {', '.join(can)}" if can else "no checkpoint is restorable"]
     if cannot:
         parts.append(f"not restorable at seq {', '.join(cannot)} (`minutehand findings` says why)")
@@ -1116,13 +1069,12 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
 
 def _point(point: ForkPoint) -> str:
     agent = point.agent
-    if isinstance(agent, Restorable):
-        return "restorable" if agent.unconfirmed is None else f"restorable, unconfirmed: {agent.unconfirmed}"
-    if isinstance(agent, Replayable):
-        return "restorable: its databases are replayed from their base"
     if isinstance(agent, NotRestorable):
         return f"not restorable: {agent.reason}"
-    return "not restorable: the agent declares no state hooks"
+    said = "restorable"
+    if agent.outside:
+        said += f"; outside its memory, which a fork does not get: {'; '.join(agent.outside)}"
+    return said
 
 
 def _finding(finding: Finding) -> str:

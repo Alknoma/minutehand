@@ -10,8 +10,6 @@ know a delivery is on its way, so only the scheduler can tell the run the wake i
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import socketserver
 import sys
 import threading
@@ -104,18 +102,7 @@ def serve(port: int, state: Path, act: float) -> None:
     server.serve_forever(poll_interval=0.05)
 
 
-def keep(state: Path, *, restoring: bool) -> None:
-    """`snapshot <state>` and `restore <state>`: the state file, copied to or from Minutehand's snapshot directory."""
-    kept = Path(os.environ["MINUTEHAND_SNAPSHOT_DIR"]) / "state.json"
-    source, target = (kept, state) if restoring else (state, kept)
-    if source.exists():
-        shutil.copyfile(source, target)
-
-
 if __name__ == "__main__":
     args = sys.argv
-    if args[1] in ("snapshot", "restore"):
-        keep(Path(args[2]), restoring=args[1] == "restore")
-    else:
-        port, state = int(args[args.index("--port") + 1]), Path(args[args.index("--state") + 1])
-        serve(port, state, float(args[args.index("--act") + 1]))
+    port, state = int(args[args.index("--port") + 1]), Path(args[args.index("--state") + 1])
+    serve(port, state, float(args[args.index("--act") + 1]))

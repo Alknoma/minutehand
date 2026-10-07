@@ -89,7 +89,7 @@ async def test_a_rule_reads_the_wakes_the_agent_planned_from_the_table(rig: Rig,
 
 async def test_a_fork_cancels_the_reply_its_person_change_withdrew_and_enters_the_one_asked_again(rig: Rig) -> None:
     scn = two_replies()
-    agent = rig.agent("ask_and_file", hooks=True)
+    agent = rig.agent("ask_and_file")
     parent, parent_store, _ = await rig.run(scn, agent)
     after_start = checkpoint_seqs(parent_store)[1]
     change = PersonChange(person="sofia", reply=scripted("CHANGED one", "CHANGED two", hours=12))

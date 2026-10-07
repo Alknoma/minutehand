@@ -85,8 +85,9 @@ async def test_an_email_the_agent_sends_is_a_message_to_the_owner_and_its_lookup
         )
 
     assert [r.path for r in real.received] == ["/search?q=partner+pricing"]
-    assert launched.state()["mailed"] == 202 and launched.state()["looked_up"] == ['{"received": 1}']
     run_id = outcome.record.run_id
+    assert launched.state(state, run_id)["mailed"] == 202
+    assert launched.state(state, run_id)["looked_up"] == ['{"received": 1}']
     # The email met the expectation the way a chat message would, quoted in the finding.
     [met] = [f for f in outcome.result.findings if f.check == "expectations"]
     assert met.kind is FindingKind.INFORMATIONAL and f"“Partner pricing {MAILED}”" in met.message
@@ -146,7 +147,7 @@ async def test_a_fork_replays_its_parents_lookups_by_default_and_calls_the_real_
 ) -> None:
     """The agent looks up once when it takes the goal and again on Sofia's answer. A fork after the first wake
     shares the first lookup and makes the second itself."""
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     agent = _declaring(launched.agent, in_forks=in_forks)
     state = tmp_path / "state"
     async with model_api(authority, host="::1") as real:
@@ -155,7 +156,7 @@ async def test_a_fork_replays_its_parents_lookups_by_default_and_calls_the_real_
         [parent] = await session.play(
             scenario(answers(after=timedelta(hours=36))), agent, state=state, command=launched.command, listen=listen
         )
-        assert launched.state()["looked_up"] == ['{"received": 1}', '{"received": 2}']
+        assert launched.state(state, parent.record.run_id)["looked_up"] == ['{"received": 1}', '{"received": 2}']
         after_first_wake = next(p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1)
         changes = Fork(parent_run=parent.record.run_id, at_seq=after_first_wake.seq)
         [child] = await session.fork(
@@ -179,5 +180,5 @@ async def test_a_fork_replays_its_parents_lookups_by_default_and_calls_the_real_
         assert heard == 3
         assert own.exchange.captured.answered_by is AnsweredBy.REAL_HOST
         assert own.exchange.response_body == '{"received": 3}'
-    looked = launched.state()["looked_up"]
+    looked = launched.state(state, child.record.run_id, root=parent.record.run_id)["looked_up"]
     assert isinstance(looked, list) and looked[-1] == own.exchange.response_body

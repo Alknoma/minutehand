@@ -72,7 +72,8 @@ async def test_a_diligent_agent_and_a_person_who_answers_in_36_hours(
     assert called and {e.actor for e in called} == {Actor.AGENT}
     assert [e for e in events if e.actor is Actor.PERSON and e.exchange is not None] == []
     # The answer reached the agent as an event it verified with Slack's own SignatureVerifier.
-    assert launched.state()["verified"] == [ANSWER] and launched.state()["rejected"] == 0
+    remembered = launched.state(tmp_path / "state", record.run_id)
+    assert remembered["verified"] == [ANSWER] and remembered["rejected"] == 0
 
 
 async def test_a_diligent_agent_follows_up_when_the_answer_comes_after_its_follow_up_window(
@@ -111,8 +112,8 @@ async def test_an_agent_that_takes_its_goal_from_a_slack_dm_needs_no_wake_endpoi
     said = messages(events, Actor.PERSON)
     assert texts(said) == [scn.goal, ANSWER] and said[0].sim_time == T0
     assert texts(messages(events, Actor.AGENT, to=SOFIA)) == [QUESTION, THANKS]
-    assert launched.state()["goal"] == scn.goal
-    assert launched.state()["verified"] == [scn.goal, ANSWER]
+    assert launched.state(tmp_path / "state", record.run_id)["goal"] == scn.goal
+    assert launched.state(tmp_path / "state", record.run_id)["verified"] == [scn.goal, ANSWER]
     assert (outcome.result.effectiveness.expectations_met, outcome.result.effectiveness.expectations_total) == (2, 2)
     assert [f for f in outcome.result.findings if f.kind is FindingKind.FAIL] == []
 
@@ -121,7 +122,7 @@ async def test_two_samples_are_two_runs_through_one_proxy_each_from_the_agents_f
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "diligent", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "diligent")
     scn = scenario(answers(after=timedelta(hours=36)))
 
     outcomes = await session.play(scn, launched.agent, state=tmp_path / "state", samples=2, command=launched.command)

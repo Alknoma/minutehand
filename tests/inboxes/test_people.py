@@ -18,10 +18,10 @@ from minutehand.application.checkpoint import checkpoints
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.orchestrator import Reach, Services, run_scenario
 from minutehand.application.replier_model import DECISION_PROMPT_VERSION, PeopleReplier, WrittenDecision, WrittenInput
-from minutehand.application.restore import SeenCall
 from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Command, StateHooks, WakeRequest
+from minutehand.application.traffic import SeenCall
+from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Command, WakeRequest
 from minutehand.domain.experiment import Fork, Override, PersonChange
 from minutehand.domain.scenario import Answers, DelayRange, ScriptedDecision
 from minutehand.domain.world import Actor, InboxItemSnapshot, WorldEvent
@@ -117,8 +117,7 @@ class _Restorable:
 async def _fork(tmp_path: Path, product: Product, change: list[Override]) -> list[tuple[str | None, datetime]]:
     scn = scenario(deciding(ScriptedDecision(decision="approve"), hours=2))
     declared = inbox(product)
-    hooks = StateHooks(snapshot=PASS, restore=PASS, quiet=timedelta(milliseconds=10))
-    agent = AgentUnderTest(name="restorable", wakes=[Command(argv=["in-process"])], inboxes=[declared], state=hooks)
+    agent = AgentUnderTest(name="restorable", wakes=[Command(argv=["in-process"])], inboxes=[declared])
     driver = _Restorable(product)
     reach = HttpInboxReach(declared, {"nadia": TOKENS[NADIA]})
     clock = RunClock(scn.starts_at)
@@ -131,14 +130,14 @@ async def _fork(tmp_path: Path, product: Product, change: list[Override]) -> lis
         clock=clock,
         services=Services(providers=[]),
         replier=PeopleReplier(scn, None, [declared]),
-        state_dir=tmp_path / "state",
         traffic=_Quiet(),
         inboxes=Inboxes(scn, [reach]),
     )
     assert decided(parent_store.events()) == [("approve", T0 + hours(2))]
     at_seq, kept = next((s, c) for s, c in checkpoints(parent_store).items() if c.wake == 1)
-    # the restore, as the agent's own hooks would do it: its report, and its product, as they were then
-    assert kept.agent.kind == "restorable"
+    # this agent keeps its state in this process and in its product, outside its memory: put back by hand, as
+    # they were then, so its report after the fork is the one at the checkpoint
+    assert kept.agent.kind == "remembered"
     product.approvals["a1"].state = "pending"
     driver.report_now = AgentReport(status=AgentStatus.IDLE, next_wake=T0 + timedelta(days=1))
 

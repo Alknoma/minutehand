@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from minutehand.domain.agent import AgentUnderTest, StateHooks
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
 from minutehand.domain.scenario import Scenario, Seed, WrittenScenario
 
@@ -319,11 +319,33 @@ def test_a_tell_a_person_edits_into_a_document_is_refused() -> None:
         )
 
 
-def test_state_hooks_that_keep_no_snapshot_are_refused() -> None:
-    assert StateHooks(snapshot=["s"], restore=["r"]).keep is None
-    assert StateHooks(snapshot=["s"], restore=["r"], keep=3).keep == 3
-    with pytest.raises(ValidationError, match="greater than or equal to 1"):
-        StateHooks(snapshot=["s"], restore=["r"], keep=0)
+@pytest.mark.parametrize("old", ["state", "databases"])
+def test_an_agent_file_with_state_hooks_or_fronted_databases_is_refused_naming_the_store(old: str) -> None:
+    with pytest.raises(ValidationError, match=r"minutehand\.agent\.store"):
+        AgentUnderTest.model_validate({"name": "a", "wakes": [{"kind": "command", "argv": ["x"]}], old: {}})
+
+
+def test_a_scenario_seeds_the_agents_memory_with_json_values_and_refuses_a_key_twice() -> None:
+    seeded = Scenario.model_validate(
+        {**BASE, "memory": [{"key": "asks/sam", "value": {"status": "asked"}}, {"key": "n", "value": 3}]}
+    )
+    assert [(m.collection, m.key, m.value) for m in seeded.memory] == [
+        ("default", "asks/sam", {"status": "asked"}),
+        ("default", "n", 3),
+    ]
+    with pytest.raises(ValidationError, match="seeds a key twice: default/n"):
+        Scenario.model_validate({**BASE, "memory": [{"key": "n", "value": 1}, {"key": "n", "value": 2}]})
+
+
+def test_an_own_database_is_handed_out_in_one_variable_once() -> None:
+    with pytest.raises(ValidationError, match="two own databases"):
+        AgentUnderTest.model_validate(
+            {
+                "name": "a",
+                "wakes": [{"kind": "command", "argv": ["x"]}],
+                "own_databases": [{"env": "DB"}, {"env": "DB"}],
+            }
+        )
 
 
 def test_a_moment_counted_from_the_start_is_written_into_the_text_when_the_run_starts() -> None:

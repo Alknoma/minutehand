@@ -20,6 +20,7 @@ from typing import Annotated, Literal, Self
 from pydantic import AwareDatetime, Field, TypeAdapter, field_validator, model_validator
 
 from minutehand.domain.assessments import Rule, refuse_repeated_rules, refuse_unknown_people
+from minutehand.domain.memory import SeededMemory
 from minutehand.domain.model import Model
 
 ProviderKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
@@ -859,6 +860,19 @@ class _ScenarioBody(Model):
         description="Faults in delivering the agent's own wakes: late, twice or dropped. Without any, each is "
         "delivered at the moment it was asked for",
     )
+    memory: list[SeededMemory] = Field(
+        default=[],
+        description="What the agent's memory (`minutehand.agent.store`) holds when the run starts: each key and its "
+        "value. Nothing else is in it; the agent's own production database is never read",
+    )
+
+    @model_validator(mode="after")
+    def _one_value_per_key(self) -> Self:
+        keys = [(m.collection, m.key) for m in self.memory]
+        twice = sorted({f"{c}/{k}" for c, k in keys if keys.count((c, k)) > 1})
+        if twice:
+            raise ValueError(f"the memory seeds a key twice: {', '.join(twice)}")
+        return self
 
     @model_validator(mode="after")
     def _one_rule_per_wake(self) -> Self:

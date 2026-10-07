@@ -1,12 +1,11 @@
 """A small proactive agent: a program of its own that knows Slack and the wake contract, and nothing else.
 
 It talks to Slack with the stock `slack_sdk.WebClient` and its default base URL, verifies every pushed
-event with the stock `SignatureVerifier`, and keeps everything it knows in one state file, read and written
-on every request, so a restore of that file is a restore of the agent.
+event with the stock `SignatureVerifier`, and keeps everything it knows under one key of `minutehand.agent.store`,
+read and written on every request: the run's memory under Minutehand, the SQLite file FILE in production. A fork
+needs nothing from it.
 
     python slack_agent.py serve --port N --state FILE [--trace]
-    python slack_agent.py snapshot FILE      # copies FILE into $MINUTEHAND_SNAPSHOT_DIR
-    python slack_agent.py restore FILE       # puts it back, or removes FILE if there was none
 
 Behaviour, from AGENT_BEHAVIOUR:
   diligent    asks ASK_EMAIL a question when it gets the goal and wakes again in two days; woken with no
@@ -15,7 +14,9 @@ Behaviour, from AGENT_BEHAVIOUR:
   slack_only  has no wake endpoint for its goal: the owner's DM is the goal, and it then acts as diligent
               does on the answer
 
-Other variables: AGENT_SLACK_SIGNING_SECRET (the signing secret), TRACEPARENT (sent on every Slack call when
+Other variables: AGENT_SLACK_SIGNING_SECRET (the signing secret), OWN_DB (a SQLite file the agent writes its goal to,
+beside its memory), OUTSIDE_FILE (when set, the agent also keeps its
+next wake in this file, outside its memory, and reports the one the file holds: state no fork puts back), TRACEPARENT (sent on every Slack call when
 set), STRAY_URL (fetched once when the goal arrives), LOOKUP_URL (fetched when the goal arrives and again on
 the answer), MAIL_URL (an email API, posted to once when the goal arrives, to MAIL_TO, in the shape a
 SendGrid-like API takes: the text as HTML, MAIL_TEXT when set), AROUND_URL (a Slack call made around the proxy
@@ -39,8 +40,8 @@ faulthandler.dump_traceback_later(15, exit=False, file=_sys.stderr)
 
 import json
 import os
-import shutil
 import socketserver
+import sqlite3
 import sys
 import threading
 import urllib.error
@@ -58,6 +59,8 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web import SlackResponse
+
+from minutehand.agent import store
 
 TOKEN = "xoxb-agent-under-test"
 FOLLOW_UP_AFTER = timedelta(days=2)
@@ -93,11 +96,12 @@ class Agent:
         self.slack = WebClient(token=TOKEN, headers=headers)
         self.lock = threading.Lock()
 
-    # -- state, on disk only ------------------------------------------------------------------------------
+    # -- state, in its memory ------------------------------------------------------------------------------
 
     def load(self) -> dict[str, object]:
-        if self.state.exists():
-            return json.loads(self.state.read_text())
+        found = store.get("state")
+        if isinstance(found, dict):
+            return {str(k): v for k, v in found.items()}
         return {
             "goal": None,
             "follow_ups": 0,
@@ -109,8 +113,9 @@ class Agent:
         }
 
     def save(self, state: dict[str, object]) -> None:
-        self.state.parent.mkdir(parents=True, exist_ok=True)
-        self.state.write_text(json.dumps(state))
+        store.put("state", state)
+        if "OUTSIDE_FILE" in os.environ:
+            Path(os.environ["OUTSIDE_FILE"]).write_text(json.dumps(state["next_wake"]))
 
     # -- Slack ----------------------------------------------------------------------------------------------
 
@@ -181,6 +186,10 @@ class Agent:
     def take_goal(self, state: dict[str, object], goal: str, now: datetime) -> None:
         print(f"goal: {goal}", flush=True)
         state["goal"] = goal
+        if "OWN_DB" in os.environ:  # a database of its own beside its memory, which no fork puts back
+            with sqlite3.connect(os.environ["OWN_DB"]) as own:
+                own.execute("CREATE TABLE IF NOT EXISTS goals(goal TEXT)")
+                own.execute("INSERT INTO goals VALUES (?)", (goal,))
         if "STRAY_URL" in os.environ:
             try:
                 urllib.request.urlopen(os.environ["STRAY_URL"], timeout=10)
@@ -230,7 +239,12 @@ class Agent:
 
     def report(self) -> dict[str, object]:
         state = self.load()
-        return {"status": state["status"], "next_wake": state["next_wake"]}
+        # Its plan follows from what it remembers: nobody to chase once the answer is in.
+        next_wake = state["next_wake"] if state["answer"] is None else None
+        outside = Path(os.environ["OUTSIDE_FILE"]) if "OUTSIDE_FILE" in os.environ else None
+        if outside is not None and outside.exists():
+            next_wake = json.loads(outside.read_text())
+        return {"status": state["status"], "next_wake": next_wake}
 
     # -- the Events API -------------------------------------------------------------------------------------
 
@@ -266,6 +280,7 @@ class Agent:
 
 
 def serve(port: int, state: Path, *, tracing: bool) -> None:
+    store.configure(store.SqliteBackend(state))
     agent = Agent(state, tracing=tracing)
     wakes = agent.behaviour != "slack_only"
 
@@ -319,31 +334,11 @@ def serve(port: int, state: Path, *, tracing: bool) -> None:
     server.serve_forever(poll_interval=0.05)
 
 
-def snapshot(state: Path) -> None:
-    into = Path(env("MINUTEHAND_SNAPSHOT_DIR")) / "state.json"
-    if state.exists():
-        shutil.copyfile(state, into)
-    elif into.exists():
-        into.unlink()
-
-
-def restore(state: Path) -> None:
-    taken = Path(env("MINUTEHAND_SNAPSHOT_DIR")) / "state.json"
-    if taken.exists():
-        shutil.copyfile(taken, state)
-    elif state.exists():
-        state.unlink()
-
-
 def main() -> None:
     command = sys.argv[1]
     if command == "serve":
         port = int(sys.argv[sys.argv.index("--port") + 1])
         serve(port, Path(sys.argv[sys.argv.index("--state") + 1]), tracing="--trace" in sys.argv)
-    elif command == "snapshot":
-        snapshot(Path(sys.argv[2]))
-    elif command == "restore":
-        restore(Path(sys.argv[2]))
     else:
         raise SystemExit(f"unknown command {command}")
 

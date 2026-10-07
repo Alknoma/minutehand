@@ -264,57 +264,6 @@
       "title": "Command",
       "type": "object"
     },
-    "CommandBase": {
-      "additionalProperties": false,
-      "description": "The base is made and put back by commands of the agent's: a copy-on-write branch (Neon, a ZFS or btrfs\nsnapshot, a cloud volume snapshot) for a database too large to copy. Each command gets MINUTEHAND_DB_URL (the\nupstream) and MINUTEHAND_DB_BASE.\n\n`take` runs at the run's start with MINUTEHAND_DB_BASE set to a name Minutehand suggests; the last line it\nprints names the base it made. `put_back` runs before a fork's replay with MINUTEHAND_DB_BASE set to that name,\nand must leave the agent's database exactly as the base holds it.",
-      "properties": {
-        "drop": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Removes the base, with MINUTEHAND_DB_BASE set to its name, once no run left needs it; without it the base is kept and said to be kept",
-          "title": "Drop"
-        },
-        "kind": {
-          "const": "command",
-          "default": "command",
-          "title": "Kind",
-          "type": "string"
-        },
-        "put_back": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "title": "Put Back",
-          "type": "array"
-        },
-        "take": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "title": "Take",
-          "type": "array"
-        }
-      },
-      "required": [
-        "take",
-        "put_back"
-      ],
-      "title": "CommandBase",
-      "type": "object"
-    },
     "CommitmentState": {
       "enum": [
         "open",
@@ -437,6 +386,17 @@
           ],
           "default": null
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Memory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "messages": {
           "anyOf": [
             {
@@ -520,90 +480,6 @@
         }
       },
       "title": "Count",
-      "type": "object"
-    },
-    "Database": {
-      "additionalProperties": false,
-      "description": "A PostgreSQL database of the agent's that Minutehand fronts. The relay speaks PostgreSQL's wire protocol in\nthe clear only: a client asking for `sslmode=require` is told the server does not support SSL, and an upstream\nasking for it is refused here.",
-      "properties": {
-        "base": {
-          "default": {
-            "kind": "template"
-          },
-          "discriminator": {
-            "mapping": {
-              "command": "#/$defs/CommandBase",
-              "template": "#/$defs/TemplateBase"
-            },
-            "propertyName": "kind"
-          },
-          "oneOf": [
-            {
-              "$ref": "#/$defs/TemplateBase"
-            },
-            {
-              "$ref": "#/$defs/CommandBase"
-            }
-          ],
-          "title": "Base"
-        },
-        "digest": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Digest"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Digest the database at every checkpoint and compare after a fork's replay: `digest: {}` for the public schema"
-        },
-        "env": {
-          "anyOf": [
-            {
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "A variable set, for the agent's program, to the upstream's URL pointed at the relay",
-          "title": "Env"
-        },
-        "kind": {
-          "const": "postgres",
-          "default": "postgres",
-          "title": "Kind",
-          "type": "string"
-        },
-        "listen": {
-          "description": "host:port the relay listens on for the agent",
-          "pattern": "^[A-Za-z0-9.\\-]+:[0-9]{1,5}$",
-          "title": "Listen",
-          "type": "string"
-        },
-        "name": {
-          "description": "What the run's records call this database",
-          "pattern": "^[a-z][a-z0-9_]{0,30}$",
-          "title": "Name",
-          "type": "string"
-        },
-        "upstream": {
-          "description": "postgres://user:password@host:port/database: the real database, reached by the relay and by Minutehand's own connections (the base, the replay)",
-          "minLength": 1,
-          "title": "Upstream",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "listen",
-        "upstream"
-      ],
-      "title": "Database",
       "type": "object"
     },
     "Decision": {
@@ -725,26 +601,6 @@
       ],
       "title": "Delivery",
       "type": "string"
-    },
-    "Digest": {
-      "additionalProperties": false,
-      "description": "A digest of the database at every checkpoint, and again after a fork has put it back: a difference refuses\nthe fork. It reads every row of every table in `schemas` and every sequence, so it costs a scan of the\ndatabase per checkpoint; it catches what replaying cannot see, such as a value the database made up itself\n(`now()`, `random()`) in a write that did not return it, or a write that did not pass the relay.",
-      "properties": {
-        "schemas": {
-          "default": [
-            "public"
-          ],
-          "description": "The schemas whose tables are digested",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "title": "Schemas",
-          "type": "array"
-        }
-      },
-      "title": "Digest",
-      "type": "object"
     },
     "Each": {
       "description": "What a rule is read once for.",
@@ -1413,6 +1269,99 @@
       "title": "Listing",
       "type": "object"
     },
+    "Marked": {
+      "additionalProperties": false,
+      "description": "The agent is woken at `wake_url`, and a wake is over when the call returns. Its next wake is the moment it\nmarked with `minutehand.agent.wake` in that wake, or none: nothing else is asked of it.",
+      "properties": {
+        "kind": {
+          "const": "marked",
+          "default": "marked",
+          "title": "Kind",
+          "type": "string"
+        },
+        "wake_timeout": {
+          "default": "PT5M",
+          "description": "How long one call to wake_url may take",
+          "format": "duration",
+          "title": "Wake Timeout",
+          "type": "string"
+        },
+        "wake_url": {
+          "title": "Wake Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "wake_url"
+      ],
+      "title": "Marked",
+      "type": "object"
+    },
+    "Memory": {
+      "additionalProperties": false,
+      "description": "Keys of the agent's memory (`minutehand.agent.store`) as they stood at the count's `until` (the run's end\nwithout one): each key holding a value there is one fact, counted at the moment that value was written, so\n`since` keeps only those written from then on. `key` and `prefix` may hold `{person.key}`.",
+      "properties": {
+        "collection": {
+          "default": "default",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+          "title": "Collection",
+          "type": "string"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exactly this key",
+          "title": "Key"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Every key starting with this",
+          "title": "Prefix"
+        },
+        "values": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default": {},
+          "description": "Each field of the value (a dotted path into it, `venue.city`) equal to this; a value that is not an object, or lacks the field, does not match",
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "title": "Memory",
+      "type": "object"
+    },
     "MessageReading": {
       "additionalProperties": false,
       "description": "How a captured send is read as a message to a person, by paths into its request body.\n\nRecipients are every value found at every path, a string or a list of strings, each split on commas, with\n`Name <address>` read as the address. Each is matched to a scenario person by email, any case, or by\n`handles` (an SMS number, a webhook's user id); one that matches nobody stays in the message as written.\nThe text is the first candidate present and not empty.",
@@ -1605,6 +1554,35 @@
       ],
       "title": "OperationRequest",
       "type": "object"
+    },
+    "OwnDatabase": {
+      "additionalProperties": false,
+      "description": "A database the agent keeps state in outside `minutehand.agent.store`, by the variable it reads its location\nfrom. Minutehand hands every run, and every fork, a fresh empty SQLite file in that variable, so no run reads\nanother's or production's, and notes in the run that it is outside forks: a fork starts with an empty one, not\nthe parent's at the checkpoint. Any other database (PostgreSQL, a cloud one) is the team's to provide per run.",
+      "properties": {
+        "env": {
+          "description": "The variable the agent reads its location from",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Env",
+          "type": "string"
+        },
+        "form": {
+          "$ref": "#/$defs/OwnDatabaseForm",
+          "default": "file"
+        }
+      },
+      "required": [
+        "env"
+      ],
+      "title": "OwnDatabase",
+      "type": "object"
+    },
+    "OwnDatabaseForm": {
+      "enum": [
+        "file",
+        "sqlite_url"
+      ],
+      "title": "OwnDatabaseForm",
+      "type": "string"
     },
     "Paging": {
       "additionalProperties": false,
@@ -2329,144 +2307,6 @@
       "title": "SecretFromEnvironment",
       "type": "object"
     },
-    "StateHooks": {
-      "additionalProperties": false,
-      "description": "How the agent's own state is saved and put back, so a run can be rewound. Without hooks a run cannot be\nforked, and a sample after the first starts from whatever the agent remembers.\n\nEvery command receives MINUTEHAND_SNAPSHOT_DIR, the directory one checkpoint's snapshot lives in.\n\nA checkpoint is snapshotted only once the agent has settled: it reports it is not working, no outbound call of\nits has been seen for `quiet`, none it sent is still awaiting its answer, and, when it declares `busy`, that\ncommand says it is idle. One that has not settled after `settle_limit` is recorded as not restorable, with the\nreason, and is never snapshotted. Without `busy`, work the proxy cannot see (writes to a database on this\nmachine, a process computing) is not asked about, and each checkpoint says it was not confirmed.\n\nA restore is a sequence: `stop`, `restore`, `start`, then the agent's report endpoint must answer within\n`answer_limit`, and its report must equal the one recorded at the checkpoint, and its `fingerprint`, when it\ndeclares one, the one taken there. Any command running longer than `step_limit` fails its step.\n\nWhat the snapshot command writes is kept by the run's store, each file once across every snapshot of the run\nand its forks, and written back out as a plain directory for `restore`. `keep` bounds how many are kept.",
-      "properties": {
-        "answer_limit": {
-          "default": "PT2M",
-          "description": "How long after `start` the agent's report endpoint has to answer",
-          "format": "duration",
-          "title": "Answer Limit",
-          "type": "string"
-        },
-        "busy": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Asks the agent whether any of its work is still in flight: exit 0 means busy, 1 idle, anything else that it could not tell",
-          "title": "Busy"
-        },
-        "fingerprint": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Prints a digest of the agent's state (its database, and what its processes hold); taken at each checkpoint and compared after a restore, beside the report. Its last line of output is the digest",
-          "title": "Fingerprint"
-        },
-        "keep": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "How many of the run's newest snapshots are kept restorable; older ones are pruned, except one pinned (`minutehand pin`), the run's start and one a fork was taken from. None keeps every one",
-          "title": "Keep"
-        },
-        "quiet": {
-          "default": "PT1S",
-          "description": "How long no outbound call of the agent's must be seen before a checkpoint is taken",
-          "format": "duration",
-          "title": "Quiet",
-          "type": "string"
-        },
-        "restore": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "title": "Restore",
-          "type": "array"
-        },
-        "settle_limit": {
-          "default": "PT1M",
-          "description": "How long a checkpoint waits to settle before it is recorded as not restorable",
-          "format": "duration",
-          "title": "Settle Limit",
-          "type": "string"
-        },
-        "snapshot": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "title": "Snapshot",
-          "type": "array"
-        },
-        "start": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Starts them again after `restore`",
-          "title": "Start"
-        },
-        "step_limit": {
-          "default": "PT5M",
-          "description": "How long one hook command may run",
-          "format": "duration",
-          "title": "Step Limit",
-          "type": "string"
-        },
-        "stop": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Stops the agent's processes",
-          "title": "Stop"
-        }
-      },
-      "required": [
-        "snapshot",
-        "restore"
-      ],
-      "title": "StateHooks",
-      "type": "object"
-    },
     "StoppedBy": {
       "description": "How the run stopped, as a rule may name it (`domain.run.StopReason`).",
       "enum": [
@@ -2514,20 +2354,6 @@
         }
       },
       "title": "Succeeds",
-      "type": "object"
-    },
-    "TemplateBase": {
-      "additionalProperties": false,
-      "description": "The base is a copy of the agent's database made by PostgreSQL itself at the run's start:\n`CREATE DATABASE <base> TEMPLATE <database>`, a file-level copy. Quick for a database of a few gigabytes; it\nneeds no other connection to the agent's database while it is made, so it is made before the agent starts.",
-      "properties": {
-        "kind": {
-          "const": "template",
-          "default": "template",
-          "title": "Kind",
-          "type": "string"
-        }
-      },
-      "title": "TemplateBase",
       "type": "object"
     },
     "TemplateRequest": {
@@ -2854,15 +2680,6 @@
       "title": "Checks",
       "type": "array"
     },
-    "databases": {
-      "default": [],
-      "description": "The agent's own databases Minutehand fronts: it relays every connection, records the agent's committed writes, and puts each back for a fork from a base and those writes, with no state hooks",
-      "items": {
-        "$ref": "#/$defs/Database"
-      },
-      "title": "Databases",
-      "type": "array"
-    },
     "emulators": {
       "default": [],
       "description": "Fakes outside Minutehand that `forward` hosts are sent to, started or attached to",
@@ -2945,16 +2762,14 @@
       "title": "Outbound",
       "type": "array"
     },
-    "state": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/StateHooks"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+    "own_databases": {
+      "default": [],
+      "description": "Databases the agent keeps state in beside its memory, by the variable it reads each from: each run is handed a fresh empty SQLite file in each, outside forks",
+      "items": {
+        "$ref": "#/$defs/OwnDatabase"
+      },
+      "title": "Own Databases",
+      "type": "array"
     },
     "tick": {
       "anyOf": [
@@ -2992,6 +2807,7 @@
             "booked": "#/$defs/Booked",
             "command": "#/$defs/Command",
             "contained": "#/$defs/Contained",
+            "marked": "#/$defs/Marked",
             "polled": "#/$defs/Polled",
             "reported": "#/$defs/Reported"
           },
@@ -3000,6 +2816,9 @@
         "oneOf": [
           {
             "$ref": "#/$defs/Reported"
+          },
+          {
+            "$ref": "#/$defs/Marked"
           },
           {
             "$ref": "#/$defs/Booked"

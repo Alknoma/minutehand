@@ -1,7 +1,8 @@
 """What the end-to-end tests share: the scenario, the agent file, and the agent's own program.
 
 The agent is `agents/slack_agent.py`, started by Minutehand itself as `-- <command>` would start it, on a
-port of its own, keeping its state in a file the test can read afterwards.
+port of its own, keeping what it knows in `minutehand.agent.store`: the run's memory, which the test reads from the
+run's world afterwards. The SQLite file it would use in production is never opened under Minutehand.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.memory import memory_of
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported, StateHooks
+from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import (
     DelayRange,
@@ -91,9 +93,12 @@ class Launched:
     agent: AgentUnderTest
     command: list[str]
     state_file: Path
+    """Where the agent keeps its memory in production: never opened when Minutehand plays it."""
 
-    def state(self) -> dict[str, object]:
-        loaded = json.loads(self.state_file.read_text())
+    def state(self, state: Path, run_id: str, *, root: str | None = None) -> dict[str, object]:
+        """What the agent remembered by the end of a run: its memory as the run's log holds it."""
+        held = memory_of(world(state, run_id, root=root).events())
+        loaded = json.loads(held[("default", "state")])
         assert isinstance(loaded, dict)
         return loaded
 
@@ -104,7 +109,6 @@ def agent_under_test(
     behaviour: str,
     *,
     by_message: bool = False,
-    hooks: bool = False,
     tracing: bool = False,
 ) -> Launched:
     """The agent under test, its behaviour chosen through the environment its command inherits; with `tracing`, it
@@ -123,13 +127,6 @@ def agent_under_test(
         inbound=[
             InboundTarget(provider="slack", url=f"{base}/slack/events", secret=GeneratedSecret(env=SECRET_VARIABLE))
         ],
-        state=StateHooks(
-            snapshot=[*program, "snapshot", str(state_file)],
-            restore=[*program, "restore", str(state_file)],
-            quiet=timedelta(milliseconds=50),
-        )
-        if hooks
-        else None,
     )
     serve = [*program, "serve", "--port", str(port), "--state", str(state_file), *(["--trace"] if tracing else [])]
     return Launched(agent=agent, command=serve, state_file=state_file)
