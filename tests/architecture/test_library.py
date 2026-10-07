@@ -134,7 +134,7 @@ def test_the_reference_agent_against_the_library(rig: Rig, name: str, behaviour:
     env = {"REFERENCE_BEHAVIOUR": behaviour}
     if name in APPROVALS:
         env["REFERENCE_APPROVER"] = REFERENCE_TEAM.other.email
-    done = rig.run(str(path), env=env, inbox=name in APPROVALS)
+    done = rig.run(str(path), env=env, inbox=name in APPROVALS, policy=False)  # judged by the scenario's rules alone
 
     code, checks = REFERENCE[(name, behaviour)]
     assert (done.code, failed(rig.state, done.run_id)) == (code, checks), done.out + done.err[-3000:]
@@ -172,7 +172,7 @@ def test_a_late_scheduler_turns_a_plan_timed_to_the_due_moment_into_a_late_follo
     ran = {}
     for name in ("person_goes_quiet", "planned_wake_late"):
         rig = Rig(tmp_path / name, outside.model, outside.search, str(outside.ca))  # type: ignore[attr-defined]
-        done = rig.run(str(write(entry(name), REFERENCE_TEAM, rig.base, replace=False)), env=sixty)
+        done = rig.run(str(write(entry(name), REFERENCE_TEAM, rig.base, replace=False)), env=sixty, policy=False)
         ran[name] = (done.code, failed(rig.state, done.run_id), done.out)
 
     assert ran["person_goes_quiet"][:2] == (3, NONE), ran["person_goes_quiet"][2]
