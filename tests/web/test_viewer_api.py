@@ -1,8 +1,9 @@
 """The viewer's JSON API and its page, through httpx's ASGI transport, on real finished runs of the end-to-end
 test agent and on a run another connection is still writing.
 
-No browser runs here: what the page draws is not asserted, only that it reaches nothing beyond its own API and
-that every API path it calls exists and answers."""
+No browser runs here: what the page draws is not asserted, only that it reaches nothing beyond this server (its
+script, styles and the vendored libraries are served from /static/) and that every API path it calls exists and
+answers."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import re
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -19,16 +20,20 @@ from pydantic import BaseModel
 
 from minutehand import session
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.adapters.web.app import PAGE, create_app
+from minutehand.adapters.web.app import PAGE, STATIC, create_app
 from minutehand.adapters.web.responses import (
     CallsResponse,
     EventsResponse,
     FindingsResponse,
+    ModelCallResponse,
+    ModelTrafficResponse,
     ObligationsResponse,
     Refusal,
     RunResponse,
     RunsResponse,
     ScorecardResponse,
+    StepSpansResponse,
+    StepsResponse,
     WakesResponse,
 )
 from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, NoHooks, write_checkpoint
@@ -38,6 +43,7 @@ from minutehand.domain.checks import FindingKind, ObligationKind
 from minutehand.domain.experiment import Fork, PersonChange
 from minutehand.domain.outbound import Acknowledge
 from minutehand.domain.scenario import Silent
+from minutehand.domain.telemetry import Attribute, IntValue, ReceivedSpan, SpanSource, StringValue
 from minutehand.domain.world import (
     Actor,
     AnsweredBy,
@@ -50,6 +56,7 @@ from minutehand.domain.world import (
 )
 from tests.e2e.support import QUESTION, SOFIA, T0, agent_under_test, answers, scenario
 
+TRACE = "0af7651916cd43dd8448eb211c80319c"
 PATHS = ("", "/wakes", "/events", "/calls", "/obligations", "/findings", "/scorecard")
 
 
@@ -189,25 +196,92 @@ def _page() -> str:
     return PAGE.read_text(encoding="utf-8")
 
 
+def _script() -> str:
+    return (STATIC / "viewer.js").read_text(encoding="utf-8")
+
+
 async def test_the_page_is_served_and_refers_to_nothing_beyond_this_machine(tmp_path: Path) -> None:
     async with client(tmp_path / "state") as c:
         response = await c.get("/")
-    assert response.status_code == 200 and response.headers["content-type"].startswith("text/html")
-    assert response.text == _page()
-    assert re.findall(r"https?://", response.text, flags=re.IGNORECASE) == []
-    assert re.findall(r"""\b(?:src|href)\s*=\s*["'](?!#)""", response.text) == []
-    assert "@import" not in response.text and "url(" not in response.text
+        assert response.status_code == 200 and response.headers["content-type"].startswith("text/html")
+        assert response.text == _page()
+        assert re.findall(r"https?://", response.text, flags=re.IGNORECASE) == []
+        referenced = re.findall(r"""\b(?:src|href)\s*=\s*["']([^"'#][^"']*)["']""", response.text)
+        assert referenced and all(r.startswith("/static/") for r in referenced), referenced
+        for ref in referenced:
+            served = await c.get(ref)
+            assert served.status_code == 200 and served.content, ref
+            assert "@import" not in served.text and not re.search(r"url\(\s*['\"]?(?:https?:)?//", served.text), ref
+    own = (STATIC / "viewer.js").read_text(encoding="utf-8") + (STATIC / "viewer.css").read_text(encoding="utf-8")
+    assert re.findall(r"https?://", own, flags=re.IGNORECASE) == []
+
+
+def test_every_vendored_library_has_its_licence_beside_it() -> None:
+    libraries = sorted(p for p in (STATIC / "vendor").iterdir() if p.is_dir())
+    assert [p.name for p in libraries] == ["d3-7.9.0", "plot-0.6.17", "vis-timeline-8.5.4"]
+    for library in libraries:
+        assert any(f.name.startswith("LICENSE") for f in library.iterdir()), library.name
 
 
 async def test_every_api_path_the_page_calls_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     state = tmp_path / "state"
     parent, _, _ = await parent_and_fork(state, tmp_path, monkeypatch)
-    called = sorted(set(re.findall(r'"(/api/[^"]*)"', _page())))
-    assert "/api/runs" in called and "/api/runs/{run}/obligations" in called
+    called = sorted(set(re.findall(r'"(/api/[^"]*)"', _script())))
+    assert "/api/runs" in called and "/api/runs/{run}/obligations" in called and "/api/runs/{run}/steps" in called
     async with client(state) as c:
         for path in called:
-            response = await c.get(path.replace("{run}", parent))
+            if "{span}" in path:
+                continue  # a model call: this run's agent sends no telemetry, see the test of that endpoint
+            response = await c.get(path.replace("{run}", parent).replace("{step}", "1"))
             assert response.status_code == 200, (path, response.text)
+
+
+def _model_span(span_id: str, start: datetime, *, parent: str | None, tokens: int) -> ReceivedSpan:
+    return ReceivedSpan(
+        trace_id=TRACE,
+        span_id=span_id,
+        parent_span_id=parent,
+        name="chat m",
+        start=start,
+        end=start + timedelta(seconds=2),
+        attributes=[
+            Attribute(key="gen_ai.operation.name", value=StringValue(value="chat")),
+            Attribute(key="gen_ai.request.model", value=StringValue(value="m")),
+            Attribute(key="gen_ai.input.messages", value=StringValue(value='[{"role": "user", "parts": []}]')),
+            Attribute(key="gen_ai.usage.input_tokens", value=IntValue(value=tokens)),
+        ],
+    )
+
+
+async def test_a_step_its_spans_and_one_model_call_are_answered_for_the_waterfall_and_the_detail(
+    tmp_path: Path,
+) -> None:
+    """`/steps` spans each step from its first act to its last, `/steps/{n}/spans` lists its spans without their
+    attributes, `/model-traffic` says how long each call took, and `/model-calls/{span}` carries what it was asked."""
+    state = tmp_path / "state"
+    directory = session.run_dir(state, "traced")
+    directory.mkdir(parents=True)
+    (directory / session.SCENARIO).write_text(scenario(Silent()).model_dump_json())
+    writer = SqliteStore(directory / session.WORLD, "traced", RunClock(T0))
+    real = datetime.now(UTC) - timedelta(minutes=5)  # clock-lint: exempt a span's start is the agent's real time
+    root = ReceivedSpan(trace_id=TRACE, span_id="a" * 16, name="turn", start=real, end=real + timedelta(seconds=9))
+    writer.receive(
+        [root, _model_span("b" * 16, real + timedelta(seconds=1), parent="a" * 16, tokens=40)],
+        source=SpanSource.RECEIVED,
+    )
+    async with client(state) as c:
+        steps = await read(c, "/api/runs/traced/steps", StepsResponse)
+        spans = await read(c, f"/api/runs/traced/steps/{steps.steps[0].step}/spans", StepSpansResponse)
+        traffic = await read(c, "/api/runs/traced/model-traffic", ModelTrafficResponse)
+        call = await read(c, f"/api/runs/traced/model-calls/{'b' * 16}", ModelCallResponse)
+        missing = await c.get(f"/api/runs/traced/model-calls/{'f' * 16}")
+    [step] = steps.steps  # no wake began: both spans are placed in setup, the wake they arrived in
+    assert (step.began, step.ended, step.spans, step.model_calls) == (real, real + timedelta(seconds=9), 2, 1)
+    assert [(s.name, s.model_call) for s in spans.spans] == [("turn", False), ("chat m", True)]
+    [traced] = traffic.calls
+    assert traced.ended - traced.started == timedelta(seconds=2) and traced.input_tokens == 40
+    assert call.call.input_messages == '[{"role": "user", "parts": []}]' and call.wrote == []
+    assert missing.status_code == 404
 
 
 async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_and_its_redacted_bodies(
@@ -230,5 +304,5 @@ async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_
         AnsweredBy.DECLARATION,
     )
     assert mail.exchange.request_body is not None and "sg-key-in-body" not in mail.exchange.request_body
-    page = _page()
+    page = _script()
     assert '"/api/runs/{run}/calls"' in page and "Outbound calls" in page and "REPLAYED from a recording" in page

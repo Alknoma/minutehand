@@ -1,10 +1,32 @@
 [project]
 name = "minutehand"
+# The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
+# installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
 version = "0.0.1"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "LICENSE.md" }
+# An SPDX expression (PEP 639). FSL-1.1-ALv2 is on the SPDX list since 3.26 and in `packaging` since 26.0, which
+# both hatchling (below) and PyPI's upload validation check it with.
+license = "FSL-1.1-ALv2"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Alknoma" }]
+keywords = ["agents", "ai-agents", "testing", "simulation", "proxy", "fakes", "pytest", "evaluation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Testing :: Mocking",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.9",
     "mitmproxy>=12,<13",
@@ -28,6 +50,11 @@ dependencies = [
 [project.optional-dependencies]
 # Receiving an agent's OTLP over gRPC, on the same port as OTLP/HTTP.
 grpc = ["grpcio>=1.60"]
+
+[project.urls]
+Repository = "https://github.com/Alknoma/minutehand"
+Issues = "https://github.com/Alknoma/minutehand/issues"
+Documentation = "https://github.com/Alknoma/minutehand/tree/integration-main/docs"
 
 [project.scripts]
 minutehand = "minutehand.cli:main"
@@ -54,7 +81,9 @@ recipes = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+# hatchling 1.27 writes PEP 639 licence metadata (Metadata-Version 2.4 and later); packaging 26 is the first to know
+# FSL-1.1-ALv2, and hatchling refuses an expression its packaging does not know.
+requires = ["hatchling>=1.27", "packaging>=26"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -67,6 +96,9 @@ include = [
     "/src/minutehand/**/*.css",
     "/src/minutehand/**/*.js",
     "/src/minutehand/**/*.md",
+    "/src/minutehand/**/*.txt",
+    # PEP 561: a suite type-checking its use of `minutehand.testing` reads our annotations.
+    "/src/minutehand/py.typed",
     "/src/minutehand/library/*.yaml",
 ]
 sources = ["src"]

@@ -7,7 +7,6 @@ port of its own, keeping its state in a file the test can read afterwards.
 from __future__ import annotations
 
 import json
-import socket
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -32,6 +31,7 @@ from minutehand.domain.scenario import (
 )
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, WorldEvent
 from minutehand.session import RUNS, WORLD
+from tests.ports import free_port
 
 AGENT = Path(__file__).parent / "agents" / "slack_agent.py"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
@@ -67,12 +67,6 @@ def scenario(sofia: ReplyBehaviour, *, owner: ReplyBehaviour = Silent(), name: s
         ],
         expect=[PersonAsked(person="sofia"), PersonAsked(person="owner", mentions=["confirmed"])],
     )
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 @dataclass(frozen=True)

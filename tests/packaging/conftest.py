@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "follow_up"
+VERSION: str = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+TWINE = "twine==7.0.0"
+"""The checker PyPI's own upload docs name; pinned so a release checks what this suite checked."""
 IMAGE = "minutehand-pkg-test"
 """The image a user runs; `IMAGE-example` is the same plus the example agent's one library."""
 
@@ -68,6 +72,7 @@ class Installed:
 
 @pytest.fixture(scope="session")
 def dist(tmp_path_factory: pytest.TempPathFactory) -> Dist:
+    """What `uv build` makes, as the release workflow runs it: the sdist, and the wheel built FROM that sdist."""
     out = tmp_path_factory.mktemp("dist")
     checked(tool("uv"), "build", "--out-dir", str(out))
     sdists, wheels = sorted(out.glob("*.tar.gz")), sorted(out.glob("*.whl"))
@@ -76,12 +81,32 @@ def dist(tmp_path_factory: pytest.TempPathFactory) -> Dist:
 
 
 @pytest.fixture(scope="session")
-def installed(dist: Dist, tmp_path_factory: pytest.TempPathFactory) -> Installed:
-    venv = tmp_path_factory.mktemp("installed") / "venv"
+def tree_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The wheel built straight from this tree, without the sdist between."""
+    out = tmp_path_factory.mktemp("tree_wheel")
+    checked(tool("uv"), "build", "--wheel", "--out-dir", str(out))
+    wheels = sorted(out.glob("*.whl"))
+    assert len(wheels) == 1, sorted(p.name for p in out.iterdir())
+    return wheels[0]
+
+
+def _installed(wheel: Path, venv: Path, *also: str) -> Installed:
     uv = tool("uv")
     checked(uv, "venv", "--python", sys.executable, str(venv))
-    checked(uv, "pip", "install", "--python", str(venv / "bin" / "python"), str(dist.wheel))
+    checked(uv, "pip", "install", "--python", str(venv / "bin" / "python"), str(wheel), *also)
     return Installed(venv=venv)
+
+
+@pytest.fixture(scope="session")
+def installed(dist: Dist, tmp_path_factory: pytest.TempPathFactory) -> Installed:
+    return _installed(dist.wheel, tmp_path_factory.mktemp("installed") / "venv")
+
+
+@pytest.fixture(scope="session")
+def installed_with_pytest(dist: Dist, tmp_path_factory: pytest.TempPathFactory) -> Installed:
+    """The wheel and pytest, in an environment of their own: a user's suite, with the plugin found by its entry
+    point. Separate from `installed`, which must hold the wheel's dependencies and nothing else."""
+    return _installed(dist.wheel, tmp_path_factory.mktemp("installed_with_pytest") / "venv", "pytest")
 
 
 @pytest.fixture(scope="session")

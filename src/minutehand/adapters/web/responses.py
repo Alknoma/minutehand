@@ -7,13 +7,13 @@ from enum import StrEnum
 from pydantic import AwareDatetime, Field
 
 from minutehand.application.forks import ForkAccount
-from minutehand.application.model_calls import EventTrace, JoinedBy
+from minutehand.application.model_calls import EventTrace, JoinedBy, ModelCall
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.checks import Effectiveness, Finding, Obligation, Pattern, WakeRecord
 from minutehand.domain.run import RunRecord, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, Scenario
-from minutehand.domain.telemetry import ForwardFailure, StoredSpan
+from minutehand.domain.telemetry import ForwardFailure, SpanStatus, StoredSpan
 from minutehand.domain.world import Actor, RecordedCall, WorldEvent
 from minutehand.session import ForkPoint
 
@@ -106,6 +106,7 @@ class TrafficCall(Model):
     trace_id: str
     step: int = Field(description="The wake or step it is placed in")
     started: AwareDatetime = Field(description="Real time")
+    ended: AwareDatetime = Field(description="Real time: with `started`, how long the model took to answer")
     model: str | None
     input_tokens: int | None
     output_tokens: int | None
@@ -126,6 +127,48 @@ class HostTraffic(Model):
 class ModelTrafficResponse(Model):
     calls: list[TrafficCall] = Field(description="Every model call a span was received or recorded of, by start")
     hosts: list[HostTraffic] = Field(description="Model hosts reached on tunnels never opened, one line each")
+
+
+class StepActivity(Model):
+    """What one wake or step of the run did in real time, as far as its record and the agent's spans show it."""
+
+    step: int = Field(ge=0, description="The wake or step its events and spans are placed in; 0 is setup")
+    began: AwareDatetime = Field(description="Real time: the earliest event written or span started in it")
+    ended: AwareDatetime = Field(description="Real time: the latest event written or span ended in it")
+    events: int = Field(ge=0, description="Events of the world's log placed in it, reads included")
+    spans: int = Field(ge=0, description="Spans of the agent's telemetry placed in it")
+    model_calls: int = Field(ge=0, description="Of those spans, the calls to a model")
+
+
+class StepsResponse(Model):
+    steps: list[StepActivity] = Field(
+        description="Every wake or step that holds an event or a span, by number; a step whose record says it "
+        "happened and that holds neither is not listed"
+    )
+
+
+class SpanBar(Model):
+    """One span of the agent's telemetry, without its attributes: what a waterfall draws."""
+
+    span_id: str
+    parent_span_id: str | None
+    trace_id: str
+    name: str
+    service: str | None
+    start: AwareDatetime = Field(description="Real time")
+    end: AwareDatetime = Field(description="Real time")
+    status: SpanStatus
+    model_call: bool = Field(description="A call to a model (`application.model_calls.is_model_call`)")
+
+
+class StepSpansResponse(Model):
+    step: int
+    spans: list[SpanBar] = Field(description="Every span placed in the step, by start; log events left out")
+
+
+class ModelCallResponse(Model):
+    call: ModelCall = Field(description="What the model was asked and answered, as its span carries them")
+    wrote: list[int] = Field(description="Seqs of the messages this call is joined to as their writer")
 
 
 class WakesResponse(Model):
