@@ -90,8 +90,6 @@ dev = [
     "pyjwt[crypto]>=2.10",
     "python-docx==1.2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
-    "psycopg[binary]>=3.2",
-    "asyncpg>=0.32.0",
 ]
 recipes = [
     "anthropic>=1.11.0",
@@ -137,13 +135,12 @@ asyncio_mode = "auto"
 pythonpath = ["src", "."]
 # A test that reaches a real service is a broken test: only this machine is reachable.
 # A test that hangs fails at 60 seconds. Tests run in a random order every time.
-addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not firestore and not benchmark and not docker and not recipes'"
+addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not benchmark and not docker and not recipes'"
 markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
     "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
-    "docker: runs a downloaded open-source emulator, or PostgreSQL, in a container named minutehand-ext-* (or the server MINUTEHAND_TEST_POSTGRES names); needs Docker; run with -m docker",
-    "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
+    "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
     "conformance: one property of docs/conformance.md held against one provider through its vendor API, the control API and the world's record; runs by default",
 ]
 filterwarnings = [
