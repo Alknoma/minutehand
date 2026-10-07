@@ -297,7 +297,8 @@ async def test_a_wake_made_only_of_a_booking_waits_for_the_agent_to_act_on_the_d
                     report_first_after=timedelta(milliseconds=1),
                     report_at_most_every=timedelta(milliseconds=5),
                 ),
-                Booked(),
+                # The agent never takes the delivery from its queue: the wait that matters is on its report.
+                Booked(take_limit=timedelta(seconds=0.1)),
             ],
         )
         clock = RecordingClock(scn.starts_at)
