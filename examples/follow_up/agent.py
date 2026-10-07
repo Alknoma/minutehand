@@ -27,8 +27,11 @@ Environment:
     MAIL_API                    the email API (default https://api.mail.example/v3/mail/send)
     MAIL_API_KEY                its key, sent as a bearer token (default a made-up one)
     LOOKUP_URL                  a venue search, the venue's name appended to it; none by default
+    AGENT_DB                    where it remembers things in production (default follow_up.db)
 
-Everything it knows lives in this process and is gone when it exits, which is fine for one run.
+What it remembers (its status, its next wake, whether it followed up, Rosa's answer) it keeps in
+`minutehand.agent.store`, read afresh on every wake, event and report: in production a SQLite file, and under
+Minutehand the run's own memory, so a fork from any checkpoint starts from what it remembered there.
 """
 
 from __future__ import annotations
@@ -45,6 +48,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 
+from minutehand.agent import store
+
 COLLEAGUE = "rosa@example.com"  # who knows the answer
 OWNER = "owen@example.com"  # who gave the agent its goal
 FOLLOW_UP_AFTER = timedelta(days=2)
@@ -59,10 +64,42 @@ class Agent:
         self.follows_up = os.environ.get("AGENT_BEHAVIOUR", "diligent") != "forgetful"
         self.slack = WebClient(token="xoxb-example-agent")
         self.verifier = SignatureVerifier(os.environ["AGENT_SLACK_SIGNING_SECRET"])
-        self.status = "idle"
-        self.next_wake: datetime | None = None
-        self.followed_up = False
-        self.answer: str | None = None
+
+    # -- what it remembers, in the store ------------------------------------------------------------------------
+
+    @property
+    def status(self) -> str:
+        return str(store.get("status", "idle"))
+
+    @status.setter
+    def status(self, value: str) -> None:
+        store.put("status", value)
+
+    @property
+    def next_wake(self) -> datetime | None:
+        found = store.get("next_wake")
+        return datetime.fromisoformat(found) if isinstance(found, str) else None
+
+    @next_wake.setter
+    def next_wake(self, value: datetime | None) -> None:
+        store.put("next_wake", value.isoformat() if value else None)
+
+    @property
+    def followed_up(self) -> bool:
+        return store.get("followed_up") is True
+
+    @followed_up.setter
+    def followed_up(self, value: bool) -> None:
+        store.put("followed_up", value)
+
+    @property
+    def answer(self) -> str | None:
+        found = store.get("answer")
+        return found if isinstance(found, str) else None
+
+    @answer.setter
+    def answer(self, value: str | None) -> None:
+        store.put("answer", value)
 
     def send(self, email: str, text: str) -> None:
         """A direct message, the way any Slack app sends one."""
@@ -125,6 +162,7 @@ class Agent:
         urllib.request.urlopen(request, timeout=10).close()
 
 
+store.configure(store.SqliteBackend(os.environ.get("AGENT_DB", "follow_up.db")))
 agent = Agent()
 one_at_a_time = threading.Lock()  # a wake and a Slack event can arrive together; take them in turn
 

@@ -1,8 +1,8 @@
 """An OpenAI Agents SDK agent that asks a colleague in Slack, remembers when it expects an answer, and follows up once.
 
-The agent is an `Agent` with three `function_tool`s and a typed run context, `Memory`, that lives as long as the
-process. Each wake or Slack event is one `Runner.run` with the situation as its input and the same `Memory` as its
-context. The tools write the waits into it (`remember_wait`, `close_wait`), and the report Minutehand asks for after
+The agent is an `Agent` with three `function_tool`s and a typed run context, `Memory`, recalled from
+`minutehand.agent.store` on every wake, event and report and kept back after. Each wake or Slack event is one
+`Runner.run` with the situation as its input and that `Memory` as its context. The tools write the waits into it (`remember_wait`, `close_wait`), and the report Minutehand asks for after
 every wake reads it: `next_wake` is the earliest moment a wait is expected by.
 
     POST /wake          {"now": ..., "reason": "start" | "due" | ..., "goal": ...}: run the agent on what is due
@@ -27,6 +27,7 @@ import json
 import os
 import socketserver
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,8 @@ from agents import Agent, OpenAIChatCompletionsModel, RunContextWrapper, Runner,
 from openai import AsyncOpenAI
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
+
+from minutehand.agent import store
 
 OWNER = "owen@example.com"  # who gives the agent its goal
 ASK = "rosa@example.com"  # who knows the answer
@@ -98,7 +101,48 @@ agent = Agent[Memory](
         ),
     ),
 )
+# -- what it remembers, in `minutehand.agent.store` ---------------------------------------------------------------
+
+# Production keeps the memory in this process (swap in `store.SqliteBackend(path)` to keep it across restarts).
+# Under Minutehand the store is the run's own memory, which a fork starts from as it stood at its checkpoint.
+store.configure(store.MemoryBackend())
+waits_kept = store.collection("waits")
 memory = Memory()
+
+
+def recall() -> None:
+    """Read what the agent remembers from the store: on every wake, event and report, never from the last one."""
+    global memory
+    goal = store.get("goal")
+    waits: dict[str, Wait] = {}
+    for email, kept in waits_kept.list():
+        assert isinstance(kept, dict)
+        waits[email] = Wait(datetime.fromisoformat(str(kept["expected_by"])), int(str(kept["asks"])))
+    memory = Memory(goal=goal if isinstance(goal, str) else None, waits=waits)
+
+
+def keep() -> None:
+    """Write what the agent remembers back to the store, all of it at once."""
+    gone = {email for email, _ in waits_kept.list()} - memory.waits.keys()
+    with store.batch() as kept:
+        kept.put("goal", memory.goal)
+        for email in gone:
+            kept.delete(email, collection="waits")
+        for email, wait in memory.waits.items():
+            kept.put(email, {"expected_by": wait.expected_by.isoformat(), "asks": wait.asks}, collection="waits")
+
+
+def remembering(handle: Callable[[dict[str, str]], None]) -> Callable[[dict[str, str]], None]:
+    """Recall before handling a wake or an event, and keep what changed after it."""
+
+    def handled(said: dict[str, str]) -> None:
+        recall()
+        try:
+            handle(said)
+        finally:
+            keep()
+
+    return handled
 
 
 def run(now: datetime, happened: str) -> None:
@@ -110,6 +154,7 @@ def run(now: datetime, happened: str) -> None:
 # -- the Minutehand side: three endpoints ----------------------------------------------------------------------
 
 
+@remembering
 def wake(request: dict[str, str]) -> None:
     now = datetime.fromisoformat(request["now"])
     if request["reason"] == "start":
@@ -123,6 +168,7 @@ def wake(request: dict[str, str]) -> None:
 
 
 def report() -> dict[str, object]:
+    recall()
     if memory.goal is None:
         return {"status": "idle", "next_wake": None}
     if not memory.waits:
@@ -130,6 +176,7 @@ def report() -> dict[str, object]:
     return {"status": "idle", "next_wake": min(w.expected_by for w in memory.waits.values()).isoformat()}
 
 
+@remembering
 def message(event: dict[str, str]) -> None:
     """Someone wrote to the agent: an answer from a person it waits on goes through the agent."""
     email = slack.users_info(user=event["user"])["user"]["profile"]["email"]

@@ -1,9 +1,10 @@
 // A Vercel AI SDK agent that asks a colleague in Slack, remembers when it expects an answer, and follows up once.
 //
 // Each wake or Slack event is one `generateText` call with three tools and a stop condition, the AI SDK's
-// tool loop. The tools write the waits into `memory`, which lives as long as the process (`remember_wait`,
-// `close_wait`), and the report Minutehand asks for after every wake reads it: `next_wake` is the earliest
-// moment a wait is expected by.
+// tool loop. The tools write the waits into `memory` (`remember_wait`, `close_wait`), which is recalled from the
+// store (`minutehand-store.ts`) on every wake, event and report and kept back after; the report Minutehand asks for
+// after every wake reads it: `next_wake` is the earliest moment a wait is expected by. Under Minutehand the store is
+// the run's own memory, so a fork starts from what the agent remembered at its checkpoint.
 //
 //     POST /wake          {"now": ..., "reason": "start" | "due" | ..., "goal": ...}: run the agent on what is due
 //     GET  /report        {"status": "idle" | "done", "next_wake": the earliest expected-by date, or null}
@@ -28,6 +29,8 @@ import { WebClient } from "@slack/web-api";
 import { generateText, isStepCount, tool } from "ai";
 import { z } from "zod";
 
+import * as store from "./minutehand-store.ts";
+
 const OWNER = "owen@example.com"; // who gives the agent its goal
 const ASK = "rosa@example.com"; // who knows the answer
 const SYSTEM =
@@ -45,8 +48,40 @@ const openai = createOpenAI({
 });
 
 type Wait = { expectedBy: Date; asks: number };
-// What the agent knows between runs: its goal and who owes it an answer by when.
+// What the agent knows between runs: its goal and who owes it an answer by when. Recalled from the store before
+// each wake, event and report, and kept back after each wake and event.
 const memory: { goal: string | null; waits: Map<string, Wait> } = { goal: null, waits: new Map() };
+
+async function recall(): Promise<void> {
+  const goal = await store.get("goal");
+  memory.goal = typeof goal === "string" ? goal : null;
+  memory.waits = new Map();
+  for (const [email, kept] of await store.list("", "waits")) {
+    const wait = kept as { expected_by: string; asks: number };
+    memory.waits.set(email, { expectedBy: new Date(wait.expected_by), asks: wait.asks });
+  }
+}
+
+async function keep(): Promise<void> {
+  const writes: store.Write[] = [{ op: "put", collection: "default", key: "goal", value: memory.goal }];
+  for (const [email] of await store.list("", "waits")) {
+    if (!memory.waits.has(email)) writes.push({ op: "delete", collection: "waits", key: email });
+  }
+  for (const [email, wait] of memory.waits) {
+    const value = { expected_by: iso(wait.expectedBy), asks: wait.asks };
+    writes.push({ op: "put", collection: "waits", key: email, value });
+  }
+  await store.write(writes);
+}
+
+async function remembering(work: () => Promise<void>): Promise<void> {
+  await recall();
+  try {
+    await work();
+  } finally {
+    await keep();
+  }
+}
 
 const tools = {
   send_slack_message: tool({
@@ -158,13 +193,13 @@ createServer(async (request, response) => {
   const body = Buffer.concat(chunks).toString("utf8");
   try {
     if (request.method === "POST" && request.url === "/wake") {
-      await inTurn(() => wake(JSON.parse(body)));
+      await inTurn(() => remembering(() => wake(JSON.parse(body))));
       answer(response, 200, { ok: true });
     } else if (request.method === "POST" && request.url === "/slack/events" && signedBySlack(request, body)) {
-      await inTurn(() => message(JSON.parse(body).event));
+      await inTurn(() => remembering(() => message(JSON.parse(body).event)));
       answer(response, 200, { ok: true });
     } else if (request.method === "GET" && request.url === "/report") {
-      answer(response, 200, await inTurn(async () => report()));
+      answer(response, 200, await inTurn(async () => (await recall(), report())));
     } else {
       answer(response, 404, { error: "no such endpoint, or a Slack event that is not signed" });
     }

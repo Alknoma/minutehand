@@ -1,7 +1,8 @@
 # LangGraph
 
 `agent.py` is a LangGraph graph of the usual shape (a chat model with tools bound, a `ToolNode`, `tools_condition`
-between them, an `InMemorySaver` checkpointer) behind three endpoints Minutehand calls. `../README.md` describes the
+between them) behind three endpoints Minutehand calls, with the goal and the waits kept between wakes in
+`minutehand.agent.store`. `../README.md` describes the
 agent and the contract all five recipes share.
 
 ## The lines that connect it
@@ -13,37 +14,53 @@ class State(TypedDict):
     goal: str
 
 
+store.configure(store.MemoryBackend())  # production: this process; under Minutehand: the run's memory
+waits_kept = store.collection("waits")
+
+
+def run(goal, waits, text):  # one run of the graph from the store, and the waits it ends with written back
+    ended = graph.invoke({"messages": [HumanMessage(text)], "goal": goal, "waits": waits})
+    with store.batch() as kept:
+        kept.put("goal", goal)
+        ...  # each wait in ended["waits"] put, each one gone deleted, collection="waits"
+
+
 def wake(request):  # POST /wake
     now = datetime.fromisoformat(request["now"])
     if request["reason"] == "start":
-        first = situation(now, request["goal"], "Nobody has been asked yet.")
-        graph.invoke({"messages": [HumanMessage(first)], "goal": request["goal"], "waits": {}}, THREAD)
+        run(request["goal"], {}, situation(now, request["goal"], "Nobody has been asked yet."))
         return
-    for email, wait in state()["waits"].items():  # reason "due": whatever has passed its date
+    goal, waits = recalled()  # the goal and the waits, as the store holds them now
+    for email, wait in waits.items():  # reason "due": whatever has passed its date
         if datetime.fromisoformat(wait["expected_by"]) <= now:
             overdue = (
                 f"No answer yet from {email}, expected by {wait['expected_by']}. Follow-ups sent: {wait['asks'] - 1}."
             )
-            graph.invoke({"messages": [HumanMessage(situation(now, state()["goal"], overdue))]}, THREAD)
+            run(goal, recalled()[1], situation(now, goal, overdue))
 
 
 def report():  # GET /report, after every wake
-    if not graph.get_state(THREAD).values:
+    goal, waits = recalled()
+    if goal is None:
         return {"status": "idle", "next_wake": None}
-    dates = [datetime.fromisoformat(w["expected_by"]) for w in state()["waits"].values() if w is not None]
+    dates = [datetime.fromisoformat(w["expected_by"]) for w in waits.values() if w is not None]
     if not dates:
         return {"status": "done", "next_wake": None}
     return {"status": "idle", "next_wake": min(dates).isoformat()}
 ```
 
-- **The wake handler** runs the compiled graph on one thread (`THREAD`), so the checkpointer carries the
-  conversation and `waits` from one wake to the next. A Slack event from a person the agent waits on runs it the
-  same way (`message`).
-- **`next_wake`** is read from the graph's own state: `graph.get_state(THREAD).values["waits"]`. The model writes
-  it through tools that return `Command(update={"waits": ...})`; `remember_wait` reads the current state through
+- **The wake handler** runs the compiled graph once per wake, from the goal and the waits the store holds, and
+  writes the waits it ends with back in one batch. A Slack event from a person the agent waits on runs it the same
+  way (`message`). There is no checkpointer: what the agent remembers between wakes is in the store, so under
+  Minutehand it is the run's own memory and a fork from any checkpoint starts from what the agent remembered there,
+  with nothing to snapshot or restore. A wake's conversation is not kept past it; the situation each run is given
+  carries what the model needs.
+- **`next_wake`** is read from the store: the earliest `expected_by` among the waits. The model writes the waits
+  through tools that return `Command(update={"waits": ...})`; `remember_wait` reads the current state through
   `InjectedState` to count the asks. `merge_waits` is the reducer, so two tool calls in one step both land.
 - **The Slack tool** is a plain `@tool` on `slack_sdk.WebClient`. It calls `slack.com`; Minutehand's `HTTPS_PROXY`
-  and CA in the agent's environment take the call to the fake Slack. Nothing in the agent names Minutehand.
+  and CA in the agent's environment take the call to the fake Slack. The store is the only line that names
+  Minutehand, and it does nothing in production but pass to the backend configured.
 
 ## The model
 
@@ -67,5 +84,5 @@ uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml --
 # exits 0: one follow-up two days in, then Owen is told Rosa never answered; no follows_up_when_due finding
 ```
 
-Outside this checkout: `pip install langgraph langchain-openai slack_sdk` in the agent's Python, and Minutehand
+Outside this checkout: `pip install langgraph langchain-openai slack_sdk minutehand` in the agent's Python, and Minutehand
 installed on its own (`uv tool install .` from a checkout); then `minutehand run …` without `uv run`.
