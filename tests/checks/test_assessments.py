@@ -19,7 +19,7 @@ from minutehand.domain.assessments import StoppedBy, merged, refuse_unknown_peop
 from minutehand.domain.checks import CommitmentsReported, Finding, FindingKind, RunView, Severity, WakeRecord
 from minutehand.domain.clock import Due, DueClosed, DueEntry, DueKind, DueSource
 from minutehand.domain.scenario import Absence, AbsenceTrigger, DispatchFault, Scenario, Silent
-from minutehand.domain.world import Actor, Operation, TicketState
+from minutehand.domain.world import Actor, EntityKind, EntityRef, InboxItemSnapshot, ItemStatus, Operation, TicketState
 from tests.checks.world import Log, at, person, reply, rules, scenario, view
 
 OWNER, SOFIA, MARCUS = person("owner"), person("sofia"), person("marcus")
@@ -358,7 +358,7 @@ def test_a_rule_naming_the_deadline_of_a_scenario_without_one_is_unread_and_note
     assert report.findings == []
     assert report.notes == [
         "rule nothing_after_the_deadline was not read 1 time: it names a moment the run never reached, or one that "
-        "was not there (an answer never given, a deadline never set)"
+        "was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, what an item holds back)"
     ]
 
 
@@ -782,3 +782,39 @@ def test_a_message_to_someone_else_is_not_one_to_the_owner() -> None:
     log.message([MARCUS], 72.5, text="Dania has not answered; could you nudge her?")
     log.message([OWNER], 100, text="status")
     assert len(found(view(scenario(OWNER, DANIA, MARCUS), log), written)) == 1
+
+
+def test_planned_wakes_of_a_run_that_kept_no_table_are_unread_rather_than_none() -> None:
+    written = """
+    - id: planned_to_be_back
+      count: {planned_wakes: {}}
+      at_least: 1
+    """
+    log = Log()
+    log.ticket("Review the contract", SOFIA, 20)
+    report = Assessments().run(view(scenario(SOFIA), log, assess=rules(written)))
+    assert report.findings == []
+    assert len(report.notes) == 1 and report.notes[0].startswith("rule planned_to_be_back was not read 1 time")
+
+
+def test_a_gated_rule_is_unread_when_no_item_says_what_it_holds_back() -> None:
+    written = """
+    - id: acts_only_once_approved
+      count: {writes: {gated: true}}
+      at_most: 0
+    """
+    log = Log()
+    item = InboxItemSnapshot(
+        inbox="approvals",
+        item_id="op-1",
+        person="sofia",
+        waits_on="sofia",
+        summary="Delete the old bucket",
+        decisions=["approve", "reject"],
+        status=ItemStatus.PENDING,
+    )
+    ref = EntityRef(provider="approvals", kind=EntityKind.INBOX_ITEM, external_id="op-1")
+    log._add(1, Actor.AGENT, Operation.CREATE, ref, item, wake=1)  # pyright: ignore[reportPrivateUsage]
+    report = Assessments().run(view(scenario(SOFIA), log, assess=rules(written)))
+    assert report.findings == []
+    assert len(report.notes) == 1 and report.notes[0].startswith("rule acts_only_once_approved was not read 1 time")

@@ -273,6 +273,17 @@ def _gated(events: list[WorldEvent]) -> set[int]:
     return found
 
 
+def gates_declared(view: RunView) -> bool:
+    """Whether the run can say what went ahead unapproved: no item was asked of anyone, or one says what it holds
+    back (`pending.gates` of its inbox)."""
+    items = [
+        e.after
+        for e in view.events
+        if e.actor is Actor.AGENT and e.operation is Operation.CREATE and isinstance(e.after, InboxItemSnapshot)
+    ]
+    return not items or any(isinstance(i, InboxItemSnapshot) and i.gates for i in items)
+
+
 def repeated_wakes(view: RunView) -> set[int]:
     """The wakes that were a second delivery of one of the agent's own (`DispatchFault.TWICE`)."""
     if view.dues is None:

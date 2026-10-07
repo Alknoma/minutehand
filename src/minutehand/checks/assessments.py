@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import pairwise
 
-from minutehand.checks.facts import Ask, Fact, asks, ended_at, messages, planned_wakes, reported, writes
+from minutehand.checks.facts import Ask, Fact, asks, ended_at, gates_declared, messages, planned_wakes, reported, writes
 from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.assessments import (
     OWNER,
@@ -94,7 +94,7 @@ class Assessments:
             if unread:
                 notes.append(
                     f"rule {rule.id} was not read {unread} time{'s' if unread != 1 else ''}: it names a moment the run "
-                    "never reached, or one that was not there (an answer never given, a deadline never set)"
+                    "never reached, or one that was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, what an item holds back)"
                 )
         return CheckReport(findings=findings, notes=notes)
 
@@ -279,6 +279,8 @@ class _Reader:
             ]
         if count.writes is not None:
             w = count.writes
+            if w.gated is not None and not gates_declared(self.view):
+                raise _Unread  # items were asked of people and none says what it holds back
             return [
                 Fact(at=x.event.sim_time, seqs=[x.event.seq])
                 for x in self.written
@@ -298,6 +300,8 @@ class _Reader:
                 and (k.changed_commitments is None or wake.commitments_changed == k.changed_commitments)
             ]
         if count.planned_wakes is not None:
+            if self.view.dues is None:
+                raise _Unread  # a captured run or a standing world keeps no table of what the agent planned
             return self.planned
         if count.commitments is not None:
             c = count.commitments
