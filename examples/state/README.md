@@ -1,7 +1,9 @@
 # Rewinding the agent's own state
 
-A fork rewinds the fakes' world by reading their log as of an earlier moment. The agent's own state is the
-agent's to save and put back, through four commands in its agent file (`state:`), and Minutehand's to prove:
+A fork rewinds the fakes' world by reading their log as of an earlier moment. A PostgreSQL database the agent
+file declares under `databases:` Minutehand fronts and puts back itself, from a base and the writes it recorded
+([`postgres/`](postgres/)). The rest of the agent's own state is the agent's to save and put back, through four
+commands in its agent file (`state:`), and Minutehand's to prove:
 
 - **Settle.** A checkpoint is snapshotted only when the agent reports it is not working and has made no
   outbound call through the proxy for `quiet`. One that has not settled after `settle_limit` is recorded as
@@ -30,7 +32,7 @@ listed as "not restorable: its snapshot was pruned", and a fork from it is refus
 |---|---|---|
 | [`sqlite/`](sqlite/) | a SQLite file; snapshot and restore by SQLite's online backup | in the default suite |
 | [`firestore_emulator/`](firestore_emulator/) | Google's Firestore emulator in a private container; export while running, restart with `--import` | against a real container, `-m firestore`, nightly |
-| [`postgres.md`](postgres.md) | PostgreSQL: a template database, or a base backup and point-in-time recovery | **untested**, described only |
+| [`postgres/`](postgres/) | PostgreSQL, fronted by Minutehand: no hooks; its committed writes recorded at the wire and replayed onto a base | against a real PostgreSQL, `-m docker`, and in CI |
 
 ## What no restore brings back
 

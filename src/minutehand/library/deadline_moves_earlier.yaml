@@ -1,0 +1,33 @@
+situation: >-
+  Six hours in, the owner says the work is now needed by the end of the second day. The person asked answers only
+  when reminded, a few hours after the reminder, so the new date is met only by an agent that brings its reminder
+  forward.
+good_agent: >-
+  It takes the owner's new date as the date every wait must now fit inside: it reminds early enough for an answer
+  to come back before that date, and tells the owner the tell by then.
+checks: [expectations, acted_after_deadline, late_follow_up]
+patterns: [budgeted_follow_up, expiry_on_every_wait, honest_closure]
+scenario:
+  name: deadline_moves_earlier
+  goal: "{team.goal}"
+  owner: "{team.owner_key}"
+  starts_at: "2026-08-24T09:00:00Z"
+  deadline_after: P5D
+  people:
+    - key: "{team.owner_key}"
+      name: "{team.owner_name}"
+      email: "{team.owner_email}"
+      reply: {kind: scripted, replies: []}
+    - key: "{team.ask_key}"
+      name: "{team.ask_name}"
+      email: "{team.ask_email}"
+      reply:
+        kind: scripted
+        delay: {shortest: PT2H, longest: PT6H}
+        replies:
+          - {to_ask: 2, text: "{team.answer}"}
+  directions:
+    - {text: "Change of plan: I need this settled by {{start+P2D:time}} at the latest, not later.", after: PT6H}
+  expect:
+    - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
+    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", tell: "{team.tell}", by: P2D}

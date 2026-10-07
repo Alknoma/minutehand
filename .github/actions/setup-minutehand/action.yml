@@ -43,10 +43,16 @@ runs:
       shell: bash
       env:
         ACTION_REF: ${{ github.action_ref }}
+      # A remote action called from a composite step gets an empty `github.action_ref`, and the runner's
+      # copy has no git history; the runner unpacks it under _actions/<owner>/<repo>/<ref>, so the folder
+      # it was unpacked into names the ref it was fetched at.
       run: |
         root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        unpacked="$(basename "$root")"
         if [[ "$ACTION_REF" =~ ^[0-9a-f]{40}$ ]]; then
           commit="$ACTION_REF"
+        elif [ -z "$ACTION_REF" ] && [[ "$unpacked" =~ ^[0-9a-f]{40}$ ]]; then
+          commit="$unpacked"
         elif git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
           commit="$(git -C "$root" rev-parse HEAD)"
         else

@@ -714,10 +714,93 @@ class DocumentShared(Bound):
     role: AccessRole = Field(default=AccessRole.READER, description="The least access that counts")
 
 
+class FileRemoved(Bound):
+    """The agent removed a file from a watched folder of its machine (`AgentUnderTest.watches`): moved it away or
+    deleted it. `at_most: 0` says it must not."""
+
+    kind: Literal["file_removed"] = "file_removed"
+    path: str = Field(min_length=1, description="A glob the file's absolute path must match, e.g. '*/Downloads/*.zip'")
+
+
+class ToolCalled(Bound):
+    """The agent called this tool on an MCP server (`ToolCallSnapshot`), with these words in its arguments."""
+
+    kind: Literal["tool_called"] = "tool_called"
+    tool: str = Field(min_length=1)
+    server: str | None = Field(default=None, description="The server's host, or its relay's --name; None: any")
+    mentions: list[str] = Field(default=[], description="Words the arguments must contain, any case")
+    succeeded: bool | None = Field(default=None, description="True: only calls the server did not answer with an error")
+
+
 Expectation = Annotated[
-    PersonAsked | TicketCreated | TicketDeleted | TicketInState | Relayed | DocumentCreated | DocumentShared,
+    PersonAsked
+    | TicketCreated
+    | TicketDeleted
+    | TicketInState
+    | Relayed
+    | DocumentCreated
+    | DocumentShared
+    | FileRemoved
+    | ToolCalled,
     Field(discriminator="kind"),
 ]
+
+
+class MachineCommand(Model):
+    """Something that happens to the agent's own machine at a moment: a file appears, a cache grows, a repository
+    goes stale. Minutehand runs the command then, in the folder the run was started from, with MINUTEHAND_NOW set
+    to the simulated moment (ISO 8601), so it can stamp what it makes; nobody is woken, as on a real machine."""
+
+    after: timedelta = Field(ge=timedelta(0), description="Offset from the scenario's start")
+    argv: list[str] = Field(min_length=1)
+    said: str = Field(min_length=1, description="What it does, in the run's record")
+    limit: timedelta = Field(default=timedelta(seconds=60), gt=timedelta(0), description="Real time it may take")
+
+
+class PlannedBy(StrEnum):
+    """How the agent asked for one of its own wakes: which of them a dispatch rule is about."""
+
+    REPORTED = "reported"  # `AgentReport.next_wake`
+    BOOKED = "booked"  # a booking with a scheduler provider
+    POLLED = "polled"  # the declared rhythm of a `Polled` agent
+
+
+class DispatchFault(StrEnum):
+    """What goes wrong delivering one of the agent's own wakes, as real schedulers go wrong."""
+
+    LATE = "late"  # delivered `by` after the moment it was asked for
+    TWICE = "twice"  # delivered at its moment, and again `by` after: an at-least-once queue
+    DROPPED = "dropped"  # never delivered
+
+
+class DispatchRule(Model):
+    """A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.
+
+    Only the agent's own wakes are covered: when a person answers is their `reply`, and a ticket's pace its fate."""
+
+    wakes: PlannedBy
+    nth: int | None = Field(default=None, ge=1, description="The nth wake of that kind to fall due, from 1; None: each")
+    fault: DispatchFault
+    by: timedelta | None = Field(
+        default=None, description="How late, or how long after the first the second delivery comes; not for dropped"
+    )
+
+    @property
+    def which(self) -> str:
+        """The wakes it is about, as a reader says it: "the 2nd reported wake", "each polled wake"."""
+        if self.nth is None:
+            return f"each {self.wakes.value} wake"
+        n = self.nth
+        suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"the {n}{suffix} {self.wakes.value} wake"
+
+    @model_validator(mode="after")
+    def _deliverable(self) -> Self:
+        if self.fault is DispatchFault.DROPPED and self.by is not None:
+            raise ValueError("a dropped wake is never delivered, so it takes no `by`")
+        if self.fault is not DispatchFault.DROPPED and (self.by is None or self.by <= timedelta(0)):
+            raise ValueError(f"a {self.fault.value} wake needs `by`, a duration after the moment it was asked for")
+        return self
 
 
 class _ScenarioBody(Model):
@@ -745,6 +828,21 @@ class _ScenarioBody(Model):
         default=[], description="Each provider's own seed beyond people, tickets and documents; one per provider"
     )
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
+    machine: list[MachineCommand] = Field(
+        default=[], description="What happens to the agent's own machine, at moments the scenario sets"
+    )
+    dispatch: list[DispatchRule] = Field(
+        default=[],
+        description="Faults in delivering the agent's own wakes: late, twice or dropped. Without any, each is "
+        "delivered at the moment it was asked for",
+    )
+
+    @model_validator(mode="after")
+    def _one_rule_per_wake(self) -> Self:
+        said = [(r.wakes, r.nth) for r in self.dispatch]
+        if len(said) != len(set(said)):
+            raise ValueError("two dispatch rules name the same wake; a rule for the nth wins over one for each")
+        return self
 
     @model_validator(mode="after")
     def _keys_resolve(self) -> Self:
@@ -998,6 +1096,20 @@ class Seed(WrittenScenario):
     name: str = Field(default="world", pattern=r"^[a-z][a-z0-9_]*$")
     goal: str = Field(default="", description="Handed to nobody: a standing world has no run loop")
     people: list[Person] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _no_dispatch(self) -> Self:
+        if self.machine:
+            raise ValueError(
+                "machine commands run at moments of the run loop's clock, and a standing world's is driven from "
+                "outside: play this scenario with `minutehand run`, or leave `machine` out of the seed"
+            )
+        if self.dispatch:
+            raise ValueError(
+                "dispatch rules need the run loop's clock, and a standing world's is driven from outside: play this "
+                "scenario with `minutehand run`, or leave `dispatch` out of the seed"
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod

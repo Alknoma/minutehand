@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from minutehand.adapters.agent.reach import reach_for
-from minutehand.adapters.providers.google_drive.provider import GoogleDriveProvider
+from minutehand.adapters.providers.google_workspace.provider import GoogleWorkspaceProvider
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.replier_scripted import ScriptedReplier
@@ -24,7 +24,7 @@ from tests.orchestrator.world import CHAT, SECRET, RecordingClock
 RENAMED_AT = T0 + timedelta(hours=30)
 
 
-class Watched(GoogleDriveProvider):
+class Watched(GoogleWorkspaceProvider):
     """The Drive provider with a watch the agent registered: the loop must wake it and notify inside the wake."""
 
     def __init__(self) -> None:
@@ -40,7 +40,7 @@ class Watched(GoogleDriveProvider):
 def with_a_document_change() -> Scenario:
     return scenario(
         ticket_fates=[],
-        documents=[SeededDocument(provider="google_drive", title="Pricing Notes", text="40k?")],
+        documents=[SeededDocument(provider="google_workspace", title="Pricing Notes", text="40k?")],
         happenings=[
             DocumentHappening(
                 document="Pricing Notes",
@@ -52,7 +52,7 @@ def with_a_document_change() -> Scenario:
     )
 
 
-async def played(rig: Rig, drive: GoogleDriveProvider) -> tuple[RunRecord, list[WorldEvent]]:
+async def played(rig: Rig, drive: GoogleWorkspaceProvider) -> tuple[RunRecord, list[WorldEvent]]:
     scn = with_a_document_change()
     agent = rig.agent("ask_silent")
     clock = RecordingClock(scn.starts_at)
@@ -80,7 +80,7 @@ async def played(rig: Rig, drive: GoogleDriveProvider) -> tuple[RunRecord, list[
 
 
 async def test_a_change_nobody_watches_lands_at_its_moment_and_wakes_no_one(rig: Rig) -> None:
-    record, changed = await played(rig, GoogleDriveProvider())
+    record, changed = await played(rig, GoogleWorkspaceProvider())
 
     assert [(e.sim_time, e.after) for e in changed] == [
         (
@@ -114,5 +114,5 @@ def test_a_run_names_the_drive_provider_whose_document_a_happening_changes() -> 
         wakes=[Reported(wake_url="http://127.0.0.1:1/w", report_url="http://127.0.0.1:1/r")],
     )
     services = _services(with_a_document_change(), agent, Registry.installed())
-    assert [p.manifest.key for p in services.providers] == ["google_drive"]
+    assert [p.manifest.key for p in services.providers] == ["google_workspace"]
     assert isinstance(services.providers[0], ChangesDocuments)

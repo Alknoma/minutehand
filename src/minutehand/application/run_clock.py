@@ -27,6 +27,13 @@ class RunClock:
         self._wake += 1
         return self._wake
 
+    def withdraw(self, wake: int) -> None:
+        """Take back `wake`, the one just begun, when nothing was stamped with it: a contained agent's timer that
+        fired and did nothing (a runtime's own housekeeping) was no wake of the agent's."""
+        if wake != self._wake or wake == 0:
+            raise ValueError(f"only the wake just begun can be withdrawn, not {wake} while in {self._wake}")
+        self._wake -= 1
+
     def enter(self, wake: int) -> None:
         """Enter wake `wake`, skipping any between: a standing world's step, numbered by the case it belongs to."""
         if wake <= self._wake:

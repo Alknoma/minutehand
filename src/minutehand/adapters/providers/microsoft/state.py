@@ -21,6 +21,9 @@
 | a seeded document's item  | RECORD       | `seeded:<n>`                   | `SEEDED`             |
 | a file held open          | RECORD       | `hold:<position>`              | `HOLDS`              |
 | a person's change owed to subscriptions | RECORD | `owed:<seq>`         | `OWED`               |
+| mail message (one mailbox's copy) | MESSAGE | its message id          | `mailbox:<object id>` |
+| calendar event            | RECORD       | `event:<event id>`             | `calendar:<organizer's object id>` |
+| a response to an event    | RECORD       | `response:<event id>:<seq>`    | `responses:<event id>` |
 
 The prefixes keep the external ids of different records apart in one namespace; nothing reads a prefix to learn
 what a record is: every read knows the kind it asked for from the parent it listed under.
@@ -74,6 +77,9 @@ POSTS = "posts"
 SEEDED = "seeded"
 HOLDS = "holds"
 OWED = "owed"
+MAILBOX = "mailbox:{user}"
+CALENDAR = "calendar:{user}"
+RESPONSES = "responses:{event}"
 
 SERVICE_URL = "https://smba.trafficmanager.net/teams/"
 """The connector every activity names as its `serviceUrl`; a bot sends its answers there."""
@@ -313,6 +319,14 @@ def post_ref(key: str) -> EntityRef:
 
 def reaction_ref(activity: str, oid: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"reaction:{activity}:{oid}")
+
+
+def event_ref(event: str) -> EntityRef:
+    return ref(EntityKind.RECORD, f"event:{event}")
+
+
+def response_ref(event: str, seq: int) -> EntityRef:
+    return ref(EntityKind.RECORD, f"response:{event}:{seq}")
 
 
 def subscription_ref(subscription: str) -> EntityRef:
@@ -654,3 +668,66 @@ class MicrosoftWorld:
 
     def subscriptions(self) -> list[SubscriptionRecord]:
         return self._all(SubscriptionRecord, EntityKind.RECORD, SUBSCRIPTIONS)
+
+    # ------------------------------------------------------------------ mail
+
+    def mail(self, message: str) -> tuple[UserRecord, wire.StoredMail] | None:
+        """A message and the user whose mailbox holds it; None when no mailbox holds it (a Teams message is not
+        one)."""
+        stored = self.store.get(message_ref(message))
+        if stored is None or stored.parent is None:
+            return None
+        owner = next((u for u in self.users() if stored.parent == MAILBOX.format(user=u.user.id)), None)
+        if owner is None:
+            return None
+        return owner, wire.parse(wire.StoredMail, stored.body)
+
+    def mails(self, user: str) -> list[wire.StoredMail]:
+        """Every message in a user's mailbox, in every folder, ordered by id."""
+        return self._all(wire.StoredMail, EntityKind.MESSAGE, MAILBOX.format(user=user))
+
+    def mail_versions(self, user: str) -> list[Stored]:
+        """Every message in a user's mailbox as stored now, with the seq of its last change."""
+        return list(self._pages(EntityKind.MESSAGE, MAILBOX.format(user=user)))
+
+    def write_mail(
+        self, user: str, stored: wire.StoredMail, *, operation: Operation, actor: Actor, after: Snapshot | None
+    ) -> WorldEvent:
+        return self.write(
+            message_ref(stored.message.id),
+            stored,
+            operation=operation,
+            actor=actor,
+            parent=MAILBOX.format(user=user),
+            after=after,
+        )
+
+    # ------------------------------------------------------------------ calendar
+
+    def event(self, event: str) -> wire.StoredEvent | None:
+        stored = self.store.get(event_ref(event))
+        if stored is None or stored.parent is None:
+            return None
+        if not any(stored.parent == CALENDAR.format(user=u.user.id) for u in self.users()):
+            return None
+        return wire.parse(wire.StoredEvent, stored.body)
+
+    def events(self) -> list[wire.StoredEvent]:
+        """Every event in every calendar of the tenant."""
+        return [
+            e
+            for u in self.users()
+            for e in self._all(wire.StoredEvent, EntityKind.RECORD, CALENDAR.format(user=u.user.id))
+        ]
+
+    def write_event(
+        self, stored: wire.StoredEvent, *, operation: Operation, actor: Actor, after: Snapshot | None
+    ) -> WorldEvent:
+        return self.write(
+            event_ref(stored.event.id),
+            stored,
+            operation=operation,
+            actor=actor,
+            parent=CALENDAR.format(user=stored.organizer_id),
+            after=after,
+        )

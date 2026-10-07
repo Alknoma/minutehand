@@ -105,6 +105,20 @@ class PushesInteractions(Protocol):
 
 
 @runtime_checkable
+class LandsReplies(Protocol):
+    """A provider where a person's answer lands where the agent reads it, and nothing is pushed: a reply email in the
+    agent's mailbox, an attendee's response on the agent's calendar event. The agent finds it on its next read, as it
+    finds a ticket's fate, so its landing wakes nobody."""
+
+    def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
+        """Write the person's answer to `reply.in_reply_to` as the real service would, recorded as actor PERSON: what
+        they wrote as their message, a control they used (`reply.press`) as its effect. A message no longer there
+        is left alone and nothing is written. A press on a control the message does not carry raises
+        `ValueError`: the replier offered what the provider never showed."""
+        ...
+
+
+@runtime_checkable
 class HoldsTickets(Protocol):
     """A provider with tickets a person can finish or cancel. This is how a `TicketFate` lands."""
 
@@ -172,12 +186,16 @@ class BooksWakes(Protocol):
         """Called once before the run; the provider books through `wakes` as the agent's calls arrive."""
         ...
 
-    async def fire(self, ref: str, world: Store, clock: Clock) -> None:
-        """The clock reached a booking: deliver it the way the real scheduler would.
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        """Deliver this occurrence of the booking the way the real scheduler would: put what it carries where the
+        agent finds it. Called once when the clock reaches it, and again when the scenario delivers it twice
+        (`DispatchFault.TWICE`); it leaves the booking as it was, so the second delivery carries the same."""
+        ...
 
-        The booking has already left the pending set when this is called, so a recurring
-        schedule books its next occurrence under the same `ref` from here.
-        """
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        """This occurrence is over, delivered or dropped: book the next occurrence of a recurring schedule under the
+        same `ref` (the first after now, as a real scheduler skips what it missed), or complete a one-off one. The
+        booking has already left the pending set when this is called."""
         ...
 
 

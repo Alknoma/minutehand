@@ -16,6 +16,12 @@
                                                  proxy, and which declared hosts NO_PROXY would send directly
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
+    minutehand scenarios                         the scenario library: each scenario's name and situation
+    minutehand scenarios show <name>             what one is for, its checks and patterns, the values it takes
+    minutehand scenarios new <name>...|--all --goal TEXT --owner 'Name <email>' --ask 'Name <email>'
+                     [--answer TEXT --tell PHRASE] [--other 'Name <email>'] [--credential-env VAR]
+                     [--provider KEY] [--wakes reported|booked|polled] [--out DIR] [--force]
+                                                 write library scenarios out with the team's values (docs/scenarios.md)
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
                      [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
                      [--model-host HOST]... [--record-model-calls]
@@ -60,15 +66,17 @@ import os
 import shlex
 import sys
 import tempfile
+import textwrap
 import traceback
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 import minutehand
-from minutehand import agent_api, session
+from minutehand import agent_api, mcp_relay, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
@@ -76,19 +84,22 @@ from minutehand.adapters.model.openai_compatible import from_environment as mode
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
-from minutehand.application.checkpoint import NoHooks, NotRestorable, Restorable
+from minutehand.application.checkpoint import NoHooks, NotRestorable, Replayable, Restorable
 from minutehand.application.files import FileKind, FileRefused, load_agent, load_fork, load_scenario, problems, schema
 from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
+from minutehand.application.library import NotInLibrary, entries, entry, write
 from minutehand.application.outbound import described, emulator_described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
 from minutehand.checks.patterns import pattern
-from minutehand.checks.runner import exit_code, stability
+from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
+from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
+from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
-from minutehand.domain.scenario import Model
+from minutehand.domain.scenario import Model, PlannedBy
 from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
 
@@ -120,6 +131,13 @@ _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
 class EnvFormat(StrEnum):
     SHELL = "shell"
     COMPOSE = "compose"
+
+
+class LibraryAction(StrEnum):
+    """What `minutehand scenarios` does besides listing the library."""
+
+    SHOW = "show"
+    NEW = "new"
 
 
 class Played(Model):
@@ -188,9 +206,13 @@ def _parser() -> argparse.ArgumentParser:
     def capture(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
             "--capture-unknown",
-            action="store_true",
-            help="pass through and keep every call to a host nobody claims or declares, rather than refusing it; "
-            "the run ends with the hosts it saw and a declaration for each",
+            nargs="?",
+            const=UnknownHosts.ALL.value,
+            default=UnknownHosts.REFUSE.value,
+            choices=[u.value for u in UnknownHosts],
+            help="pass through and keep calls to a host nobody claims or declares, rather than refusing them: 'all' "
+            "(the default when the flag is given) or only 'reads' (GET, HEAD, OPTIONS; a write is refused, so nothing "
+            "is sent anywhere real); the run ends with the hosts it saw and a declaration for each",
         )
         sub.add_argument(
             "--upstream-ca",
@@ -292,6 +314,13 @@ def _parser() -> argparse.ArgumentParser:
     capture(served)
     state(served)
 
+    relayed = commands.add_parser(
+        "mcp-relay",
+        help="run an MCP server on standard input and output (-- <command>), passing every line through and "
+        "reporting each tool call to the run (MINUTEHAND_MCP_URL)",
+    )
+    relayed.add_argument("--name", required=True, help="the server's name in the run's record")
+
     doctor = commands.add_parser(
         "doctor", help="which HTTP clients in the agent's interpreter would go around the proxy (-- <command>)"
     )
@@ -318,7 +347,55 @@ def _parser() -> argparse.ArgumentParser:
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
     state(view)
+    _library_parser(commands.add_parser("scenarios", help="the scenario library: list it, or write scenarios out"))
     return parser
+
+
+def _library_parser(library: argparse.ArgumentParser) -> None:
+    actions = library.add_subparsers(dest="library_action")
+    shown = actions.add_parser(
+        LibraryAction.SHOW.value, help="what one library scenario is for, and the values it takes"
+    )
+    shown.add_argument("name")
+    new = actions.add_parser(LibraryAction.NEW.value, help="write library scenarios out, filled with the team's values")
+    new.add_argument("names", nargs="*", metavar="name", help="the library scenarios to write (or --all)")
+    new.add_argument("--all", action="store_true", help="write every library scenario")
+    new.add_argument("--goal", required=True, help="the goal handed to the agent, verbatim")
+    new.add_argument(
+        "--owner", required=True, metavar="'NAME <EMAIL>'", help="who gives the goal and is told the outcome"
+    )
+    new.add_argument("--ask", required=True, metavar="'NAME <EMAIL>'", help="the person the agent must ask")
+    new.add_argument(
+        "--answer", default=None, help=f"what that person answers (default {DEFAULT_ANSWER!r}); give --tell with it"
+    )
+    new.add_argument(
+        "--tell", default=None, help=f"a phrase of the answer that must reach the owner (default {DEFAULT_TELL!r})"
+    )
+    new.add_argument(
+        "--other",
+        default=f"{OTHER.name} <{OTHER.email}>",
+        metavar="'NAME <EMAIL>'",
+        help="a second person: the delegate, the approver, someone who writes in (default %(default)s)",
+    )
+    new.add_argument(
+        "--credential-env",
+        default=TeamValues.model_fields["credential_env"].default,
+        metavar="VAR",
+        help="the variable the agent reads the approver's sign-in to its own product from (default %(default)s)",
+    )
+    new.add_argument(
+        "--provider",
+        default=TeamValues.model_fields["provider"].default,
+        help="the messaging provider someone writes in on, unprompted (default %(default)s)",
+    )
+    new.add_argument(
+        "--wakes",
+        choices=[p.value for p in PlannedBy],
+        default=PlannedBy.REPORTED.value,
+        help="how the agent asks for its own wakes, for the scenarios whose scheduler goes wrong (default %(default)s)",
+    )
+    new.add_argument("--out", type=Path, default=Path("."), help="the folder to write into (default: this one)")
+    new.add_argument("--force", action="store_true", help="replace a file of the same name")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -363,6 +440,11 @@ def _main(args_in: list[str]) -> int:
             print("minutehand: nothing follows --; give the agent's command or leave -- out", file=sys.stderr)
             return 2
     args = _parser().parse_args(args_in)
+    if args.command == "mcp-relay":
+        if not command:
+            print("minutehand mcp-relay: give the MCP server's command after --", file=sys.stderr)
+            return 2
+        return mcp_relay.main(args.name, command)
     if args.command == "doctor":
         if not command:
             print("minutehand doctor: give the agent's command after --", file=sys.stderr)
@@ -376,6 +458,8 @@ def _main(args_in: list[str]) -> int:
         return _schema(args.kind)
     if args.command == "validate":
         return _validate(args.files, FileKind(args.kind) if args.kind else None)
+    if args.command == "scenarios":
+        return _scenarios(args)
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
     if command is not None and args.command not in ("run", "fork"):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
@@ -424,6 +508,10 @@ def _validate(paths: Sequence[Path], kind: FileKind | None) -> int:
     for path in paths:
         read_as, model, said = problems(path, kind)
         if isinstance(model, AgentUnderTest):
+            try:
+                load_checks(model.checks)
+            except ChecksRefused as e:
+                said.append(f"{path}: checks: {e}")
             for n, declared in enumerate(model.inboxes):
                 try:
                     HttpInboxReach(declared, {})
@@ -435,6 +523,86 @@ def _validate(paths: Sequence[Path], kind: FileKind | None) -> int:
     for line in found:
         print(line, file=sys.stderr)
     return 1 if found else 0
+
+
+def _scenarios(args: argparse.Namespace) -> int:
+    """The library listed, one scenario shown, or scenarios written out; a refusal says why and exits 2."""
+    try:
+        if args.library_action == LibraryAction.SHOW:
+            print(_shown(entry(args.name)))
+            return 0
+        if args.library_action == LibraryAction.NEW:
+            return _new(args)
+    except (NotInLibrary, WhoRefused, FileRefused, FileExistsError, ValidationError) as e:
+        print(f"minutehand scenarios: {e}", file=sys.stderr)
+        return 2
+    for found in entries():
+        print(f"{found.name}\n  {_first_sentence(found.situation)}")
+    print("\nminutehand scenarios show <name> says what one is for; minutehand scenarios new <name> writes it out.")
+    return 0
+
+
+def _first_sentence(text: str) -> str:
+    end = text.find(". ")
+    return text if end < 0 else text[: end + 1]
+
+
+def _shown(found: LibraryScenario) -> str:
+    takes = {
+        "goal": "--goal",
+        "owner": "--owner",
+        "ask": "--ask",
+        "other": "--other",
+        "answer": "--answer",
+        "tell": "--tell",
+        "credential_env": "--credential-env",
+        "provider": "--provider",
+        "wakes": "--wakes",
+    }
+    return "\n".join(
+        [
+            found.name,
+            "",
+            *textwrap.wrap(f"Situation: {found.situation}", 116),
+            "",
+            *textwrap.wrap(f"A good agent: {found.good_agent}", 116),
+            "",
+            f"checks: {', '.join(found.checks)}",
+            f"patterns: {', '.join(found.patterns)}",
+            f"takes: {' '.join(takes[u] for u in found.uses)}",
+        ]
+    )
+
+
+def _new(args: argparse.Namespace) -> int:
+    if args.all == bool(args.names):
+        print("minutehand scenarios new: name the scenarios to write, or give --all", file=sys.stderr)
+        return 2
+    if (args.answer is None) != (args.tell is None):
+        print(
+            "minutehand scenarios new: --answer and --tell go together: the tell is a phrase of the answer",
+            file=sys.stderr,
+        )
+        return 2
+    answered = {} if args.answer is None else {"answer": args.answer, "tell": args.tell}
+    team = TeamValues(
+        goal=args.goal,
+        owner=Who.written(args.owner),
+        ask=Who.written(args.ask),
+        other=Who.written(args.other),
+        credential_env=args.credential_env,
+        provider=args.provider,
+        wakes=PlannedBy(args.wakes),
+        **answered,
+    )
+    chosen = entries() if args.all else [entry(n) for n in args.names]
+    for found in chosen:
+        print(write(found, team, args.out, replace=args.force))
+    print(
+        "\nrun one with: minutehand run <file> --agent <agent.yaml> -- <the agent's command>; "
+        "minutehand validate <file> checks one without a run"
+    )
+    return 0
 
 
 def _telemetry() -> OtelTelemetry | None:
@@ -451,7 +619,7 @@ def _listen(args: argparse.Namespace) -> session.Listen:
         telemetry_port=args.telemetry_port,
         receive_telemetry=not args.no_receive_telemetry,
         record_model_calls=args.record_model_calls,
-        capture_unknown=args.capture_unknown,
+        capture_unknown=UnknownHosts(args.capture_unknown),
         upstream_ca=args.upstream_ca,
         model_hosts=list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *args.model_host])),
     )
@@ -475,6 +643,10 @@ def _env(args: argparse.Namespace, state: Path) -> int:
         return 2
     agent = load_agent(args.agent)
     listen = _listen(args)
+    from minutehand import doctor  # loaded only here and for `doctor`: it starts nothing, but imports the proxy
+
+    for warning in doctor.docker_warnings(doctor.claimed_hosts(agent), os.environ):
+        print(f"minutehand env: warning: {warning}", file=sys.stderr)
     if EnvFormat(args.format) is EnvFormat.SHELL:
         if args.service:
             print("minutehand env: --service is for --format compose", file=sys.stderr)
@@ -701,8 +873,8 @@ def _restorable_summary(points: list[ForkPoint]) -> str:
         return "no checkpoints"
     if all(isinstance(p.agent, NoHooks) for p in points):
         return "no checkpoint is restorable: the agent declares no state hooks"
-    can = [str(p.seq) for p in points if isinstance(p.agent, Restorable)]
-    cannot = [str(p.seq) for p in points if not isinstance(p.agent, Restorable)]
+    can = [str(p.seq) for p in points if isinstance(p.agent, Restorable | Replayable)]
+    cannot = [str(p.seq) for p in points if not isinstance(p.agent, Restorable | Replayable)]
     parts = [f"restorable at seq {', '.join(can)}" if can else "no checkpoint is restorable"]
     if cannot:
         parts.append(f"not restorable at seq {', '.join(cannot)} (`minutehand findings` says why)")
@@ -738,7 +910,7 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
         agent_host=args.agent_host,
         no_proxy=args.no_proxy,
         keep=args.keep,
-        capture_unknown=args.capture_unknown,
+        capture_unknown=UnknownHosts(args.capture_unknown),
         upstream_ca=args.upstream_ca,
         model_hosts=args.model_host,
         record_model_calls=args.record_model_calls,
@@ -825,6 +997,8 @@ def _point(point: ForkPoint) -> str:
     agent = point.agent
     if isinstance(agent, Restorable):
         return "restorable" if agent.unconfirmed is None else f"restorable, unconfirmed: {agent.unconfirmed}"
+    if isinstance(agent, Replayable):
+        return "restorable: its databases are replayed from their base"
     if isinstance(agent, NotRestorable):
         return f"not restorable: {agent.reason}"
     return "not restorable: the agent declares no state hooks"

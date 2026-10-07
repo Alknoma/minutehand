@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from minutehand.domain.scenario import Model, ReplyBehaviour, TicketState
+from minutehand.domain.scenario import DispatchRule, Model, ReplyBehaviour, TicketState
 from minutehand.domain.world import EntityRef
 
 
@@ -59,7 +59,18 @@ class DeadlineShift(Model):
     by: timedelta
 
 
-Override = Annotated[PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift, Field(discriminator="kind")]
+class DispatchChange(Model):
+    """From the fork onward the agent's own wakes are delivered by these rules in place of the scenario's
+    (`Scenario.dispatch`): the same run, with the scheduler late, doubling or dropping. A rule for the nth wake of
+    a kind counts the wakes that fell due before the fork, so one the parent already reached never applies."""
+
+    kind: Literal["dispatch_change"] = "dispatch_change"
+    rules: list[DispatchRule] = Field(description="Every rule from the fork on; empty: every wake delivered as asked")
+
+
+Override = Annotated[
+    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift | DispatchChange, Field(discriminator="kind")
+]
 
 
 class Fork(Model):

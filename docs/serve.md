@@ -123,6 +123,7 @@ the client raises `ServerFailed`, not `Refused`. Each status comes from one conv
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now; for a world of a case, the case's |
 | `POST /v1/worlds/{id}/steps` | `MarkStep` → `StepView` | A step begins (`edge: began`, `at`, `reason`) or ends (`edge: ended`); a world of a case steps its case |
+| `POST /v1/worlds/{id}/report` | `AgentReport` → `Checked` | The agent's own report of its work, relayed by whoever drives it: `status` (`done` is how the run stopped) and the `commitments` it still holds open, which keep the run from passing. The latest stands; a world of a case reports for its case |
 | `POST /v1/worlds/{id}/inboxes/read` | → `InboxesView` | Read the world's inboxes as each person now: what waits on people, and the decisions owed with when each falls due |
 | `POST /v1/worlds/{id}/inboxes/due` | → `DecisionsDone` | Make every decision due by the world's clock, its case's, or its latest step's moment, as its person |
 | `POST /v1/worlds/{id}/inboxes/decide` | `DecideNow` → `DecisionView` | A person decides an item now, with a decision and its inputs |
@@ -145,7 +146,7 @@ server's state directory. A call reaches a world's declarations only once it is 
 a service's email client that carries the world's token (or posts to a host the world claims) is answered by
 its own world's declaration; another world may declare the same host differently, and a world that declares
 nothing refuses it. A declared host a provider claims is refused with 409, naming both. `serve
---capture-unknown` passes every undeclared call through instead, kept in its world or the lobby.
+--capture-unknown` passes every undeclared call through instead, kept in its world or the lobby; `--capture-unknown reads` passes only GET, HEAD and OPTIONS.
 
 ### Model hosts
 
@@ -306,7 +307,7 @@ supported path is still the acts above, which build, sign and push the request t
 ## Scoring a run you drive yourself
 
 A harness that drives its own agent and its own simulated time, and uses this server only for the fakes and the
-record, adds three things and nothing else:
+record, adds four things and nothing else:
 
 ```python
 from minutehand.testing.world import open_case
@@ -316,7 +317,8 @@ for cycle in cycles:
     case.advance(to=cycle.now)  # the clock, as before: a separate act
     with case.step(at=cycle.now, reason=cycle.why):  # 2. where one go of the agent begins and ends
         run_the_agent_once()
-result = case.close().result  # 3. the case's checks, once, when its last world closes
+case.report(AgentReport(status=..., commitments=[...]))  # 3. what the service itself says of its work
+result = case.close().result  # 4. the case's checks, once, when its last world closes
 ```
 
 Over the wire: `CreateWorld.case` on each world, `POST /v1/cases/{case_id}/steps` with `{"edge": "began", "at":
@@ -448,6 +450,10 @@ volumes:
 A container that cannot share a volume downloads the bundle at start from `GET http://minutehand:8081/v1/ca.pem`
 (`tests/packaging/test_stack.py` does exactly that from a second container on the same network). The test
 process on the host reaches the control API at the published port and sets `MINUTEHAND_URL`.
+
+A service started with `docker run --env-file` instead loses its `NO_PROXY` to the Docker client config's
+`noProxy`, which Docker Desktop sets to `*`: see `docs/containers.md`, "The NO_PROXY trap". An agent in a container
+under `minutehand run`, with Minutehand on the host, is in the same page.
 
 ## Measured
 

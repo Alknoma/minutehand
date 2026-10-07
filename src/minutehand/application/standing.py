@@ -30,6 +30,7 @@ from minutehand.application.replier_scripted import ScriptedReplier, decision_te
 from minutehand.application.run_clock import RunClock
 from minutehand.application.steps import STEP, steps
 from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, view_of
+from minutehand.domain.agent import AgentReport
 from minutehand.domain.people import (
     Decides,
     InboundCredential,
@@ -717,10 +718,10 @@ class StandingWorld:
 
     # -- reading ------------------------------------------------------------------------------------------------
 
-    async def checks(self, *, stop: StopReason | None) -> RunResult:
+    async def checks(self, *, stop: StopReason | None, reported: AgentReport | None = None) -> RunResult:
         """Every deterministic check and the scorecard over the world as it stands now."""
         await self.look()
-        return score(self.scenario, self.store, stop=stop, ended=self.clock.now())
+        return score(self.scenario, self.store, stop=stop, ended=self.clock.now(), reported=reported)
 
     # -- lookups that refuse loudly -----------------------------------------------------------------------------
 
@@ -771,9 +772,17 @@ class StandingWorld:
         return found
 
 
-def score(scenario: Scenario, world: Store, *, stop: StopReason | None, ended: datetime) -> RunResult:
+def score(
+    scenario: Scenario,
+    world: Store,
+    *,
+    stop: StopReason | None,
+    ended: datetime,
+    reported: AgentReport | None = None,
+) -> RunResult:
     """Every deterministic check and the scorecard over a standing world's record, or a case's merged one, as it
-    stands: its steps are its wakes."""
+    stands: its steps are its wakes, and `reported` is the agent's own report as whoever drives it last relayed
+    it."""
     wakes = steps(world)
     calls = world.calls()
     view = view_of(
@@ -781,6 +790,7 @@ def score(scenario: Scenario, world: Store, *, stop: StopReason | None, ended: d
         [e for e in world.events() if e.entity != STEP],
         wakes,
         world.replies(),
+        commitments=reported.commitments if reported is not None else None,
         unmatched_calls=[c.exchange for c in calls if c.refused],
         model_calls=per_wake(world.spans(), [w.index for w in wakes]),
         broken_calls=broken(calls),

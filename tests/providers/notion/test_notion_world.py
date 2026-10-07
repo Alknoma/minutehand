@@ -65,7 +65,7 @@ def test_a_scenarios_documents_become_pages_shared_with_every_integration(tmp_pa
         SeededDocument(
             provider="notion", title="Pricing memo", text="Tier one is 40.\nTier two is 90.", folder="Finance"
         ),
-        SeededDocument(provider="google_drive", title="Not Notion's", text="elsewhere"),
+        SeededDocument(provider="google_workspace", title="Not Notion's", text="elsewhere"),
     ]
     world = seeded(tmp_path, scenario(documents=documents))
     pages = [e.after for e in world.store.events() if isinstance(e.after, DocumentSnapshot)]
