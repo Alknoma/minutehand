@@ -221,9 +221,10 @@ async def fork_run(
                 channels=channels,
                 environment=environment,
                 inboxes=Inboxes(changed, list(inboxes.reaches.values())) if inboxes is not None else None,
+                databases=databases,
             )
             orchestrator.mount()
-            put_back = PutBack(databases, child) if databases else None
+            put_back = PutBack(databases, child, restorable.digests) if databases else None
             if isinstance(restorable, Restorable):
                 assert hooks is not None
                 with materialised(

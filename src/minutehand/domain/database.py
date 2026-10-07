@@ -55,9 +55,24 @@ class CommandBase(Model):
     kind: Literal["command"] = "command"
     take: list[str] = Field(min_length=1)
     put_back: list[str] = Field(min_length=1)
+    drop: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="Removes the base, with MINUTEHAND_DB_BASE set to its name, once no run left needs it; without "
+        "it the base is kept and said to be kept",
+    )
 
 
 DatabaseBase = Annotated[TemplateBase | CommandBase, Field(discriminator="kind")]
+
+
+class Digest(Model):
+    """A digest of the database at every checkpoint, and again after a fork has put it back: a difference refuses
+    the fork. It reads every row of every table in `schemas` and every sequence, so it costs a scan of the
+    database per checkpoint; it catches what replaying cannot see, such as a value the database made up itself
+    (`now()`, `random()`) in a write that did not return it, or a write that did not pass the relay."""
+
+    schemas: list[str] = Field(default=["public"], min_length=1, description="The schemas whose tables are digested")
 
 
 class Database(Model):
@@ -81,6 +96,11 @@ class Database(Model):
         description="A variable set, for the agent's program, to the upstream's URL pointed at the relay",
     )
     base: DatabaseBase = TemplateBase()
+    digest: Digest | None = Field(
+        default=None,
+        description="Digest the database at every checkpoint and compare after a fork's replay: `digest: {}` for the "
+        "public schema",
+    )
 
     @model_validator(mode="after")
     def _plain_postgres(self) -> Self:
@@ -131,7 +151,17 @@ class Executed(Model):
         default=[], description="Each parameter: its text, or its bytes in hex when sent binary; None for NULL"
     )
     result_formats: list[int] = Field(default=[], description="The result format codes the agent's Bind asked for")
+    max_rows: int = Field(
+        default=0,
+        ge=0,
+        description="The row limit the agent's Execute asked for; 0 for none (asyncpg's fetchrow asks 1)",
+    )
     tags: list[str] = Field(description="The CommandComplete tag of each statement it ran: `INSERT 0 1`")
+    suspended: bool = Field(
+        default=False,
+        description="The database stopped at `max_rows` (PortalSuspended) and sent no tag: a write with RETURNING has "
+        "run whole by then, so it is kept by its text",
+    )
     rows: str | None = Field(
         default=None, description="SHA-256 of the rows it returned (RETURNING), as sent; None when it returned none"
     )
@@ -182,6 +212,16 @@ class NotReplayable(Model):
 
 
 DatabaseRecord = Annotated[BaseTaken | Committed | SequencesMoved | NotReplayable, Field(discriminator="kind")]
+
+
+class DatabaseDigest(Model):
+    """What one database held at one moment, as one SHA-256: every row of every table in the declared schemas,
+    in a fixed order, and every sequence's position (`Digest`)."""
+
+    database: str
+    digest: str
+    tables: int = Field(ge=0)
+    rows: int = Field(ge=0)
 
 
 class Replayed(Model):

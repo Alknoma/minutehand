@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import secrets
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Self
 from urllib.parse import unquote, urlsplit
@@ -34,6 +35,8 @@ class Answer:
     rows: str | None
     error: str | None
     values: list[list[str | None]]
+    suspended: bool = False
+    """The Execute stopped at its row limit (PortalSuspended)."""
 
 
 @dataclass(frozen=True)
@@ -139,22 +142,24 @@ class Connection:
 
     async def replay(self, executed: Executed) -> Answer:
         """One recorded statement, sent as the agent sent it."""
-        if executed.protocol is StatementProtocol.SIMPLE:
-            return await self.run(executed.sql)
-        self._writer.write(
-            wire.parse("", executed.sql, executed.param_types)
-            + wire.bind(
-                "",
-                "",
-                executed.param_formats,
-                [param_bytes(v, f) for v, f in zip(executed.params, executed.param_formats, strict=True)],
-                executed.result_formats,
-            )
-            + wire.execute("")
-            + wire.sync()
-        )
-        await self._writer.drain()
-        return await self._answer()
+        [answer] = await self.pipeline([sent(executed)])
+        return answer
+
+    async def pipeline(self, units: Sequence[bytes]) -> list[Answer]:
+        """Several units sent at once, each a simple query or an extended statement ending in Sync, and each one's
+        answer up to its ReadyForQuery, in order: one round trip for all of them. The answers are read while the
+        units are written, so a large answer cannot hold the writing up."""
+        reading = asyncio.ensure_future(self._answers(len(units)))
+        try:
+            self._writer.write(b"".join(units))
+            await self._writer.drain()
+        except BaseException:
+            reading.cancel()
+            raise
+        return await reading
+
+    async def _answers(self, count: int) -> list[Answer]:
+        return [await self._answer() for _ in range(count)]
 
     async def _answer(self) -> Answer:
         tags: list[str] = []
@@ -162,6 +167,7 @@ class Connection:
         digest = hashlib.sha256()
         any_rows = False
         values: list[list[str | None]] = []
+        suspended = False
         while True:
             kind, payload = await wire.read_message(self._reader)
             if kind == b"D":
@@ -170,10 +176,37 @@ class Connection:
                 values.append(_row(payload))
             elif kind == b"C":
                 tags.append(wire.tag_of(payload))
+            elif kind == b"s":
+                suspended = True
             elif kind == b"E" and error is None:
                 error = wire.error_text(payload)
             elif kind == b"Z":
-                return Answer(tags=tags, rows=digest.hexdigest() if any_rows else None, error=error, values=values)
+                return Answer(
+                    tags=tags,
+                    rows=digest.hexdigest() if any_rows else None,
+                    error=error,
+                    values=values,
+                    suspended=suspended,
+                )
+
+
+def sent(executed: Executed) -> bytes:
+    """A recorded statement's messages as the agent sent them: its text, or Parse, Bind, Execute and Sync with the
+    very parameter bytes, formats, types and row limit."""
+    if executed.protocol is StatementProtocol.SIMPLE:
+        return wire.query(executed.sql)
+    return (
+        wire.parse("", executed.sql, executed.param_types)
+        + wire.bind(
+            "",
+            "",
+            executed.param_formats,
+            [param_bytes(v, f) for v, f in zip(executed.params, executed.param_formats, strict=True)],
+            executed.result_formats,
+        )
+        + wire.execute("", executed.max_rows)
+        + wire.sync()
+    )
 
 
 def _row(payload: bytes) -> list[str | None]:

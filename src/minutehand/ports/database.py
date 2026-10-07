@@ -7,7 +7,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from minutehand.domain.database import BaseTaken, Committed, Database, DatabaseRecord, Replayed, SequencesMoved
+from minutehand.domain.database import (
+    BaseTaken,
+    Committed,
+    Database,
+    DatabaseDigest,
+    DatabaseRecord,
+    Replayed,
+    SequencesMoved,
+)
 
 
 class HearsWrites(Protocol):
@@ -35,4 +43,10 @@ class FrontsDatabase(Protocol):
         statement answers with what it answered when the agent ran it. Every connection of the agent's is closed
         first. Answers what it did, and the first difference when the replay parted from the record
         (`Replayed.diverged`); raises `RunRefused` when the database could not be made again at all."""
+        ...
+
+    async def digest(self) -> DatabaseDigest:
+        """The database as it stands, as one digest of the tables in the schemas its `Digest` names and its
+        sequences, taken when no statement of the agent's is awaiting an answer and no commit lands while it is
+        read. Raises `RunRefused` when the database cannot be read."""
         ...

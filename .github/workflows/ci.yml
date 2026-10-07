@@ -163,7 +163,7 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync
-      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py -s
+      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py tests/state/test_postgres_drivers.py tests/state/test_postgres_replay.py tests/state/test_postgres_cli.py -s
         env:
           MINUTEHAND_TEST_POSTGRES: postgresql://postgres:secret@127.0.0.1:5432
 
