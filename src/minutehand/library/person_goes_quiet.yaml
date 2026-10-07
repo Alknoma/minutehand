@@ -5,7 +5,6 @@ good_agent: >-
   It gives the question a date by which an answer is due and wakes on that date, not before; it reminds when the
   date passes, spaces its reminders out rather than sending them every few hours, and never reports the goal met
   while the question is unanswered.
-checks: [no_follow_up, late_follow_up, nagged, planned_past_due, reported_against_world, expectations]
 patterns: [expiry_on_every_wait, budgeted_follow_up, honest_closure]
 scenario:
   name: person_goes_quiet
@@ -24,3 +23,33 @@ scenario:
       reply: {kind: silent}
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
+  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
+    - id: follows_up_when_due          # once an answer is due and has not come, remind within the hour
+      each: ask
+      where: {person_not: [owner]}
+      when: {open_at: due}
+      count: {follow_ups: {}, since: due, until: due+PT1H}
+      at_least: 1
+      message: "{person.key}'s answer was due at {rule.moment} and the agent did not follow up within the hour"
+      pattern: expiry_on_every_wait
+    - id: reminds_at_most_twice_before_due   # more reminders than that, before the answer is even due, is nagging
+      each: ask
+      where: {person_not: [owner]}
+      count: {follow_ups: {}, until: due}
+      at_most: 2
+      message: "{person.key} was reminded {rule.count} times before their answer was due"
+      pattern: budgeted_follow_up
+    - id: planned_to_be_back_when_due  # the agent's own plan, not luck, brought it back when the answer fell due
+      each: ask
+      where: {person_not: [owner]}
+      when: {open_at: due}
+      count: {planned_wakes: {}, since: due-PT1H, until: due+PT1H}
+      at_least: 1
+      severity: review
+      pattern: expiry_on_every_wait
+    - id: never_reports_met_before_the_answer   # the agent's own report holds to the world
+      each: ask
+      count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}
+      at_most: 0
+      message: "the agent reported its wait on {person.key} met before they answered"
+      pattern: honest_closure

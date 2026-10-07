@@ -131,14 +131,11 @@ class OtelTelemetry:
         self._wakes = meter.create_counter(
             "minutehand.wakes", unit="{wake}", description="Wakes, by whether the agent changed the world in them"
         )
-        self._time_lost = meter.create_histogram(
-            "minutehand.time_lost_seconds", unit="s", description="Simulated time the agent itself added"
-        )
         self._idle_wakes = meter.create_histogram(
             "minutehand.idle_wakes", unit="{wake}", description="Wakes in a run that changed nothing"
         )
-        self._follow_ups_late = meter.create_histogram(
-            "minutehand.follow_ups_late", unit="{follow_up}", description="Follow-ups made after their wait expired"
+        self._follow_ups_made = meter.create_histogram(
+            "minutehand.follow_ups_made", unit="{follow_up}", description="Follow-ups made on a wait still open"
         )
         self._run_sim = meter.create_histogram(
             "minutehand.run.sim_seconds", unit="s", description="Simulated length of a run"
@@ -348,9 +345,8 @@ class OtelTelemetry:
         self._run_sim.record((record.ended_at - record.started_at).total_seconds(), scenario)
         self._run_wall.record(record.wall_seconds, scenario)
         if effectiveness is not None:
-            self._time_lost.record(effectiveness.time_lost.total_seconds(), scenario)
             self._idle_wakes.record(effectiveness.idle_wakes, scenario)
-            self._follow_ups_late.record(effectiveness.follow_ups_late, scenario)
+            self._follow_ups_made.record(effectiveness.follow_ups_made, scenario)
         for span in self._wake_spans.values():
             span.end()
         self._wake_spans.clear()

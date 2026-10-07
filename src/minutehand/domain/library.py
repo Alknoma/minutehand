@@ -113,11 +113,10 @@ class TeamValues(Model):
 
 class LibraryScenario(Model):
     """One library entry: the scenario, in the scenario file's own format with `{team.*}` placeholders in its text,
-    and what it is for."""
+    and what it is for. The rules that judge it are in the scenario (`assess`), the team's to edit once written."""
 
     situation: str = Field(min_length=1, description="What happens, in a few sentences")
     good_agent: str = Field(min_length=1, description="What a proactive agent does about it")
-    checks: list[str] = Field(min_length=1, description="The ids of the checks that judge it")
     patterns: list[str] = Field(min_length=1, description="The Pattern.key of each design it exercises")
     scenario: JsonValue = Field(description="The scenario file, its team's values as `{team.*}` placeholders")
 
@@ -130,6 +129,8 @@ class LibraryScenario(Model):
         ):
             raise ValueError("`scenario` is a scenario file's mapping, with its `name`")
         unknown = sorted({n for n in named(self.scenario) if n.startswith(f"{NAMESPACE}.")} - set(PLACEHOLDERS))
+        if "assess" not in self.scenario or not self.scenario["assess"]:
+            raise ValueError("a library scenario carries the rules that judge it, in its scenario's `assess`")
         if unknown:
             raise ValueError(f"names {', '.join('{' + u + '}' for u in unknown)}, which no team value fills")
         return self
@@ -138,6 +139,12 @@ class LibraryScenario(Model):
     def name(self) -> str:
         assert isinstance(self.scenario, dict) and isinstance(self.scenario["name"], str)
         return self.scenario["name"]
+
+    @property
+    def rules(self) -> list[str]:
+        """The ids of the rules its scenario judges by."""
+        assert isinstance(self.scenario, dict) and isinstance(self.scenario["assess"], list)
+        return [str(r["id"]) for r in self.scenario["assess"] if isinstance(r, dict)]
 
     @property
     def uses(self) -> list[str]:

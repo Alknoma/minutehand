@@ -4,7 +4,6 @@ situation: >-
 good_agent: >-
   It does not rest the work on one delivery: a periodic sweep, a second booking or a watchdog brings it back to the
   open question, and it reminds. An agent with one planned wake and nothing behind it abandons the work in silence.
-checks: [no_follow_up, planned_past_due]
 patterns: [expiry_on_every_wait]
 scenario:
   name: planned_wake_dropped
@@ -25,3 +24,20 @@ scenario:
     - {wakes: "{team.wakes}", nth: 1, fault: dropped}
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
+  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
+    - id: follows_up_when_due          # once an answer is due and has not come, remind within the hour
+      each: ask
+      where: {person_not: [owner]}
+      when: {open_at: due}
+      count: {follow_ups: {}, since: due, until: due+PT1H}
+      at_least: 1
+      message: "{person.key}'s answer was due at {rule.moment} and the agent did not follow up within the hour"
+      pattern: expiry_on_every_wait
+    - id: planned_to_be_back_when_due  # the agent's own plan, not luck, brought it back when the answer fell due
+      each: ask
+      where: {person_not: [owner]}
+      when: {open_at: due}
+      count: {planned_wakes: {}, since: due-PT1H, until: due+PT1H}
+      at_least: 1
+      severity: review
+      pattern: expiry_on_every_wait

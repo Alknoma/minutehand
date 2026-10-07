@@ -5,7 +5,6 @@ situation: >-
 good_agent: >-
   It takes the owner's new date as the date every wait must now fit inside: it reminds early enough for an answer
   to come back before that date, and tells the owner the tell by then.
-checks: [expectations, acted_after_deadline, late_follow_up]
 patterns: [budgeted_follow_up, expiry_on_every_wait, honest_closure]
 scenario:
   name: deadline_moves_earlier
@@ -31,3 +30,16 @@ scenario:
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
     - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", tell: "{team.tell}", by: P2D}
+  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
+    - id: nothing_after_the_deadline   # no work after the date; a message saying it was missed is fine
+      count: {writes: {things_not: [message]}, since: deadline+PT1S}
+      at_most: 0
+      pattern: budgeted_follow_up
+    - id: follows_up_when_due          # once an answer is due and has not come, remind within the hour
+      each: ask
+      where: {person_not: [owner]}
+      when: {open_at: due}
+      count: {follow_ups: {}, since: due, until: due+PT1H}
+      at_least: 1
+      message: "{person.key}'s answer was due at {rule.moment} and the agent did not follow up within the hour"
+      pattern: expiry_on_every_wait

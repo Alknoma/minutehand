@@ -98,18 +98,21 @@ from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_s
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.application.steps import steps
+from minutehand.checks.patterns import PATTERNS
 from minutehand.checks.runner import (
     ChecksRefused,
     RunResult,
     broken,
     contract_breaks,
+    discover,
     evaluate,
     evaluate_judged,
     load_checks,
     view_of,
 )
 from minutehand.domain.agent import AgentUnderTest, Booked, Contained, GoalByMessage, Polled, Reported
-from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, WakeRecord
+from minutehand.domain.assessments import Rule, merged, refuse_unknown_people
+from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, Stability, WakeRecord
 from minutehand.domain.database import BaseTaken, CommandBase, Database
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
@@ -197,6 +200,14 @@ class ForkPoint(Model):
     agent: AgentState
 
 
+class Played(Model):
+    """What `run`, `fork` and `findings` print with --json: one shape, so a script reads any of them the same way.
+    `findings` prints the one run asked for; `stability` is set only for several samples."""
+
+    outcomes: list[Outcome]
+    stability: Stability | None = None
+
+
 def run_dir(state: Path, run_id: str) -> Path:
     return state / RUNS / run_id
 
@@ -243,6 +254,7 @@ async def play(
     scenario = written.starting(_now())
     _refuse_unwritten(scenario, model)
     own_checks = _own_checks(agent)
+    rules = rules_for(agent, scenario, own_checks)
     listen = listen or Listen()
     _refuse_unmodeled(listen, model)
     registry = Registry.installed()
@@ -270,7 +282,12 @@ async def play(
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(
-                scenario, model if judge else None, judging=judge, own=own_checks, claims=_claims(registry, services)
+                scenario,
+                model if judge else None,
+                judging=judge,
+                own=own_checks,
+                rules=rules,
+                claims=_claims(registry, services),
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
@@ -387,6 +404,7 @@ async def fork(
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, model)
     own_checks = _own_checks(agent)
+    rules = rules_for(agent, changed, own_checks)
     listen = listen or Listen()
     _refuse_unmodeled(listen, model)
     registry = Registry.installed()
@@ -398,7 +416,12 @@ async def fork(
     )
     child_id = _new_run_id()
     scorer = _Judge(
-        changed, model if judge else None, judging=judge, own=own_checks, claims=_claims(registry, services)
+        changed,
+        model if judge else None,
+        judging=judge,
+        own=own_checks,
+        rules=rules,
+        claims=_claims(registry, services),
     )
     signing = signing_for(agent, changed.people)
 
@@ -1050,6 +1073,24 @@ def _refuse_unmodeled(listen: Listen, model: LanguageModel | None) -> None:
         )
 
 
+def rules_for(agent: AgentUnderTest, scenario: Scenario, own: Sequence[Check] = ()) -> list[Rule]:
+    """The team's rules the run is judged by (`domain.assessments.merged`), refused before anything starts when the
+    scenario switches off a rule nobody wrote, a rule names someone the scenario does not have or a pattern there is
+    not, or a rule takes the id of a check that also judges the run."""
+    try:
+        rules = merged(agent.assess, scenario.assess, scenario.assess_off)
+        refuse_unknown_people(rules, [p.key for p in scenario.people])
+    except ValueError as e:
+        raise RunRefused(f"the assessments: {e}") from e
+    unknown = sorted({r.pattern for r in rules if r.pattern is not None} - {p.key for p in PATTERNS})
+    if unknown:
+        raise RunRefused(f"the assessments: no pattern {', '.join(unknown)}; the patterns are in docs/patterns/")
+    taken = sorted({r.id for r in rules} & {c.id for c in discover(own)})
+    if taken:
+        raise RunRefused(f"the assessments: a rule takes the id of a check: {', '.join(taken)}; rename the rule")
+    return rules
+
+
 def _own_checks(agent: AgentUnderTest) -> list[Check]:
     """The agent's own checks, loaded before anything of a run starts, so a file that cannot load refuses it."""
     try:
@@ -1087,9 +1128,11 @@ class _Judge:
         *,
         judging: bool,
         own: Sequence[Check] = (),
+        rules: Sequence[Rule] = (),
         claims: _Claims | None = None,
     ) -> None:
         self._claims = claims
+        self._rules = list(rules)
         self._scenario = scenario
         self._own = list(own)
         self._model = model
@@ -1120,6 +1163,8 @@ class _Judge:
             uncalled_providers=(
                 uncalled_providers(claims.named, calls, woken=bool(record.wakes)) if claims is not None else []
             ),
+            rules=self._rules,
+            stop=record.stop,
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop, own=self._own)
