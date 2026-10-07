@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from minutehand.application.checkpoint import checkpoint_seqs
-from minutehand.application.dues import due_entries, due_events
 import pytest
 
+from minutehand.application.checkpoint import checkpoint_seqs
+from minutehand.application.dues import due_entries, due_events
 from minutehand.checks.runner import evaluate, view_of
-from minutehand.domain.checks import FindingKind
 from minutehand.domain.agent import Booked
+from minutehand.domain.checks import FindingKind
 from minutehand.domain.clock import DueClosed, DueEntry, DueSource
 from minutehand.domain.experiment import Fork, PersonChange
 from minutehand.domain.world import Actor

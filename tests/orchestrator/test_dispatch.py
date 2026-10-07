@@ -11,8 +11,8 @@ from minutehand.application.dues import Dues, due_entries
 from minutehand.application.forks import change_words, short_words
 from minutehand.application.rewind import changed_scenario
 from minutehand.checks.runner import evaluate, view_of
-from minutehand.domain.checks import FindingKind
 from minutehand.domain.agent import AgentUnderTest, Booked, Polled, WakeReason
+from minutehand.domain.checks import FindingKind
 from minutehand.domain.clock import Due, DueClosed, DueKind, DueSource
 from minutehand.domain.experiment import DispatchChange, Fork
 from minutehand.domain.run import StopReason
@@ -22,7 +22,6 @@ from tests.orchestrator.test_http_agents import TickingAgent, _run
 from tests.orchestrator.test_rewind import fork
 from tests.orchestrator.world import RecordingClock, serving
 from tests.support.rules import rules
-
 
 TWICE = """
 - id: nothing_new_in_a_repeated_wake
