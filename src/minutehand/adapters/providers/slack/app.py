@@ -23,7 +23,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.slack import state, wire
+from minutehand.adapters.providers.slack import socket_mode, state, wire
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.world import (
     Actor,
@@ -40,6 +40,9 @@ from minutehand.ports.store import Store
 _MAX_GROUP = 8
 _UNAUTHENTICATED = frozenset({"oauth.v2.access"})
 """Methods an app calls with its client id and secret, before it holds a token."""
+_APP_LEVEL = frozenset({"apps.connections.open"})
+"""Methods an app calls with its app-level token (`xapp-`), which no other method takes."""
+APP_TOKEN = "xapp-"
 _TRIGGER_LIFETIME = 3
 """Seconds a `trigger_id` can open a view, on the run's clock."""
 HOOK_LIFETIME = 30 * 60
@@ -85,6 +88,7 @@ class SlackApi:
             "views.update": self.views_update,
             "views.publish": self.views_publish,
             "oauth.v2.access": self.oauth_v2_access,
+            "apps.connections.open": self.apps_connections_open,
         }
 
     async def endpoint(self, request: Request) -> Response:
@@ -99,7 +103,9 @@ class SlackApi:
                 _header(request, "authorization"),
             )
             self._world = SlackWorld(self._store)
-            if method not in _UNAUTHENTICATED:
+            if method in _APP_LEVEL:
+                self._world = self._app_level(presented)
+            elif method not in _UNAUTHENTICATED:
                 self._world = self._authenticate(presented)
             faulted = self._fault(method, presented)
             answer: wire.Response = faulted if faulted is not None else self._methods[method](presented)
@@ -146,12 +152,27 @@ class SlackApi:
         Slack sign-in, when only the tokens it names are let in."""
         if presented.token is None:
             raise wire.Refusal("not_authed")
+        if presented.token.startswith(APP_TOKEN):
+            raise wire.Refusal("not_allowed_token_type")
         found = SlackWorld(self._store).for_token(presented.token)
         if found is None or found.user(found.bot) is None:
             raise wire.Refusal("invalid_auth")
         if not found.knows_token(presented.token):
             raise wire.Refusal("invalid_auth")
         return found
+
+    def _app_level(self, presented: wire.Presented) -> SlackWorld:
+        """An app-level token is the app's, across every workspace it is installed in: any `xapp-` token is taken,
+        as the agent's app, and the first workspace names the app. A bot or user token is refused."""
+        if presented.token is None:
+            raise wire.Refusal("not_authed")
+        if not presented.token.startswith(APP_TOKEN):
+            raise wire.Refusal("not_allowed_token_type")
+        return SlackWorld(self._store)
+
+    def apps_connections_open(self, presented: wire.Presented) -> wire.Ok:
+        wire.read_args(wire.NoArgs, presented)
+        return socket_mode.open_connection(self._world)
 
     # ------------------------------------------------------------------ lookups
 

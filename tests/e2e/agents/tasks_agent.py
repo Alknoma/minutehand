@@ -1,12 +1,13 @@
 """An agent that defers its follow-up with Google Cloud Tasks and handles it when Cloud Tasks calls back.
 
-Stock `google-cloud-tasks` on its REST transport, configured by nothing but the environment it is started with.
+Stock `google-cloud-tasks` on its REST transport, or with `--grpc` on its default (gRPC), configured by nothing but
+the environment it is started with.
 
     POST /wake            START: create an HTTP task for five hours on, aimed at this agent's own handler
     GET  /report          always IDLE with no next wake: Cloud Tasks is what brings it back
     POST /tasks/follow-up the task's delivery; `--fail-first` answers the first one 503
 
-    python tasks_agent.py --port P --state FILE --queue NAME [--fail-first]
+    python tasks_agent.py --port P --state FILE --queue NAME [--fail-first] [--grpc]
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ parser.add_argument("--port", type=int, required=True)
 parser.add_argument("--state", type=Path, required=True)
 parser.add_argument("--queue", required=True)
 parser.add_argument("--fail-first", action="store_true")
+parser.add_argument("--grpc", action="store_true")
 args = parser.parse_args()
 
 lock = threading.Lock()
@@ -40,7 +42,10 @@ def save() -> None:
 
 
 def defer(now: datetime.datetime) -> None:
-    client = tasks_v2.CloudTasksClient(transport="rest", credentials=AnonymousCredentials())
+    if args.grpc:
+        client = tasks_v2.CloudTasksClient(credentials=AnonymousCredentials())
+    else:
+        client = tasks_v2.CloudTasksClient(transport="rest", credentials=AnonymousCredentials())
     at = timestamp_pb2.Timestamp()
     at.FromDatetime(now + datetime.timedelta(hours=5))
     task = {

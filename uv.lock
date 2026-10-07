@@ -2034,11 +2034,13 @@ dependencies = [
     { name = "pyyaml" },
     { name = "starlette" },
     { name = "uvicorn" },
+    { name = "wsproto" },
     { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
 grpc = [
+    { name = "google-cloud-tasks" },
     { name = "grpcio" },
 ]
 
@@ -2086,6 +2088,7 @@ requires-dist = [
     { name = "asgiref", specifier = ">=3.8" },
     { name = "certifi", specifier = ">=2024.2.2" },
     { name = "flask", specifier = ">=3" },
+    { name = "google-cloud-tasks", marker = "extra == 'grpc'", specifier = ">=2.16" },
     { name = "grpcio", marker = "extra == 'grpc'", specifier = ">=1.60" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.20" },
@@ -2100,6 +2103,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6" },
     { name = "starlette", specifier = ">=0.40" },
     { name = "uvicorn", specifier = ">=0.30" },
+    { name = "wsproto", specifier = ">=1.2" },
     { name = "zstandard", specifier = ">=0.23" },
 ]
 provides-extras = ["grpc"]

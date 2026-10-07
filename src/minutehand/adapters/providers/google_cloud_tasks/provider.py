@@ -24,10 +24,14 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 import httpx
+from google.protobuf import json_format
+from google.protobuf.message import Message as ProtoMessage
 from pydantic import Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import Response
@@ -36,12 +40,12 @@ from starlette.routing import Route, Router
 from minutehand.adapters.providers.google_cloud_tasks import wire
 from minutehand.adapters.providers.google_cloud_tasks.manifest import MANIFEST
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.errors import Rendered
+from minutehand.domain.errors import GrpcRefusal, Rendered
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Wakes
+from minutehand.ports.provider import ASGIApp, GrpcMethod, Wakes
 from minutehand.ports.store import Store
 
 LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -401,7 +405,7 @@ class CloudTasksProvider:
     # -- the API ---------------------------------------------------------------------------------------------
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        tasks = Tasks(world)
+        api = _Api(Tasks(world), world, clock, self._bound)
         location = "/v2/projects/{project}/locations/{location}"
 
         def located(request: Request) -> str:
@@ -410,141 +414,36 @@ class CloudTasksProvider:
         def queue_name(request: Request) -> str:
             return f"{located(request)}/queues/{request.path_params['queue']}"
 
-        def existing_queue(name: str) -> QueueRecord:
-            found = tasks.queue(name)
-            if found is None:
-                raise wire.TasksRefusal(404, "Queue does not exist.")
-            return found
+        def task_name(request: Request) -> str:
+            return f"{queue_name(request)}/tasks/{request.path_params['task']}"
 
         async def create_queue(request: Request) -> Response:
-            given = _parsed(wire.QueueIn, await request.body())
-            parent = located(request)
-            if not given.name.startswith(parent + "/queues/") or "/" in given.name[len(parent) + 8 :]:
-                raise wire.TasksRefusal(400, f"Queue name {given.name!r} must be in {parent}")
-            if tasks.queue(given.name) is not None:
-                raise wire.TasksRefusal(409, "Queue already exists")
-            retry = given.retryConfig or wire.RetryConfig()
-            record = QueueRecord(
-                name=given.name,
-                max_attempts=retry.maxAttempts if retry.maxAttempts is not None else wire.DEFAULT_MAX_ATTEMPTS,
-                min_backoff=wire.duration(retry.minBackoff) if retry.minBackoff else wire.DEFAULT_MIN_BACKOFF,
-                max_backoff=wire.duration(retry.maxBackoff) if retry.maxBackoff else wire.DEFAULT_MAX_BACKOFF,
-                max_doublings=retry.maxDoublings if retry.maxDoublings is not None else wire.DEFAULT_MAX_DOUBLINGS,
-                max_retry_duration=wire.duration(retry.maxRetryDuration) if retry.maxRetryDuration else None,
-            )
-            tasks.put_queue(record, actor=Actor.AGENT, operation=Operation.CREATE)
-            return _json(_queue_wire(record))
+            return _json(_queue_wire(api.create_queue(located(request), _parsed(wire.QueueIn, await request.body()))))
 
         async def list_queues(request: Request) -> Response:
-            return _json({"queues": [_queue_wire(q) for q in tasks.queues(located(request))]})
+            return _json({"queues": [_queue_wire(q) for q in api.list_queues(located(request))]})
 
         async def get_queue(request: Request) -> Response:
-            return _json(_queue_wire(existing_queue(queue_name(request))))
+            return _json(_queue_wire(api.get_queue(queue_name(request))))
 
         async def delete_queue(request: Request) -> Response:
-            found = existing_queue(queue_name(request))
-            now = clock.now()
-            for task in tasks.tasks(found.name):
-                tasks.put_task(
-                    task.model_copy(update={"gone_at": now}),
-                    actor=Actor.AGENT,
-                    operation=Operation.UPDATE,
-                    said="deleted with its queue",
-                )
-                self._bound().cancel(task.name)
-            tasks.put_queue(found.model_copy(update={"gone_at": now}), actor=Actor.AGENT, operation=Operation.UPDATE)
+            api.delete_queue(queue_name(request))
             return _json({})
 
         async def create_task(request: Request) -> Response:
-            queue = existing_queue(queue_name(request))
             asked = _parsed(wire.CreateTaskIn, await request.body())
-            given = asked.task
-            if given.appEngineHttpRequest is not None:
-                raise NotImplementedError("App Engine tasks are not served: only HTTP tasks are")
-            http = given.httpRequest
-            if http is None:
-                raise wire.TasksRefusal(400, "Task.http_request or Task.app_engine_http_request must be set")
-            if http.oidcToken is not None or http.oauthToken is not None:
-                raise NotImplementedError(
-                    "a task that asks Cloud Tasks to sign an OIDC or OAuth token is not served: nothing here holds "
-                    "Google's signing keys, so the agent could not verify the token it would be sent"
-                )
-            if urlsplit(http.url).scheme not in ("http", "https"):
-                raise wire.TasksRefusal(400, f"HttpRequest.url {http.url!r} must start with http:// or https://")
-            if http.body is not None:
-                try:
-                    base64.b64decode(http.body, validate=True)
-                except (binascii.Error, ValueError) as e:
-                    raise wire.TasksRefusal(400, "HttpRequest.body is not valid base64") from e
-            now = clock.now()
-            name = given.name or f"{queue.name}/tasks/{10**18 + world.head():019d}"
-            if (
-                not name.startswith(queue.name + "/tasks/")
-                or not _short(name).replace("-", "").replace("_", "").isalnum()
-            ):
-                raise wire.TasksRefusal(400, f"Task name {name!r} is not a task of {queue.name}")
-            before = tasks.task(name)
-            if before is not None and (before.gone_at is None or now - before.gone_at < wire.NAME_REUSE_AFTER):
-                raise wire.TasksRefusal(
-                    409,
-                    "Requested entity already exists"
-                    if before.gone_at is None
-                    else "The task cannot be created because a task with this name existed too recently.",
-                )
-            scheduled = max(wire.moment(given.scheduleTime), now) if given.scheduleTime else now
-            record = TaskRecord(
-                name=name,
-                queue=queue.name,
-                url=http.url,
-                method=_method(http.httpMethod),
-                headers=http.headers,
-                body=http.body,
-                create_time=now,
-                schedule_time=scheduled,
-                dispatch_deadline=wire.duration(given.dispatchDeadline)
-                if given.dispatchDeadline
-                else wire.DEFAULT_DISPATCH_DEADLINE,
-            )
-            tasks.put_task(
-                record,
-                actor=Actor.AGENT,
-                operation=Operation.CREATE if before is None else Operation.UPDATE,
-                said=_said(record.method, record.url, record.body),
-            )
-            self._bound().book(Due(at=scheduled, kind=DueKind.AGENT_WAKE, ref=name))
-            return _json(_task_wire(record, full=_full(asked.responseView)))
+            return _json(_task_wire(api.create_task(queue_name(request), asked), full=_full(asked.responseView)))
 
         async def list_tasks(request: Request) -> Response:
-            queue = existing_queue(queue_name(request))
             full = _full(request.query_params.get("responseView"))
-            return _json(
-                {"tasks": [_task_wire(t, full=full) for t in sorted(tasks.tasks(queue.name), key=lambda t: t.name)]}
-            )
-
-        def existing_task(request: Request) -> TaskRecord:
-            name = f"{queue_name(request)}/tasks/{request.path_params['task']}"
-            found = tasks.task(name)
-            if found is None or found.gone_at is not None:
-                raise wire.TasksRefusal(
-                    404,
-                    "The task no longer exists, though a task with this name existed recently. The task either successfully completed or was deleted."
-                    if found is not None
-                    else "Requested entity was not found.",
-                )
-            return found
+            return _json({"tasks": [_task_wire(t, full=full) for t in api.list_tasks(queue_name(request))]})
 
         async def get_task(request: Request) -> Response:
-            return _json(_task_wire(existing_task(request), full=_full(request.query_params.get("responseView"))))
+            found = api.get_task(task_name(request))
+            return _json(_task_wire(found, full=_full(request.query_params.get("responseView"))))
 
         async def delete_task(request: Request) -> Response:
-            found = existing_task(request)
-            tasks.put_task(
-                found.model_copy(update={"gone_at": clock.now()}),
-                actor=Actor.AGENT,
-                operation=Operation.UPDATE,
-                said="deleted",
-            )
-            self._bound().cancel(found.name)
+            api.delete_task(task_name(request))
             return _json({})
 
         async def unserved(request: Request) -> Response:
@@ -563,6 +462,239 @@ class CloudTasksProvider:
                 Route("/{rest:path}", unserved, methods=["GET", "POST", "PATCH", "PUT", "DELETE"]),
             ]
         )
+
+    def grpc(self, world: Store, clock: Clock) -> list[GrpcMethod]:
+        """The same API over gRPC, the transport `CloudTasksClient()` speaks by default, answered by the same
+        operations as the REST routes over the same world: each request is read as the proto3 JSON its REST call
+        carries, and each answer written as the message the REST answer's JSON parses to. Google's messages come
+        from `google-cloud-tasks` (`minutehand[grpc]`)."""
+        from google.cloud.tasks_v2.types import cloudtasks, queue, task
+        from google.protobuf import empty_pb2
+
+        api = _Api(Tasks(world), world, clock, self._bound)
+
+        def method[In: wire.Wire](
+            name: str, request: type[ProtoMessage], read: type[In], answer: Callable[[In], ProtoMessage]
+        ) -> GrpcMethod:
+            async def answered(message: ProtoMessage) -> ProtoMessage:
+                try:
+                    return answer(_parsed(read, json_format.MessageToJson(message, indent=None).encode()))
+                except wire.TasksRefusal as refusal:
+                    raise GrpcRefusal(refusal.grpc_code(), refusal.message) from refusal
+
+            return GrpcMethod(path=f"{SERVICE}/{name}", request=request, answer=answered)
+
+        def as_queue(record: QueueRecord) -> ProtoMessage:
+            return json_format.Parse(json.dumps(_queue_wire(record)), queue.Queue.pb()())
+
+        def as_task(record: TaskRecord, view: str | int | None) -> ProtoMessage:
+            return json_format.Parse(json.dumps(_task_wire(record, full=_full(view))), task.Task.pb()())
+
+        def tasks_listed(asked: wire.TasksListed) -> ProtoMessage:
+            listed = [_task_wire(t, full=_full(asked.responseView)) for t in api.list_tasks(_named(asked.parent))]
+            return json_format.Parse(json.dumps({"tasks": listed}), cloudtasks.ListTasksResponse.pb()())
+
+        def queues_listed(asked: wire.Parented) -> ProtoMessage:
+            listed = [_queue_wire(q) for q in api.list_queues(_located(asked.parent))]
+            return json_format.Parse(json.dumps({"queues": listed}), cloudtasks.ListQueuesResponse.pb()())
+
+        def queue_deleted(asked: wire.Named) -> ProtoMessage:
+            api.delete_queue(_named(asked.name))
+            return empty_pb2.Empty()
+
+        def task_deleted(asked: wire.Named) -> ProtoMessage:
+            api.delete_task(_task_named(asked.name))
+            return empty_pb2.Empty()
+
+        return [
+            method(
+                "CreateQueue",
+                cloudtasks.CreateQueueRequest.pb(),
+                wire.QueueCreated,
+                lambda asked: as_queue(api.create_queue(_located(asked.parent), asked.queue)),
+            ),
+            method("ListQueues", cloudtasks.ListQueuesRequest.pb(), wire.Parented, queues_listed),
+            method(
+                "GetQueue",
+                cloudtasks.GetQueueRequest.pb(),
+                wire.Named,
+                lambda asked: as_queue(api.get_queue(_named(asked.name))),
+            ),
+            method("DeleteQueue", cloudtasks.DeleteQueueRequest.pb(), wire.Named, queue_deleted),
+            method(
+                "CreateTask",
+                cloudtasks.CreateTaskRequest.pb(),
+                wire.TaskCreated,
+                lambda asked: as_task(api.create_task(_named(asked.parent), asked.as_rest()), asked.responseView),
+            ),
+            method("ListTasks", cloudtasks.ListTasksRequest.pb(), wire.TasksListed, tasks_listed),
+            method(
+                "GetTask",
+                cloudtasks.GetTaskRequest.pb(),
+                wire.TaskNamed,
+                lambda asked: as_task(api.get_task(_task_named(asked.name)), asked.responseView),
+            ),
+            method("DeleteTask", cloudtasks.DeleteTaskRequest.pb(), wire.Named, task_deleted),
+        ]
+
+
+SERVICE = "/google.cloud.tasks.v2.CloudTasks"
+_LOCATION = re.compile(r"projects/[^/]+/locations/[^/]+")
+_QUEUE = re.compile(r"projects/[^/]+/locations/[^/]+/queues/[^/]+")
+_TASK = re.compile(r"projects/[^/]+/locations/[^/]+/queues/[^/]+/tasks/[^/]+")
+
+
+def _checked(name: str, pattern: re.Pattern[str], what: str) -> str:
+    """A resource name a gRPC request carries whole, which a REST call spells out in its path."""
+    if pattern.fullmatch(name) is None:
+        raise wire.TasksRefusal(400, f"Invalid resource field value in the request: {what} {name!r}")
+    return name
+
+
+def _located(name: str) -> str:
+    return _checked(name, _LOCATION, "location")
+
+
+def _named(name: str) -> str:
+    return _checked(name, _QUEUE, "queue")
+
+
+def _task_named(name: str) -> str:
+    return _checked(name, _TASK, "task")
+
+
+class _Api:
+    """Cloud Tasks' operations over the world, whatever transport asked: the REST routes and the gRPC methods both
+    answer from here. Each raises `wire.TasksRefusal` where Cloud Tasks refuses and `NotImplementedError` for what
+    is not served."""
+
+    def __init__(self, tasks: Tasks, world: Store, clock: Clock, wakes: Callable[[], Wakes]) -> None:
+        self._tasks = tasks
+        self._world = world
+        self._clock = clock
+        self._wakes = wakes
+
+    def existing_queue(self, name: str) -> QueueRecord:
+        found = self._tasks.queue(name)
+        if found is None:
+            raise wire.TasksRefusal(404, "Queue does not exist.")
+        return found
+
+    def create_queue(self, parent: str, given: wire.QueueIn) -> QueueRecord:
+        if not given.name.startswith(parent + "/queues/") or "/" in given.name[len(parent) + 8 :]:
+            raise wire.TasksRefusal(400, f"Queue name {given.name!r} must be in {parent}")
+        if self._tasks.queue(given.name) is not None:
+            raise wire.TasksRefusal(409, "Queue already exists")
+        retry = given.retryConfig or wire.RetryConfig()
+        record = QueueRecord(
+            name=given.name,
+            max_attempts=retry.maxAttempts if retry.maxAttempts is not None else wire.DEFAULT_MAX_ATTEMPTS,
+            min_backoff=wire.duration(retry.minBackoff) if retry.minBackoff else wire.DEFAULT_MIN_BACKOFF,
+            max_backoff=wire.duration(retry.maxBackoff) if retry.maxBackoff else wire.DEFAULT_MAX_BACKOFF,
+            max_doublings=retry.maxDoublings if retry.maxDoublings is not None else wire.DEFAULT_MAX_DOUBLINGS,
+            max_retry_duration=wire.duration(retry.maxRetryDuration) if retry.maxRetryDuration else None,
+        )
+        self._tasks.put_queue(record, actor=Actor.AGENT, operation=Operation.CREATE)
+        return record
+
+    def list_queues(self, parent: str) -> list[QueueRecord]:
+        return self._tasks.queues(parent)
+
+    def get_queue(self, name: str) -> QueueRecord:
+        return self.existing_queue(name)
+
+    def delete_queue(self, name: str) -> None:
+        found = self.existing_queue(name)
+        now = self._clock.now()
+        for task in self._tasks.tasks(found.name):
+            self._tasks.put_task(
+                task.model_copy(update={"gone_at": now}),
+                actor=Actor.AGENT,
+                operation=Operation.UPDATE,
+                said="deleted with its queue",
+            )
+            self._wakes().cancel(task.name)
+        self._tasks.put_queue(found.model_copy(update={"gone_at": now}), actor=Actor.AGENT, operation=Operation.UPDATE)
+
+    def create_task(self, queue_name: str, asked: wire.CreateTaskIn) -> TaskRecord:
+        queue = self.existing_queue(queue_name)
+        given = asked.task
+        if given.appEngineHttpRequest is not None:
+            raise NotImplementedError("App Engine tasks are not served: only HTTP tasks are")
+        http = given.httpRequest
+        if http is None:
+            raise wire.TasksRefusal(400, "Task.http_request or Task.app_engine_http_request must be set")
+        if http.oidcToken is not None or http.oauthToken is not None:
+            raise NotImplementedError(
+                "a task that asks Cloud Tasks to sign an OIDC or OAuth token is not served: nothing here holds "
+                "Google's signing keys, so the agent could not verify the token it would be sent"
+            )
+        if urlsplit(http.url).scheme not in ("http", "https"):
+            raise wire.TasksRefusal(400, f"HttpRequest.url {http.url!r} must start with http:// or https://")
+        if http.body is not None:
+            try:
+                base64.b64decode(http.body, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise wire.TasksRefusal(400, "HttpRequest.body is not valid base64") from e
+        now = self._clock.now()
+        name = given.name or f"{queue.name}/tasks/{10**18 + self._world.head():019d}"
+        if not name.startswith(queue.name + "/tasks/") or not _short(name).replace("-", "").replace("_", "").isalnum():
+            raise wire.TasksRefusal(400, f"Task name {name!r} is not a task of {queue.name}")
+        before = self._tasks.task(name)
+        if before is not None and (before.gone_at is None or now - before.gone_at < wire.NAME_REUSE_AFTER):
+            raise wire.TasksRefusal(
+                409,
+                "Requested entity already exists"
+                if before.gone_at is None
+                else "The task cannot be created because a task with this name existed too recently.",
+            )
+        scheduled = max(wire.moment(given.scheduleTime), now) if given.scheduleTime else now
+        record = TaskRecord(
+            name=name,
+            queue=queue.name,
+            url=http.url,
+            method=_method(http.httpMethod),
+            headers=http.headers,
+            body=http.body,
+            create_time=now,
+            schedule_time=scheduled,
+            dispatch_deadline=wire.duration(given.dispatchDeadline)
+            if given.dispatchDeadline
+            else wire.DEFAULT_DISPATCH_DEADLINE,
+        )
+        self._tasks.put_task(
+            record,
+            actor=Actor.AGENT,
+            operation=Operation.CREATE if before is None else Operation.UPDATE,
+            said=_said(record.method, record.url, record.body),
+        )
+        self._wakes().book(Due(at=scheduled, kind=DueKind.AGENT_WAKE, ref=name))
+        return record
+
+    def list_tasks(self, queue_name: str) -> list[TaskRecord]:
+        queue = self.existing_queue(queue_name)
+        return sorted(self._tasks.tasks(queue.name), key=lambda t: t.name)
+
+    def get_task(self, name: str) -> TaskRecord:
+        found = self._tasks.task(name)
+        if found is None or found.gone_at is not None:
+            raise wire.TasksRefusal(
+                404,
+                "The task no longer exists, though a task with this name existed recently. The task either successfully completed or was deleted."
+                if found is not None
+                else "Requested entity was not found.",
+            )
+        return found
+
+    def delete_task(self, name: str) -> None:
+        found = self.get_task(name)
+        self._tasks.put_task(
+            found.model_copy(update={"gone_at": self._clock.now()}),
+            actor=Actor.AGENT,
+            operation=Operation.UPDATE,
+            said="deleted",
+        )
+        self._wakes().cancel(found.name)
 
 
 def build() -> CloudTasksProvider:

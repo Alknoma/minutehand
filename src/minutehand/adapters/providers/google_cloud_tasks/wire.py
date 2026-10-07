@@ -1,6 +1,9 @@
 """Cloud Tasks v2 as its REST API puts it on the wire: proto3 JSON, field names in camelCase, durations as
 `"3.5s"`, timestamps as RFC 3339, bytes as base64, and Google's error envelope.
 
+A gRPC request is read in the same shapes, as the proto3 JSON its message prints to: the REST call carries the same
+fields with the resource names in its path, the gRPC request carries them whole (`Named`, `Parented`, ...).
+
 https://cloud.google.com/tasks/docs/reference/rest
 """
 
@@ -13,6 +16,7 @@ from pydantic import ConfigDict, Field, JsonValue
 
 from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
+from minutehand.domain.world import GrpcCode
 
 JSON = "application/json; charset=UTF-8"
 
@@ -110,6 +114,56 @@ class CreateTaskIn(Wire):
     responseView: str | int | None = None
 
 
+class TaskCreated(Wire):
+    """`CreateTaskRequest`, as gRPC carries it: the REST body and the queue it names in its path."""
+
+    parent: str
+    task: TaskIn
+    responseView: str | int | None = None
+
+    def as_rest(self) -> CreateTaskIn:
+        return CreateTaskIn(task=self.task, responseView=self.responseView)
+
+
+class QueueCreated(Wire):
+    """`CreateQueueRequest`, as gRPC carries it."""
+
+    parent: str
+    queue: QueueIn
+
+
+class Named(Wire):
+    """`GetQueueRequest`, `DeleteQueueRequest`, `DeleteTaskRequest`: the resource a REST call names in its path."""
+
+    name: str
+
+
+class TaskNamed(Wire):
+    """`GetTaskRequest`."""
+
+    name: str
+    responseView: str | int | None = None
+
+
+class Parented(Wire):
+    """`ListQueuesRequest`. Paging and filtering are read and not applied: every queue is one page."""
+
+    parent: str
+    filter: str | None = None
+    pageSize: int | None = None
+    pageToken: str | None = None
+    readMask: str | None = None
+
+
+class TasksListed(Wire):
+    """`ListTasksRequest`. Every task is one page."""
+
+    parent: str
+    responseView: str | int | None = None
+    pageSize: int | None = None
+    pageToken: str | None = None
+
+
 class ErrorBody(Wire):
     code: int
     message: str
@@ -130,6 +184,10 @@ class TasksRefusal(ServiceRefusal):
 
     def render(self, asked: Asked) -> Rendered:
         return error_answer(self.code, _STATUS_WORD.get(self.code, "UNKNOWN"), self.message)
+
+    def grpc_code(self) -> GrpcCode:
+        """The status a gRPC call is refused with: the one Google's REST error names (`status`)."""
+        return GrpcCode(_STATUS_WORD.get(self.code, "UNKNOWN"))
 
 
 def error_answer(status: int, word: str, message: str) -> Rendered:

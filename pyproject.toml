@@ -45,11 +45,14 @@ dependencies = [
     "mcp>=1.2,<2",
     "zstandard>=0.23",
     "jsonschema>=4.20",
+    # uvicorn's WebSocket protocol for the providers' socket servers (Slack's Socket Mode); mitmproxy needs it too.
+    "wsproto>=1.2",
 ]
 
 [project.optional-dependencies]
-# Receiving an agent's OTLP over gRPC, on the same port as OTLP/HTTP.
-grpc = ["grpcio>=1.60"]
+# gRPC: receiving an agent's OTLP over gRPC on the same port as OTLP/HTTP, and answering the gRPC transport of
+# Google's client libraries (Cloud Tasks), whose messages come from Google's own package.
+grpc = ["grpcio>=1.60", "google-cloud-tasks>=2.16"]
 
 [project.urls]
 Repository = "https://github.com/Alknoma/minutehand"

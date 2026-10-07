@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -9,10 +11,12 @@ import pytest
 
 from minutehand import session
 from minutehand.checks.runner import stability
+from minutehand.domain.agent import AgentUnderTest, GoalByMessage
 from minutehand.domain.checks import FindingKind, Stability
+from minutehand.domain.people import Delivery, InboundTarget
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import Silent
-from minutehand.domain.world import Actor
+from minutehand.domain.world import Actor, FrameSender
 from tests.e2e.support import (
     ANSWER,
     FOLLOW_UP,
@@ -30,6 +34,8 @@ from tests.e2e.support import (
     texts,
     world,
 )
+
+SOCKET_AGENT = Path(__file__).parent / "agents" / "socket_agent.py"
 
 
 async def test_a_diligent_agent_and_a_person_who_answers_in_36_hours(
@@ -150,3 +156,39 @@ async def test_a_provider_neither_file_names_is_seeded_on_its_first_call_and_lis
     assert seeded and all(e.wake == 1 for e in seeded), "seeded during the first wake, when the agent first called"
     # The seed is the scenario's, not the call's: no call is tied to a scenario event.
     assert all(e.exchange is None for e in seeded)
+
+
+async def test_an_agent_on_slack_socket_mode_takes_its_goal_and_the_answer_as_envelopes_it_acknowledges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No request URL and no wake endpoint: the owner's DM and Sofia's answer reach the agent on the WebSocket it
+    opened with `SocketModeClient`, at the same simulated moments a request-URL agent hears them."""
+    monkeypatch.setenv("ASK_EMAIL", SOFIA)
+    state_file = tmp_path / "agent" / "state.json"
+    agent = AgentUnderTest(
+        name="socket_agent",
+        goal=GoalByMessage(provider="slack"),
+        inbound=[InboundTarget(provider="slack", delivery=Delivery.SOCKET_MODE)],
+    )
+    command = [sys.executable, str(SOCKET_AGENT), "--state", str(state_file)]
+    scn = scenario(answers(after=timedelta(hours=36)), owner=NEVER_EXPECTED_TO_ANSWER)
+
+    [outcome] = await session.play(scn, agent, state=tmp_path / "state", command=command)
+
+    record = outcome.record
+    assert record.stop is StopReason.NOTHING_PENDING
+    assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=36)]
+    store = world(tmp_path / "state", record.run_id)
+    events = store.events()
+    assert texts(messages(events, Actor.PERSON)) == [scn.goal, ANSWER]
+    assert texts(messages(events, Actor.AGENT, to=SOFIA)) == [QUESTION, THANKS]
+    held = json.loads(state_file.read_text())
+    assert held["heard"] == [scn.goal, ANSWER]
+    sent = [c.exchange for c in store.calls() if c.exchange.frame is not None]
+    envelopes = [json.loads(e.response_body or "{}") for e in sent if e.frame and e.frame.sender is FrameSender.SERVICE]
+    acks = [json.loads(e.request_body or "{}") for e in sent if e.frame and e.frame.sender is FrameSender.AGENT]
+    pushed = [e for e in envelopes if e["type"] == "events_api"]
+    assert [e["payload"]["event"]["text"] for e in pushed] == [scn.goal, ANSWER]
+    assert acks == [{"envelope_id": e["envelope_id"]} for e in pushed] and held["envelopes"] == [
+        e["envelope_id"] for e in pushed
+    ]

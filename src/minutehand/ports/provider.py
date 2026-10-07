@@ -7,7 +7,10 @@ pushes events or books wakes to the port it claims, and refuse it loudly when it
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+from google.protobuf.message import Message as ProtoMessage
 
 from minutehand.domain.clock import Due
 from minutehand.domain.errors import Rendered
@@ -48,6 +51,42 @@ class Provider(Protocol):
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """Write the scenario's people, tickets and documents for this service, as actor SCENARIO."""
+        ...
+
+
+@dataclass(frozen=True)
+class GrpcMethod:
+    """One unary method of a service's gRPC API: the path its clients call (`/package.Service/Method`), the message
+    it takes, and what answers it. `answer` is handed the request decoded as `request` and returns the answer
+    message; it raises `domain.errors.GrpcRefusal` where the real service refuses, `NotImplementedError` for what
+    the fake does not do (answered UNIMPLEMENTED), and anything else is Minutehand's bug (answered INTERNAL). A
+    table of handlers, not a model: nothing of it is stored or sent."""
+
+    path: str
+    request: type[ProtoMessage]
+    answer: Callable[[ProtoMessage], Awaitable[ProtoMessage]]
+
+
+@runtime_checkable
+class ServesGrpc(Protocol):
+    """A provider whose real service also speaks gRPC on its hosts, as Google's client libraries do by default.
+    Minutehand serves `grpc` from a gRPC server of its own on a loopback port, one per world, and the proxy sends
+    each gRPC call to the provider's hosts there (HTTP/2, `content-type: application/grpc`) and records it."""
+
+    def grpc(self, world: Store, clock: Clock) -> Sequence[GrpcMethod]:
+        """The methods served, over `world` and stamped from `clock`, as `app` answers the same API's REST calls.
+        A method the real service has and this list leaves out is answered UNIMPLEMENTED."""
+        ...
+
+
+@runtime_checkable
+class ServesSockets(Protocol):
+    """A provider whose real service answers WebSocket upgrades on its hosts: Slack's Socket Mode. Minutehand serves
+    `sockets` on a loopback port, one per world; the proxy sends each upgrade to the provider's hosts there and
+    records every message that crosses the connection afterwards, either way."""
+
+    def sockets(self, world: Store, clock: Clock) -> ASGIApp:
+        """An ASGI app answering `websocket` scopes, over `world` and stamped from `clock`."""
         ...
 
 

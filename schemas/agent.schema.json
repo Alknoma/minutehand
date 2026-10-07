@@ -499,6 +499,15 @@
       "title": "DecisionInput",
       "type": "object"
     },
+    "Delivery": {
+      "description": "How a provider's events reach the agent.",
+      "enum": [
+        "request_url",
+        "socket_mode"
+      ],
+      "title": "Delivery",
+      "type": "string"
+    },
     "ErrorMarker": {
       "additionalProperties": false,
       "description": "An answer that is an error of a known kind: its status, and, with `at`, a value in its JSON body at that path\n(`equals` it, or present at all when `equals` is None). For GraphQL: `errors[*].extensions.code`.",
@@ -948,6 +957,10 @@
       "additionalProperties": false,
       "description": "Where a provider pushes events to the agent, the way the real service would.",
       "properties": {
+        "delivery": {
+          "$ref": "#/$defs/Delivery",
+          "default": "request_url"
+        },
         "interactivity_url": {
           "anyOf": [
             {
@@ -994,13 +1007,21 @@
           "title": "Secret"
         },
         "url": {
-          "title": "Url",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where events are pushed; required for `request_url` delivery, refused for `socket_mode`, where the agent opens the connection itself",
+          "title": "Url"
         }
       },
       "required": [
-        "provider",
-        "url"
+        "provider"
       ],
       "title": "InboundTarget",
       "type": "object"

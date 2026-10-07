@@ -14,7 +14,8 @@ from minutehand import session
 from minutehand.adapters.providers.google_cloud_tasks.provider import CloudTasksSeed, SeededQueue
 from minutehand.domain.agent import AgentUnderTest, Booked, Reported
 from minutehand.domain.scenario import DispatchFault, DispatchRule, Person, PlannedBy, ProviderSeed, Scenario, Silent
-from tests.e2e.support import OWNER, T0, free_port
+from minutehand.domain.world import Actor, GrpcCode
+from tests.e2e.support import OWNER, T0, free_port, world
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -59,6 +60,21 @@ async def test_the_task_the_agent_defers_calls_it_back_five_simulated_hours_late
     [handled] = held["handled"]
     assert handled["body"] == '{"do": "follow up"}' and handled["retry"] == "0"
     assert held["created"] == [f"{QUEUE}/tasks/{handled['task']}"]
+
+
+async def test_a_task_the_agent_defers_over_grpc_calls_it_back_as_one_deferred_over_rest_does(tmp_path: Path) -> None:
+    """`CloudTasksClient()` with no transport speaks gRPC: the same booking fires at the same simulated moment."""
+    held = await play(tmp_path, scenario(), "--grpc")
+
+    [handled] = held["handled"]
+    assert handled["body"] == '{"do": "follow up"}' and handled["retry"] == "0"
+    assert held["created"] == [f"{QUEUE}/tasks/{handled['task']}"]
+    [outcome] = session.runs(tmp_path / "state")
+    store = world(tmp_path / "state", outcome.record.run_id)
+    [created] = [c for c in store.calls() if c.exchange.path == "/google.cloud.tasks.v2.CloudTasks/CreateTask"]
+    assert created.exchange.grpc is not None and created.exchange.grpc.code is GrpcCode.OK
+    delivered = [e for e in store.events() if e.actor is Actor.SCENARIO and e.entity.external_id == held["created"][0]]
+    assert delivered[0].sim_time == T0 + timedelta(hours=5), "delivered when the task's scheduleTime came round"
 
 
 async def test_a_handler_that_answers_503_is_called_again_after_the_queues_backoff(tmp_path: Path) -> None:
