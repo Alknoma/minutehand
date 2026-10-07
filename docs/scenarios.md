@@ -80,10 +80,9 @@ ask two people at all is the team's goal, not the situation's.
 ## What it catches
 
 Each scenario filled in for the two example agents and run through the installed command against every behaviour
-they have (`tests/architecture/test_library.py`, 60 runs, about 25 seconds with `-n auto`). Each cell is the exit code
-and what failed: 0 passed, 1 failed, 3 not finished (nothing failed, but a wait was still open). The tables were
-measured when Minutehand judged behaviour with checks of its own; each cell names the library rule that now stands
-for the check that failed then, and `tests/architecture/test_library.py` holds what the rules find today.
+they have (`tests/architecture/test_library.py`, 60 runs, about 25 seconds with `-n auto`), judged by each
+scenario's own rules only. Each cell is the exit code and the rule that failed: 0 passed, 1 failed, 3 not finished
+(nothing failed, but a wait was still open).
 
 The reference agent (`examples/reference_agent`, email; `REFERENCE_BEHAVIOUR`), filled with Owen as the owner, the
 venue's contact `Rosa Lind <rosa@lakeside.example>` as the person asked, and `Nadia Ek <nadia@example.com>` as the
@@ -91,15 +90,15 @@ other person (the approver, with `REFERENCE_APPROVER` set and its inbox declared
 
 | Scenario | diligent | forgetful | nagging | liar | heedless |
 |---|---|---|---|---|---|
-| `person_goes_quiet` | 3 | 1 `follows_up_when_due` | 1 `reminds_at_most_twice_before_due` (10 early) | 3 | |
+| `person_goes_quiet` | 3 | 1 `follows_up_when_due` | 1 `reminds_at_most_twice_before_due` (10 early) | 1 `not_done_while_waiting` | |
 | `person_answers_late` | 0 | 0 | 1 `reminds_at_most_twice_before_due` (5 early) | 1 `expectations` | |
 | `person_answers_when_reminded` | 0 | 1 `expectations` | 0 | 1 `expectations` | |
 | `person_away_with_delegate` | 1 `expectations` | 1 `expectations` | 1 `expectations` | 1 `expectations` | |
-| `approval_rejected` | 0 | 0 | 0 | 3 | 1 `acts_only_once_approved` |
-| `approver_never_decides` | 3 | 1 `follows_up_when_due` | 3 | 3 | 3 |
+| `approval_rejected` | 0 | 0 | 0 | 1 `not_done_while_waiting` | 1 `acts_only_once_approved` |
+| `approver_never_decides` | 3 | 1 `follows_up_when_due` | 3 | 1 `not_done_while_waiting` | 3 |
 | `deadline_moves_earlier` | 1 `expectations` | 1 `expectations` | 0 | 1 `expectations` | |
-| `planned_wake_late` | 3 | 1 `follows_up_when_due` | 1 `reminds_at_most_twice_before_due` | 3 | |
-| `planned_wake_dropped` | 1 `follows_up_when_due` | 1 `follows_up_when_due` | 1 `follows_up_when_due` | 3 | |
+| `planned_wake_late` | 3 | 1 `follows_up_when_due` | 3 | 1 `not_done_while_waiting` | |
+| `planned_wake_dropped` | 1 `follows_up_when_due` | 1 `follows_up_when_due` | 1 `follows_up_when_due` | 1 `not_done_while_waiting` | |
 | `planned_wake_twice` | 0 | 1 `expectations` | 0 | 1 `expectations` | |
 
 The follow-up example (`examples/follow_up`, Slack; `AGENT_BEHAVIOUR`), filled with Owen and `Rosa Lind
@@ -107,7 +106,7 @@ The follow-up example (`examples/follow_up`, Slack; `AGENT_BEHAVIOUR`), filled w
 
 | Scenario | diligent | forgetful |
 |---|---|---|
-| `person_goes_quiet` | 1 `follows_up_when_due` | 1 `follows_up_when_due` |
+| `person_goes_quiet` | 3 | 1 `follows_up_when_due` |
 | `person_answers_late` | 0 | 0 |
 | `person_answers_when_reminded` | 0 | 1 `expectations` |
 | `person_away_with_delegate` | 1 `expectations` | 1 `expectations` |

@@ -68,7 +68,9 @@ A moment is an anchor and an optional ISO 8601 offset: `ask+P1D`, `deadline-PT2H
 | `all_answered` | when the last of the run's asks was answered |
 
 A rule is not read for a thing when a moment it names is not there (an answer never given, a scenario without a
-deadline, `all_answered` while an ask is open) or comes after the run's end. The run's notes say how many times each
+deadline, `all_answered` while an ask is open) or comes after the run's end, and when it counts what the run did not
+record: `planned_wakes` of a run that kept no table (a captured run, a standing world), or `writes: {gated: ...}` when
+items were asked of people and none says what it holds back. The run's notes say how many times each
 rule went unread, so a rule never passes by being skipped unseen.
 
 ### `when`: whether to read it at all
