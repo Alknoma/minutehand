@@ -720,3 +720,65 @@ def test_a_rules_findings_judge_the_run_and_a_review_does_not_fail_it() -> None:
         assess=rules(FOLLOWS_UP_WHEN_DUE.replace("at_least: 1", "at_least: 1\n  severity: review")),
     )
     assert evaluate(reviewing, stop=None).exit_code == 3
+
+
+def test_an_ask_answered_before_it_fell_due_is_not_read_for_a_follow_up() -> None:
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([OWNER], 40, text="status")
+    assert found(view(scenario(OWNER, SOFIA), log, [reply(SOFIA, ask, 1)]), FOLLOWS_UP_WHEN_DUE) == []
+
+
+def test_a_rule_for_unanswered_asks_is_not_read_for_an_answered_one() -> None:
+    written = """
+    - id: unanswered_asks_are_followed_up
+      each: ask
+      when: {answered: false}
+      count: {follow_ups: {}}
+      at_least: 1
+    """
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([OWNER], 40, text="status")
+    assert found(view(scenario(OWNER, SOFIA), log, [reply(SOFIA, ask, 1)]), written) == []
+    silent = Log()
+    silent.message([DANIA], 0)
+    silent.message([OWNER], 40, text="status")
+    assert len(found(view(scenario(OWNER, DANIA), silent), written)) == 1
+
+
+def test_a_message_to_the_person_outside_the_answered_asks_thread_is_not_in_it() -> None:
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([SOFIA], 6, text="A new question: who signs?")
+    assert found(view(scenario(SOFIA), log, [reply(SOFIA, ask, 5)]), NO_CHASING_AN_ANSWER) == []
+
+
+def test_a_condition_on_a_moment_after_the_run_ended_is_unread() -> None:
+    written = """
+    - id: escalates_at_three_days
+      each: ask
+      when: {open_at: ask+P3D}
+      count: {messages: {to: [owner]}}
+      at_least: 1
+    """
+    log = Log()
+    log.message([DANIA], 0)
+    log.message([DANIA], 10, text="Any news?")
+    report = Assessments().run(view(scenario(OWNER, DANIA), log, assess=rules(written)))
+    assert report.findings == [] and report.notes[0].startswith("rule escalates_at_three_days was not read 1 time")
+
+
+def test_a_message_to_someone_else_is_not_one_to_the_owner() -> None:
+    written = """
+    - id: escalates_at_three_days
+      each: ask
+      when: {open_at: ask+P3D}
+      count: {messages: {to: [owner]}, since: ask+P3D, until: ask+P3DT1H}
+      at_least: 1
+    """
+    log = Log()
+    log.message([DANIA], 0)
+    log.message([MARCUS], 72.5, text="Dania has not answered; could you nudge her?")
+    log.message([OWNER], 100, text="status")
+    assert len(found(view(scenario(OWNER, DANIA, MARCUS), log), written)) == 1
