@@ -1,6 +1,6 @@
 # Follow-ups budgeted against the deadline
 
-**Found by:** `acted_after_deadline`.
+**Found by:** a rule of the team's own (`docs/assessments.md`), such as `each: ask`, `count: {follow_ups: {}, until: due}`, `at_most: 2` (reminders before an answer is due), or `count: {writes: {things_not: [message]}, since: deadline+PT1S}`, `at_most: 0` (work after the date).
 
 ## The failure
 
@@ -16,4 +16,4 @@ A reference agent computes the next reminder from the time remaining and the num
 
 - Is the deadline an input to when the agent next follows up, or only to what it writes?
 - What does the agent do on the first wake after the deadline? A ticket filed or a document written then is work done too late; a message telling the owner the date was missed is the honest one.
-- `acted_after_deadline` fails a wake that wrote tickets or documents after the deadline and asks for review of one that only sent messages.
+- A rule counting `writes` with `things_not: [message]` since the deadline finds work done after it; messages, which may be the honest report that the date was missed, are left out. How many reminders and how far apart is the team's to write: `at_most` on `follow_ups`, or `gap_at_least` on `messages` to one person.

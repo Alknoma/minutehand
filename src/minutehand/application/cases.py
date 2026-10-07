@@ -243,11 +243,12 @@ def merged(name: str, scenarios: Sequence[Scenario]) -> Scenario:
             "owner": first.owner,
             "starts_at": starts,
             "deadline_after": deadline - starts if deadline is not None else None,
-            "max_wakes": max(s.max_wakes for s in scenarios),
+            "max_wakes": max((s.max_wakes for s in scenarios if s.max_wakes is not None), default=None),
             "seed": first.seed,
             "protected_names": list(dict.fromkeys(n for s in scenarios for n in s.protected_names)),
             "people": [p.model_dump() for p in people],
             "ticket_fates": [f.model_dump() for s in scenarios for f in s.ticket_fates],
             "expect": [e.model_dump() for s in scenarios for e in s.expect],
+            "assess": [r.model_dump() for r in {r.id: r for s in reversed(scenarios) for r in s.assess}.values()],
         }
     )

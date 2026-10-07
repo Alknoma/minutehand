@@ -12,6 +12,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
+from minutehand.domain.assessments import Rule, refuse_repeated_rules
 from minutehand.domain.database import Database, refuse_repeated_databases
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
@@ -292,6 +293,13 @@ class AgentUnderTest(Model):
     name: str
     goal: GoalSource = GoalByWake()
     wakes: list[WakeSource] = []
+    tick: timedelta | None = Field(
+        default=None,
+        gt=timedelta(0),
+        description="How often the agent comes back to work by itself at most, when that rhythm is its own (it "
+        "reports or books its next wake); a polled wake's `every` counts without it. Sizes the wake limit from the "
+        "scenario's deadline",
+    )
     inbound: list[InboundTarget] = []
     inboxes: list[HttpInbox] = Field(
         default=[],
@@ -310,6 +318,12 @@ class AgentUnderTest(Model):
         description="Python files holding checks of the agent's own, written as Minutehand's are: a class with `id`, "
         "`needs` and `run(view) -> CheckReport`. Run with Minutehand's after every run and fork. A relative path is "
         "read from the agent file's folder",
+    )
+    assess: list[Rule] = Field(
+        default=[],
+        description="The team's own rules for judging the agent, over the facts of each run (`docs/assessments.md`). "
+        "A scenario may replace one by its id, add its own, or switch one off (`Scenario.assess_off`). Nothing else "
+        "judges how the agent behaves",
     )
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"
@@ -335,6 +349,7 @@ class AgentUnderTest(Model):
             )
         refuse_repeats(self.outbound)
         refuse_repeated_inboxes(self.inboxes)
+        refuse_repeated_rules(self.assess)
         clash = sorted({i.name for i in self.inboxes} & {d.key for d in self.outbound})
         if clash:
             raise ValueError(f"an inbox and an outbound host are both recorded as {', '.join(clash)}")

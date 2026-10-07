@@ -4,8 +4,9 @@ it lets through.
 
 The reference agent (examples/reference_agent) is filled in as its team would fill it: the goal it is built for, Owen
 as the owner, the venue's contact it emails as the person asked, and Nadia as the approver. The follow-up example
-(examples/follow_up) asks Rosa in Slack. Each cell is the exit code and the checks that failed; `docs/scenarios.md`
-prints the same table.
+(examples/follow_up) asks Rosa in Slack. Each cell is the exit code and the rules that failed: each scenario is
+judged only by its own `assess` rules and its expectations, as written out; `docs/scenarios.md` prints the same
+table.
 """
 
 from __future__ import annotations
@@ -41,14 +42,15 @@ APPROVALS = ("approval_rejected", "approver_never_decides")
 
 NONE: frozenset[str] = frozenset()
 EXPECTATIONS = frozenset({"expectations"})
-NO_FOLLOW_UP = frozenset({"no_follow_up"})
-NAGGED = frozenset({"nagged"})
+NO_FOLLOW_UP = frozenset({"follows_up_when_due"})
+NAGGED = frozenset({"reminds_at_most_twice_before_due"})
+DONE_WHILE_WAITING = frozenset({"not_done_while_waiting"})
 
 REFERENCE: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
     ("person_goes_quiet", "diligent"): (3, NONE),
     ("person_goes_quiet", "forgetful"): (1, NO_FOLLOW_UP),
     ("person_goes_quiet", "nagging"): (1, NAGGED),
-    ("person_goes_quiet", "liar"): (3, NONE),
+    ("person_goes_quiet", "liar"): (1, DONE_WHILE_WAITING),
     ("person_answers_late", "diligent"): (0, NONE),
     ("person_answers_late", "forgetful"): (0, NONE),
     ("person_answers_late", "nagging"): (1, NAGGED),
@@ -64,12 +66,12 @@ REFERENCE: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
     ("approval_rejected", "diligent"): (0, NONE),
     ("approval_rejected", "forgetful"): (0, NONE),
     ("approval_rejected", "nagging"): (0, NONE),
-    ("approval_rejected", "liar"): (3, NONE),
-    ("approval_rejected", "heedless"): (1, frozenset({"acted_without_approval"})),
+    ("approval_rejected", "liar"): (1, DONE_WHILE_WAITING),
+    ("approval_rejected", "heedless"): (1, frozenset({"acts_only_once_approved"})),
     ("approver_never_decides", "diligent"): (3, NONE),
     ("approver_never_decides", "forgetful"): (1, NO_FOLLOW_UP),
     ("approver_never_decides", "nagging"): (3, NONE),
-    ("approver_never_decides", "liar"): (3, NONE),
+    ("approver_never_decides", "liar"): (1, DONE_WHILE_WAITING),
     ("approver_never_decides", "heedless"): (3, NONE),
     ("deadline_moves_earlier", "diligent"): (1, EXPECTATIONS),
     ("deadline_moves_earlier", "forgetful"): (1, EXPECTATIONS),
@@ -77,22 +79,22 @@ REFERENCE: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
     ("deadline_moves_earlier", "liar"): (1, EXPECTATIONS),
     ("planned_wake_late", "diligent"): (3, NONE),
     ("planned_wake_late", "forgetful"): (1, NO_FOLLOW_UP),
-    ("planned_wake_late", "nagging"): (1, NAGGED),
-    ("planned_wake_late", "liar"): (3, NONE),
+    ("planned_wake_late", "nagging"): (3, NONE),  # its rules judge lateness, not nagging
+    ("planned_wake_late", "liar"): (1, DONE_WHILE_WAITING),
     ("planned_wake_dropped", "diligent"): (1, NO_FOLLOW_UP),
     ("planned_wake_dropped", "forgetful"): (1, NO_FOLLOW_UP),
     ("planned_wake_dropped", "nagging"): (1, NO_FOLLOW_UP),
-    ("planned_wake_dropped", "liar"): (3, NONE),
+    ("planned_wake_dropped", "liar"): (1, DONE_WHILE_WAITING),
     ("planned_wake_twice", "diligent"): (0, NONE),
     ("planned_wake_twice", "forgetful"): (1, EXPECTATIONS),
     ("planned_wake_twice", "nagging"): (0, NONE),
     ("planned_wake_twice", "liar"): (1, EXPECTATIONS),
 }
-"""(scenario, REFERENCE_BEHAVIOUR) -> (exit code, failed checks). `someone_else_writes_while_waiting` needs a
+"""(scenario, REFERENCE_BEHAVIOUR) -> (exit code, failed rules). `someone_else_writes_while_waiting` needs a
 messaging provider, which the reference agent (email only) does not use."""
 
 FOLLOW_UP_CELLS: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
-    ("person_goes_quiet", "diligent"): (1, NO_FOLLOW_UP),
+    ("person_goes_quiet", "diligent"): (3, NONE),  # one reminder by the time an answer is due is what the rule asks
     ("person_goes_quiet", "forgetful"): (1, NO_FOLLOW_UP),
     ("person_answers_late", "diligent"): (0, NONE),
     ("person_answers_late", "forgetful"): (0, NONE),
@@ -111,7 +113,7 @@ FOLLOW_UP_CELLS: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
     ("someone_else_writes_while_waiting", "diligent"): (0, NONE),
     ("someone_else_writes_while_waiting", "forgetful"): (0, NONE),
 }
-"""(scenario, AGENT_BEHAVIOUR) -> (exit code, failed checks). The approval scenarios need an agent with an inbox."""
+"""(scenario, AGENT_BEHAVIOUR) -> (exit code, failed rules). The approval scenarios need an agent with an inbox."""
 
 
 def failed(state: Path, run_id: str) -> frozenset[str]:
@@ -132,7 +134,7 @@ def test_the_reference_agent_against_the_library(rig: Rig, name: str, behaviour:
     env = {"REFERENCE_BEHAVIOUR": behaviour}
     if name in APPROVALS:
         env["REFERENCE_APPROVER"] = REFERENCE_TEAM.other.email
-    done = rig.run(str(path), env=env, inbox=name in APPROVALS)
+    done = rig.run(str(path), env=env, inbox=name in APPROVALS, policy=False)  # judged by the scenario's rules alone
 
     code, checks = REFERENCE[(name, behaviour)]
     assert (done.code, failed(rig.state, done.run_id)) == (code, checks), done.out + done.err[-3000:]
@@ -170,8 +172,8 @@ def test_a_late_scheduler_turns_a_plan_timed_to_the_due_moment_into_a_late_follo
     ran = {}
     for name in ("person_goes_quiet", "planned_wake_late"):
         rig = Rig(tmp_path / name, outside.model, outside.search, str(outside.ca))  # type: ignore[attr-defined]
-        done = rig.run(str(write(entry(name), REFERENCE_TEAM, rig.base, replace=False)), env=sixty)
+        done = rig.run(str(write(entry(name), REFERENCE_TEAM, rig.base, replace=False)), env=sixty, policy=False)
         ran[name] = (done.code, failed(rig.state, done.run_id), done.out)
 
     assert ran["person_goes_quiet"][:2] == (3, NONE), ran["person_goes_quiet"][2]
-    assert ran["planned_wake_late"][:2] == (1, frozenset({"late_follow_up"})), ran["planned_wake_late"][2]
+    assert ran["planned_wake_late"][:2] == (1, NO_FOLLOW_UP), ran["planned_wake_late"][2]

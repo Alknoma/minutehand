@@ -1,5 +1,5 @@
 """The MCP tools, driven through the SDK's own client over an in-memory connection, on real runs of the
-end-to-end test agent: a forgetful agent and a person who never answers give a `no_follow_up` failure."""
+end-to-end test agent: a forgetful agent and a person who never answers give a failure of the team's rule `follows_up_when_due`."""
 
 from __future__ import annotations
 
@@ -128,7 +128,7 @@ async def test_list_findings_names_each_findings_kind_time_wake_and_pattern_titl
         found = await call(client, "list_findings", FindingList, run_id=run.run_id)
 
     assert [f.number for f in found.findings] == list(range(1, len(found.findings) + 1))
-    [silence] = [f for f in found.findings if f.check == "no_follow_up"]
+    [silence] = [f for f in found.findings if f.check == "follows_up_when_due"]
     assert silence.kind is FindingKind.FAIL and silence.message.startswith("wait on sofia expired")
     assert silence.at is not None and silence.evidence
     assert (silence.pattern, silence.pattern_title) == ("expiry_on_every_wait", "An expiry on every wait")
@@ -142,7 +142,7 @@ async def test_show_evidence_hands_over_the_events_their_calls_the_trace_the_wak
     async with connected(tmp_path / "state") as client:
         [run] = (await play_forgetful(client, tmp_path, monkeypatch)).runs
         found = await call(client, "list_findings", FindingList, run_id=run.run_id)
-        [silence] = [f for f in found.findings if f.check == "no_follow_up"]
+        [silence] = [f for f in found.findings if f.check == "follows_up_when_due"]
         evidence = await call(client, "show_evidence", Evidence, run_id=run.run_id, finding=silence.number)
 
     assert evidence.finding == silence
@@ -279,7 +279,7 @@ async def test_rerun_from_a_checkpoint_where_the_silent_person_answers_passes_an
     [child] = rerun.runs
     assert child.stop is StopReason.AGENT_DONE
     assert (child.parent_run, child.forked_at) == (parent.run_id, after_first_wake.seq)
-    assert [f for f in child_findings.findings if f.check == "no_follow_up"] == []
+    assert [f for f in child_findings.findings if f.check == "follows_up_when_due"] == []
     by_id = {r.run_id: r for r in listed.runs}
     assert by_id[parent.run_id].children == [child.run_id]
     assert by_id[child.run_id].parent_run == parent.run_id

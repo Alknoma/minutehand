@@ -48,7 +48,6 @@ from minutehand.adapters.web.responses import (
     CallsResponse,
     DrawnWait,
     EventsResponse,
-    FellDue,
     FindingsResponse,
     HostTraffic,
     MessageChange,
@@ -78,7 +77,6 @@ from minutehand.application.forks import summary
 from minutehand.application.model_calls import JoinedBy, is_model_call, model_call, trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.application.steps import STEP
-from minutehand.checks._waits import chases, ended_at
 from minutehand.checks.runner import view_of
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.inboxes import item_words
@@ -183,26 +181,7 @@ def create_app(state: Path) -> Starlette:
                 world.replies(),
                 withdrawn=last.withdrawn if last is not None else [],
             )
-        due = {c.obligation.key: c.expiries for c in chases(view, ended_at(view))}
-        return _json(
-            ObligationsResponse(
-                obligations=[
-                    DrawnWait(
-                        obligation=o,
-                        fell_due=[
-                            FellDue(
-                                at=e.expired,
-                                until=e.touched_at or e.closes,
-                                followed_up=e.touch is not None,
-                                late=e.late,
-                            )
-                            for e in due.get(o.key, [])
-                        ],
-                    )
-                    for o in view.obligations
-                ]
-            )
-        )
+        return _json(ObligationsResponse(obligations=[DrawnWait(obligation=o) for o in view.obligations]))
 
     def findings(run_id: str) -> Response:
         if not session.find(state, run_id).finished:

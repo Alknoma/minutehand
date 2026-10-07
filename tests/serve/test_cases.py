@@ -30,7 +30,7 @@ from minutehand.testing.background import serve_in_background
 from minutehand.testing.client import MinutehandClient
 from minutehand.testing.world import open_case
 from tests.proxy.upstream import Authority, make_authority, model_api
-from tests.serve.support import Served, dm, spec
+from tests.serve.support import ASKS_SOFIA, Served, dm, spec
 
 MODEL_HOST = "model.localhost"
 
@@ -74,7 +74,7 @@ def test_worlds_under_one_label_are_one_case_with_one_timeline_one_person_and_on
     served: Served, state: Path
 ) -> None:
     client = served.client
-    case = open_case(client, "launch week", [spec("xoxb-case-one"), _tracker("asana-case-one")])
+    case = open_case(client, "launch week", [spec("xoxb-case-one", assess=ASKS_SOFIA), _tracker("asana-case-one")])
     alone = client.create_world(spec("xoxb-case-alone"))
     messaging, tracker = case.worlds
     assert alone.case_id is None and messaging.case_id == tracker.case_id == case.case_id

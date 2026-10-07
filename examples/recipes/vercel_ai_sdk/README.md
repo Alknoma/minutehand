@@ -72,7 +72,7 @@ uv run minutehand run scenario_late.yaml --agent agent.yaml -- node agent.ts
 # exits 0: Rosa answers after the follow-up; the agent tells Owen "... says: The lakeside hall, booked for the 14th."
 
 uv run minutehand run scenario_silent.yaml --agent agent.yaml -- node agent.ts
-# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no no_follow_up finding
+# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no follows_up_when_due finding
 ```
 
 Minutehand installed on its own (`uv tool install .` from a checkout) runs the same without `uv run`.

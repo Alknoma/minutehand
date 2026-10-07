@@ -10,6 +10,7 @@ import pytest
 from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import discover, evaluate
 from minutehand.domain.checks import FindingKind
+from tests.checks.world import rules
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
 ROOT = Path(__file__).parents[2]
@@ -37,16 +38,32 @@ def test_an_unknown_pattern_key_is_refused() -> None:
         pattern("expiry_on_some_waits")
 
 
+def _declared() -> dict[str, str | None]:
+    """Each check's pattern; the reader of the team's rules has none of its own, each rule naming its own."""
+    return {c.id: vars(type(c))["pattern"] if "pattern" in vars(type(c)) else None for c in discover()}
+
+
 def test_every_pattern_a_check_declares_exists() -> None:
-    for check in discover():
-        declared = vars(type(check))["pattern"]
-        assert declared is None or pattern(declared).key == declared, check.id
+    for check, declared in _declared().items():
+        assert declared is None or pattern(declared).key == declared, check
 
 
-def test_every_pattern_a_finding_carries_exists_and_is_its_checks_own() -> None:
-    declared = {c.id: vars(type(c))["pattern"] for c in discover()}
-    findings = evaluate(WORLD, stop=None).findings + evaluate(TIMELINE, stop=None).findings
-    assert findings
+def test_every_pattern_a_finding_carries_exists_and_is_its_checks_or_its_rules_own() -> None:
+    written = rules(
+        """
+        - id: no_two_messages_within_minutes
+          each: person
+          count: {messages: {to: [person]}}
+          gap_at_least: PT5M
+          pattern: one_open_ask_per_person
+        """
+    )
+    declared = _declared() | {r.id: r.pattern for r in written}
+    findings = (
+        evaluate(WORLD.model_copy(update={"rules": written}), stop=None).findings
+        + evaluate(TIMELINE, stop=None).findings
+    )
+    assert "no_two_messages_within_minutes" in {f.check for f in findings}
     for finding in findings:
         # A met expectation is reported for the record and hands over no fix.
         met = finding.kind is FindingKind.INFORMATIONAL and finding.check == "expectations"

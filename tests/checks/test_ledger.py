@@ -13,7 +13,7 @@ from minutehand.domain.checks import ObligationKind
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Absence, DelayRange, Silent, TicketFate, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
-from tests.checks.world import START, Log, at, person, reply, scenario
+from tests.checks.world import START, Log, at, person, reply, rules, scenario
 
 OWNER, SOFIA, MARCUS = person("owner"), person("sofia"), person("marcus")
 DANIA = person("dania", reply=Silent())
@@ -174,6 +174,17 @@ def test_the_ledger_reads_a_real_store_and_its_stored_replies(tmp_path: Path) ->
     clock.jump(at(9))
     clock.begin_wake()
     store.apply(Change(entity=message, operation=Operation.READ, actor=Actor.AGENT))
-    result = evaluate_run(scenario(SOFIA), store.events(), [], store.replies(), stop=None)
-    assert result.effectiveness.waits_opened == 1 and result.effectiveness.reactions_slow == 1
-    assert [f.check for f in result.findings] == ["slow_to_react"] and result.findings[0].evidence[0] == ask.seq
+    acted = rules(
+        """
+        - id: comes_back_to_an_answer
+          each: ask
+          when: {answered: true}
+          count: {touches: {}, since: answer, until: answer+PT1H}
+          at_least: 1
+        """
+    )
+    result = evaluate_run(scenario(SOFIA), store.events(), [], store.replies(), stop=None, rules=acted)
+    assert result.effectiveness.waits_opened == 1 and result.effectiveness.slowest_reaction == timedelta(hours=8)
+    assert [f.check for f in result.findings] == ["comes_back_to_an_answer"] and result.findings[0].evidence == [
+        ask.seq
+    ]

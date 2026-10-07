@@ -27,7 +27,7 @@ from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import MessageChange, MessagesResponse, ModelTrafficResponse
 from minutehand.application.forks import scorecard_lines
 from minutehand.application.model_calls import JoinedBy
-from minutehand.checks.runner import RunResult
+from minutehand.checks.runner import NOTHING_ASSESSED, RunResult
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import Seed
@@ -244,5 +244,5 @@ def test_the_same_run_with_no_step_and_nothing_declared_is_not_judged(served: Se
 
     verdict = closed.result.verdict
     assert verdict.kind is VerdictKind.NOT_JUDGED and closed.result.exit_code == 5, verdict.words
-    assert verdict.unjudged and verdict.unjudged[0].startswith("idle_wake could not run")
+    assert verdict.unjudged == [NOTHING_ASSESSED] and verdict.words.startswith("Not assessed:")
     assert closed.result.effectiveness.waits_opened == 1, "the ask Dani answered is still in the ledger"

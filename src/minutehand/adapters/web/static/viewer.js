@@ -310,7 +310,7 @@
     var simSecs = (ms(run.reached) - ms(run.scenario.starts_at)) / 1000;
     var out = [];
     function tile(k, val, sub) { out.push('<div class="tile"><div class="k">' + esc(k) + '</div><div class="v">' + esc(val) + '</div><div class="s">' + esc(sub || " ") + "</div></div>"); }
-    tile("Expectations met", card ? card.expectations_met + " of " + card.expectations_total : "—", card ? (card.follow_ups_late ? card.follow_ups_late + " follow-ups late" : "no follow-up late") : "once finished");
+    tile("Expectations met", card ? card.expectations_met + " of " + card.expectations_total : "—", card ? plural(card.follow_ups_made, "follow-up", "follow-ups") + " made" : "once finished");
     var idle = v.wakes.filter(function (w) { return w.world_changes === 0 && !w.commitments_changed; }).length;
     tile(run.driven ? "Steps" : "Wakes", String(v.wakes.length), idle ? idle + " changed nothing" : "each changed something");
     tile("Model calls", calls.length ? String(calls.length) : "none seen", calls.length ? short(modelSecs) + " answering" : (v.traffic.hosts.length ? "tunnelled, not opened" : "no telemetry"));
@@ -326,16 +326,8 @@
     lines.push(card.expectations_met + " of " + card.expectations_total + " of the scenario's expectations were met.");
     lines.push(plural(card.waits_opened, "wait was", "waits were") + " opened" +
       (card.waits_open_at_end ? "; " + card.waits_open_at_end + " still open at the end." : "; none was left open."));
-    if (card.follow_ups_due) {
-      lines.push(plural(card.follow_ups_due, "wait", "waits") + " passed the time an answer was due. Follow-ups made: " +
-        card.follow_ups_made + "; late or never made: " + card.follow_ups_late + ".");
-    } else {
-      lines.push("No wait passed the time an answer was due.");
-    }
-    var lost = seconds(card.time_lost);
-    lines.push(lost ? "The agent itself added " + span(lost) + " of delay." : "The agent added no delay of its own.");
-    if (card.slowest_follow_up) { lines.push("Its slowest follow-up came " + span(seconds(card.slowest_follow_up)) + " after the wait expired."); }
-    if (card.reactions_slow) { lines.push("It was slow to act on " + plural(card.reactions_slow, "answer", "answers") + "."); }
+    lines.push("Follow-ups the agent made on a wait still open: " + card.follow_ups_made + ".");
+    if (card.slowest_reaction) { lines.push("The longest it took to come back to a settled wait: " + span(seconds(card.slowest_reaction)) + "."); }
     if (v.run.driven) {
       var inferred = v.wakes.filter(function (w) { return w.inferred; }).length;
       lines.push(card.wakes
@@ -546,12 +538,6 @@
         if (real) { a = simToReal(v, a); b = simToReal(v, b); }
         add({ id: "wait:" + o.key, group: "waits", start: a, end: Math.max(b, a + (real ? 1000 : 60000)), type: "range",
           content: esc(obligationLabel(v, o)), className: "wait" + (open ? " open" : ""), title: esc(obligationLabel(v, o) + (open ? ", still open" : ", settled " + when(o.settled_at))) }, { kind: "wait", key: o.key });
-        w.fell_due.forEach(function (d, j) {
-          var x = ms(d.at), y = ms(d.until);
-          if (real) { x = simToReal(v, x); y = simToReal(v, y); }
-          add({ id: "due:" + o.key + ":" + j, group: "waits", start: x, end: Math.max(y, x + (real ? 500 : 60000)), type: "range", content: "",
-            className: "overdue", title: esc("Due " + when(d.at) + (d.followed_up ? ", followed up " + when(d.until) + (d.late ? ", late" : "") : ", never followed up")) }, { kind: "wait", key: o.key });
-        });
       });
     }
 
@@ -954,11 +940,6 @@
       "<dt>Opened</dt><dd>" + esc(when(o.opened_at)) + " by " + link("event:" + o.opened_by, "this change") + "</dd>" +
       (o.expected_by ? "<dt>Expected by</dt><dd>" + esc(when(o.expected_by)) + "</dd>" : "") +
       "<dt>Settled</dt><dd>" + (o.settled_at ? esc(when(o.settled_at)) : "still open") + "</dd></dl>";
-    if (w.fell_due.length) {
-      html += '<section><h3>Fell due</h3><ul class="rows">' + w.fell_due.map(function (d) {
-        return '<li><span class="w">' + esc(when(d.at)) + '</span><span class="x">' + esc(d.followed_up ? "followed up " + when(d.until) + (d.late ? ", late" : "") : "never followed up") + "</span><span></span></li>";
-      }).join("") + "</ul></section>";
-    }
     if (o.agent_touches.length) {
       html += '<section><h3>The agent came back to it</h3><ul class="rows">' + o.agent_touches.map(function (s) {
         var e = v.bySeq[s];

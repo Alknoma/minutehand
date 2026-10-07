@@ -55,19 +55,22 @@ def test_a_contained_source_without_a_place_for_the_step_is_refused() -> None:
 
 
 async def test_a_contained_run_is_scored_with_its_timer_read_as_the_agents_own_plan(rig: Rig, tmp_path: Path) -> None:
+    from minutehand.checks.facts import ended_at, planned_wakes
     from minutehand.checks.runner import evaluate, view_of
+    from tests.support.rules import rules
 
     agent = rig.agent("ask_silent", extra=[sandbox(rig, tmp_path / "sandbox.json", 100)])
     scn = scenario(ticket_fates=[], deadline_after=timedelta(days=5))
     record, store, _ = await rig.run(scn, agent)
 
-    view = view_of(scn, store.events(), record.wakes, store.replies(), dues=due_entries(store))
+    late = rules(
+        "[{id: follows_up_when_due, each: ask, when: {open_at: due}, at_least: 1,"
+        " count: {follow_ups: {}, since: due, until: due+PT1H}}]"
+    )
+    view = view_of(scn, store.events(), record.wakes, store.replies(), dues=due_entries(store), rules=late)
+    assert [f.at for f in planned_wakes(view, ended_at(view))] == [T0 + timedelta(hours=100)]
     found = evaluate(view, stop=record.stop).findings
-    late = [f.message for f in found if f.check == "late_follow_up"]
-    assert late == [
-        "followed up 34 hours after the wait expired; when it expired, the agent's own next wake was 1 day 10 hours "
-        "later (its own timer, read from its sandbox in wake 1)"
-    ], [(f.check, f.message) for f in found]
+    assert [f.check for f in found] == ["follows_up_when_due"], [(f.check, f.message) for f in found]
 
 
 async def test_a_timer_that_does_nothing_is_no_wake_and_the_one_that_acts_is(rig: Rig, tmp_path: Path) -> None:

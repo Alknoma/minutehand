@@ -1,6 +1,6 @@
 # Know who is away
 
-**Found by:** `chased_absent_person`.
+**Found by:** a rule of the team's own (`docs/assessments.md`), such as `count: {messages: {to_away: true}}, at_most: 0`.
 
 ## The failure
 
@@ -16,4 +16,4 @@ A reference agent runs an absence filter over every follow-up before it is sent,
 
 - Does anything between "decide to chase" and "send" look at whether the person is available?
 - When an auto-reply says "I am away until …, contact …", is that read and kept, or treated as an answer?
-- `chased_absent_person` lists every message sent inside an absence that had a delegate.
+- The rule `count: {messages: {to_away: true}}, at_most: 0` finds every message sent inside an absence that had a delegate.
