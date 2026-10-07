@@ -182,7 +182,8 @@ class MailWorld:
         recipient_labels: list[str] | None = None,
     ) -> mail.StoredMail | None:
         """Put a message in the sender's mailbox (when they have one) and in each recipient's who has one, and answer
-        the sender's copy. The copy in `snapshot_in`'s mailbox carries the world's snapshot of the message. A copy
+        the sender's copy. The copy in `snapshot_in`'s mailbox carries the world's snapshot of the message, whose
+        `thread_of` is `thread_of` when given, else the thread the copy joined (None when it starts one). A copy
         joins the thread holding what the message answers; a message sent through the API (`by_reference` False)
         joins, in the sender's mailbox, only the thread `thread_id` names, as Gmail's sending guide has it."""
         message = mail.parsed(raw)
@@ -233,7 +234,7 @@ class MailWorld:
                     text=f"{subject}\n\n{body}" if subject else body,
                     channel=thread,
                     recipient_emails=people,
-                    thread_of=thread_of,
+                    thread_of=thread_of if thread_of is not None else copy.thread_id,
                 )
                 if copy.mailbox == snapshot_in
                 else None

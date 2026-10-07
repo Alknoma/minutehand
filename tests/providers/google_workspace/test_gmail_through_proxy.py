@@ -182,6 +182,7 @@ say(history=history, reply_id=reply_id, thread=[(headers(m)["From"], headers(m)[
             e.after for e in google.store.events() if e.actor is Actor.AGENT and isinstance(e.after, MessageSnapshot)
         ]
         assert [s.channel for s in snapshots] == [sent["threadId"], sent["threadId"], other["id"]]
+        assert [s.thread_of for s in snapshots] == [None, sent["threadId"], None], "a reply carries its thread"
 
 
 async def test_a_bad_id_another_mailbox_no_recipient_and_an_account_without_mail_are_refused(
