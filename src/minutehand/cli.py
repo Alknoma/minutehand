@@ -50,18 +50,24 @@ the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
 
+A run is judged only by what its files declare: the team's rules (`assess:` in the agent file and the scenario,
+docs/assessments.md), the scenario's `expect:` and `protected_names`, and the agent's own `checks:`. With --json,
+`run`, `fork` and `findings` print one shape: {"outcomes": [...], "stability": ...}.
+
 Exit codes of `run`, `fork` and `findings`, which follow the verdict each report starts with:
-  0  passed: no check failed, and the agent finished: it reported done, or nothing was left open
-  1  failed: a check failed
+  0  passed: nothing failed, and the agent finished: it reported done, or nothing was left open
+  1  failed: a rule, an expectation or a check failed
   2  the run could not be performed
-  3  not finished: no check failed, but the run stopped without the agent reporting done (the wake limit, the
+  3  not finished: nothing failed, but the run stopped without the agent reporting done (the wake limit, the
      deadline, an agent that asked for no further wake, an agent that failed) while a wait or a commitment
      was still open
   4  not scored: Minutehand itself failed while answering one of the agent's calls, so the run says nothing about
      the agent; any command exits 4 too when Minutehand fails, naming where its traceback was written (--debug
      prints it as well)
+  5  not judged: nothing was assessed (the files declare no rule, expectation, protected name or check of the
+     agent's own; the facts are still reported), or a check that needs wakes had none
 With samples: 2 when an external emulator was unavailable in any sample, else 4 when Minutehand failed in any,
-else 1 when any failed, else 3 when any did not finish, else 0.
+else 1 when any failed, else 5 when any was not judged, else 3 when any did not finish, else 0.
 """
 
 from __future__ import annotations

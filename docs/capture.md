@@ -123,8 +123,8 @@ present, HTML reduced to its text, with the subject line before it. A body with 
 kept as a call, with a note saying why it is no message.
 
 So the ledger, the scorecard ("messages to people") and the expectations (`person_asked`, `relayed`) see an
-email exactly as they see a Slack message, and `repeated_message` flags the same email sent twice to the same
-recipient within five simulated minutes.
+email exactly as they see a Slack message, and a team's rules count it among `messages` (a rule with
+`gap_at_least: PT5M` on messages to one person flags the same email sent twice within five simulated minutes).
 
 **People answer a captured send when the declaration says how an answer reaches the agent.** An email API's
 inbound parse, an SMS gateway's webhook: the agent has an endpoint where answers arrive, and `replies` declares

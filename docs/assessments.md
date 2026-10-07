@@ -77,7 +77,7 @@ rule went unread, so a rule never passes by being skipped unseen.
 |---|---|
 | `open_at: <moment>` | the ask or hand-off was made and still unanswered at that moment |
 | `answered: true` / `false` | it was answered, or the work finished, by the end |
-| `stopped: [agent_done, wake_limit, deadline_passed, nothing_pending, agent_failed, closed]` | the run stopped one of these ways |
+| `stopped: [agent_done, wake_limit, deadline_passed, nothing_pending, agent_failed, closed, environment_failed]` | the run stopped one of these ways |
 
 ### `count`: which facts, between which moments
 
@@ -97,7 +97,8 @@ rule went unread, so a rule never passes by being skipped unseen.
 ### Bounds
 
 `at_least`, `at_most` and `exactly` bound the count; `gap_at_least` (a duration) says no two of the counted facts
-come closer together than that. A rule gives at least one. Each broken bound is one finding, naming the rule, the
+come closer together than that. A rule gives at least one, and `exactly` takes neither `at_least` nor `at_most`.
+Each thing a rule is read for (at each of its moments) that breaks a bound is one finding, naming the rule, the
 thing it was read for, the count and the window; `message` replaces that text and may name `{person.key}`,
 `{person.name}`, `{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`. Its evidence is the ask
 and every fact counted.
@@ -179,7 +180,8 @@ judgement no count makes; a rule that might be wrong about it is `severity: revi
 
 `minutehand validate agent.yaml scenario.yaml` reads every rule as a run would: an unknown field, an anchor a rule's
 `each` does not have (`answer` in a rule read once), `moment` without `at`, a fact counted where it cannot be
-(`follow_ups` for `each: run`), a rule with no bound, two rules with one id, and a person no scenario has, each named
+(`follow_ups` for `each: run`), a rule with no bound, two rules with one id, a pattern there is not, and a person no
+scenario has, each named
 with its place. Given an agent file and scenarios together, it also reads the rules each scenario would be judged by,
 refusing an `assess_off` that names no rule. A run refuses the same before it starts, and refuses a rule whose id is
 the id of a check (`expectations`, `near_miss_name`, an agent's own).

@@ -8,7 +8,7 @@ Minutehand is how a team builds its own proactive agent and finds out whether it
 
 Two pillars, in this order:
 
-1. **Evaluating proactive effectiveness.** Did the work get done, how much time did the agent itself lose, how many follow-ups came late, how often did it wake for nothing, and which known failure did it fall into. Every result names the design that fixes it.
+1. **Evaluating proactive effectiveness.** What the agent did and when, against what the world did and when, judged by the rules the team writes for its own agent. Minutehand states the facts; whether a follow-up was late, a reminder one too many, or an answer acknowledged too slowly is the team's policy, written in YAML (`docs/assessments.md`). A rule may name the design that fixes what it finds.
 2. **Rewind.** Any run can be restarted from any moment with the prompt, the model, the people or the world changed, and played forward again, with no change to the agent's code.
 
 It is one process: it intercepts the agent's outbound API calls, owns the clock, plays the people and records every change. A coding agent reaches it over MCP, so "simulate it and fix what it finds" is a loop that needs no person in it.
@@ -37,7 +37,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. Only `Scripted` and `Silent` people: `Answers` is refused. |
 | Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step compares the report and, when the hooks declare `fingerprint`, a digest of the agent's state; what the fingerprint command does not cover it cannot see. An agent with neither a `Reported` source nor a fingerprint is restored unverified, and says so. Without a `busy` command, settling sees only the report and the proxy, and each checkpoint says it is unconfirmed. A PostgreSQL database is fronted instead (next row). |
 | The agent's database, recorded at the wire: `domain/database.py`, `adapters/database/postgres/`, `application/databases.py` | Minutehand listens as PostgreSQL where the agent's database URL points, relays every connection, records each committed transaction in the run's log, takes a base at the run's start, and puts the database back for a fork by replaying onto the base, comparing every answer | Built and tested; prototype | 14 in `tests/state/test_postgres_wire.py`, 2 marked `docker` in `tests/state/test_postgres_recipe.py` (CI job `postgres`) | PostgreSQL only, in the clear only. Values the database makes up (`now()`, `random()`) are detected only when a write returns them. See "The agent's database, recorded at the wire". |
-| Checks, ledger, scorecard, patterns: `checks/` | 19 checks (`planned_past_due`, `acted_on_repeated_wake`, `reported_against_world`, `around_proxy` added), the agent's own checks, the obligations ledger, `Effectiveness`, 10 patterns | Built and tested | 161 (`tests/checks/` 152, `tests/test_checks_on_reference_run.py` 7, `tests/e2e/test_around_proxy_run.py` 2) | `repeated_message` measures its window in wall time. |
+| Facts, assessments, ledger, scorecard, patterns: `checks/`, `domain/assessments.py` | The facts of a run (`checks/facts.py`), the team's YAML rules over them (`checks/assessments.py`), the checks that state the scenario's own words and the run's integrity (`expectations`, `near_miss_name`, `agent_contract_changed`, `around_proxy`, `unmatched_call`), the agent's own checks, the obligations ledger, `Effectiveness` (facts only), 10 patterns | Built and tested | `tests/checks/`, `tests/orchestrator/test_team_rules.py`, `tests/test_checks_on_reference_run.py`, `tests/e2e/test_around_proxy_run.py` | A rule counts; whether a message meant something is a judgement no rule makes. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP and, with `minutehand[grpc]`, gRPC on the same port. Metrics are dropped; a log record is kept only when it carries GenAI content. A span is placed in a wake by comparing its SDK's clock with this machine's. |
 | Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Samples without `StateHooks` are not independent. |
@@ -67,10 +67,14 @@ What is sold is the know-how, in three forms:
 | Form | What it is | Where it comes from |
 |---|---|---|
 | **Scenarios** | The situations: a person goes quiet, a person is away, a date moves, an approval is declined, a weekly task recurs, a deadline closes in. Eleven ship as a library a team fills with its own goal and people (`docs/scenarios.md`) | 21 field-observation cases from a production agent |
-| **Checks** | What going wrong looks like in each | The nine failure categories captured from that agent's runs, and the incidents behind each guard |
+| **Rules** | What going wrong looks like in each, as the team defines it: rules in YAML over the facts of a run, which the library scenarios ship as a starting point and the team edits (`docs/assessments.md`) | The nine failure categories captured from that agent's runs, and the incidents behind each guard |
 | **Patterns** | The design that stops it, with a working implementation to read | How that agent does it |
 
-A finding carries its pattern (`Finding.pattern`), so the coding agent that reads "followed up 33 hours late" is handed "give every wait an expiry and wake on it" in the same answer.
+A finding carries its pattern (`Finding.pattern`, from the rule's `pattern`), so the coding agent that reads "followed up 33 hours late" is handed "give every wait an expiry and wake on it" in the same answer.
+
+**Facts in the core, judgement with the team.** Minutehand holds no opinion of how an agent should behave. When to follow up and how often, whether to acknowledge an answer, when to escalate and to whom, what counts as nagging: two teams with good agents answer differently, and a team that wants an agent which reminds every hour may have one. The core records what happened and when (who was asked what, every follow-up, every answer, every write, every wake and the wakes the agent planned, what it reported) and states it. Nothing judges a run but what the team declared: its rules (`assess:`), the scenario's expectations (`expect:`) and protected names, and its own Python checks. Minutehand's library scenarios carry rules too, but as text written into the team's own file, theirs to change. The checks left in the core state the scenario's own words (`expectations`, `near_miss_name`) or whether the run can be trusted at all (`around_proxy`, `unmatched_call`, `agent_contract_changed`); none is about how an agent should behave.
+
+What it gets wrong: a team that declares nothing gets no verdict, only facts (`Not assessed`), so a first run teaches less than it did when Minutehand judged by itself. The library's rules are the answer to that, and they are a suggestion a team must read.
 
 Monitoring is how the know-how is delivered. It is not the product.
 
@@ -96,7 +100,7 @@ One process with five parts:
 2. **Providers.** One package per service. Its manifest loads at start; its code loads on its first call. Each answers the real API's routes, reads and writes only through `ports.store.Store`, and records every call as `Change`s, which the store turns into `WorldEvent`s.
 3. **Clock.** `RunClock` is the only clock in a run. `next_jump()` moves it to the next moment something is due, every provider stamps from it, and the agent is told the time in `WakeRequest.now`.
 4. **People.** A scenario's `Person` replies after a simulated delay, through the provider as a real inbound event. Replies are scripted text or silence today.
-5. **Checks.** Classes over `RunView` that return `CheckReport`. Deterministic first; anything that needs judgement answers `FindingKind.REVIEW`.
+5. **Facts and assessments.** The facts of a run read from `RunView` (`checks/facts.py`), and the team's own rules over them (`checks/assessments.py`); a few checks in the core state the scenario's own words and the run's integrity. Deterministic first; anything that needs judgement answers `FindingKind.REVIEW`.
 
 The agent under test declares how it is reached (`AgentUnderTest`): where it takes its goal (`GoalByWake` or `GoalByMessage`), how it comes back to work (`wakes`), and where pushed events reach it (`inbound`). At most it answers `WakeRequest` with `AgentReport`. An agent that takes its goal as a Slack message and books its own wake-ups answers nothing.
 
@@ -150,7 +154,21 @@ A scenario file may leave `starts_at` out: the run then starts at the moment it 
 
 ### A whole run
 
-The e2e test agent (`tests/e2e/agents/slack_agent.py`, behaviour `forgetful`: asks once on stock `slack_sdk` and never comes back), a scenario where Sofia and the owner are silent, run with the command that `tests/e2e/test_cli.py` drives:
+The e2e test agent (`tests/e2e/agents/slack_agent.py`, behaviour `forgetful`: asks once on stock `slack_sdk` and never comes back), a scenario where Sofia and the owner are silent, run with the command that `tests/e2e/test_cli.py` drives. The scenario's team asks for a follow-up within the hour of an answer falling due:
+
+```yaml
+assess:
+  - id: follows_up_when_due
+    each: ask
+    where: {person_not: [owner]}
+    when: {open_at: due}
+    count: {follow_ups: {}, since: due, until: due+PT1H}
+    at_least: 1
+    message: "{person.key}'s answer was due and no follow-up came within the hour"
+    pattern: expiry_on_every_wait
+```
+
+Abbreviated:
 
 ```
 $ minutehand run scenario.yaml --agent agent.yaml --state state -- python slack_agent.py serve --port 8765 --state agent.json
@@ -159,10 +177,10 @@ run d799b57b7ad2: partner_pricing
   stopped at 2026-09-07 10:00 UTC (simulated) because nothing more was due and the agent asked for no wake
 
 fail (2)
+  follows_up_when_due: sofia's answer was due and no follow-up came within the hour
+    pattern expiry_on_every_wait: An expiry on every wait. Every wait carries an expected-by date and the agent wakes on it.
   expectations: owner asked mentioning ['confirmed']: wanted at least 1, found 0
     pattern honest_closure: Honest closure. Closing is decided from the state of the world, not from the agent's last message.
-  no_follow_up: wait on sofia expired 11 days 6 hours before the run ended and the agent never came back to it
-    pattern expiry_on_every_wait: An expiry on every wait. Every wait carries an expected-by date and the agent wakes on it.
 
 informational (1)
   expectations: sofia asked: met by the message to Sofia Romano (seq 17): "Could you confirm the partner pricing, please?"
@@ -170,8 +188,7 @@ informational (1)
 scorecard
   expectations met: 1 of 2
   waits opened: 1, still open at the end: 1
-  follow-ups due: 1, made: 0, late: 1
-  time the agent lost: 11.2 days
+  follow-ups made: 0
   wakes: 1, of which changed nothing: 0
   messages to people: 1
   failed checks: 2
@@ -183,7 +200,7 @@ checkpoints
 exit 1
 ```
 
-The agent stopped after one wake; the clock ran on to the deadline (seq 19 is that checkpoint), so the wait it abandoned was seen to expire.
+The agent stopped after one wake; the clock ran on to the deadline (seq 19 is that checkpoint), so the moment Sofia's answer fell due was reached and the rule read. Without `assess:` and `expect:` the same run says `Not assessed` and exits 5: the scorecard still shows one wait open and no follow-up made.
 
 ### The checks on a captured run
 
@@ -192,7 +209,7 @@ The agent stopped after one wake; the clock ran on to the deadline (seq 19 is th
 | Check | Result |
 |---|---|
 | `near_miss_name` | 4 failures, each `wrote "Aiven" where the scenario says "Ayven"`: two tickets and two messages. 0 once the name is corrected. |
-| `repeated_message` | 1 review, evidence `[3, 4]`, "18 seconds apart". The two template-alike pairs it once flagged score below `SAME_ASK`. |
+| A rule `each: person`, `count: {messages: {to: [person]}}`, `gap_at_least: PT5M`, `severity: review` | 1 review, evidence `[3, 4]`, the two messages 18 seconds apart. The check this replaced also weighed the wording the two shared; a rule weighs only their spacing. |
 | `expectations` | 1 failure: `ticket created for dania: wanted at least 1, found 0`. The legal-review ticket the goal depended on was never filed. |
 
 ### The loop a coding agent runs
@@ -200,8 +217,9 @@ The agent stopped after one wake; the clock ran on to the deadline (seq 19 is th
 Built, on the command line:
 
 ```
-minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1, 2 or 3 by the verdict
+minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1, 2, 3, 4 or 5 by the verdict
 minutehand findings <run_id>                                   -> the same report, read back from the state directory
+minutehand run-all <folder> --agent agent.yaml -- <command>    -> every scenario in parallel; exit 1 when a verdict differs from its expect_outcome
 minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
 minutehand runs
 ```
@@ -236,10 +254,12 @@ src/minutehand/
     provider.py       Manifest, Tier, TicketField, DocumentChange, PersonChange, WorldKey, world_keys(),
                       fault_fragment(), merged_seed()
     experiment.py     Fork, CallMatch, PromptPatch, ModelSwap, PersonChange, TicketEdit, DeadlineShift, DispatchChange
+    model.py          Model: the base of every model
+    assessments.py    Rule, Each, Anchor, Moment, Count and the facts it counts, Where, When, Judged, merged()
     checks.py         Finding, CheckReport, Pattern, Obligation, Stability, Effectiveness, PersonBurden,
                       WakeRecord, RunView, Check
     clock.py          Due, Jump, next_jump()
-    run.py            RunRecord, StopReason, Verdict, VerdictKind, EmulatorUse
+    run.py            RunRecord, StopReason, Verdict, VerdictKind, EmulatorUse, WakeLimit, wake_limit()
     errors.py         ServiceRefusal, Rendered, Asked: what leaves a provider's app
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
   ports/              Store, Clock, Provider, PushesEvents, PushesInteractions, HoldsTickets, EditsTickets,
@@ -249,7 +269,11 @@ src/minutehand/
   application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (settle, restore,
                       verify), replier_scripted.py, run_clock.py, state_hooks.py, files.py, refusals.py,
                       model_calls.py (the join), standing.py and further_seed.py (`minutehand serve`)
-  checks/             one module per check; runner.py, ledger.py, effectiveness.py, patterns.py, _waits.py
+  checks/             facts.py (the facts, public), assessments.py (the team's rules read over them), ledger.py,
+                      runner.py, effectiveness.py, patterns.py, and the checks of the scenario's words and the
+                      run's integrity: expectations.py, near_miss_name.py, agent_contract_changed.py,
+                      around_proxy.py, unmatched_call.py
+  run_all.py          `minutehand run-all`: every scenario of a folder, each in a `minutehand run` of its own
   adapters/
     answering.py      the converter: what leaves a provider's app, as the answer the agent gets
     proxy/            server.py, addon.py, policy.py, registry.py, hosts.py, edit.py, redact.py, model_calls.py,
@@ -638,8 +662,8 @@ Orchestrator.run():
       checkpoint: with StateHooks, settle (not WORKING, and no call through the proxy for `quiet`), then
                   StateHooks.snapshot, or NotRestorable with the reason after `settle_limit`;
                   then a Checkpoint row in the log, carrying the agent's report
-      stop on DONE (AGENT_DONE), Scenario.max_wakes (WAKE_LIMIT), AgentFailed (AGENT_FAILED)
-  RunRecord -> Scorer (every check) -> Telemetry.found, Telemetry.run_ended
+      stop on DONE (AGENT_DONE), the wake limit (WAKE_LIMIT), AgentFailed (AGENT_FAILED)
+  RunRecord -> Scorer (the team's rules and checks, the core's checks) -> Telemetry.found, Telemetry.run_ended
 ```
 
 - A person answers a message as it reads when the wake ends. A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. An edit in a later wake that changes the text is put to the person again unless they have already answered that message, and a reply to the old text still on its way is withdrawn. The withdrawn reply stays in the `reply` table and its position is kept in every later `Checkpoint.withdrawn`: the ledger reads it as the replier's decision that the message asked something, and never as an answer, so a wait whose only reply was withdrawn stays open (`test_a_reply_withdrawn_by_an_edit_that_gets_no_answer_settles_no_wait`). Before, the ledger read the latest reply to a message, and an edit that got no answer was settled by the withdrawn one, and then `slow_to_react` failed the agent for never acting on an answer that never arrived.
@@ -647,7 +671,7 @@ Orchestrator.run():
 - When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
 - A wake made only of bookings sends no `WakeRequest`: the scheduler's delivery is the wake. The loop still polls the agent's main driver (if it has one) until it is not `WORKING`, adopts its report and counts what it wrote in that wake. It cannot see whether the agent's own poll of its queue has picked the delivery up yet: an agent that answers `IDLE` before it has is moved on past it.
 - A wake whose only news is a pushed event, to an agent with no wake endpoint, sends nothing either: the push is the wake.
-- Every `Polled` tick is a wake and counts toward `Scenario.max_wakes` (default 20).
+- Every `Polled` tick is a wake and counts toward the wake limit (`domain/run.wake_limit`). The scenario's `max_wakes` sets it. Without one, a scenario with a deadline and an agent with a rhythm of its own (a polled wake's `every`, or the agent file's `tick` for an agent that reports or books its next wake) gets every tick up to the deadline and 20 more, for the wakes replies and happenings bring; anything else gets 20. `RunRecord.wake_limit` keeps the number and where it came from, and a run stopped there says both and how to raise it. What it gets wrong: an agent that reports hourly wakes and declares no `tick` is held to 20 wakes, less than a day; the message says to declare it.
 - An agent that refuses a pushed event fails the wake as one that refuses the wake does.
 
 ## Implementation
@@ -669,7 +693,8 @@ What a run leaves behind (`session.py`):
 <state>/runs/<run_id>/world.db       the world, for a run started from the beginning; a fork writes
                                      into its root run's file
 <state>/runs/<run_id>/record.json    `RunRecord`
-<state>/runs/<run_id>/result.json    `RunResult`: findings, blocked checks, notes, the scorecard
+<state>/runs/<run_id>/result.json    `RunResult`: findings, blocked checks, notes, the scorecard, what judged it
+                                     (`assessed_by`)
 <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
 <state>/runs/<run_id>/agent.json     `AgentUnderTest`
 <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
@@ -896,7 +921,7 @@ Designed, not built. Five hand-written providers exist, all `Tier.FINISHED`; the
 
 - **One engine, not thousands of providers.** `GENERATED` is a single provider whose manifests are produced from descriptions. The APIs.guru directory holds roughly 1,900–2,500 public descriptions.
 - **MCP is the shorter road.** A remote MCP server lists its tools with schemas. The same engine can stand in for any of them.
-- **An unmapped resource is recorded as `RecordSnapshot(resource, text)`.** The AWS provider and the Drive provider's permissions and comments emit it today. Two checks read it: `near_miss_name`, which needs only the text the agent wrote, and `acted_after_deadline`, which needs only that a write happened. `duplicate_ticket` and `repeated_message` do not: a record has no title, project or channel to compare.
+- **An unmapped resource is recorded as `RecordSnapshot(resource, text)`.** The AWS provider and the Drive provider's permissions and comments emit it today. `near_miss_name` reads it, needing only the text the agent wrote, and a rule counts it among `writes` (`things: [record]`), needing only that a write happened. `repeats_open_ticket` never holds of it, and it is no message: a record has no title, project or channel to compare.
 - **Mapping is data.** Which resource is a ticket and which field is its title is a short mapping file per service, drafted by a coding agent and reviewed.
 - **Prior art:** FetchSandbox generates a stateful sandbox from an OpenAPI document and is hosted; Prism and Microcks serve examples without state. Nango's provider catalogue (1,000+ APIs) is under the Elastic License and cannot be copied into this repo.
 - **Unproven:** how much of a real service's behaviour create-read-update-delete over its description actually covers. This needs measuring on five services before the tier is promised.
@@ -1033,12 +1058,29 @@ place as an inbox (`AgentUnderTest.inboxes`, `domain.inboxes.HttpInbox`): how Mi
   script's decision for the nth or every item, a model's pick, or nothing from a `Silent` person. A person who can
   receive items and whose script says nothing of them refuses the run. When due, the declared call is made as them;
   the product taking it is their change (`DECIDED`); its refusal is recorded and the wait stays open.
-- **Scored by reuse.** An item is an `ANSWER_FROM_PERSON` wait in the ledger; every follow-up check reads it.
-  `acted_without_approval` fails an operation the item `gates` going ahead while pending, rejected or withdrawn.
+- **Scored by reuse.** An item is an `ANSWER_FROM_PERSON` wait in the ledger, so every rule that counts `follow_ups`
+  or `touches` on an ask reads it. Going ahead with an operation the item `gates`, while pending, rejected or
+  withdrawn, is the fact `writes: {gated: true}`; a team that holds that against its agent writes a rule.
 
 ### Pillar one: proactive effectiveness
 
-A run ends with a scorecard. It is computed from the world and the clock; nothing in it is the agent's own account of itself.
+A run ends with the facts of it and, when the team declared any, its judgement. Nothing in either is the agent's own account of itself, and nothing in the facts is measured against what the agent should have done.
+
+**Facts in the core, judgement with the team.** Minutehand holds no opinion of how an agent should behave. It states what happened: the waits it opened and when each settled, every follow-up with its time, every message and to whom, every change to the world, every wake and the wakes the agent planned, and what the agent reported. Whether a follow-up was late, a reminder one too many, or an answer acknowledged too slowly is a team's policy; the team writes it as rules (`docs/assessments.md`) and nothing else judges how its agent behaves. Before this, fourteen checks and two verdict rules held Minutehand's own opinion: a real agent that by design never acknowledges an answer, follows up twice and then escalates and stops, failed `slow_to_react` on every run and was asked by `no_follow_up` for a third reminder, and its team could not say otherwise. Each of those checks is now a rule a team may copy (the table in `docs/assessments.md`), and `tests/orchestrator/test_team_rules.py` judges a scripted copy of that agent by its team's policy in YAML.
+
+| Layer | Answers | Whose | State |
+|---|---|---|---|
+| Facts (`checks/facts.py`, the ledger, `RunView`) | What happened, and when | Minutehand's: stated, never judged | Built and tested |
+| Scorecard (`Effectiveness`, `checks/effectiveness.py`) | The facts counted, in numbers that compare across runs, prompts and models | Minutehand's | Built and tested; ends every run |
+| Assessments (`assess:`, `checks/assessments.py`) | Did the agent behave as the team wants | The team's rules, in the agent file and the scenario | Built and tested |
+| Expectations (`expect:`, `checks/expectations.py`) and protected names (`near_miss_name`) | Did the world end up right | The scenario author's words | Built and tested |
+| The agent's own checks (`checks:`) | Anything a rule cannot say, in Python over the same facts | The team's | Built and tested |
+| Integrity (`around_proxy`, `unmatched_call`, `agent_contract_changed`) | Can the run be trusted at all | Minutehand's: about the run, never the agent's behaviour | Built and tested |
+| Patterns (`checks/patterns.py`) | What design fixes it | Named by a rule's `pattern` | 10, each with a page in `docs/patterns/` |
+| Verdict (`Verdict`) | Did what the team declared hold, and did the agent finish | Read from findings and how the run stopped | Built and tested; ends every run and sets the exit code |
+| Stability (`Stability`) | How often, over several samples | | Built: `--samples N` reports "passed k of N"; a sample that did not finish did not pass |
+
+#### The scorecard: facts only
 
 ```python
 class Effectiveness(Model):
@@ -1049,123 +1091,75 @@ class Effectiveness(Model):
         description="Asks and hand-offs the agent is owed an answer or work on; the scenario's deadline is not one",
     )
     waits_open_at_end: int = Field(ge=0, description="Of those, the ones the world had not settled when the run ended")
-    follow_ups_due: int = Field(
-        ge=0,
-        description="Moments a wait fell due while still open: its expected date, and again its patience after "
-        "each follow-up",
-    )
     follow_ups_made: int = Field(
-        ge=0, description="Agent writes the person could see on a wait still open, whether before or after it fell due"
+        ge=0, description="Agent writes the person could see on a wait while it was still open"
     )
-    follow_ups_late: int = Field(
-        ge=0, description="Of the moments due, those followed up more than the grace after, or never"
+    waits_settled: int = Field(
+        default=0, ge=0, description="Waits the world settled that name a person or entity, so a reaction can be timed"
     )
-    time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
-    slowest_follow_up: timedelta | None = None
-    reactions_due: int = Field(
-        default=0, ge=0, description="Settled waits naming a person or entity, so a reaction can be timed"
+    slowest_reaction: timedelta | None = Field(
+        default=None,
+        description="The longest stretch from a wait settling to the agent's next write on it, or to the run's end "
+        "when there was none",
     )
-    reactions_slow: int = Field(
-        default=0, ge=0, description="Of those, the agent's next touch came after the grace, or never"
-    )
-    slowest_reaction: timedelta | None = None
     messages_to_people: int = Field(default=0, ge=0)
-    burden: list[PersonBurden] = Field(default=[], description="Messages per person, in Scenario.people order")
-    messages_per_outcome: float | None = Field(
-        default=None, description="messages_to_people per expectation met; None when none was met"
-    )
+    ...
     wakes: int = Field(ge=0)
     idle_wakes: int = Field(ge=0, description="Wakes that changed nothing")
     failed_checks: int = Field(ge=0)
 ```
 
-The rule that makes it fair: time the world itself took is not the agent's. A person who needed three days, or a reviewer who never answered, costs the agent nothing. `time_lost` counts only the stretch between the moment the agent should have acted and the moment it did, beyond `GRACE` (one hour, `checks/_waits.py`): a follow-up after a wait fell due, and a reaction after a wait settled. A wait left after it fell due costs its whole stretch, from that moment to its settling or the run's end.
+Every number is a count or a stretch of time. What it no longer holds is what was relative to someone's policy: when a wait "fell due" and whether a follow-up was "late" or "early" (`follow_ups_due`, `follow_ups_late`, `follow_ups_early`), the time the agent "lost" past a grace of an hour (`time_lost`, `slowest_follow_up`), and reactions "slow" past that grace (`reactions_slow`). A team that wants those writes the rule that defines them. The viewer's `/obligations` answers each wait as facts (opened, followed up, settled) and draws nothing as overdue on its own.
 
-What a follow-up is (`checks/_waits.chase`):
+What a follow-up is, as a fact (`checks/facts.asks`): an agent write the person could see while the wait was open, a message to them or their delegate, or a change to the ask's thread or ticket. A read is not one: looking at the channel tells nobody anything. One message chasing two waits is one follow-up in `follow_ups_made`.
 
-- **A follow-up is an agent write the person could see while the wait is open**: a message to them or their delegate, or a change to the ask's thread or ticket. Before the wait fell due or after, it counts in `follow_ups_made`. A read is not one: looking at the channel tells nobody anything.
-- **A wait falls due at its `expected_by`, and again its `patience` after each follow-up.** For an answer the patience is the person's longest delay: a reminder gives them their usual time again. For work there is none: the ticket's fate has its own pace, and the first follow-up after the date answers it.
-- **A wait is followed up for a due moment when a follow-up comes at or after it.** One that came more than `GRACE` after is late (`late_follow_up`). A wait still open whose last due moment passed with nothing after it was abandoned (`no_follow_up`), and the finding says what came before: "the agent followed up once, the last 2 days after the ask, then nothing; due again 4 days 18 hours after the ask, it sat 9 days 6 hours until the run ended".
-
-One reading serves every surface: `checks/_waits.chases` reads each wait of the ledger for these moments, the scorecard counts them, and the viewer's `/obligations` answers them per wait (`fell_due`), so the page draws a wait overdue only where the scorecard counts it due. The page once drew "overdue" from a wait's first `expected_by` by itself, and a silent owner the agent kept reporting to showed overdue while the scorecard said no wait fell due (`tests/web/test_viewer_waits.py`).
-
-What this gets wrong: the patience is the person's longest delay whatever the follow-up said, so a reminder that only adds a detail gives the same allowance as one that re-asks; and a follow-up sent a minute before a due moment moves it on a whole delay. That one now costs something: each follow-up sent before its wait fell due is counted (`follow_ups_early`), and more of them on one ask than the person's `Person.early_follow_ups` is the `nagged` finding. The reference agent's nagging behaviour (every 12 hours, against a 66-hour delay) fails it with 10 early follow-ups where the diligent one makes 2.
-
-The reference run, scored by `tests/test_checks_on_reference_run.py` from the run's own turn files (`timeline.json`):
-
-```
-expectations_met       3 of 4      the legal-review ticket was never filed
-waits_opened           12          5 still open when the run stopped
-follow_ups_due         3           made 3, late 1
-time_lost              1 day, 8:43 one reminder, 33 hours after the wait expired
-wakes                  20          3 changed nothing
-```
-
-These waits are read from the captured agent's own records, which predate the ledger and name no person or entity, so no reaction is timed on this run.
+What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no commitment, so a wake that learned something it kept in its own memory reads as idle. `slowest_reaction` runs to the end of the run when the agent never came back, so a run stopped early makes it shorter.
 
 #### The verdict
 
-Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). Whether the checks held and whether the agent finished are two questions, and a run answers both. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is.
+Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). The verdict reads only the findings of what the team declared (its rules, the scenario's expectations and protected names, its own checks), the core's integrity checks, and how the run stopped. It holds no rule of its own about how an agent should behave. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is. `RunResult.assessed_by` records what judged the run.
 
 | `VerdictKind` | When | Exit |
 |---|---|---|
 | `ENVIRONMENT_FAILED` | The run stopped `ENVIRONMENT_FAILED`: an external emulator it forwarded to was unavailable (`docs/external-emulators.md`). Not the agent's failure; the checks still run and are listed | 2 |
 | `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
-| `PASSED` | No check failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
-| `UNFINISHED` | No check failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
+| `NOT_JUDGED` | No finding failed, and nothing was assessed: neither the scenario nor the agent file declares `assess`, `expect`, `protected_names` or its own `checks` ("Not assessed"; the facts are still reported); or a check that reads wakes had none (a standing world nobody stepped). `Verdict.unjudged` lists each reason; it is never `PASSED` | 5 |
+| `PASSED` | No finding failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
+| `UNFINISHED` | No finding failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
 | `TOOL_FAILED` | Minutehand failed answering any call (`CallOutcome.INTERNAL_ERROR`, below): the run says nothing about the agent, whatever the checks found, and the verdict names the first such call | 4 |
-| `NOT_JUDGED` | No check failed, and the run could not be judged: a check that reads wakes had none (a standing world nobody stepped), or nothing was there to judge (no expectation, no wait, no wake). `Verdict.unjudged` lists each reason; it is never `PASSED` (`checks/runner.unjudged`, `tests/serve/test_steps.py`) | 5 |
 
 ```
 run 5c1e0a9f2b77: partner_pricing
-  Not finished: no check failed, but the agent never reported it was done; the run stopped at the scenario's wake limit, with 1 wait still open.
+  Not finished: no check failed, but the agent never reported it was done; the run stopped at its wake limit, with 1 wait still open.
+  the wake limit was 20: the default: the scenario sets no max_wakes and has no deadline to size one from; set `max_wakes` in the scenario, or declare the agent's rhythm (`tick` in the agent file) so the deadline sizes it
 ```
 
-Exit 3 is not a failure: a scenario whose point is that nobody answers ends at its deadline with the agent's question open, and is `UNFINISHED` rather than `FAILED`. A CI job that wants such a scenario green accepts 3 for it; one that wants every agent to close its work accepts only 0. 2 is also "could not be performed", which has no verdict: both are the environment's, never the agent's.
+Exit 3 is not a failure: a scenario whose point is that nobody answers ends at its deadline with the agent's question open, and is `UNFINISHED` rather than `FAILED` (or declares `expect_outcome: unfinished`, which `minutehand run-all` reads). A CI job that wants such a scenario green accepts 3 for it; one that wants every agent to close its work accepts only 0. 2 is also "could not be performed", which has no verdict: both are the environment's, never the agent's.
 
 What the rule gets wrong:
 
-- **It trusts `DONE` as far as the ledger lets it.** An agent that reports done while a question it asked is unanswered and was never followed up is `UNFINISHED`, naming whom; a "follow-up" sent in the same wake as the ask, less than `GRACE` after it, chased nothing (the agent never waited) and does not count (`Chase.instant`, `tests/orchestrator/test_done_while_waiting.py`); one that reports done with every question answered or chased passes unless an expectation or a check says otherwise. Whether a `DONE` whose expectations are met is true to the goal's meaning, and whether a message was a question at all, are left to judged checks.
+- **It takes `DONE` at the agent's word.** An agent that reports done with a question it asked unanswered passes, unless a rule says otherwise. The verdict once held two rules of its own here (done with an ask never followed up was `UNFINISHED`, and a "follow-up" in the same wake as the ask did not count); both were opinions, and both are now rules a team may write: `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0`, and `each: ask`, `count: {follow_ups: {}, until: ask+PT1H}`, `at_most: 0`.
 - **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question. The one exception: once every expectation is met, a message to a `Silent` owner sent with or after the last of them is the result being reported, and keeps nothing open. A silent person other than the owner still leaves the run `UNFINISHED`.
 - **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
 - **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
 
-| Layer | Answers | State |
-|---|---|---|
-| Scorecard (`Effectiveness`, `checks/effectiveness.py`) | How well, in numbers that compare across runs, prompts and models | Built and tested; ends every run |
-| Expectations (`checks/expectations.py`) | Did the world end up right | Built and tested |
-| Checks | Which known failure, where, with evidence | 12 built and tested (below) |
-| Patterns (`checks/patterns.py`) | What design fixes it | 9, each with a page in `docs/patterns/` |
-| Verdict (`Verdict`) | Did the checks hold, and did the agent finish | Built and tested; ends every run and sets the exit code |
-| Stability (`Stability`) | How often, over several samples | Built: `--samples N` reports "passed k of N"; a sample that did not finish did not pass |
 
-The checks, discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, `needs` and `run`; no registration). An agent's repository adds its own the same way: the agent file names Python files (`AgentUnderTest.checks`, a relative path read from the file's folder and kept absolute, so a fork finds them), each class in them is loaded as a check (`load_checks`), run after Minutehand's on every run and fork, and counted as they are; a file that cannot load, defines no check, or holds a check with one of Minutehand's ids refuses the run before it starts, and `minutehand validate` says so (`tests/checks/test_own_checks.py`, `tests/e2e/test_cloud_tasks_run.py`). Standing worlds (`serve`) do not run them yet:
+#### The checks left in the core
 
-| `id` | Kind of finding | `Pattern.key` |
-|---|---|---|
-| `acted_after_deadline` | `FAIL`; `REVIEW` for a wake whose late writes are all messages | `budgeted_follow_up` |
-| `acted_on_repeated_wake` | `REVIEW`: a wake the scenario delivered a second time (`dispatch`, `twice`) in which the agent changed the world again; notes each dispatch rule that never applied | `no_double_tick` |
-| `around_proxy` | `FAIL`: the agent's own HTTP client spans name calls to a host a provider claims that the proxy never saw; `REVIEW`: the agent was woken and called none of the providers the run names. Both name the fixes ("Transparent capture") | none |
-| `nagged` | `FAIL`: more follow-ups on one ask, each before the answer was due, than the person's `early_follow_ups` (default 2); `REVIEW`, within that budget, for a new message sent as a follow-up in the same wake as the ask and less than `GRACE` after it, before the person could have answered (a second message seconds later may add what the first forgot, which only its words say) | `budgeted_follow_up` |
-| `chased_absent_person` | `FAIL`: messaged someone away while a delegate covered | `absence_aware` |
-| `duplicate_ticket` | `FAIL`: the same normalised title filed twice in one project while the first was open | `one_open_ask_per_person` |
-| `expectations` | `FAIL` per unmet expectation | `honest_closure` |
-| `idle_wake` | `REVIEW`: a wake that changed nothing in the world and nothing the agent was waiting on, with the model calls received during it, or that none could be counted; not raised when the agent's telemetry shows it made none | `check_world_before_model` |
-| `kept_chasing_after_done` | `REVIEW`: a message threaded under an answered ask, or naming a finished ticket | `one_open_ask_per_person` |
-| `late_follow_up` | `FAIL`: a follow-up more than `GRACE` after the wait fell due; says what the agent had planned then, when the run kept its table of what was due | `expiry_on_every_wait` |
-| `near_miss_name` | `FAIL`: a protected name written one letter off | `confirm_names` |
-| `no_follow_up` | `FAIL`: a wait still open fell due and nothing followed; says how many follow-ups came before, and what the agent had planned then | `expiry_on_every_wait` |
-| `planned_past_due` | `REVIEW`: a follow-up in time only because something other than the agent's own plan woke it: when the wait fell due, the agent's earliest reported, booked or polled wake was more than `GRACE` away, or it had none | `expiry_on_every_wait` |
-| `repeated_message` | `REVIEW`: two messages to one channel within five minutes of simulated time, no reply between, sharing rare wording | `one_open_ask_per_person` |
-| `reported_against_world` | The agent's commitments as each wake ended (`RunView.reported`, from the checkpoints) held against the ledger's waits on the same person: `FAIL` for one reported met while the person had not answered; `REVIEW` for one still reported open more than `GRACE` after their answer, and for a wait overdue by more than `GRACE` that no open commitment names. Each said once. Silent when the agent reports no commitments, which is optional | `honest_closure`; `expiry_on_every_wait` for the overdue wait |
-| `slow_to_react` | `FAIL`: an answer landed or work was finished and the agent came back late or never | `expiry_on_every_wait` |
-| `unmatched_call` | `REVIEW`: a call to a host no provider claims | none |
+Discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, `needs` and `run`; no registration). An agent's repository adds its own the same way: the agent file names Python files (`AgentUnderTest.checks`, a relative path read from the file's folder and kept absolute, so a fork finds them), each class in them is loaded as a check (`load_checks`), run after Minutehand's on every run and fork, and counted as they are; a file that cannot load, defines no check, or holds a check with one of Minutehand's ids refuses the run before it starts, and `minutehand validate` says so (`tests/checks/test_own_checks.py`, `tests/e2e/test_cloud_tasks_run.py`). A rule may not take a check's id. Standing worlds (`serve`) run the scenario's rules but not the agent's own checks.
 
-`idle_wake` states what it saw and gives no reason: "wake 3 changed nothing in the world and nothing the agent was waiting on; 2 model calls were received or recorded during it", or, with no span of a model call in the run, that the count is not known. Why a wake was idle (asked the model to look, woke too early, dropped a reply) is not observed, so the advice for each cause is on the pattern's page, not in the finding. A wake that changed nothing and made no model call, by telemetry that reports model calls, cost nothing worth fixing and is only noted. What this gets wrong: an agent that traces some of its model calls and not others has an untraced, costly wake read as free; and "changed nothing" counts only writes to the world and changes to reported commitments, so a wake that learned something it kept in its own memory reads as idle.
+| `id` | What it states | Whose words | `Pattern.key` |
+|---|---|---|---|
+| `assessments` | One finding per broken bound of each of the team's rules, named by the rule's `id`, with its `severity` and `message`; a note for each rule not read for want of a moment the run never reached | The team's | the rule's `pattern` |
+| `expectations` | `FAIL` per unmet expectation; `INFORMATIONAL` per met one, quoting what met it | The scenario author's | `honest_closure` |
+| `near_miss_name` | `FAIL`: a name the scenario protects written one letter off | The scenario author's | `confirm_names` |
+| `agent_contract_changed` | `FAIL`: the agent's own product answered Minutehand's call against its own API description | The agent's own document | none |
+| `around_proxy` | `FAIL`: the agent's own HTTP client spans name calls to a host a provider claims that the proxy never saw; `REVIEW`: the agent was woken and called none of the providers the run names. Both name the fixes ("Transparent capture") | none: the run's integrity | none |
+| `unmatched_call` | `REVIEW`: a call to a host no provider claims | none: the run's integrity | none |
 
 Not built:
 
-- **The earliest the work could have finished,** given how the people and systems behaved. With it, `time_lost` becomes "finished four days later than was possible". It needs to know which waits depend on which.
+- **The earliest the work could have finished,** given how the people and systems behaved. With it, a rule could count "finished four days later than was possible". It needs to know which waits depend on which.
 
 ### Pillar two: the changelog, rewind and forks
 
@@ -1340,7 +1334,7 @@ The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`
 | **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built and tested through a whole run on AWS (`tests/e2e/test_booked_on_aws.py`) |
 | **`Reported`**: the agent answers `next_wake` at `report_url` | An endpoint, or an adapter beside its tests | Yes | None | Built and tested |
 | **`Command`**: one process per wake, `WakeRequest` on stdin, `AgentReport` on stdout | A command | Yes | None | Built and tested |
-| **`Polled`**: the agent is invoked every `every` (default 5 minutes) and decides for itself | Declare the rhythm | Yes, at that rhythm | One call per tick: 4,032 calls for 14 days at 5 minutes, each a wake counted against `Scenario.max_wakes` | Built and tested |
+| **`Polled`**: the agent is invoked every `every` (default 5 minutes) and decides for itself | Declare the rhythm | Yes, at that rhythm | One call per tick: 4,032 calls for 14 days at 5 minutes, each a wake counted against the wake limit, which a deadline and this rhythm size | Built and tested |
 
 - `Polled` never skips a tick, never names a next wake and never reports `DONE`. Skipping is only safe when the agent says when it next matters, which is `Reported`.
 - An agent may declare one `Reported` or `Command` source and one `Polled` source; `reach_for` refuses two of either. An agent with only `Booked` wakes must take its goal by message.
@@ -1368,7 +1362,7 @@ Built and tested (`application/dues.py`, `tests/orchestrator/test_dues.py`, `tes
 | A fork takes up its checkpoint's table against the log it shares: an entry the checkpoint dropped (a reply a `PersonChange` withdrew) is cancelled at the fork, and one it added is entered | The fork's table and its log agree from its first event |
 | The rows are left out of the viewer's event list, as checkpoints are, and no check counts them as the agent's | They are the run loop's own record, not the world |
 
-`RunView.dues` carries every entry as it last stood; None for a run that kept none (a captured run, a standing world, whose clock is driven from outside). `checks/_waits.plan_at` reads the agent's own plan at any moment from it: the earliest entry of the agent's own sources open then. What it cannot see: a plan the agent holds and never reports or books (an in-process scheduler), which reads as no plan. 
+`RunView.dues` carries every entry as it last stood; None for a run that kept none (a captured run, a standing world, whose clock is driven from outside). `checks/facts.planned_wakes` reads the agent's own plan from it: each wake the agent asked for itself (reported, booked, its rhythm, its timer) at the moment it was due, a late or second delivery left out, since that is the scenario's. What it cannot see: a plan the agent holds and never reports or books (an in-process scheduler), which reads as no plan. 
 #### Deciding what to dispatch
 
 Built and tested (`DispatchRule`, `Dues.dispatch`, `tests/orchestrator/test_dispatch.py`). Real schedulers deliver late, twice (an at-least-once queue) and not at all, and a scenario can say so of the agent's own wakes:
@@ -1390,7 +1384,7 @@ The decision is made when the wake's moment comes, and recorded on its entry (`D
 
 A scheduler provider delivers and finishes an occurrence in two steps (`BooksWakes.deliver_booking`, `advance_booking`), so a booking can go wrong as a real scheduler's does: delivered twice (`deliver_booking` now and again, `advance_booking` once, after the second), or dropped (`advance_booking` only, so a recurring schedule still books its next occurrence). `advance_booking` books the first occurrence after now, as a real scheduler skips what it missed. A seed refuses `dispatch` (a standing world's clock is driven from outside). Only the agent's own wakes are covered: a person's pace is their `reply`, a ticket's its fate.
 
-What the checks make of it: the follow-up checks' account of the agent's plan (`plan_at`) counts only wakes delivered or on their way, so a wait missed because the scenario held the agent's wake back says that the delivery failed the plan, not that the agent had none; `acted_on_repeated_wake` reviews a second delivery after which the agent changed the world again, and notes each rule that never applied.
+What a team's rules make of it: `planned_wakes` counts a wake the agent planned whether or not the scenario delivered it, so a rule can tell an agent with no plan from one whose plan the dispatch rules broke; `writes` with `in_repeated_wake` are what the agent wrote in a second delivery of one wake. Whether either is a failure is the rule's to say.
 
 ### What the agent is waiting on
 
@@ -1428,9 +1422,9 @@ Whether a message asked anything is the replier's decision, never the ledger's. 
 
 A message is the same ask as an earlier one, and so a follow-up on that wait rather than a wait of its own, when it goes to the same person in the same conversation (provider and channel; a thread shares its channel) while the earlier wait is open; an answer to it settles the wait. Nothing is read from the text, which gets two cases wrong: a second, different question in the same conversation before the first is answered is folded into the first, and its own answer settles both; and a reminder sent somewhere else (email after chat, a group channel after a direct message) is a new wait. A `Scripted` person whose script answers only their second message was, by the replier's decision, not asked by the first, so an agent that asked and then chased them is scored as having asked once.
 
-A touch is any later agent event on the ask's entity or channel, or an agent message to the person or their delegate. `no_follow_up`, `late_follow_up`, `slow_to_react`, `kept_chasing_after_done` and the scorecard read the ledger; `chased_absent_person` reads the absences directly.
+A touch is any later agent event on the ask's entity or channel, or an agent message to the person or their delegate. The facts a rule counts on an ask (`follow_ups`, `touches`) and the scorecard read the ledger; `messages` with `to_away` reads the absences directly.
 
-`AgentReport.commitments` stays optional. The cross-check it allows (the agent believes it is waiting on something the world shows as answered, or the reverse) is `reported_against_world`.
+`AgentReport.commitments` stays optional. The cross-check it allows (the agent believes it is waiting on something the world shows as answered, or the reverse) is a rule over `commitments`: `each: ask`, `count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}`, `at_most: 0`.
 
 ### Time, for the agent
 
@@ -1474,7 +1468,7 @@ Built and tested (`tests/telemetry/test_otel_telemetry.py`). OpenTelemetry SDK, 
 - **Findings.** One log record per `Finding` (`event_name="minutehand.finding"`), in the trace of the span of its first evidence, with `minutehand.check`, `minutehand.finding.kind`, `minutehand.evidence`, `minutehand.pattern`, and OTel severity from `Finding.severity`.
 - **A fake's 4xx is not an error.** A provider refusing bad input is the fake working; the span status stays unset. A 5xx sets status `ERROR`.
 - **Bodies stay local** unless `MINUTEHAND_EXPORT_BODIES=1` (`minutehand.request.body`, `minutehand.response.body`).
-- **Metrics.** `minutehand.findings{check,kind}`, `minutehand.wakes{changed}`, and per run, by scenario, the histograms `minutehand.time_lost_seconds`, `minutehand.idle_wakes`, `minutehand.follow_ups_late`, `minutehand.run.sim_seconds`, `minutehand.run.wall_seconds`.
+- **Metrics.** `minutehand.findings{check,kind}`, `minutehand.wakes{changed}`, and per run, by scenario, the histograms `minutehand.idle_wakes`, `minutehand.follow_ups_made`, `minutehand.run.sim_seconds`, `minutehand.run.wall_seconds`.
 
 #### What the agent sends
 
@@ -1523,7 +1517,7 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 
 | Pillar | What the agent's telemetry adds | Built |
 |---|---|---|
-| Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is placed in the wake its start fell in, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. `idle_wake` reads each wake's model calls (`RunView.model_calls`). No scorecard number counts tokens. |
+| Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is placed in the wake its start fell in, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. `RunView.model_calls` holds each wake's model calls, for a check of the team's own. No scorecard number counts tokens. |
 | Comparing a fork with its parent | A fork sees its parent's spans of the wakes up to the fork, and keeps its own after it; the same event in parent and child can be read with the model call behind each, so a `PromptPatch` can be judged by what the model was then asked and answered, not only by what the world did. | The fork's view of spans. No side-by-side of a parent's and a child's model calls. |
 
 ### What a coding agent calls
@@ -1628,19 +1622,20 @@ class Pattern(Model):
     reference: str | None = Field(default=None, description="Where a working implementation can be read")
 ```
 
-Nine, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/patterns/<key>.md`. Each is taken from a mechanism a production agent has.
+Ten, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/patterns/<key>.md`. Each is taken from a mechanism a production agent has. A finding names one when the rule that made it does (`pattern:`, refused when there is no such pattern); the column "A rule that finds it" gives a shape a team may copy (the table in `docs/assessments.md` has more).
 
-| `Pattern.key` | Failure | Design | Found by | Reference mechanism |
+| `Pattern.key` | Failure | Design | A rule that finds it | Reference mechanism |
 |---|---|---|---|---|
-| `expiry_on_every_wait` | Waits on something forever | Every wait carries an expected-by date and the agent wakes on it | `late_follow_up`, `no_follow_up`, `slow_to_react`, `planned_past_due` | An expected-by date on every blocker and one "next stale check" time derived from them, which the scheduler books |
-| `check_world_before_model` | Spends a wake, and the model calls in it, to learn nothing changed | Spend a wake's model calls only on what changed since the last look; the page lists why a wake can change nothing and what each cause needs | `idle_wake` | A filter to the waits actually stale, and a cheap preflight that ends the wake when none is |
-| `absence_aware` | Chases someone who is away | Know who is away and until when; extend the wait or go to their delegate | `chased_absent_person` | An absence filter over every follow-up before it is sent, rerouting to the named cover |
-| `budgeted_follow_up` | Follows up too often, or too late | Space reminders across the time left before the deadline | `acted_after_deadline`, `nagged` | The next reminder computed from the time remaining and the number already sent |
-| `bounded_asking` | Asks for input indefinitely | After a fixed number of attempts, stop asking and deliver the best available version | none | A count of attempts per unmet need and a pivot to best-effort delivery past a threshold |
-| `one_open_ask_per_person` | Sends the same question twice | Track what is already open with each person before asking | `repeated_message`, `duplicate_ticket`, `kept_chasing_after_done` | A judge that compares each outgoing question with those already open with the same person |
-| `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | `acted_on_repeated_wake` | A check for an existing instance in the current period before each cadence tick creates anything |
-| `honest_closure` | Reports done when it is not | Closing is decided from the state of the world, not from the agent's last message | `expectations` | Closure evaluated against the recorded state of every piece of work the goal depends on |
-| `confirm_names` | Acts on a name it guessed | A name that matters is carried exactly as given, and an assumption is asked about before it is acted on | `near_miss_name` | None. Run `f431fc97f427` is the evidence one is needed. |
+| `expiry_on_every_wait` | Waits on something forever | Every wait carries an expected-by date and the agent wakes on it | `each: ask`, `when: {open_at: due}`, `count: {follow_ups: {}, since: due, until: due+PT1H}`, `at_least: 1` | An expected-by date on every blocker and one "next stale check" time derived from them, which the scheduler books |
+| `check_world_before_model` | Spends a wake, and the model calls in it, to learn nothing changed | Spend a wake's model calls only on what changed since the last look; the page lists why a wake can change nothing and what each cause needs | `count: {wakes: {changed_world: false}}`, `at_most: 0`, review | A filter to the waits actually stale, and a cheap preflight that ends the wake when none is |
+| `absence_aware` | Chases someone who is away | Know who is away and until when; extend the wait or go to their delegate | `count: {messages: {to_away: true}}`, `at_most: 0` | An absence filter over every follow-up before it is sent, rerouting to the named cover |
+| `budgeted_follow_up` | Follows up too often, or too late | Space reminders across the time left before the deadline | `each: ask`, `count: {follow_ups: {}, until: due}`, `at_most: 2` | The next reminder computed from the time remaining and the number already sent |
+| `bounded_asking` | Asks for input indefinitely | After a fixed number of attempts, stop asking and deliver the best available version | `each: person`, `count: {asks: {of: [person]}}`, `at_most: 3` | A count of attempts per unmet need and a pivot to best-effort delivery past a threshold |
+| `one_open_ask_per_person` | Sends the same question twice | Track what is already open with each person before asking | `count: {writes: {repeats_open_ticket: true}}`, `at_most: 0` | A judge that compares each outgoing question with those already open with the same person |
+| `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | `count: {writes: {in_repeated_wake: true}}`, `at_most: 0`, review | A check for an existing instance in the current period before each cadence tick creates anything |
+| `honest_closure` | Reports done when it is not | Closing is decided from the state of the world, not from the agent's last message | `expect:`; `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0` | Closure evaluated against the recorded state of every piece of work the goal depends on |
+| `act_on_the_decision` | Goes ahead with what a person has still to approve, or turned down | Hold each gated operation until a decision that permits it; on a rejection close the work and say so | `count: {writes: {gated: true}}`, `at_most: 0` | The operation's state read at the moment it is performed, against the approval it needs |
+| `confirm_names` | Acts on a name it guessed | A name that matters is carried exactly as given, and an assumption is asked about before it is acted on | `near_miss_name`, over `protected_names` | None. Run `f431fc97f427` is the evidence one is needed. |
 
 - Patterns are documentation in the repo, one page each, and data the tool returns (`pattern(key)`; the CLI prints the pattern under each finding). They are not code the user must import.
 - The reference mechanisms are what make them more than advice. Publishing the implementations they point to is the separate, heavier product.
@@ -1818,7 +1813,7 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 - **A press that means to fill a form waits three real seconds** for the agent to open it with the press's `trigger_id`, as Slack's trigger lives three seconds; an agent slower than that fails the run (`FormNeverOpened`).
 - **Most providers accept any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana and YouTrack accept any bearer token unless their own seeds declare tokens. Drive accepts only tokens its `/token` issued, which expire an hour of simulated time later; `/token` matches a refresh token or a service account by name and verifies no signature.
 - **No fake's wire details have been verified against the real service.**
-- **`repeated_message` measures its five-minute window in wall time.** On the reference run it flags the one real repeat; in a simulated run, messages days apart in simulated time can be seconds apart in wall time.
+- **A rule cannot read meaning.** It counts facts between moments: a thank-you and a chase under an answered ask are both a message `in_thread`, and two messages minutes apart are close whether or not they ask the same thing. Such a rule is best `severity: review`; telling them apart is a judgement, for a check a model judges (not built) or the team's own Python.
 - **The enum-comparison lint judges a field by its name, not its type** (`docs/lints.md`).
 - **The store's file carries a schema version and refuses other versions;** there is no migration.
 - **Bytes are kept once per world file, not across files.** A root run and its forks share every body and snapshot file; two root runs (two samples, two `minutehand run`s) each keep their own copy.

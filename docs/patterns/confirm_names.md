@@ -1,6 +1,6 @@
 # Confirm names
 
-**Found by:** `near_miss_name`.
+**Found by:** `near_miss_name`, over the names the scenario protects (`protected_names`).
 
 ## The failure
 
