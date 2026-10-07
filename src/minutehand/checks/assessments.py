@@ -154,7 +154,8 @@ class _Reader:
             return subject.person.key
         return who
 
-    def _when(self, said: str, subject: _Subject, at: str | None) -> datetime:
+    def _when(self, said: str, subject: _Subject, at: str | None, *, past_end: bool = False) -> datetime:
+        """The moment `said` names for `subject`; past the run's end it is not read, unless `past_end`."""
         moment = Moment.read(said)
         base: datetime | None
         if moment.anchor is Anchor.START:
@@ -182,7 +183,7 @@ class _Reader:
         if base is None:
             raise _Unread
         found = base + moment.offset
-        if found > self.end:
+        if found > self.end and not past_end:
             raise _Unread
         return found
 
@@ -191,13 +192,16 @@ class _Reader:
         if not self._holds(rule, subject, at):
             return None
         since = self._when(rule.count.since, subject, at) if rule.count.since is not None else None
-        until = self._when(rule.count.until, subject, at) if rule.count.until is not None else None
+        until = self._when(rule.count.until, subject, at, past_end=True) if rule.count.until is not None else None
         counted = [
             f
             for f in self._facts(rule, subject, at)
             if (since is None or f.at >= since) and (until is None or f.at <= until)
         ]
         broke = _broken(rule, counted)
+        if until is not None and until > self.end and (broke is None or not _for_good(rule, counted)):
+            # The window runs past the end: only what more facts could not undo is said; the rest is unread.
+            raise _Unread
         if broke is None:
             return None
         evidence = sorted(
@@ -326,12 +330,28 @@ def _broken(rule: Rule, counted: list[Fact]) -> str | None:
         return f"expected at least {rule.at_least}"
     if rule.at_most is not None and n > rule.at_most:
         return f"expected at most {rule.at_most}"
-    if rule.gap_at_least is not None:
-        times = sorted(f.at for f in counted)
-        close = [b - a for a, b in pairwise(times) if b - a < rule.gap_at_least]
-        if close:
-            return f"{len(close)} {'were' if len(close) != 1 else 'was'} closer than {_hours(rule.gap_at_least)} to the one before, the closest {_hours(min(close))}"
-    return None
+    return _too_close(rule, counted)
+
+
+def _too_close(rule: Rule, counted: list[Fact]) -> str | None:
+    if rule.gap_at_least is None:
+        return None
+    times = sorted(f.at for f in counted)
+    close = [b - a for a, b in pairwise(times) if b - a < rule.gap_at_least]
+    if not close:
+        return None
+    were = "were" if len(close) != 1 else "was"
+    return (
+        f"{len(close)} {were} closer than {_hours(rule.gap_at_least)} to the one before, the closest "
+        f"{_hours(min(close))}"
+    )
+
+
+def _for_good(rule: Rule, counted: list[Fact]) -> bool:
+    """Whether the count already breaks a bound more facts could not mend: too many, or two too close."""
+    n = len(counted)
+    too_many = (rule.at_most is not None and n > rule.at_most) or (rule.exactly is not None and n > rule.exactly)
+    return too_many or _too_close(rule, counted) is not None
 
 
 def _hours(delta: timedelta) -> str:

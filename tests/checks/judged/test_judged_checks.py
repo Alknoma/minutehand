@@ -20,7 +20,7 @@ from minutehand.checks.runner import NO_MODEL, RunResult, discover, discover_jud
 from minutehand.domain.checks import FindingKind, Severity
 from minutehand.domain.conversation import Judgement
 from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import Expectation, PersonAsked
+from minutehand.domain.scenario import Expectation, PersonAsked, TicketCreated
 from minutehand.domain.world import Actor, Operation
 from tests.checks.world import Log, person, scenario, view
 from tests.model.fake_completions import Answer, FakeCompletions, Received, fake_completions
@@ -64,7 +64,7 @@ def test_the_two_judged_checks_are_found_and_are_not_deterministic_checks() -> N
 
 
 async def test_an_unclear_ticket_is_a_review_finding_carrying_the_model_and_prompt_version() -> None:
-    world = view(scenario(OWNER, TOM), tickets())
+    world = view(scenario(OWNER, TOM, expect=[TicketCreated(assignee="tom")]), tickets())
     async with fake_completions(judge) as fake:
         result = await evaluate_judged(world, model(fake), stop=StopReason.AGENT_DONE)
 
