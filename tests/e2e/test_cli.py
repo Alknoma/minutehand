@@ -169,6 +169,39 @@ def test_env_writes_a_compose_override_that_injects_the_variables_and_mounts_the
     assert environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://host.docker.internal:18081"
 
 
+def test_env_with_a_transparent_port_prints_the_redirect_and_mounts_it_with_the_capability(tmp_path: Path) -> None:
+    agent_file = _dump(tmp_path / "agent.yaml", RUNNING_AGENT)
+    state = tmp_path / "state"
+    proxy = ("--proxy-host", "0.0.0.0", "--proxy-port", "18080", "--telemetry-port", "18081", "--transparent-port")
+    base = ("env", "--agent", str(agent_file), *proxy, "18443", "--agent-proxy-host", "host.docker.internal")
+
+    script = _cli(*base, "--format", "redirect", "--state", str(state), env=dict(os.environ))
+    override = _cli(*base, "--format", "compose", "--service", "agent", "--state", str(state), env=dict(os.environ))
+    exports = _cli(*base, "--state", str(state), env=dict(os.environ))
+
+    assert script.returncode == 0, script.stderr
+    assert script.stdout.startswith("#!/bin/sh\n")
+    assert "target=host.docker.internal" in script.stdout
+    assert 'iptables -t nat -A MINUTEHAND -p tcp --dport 443 -j DNAT --to-destination "$address:18443"' in script.stdout
+    assert "iptables -t nat -A OUTPUT -p tcp -j MINUTEHAND" in script.stdout
+    assert override.returncode == 0, override.stderr
+    agent = yaml.safe_load(override.stdout)["services"]["agent"]
+    assert agent["cap_add"] == ["NET_ADMIN"]
+    assert f"{(state / 'redirect.sh').resolve()}:/etc/minutehand/redirect.sh:ro" in agent["volumes"]
+    assert (state / "redirect.sh").read_text() == script.stdout
+    assert agent["environment"]["NODE_USE_ENV_PROXY"] == "1"
+    assert "export NODE_USE_ENV_PROXY=1" in exports.stdout.splitlines()
+
+
+def test_env_redirect_without_a_transparent_port_is_refused_with_exit_2(tmp_path: Path) -> None:
+    agent_file = _dump(tmp_path / "agent.yaml", RUNNING_AGENT)
+    printed = _cli(
+        "env", "--agent", str(agent_file), "--proxy-port", "18080", "--telemetry-port", "18081",
+        "--format", "redirect", "--state", str(tmp_path / "s"), env=dict(os.environ),
+    )  # fmt: skip
+    assert printed.returncode == 2 and "--transparent-port" in printed.stderr
+
+
 def test_env_warns_of_a_docker_config_whose_no_proxy_would_replace_the_one_it_hands_out(tmp_path: Path) -> None:
     """Docker Desktop writes `"noProxy": "*"` into the client config, and the Docker CLI copies it into the NO_PROXY
     of every container it starts: the agent's calls would skip the proxy and the run would record nothing."""

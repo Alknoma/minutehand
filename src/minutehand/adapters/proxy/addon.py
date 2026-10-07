@@ -42,6 +42,7 @@ from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.hosts import loopback_name
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
+from minutehand.adapters.proxy.redirected import Redirected
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.application.restore import SeenCall
@@ -275,11 +276,15 @@ class ProxyAddon:
         chosen first; this replaces its choice for those hosts only."""
         context = nextlayer.context
         chosen = nextlayer.layer
-        if isinstance(chosen, layers.HttpLayer) and context.layers[-2:] == [context.layers[0], chosen]:
+        if (
+            isinstance(chosen, layers.HttpLayer)
+            and isinstance(context.layers[0], modes.HttpProxy)
+            and context.layers[-2:] == [context.layers[0], chosen]
+        ):
             # The client's own connection to the proxy, about to be read as HTTP: mitmproxy would refuse a CONNECT
             # it cannot parse with a bare 400, before any hook sees a flow.
             address6 = connect.unbracketed_ipv6(nextlayer.data_client())
-            if address6 is not None and isinstance(context.layers[0], modes.HttpProxy):
+            if address6 is not None:
                 self._seen(f"CONNECT {address6} without brackets, refused")
                 context.layers.remove(chosen)
                 nextlayer.layer = connect.Refused(context, connect.refusal(address6))
@@ -287,8 +292,8 @@ class ProxyAddon:
         address = context.server.address
         if context.client.transport_protocol != "tcp" or address is None:
             return
-        if not any(isinstance(lay, layers.HttpLayer) for lay in context.layers):
-            return  # not the inside of a CONNECT
+        if not any(isinstance(lay, layers.HttpLayer | Redirected) for lay in context.layers):
+            return  # neither the inside of a CONNECT nor a connection redirected to the proxy
         if self.forwarded(str(address[0])):
             nextlayer.layer = layers.TCPLayer(context, ignore=True)
             return

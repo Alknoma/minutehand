@@ -21,6 +21,7 @@ CHECKS = {
     "acted_on_repeated_wake",
     "acted_without_approval",
     "agent_contract_changed",
+    "around_proxy",
     "chased_absent_person",
     "duplicate_ticket",
     "expectations",

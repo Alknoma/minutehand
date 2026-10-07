@@ -59,6 +59,7 @@ from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
+from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.application.cases import CASE, CaseKept, CaseStore
 from minutehand.application.checkpoint import (
     CHECKPOINT,
@@ -156,6 +157,12 @@ CA_VARIABLES = (
 )
 """Each HTTP library's own name for the file of CAs it trusts. httplib2 reads only its own and ignores
 `SSL_CERT_FILE`; gRPC reads only `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`. stripe reads none: it passes its bundled CA."""
+
+NODE_PROXY = "NODE_USE_ENV_PROXY"
+"""Node's built-in `fetch` (undici, and so `@slack/web-api` v8 and every SDK on it) reads no proxy variable unless this
+is `1` (Node 24 and later; Node 25 applies it to `http` and `https` too). Set for every agent, whatever its command:
+a Node process started by a shell script or by another program is reached all the same, and every other runtime
+ignores it. An older Node may not read it: such an agent needs a base URL or transparent capture."""
 
 LISTEN_TIMEOUT = 30.0
 """Seconds the agent's process has to accept connections on its wake or inbound URL."""
@@ -255,7 +262,9 @@ async def play(
                 await start_again(fronts, first[0], proxy.recorder)
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
-            scorer = _Judge(scenario, model if judge else None, judging=judge, own=own_checks)
+            scorer = _Judge(
+                scenario, model if judge else None, judging=judge, own=own_checks, claims=_claims(registry, services)
+            )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
             env = (
@@ -380,7 +389,9 @@ async def fork(
         agent, registry, state=state, parent=parent_run, after_wake=forked_after, model_hosts=listen.model_hosts
     )
     child_id = _new_run_id()
-    scorer = _Judge(changed, model if judge else None, judging=judge, own=own_checks)
+    scorer = _Judge(
+        changed, model if judge else None, judging=judge, own=own_checks, claims=_claims(registry, services)
+    )
     signing = signing_for(agent, changed.people)
 
     def open_parent(clock: Clock) -> Store:
@@ -904,13 +915,38 @@ def _own_checks(agent: AgentUnderTest) -> list[Check]:
         raise RunRefused(f"the agent's checks: {e}") from e
 
 
+@dataclass(frozen=True)
+class _Claims:
+    """Which provider claims a host, and the providers the run names: what tells a call that went around the proxy
+    (`application.around_proxy`)."""
+
+    registry: Registry
+    named: frozenset[ProviderKey]
+
+    def provider(self, host: str) -> ProviderKey | None:
+        found = self.registry.claimant(host)
+        return found.key if found is not None else None
+
+
+def _claims(registry: Registry, services: Services) -> _Claims:
+    return _Claims(registry, frozenset(p.manifest.key for p in services.providers))
+
+
 class _Judge:
     """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it;
-    with `judging`, the judged checks too, by `model` or blocked for want of one."""
+    with `judging`, the judged checks too, by `model` or blocked for want of one. With `claims`, the calls the agent
+    made around the proxy are counted too."""
 
     def __init__(
-        self, scenario: Scenario, model: LanguageModel | None, *, judging: bool, own: Sequence[Check] = ()
+        self,
+        scenario: Scenario,
+        model: LanguageModel | None,
+        *,
+        judging: bool,
+        own: Sequence[Check] = (),
+        claims: _Claims | None = None,
     ) -> None:
+        self._claims = claims
         self._scenario = scenario
         self._own = list(own)
         self._model = model
@@ -921,6 +957,9 @@ class _Judge:
 
     async def score(self, record: RunRecord, world: Store) -> RunResult:
         last = read_checkpoint(world)
+        calls = world.calls()
+        spans = world.spans()
+        claims = self._claims
         view = view_of(
             self._scenario,
             world.events(),
@@ -928,12 +967,16 @@ class _Judge:
             world.replies(),
             withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
-            unmatched_calls=[call.exchange for call in world.calls() if call.refused],
-            model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
-            broken_calls=broken(world.calls()),
-            contract_breaks=contract_breaks(world.calls()),
+            unmatched_calls=[call.exchange for call in calls if call.refused],
+            model_calls=per_wake(spans, [w.index for w in record.wakes]),
+            broken_calls=broken(calls),
+            contract_breaks=contract_breaks(calls),
             dues=due_entries(world),
             reported=reported_of(world),
+            around_proxy=around_proxy(spans, calls, claims.provider) if claims is not None else None,
+            uncalled_providers=(
+                uncalled_providers(claims.named, calls, woken=bool(record.wakes)) if claims is not None else []
+            ),
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop, own=self._own)
@@ -1169,23 +1212,31 @@ class Listen(Model):
         description="The CAs a real host is verified against when a call is passed through, edited or recorded; "
         "None trusts the system's",
     )
+    transparent_port: int | None = Field(
+        default=None,
+        ge=0,
+        le=65535,
+        description="A second listener, on `host`, for connections the agent's container redirects to the proxy "
+        "without asking for one (`adapters.proxy.redirected`): a client that ignores HTTPS_PROXY is captured all the "
+        "same. None serves none; 0 lets the system pick one",
+    )
     model_hosts: list[str] = Field(
         default=list(DEFAULT_MODEL_HOSTS),
         description="Hosts that are model APIs: tunnelled, or opened to edit or record their calls. The three "
         "public ones by default; a self-hosted or other provider's API is added here",
     )
 
-    def _reached_at(self) -> str:
+    def reached_at(self) -> str:
         """This machine as the agent names it. Binding every interface is not an address: it is reached on loopback."""
         return self.agent_host or ("127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host)
 
     def proxy_url(self, port: int) -> str:
         """The proxy as the agent reaches it."""
-        return f"http://{self._reached_at()}:{port}"
+        return f"http://{self.reached_at()}:{port}"
 
     def telemetry_url(self, port: int) -> str:
         """The telemetry receiver as the agent reaches it."""
-        return f"http://{self._reached_at()}:{port}"
+        return f"http://{self.reached_at()}:{port}"
 
     def elsewhere(self) -> bool:
         """Whether the agent runs on another machine than the proxy (a container): its `localhost` is then not the
@@ -1198,8 +1249,8 @@ class Listen(Model):
         named only for an agent `elsewhere`: on this machine the proxy forwards it (`ProxyAddon.forwarded`), and
         named it would send every `*.localhost` host direct under requests, urllib, aiohttp and curl."""
         hosts = [*DIRECT, *self.no_proxy]
-        if self.receive_telemetry and not loopback(self._reached_at()):
-            hosts.append(self._reached_at())
+        if self.receive_telemetry and not loopback(self.reached_at()):
+            hosts.append(self.reached_at())
         if self.elsewhere():
             hosts.append(LOOPBACK_NAME)
         return list(dict.fromkeys(hosts))
@@ -1217,7 +1268,8 @@ def agent_environment(
 ) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
     spellings libraries read, the hosts it reaches directly (also as `no_grpc_proxy`: gRPC applies `http_proxy`
-    even to an insecure channel to an in-stack emulator), the one CA file in each library's variable
+    even to an insecure channel to an in-stack emulator), Node's switch that makes its built-in `fetch` read them
+    (`NODE_PROXY`), the one CA file in each library's variable
     (`ca_bundle`, as the agent sees the path), the signing secrets it is handed, and, unless `telemetry_port`
     is None (receiving is off), its OTLP exporter pointed at the receiver."""
     proxy = listen.proxy_url(port)
@@ -1233,6 +1285,7 @@ def agent_environment(
         "http_proxy": proxy,
         "no_proxy": direct,
         "no_grpc_proxy": direct,
+        NODE_PROXY: "1",
         **{name: str(ca_bundle) for name in CA_VARIABLES},
         **exporter,
         **secrets,
@@ -1249,6 +1302,11 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
     run, which only reaches a command Minutehand starts."""
     if listen.port == 0:
         raise RunRefused("an agent configured before the run needs the proxy on a fixed port: give --proxy-port")
+    if listen.transparent_port == 0:
+        raise RunRefused(
+            "an agent configured before the run needs the redirected listener on a fixed port: give "
+            "--transparent-port a port"
+        )
     generated = [f"{t.provider} ({t.secret.env})" for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
     generated += [
         f"{d.host} replies ({d.replies.signing.secret.env})"
@@ -1351,6 +1409,7 @@ async def intercepting(
         capturing=capturing,
         capture_unknown=listen.capture_unknown,
         model=model,
+        redirect_port=listen.transparent_port,
     ) as proxy:
         if not listen.receive_telemetry:
             yield Intercepting(proxy, None)

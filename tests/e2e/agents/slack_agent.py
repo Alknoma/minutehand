@@ -18,7 +18,9 @@ Behaviour, from AGENT_BEHAVIOUR:
 Other variables: AGENT_SLACK_SIGNING_SECRET (the signing secret), TRACEPARENT (sent on every Slack call when
 set), STRAY_URL (fetched once when the goal arrives), LOOKUP_URL (fetched when the goal arrives and again on
 the answer), MAIL_URL (an email API, posted to once when the goal arrives, to MAIL_TO, in the shape a
-SendGrid-like API takes: the text as HTML, MAIL_TEXT when set).
+SendGrid-like API takes: the text as HTML, MAIL_TEXT when set), AROUND_URL (a Slack call made around the proxy
+when the goal arrives: posted to AROUND_URL, standing for the real slack.com, by a client that ignores every proxy
+variable, under the HTTP client span OpenTelemetry's instrumentation would make for https://slack.com/api/chat.postMessage).
 
 With --trace it traces itself with the stock OpenTelemetry SDK, exported over OTLP/HTTP to wherever its
 environment's OTEL_* variables point: each message it sends is a span `agent turn`, under which a GenAI span
@@ -149,6 +151,19 @@ class Agent:
         channel = answered(self.slack.conversations_open(users=[self.user_id(email)]))["channel"]["id"]
         self.slack.chat_postMessage(channel=channel, text=text)
 
+    def around(self) -> None:
+        """A call by a client that ignores the proxy, as Node's fetch without NODE_USE_ENV_PROXY makes one."""
+        direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        request = urllib.request.Request(
+            os.environ["AROUND_URL"], data=b"{}", headers={"content-type": "application/json"}
+        )
+        if self.traces is None:
+            direct.open(request, timeout=10).close()
+            return
+        called = {"http.request.method": "POST", "url.full": "https://slack.com/api/chat.postMessage"}
+        with self.traces.get_tracer("slack-agent").start_as_current_span("POST", attributes=called):
+            direct.open(request, timeout=10).close()
+
     def look_up(self, state: dict[str, object]) -> None:
         """A lookup the agent makes and keeps no state at: the answer goes into its state file, for the test."""
         if "LOOKUP_URL" not in os.environ:
@@ -186,6 +201,8 @@ class Agent:
             )
             with urllib.request.urlopen(mail, timeout=10) as answer:
                 state["mailed"] = answer.status
+        if "AROUND_URL" in os.environ:
+            self.around()
         self.dm(env("ASK_EMAIL"), QUESTION)
         if self.behaviour == "forgetful":
             state["next_wake"] = None

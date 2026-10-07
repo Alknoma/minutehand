@@ -34,6 +34,7 @@ from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.ledger import build
 from minutehand.domain.agent import Commitment, CommitmentStatus
 from minutehand.domain.checks import (
+    AroundProxy,
     Check,
     CheckReport,
     CommitmentsReported,
@@ -50,7 +51,7 @@ from minutehand.domain.checks import (
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
-from minutehand.domain.scenario import Model, PersonAsked, Scenario, Silent
+from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario, Silent
 from minutehand.domain.world import CallOutcome, EntityRef, Exchange, RecordedCall, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
@@ -439,6 +440,8 @@ def view_of(
     contract_breaks: list[Exchange] | None = None,
     dues: list[DueEntry] | None = None,
     reported: list[CommitmentsReported] | None = None,
+    around_proxy: list[AroundProxy] | None = None,
+    uncalled_providers: Sequence[ProviderKey] = (),
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -455,6 +458,8 @@ def view_of(
         contract_breaks=contract_breaks or [],
         dues=dues,
         reported=reported,
+        around_proxy=around_proxy,
+        uncalled_providers=list(uncalled_providers),
     )
 
 
