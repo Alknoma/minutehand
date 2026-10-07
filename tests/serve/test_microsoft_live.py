@@ -276,7 +276,7 @@ def test_enabling_a_user_who_is_not_disabled_is_refused(served: Served) -> None:
 def test_a_provider_without_people_changes_is_refused_as_unsupported(served: Served) -> None:
     with _world(served, "unsupported_tenant") as (world, _):
         with pytest.raises(Unsupported):
-            world.deactivate_person("google_drive", "owen")
+            world.deactivate_person("google_workspace", "owen")
 
 
 # ------------------------------------------------------------------ what a person pushes, checked as a bot checks it

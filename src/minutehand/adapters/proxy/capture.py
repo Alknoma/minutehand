@@ -24,6 +24,7 @@ from pydantic import JsonValue
 
 from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.hosts import HostPattern
+from minutehand.adapters.proxy.policy import MODEL_INFRASTRUCTURE_HOSTS
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.domain.emulator import ExternalEmulator
 from minutehand.domain.outbound import (
@@ -618,8 +619,8 @@ class Capturing:
 
 
 def refuse_claimed(declared: Sequence[Declaration], registry: Registry, model_hosts: Sequence[str]) -> None:
-    """A declared host a provider claims, or a model API, would be answered by two things: refused at load,
-    naming both. So is a declaration recorded under a provider's own name."""
+    """A declared host a provider claims, or a model API or its vendor's infrastructure, would be answered by two
+    things: refused at load, naming both. So is a declaration recorded under a provider's own name."""
     for declaration in declared:
         mine = HostPattern(declaration.host)
         for manifest in registry.manifests:
@@ -634,7 +635,7 @@ def refuse_claimed(declared: Sequence[Declaration], registry: Registry, model_ho
                         f"outbound host {declaration.host!r} is declared {declaration.kind}, and provider "
                         f"{manifest.key!r} claims {claimed!r}: a host is faked or captured, never both"
                     )
-        for model in model_hosts:
+        for model in dict.fromkeys([*model_hosts, *MODEL_INFRASTRUCTURE_HOSTS]):
             if mine.overlaps(HostPattern(model)):
                 raise ProviderConflict(
                     f"outbound host {declaration.host!r} is declared {declaration.kind}, and {model!r} is a model "

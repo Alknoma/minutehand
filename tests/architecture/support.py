@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -26,6 +25,7 @@ import yaml
 
 from minutehand import session
 from minutehand.ports.store import Store
+from tests.ports import free_port
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENT_DIR = ROOT / "examples" / "reference_agent"
@@ -42,12 +42,6 @@ def outside_module() -> ModuleType:
     sys.modules["reference_outside"] = module
     spec.loader.exec_module(module)
     return module
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 MAIL = {

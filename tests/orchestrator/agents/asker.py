@@ -114,9 +114,35 @@ def ask_silent(reason: str, now: datetime, state: dict[str, object]) -> None:
     report("idle", now + timedelta(hours=float(after)) if after else None)
 
 
+def ask_chase_and_close(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START, all in one wake: ask dania, "follow up" seconds later, tell the owner it reached out, report done. What
+    a real model did against the follow-up recipe: it never waited for an answer."""
+    call("POST", "/testchat/messages", {"to": "dania@example.com", "text": "Could you review the contract?"})
+    time.sleep(0.05)
+    call("POST", "/testchat/messages", {"to": "dania@example.com", "text": "Just following up on the contract."})
+    call("POST", "/testchat/messages", {"to": "owner@example.com", "text": "I have reached out to Dania."})
+    save(state)
+    report("done")
+
+
 def keep_waking(reason: str, now: datetime, state: dict[str, object]) -> None:
     save(state)
     report("idle", now + timedelta(hours=1))
+
+
+def keep_writing(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """Every wake: tell tom how things stand, and wake again in two hours. No guard against a repeated wake."""
+    call("POST", "/testchat/messages", {"to": "tom@example.com", "text": f"Status at {now.isoformat()}"})
+    save(state)
+    report("idle", now + timedelta(hours=2))
+
+
+def tidy(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: remove $TIDY_FILE, and wake again in a day. DUE: nothing."""
+    if reason == "start":
+        Path(os.environ["TIDY_FILE"]).unlink()
+    save(state)
+    report("idle", now + timedelta(days=1) if reason == "start" else None)
 
 
 def book(reason: str, now: datetime, state: dict[str, object]) -> None:
@@ -198,8 +224,11 @@ BEHAVIOURS = {
         placeholder,
         placeholder_later,
         ask_silent,
+        ask_chase_and_close,
         ask_and_keep_calling,
         keep_waking,
+        keep_writing,
+        tidy,
         book,
         book_and_poll,
         fail,

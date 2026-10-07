@@ -4,8 +4,10 @@ back as a run once it is closed."""
 from __future__ import annotations
 
 import json
+import ssl
 from datetime import timedelta
 
+import httpx
 from slack_sdk.signature import SignatureVerifier
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
@@ -138,7 +140,7 @@ def test_a_document_happening_lands_when_the_clock_passes_it(served: Served) -> 
             "after": "PT2H",
             "action": {"kind": "renamed", "to": "Plan (final)"},
         },
-        documents=[{"provider": "google_drive", "title": "Plan", "text": "draft", "owner": "sofia"}],
+        documents=[{"provider": "google_workspace", "title": "Plan", "text": "draft", "owner": "sofia"}],
     )
     try:
         assert world.advance(timedelta(hours=1)).fired == []
@@ -175,3 +177,33 @@ def test_a_messaging_happening_is_pushed_when_the_clock_passes_it(served: Served
             assert receiver.texts() == ["Booked it myself."]
         finally:
             served.client.close_world(world.world_id)
+
+
+def test_a_task_booked_on_a_scheduler_is_recorded_and_never_fires_however_far_the_clock_moves(served: Served) -> None:
+    """A standing world fires no booking (docs/serve.md, "Booked wakes"): a Cloud Tasks task is created and kept as
+    the provider's record, and moving the clock past its schedule delivers nothing."""
+    queue = "projects/sim-project/locations/us-central1/queues/follow-ups"
+    written = seed(("owen", "Owen Owner"))
+    world_seed = Seed.model_validate(
+        {
+            **written.model_dump(),
+            "provider_seeds": [{"provider": "google_cloud_tasks", "body": {"queues": [{"name": queue}]}}],
+        }
+    )
+    spec_ = CreateWorld(seed=world_seed, claims=Claims(tokens=["ya29.books-a-task"]))
+    world = OpenWorld(served.client, served.client.create_world(spec_))
+    try:
+        with httpx.Client(proxy=served.proxy, verify=ssl.create_default_context(cafile=served.bundle)) as http:
+            task = {"httpRequest": {"url": "http://127.0.0.1:9/handler"}, "scheduleTime": "2026-09-01T10:00:00Z"}
+            created = http.post(
+                f"https://cloudtasks.googleapis.com/v2/{queue}/tasks",
+                json={"task": task},
+                headers={"Authorization": "Bearer ya29.books-a-task"},
+            )
+        assert created.status_code == 200, created.text
+        name = created.json()["name"]
+        assert world.advance(timedelta(days=1)).fired == []
+        written_for = [e for e in world.events() if e.entity.external_id == name]
+        assert [(e.actor, e.operation) for e in written_for] == [(Actor.AGENT, Operation.CREATE)]
+    finally:
+        served.client.close_world(world.world_id)

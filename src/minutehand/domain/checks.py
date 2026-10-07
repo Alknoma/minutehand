@@ -11,9 +11,10 @@ from typing import Protocol
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
+from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Model, Scenario
+from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.world import EntityRef, Exchange, WorldEvent
 
 
@@ -182,6 +183,14 @@ class Effectiveness(Model):
     failed_checks: int = Field(ge=0)
 
 
+class CommitmentsReported(Model):
+    """What the agent said it was committed to as one wake ended (`AgentReport.commitments`)."""
+
+    wake: int = Field(ge=0)
+    at: AwareDatetime = Field(description="Simulated time the wake ended")
+    commitments: list[Commitment]
+
+
 class WakeRecord(Model):
     """One wake of the agent; in a standing world, one step whoever drives the agent marked (or the server inferred
     from the clock): the stretch the checks read as one go of the agent's."""
@@ -229,11 +238,43 @@ class RunView(Model):
         description="Calls Minutehand made as a person to the agent's own product whose answer departed from the "
         "agent's own API description (`InboxCall.contract`): the agent's contract changed",
     )
+    reported: list[CommitmentsReported] | None = Field(
+        default=None,
+        description="The agent's commitments as each wake ended, in order; None when the agent reported none, so "
+        "nothing it said can be held against the world",
+    )
+    dues: list[DueEntry] | None = Field(
+        default=None,
+        description="Every entry of the run loop's table of what is due next, as each last stood: what the agent "
+        "planned and when, and what else was due; None when the run kept no table (a captured run, a standing world)",
+    )
+    around_proxy: list[AroundProxy] | None = Field(
+        default=None,
+        description="Hosts a provider claims that the agent's telemetry says it called more often than the proxy saw; "
+        "None when the agent exported no span of an HTTP client call, so nobody can say",
+    )
+    uncalled_providers: list[ProviderKey] = Field(
+        default=[],
+        description="The providers the scenario and the agent file name, when the agent was woken and the proxy saw no "
+        "call to any of them; empty when it saw one",
+    )
     broken_calls: list[Exchange] = Field(
         default=[],
         description="Calls Minutehand failed to answer (`CallOutcome.INTERNAL_ERROR`): the run says nothing about the "
         "agent while any is here",
     )
+
+
+class AroundProxy(Model):
+    """Calls to a host a provider claims that the agent's own telemetry says it made and the proxy never saw: its HTTP
+    client went around Minutehand, to the real host (`application.around_proxy`)."""
+
+    host: str
+    provider: ProviderKey
+    by_agent: int = Field(ge=1, description="Spans of HTTP client calls to the host the agent exported")
+    through_proxy: int = Field(ge=0, description="Calls to the host the proxy recorded")
+    around: int = Field(ge=1, description="Calls the agent made that the proxy did not see")
+    example: str = Field(description="One such call as its span names it: the span's name and its URL")
 
 
 class Check(Protocol):

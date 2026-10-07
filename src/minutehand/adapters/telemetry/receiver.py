@@ -48,9 +48,12 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 from starlette.routing import Route
 
+from minutehand.adapters.proxy import mcp
 from minutehand.adapters.telemetry import otlp
 from minutehand.adapters.telemetry.forward import ENDPOINT, Forwarding, forward, signal_variable
+from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import ReceivedSpan, Signal, SpanSource
+from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -72,6 +75,20 @@ def exporter_environment(url: str) -> dict[str, str]:
         signal_variable(Signal.TRACES, "ENDPOINT"): f"{url}/v1/{Signal.TRACES.value}",
         signal_variable(Signal.TRACES, "PROTOCOL"): HTTP_PROTOBUF,
     }
+
+
+MCP_PATH = "/minutehand/mcp"
+"""Where `minutehand mcp-relay` reports each tool call; the agent is handed it as MINUTEHAND_MCP_URL."""
+MCP_URL_ENV = "MINUTEHAND_MCP_URL"
+JSON = "application/json"
+
+
+class RelayedCall(Model):
+    """One request line and the response line that answered it, as the relay saw them."""
+
+    server: str
+    request: str
+    response: str
 
 
 class Receiver:
@@ -133,7 +150,32 @@ class Receiver:
 
             return Route(f"/v1/{signal.value}", endpoint, methods=["POST"])
 
-        return Starlette(routes=[route(signal) for signal in Signal])
+        async def relayed(request: Request) -> Response:
+            return self._relayed(await request.body())
+
+        return Starlette(routes=[*(route(signal) for signal in Signal), Route(MCP_PATH, relayed, methods=["POST"])])
+
+    def _relayed(self, body: bytes) -> Response:
+        """A tool call `minutehand mcp-relay` saw pass between the agent and an MCP server on its standard input and
+        output: recorded as the agent's, in the run being played."""
+        try:
+            said = RelayedCall.model_validate_json(body)
+        except ValueError as e:
+            return PlainTextResponse(f"not a relayed MCP call: {e}", status_code=400)
+        for n, call in enumerate(mcp.tool_calls(said.server, said.request, JSON, said.response, JSON)):
+            head = self.store.head()
+            self.store.apply(
+                Change(
+                    entity=EntityRef(
+                        provider="mcp", kind=EntityKind.TOOL_CALL, external_id=f"{said.server}/{head + 1}/{n}"
+                    ),
+                    operation=Operation.CREATE,
+                    actor=Actor.AGENT,
+                    body=call.model_dump_json(),
+                    after=call,
+                )
+            )
+        return Response(status_code=204)
 
     async def _take(self, signal: Signal, request: Request) -> Response:
         body = await request.body()

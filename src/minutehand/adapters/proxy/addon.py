@@ -9,6 +9,13 @@ on unchanged, its answer streamed back to the agent as it arrives when it is a s
 kept as a span (`model_calls.span_of`); it is not an `Exchange`, and nothing from its
 headers or query string is stored.
 
+A gRPC call to a claimed host (HTTP/2, `content-type: application/grpc`) is sent on to the gRPC server Minutehand runs
+for that provider and world (`adapters.proxy.local`), over HTTP/2 without TLS, and recorded once its trailers have
+passed back: the method, the request and answer messages as proto3 JSON, its status (`Exchange.grpc`), and the events
+its method wrote. A WebSocket upgrade to a claimed host whose provider serves sockets is sent on to that provider's
+socket server the same way; the upgrade is recorded, and so is every message on the connection afterwards, either
+way (`Exchange.frame`). A gRPC call to a provider that serves no gRPC is answered UNIMPLEMENTED, saying so.
+
 A host no provider claims that the call's world declares outbound (`domain.outbound`) is captured
 (`adapters.proxy.capture`): acknowledged with the declared answer, passed through to the real host, or answered
 from a recording, and kept as an `Exchange` carrying `Captured`. With `capture_unknown`, an undeclared one is
@@ -26,31 +33,44 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from mitmproxy import http, tcp, tls
 from mitmproxy.addons import asgiapp
 from mitmproxy.net import encoding
-from mitmproxy.proxy import layer, layers
+from mitmproxy.proxy import layer, layers, server_hooks
 from mitmproxy.proxy.layers import modes
 
-from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, kind_of
+from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, grpc_outcome, kind_of
 from minutehand.adapters.emulator import answers
-from minutehand.adapters.proxy import capture, connect, credentials, redact
+from minutehand.adapters.proxy import capture, connect, credentials, mcp, modeled, redact
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.hosts import loopback_name
+from minutehand.adapters.proxy.local import CALL_HEADER, GRPC_NOT_INSTALLED, LocalServers
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
+from minutehand.adapters.proxy.redirected import Redirected
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
+from minutehand.adapters.telemetry.receiver import grpc_installed
 from minutehand.application.restore import SeenCall
 from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
-from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, Forward, HostHeader, OnMiss, PassThrough
+from minutehand.domain.outbound import (
+    BODY_LIMIT,
+    READ_METHODS,
+    Acknowledge,
+    Forward,
+    HostHeader,
+    OnMiss,
+    PassThrough,
+    UnknownHosts,
+)
 from minutehand.domain.provider import Manifest, world_keys
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
+    GRPC_NUMBERS,
     Actor,
     AnsweredBy,
     BodyKept,
@@ -62,14 +82,20 @@ from minutehand.domain.world import (
     EntityKind,
     EntityRef,
     Exchange,
+    FrameSender,
+    GrpcCode,
+    GrpcStatus,
     MessageSnapshot,
     Operation,
     Recipient,
+    SocketFrame,
     Tunnelled,
     TunnelRoute,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope
+from minutehand.ports.model import Model as LanguageModel
+from minutehand.ports.model import ModelFailed
+from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope, ServesGrpc, ServesSockets
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -153,6 +179,64 @@ class _Forwarded:
     sent_traceparent: str
 
 
+@dataclass(frozen=True)
+class _GrpcCall:
+    """A gRPC call sent on to its provider's gRPC server, as the agent sent it, until its answer has passed."""
+
+    world: Mounted
+    provider: ProviderKey
+    host: str
+    path: str
+    traceparent: str | None
+
+
+@dataclass
+class _Socket:
+    """A WebSocket connection to a claimed host, sent on to its provider's socket server: where its messages are
+    recorded, and how many it has carried."""
+
+    world: Mounted
+    provider: ProviderKey
+    host: str
+    path: str
+    carried: int = 0
+
+
+GRPC = "application/grpc"
+
+
+def is_grpc(request: http.Request) -> bool:
+    """A gRPC call, by its content type: `application/grpc`, or `application/grpc+` and a codec. gRPC-Web, which is
+    not gRPC on the wire, is not."""
+    media = (_first_header(request, "content-type") or "").split(";", 1)[0].strip().lower()
+    return media == GRPC or media.startswith(GRPC + "+")
+
+
+def is_upgrade(request: http.Request) -> bool:
+    """A WebSocket opening handshake (RFC 6455 §4.1)."""
+    return (_first_header(request, "upgrade") or "").strip().lower() == "websocket"
+
+
+def grpc_refusal(code: GrpcCode, message: str) -> http.Response:
+    """An answer that is trailers only (the gRPC spec's Trailers-Only): its status in the headers, no message."""
+    return http.Response.make(
+        200,
+        b"",
+        {"content-type": GRPC, "grpc-status": str(GRPC_NUMBERS.index(code)), "grpc-message": quote(message, safe=" ")},
+    )
+
+
+def grpc_status(response: http.Response) -> GrpcStatus:
+    """How a gRPC call ended, from its trailers or, for an answer that is trailers only, its headers. An answer that
+    carries no status at all, or not a number gRPC has, ended UNKNOWN, as a gRPC client reads it."""
+    fields = response.trailers if response.trailers is not None and "grpc-status" in response.trailers else None
+    fields = fields or response.headers
+    raw = fields["grpc-status"] if "grpc-status" in fields else ""
+    code = GRPC_NUMBERS[int(raw)] if raw.isdigit() and int(raw) < len(GRPC_NUMBERS) else GrpcCode.UNKNOWN
+    message = unquote(fields["grpc-message"]) if "grpc-message" in fields else ""
+    return GrpcStatus(code=code, message=message or None)
+
+
 @dataclass
 class _Passing:
     """A captured call sent on to the real host, or to its external emulator, until its answer has passed."""
@@ -177,11 +261,13 @@ class ProxyAddon:
         *,
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
-        capture_unknown: bool = False,
+        capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
+        model: LanguageModel | None = None,
     ) -> None:
         self.routing = routing
         self.capturing = capturing or Capturing()
         self.capture_unknown = capture_unknown
+        self._model = model
         self.worlds: Worlds = one_run(
             store, clock, {}, scenario=None, provider=routing.registry.provider, capturing=self.capturing
         )
@@ -199,6 +285,11 @@ class ProxyAddon:
         self._tunnels: dict[str, _Relayed] = {}
         # Each call routed to a world and not yet answered, by flow id, with the world and what it is.
         self._in: dict[str, tuple[Mounted, str]] = {}
+        # The gRPC and WebSocket servers of each provider and world, and what is on its way to them, by flow id.
+        self.local = LocalServers()
+        self._grpc: dict[str, _GrpcCall] = {}
+        self._sockets: dict[str, _Socket] = {}
+        self._closing: set[asyncio.Task[None]] = set()
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
@@ -262,11 +353,15 @@ class ProxyAddon:
         chosen first; this replaces its choice for those hosts only."""
         context = nextlayer.context
         chosen = nextlayer.layer
-        if isinstance(chosen, layers.HttpLayer) and context.layers[-2:] == [context.layers[0], chosen]:
+        if (
+            isinstance(chosen, layers.HttpLayer)
+            and isinstance(context.layers[0], modes.HttpProxy)
+            and context.layers[-2:] == [context.layers[0], chosen]
+        ):
             # The client's own connection to the proxy, about to be read as HTTP: mitmproxy would refuse a CONNECT
             # it cannot parse with a bare 400, before any hook sees a flow.
             address6 = connect.unbracketed_ipv6(nextlayer.data_client())
-            if address6 is not None and isinstance(context.layers[0], modes.HttpProxy):
+            if address6 is not None:
                 self._seen(f"CONNECT {address6} without brackets, refused")
                 context.layers.remove(chosen)
                 nextlayer.layer = connect.Refused(context, connect.refusal(address6))
@@ -274,8 +369,8 @@ class ProxyAddon:
         address = context.server.address
         if context.client.transport_protocol != "tcp" or address is None:
             return
-        if not any(isinstance(lay, layers.HttpLayer) for lay in context.layers):
-            return  # not the inside of a CONNECT
+        if not any(isinstance(lay, layers.HttpLayer | Redirected) for lay in context.layers):
+            return  # neither the inside of a CONNECT nor a connection redirected to the proxy
         if self.forwarded(str(address[0])):
             nextlayer.layer = layers.TCPLayer(context, ignore=True)
             return
@@ -362,14 +457,31 @@ class ProxyAddon:
             self._write(relayed, closed=None)
 
     def flush_in(self, world: Mounted) -> None:
-        """`flush`, for the bursts kept in `world` only: it is about to be scored and closed, or reset."""
+        """`flush`, for the bursts kept in `world` only: it is about to be scored and closed, or reset. Its gRPC
+        and WebSocket servers are stopped too: a reset world's are started again on the next call."""
         for relayed in self._tunnels.values():
             if relayed.burst is not None and relayed.burst.world is world:
                 self._write(relayed, closed=None)
+        self._close_local(world)
 
-    def done(self) -> None:
-        """mitmproxy is stopping: what is in progress is written before the run's store is closed."""
+    async def done(self) -> None:
+        """mitmproxy is stopping: what is in progress is written before the run's store is closed, and the gRPC and
+        WebSocket servers are stopped."""
         self.flush()
+        await self.local.close()
+        if self._closing:
+            await asyncio.gather(*self._closing)
+
+    def _close_local(self, world: Mounted | None) -> None:
+        """Stop the local servers of `world`, or of every world, in the background: called where the proxy moves
+        on without waiting (`mount`, `flush_in`); `done` waits for what is still stopping."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop runs, so no server was ever started
+        task = loop.create_task(self.local.close(world))
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
 
     def _write(self, relayed: _Relayed, *, closed: float | None) -> None:
         """The burst in progress as one recorded call, in the world it began in. A burst of nothing but TLS
@@ -409,8 +521,10 @@ class ProxyAddon:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
         its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
         and seeded then with `scenario`'s people and things, unless `world` already holds anything of it. A burst
-        in progress on a relayed tunnel is written to the run it began in first."""
+        in progress on a relayed tunnel is written to the run it began in first, and the gRPC and WebSocket
+        servers of the run before are stopped."""
         self.flush()
+        self._close_local(None)
         self.worlds = one_run(
             world, clock, apps, scenario=scenario, provider=self.routing.registry.provider, capturing=self.capturing
         )
@@ -468,11 +582,23 @@ class ProxyAddon:
         if world is not None and world is not self.worlds.lobby:
             self._routed(flow.id, world, f"{request.method} {host}{redact.path(request.path)}")
         if policy is HostPolicy.ANSWER and manifest is not None and world is not None:
-            await self._answer(flow, host, manifest, world)
+            if is_grpc(request):
+                await self._send_grpc(flow, host, manifest, world)
+            elif not is_upgrade(request) or not await self._send_upgrade(flow, host, manifest, world):
+                await self._answer(flow, host, manifest, world)
             return
         held = world or self.worlds.lobby
         declaration = held.capturing.find(host) if manifest is None else None
-        if declaration is not None or (manifest is None and self.capture_unknown):
+        if (
+            declaration is None
+            and manifest is None
+            and self.capture_unknown is UnknownHosts.MODEL
+            and self._model is not None
+            and (request.method.upper() not in READ_METHODS or modeled.earlier(held.store.calls(), host))
+        ):
+            await self._modeled(flow, host, held, self._model)
+            return
+        if declaration is not None or (manifest is None and self.capture_unknown.captures(request.method)):
             await self._capture(flow, host, held, declaration)
             return
         refused = held
@@ -494,6 +620,154 @@ class ProxyAddon:
             self._record(
                 refused, flow, host, flow.request.path, first, manifest.key if manifest else None, late_for=late
             )
+
+    def server_connect(self, data: server_hooks.ServerConnectionHookData) -> None:
+        """A connection to one of the gRPC servers here speaks HTTP/2 without TLS: there is no TLS to agree a
+        protocol by, and gRPC speaks nothing else."""
+        address = data.server.address
+        if address is not None and address[0] == "127.0.0.1" and int(address[1]) in self.local.grpc_ports:
+            data.server.alpn = b"h2"
+
+    async def _send_grpc(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> None:
+        """Send a gRPC call on to its provider's gRPC server in `world`; one that cannot be served is answered here,
+        in gRPC, and recorded."""
+        request = flow.request
+        self._grpc[flow.id] = _GrpcCall(world, manifest.key, host, request.path, _first_header(request, TRACEPARENT))
+        try:
+            provider = world.provider_for(manifest)
+        except Exception as e:
+            logger.error("%s could not be built for a gRPC call", manifest.key, exc_info=e)
+            flow.response = grpc_refusal(GrpcCode.INTERNAL, f"minutehand could not build {manifest.key}: {e}")
+            self._grpc_passed(flow)
+            return
+        if not isinstance(provider, ServesGrpc) or not grpc_installed():
+            why = (
+                GRPC_NOT_INSTALLED
+                if isinstance(provider, ServesGrpc)
+                else f"minutehand's {manifest.key} fake does not serve gRPC: set the client to its REST transport"
+            )
+            flow.response = grpc_refusal(GrpcCode.UNIMPLEMENTED, why)
+            self._grpc_passed(flow)
+            return
+        port = await self.local.grpc(world, manifest, provider)
+        self._sent_on[flow.id] = f"gRPC {host}{request.path}"
+        request.headers[CALL_HEADER] = flow.id
+        request.scheme = "http"
+        request.host = "127.0.0.1"
+        request.port = port
+
+    def _grpc_passed(self, flow: http.HTTPFlow) -> None:
+        """A gRPC call whose answer, or failure, has come back: recorded with the events its method wrote, in the
+        world it was routed to."""
+        call = self._grpc.pop(flow.id)
+        answered = self.local.answered.pop(flow.id, None)
+        response = flow.response
+        world = call.world
+        if response is None:
+            status = GrpcStatus(code=GrpcCode.UNAVAILABLE, message=flow.error.msg if flow.error is not None else None)
+            http_status = 502
+        else:
+            status, http_status = grpc_status(response), response.status_code
+        if answered is not None:
+            asked, asked_bytes, said, said_bytes = answered.request, None, answered.answer, None
+            first, last, failure = answered.first, answered.last, answered.failure
+        else:
+            asked, asked_bytes = redact.kept(flow.request.get_content(strict=False) or b"", GRPC)
+            said, said_bytes = (
+                redact.kept(response.get_content(strict=False) or b"", GRPC) if response is not None else (None, None)
+            )
+            first, last, failure = world.store.head() + 1, world.store.head(), None
+        exchange = Exchange(
+            method=flow.request.method,
+            host=call.host,
+            path=call.path,
+            status=http_status,
+            request_body=asked,
+            response_body=said,
+            request_bytes=asked_bytes,
+            response_bytes=said_bytes,
+            traceparent=call.traceparent,
+            outcome=grpc_outcome(status.code, failure),
+            failure=failure,
+            grpc=status,
+        )
+        self._seen(f"gRPC {call.host}{call.path}")
+        world.store.attach(exchange, first_seq=first, last_seq=last, provider=call.provider)
+        if self.telemetry is not None and last >= first:
+            for event in world.store.events(since=first - 1):
+                if event.seq <= last:
+                    self.telemetry.recorded(event)
+        self.worlds.answered(world, exchange, [])
+
+    async def _send_upgrade(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> bool:
+        """Send a WebSocket upgrade on to its provider's socket server in `world`; False when the provider serves
+        no sockets, and its app answers the request as any other."""
+        try:
+            provider = world.provider_for(manifest)
+        except Exception:
+            return False  # its app, built the same way, fails the same and answers in the provider's error shape
+        if not isinstance(provider, ServesSockets):
+            return False
+        request = flow.request
+        port = await self.local.sockets(world, manifest, provider)
+        self._sockets[flow.id] = _Socket(world, manifest.key, host, redact.path(request.path))
+        request.scheme = "http"
+        request.host = "127.0.0.1"
+        request.port = port
+        return True
+
+    def _upgraded(self, flow: http.HTTPFlow, socket: _Socket) -> None:
+        """The upgrade's answer has passed: recorded as a call. One the socket server refused ends the connection."""
+        response = flow.response
+        assert response is not None
+        said, said_bytes = redact.kept(
+            response.get_content(strict=False) or b"", _first_header(response, "content-type") or ""
+        )
+        exchange = Exchange(
+            method=flow.request.method,
+            host=socket.host,
+            path=socket.path,
+            status=response.status_code,
+            response_body=said,
+            response_bytes=said_bytes,
+            traceparent=_first_header(flow.request, TRACEPARENT),
+            outcome=CallOutcome.ANSWERED if response.status_code == 101 else CallOutcome.REFUSED,
+        )
+        self._seen(f"{flow.request.method} {socket.host}{socket.path}")
+        head = socket.world.store.head()
+        socket.world.store.attach(exchange, first_seq=head + 1, last_seq=head, provider=socket.provider)
+        self.worlds.answered(socket.world, exchange, [])
+        if response.status_code != 101:
+            del self._sockets[flow.id]
+
+    def websocket_message(self, flow: http.HTTPFlow) -> None:
+        """One message on a WebSocket connection to a claimed host, either way, recorded as it crosses."""
+        socket = self._sockets[flow.id] if flow.id in self._sockets else None
+        if socket is None or flow.websocket is None:
+            return
+        message = flow.websocket.messages[-1]
+        socket.carried += 1
+        sender = FrameSender.AGENT if message.from_client else FrameSender.SERVICE
+        kept, kept_bytes = redact.kept(message.content, "application/json" if message.is_text else "")
+        exchange = Exchange(
+            method=flow.request.method,
+            host=socket.host,
+            path=socket.path,
+            status=101,
+            request_body=kept if sender is FrameSender.AGENT else None,
+            request_bytes=kept_bytes if sender is FrameSender.AGENT else None,
+            response_body=kept if sender is FrameSender.SERVICE else None,
+            response_bytes=kept_bytes if sender is FrameSender.SERVICE else None,
+            outcome=CallOutcome.ANSWERED,
+            frame=SocketFrame(connection=flow.id, number=socket.carried, sender=sender, text=message.is_text),
+        )
+        self._seen(f"a message {'from' if message.from_client else 'to'} the agent on {socket.host}{socket.path}")
+        head = socket.world.store.head()
+        socket.world.store.attach(exchange, first_seq=head + 1, last_seq=head, provider=socket.provider)
+        del flow.websocket.messages[:-1]  # messages are recorded, not kept: a long-lived connection would grow
+
+    def websocket_end(self, flow: http.HTTPFlow) -> None:
+        self._sockets.pop(flow.id, None)
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """A recorded call answered as a stream reaches the agent as one: each chunk is passed on as it arrives
@@ -517,6 +791,12 @@ class ProxyAddon:
     def response(self, flow: http.HTTPFlow) -> None:
         self._sent_on.pop(flow.id, None)
         self._ended(flow.id)
+        if flow.id in self._grpc:
+            self._grpc_passed(flow)
+            return
+        if flow.id in self._sockets:
+            self._upgraded(flow, self._sockets[flow.id])
+            return
         if flow.id in self._passing:
             self._passed(flow, self._passing.pop(flow.id))
             return
@@ -702,6 +982,31 @@ class ProxyAddon:
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
 
+    async def _modeled(self, flow: http.HTTPFlow, host: str, world: Mounted, model: LanguageModel) -> None:
+        """Answer a write to a host nobody declared, and every call to it after, as a model standing in for the
+        service says, from what it answered for that host before: never sent anywhere. A model that fails is
+        answered 502, naming it."""
+        request = flow.request
+        content_type = _first_header(request, "content-type")
+        shown = capture.keep(request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=[])
+        try:
+            found = await modeled.answer(
+                model,
+                host,
+                request.method,
+                redact.path(request.path),
+                shown.text,
+                modeled.earlier(world.store.calls(), host),
+            )
+        except ModelFailed as e:
+            flow.response = _json_response(502, f"the model standing in for this host failed: {e}", host)
+            await self._keep(flow, host, world, None, CaptureMode.MODELED, AnsweredBy.REFUSAL, note=str(e))
+            return
+        flow.response = http.Response.make(found.status, found.body.encode(), {"content-type": found.content_type})
+        await self._keep(
+            flow, host, world, None, CaptureMode.MODELED, AnsweredBy.MODEL, note=f"answered by {model.model_id}"
+        )
+
     async def _forward(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Forward) -> None:
         """Send the call to its external emulator through the emulator's relay, unchanged but for the headers
         `domain.emulator.ADDED_HEADERS` names, `traceparent` (the agent's trace, Minutehand's span of the call as the
@@ -865,9 +1170,14 @@ class ProxyAddon:
         )
 
     def error(self, flow: http.HTTPFlow) -> None:
-        """A captured call whose real host could not be reached or broke off: kept, saying so."""
+        """A captured call whose real host could not be reached or broke off, or a gRPC call whose server did not
+        answer: kept, saying so."""
         self._sent_on.pop(flow.id, None)
         self._ended(flow.id)
+        if flow.id in self._grpc:
+            self._grpc_passed(flow)
+            return
+        self._sockets.pop(flow.id, None)
         passing = self._passing.pop(flow.id, None)
         if passing is None:
             return
@@ -1060,8 +1370,27 @@ class ProxyAddon:
             ),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
+        before = world.store.head()
+        for n, call in enumerate(
+            mcp.tool_calls(
+                host,
+                asked.text,
+                _first_header(request, "content-type"),
+                answered.text,
+                _first_header(response, "content-type"),
+            )
+        ):
+            world.store.apply(
+                Change(
+                    entity=EntityRef(provider="mcp", kind=EntityKind.TOOL_CALL, external_id=f"{host}/{before + 1}/{n}"),
+                    operation=Operation.CREATE,
+                    actor=Actor.AGENT,
+                    body=call.model_dump_json(),
+                    after=call,
+                )
+            )
         head = world.store.head()
-        world.store.attach(exchange, first_seq=first if first is not None else head + 1, last_seq=head)
+        world.store.attach(exchange, first_seq=first if first is not None else before + 1, last_seq=head)
         self.worlds.answered(world, exchange, [])
         return exchange
 

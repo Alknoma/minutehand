@@ -67,6 +67,24 @@ service do it. Tests are in `tests/providers/microsoft/test_microsoft_vendor_cla
 | Search on a folder covers only what lies beneath it | documented | `test_search_from_a_folder_finds_only_what_lies_beneath_it` | https://learn.microsoft.com/en-us/graph/api/driveitem-search |
 | `invite` answers one permission per recipient with the roles granted | documented | `test_an_invite_answers_the_permissions_it_granted` | https://learn.microsoft.com/en-us/graph/api/driveitem-invite |
 
+## Graph mail and calendars (`graph.microsoft.com`)
+
+Not in the older emulator: each row is a fact from Microsoft's documentation that this provider was written to, pinned
+by a test in `tests/providers/microsoft/test_microsoft_{mail,calendar}.py`.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| `sendMail` answers 202 Accepted with no body | documented | `test_a_sent_email_is_one_copy_per_mailbox_and_the_senders_copy_asks_each_recipient` | https://learn.microsoft.com/en-us/graph/api/user-sendmail |
+| `reply` answers 202 and the reply is in the message's conversation | documented | `test_a_persons_reply_lands_in_the_senders_inbox_in_the_conversation_and_is_notified` | https://learn.microsoft.com/en-us/graph/api/message-reply |
+| With `$filter` and `$orderby` together, the `$orderby` properties must open the `$filter` in order, else `InefficientFilter` | documented | `test_an_orderby_that_does_not_lead_the_filter_is_refused_inefficient_filter` | https://learn.microsoft.com/en-us/graph/api/user-list-messages |
+| `Prefer: outlook.body-content-type="text"` answers the body as text; without it, HTML | documented | `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask` | https://learn.microsoft.com/en-us/graph/api/message-get |
+| A folder's message `delta` pages to a `@odata.deltaLink`, and from it lists what changed, a removal as `@removed` | documented | `test_delta_lists_the_folder_then_only_what_arrived_and_what_left` | https://learn.microsoft.com/en-us/graph/api/message-delta |
+| An Outlook message subscription lasts at most 10,080 minutes | documented | `test_a_mail_subscription_past_seven_days_or_on_a_folder_that_is_none_is_refused` | https://learn.microsoft.com/en-us/graph/api/resources/subscription |
+| An event made with attendees sends them an invitation; an attendee's response is in `attendees[].status` | documented | `test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_change` | https://learn.microsoft.com/en-us/graph/api/user-post-events |
+| `calendarView` requires `startDateTime` and `endDateTime` | documented | `test_a_calendar_view_without_a_window_is_refused` | https://learn.microsoft.com/en-us/graph/api/user-list-calendarview |
+| A POST repeated with the same `transactionId` makes the event once | documented | `test_an_event_retried_with_its_transaction_id_is_made_once` | https://learn.microsoft.com/en-us/graph/api/resources/event |
+| `getSchedule`'s `availabilityView` is one digit an interval: 0 free, 1 tentative, 2 busy | documented | `test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answers` | https://learn.microsoft.com/en-us/graph/api/calendar-getschedule |
+
 ## Not carried over
 
 Contradicted by Microsoft's documentation (the old emulator was wrong; this provider follows the page):

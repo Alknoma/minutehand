@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
-from minutehand.domain.scenario import Model
+from minutehand.domain.clock import AGENT_SOURCES, DueClosed, DueEntry, DueSource
+from minutehand.domain.scenario import DispatchFault, Model
 from minutehand.domain.world import Operation, WorldEvent
 
 GRACE = timedelta(hours=1)
@@ -53,6 +54,15 @@ class Chase(Model):
     early: list[int] = Field(
         default=[], description="WorldEvent.seq of each follow-up sent before the wait had fallen due"
     )
+    instant: list[int] = Field(
+        default=[],
+        description="WorldEvent.seq of each new message or ticket sent as a follow-up in the same wake as the ask, less "
+        "than `GRACE` after it: the agent did not wait at all, so it chased nothing",
+    )
+
+    def since(self, moment: datetime) -> datetime:
+        """When the agent last did something on the wait before `moment`: its last follow-up, or the ask."""
+        return max((t for t in self.follow_up_times if t < moment), default=self.obligation.opened_at)
 
     @property
     def abandoned(self) -> Expiry | None:
@@ -88,12 +98,22 @@ def chase(o: Obligation, events: dict[int, WorldEvent], ended: datetime) -> Chas
         due = touched_at + o.patience if o.patience is not None else None
     if due is not None and due < closes:
         expiries.append(Expiry(expired=due, closes=closes, touch=None, touched_at=None))
+    asked = events[o.opened_by] if o.opened_by in events else None
+    instant = [
+        seq
+        for touched_at, seq in seen
+        if asked is not None
+        and events[seq].operation is Operation.CREATE
+        and events[seq].wake == asked.wake
+        and touched_at - o.opened_at < GRACE
+    ]
     return Chase(
         obligation=o,
         follow_ups=[s for _, s in seen],
         follow_up_times=[t for t, _ in seen],
         expiries=expiries,
         early=early,
+        instant=instant,
     )
 
 
@@ -180,3 +200,90 @@ def span(delta: timedelta) -> str:
     if hours or not days:
         parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
     return " ".join(parts)
+
+
+class Plan(Model):
+    """The agent's own plan to come back to work as it stood at one moment: the earliest wake it had reported,
+    booked or declared a rhythm for that was still in the run loop's table then (`DueEntry`)."""
+
+    moment: AwareDatetime
+    earliest: DueEntry | None = Field(description="None: the agent had asked for no wake of its own")
+    dropped: DueEntry | None = Field(
+        default=None,
+        description="A wake the agent had asked for, due after it last did something on the wait and no later than "
+        "the grace past `moment`, that the scenario's dispatch rules dropped: had it come, the agent would have been "
+        "back on the wait in time, so the delivery failed the plan",
+    )
+
+    @property
+    def past_due(self) -> bool:
+        """Whether the agent planned to be away more than the grace past `moment`."""
+        return self.earliest is None or self.earliest.due.at - self.moment > GRACE
+
+    def said(self) -> str:
+        if self.earliest is None:
+            if self.dropped is not None:
+                return (
+                    f"the scenario's dispatch rules had dropped the wake the agent asked for ({self._lost()}), and "
+                    "it had asked for no other"
+                )
+            return "the agent had asked for no wake of its own"
+        how = _PLANNED[self.earliest.source]
+        if not self.past_due:
+            return f"the agent's own next wake was due then ({how} in wake {self.earliest.entered_wake})"
+        late = self.earliest.asked_for
+        if late is not None and self.earliest.fault is DispatchFault.LATE and late - self.moment <= GRACE:
+            return (
+                f"the agent's own next wake was {span(self.earliest.due.at - self.moment)} later: it had asked for one "
+                f"then ({how} in wake {self.earliest.entered_wake}) that the scenario's dispatch rules delivered late"
+            )
+        return (
+            f"the agent's own next wake was {span(self.earliest.due.at - self.moment)} later "
+            f"({how} in wake {self.earliest.entered_wake})"
+            + (
+                f"; the wake it had asked for ({self._lost()}) was dropped by the scenario's dispatch rules"
+                if self.dropped is not None
+                else ""
+            )
+        )
+
+    def _lost(self) -> str:
+        """The dropped wake: how the agent asked for it, in which wake, and when it was due against `moment`."""
+        assert self.dropped is not None
+        gap = self.moment - self.dropped.due.at
+        when = "then" if abs(gap) <= GRACE else f"{span(gap)} before"
+        return f"{_PLANNED[self.dropped.source]} in wake {self.dropped.entered_wake}, due {when}"
+
+
+_PLANNED = {
+    DueSource.REPORTED: "reported",
+    DueSource.BOOKED: "booked",
+    DueSource.POLLED: "its declared rhythm, set",
+    DueSource.TIMER: "its own timer, read from its sandbox",
+}
+
+
+def plan_at(dues: list[DueEntry], moment: datetime, *, since: datetime) -> Plan:
+    """What the agent had planned at `moment`, read from the table as the log recorded it. `since` is when it last
+    did something on the wait: a wake it asked for that was due between then and the grace past `moment`, and that
+    the dispatch rules dropped, is the one that would have brought it back."""
+    planned = [
+        d
+        for d in dues
+        if d.source in AGENT_SOURCES
+        and d.open_at(moment)
+        and d.closed not in (DueClosed.DELAYED, DueClosed.DROPPED)  # never delivered at that moment
+    ]
+    dropped = [
+        d
+        for d in dues
+        if d.source in AGENT_SOURCES
+        and d.closed is DueClosed.DROPPED
+        and d.entered_at <= moment
+        and since <= d.due.at <= moment + GRACE
+    ]
+    return Plan(
+        moment=moment,
+        earliest=min(planned, key=lambda d: d.due.at, default=None),
+        dropped=max(dropped, key=lambda d: d.due.at, default=None),
+    )

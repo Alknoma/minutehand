@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from enum import StrEnum
 
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, model_validator
 
 from minutehand.domain.conversation import Provenance
 from minutehand.domain.scenario import FormInput, Model, ProviderKey, SigningSecret
@@ -59,11 +60,23 @@ class PersonMessage(Model):
     at: AwareDatetime = Field(description="Simulated time the message is sent")
 
 
+class Delivery(StrEnum):
+    """How a provider's events reach the agent."""
+
+    REQUEST_URL = "request_url"  # the service calls the agent's URL (Slack's Events API, a webhook)
+    SOCKET_MODE = "socket_mode"  # the agent holds a WebSocket open to the service and takes them on it (Slack)
+
+
 class InboundTarget(Model):
     """Where a provider pushes events to the agent, the way the real service would."""
 
     provider: ProviderKey
-    url: str
+    delivery: Delivery = Delivery.REQUEST_URL
+    url: str | None = Field(
+        default=None,
+        description="Where events are pushed; required for `request_url` delivery, refused for `socket_mode`, where "
+        "the agent opens the connection itself",
+    )
     interactivity_url: str | None = Field(
         default=None,
         description="Where a person's use of a control or a form is pushed (Slack's interactivity request URL); "
@@ -74,6 +87,23 @@ class InboundTarget(Model):
         description="Where the secret that signs pushed events comes from; None signs with one made per run "
         "and given to no one, for an agent that does not verify",
     )
+
+    @model_validator(mode="after")
+    def _reached(self) -> InboundTarget:
+        if self.delivery is Delivery.REQUEST_URL and self.url is None:
+            raise ValueError(f"an inbound target on {self.provider} delivered to a request URL needs `url`")
+        if self.delivery is Delivery.SOCKET_MODE and (self.url is not None or self.interactivity_url is not None):
+            raise ValueError(
+                f"an inbound target on {self.provider} in socket mode takes events on the connection the agent opens: "
+                "it has no `url` or `interactivity_url`"
+            )
+        return self
+
+    def request_url(self) -> str:
+        """Where a request is pushed: `url`, which a target delivered by socket has none of."""
+        if self.url is None:
+            raise ValueError(f"the inbound target on {self.provider} takes events in {self.delivery}, not at a URL")
+        return self.url
 
 
 class PermissionGrant(Model):

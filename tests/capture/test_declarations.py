@@ -89,6 +89,11 @@ def test_a_declared_model_api_is_refused(registry: Registry) -> None:
         refuse_claimed([PassThrough(host="api.openai.com")], registry, DEFAULT_MODEL_HOSTS)
 
 
+def test_a_declared_model_vendor_infrastructure_host_is_refused(registry: Registry) -> None:
+    with pytest.raises(ProviderConflict, match=r"'mcp-proxy\.anthropic\.com' is a model API"):
+        refuse_claimed([PassThrough(host="mcp-proxy.anthropic.com")], registry, DEFAULT_MODEL_HOSTS)
+
+
 def test_a_declaration_named_as_a_provider_is_refused(registry: Registry) -> None:
     with pytest.raises(ProviderConflict, match="recorded as 'ledger', which is the name of provider 'ledger'"):
         refuse_claimed([Acknowledge(host="mail.example", name="ledger")], registry, DEFAULT_MODEL_HOSTS)

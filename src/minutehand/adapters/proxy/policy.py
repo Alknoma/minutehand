@@ -16,6 +16,16 @@ DEFAULT_MODEL_HOSTS: tuple[str, ...] = (
     "generativelanguage.googleapis.com",
 )
 
+MODEL_INFRASTRUCTURE_HOSTS: tuple[str, ...] = (
+    "mcp-proxy.anthropic.com",
+    "*.mcp.claude.com",
+    "platform.claude.com",
+)
+"""Hosts a model vendor's own client calls beside its model API, whatever the run's model hosts: Claude Code's relay
+to the account's remote MCP connectors, Anthropic's own MCP servers, and the sign-in's token refresh. Each is
+tunnelled, or recorded under `--record-model-calls`, as a model host is, and never edited: what crosses is not a
+model call."""
+
 ModelEdit = PromptPatch | ModelSwap
 
 
@@ -37,7 +47,8 @@ class Routing:
     ) -> None:
         self.registry = registry
         self._model_hosts = [HostPattern(host) for host in model_hosts]
-        for pattern in self._model_hosts:
+        self._infrastructure = [HostPattern(host) for host in MODEL_INFRASTRUCTURE_HOSTS]
+        for pattern in [*self._model_hosts, *self._infrastructure]:
             self._refuse_claimed(pattern)
         # Model hosts a world of `minutehand serve` declared while open, each with whether its calls are recorded.
         self._declared: dict[str, tuple[HostPattern, bool]] = {}
@@ -51,8 +62,9 @@ class Routing:
 
     @property
     def model_hosts(self) -> list[str]:
-        """Every host that is a model API now: those the routing was built with, and those declared since."""
-        return [p.text for p in self._model_hosts] + list(self._declared)
+        """Every host that is a model API now: those the routing was built with, the vendors' own infrastructure
+        (`MODEL_INFRASTRUCTURE_HOSTS`), and those declared since."""
+        return [p.text for p in [*self._model_hosts, *self._infrastructure]] + list(self._declared)
 
     def declare(self, host: str, *, record: bool) -> None:
         """A model host declared while the proxy runs (a world of `minutehand serve`), tunnelled or, with `record`,
@@ -84,10 +96,14 @@ class Routing:
         self.edits = list(overrides)
 
     def is_model_host(self, host: str) -> bool:
+        return self._edited(host) or any(pattern.matches(host) for pattern in self._infrastructure)
+
+    def _edited(self, host: str) -> bool:
+        """A model API proper, whose calls a run's edits apply to; a vendor's infrastructure host is not one."""
         return any(pattern.matches(host) for pattern in self._model_hosts) or self.declared(host) is not None
 
     def edits_for(self, host: str) -> list[ModelEdit]:
-        if not self.is_model_host(host):
+        if not self._edited(host):
             return []
         return [e for e in self.edits if e.where.host is None or e.where.host.lower() == host.lower()]
 

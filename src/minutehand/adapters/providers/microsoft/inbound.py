@@ -100,7 +100,7 @@ async def push(
 ) -> httpx.Response:
     if target.provider != MANIFEST.key:
         raise ValueError(f"a {target.provider} target is not Microsoft's to deliver to")
-    where = url or target.url
+    where = url or target.request_url()
     try:
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             answered = await client.post(
@@ -558,9 +558,11 @@ class People:
         try:
             answer = wire.parse(wire.InvokeAnswer, answered.content)
         except ValidationError as e:
-            raise DeliveryRefused(target.url, answered.status_code, f"an invoke answer that is not one: {e}") from e
+            raise DeliveryRefused(
+                target.request_url(), answered.status_code, f"an invoke answer that is not one: {e}"
+            ) from e
         if answer.statusCode != 200:
-            raise DeliveryRefused(target.url, answer.statusCode, answered.text)
+            raise DeliveryRefused(target.request_url(), answer.statusCode, answered.text)
         if answer.type == wire.ADAPTIVE_CARD:
             attachments = list(message.attachments or [])
             attachments[card.attachment] = attachments[card.attachment].model_copy(update={"content": answer.value})

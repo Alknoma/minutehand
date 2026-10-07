@@ -14,7 +14,7 @@ tickets:
   - {key: notes, provider: youtrack, project: Launch, title: Write the release notes, assignee: nadia,
      labels: [docs], comments: [{by: owen, text: Due before the partner call}]}
 documents:
-  - {provider: google_drive, title: Launch plan, text: "# Launch plan"}
+  - {provider: google_workspace, title: Launch plan, text: "# Launch plan"}
 happenings:
   - {kind: ticket, person: nadia, ticket: Book the venue, after: P1D, action: {kind: moves, to: done}}
   - {kind: ticket, person: nadia, ticket: Write the release notes, after: P2D,

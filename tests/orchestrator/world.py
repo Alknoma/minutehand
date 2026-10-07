@@ -214,7 +214,7 @@ class Chat:
             )
         )
         async with httpx.AsyncClient() as client:
-            (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
+            (await client.post(target.request_url(), content=body, headers={SIGNATURE: secret})).raise_for_status()
 
     async def say(
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
@@ -232,7 +232,7 @@ class Chat:
             )
         )
         async with httpx.AsyncClient() as client:
-            (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
+            (await client.post(target.request_url(), content=body, headers={SIGNATURE: secret})).raise_for_status()
 
     async def happen(
         self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
@@ -294,6 +294,7 @@ class Scheduler:
 
     def __init__(self) -> None:
         self.fired: list[tuple[str, datetime]] = []
+        self.advanced: list[tuple[str, datetime]] = []
         self.delivered: list[str] = []
         self.taken_refs: list[str] = []
         self._wakes: Wakes | None = None
@@ -358,7 +359,11 @@ class Scheduler:
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scheduler starts with no bookings: a scenario has nothing to seed here."""
 
-    async def fire(self, ref: str, world: Store, clock: Clock) -> None:
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        """Every booking here is one-off: the occurrence is over, and nothing more is booked."""
+        self.advanced.append((ref, clock.now()))
+
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
         self.fired.append((ref, clock.now()))
         self.delivered.append(ref)
         world.apply(

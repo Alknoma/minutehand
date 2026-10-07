@@ -110,6 +110,81 @@ jobs:
       # The seed is printed at the top of the output; rerun with -p randomly -p "randomly_seed=N".
       - run: uv run pytest -q -n auto
 
+  # examples/recipes: an agent per framework (LangGraph, the OpenAI Agents SDK, the Claude Agent SDK, Pydantic AI,
+  # the Vercel AI SDK), each run through both of its scenarios against the recipes' fake model. The frameworks are
+  # the `recipes` dependency group, kept out of every other job; RECIPES_NODE_REQUIRED turns a missing node or a
+  # failed `npm ci` from a skip into a failure.
+  recipes:
+    name: Framework recipes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: uv sync --group recipes
+      - run: uv run --group recipes pytest -q -rs -n auto -m recipes tests/recipes
+        env:
+          RECIPES_NODE_REQUIRED: "1"
+
+  # The agent's database fronted by Minutehand's relay (tests/state/test_postgres_recipe.py): a run records the
+  # agent's committed writes, a fork puts the database back from the base and replays them. Against a real
+  # PostgreSQL in a service container; the default run skips these (`-m docker`).
+  postgres:
+    name: PostgreSQL relay (record, fork, replay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py tests/state/test_postgres_drivers.py tests/state/test_postgres_replay.py tests/state/test_postgres_cli.py -s
+        env:
+          MINUTEHAND_TEST_POSTGRES: postgresql://postgres:secret@127.0.0.1:5432
+
+  # Transparent capture (docs/containers.md): a client that ignores every proxy variable, in a Linux container whose
+  # connections to ports 80 and 443 are sent to the proxy's redirected listener by `minutehand env --format redirect`'s
+  # iptables script, is answered by the Slack fake. Needs Docker and alpine's package index; the default run skips it.
+  transparent:
+    name: Transparent capture in a container
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -q -m docker tests/providers/slack/test_slack_redirected_container.py
+
   # What a user installs, as they would install it: the wheel in an environment with none of the
   # dev dependencies, and the image, each running examples/follow_up end to end. Nothing is pushed.
   build:
@@ -170,6 +245,22 @@ jobs:
             -- "$RUNNER_TEMP/venv/bin/python" agent.py
       - name: The image the action built
         run: docker run --rm minutehand:action --help
+      # What a caller's runner holds: this commit's files, no .git, unpacked into a folder named by the
+      # ref, reached with an empty `github.action_ref` (a remote action inside a composite step). `uses:`
+      # takes no expression, so the folder is named by a fixed 40-hex ref, and that is what must come back.
+      - name: The action as a remote caller's runner unpacks it
+        run: |
+          mkdir -p _actions/minutehand/0123456789abcdef0123456789abcdef01234567
+          git archive HEAD | tar -x -C _actions/minutehand/0123456789abcdef0123456789abcdef01234567
+      - id: unpacked
+        uses: ./_actions/minutehand/0123456789abcdef0123456789abcdef01234567/.github/actions/setup-minutehand # zizmor: ignore[self-repository]
+        with:
+          python: ${{ runner.temp }}/venv/bin/python
+          installer: pip
+      - name: The unpacked copy names the ref it was unpacked at
+        env:
+          COMMIT: ${{ steps.unpacked.outputs.commit }}
+        run: test "$COMMIT" = 0123456789abcdef0123456789abcdef01234567
 
   # main takes pull requests from integration-main and from nowhere else. A branch rule can
   # only constrain the branch being written to, never the branch a pull request comes from,
@@ -204,7 +295,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, build, action, promotion]
+    needs: [types, style, lints, workflows, tests, recipes, postgres, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

@@ -299,6 +299,10 @@ class SlackWorld:
         self._store = store
         self.team = team if team is not None else self._first()
 
+    @property
+    def store(self) -> Store:
+        return self._store
+
     def _first(self) -> wire.SlackWorkspace:
         return self.workspaces()[0]
 

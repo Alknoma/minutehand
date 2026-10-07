@@ -29,6 +29,7 @@ the endpoints below.
 | **wake** | Minutehand → agent, each moment something is due | `WakeRequest` → any 2xx | `wakes[].wake_url` (`reported`, `polled`); `command` (stdin) | Only to take the goal or wakes this way |
 | **report** | Minutehand → agent, polled after a wake and while settling | none → `AgentReport` | `wakes[].report_url` | Only for `reported` |
 | **deliver a reply** (provider) | Minutehand → agent, when a person's reply falls due | The provider's own event (Slack Events API, Bot Framework activity) → 2xx | `inbound[]` | Only for a provider that pushes |
+| **socket** (Slack) | The agent → Slack's `apps.connections.open`, then a WebSocket it holds open; replies arrive on it | `events_api` envelopes → the agent's `{"envelope_id": …}` | `inbound[]` with `delivery: socket_mode` and no `url` | Instead of a request URL |
 | **deliver a press** (provider) | Minutehand → agent, when a person uses a control | The provider's own interactivity payload → 2xx | `inbound[].interactivity_url` | Only for controls |
 | **deliver a reply** (declared host) | Minutehand → agent, an answer to a captured send | `DeliveredReply` (the default shape, no `body`), or the declared `body` → 2xx | `outbound[].replies` | Only when people answer a send |
 | **inbox list** | Minutehand → agent, as each person, after each wake or step and before the clock moves | Declared template or operation (default `listPending`, `PendingPage`) | `inboxes[].pending` | Only with an inbox |
@@ -41,6 +42,7 @@ the endpoints below.
 | **base URLs** | The agent → the proxy's `/_host/…`, for a client without a proxy | As the real host | `base_urls[]` | No |
 | **model hosts** | The agent → its model API, tunnelled or recorded | As the real host | `--model-host`, `CreateWorld.model_hosts` | No |
 | **telemetry** | The agent → Minutehand's OTLP receiver | OTLP/HTTP or gRPC | Environment Minutehand hands out | No |
+| **own checks** | Minutehand runs the agent's checks with its own after every run and fork | A class with `id`, `needs` and `run(view) -> CheckReport`, as `src/minutehand/checks/` writes them | `checks[]`: Python files, a relative path read from the agent file's folder | No |
 
 ## Types the agent may generate
 
@@ -107,6 +109,7 @@ New declarations (inboxes) use the following.
 | `clock` | `now` |
 | `page` | `cursor` |
 | `run`, `case` | reserved |
+| `team` | a team's values in a library scenario: `goal`, `owner_key`, `owner_name`, `owner_email`, the same for `ask` and `other`, `answer`, `tell`, `credential_env`, `provider`, `wakes` (`docs/scenarios.md`) |
 
 **Paths** are JSONPath (RFC 9535), in the subset `domain/jsonpath.py` reads: names, indexes, wildcards, several
 selectors in one bracket, and descendants. Filters and slices are refused at load.

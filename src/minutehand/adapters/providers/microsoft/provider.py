@@ -1,12 +1,17 @@
-"""The Microsoft provider: sign-in, the Bot Framework connector, Graph for Teams and files, and the people of the
-tenant acting in Teams and on files.
+"""The Microsoft provider: sign-in, the Bot Framework connector, Graph for Teams, files, Outlook mail and calendars,
+and the people of the tenant acting in Teams, on files, by email and on invitations.
 
 It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesInteractions`,
+`LandsReplies`,
 `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `ChangesPeople` (a user removed, disabled or enabled again
 by an administrator) and `MintsInboundCredentials` (the Bot Framework's token for an activity a test posts itself). A person's change to a seeded document (edit, rename, move, share, delete)
 lands at its moment as that person, recorded as actor PERSON, and owes every live Graph subscription on the drive a
 notification; `notify` sends what is owed, through the same `subscriptions.notify` an agent's own change goes
-through. A file held open is not something a person does here: it is a fault the scenario declares
+through. A person's reply to an email is an email back into the mailbox it answers, and a press of Accept, Tentative or
+Decline on a meeting request answers the invitation (`LandsReplies`); neither is pushed to the bot, so an agent that
+talks to people only by email declares no Teams inbound target. A Graph subscription on the mailbox it lands in is
+notified, and that notification is the wake (`heard`). A file held open is
+not something a person does here: it is a fault the scenario declares
 (`MicrosoftSeed.holds`).
 """
 
@@ -15,15 +20,19 @@ from __future__ import annotations
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
 from minutehand.adapters.providers.microsoft.common import error_answer
+from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
 from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of
+from minutehand.adapters.providers.microsoft.graph_mail import Mail
 from minutehand.adapters.providers.microsoft.inbound import People, activity_token
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
+    MAILBOX,
     USERS,
     DriveRecord,
     MicrosoftWorld,
     UserRecord,
     item_text,
+    message_ref,
     user_ref,
 )
 from minutehand.domain.errors import Rendered
@@ -48,7 +57,7 @@ from minutehand.domain.scenario import (
     Shared,
     Trashed,
 )
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.world import Actor, EntityKind, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -80,7 +89,8 @@ class MicrosoftProvider:
     async def deliver(
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
-        """`secret` is not used: the Bot Framework signs with its published key, never a shared secret."""
+        """A Teams message pushed to the bot (a reply to an email lands instead: `land`). `secret` is not used: the
+        Bot Framework signs with its published key, never a shared secret."""
         await People(world, clock).deliver(reply, target)
 
     async def say(
@@ -99,6 +109,46 @@ class MicrosoftProvider:
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
         await People(world, clock).press(reply, target)
+
+    # ------------------------------------------------------------------ LandsReplies
+
+    def lands(self, reply: PersonReply, world: Store) -> bool:
+        """A reply to a message that was ever in a mailbox lands by mail; a reply to a Teams message is pushed."""
+        if reply.in_reply_to.provider != MANIFEST.key or reply.in_reply_to.kind is not EntityKind.MESSAGE:
+            return False
+        mailboxes = {MAILBOX.format(user=u.user.id) for u in MicrosoftWorld(world).users()}
+        return any(v.parent in mailboxes for v in world.versions(message_ref(reply.in_reply_to.external_id)))
+
+    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool:
+        """Whether a live subscription watches a mailbox (or, for an invitation's answer, a calendar) the answer
+        lands in: the asker's, where it arrives, or the person's own, where its sent copy is kept."""
+        mw = MicrosoftWorld(world)
+        found = mw.mail(reply.in_reply_to.external_id)
+        if found is None:
+            return False
+        _, asked = found
+        asker, person = mw.user_by(asked.message.from_.emailAddress.address), mw.person(reply.person)
+        watches: set[str] = set()
+        for user, folder in ((asker, wire.MailFolderName.INBOX), (person, wire.MailFolderName.SENT)):
+            if user is None:
+                continue
+            watches |= {subscriptions.mail_watch(user.user.id, None), subscriptions.mail_watch(user.user.id, folder)}
+            if reply.press is not None:
+                watches.add(subscriptions.calendar_watch(user.user.id))
+        now = clock.now()
+        return any(r.watches in watches and subscriptions.live(r, now) for r in mw.subscriptions())
+
+    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
+        """A reply to an email is an email back, put in the mailbox it answers; a press on a meeting request answers
+        its invitation. An email no longer in any mailbox is left alone."""
+        mw = MicrosoftWorld(world)
+        mail = Mail(mw, clock)
+        if not mail.holds(reply.in_reply_to.external_id):
+            return
+        if reply.press is not None:
+            await Calendar(mw, clock, mail).person_responds(reply)
+        else:
+            await mail.person_replies(reply)
 
     # ------------------------------------------------------------------ ChangesDocuments
 
@@ -228,6 +278,6 @@ def _by(user: UserRecord) -> wire.IdentitySet:
 
 
 def build() -> MicrosoftProvider:
-    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `ChangesDocuments`, `NotifiesChanges`,
+    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`,
     `DeclaresFaults`, `ChangesPeople` and `MintsInboundCredentials`."""
     return MicrosoftProvider()

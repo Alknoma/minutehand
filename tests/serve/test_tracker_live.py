@@ -236,7 +236,7 @@ def test_a_notion_member_removed_is_unlisted_and_not_found(served: Served) -> No
 
 @pytest.mark.parametrize(
     ("provider", "change"),
-    [("asana", "deactivate"), ("jira", "remove"), ("google_drive", "remove"), ("github", "deactivate")],
+    [("asana", "deactivate"), ("jira", "remove"), ("google_workspace", "remove"), ("github", "deactivate")],
 )
 def test_a_person_change_a_provider_cannot_show_is_refused_as_unsupported(
     served: Served, provider: str, change: str

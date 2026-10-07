@@ -1177,6 +1177,54 @@ def event_body(callback: EventCallback | UrlVerification) -> bytes:
     return callback.model_dump_json(exclude_none=True).encode()
 
 
+# --------------------------------------------------------------------------- Socket Mode
+
+
+class ConnectionsOpen(Ok):
+    """`apps.connections.open`: where the app opens its Socket Mode connection."""
+
+    url: str
+
+
+class SocketConnectionInfo(Model):
+    app_id: str
+
+
+class SocketDebugInfo(Model):
+    host: str
+    approximate_connection_time: int = Field(description="Seconds until Slack asks the app to reconnect")
+
+
+class SocketHello(Model):
+    """What Slack sends first on a Socket Mode connection."""
+
+    type: Literal["hello"] = "hello"
+    num_connections: int
+    debug_info: SocketDebugInfo
+    connection_info: SocketConnectionInfo
+
+
+class SocketEnvelope(Model):
+    """An Events API callback as Socket Mode carries it; the app acknowledges it by its `envelope_id`."""
+
+    envelope_id: str
+    payload: EventCallback
+    type: Literal["events_api"] = "events_api"
+    accepts_response_payload: bool = False
+    retry_attempt: int = 0
+    retry_reason: str = ""
+
+
+def envelope_body(envelope: SocketEnvelope) -> str:
+    return envelope.model_dump_json(exclude_none=True)
+
+
+class SocketAck(_Foreign):
+    """What the app sends back on its connection to acknowledge an envelope; anything else it carries is its own."""
+
+    envelope_id: str
+
+
 class UrlVerification(Model):
     token: str
     challenge: str

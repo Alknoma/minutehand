@@ -147,3 +147,26 @@ def test_the_deadline_after_a_silent_person_is_not_finished_rather_than_failed()
     result = evaluate(world, stop=StopReason.DEADLINE_PASSED, ended=at(72))
 
     assert result.verdict.kind is VerdictKind.UNFINISHED and result.exit_code == 3
+
+
+def test_done_after_a_follow_up_in_the_same_wake_as_the_ask_is_not_finished() -> None:
+    """A "follow-up" sent seconds after the ask, in its wake, chased nothing: the agent never waited."""
+    log = _asked_and_waiting()
+    log.message([SOFIA], 1.01, text="Just following up on the contract.")
+    world = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]), log)
+
+    result = evaluate(world, stop=StopReason.AGENT_DONE)
+
+    assert result.verdict.kind is VerdictKind.UNFINISHED and result.exit_code == 3
+    assert result.verdict.words == (
+        "Not finished: no check failed, but the agent reported it was done with 1 ask it made still unanswered "
+        "and never followed up after the wake it asked in (sofia)."
+    )
+
+
+def test_done_after_a_follow_up_in_a_later_wake_passes() -> None:
+    log = _asked_and_waiting()
+    log.message([SOFIA], 1.01, text="Just following up on the contract.", wake=2)
+    world = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]), log)
+
+    assert evaluate(world, stop=StopReason.AGENT_DONE).verdict.kind is VerdictKind.PASSED

@@ -40,6 +40,10 @@ reference says it, at the page given; **observed** means someone saw Slack do it
 | A modal title past 24 characters is refused | documented | `test_a_modal_title_past_twenty_four_characters_is_refused` | https://docs.slack.dev/reference/views/modal-views |
 | A view of more than 100 blocks is refused `invalid_arguments` | documented | `test_a_view_of_more_than_a_hundred_blocks_is_refused_invalid_arguments` | https://docs.slack.dev/reference/block-kit/blocks, https://docs.slack.dev/reference/methods/views.publish |
 | `ratelimited` is HTTP 429 with `Retry-After` | documented | `test_slack_through_the_proxy.py::test_a_rate_limit_answers_429_with_retry_after_and_then_passes` (a declared fault; the fake does not rate-limit on its own) | https://docs.slack.dev/apis/web-api/rate-limits |
+| `apps.connections.open` answers a `wss://wss-primary.slack.com/link/?ticket=…&app_id=…` URL to an app-level token, and refuses any other token `not_allowed_token_type` | documented | `test_slack_socket_mode.py::test_an_app_level_token_is_refused_anywhere_but_apps_connections_open` | https://docs.slack.dev/reference/methods/apps.connections.open |
+| A Socket Mode connection opens with `hello`; an event arrives as an `events_api` envelope the app acknowledges with its `envelope_id` | documented | `test_slack_socket_mode.py::test_what_a_person_says_reaches_a_socket_mode_agent_as_an_envelope_it_acknowledges` | https://docs.slack.dev/apis/events-api/using-socket-mode |
+| An envelope not acknowledged is sent again, `retry_attempt` counted up, `retry_reason` set | documented | `test_slack_socket_mode.py::test_an_envelope_the_agent_never_acknowledges_is_sent_again_and_then_fails_the_agent_is_refused` | https://docs.slack.dev/apis/events-api/using-socket-mode |
+| Three seconds to acknowledge; the same `envelope_id` on each retry; a URL's ticket good for one connection | chosen | the same tests | the page gives three seconds for an acknowledgement and says a URL is short-lived; reuse of the id and the one use of a ticket are this fake's |
 
 ## Where the old emulator and Slack's reference disagree
 

@@ -1,10 +1,32 @@
 [project]
 name = "minutehand"
+# The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
+# installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
 version = "0.0.1"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "LICENSE.md" }
+# An SPDX expression (PEP 639). FSL-1.1-ALv2 is on the SPDX list since 3.26 and in `packaging` since 26.0, which
+# both hatchling (below) and PyPI's upload validation check it with.
+license = "FSL-1.1-ALv2"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Alknoma" }]
+keywords = ["agents", "ai-agents", "testing", "simulation", "proxy", "fakes", "pytest", "evaluation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Testing :: Mocking",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.9",
     "mitmproxy>=12,<13",
@@ -23,11 +45,19 @@ dependencies = [
     "mcp>=1.2,<2",
     "zstandard>=0.23",
     "jsonschema>=4.20",
+    # uvicorn's WebSocket protocol for the providers' socket servers (Slack's Socket Mode); mitmproxy needs it too.
+    "wsproto>=1.2",
 ]
 
 [project.optional-dependencies]
-# Receiving an agent's OTLP over gRPC, on the same port as OTLP/HTTP.
-grpc = ["grpcio>=1.60"]
+# gRPC: receiving an agent's OTLP over gRPC on the same port as OTLP/HTTP, and answering the gRPC transport of
+# Google's client libraries (Cloud Tasks), whose messages come from Google's own package.
+grpc = ["grpcio>=1.60", "google-cloud-tasks>=2.16"]
+
+[project.urls]
+Repository = "https://github.com/Alknoma/minutehand"
+Issues = "https://github.com/Alknoma/minutehand/issues"
+Documentation = "https://github.com/Alknoma/minutehand/tree/integration-main/docs"
 
 [project.scripts]
 minutehand = "minutehand.cli:main"
@@ -37,25 +67,63 @@ minutehand = "minutehand.cli:main"
 minutehand = "minutehand.testing.plugin"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "pyright>=1.1.390", "ruff>=0.8", "boto3>=1.35", "slack_sdk>=3.33", "psutil>=6",
-       "uvicorn>=0.30", "asana>=5", "google-api-python-client>=2.150", "google-auth>=2.35",
-       "pytest-socket>=0.7", "pytest-timeout>=2.3", "pytest-randomly>=3.15", "pytest-xdist>=3.6", "aiohttp>=3.10", "pysocks>=1.7",
-       "notion-client==2.2.1", "pyjwt[crypto]>=2.10", "python-docx==1.2.0",
-       "opentelemetry-exporter-otlp-proto-grpc>=1.27"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pyright>=1.1.390",
+    "ruff>=0.8",
+    "boto3>=1.35",
+    "slack_sdk>=3.33",
+    "psutil>=6",
+    "uvicorn>=0.30",
+    "asana>=5",
+    "google-api-python-client>=2.150",
+    "google-auth>=2.35",
+    "google-cloud-tasks>=2.16",
+    "pytest-socket>=0.7",
+    "pytest-timeout>=2.3",
+    "pytest-randomly>=3.15",
+    "pytest-xdist>=3.6",
+    "aiohttp>=3.10",
+    "pysocks>=1.7",
+    "notion-client==2.2.1",
+    "pyjwt[crypto]>=2.10",
+    "python-docx==1.2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+    "psycopg[binary]>=3.2",
+    "asyncpg>=0.32.0",
+]
+recipes = [
+    "anthropic>=1.11.0",
+    "claude-agent-sdk>=0.2.163",
+    "langchain-openai>=1.0",
+    "langgraph>=1.2.14",
+    "openai-agents>=0.4.2",
+    # openai-agents 0.4, all that resolves beside mitmproxy on Python 3.12, fails on the usage field openai 2.45 made required.
+    "openai<2.45; python_full_version < '3.13'",
+    "pydantic-ai-slim[openai]>=1.60.0",
+]
 
 [build-system]
-requires = ["hatchling"]
+# hatchling 1.27 writes PEP 639 licence metadata (Metadata-Version 2.4 and later); packaging 26 is the first to know
+# FSL-1.1-ALv2, and hatchling refuses an expression its packaging does not know.
+requires = ["hatchling>=1.27", "packaging>=26"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# What the installed command needs, by pattern: its code, the pages it serves, and each provider's notes. Nothing else under
-# src/minutehand/ ships; tests/packaging fails when a file git tracks there is left out of the wheel.
+# What the installed command needs, by pattern: its code, the pages it serves, each provider's notes and the scenario
+# library. Nothing else under src/minutehand/ ships; tests/packaging fails when a file git tracks there is left out of
+# the wheel.
 include = [
     "/src/minutehand/**/*.py",
     "/src/minutehand/**/*.html",
     "/src/minutehand/**/*.css",
     "/src/minutehand/**/*.js",
     "/src/minutehand/**/*.md",
+    "/src/minutehand/**/*.txt",
+    # PEP 561: a suite type-checking its use of `minutehand.testing` reads our annotations.
+    "/src/minutehand/py.typed",
+    "/src/minutehand/library/*.yaml",
 ]
 sources = ["src"]
 
@@ -69,12 +137,14 @@ asyncio_mode = "auto"
 pythonpath = ["src", "."]
 # A test that reaches a real service is a broken test: only this machine is reachable.
 # A test that hangs fails at 60 seconds. Tests run in a random order every time.
-addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not firestore and not benchmark and not docker'"
+addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not firestore and not benchmark and not docker and not recipes'"
 markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
-    "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
+    "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
+    "docker: runs a downloaded open-source emulator, or PostgreSQL, in a container named minutehand-ext-* (or the server MINUTEHAND_TEST_POSTGRES names); needs Docker; run with -m docker",
     "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
+    "conformance: one property of docs/conformance.md held against one provider through its vendor API, the control API and the world's record; runs by default",
 ]
 filterwarnings = [
     # A warning raised against our own code is an error. Third-party internals are left alone.

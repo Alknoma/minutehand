@@ -13,6 +13,7 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import AgentReport, Commitment, WakeReason
 from minutehand.domain.clock import Due
+from minutehand.domain.database import DatabaseDigest
 from minutehand.domain.scenario import Model, ProviderKey, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.store import Store
@@ -50,6 +51,26 @@ class PendingWake(Model):
     kind: Literal["wake"] = "wake"
     due: Due
     reason: WakeReason
+    repeat: bool = Field(
+        default=False,
+        description="A late or second delivery the scenario's dispatch rules made of a wake already due: a tick of "
+        "it books no next tick, which the wake it repeats already did",
+    )
+
+
+class PendingTimer(Model):
+    """The earliest deadline of the agent's own timers, read from its sandbox (`Contained`)."""
+
+    kind: Literal["timer"] = "timer"
+    due: Due
+
+
+class PendingMachine(Model):
+    """A command the scenario runs on the agent's machine (`Scenario.machine`), not yet run."""
+
+    kind: Literal["machine"] = "machine"
+    due: Due
+    command: int = Field(ge=0, description="Position in the scenario's `machine`")
 
 
 class PendingDirection(Model):
@@ -65,10 +86,22 @@ class PendingBooking(Model):
     due: Due
     provider: ProviderKey
     ref: str = Field(description="The scheduler's own reference for the booking")
+    deliver: bool = Field(default=True, description="Deliver this occurrence when it fires")
+    advance: bool = Field(
+        default=True,
+        description="Then finish the occurrence: False on the first of two deliveries, whose second finishes it",
+    )
 
 
 Pending = Annotated[
-    PendingReply | PendingFate | PendingHappening | PendingWake | PendingDirection | PendingBooking,
+    PendingReply
+    | PendingFate
+    | PendingHappening
+    | PendingWake
+    | PendingDirection
+    | PendingBooking
+    | PendingMachine
+    | PendingTimer,
     Field(discriminator="kind"),
 ]
 
@@ -86,6 +119,9 @@ class Restorable(Model):
     fingerprint: str | None = Field(
         default=None, description="What the agent's `fingerprint` printed once settled; None when it declares none"
     )
+    digests: list[DatabaseDigest] = Field(
+        default=[], description="Each fronted database that declares `digest`, as it stood here"
+    )
     unconfirmed: str | None = Field(
         default=None,
         description="Why this snapshot may hold work in flight: settling saw only the report and the proxy, and "
@@ -100,13 +136,26 @@ class NotRestorable(Model):
     reason: str
 
 
+class Replayable(Model):
+    """The agent declares no state hooks and keeps its state in databases Minutehand fronts
+    (`AgentUnderTest.databases`): a fork puts each back from its base and the writes recorded up to here, restarts
+    the agent's program, and compares its report with this one. Nothing waits for it to settle: a transaction still
+    open here commits after this checkpoint's seq, so it is not part of it."""
+
+    kind: Literal["replayable"] = "replayable"
+    report: AgentReport | None = Field(description="The agent's last report, which a restore must bring back")
+    digests: list[DatabaseDigest] = Field(
+        default=[], description="Each fronted database that declares `digest`, as it stood here"
+    )
+
+
 class NoHooks(Model):
     """The agent declares no `StateHooks`: nothing of its own state was kept."""
 
     kind: Literal["no_hooks"] = "no_hooks"
 
 
-AgentState = Annotated[Restorable | NotRestorable | NoHooks, Field(discriminator="kind")]
+AgentState = Annotated[Restorable | Replayable | NotRestorable | NoHooks, Field(discriminator="kind")]
 
 
 class Checkpoint(Model):

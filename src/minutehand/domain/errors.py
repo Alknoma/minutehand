@@ -1,10 +1,12 @@
-"""The three kinds of exception that may leave a provider's request handler, after LocalStack's `ServiceException`
+"""The kinds of exception that may leave a provider's request handler, after LocalStack's `ServiceException`
 and moto's: one converter at the proxy (`adapters.answering`) tells them apart and answers each.
 
 - `ServiceRefusal`: the real service would refuse this request. Each provider's own refusal classes subclass it and
   render the answer the real service gives (`render`), in that service's wire shape.
 - `NotImplementedError`: the real service has this operation and the fake does not. Answered 501 in the vendor's
   error shape, naming the method and path.
+- `GrpcRefusal`: the real service would refuse this gRPC call, with the status it names. Only a provider's gRPC
+  methods (`ports.provider.ServesGrpc`) raise it; their other exceptions are read as above.
 - anything else: Minutehand's own bug. Answered 500 in the vendor's error shape, its message beginning
   "minutehand internal error while answering", and kept with its traceback on the recorded call
   (`world.CallFailure`).
@@ -17,6 +19,7 @@ from abc import ABC, abstractmethod
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.scenario import Model
+from minutehand.domain.world import GrpcCode
 
 
 class Rendered(Model):
@@ -50,3 +53,14 @@ class ServiceRefusal(Exception, ABC):
     @abstractmethod
     def render(self, asked: Asked) -> Rendered:
         """The answer the real service gives to `asked`."""
+
+
+class GrpcRefusal(Exception):
+    """The real service would refuse this gRPC call: the status it ends with and its `grpc-message`."""
+
+    def __init__(self, code: GrpcCode, message: str) -> None:
+        if code is GrpcCode.OK:
+            raise ValueError("a refusal ends with a status other than OK")
+        super().__init__(message)
+        self.code = code
+        self.message = message

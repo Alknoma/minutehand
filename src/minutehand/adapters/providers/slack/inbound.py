@@ -23,11 +23,11 @@ import time
 
 import httpx
 
-from minutehand.adapters.providers.slack import seed, state, wire
+from minutehand.adapters.providers.slack import seed, socket_mode, state, wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.application.refusals import AgentFailed
-from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
+from minutehand.domain.people import Delivery, InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.scenario import (
     MessagingHappening,
     PersonAddsAgent,
@@ -86,39 +86,42 @@ async def post_signed(
         return await client.post(url, content=body, headers=headers)
 
 
-async def push_event(target: InboundTarget, body: bytes, secret: str) -> httpx.Response:
-    """An Events API request, sent again on failure as Slack sends it, until the agent acknowledges it."""
+async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.EventCallback, secret: str) -> None:
+    """An Events API callback, sent again on failure as Slack sends it, until the agent acknowledges it: a signed
+    request to the target's URL, or, for a target in Socket Mode, an envelope on the connection the agent holds open
+    (`socket_mode`)."""
+    if target.delivery is Delivery.SOCKET_MODE:
+        await socket_mode.hub(slack.store).push(callback)
+        return
+    body = wire.event_body(callback)
+    url = target.request_url()
     last: str = ""
     status: int | None = None
     for attempt in range(RETRIES + 1):
         reason = None if attempt == 0 else ("http_timeout" if status is None else "http_error")
         try:
-            answered = await post_signed(
-                target.url, body, "application/json", secret, retry=attempt or None, reason=reason
-            )
+            answered = await post_signed(url, body, "application/json", secret, retry=attempt or None, reason=reason)
         except httpx.TimeoutException as e:
             status, last = None, repr(e)
             continue
         except httpx.HTTPError as e:
-            raise DeliveryRefused(target.url, None, repr(e)) from e
+            raise DeliveryRefused(url, None, repr(e)) from e
         if answered.is_success:
-            return answered
+            return
         status, last = answered.status_code, answered.text
-    raise DeliveryRefused(target.url, status, last)
+    raise DeliveryRefused(url, status, last)
 
 
-def _event(slack: SlackWorld, event: wire.Event, *, seq: int, clock: Clock, second: bool = False) -> bytes:
+def _event(slack: SlackWorld, event: wire.Event, *, seq: int, clock: Clock, second: bool = False) -> wire.EventCallback:
     """The `event_callback` envelope, from the workspace `slack` is. `event_id` is fixed by the world event the push
     reports; a second push for the same event (the `app_mention` beside a `message`) gets an id of its own."""
-    return wire.event_body(
-        wire.EventCallback(
-            team_id=slack.team.id,
-            api_app_id=slack.team.app_id,
-            event_id=f"Ev{seq:010d}{'M' if second else ''}",
-            event_time=int(clock.now().timestamp()),
-            authorizations=[wire.Authorization(team_id=slack.team.id, user_id=slack.bot)],
-            event=event,
-        )
+    return wire.EventCallback(
+        team_id=slack.team.id,
+        api_app_id=slack.team.app_id,
+        event_id=f"Ev{seq:010d}{'M' if second else ''}",
+        event_time=int(clock.now().timestamp()),
+        authorizations=[wire.Authorization(team_id=slack.team.id, user_id=slack.bot)],
+        event=event,
     )
 
 
@@ -154,13 +157,14 @@ async def verify_url(target: InboundTarget, secret: str, challenge: str) -> None
     """Slack's `url_verification`, as it is sent when an app's request URL is set: the agent must echo the challenge,
     as JSON or as plain text. Nothing in a run sends it; a check of an agent's endpoint does."""
     refuse_foreign(target)
+    url = target.request_url()
     body = wire.event_body(wire.UrlVerification(token=wire.VERIFICATION_TOKEN, challenge=challenge))
     try:
-        answered = await post_signed(target.url, body, "application/json", secret)
+        answered = await post_signed(url, body, "application/json", secret)
     except httpx.HTTPError as e:
-        raise DeliveryRefused(target.url, None, repr(e), what="url_verification") from e
+        raise DeliveryRefused(url, None, repr(e), what="url_verification") from e
     if not answered.is_success:
-        raise DeliveryRefused(target.url, answered.status_code, answered.text, what="url_verification")
+        raise DeliveryRefused(url, answered.status_code, answered.text, what="url_verification")
     echoed = answered.text.strip()
     if echoed != challenge:
         try:
@@ -168,7 +172,7 @@ async def verify_url(target: InboundTarget, secret: str, challenge: str) -> None
         except ValueError:
             echoed = ""
     if echoed != challenge:
-        raise DeliveryRefused(target.url, answered.status_code, answered.text, what="url_verification's challenge")
+        raise DeliveryRefused(url, answered.status_code, answered.text, what="url_verification's challenge")
 
 
 # --------------------------------------------------------------------------- replies and messages
@@ -243,7 +247,7 @@ async def _post(
         files=files or None,
         upload=False if files else None,
     )
-    await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
     if mentions and not channel.is_im:
         mention = wire.AppMentionEvent(
             user=author,
@@ -256,7 +260,9 @@ async def _post(
             thread_ts=thread_ts,
             files=files or None,
         )
-        await push_event(target, _event(slack, mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret)
+        await push_event(
+            slack, target, _event(slack, mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret
+        )
     return ts
 
 
@@ -382,7 +388,7 @@ async def _edits(
             message=after,
             previous_message=before,
         )
-        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _deletes(
@@ -411,7 +417,7 @@ async def _deletes(
             event_ts=stamp,
             previous_message=before,
         )
-        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _reacts(
@@ -451,7 +457,7 @@ async def _reacts(
             item=wire.ReactionItem(channel=channel.id, ts=message.ts),
             event_ts=stamp,
         )
-        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _joins(
@@ -481,7 +487,7 @@ async def _joins(
             team=slack.team.id,
             event_ts=stamp,
         )
-        await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _adds_agent(
@@ -511,7 +517,7 @@ async def _adds_agent(
         inviter=author,
         event_ts=stamp,
     )
-    await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _opens_home(
@@ -524,4 +530,4 @@ async def _opens_home(
     event = wire.AppHomeOpenedEvent(
         user=author, channel=dm.id, event_ts=stamp, view=home.view if home is not None else None
     )
-    await push_event(target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)

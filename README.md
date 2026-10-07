@@ -1,54 +1,131 @@
 # Minutehand
 
-Build your proactive agent yourself. Minutehand runs it through two simulated weeks in a few minutes, against fake Slack, trackers and document stores with people who answer late or not at all, measures how well it carried the work, and names the design that fixes each thing it got wrong.
+Minutehand runs your proactive agent through simulated days of work in a few seconds and tells you how well it
+carried the work. The agent talks to fake Slack, Teams, Asana, Jira, YouTrack, Notion, GitHub, Google Drive and others,
+with people who answer late or not at all. Minutehand owns the clock, records every change in an append-only
+log, and runs checks on the result. Each failure names the design that fixes it. A finished run can be forked
+from a checkpoint with the prompt, the model, a person or the world changed, and played forward again.
 
-The project under test changes by zero lines: its outbound calls are intercepted, and the clock is Minutehand's.
+The agent's code does not change. Minutehand starts the agent's own command, or reaches one already running,
+and points it at the fakes through its environment: `HTTPS_PROXY`, `NO_PROXY` and a CA bundle.
 
-## State
+## Install
 
-| Part | State |
-|---|---|
-| Models and contracts (`src/minutehand/domain`, `src/minutehand/ports`) | Written |
-| The world as an append-only log with forks (`adapters/store/sqlite.py`) | Written, tested |
-| Checks: `near_miss_name`, `repeated_message`, `expectations`, the `effectiveness` scorecard | Written, tested on a real captured run |
-| Proxy, providers, orchestrator, people, telemetry, command line, MCP, viewer | Not built; see `docs/design.md` |
+You need [uv](https://docs.astral.sh/uv/). It fetches Python 3.12 if you do not have it.
+
+```bash
+uv tool install git+https://github.com/Alknoma/minutehand@integration-main
+```
+
+This puts the `minutehand` command in an environment of its own, apart from your agent's dependencies. Minutehand
+is not published on PyPI.
 
 ## Quick start
 
-From a checkout, with [uv](https://docs.astral.sh/uv/):
+The example agent is in the repository, so clone it for the example files:
 
 ```bash
-uv tool install .                     # the `minutehand` command, in an environment of its own
-cd examples/follow_up
-pip install slack_sdk                 # the example agent's one library, in the agent's own Python
+git clone --depth 1 -b integration-main https://github.com/Alknoma/minutehand
+cd minutehand/examples/follow_up
+python3 -m venv .venv && .venv/bin/pip install slack_sdk    # the agent's one library, in the agent's own Python
 
-minutehand run scenario.yaml --agent agent.yaml -- python agent.py
-# exits 0: Rosa answers in a day and a half and the agent finishes
+minutehand run scenario.yaml --agent agent.yaml -- .venv/bin/python agent.py
+# exits 0: Rosa answers after a day and a half, and the agent tells Owen and finishes
 
-AGENT_BEHAVIOUR=forgetful minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
-# exits 1: Rosa never answers, the agent never follows up, and the no_follow_up finding names the fix
+AGENT_BEHAVIOUR=forgetful minutehand run scenario_silent.yaml --agent agent.yaml -- .venv/bin/python agent.py
+# exits 1: Rosa never answers, the agent never follows up, and no_follow_up names the fix
+
+minutehand runs                  # every run, one line each
+minutehand findings <run_id>     # a run's findings again, and the checkpoints it can be forked from
+minutehand view                  # the runs in a browser, at http://127.0.0.1:8081/
 ```
 
-Or in a container, with the example mounted and its agent started inside:
+Each run takes a few seconds. Runs are kept in `.minutehand/` in the folder you ran them from. The example's
+`README.md` explains both runs line by line.
 
-```bash
-docker build --target example -t minutehand-example .
-docker run --rm -v "$PWD/examples:/examples:ro" -w /examples/follow_up \
-  minutehand-example run scenario.yaml --agent agent.yaml -- python agent.py
-```
+To try your own agent, write an agent file (`minutehand schema agent` prints its JSON Schema) and a scenario,
+check them with `minutehand validate`, and run `minutehand doctor -- <your agent's command>` to find any HTTP
+client in the agent that would go around the proxy.
 
-`docker build -t minutehand .` builds the image without the example's library. `examples/follow_up/README.md`
-walks through both runs.
+## How the agent touches Minutehand
+
+Almost nothing is required. An agent that takes its goal by message and books its own wakes implements no
+endpoint. An agent can also take a wake (a `POST` carrying the simulated `now`), answer a report (still working,
+done, when to wake next), take pushed events in each provider's own format, and list its own inboxes for the
+simulated people to decide. Hosts no fake answers are declared in the agent file: acknowledge, pass through,
+replay, or forward to an emulator of your own. `docs/agent-contract.md` lists every touch point, and
+`schemas/agent-api.openapi.json` describes the endpoints.
+
+## Status
+
+Built and tested (`docs/design.md`, "What exists", counts the tests for each part):
+
+- The proxy, the run loop, the store (SQLite, one file per run and its forks), forks from a checkpoint with the
+  agent's own state restored and verified, and `minutehand serve` for test suites that open many worlds at once.
+- Providers: Slack, Microsoft Teams and Graph, Asana, Jira, YouTrack, Notion, GitHub, Google Drive with Docs and Slides,
+  AWS EventBridge Scheduler and SQS (through moto), and Google Cloud Tasks over its REST transport.
+- 19 checks, the scorecard and 10 patterns. Among them, `planned_past_due` flags a follow-up that was on time
+  only because something other than the agent's own plan woke it; the loop's table of what was due is recorded
+  to answer that. `reported_against_world` holds what the agent says it is waiting on against what the world
+  shows.
+- Checks of the agent's own, kept beside its agent file (`checks:`) and run with Minutehand's.
+- Dispatch rules: a scenario can deliver the agent's own wakes late, twice or not at all, and a fork can change
+  them (`DispatchChange`).
+- Outbound capture, with `--capture-unknown` for a first run: `reads` passes only GET, HEAD and OPTIONS, and
+  `model` lets a model stand in for a service nobody declared once the agent writes to it.
+- The agent's machine: `machine:` commands in a scenario change files at a moment, and the folders an agent file
+  `watches:` are recorded as they change. The `file_removed` expectation reads them.
+- MCP: an agent's tool calls are recorded over HTTP through the proxy, and over standard input and output with
+  `minutehand mcp-relay`. The `tool_called` expectation reads them. `minutehand mcp` serves the tools a coding
+  agent uses to run scenarios and read findings.
+- The agent's own OpenTelemetry received and joined to the world events it caused; telemetry out over OTLP.
+- The run viewer (`minutehand view`), `doctor`, `validate` and `schema`, and a container image (`Dockerfile`)
+  that serves by default.
+
+Experimental: `Contained`, an agent in a gVisor sandbox whose clock Minutehand owns, so timers in the agent's own
+process become its wakes with no code change. It needs a patched gVisor that is kept outside this repository,
+and has been run on arm64 only.
+
+Checked by hand, not in the test suite: an agent in containers (`docs/containers.md`).
+
+Not built: people written by a model, checks a model judges, generated providers, a faked system clock
+(`libfaketime`), the hosted service. No fake has been checked against the real service's wire details; each is
+tested against the service's own client library. `docs/design.md`, "Known issues", lists the limits of what is
+built.
+
+## Docs
+
+| Page | What it covers |
+|---|---|
+| `docs/design.md` | The design, what exists, and its known limits |
+| `docs/agent-contract.md` | Every way an agent and Minutehand touch |
+| `docs/capture.md` | Hosts no fake answers: acknowledge, pass through, replay, `--capture-unknown` |
+| `docs/containers.md` | An agent in a container, and the Docker `NO_PROXY` trap |
+| `docs/serve.md` | `minutehand serve`, for a test suite |
+| `docs/external-emulators.md` | Forwarding a host to a fake of your own |
+| `docs/inboxes.md` | Work that waits on a person in the agent's own product |
+| `docs/reference-agent.md` | A larger example: two processes, a job queue, email, a model API |
+
+## Scenarios to start from
+
+`minutehand scenarios` lists a library of ready-made situations (a person goes quiet, answers late, is away with a
+delegate; an approval is rejected or never decided; a deadline moves; a scheduled wake comes late, twice or never).
+`minutehand scenarios new --all --goal ... --owner 'Name <email>' --ask 'Name <email>'` writes each out with your
+values. See `docs/scenarios.md`.
 
 ## Develop
 
+From a checkout:
+
 ```bash
 uv sync
-uv run pytest -q
+uv run pytest -q -n auto
 uv run pyright
 uv run python -m lints
+uv run ruff check . && uv run ruff format --check .
 ```
 
-`docs/design.md` is the design. `CLAUDE.md` is the house rules. `docs/lints.md` argues each lint.
+`CLAUDE.md` is the house rules, `CONTRIBUTING.md` how to contribute, and `docs/lints.md` argues each lint.
+`uv tool install .` installs the checkout's own `minutehand`.
 
 Licensed under the Functional Source License 1.1 (Apache-2.0 future licence); see `LICENSE.md`.

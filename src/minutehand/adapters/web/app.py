@@ -2,7 +2,9 @@
 
     minutehand view [--state DIR] [--port N]      serves both on 127.0.0.1 only
 
-    GET /                                   viewer.html: inline CSS, JS and SVG, nothing fetched from elsewhere
+    GET /                                   viewer.html, which loads its script, its styles and the vendored
+                                            libraries from /static/ on this server and nothing from elsewhere
+    GET /static/...                         those files (`adapters/web/static/`), each library's licence beside it
     GET /api/runs                           every run, finished or still running, with the fork tree
     GET /api/runs/{run_id}                  the scenario, the record once finished, the checkpoints, and for a
                                             fork what it changed and how it differs from its parent
@@ -16,6 +18,9 @@
     GET /api/runs/{run_id}/messages         every message sent, rewritten or deleted, to whom, what it said
     GET /api/runs/{run_id}/model-traffic    every model call by step, what message each wrote, and the model
                                             hosts reached on tunnels never opened, one line per host
+    GET /api/runs/{run_id}/model-calls/{span_id}   one model call: what it was asked and answered, what it wrote
+    GET /api/runs/{run_id}/steps            each wake or step's real-time extent and how much it holds
+    GET /api/runs/{run_id}/steps/{step}/spans      the agent's spans placed in one step, for a waterfall
 
 A case (standing worlds opened under one case label) is one run here: its worlds are read as one log and are not
 listed on their own, and a standing world no call reached (a probe) is not listed.
@@ -28,13 +33,15 @@ read as of its last commit, and the viewer can never change or lock a run.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from minutehand import session
 from minutehand.adapters.web.responses import (
@@ -47,6 +54,7 @@ from minutehand.adapters.web.responses import (
     MessageChange,
     MessageLine,
     MessagesResponse,
+    ModelCallResponse,
     ModelCallsResponse,
     ModelTrafficResponse,
     ObligationsResponse,
@@ -55,6 +63,10 @@ from minutehand.adapters.web.responses import (
     RunRow,
     RunsResponse,
     ScorecardResponse,
+    SpanBar,
+    StepActivity,
+    StepSpansResponse,
+    StepsResponse,
     TraceResponse,
     TrafficCall,
     WakesResponse,
@@ -71,8 +83,10 @@ from minutehand.checks.runner import view_of
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.inboxes import item_words
 from minutehand.domain.scenario import Model
+from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
     Actor,
+    EntityKind,
     EntityRef,
     InboxItemSnapshot,
     ItemStatus,
@@ -80,9 +94,11 @@ from minutehand.domain.world import (
     Operation,
     WorldEvent,
 )
+from minutehand.ports.store import Store
 from minutehand.session import Logged
 
 PAGE = Path(__file__).with_name("viewer.html")
+STATIC = Path(__file__).with_name("static")
 WRITES = frozenset({Operation.CREATE, Operation.UPDATE, Operation.DELETE})
 HOST = "127.0.0.1"
 
@@ -141,7 +157,16 @@ def create_app(state: Path) -> Starlette:
 
     def events(run_id: str) -> Response:
         with session.reading(state, run_id) as world:
-            return _json(EventsResponse(events=[e for e in world.events() if e.entity not in (CHECKPOINT, STEP)]))
+            return _json(
+                EventsResponse(
+                    events=[
+                        e
+                        for e in world.events()
+                        if e.entity not in (CHECKPOINT, STEP)
+                        and e.entity.kind not in (EntityKind.DUE, EntityKind.DATABASE)
+                    ]
+                )
+            )
 
     def calls(run_id: str) -> Response:
         with session.reading(state, run_id) as world:
@@ -260,18 +285,14 @@ def create_app(state: Path) -> Starlette:
 
     def model_traffic(run_id: str) -> Response:
         with session.reading(state, run_id) as world:
-            wrote: dict[str, list[tuple[int, JoinedBy]]] = {}
-            for event in world.events():
-                if event.actor is Actor.AGENT and isinstance(event.after, MessageSnapshot):
-                    joined = trace_of(event, world)
-                    if joined.model_call is not None and joined.joined_by is not None:
-                        wrote.setdefault(joined.model_call.span_id, []).append((event.seq, joined.joined_by))
+            wrote = _writers(world)
             calls = [
                 TrafficCall(
                     span_id=c.span_id,
                     trace_id=c.trace_id,
                     step=s.wake,
                     started=c.started,
+                    ended=c.ended,
                     model=c.model,
                     input_tokens=c.input_tokens,
                     output_tokens=c.output_tokens,
@@ -304,6 +325,77 @@ def create_app(state: Path) -> Starlette:
                     }
                 )
         return _json(ModelTrafficResponse(calls=calls, hosts=list(hosts.values())))
+
+    def steps(run_id: str) -> Response:
+        with session.reading(state, run_id) as world:
+            events = [e for e in world.events() if e.entity not in (CHECKPOINT, STEP)]
+            spans = world.spans()
+        moments: dict[int, list[datetime]] = {}
+        for event in events:
+            moments.setdefault(event.wake, []).append(event.wall_time)
+        for stored in spans:
+            moments.setdefault(stored.wake, []).extend((stored.span.start, stored.span.end))
+        return _json(
+            StepsResponse(
+                steps=[
+                    StepActivity(
+                        step=step,
+                        began=min(moments[step]),
+                        ended=max(moments[step]),
+                        events=sum(1 for e in events if e.wake == step),
+                        spans=sum(1 for s in spans if s.wake == step),
+                        model_calls=sum(1 for s in spans if s.wake == step and is_model_call(s)),
+                    )
+                    for step in sorted(moments)
+                ]
+            )
+        )
+
+    def step_spans(request: Request) -> Response:
+        run_id, step = request.path_params["run_id"], request.path_params["step"]
+        assert isinstance(run_id, str) and isinstance(step, int)
+        try:
+            with session.reading(state, run_id) as world:
+                placed = [s for s in world.spans(wake=step) if s.source is not SpanSource.LOG]
+        except RunRefused as e:
+            return _json(Refusal(error=str(e)), status=404)
+        return _json(
+            StepSpansResponse(
+                step=step,
+                spans=[
+                    SpanBar(
+                        span_id=s.span.span_id,
+                        parent_span_id=s.span.parent_span_id,
+                        trace_id=s.span.trace_id,
+                        name=s.span.name,
+                        service=s.span.service_name,
+                        start=s.span.start,
+                        end=s.span.end,
+                        status=s.span.status,
+                        model_call=is_model_call(s),
+                    )
+                    for s in sorted(placed, key=lambda s: s.span.start)
+                ],
+            )
+        )
+
+    def one_model_call(request: Request) -> Response:
+        run_id, span_id = request.path_params["run_id"], request.path_params["span_id"]
+        assert isinstance(run_id, str) and isinstance(span_id, str)
+        try:
+            with session.reading(state, run_id) as world:
+                found = next((s for s in world.spans() if s.span.span_id == span_id.lower() and is_model_call(s)), None)
+                if found is None:
+                    return _json(Refusal(error=f"run {run_id} holds no model call {span_id}"), status=404)
+                wrote = _writers(world)
+                return _json(
+                    ModelCallResponse(
+                        call=model_call(found, world.spans(trace_id=found.span.trace_id)),
+                        wrote=[seq for seq, _ in wrote[found.span.span_id]] if found.span.span_id in wrote else [],
+                    )
+                )
+        except RunRefused as e:
+            return _json(Refusal(error=str(e)), status=404)
 
     def trace(request: Request) -> Response:
         run_id, trace_id = request.path_params["run_id"], request.path_params["trace_id"]
@@ -339,9 +431,25 @@ def create_app(state: Path) -> Starlette:
             Route("/api/runs/{run_id}/model-calls", one_run(model_calls)),
             Route("/api/runs/{run_id}/messages", one_run(messages)),
             Route("/api/runs/{run_id}/model-traffic", one_run(model_traffic)),
+            Route("/api/runs/{run_id}/model-calls/{span_id}", one_model_call),
+            Route("/api/runs/{run_id}/steps", one_run(steps)),
+            Route("/api/runs/{run_id}/steps/{step:int}/spans", step_spans),
             Route("/api/runs/{run_id}/traces/{trace_id}", trace),
+            Mount("/static", StaticFiles(directory=STATIC), name="static"),
         ]
     )
+
+
+def _writers(world: Store) -> dict[str, list[tuple[int, JoinedBy]]]:
+    """Each model call joined to a message the agent wrote, by its span id: the messages' seqs and how each was
+    joined."""
+    wrote: dict[str, list[tuple[int, JoinedBy]]] = {}
+    for event in world.events():
+        if event.actor is Actor.AGENT and isinstance(event.after, MessageSnapshot):
+            joined = trace_of(event, world)
+            if joined.model_call is not None and joined.joined_by is not None:
+                wrote.setdefault(joined.model_call.span_id, []).append((event.seq, joined.joined_by))
+    return wrote
 
 
 def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:

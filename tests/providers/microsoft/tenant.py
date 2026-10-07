@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
 import ssl
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -40,6 +39,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import DocumentAction, DocumentHappening, Scenario
 from minutehand.domain.world import EntityKind, WorldEvent
+from tests.ports import free_port
 
 START = datetime(2026, 9, 14, 8, 30, tzinfo=UTC)
 
@@ -214,18 +214,12 @@ def _signing_key(client: PyJWKClient, presented: str) -> Any:
     return client.get_signing_key_from_jwt(presented).key
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
 @pytest.fixture
 async def bot(tenant: Tenant, microsoft: Intercepted, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Bot]:
     # PyJWKClient fetches with urllib, which takes its proxy from the environment, as in the bot's process.
     monkeypatch.setenv("https_proxy", microsoft.proxy.url)
     monkeypatch.setenv("HTTPS_PROXY", microsoft.proxy.url)
-    port = _free_port()
+    port = free_port()
     handle = Bot(url=f"http://127.0.0.1:{port}/api/v1/teams/messages")
 
     async def messages(request: Request) -> Response:
@@ -262,7 +256,7 @@ class Webhook:
 @pytest.fixture
 async def webhook() -> AsyncIterator[Webhook]:
     """The service's notification route: the validation handshake echoed as text, notifications kept."""
-    port = _free_port()
+    port = free_port()
     handle = Webhook(url=f"http://127.0.0.1:{port}/api/v1/webhook/sharepoint")
 
     async def receive(request: Request) -> Response:

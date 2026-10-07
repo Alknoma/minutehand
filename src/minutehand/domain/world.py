@@ -18,6 +18,10 @@ class EntityKind(StrEnum):
     CHANNEL = "channel"
     RECORD = "record"
     INBOX_ITEM = "inbox_item"  # something waiting on a person in the agent's own product (`domain.inboxes`)
+    DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
+    FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
+    TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
+    DATABASE = "database"  # a record of a database of the agent's that Minutehand fronts (`domain.database`)
 
 
 class Operation(StrEnum):
@@ -48,6 +52,7 @@ class CaptureMode(StrEnum):
     REPLAY = "replay"
     DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
     FORWARD = "forward"  # sent to an external emulator the agent file or world declares (`domain.emulator`)
+    MODELED = "modeled"  # declared by nobody; answered by a model standing in for the service (`UnknownHosts.MODEL`)
 
 
 class AnsweredBy(StrEnum):
@@ -56,6 +61,7 @@ class AnsweredBy(StrEnum):
     RECORDING = "recording"  # an earlier run's recording of the same call
     REFUSAL = "refusal"  # nobody: a replay that missed, declared to refuse, or an emulator that was unavailable
     EMULATOR = "emulator"  # an external emulator, named in `Captured.emulator`
+    MODEL = "model"  # a language model standing in for a service nobody declared; never sent
 
 
 class BodyKept(StrEnum):
@@ -154,6 +160,55 @@ class Tunnelled(Model):
     route: TunnelRoute
 
 
+class GrpcCode(StrEnum):
+    """A gRPC status, by the name gRPC gives it (`grpc-status` carries its number on the wire)."""
+
+    OK = "OK"
+    CANCELLED = "CANCELLED"
+    UNKNOWN = "UNKNOWN"
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    DEADLINE_EXCEEDED = "DEADLINE_EXCEEDED"
+    NOT_FOUND = "NOT_FOUND"
+    ALREADY_EXISTS = "ALREADY_EXISTS"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    RESOURCE_EXHAUSTED = "RESOURCE_EXHAUSTED"
+    FAILED_PRECONDITION = "FAILED_PRECONDITION"
+    ABORTED = "ABORTED"
+    OUT_OF_RANGE = "OUT_OF_RANGE"
+    UNIMPLEMENTED = "UNIMPLEMENTED"
+    INTERNAL = "INTERNAL"
+    UNAVAILABLE = "UNAVAILABLE"
+    DATA_LOSS = "DATA_LOSS"
+    UNAUTHENTICATED = "UNAUTHENTICATED"
+
+
+GRPC_NUMBERS: tuple[GrpcCode, ...] = tuple(GrpcCode)
+"""Each status at the number `grpc-status` carries for it: gRPC numbers them in the order above, from 0."""
+
+
+class GrpcStatus(Model):
+    """How a gRPC call ended, as its trailers (or, for an answer that is trailers only, its headers) said."""
+
+    code: GrpcCode
+    message: str | None = Field(default=None, description="`grpc-message`, decoded; None when it was empty")
+
+
+class FrameSender(StrEnum):
+    """Who sent a message on a WebSocket connection."""
+
+    AGENT = "agent"
+    SERVICE = "service"  # the provider's socket server, answering for the real service
+
+
+class SocketFrame(Model):
+    """One message on a WebSocket connection to a host a provider claims, as it crossed the proxy."""
+
+    connection: str = Field(description="The connection's own id, the same on every message it carried")
+    number: int = Field(ge=1, description="This message's number on its connection, from 1, both ways counted")
+    sender: FrameSender
+    text: bool = Field(description="A text message; False: binary")
+
+
 class CallFailure(Model):
     """Why Minutehand answered a call in the provider's place: an operation the fake does not implement, or its own
     error, with the exception's type and, for an internal error, its traceback."""
@@ -223,6 +278,18 @@ class Exchange(Model):
         default=None,
         description="Set for a call Minutehand made as a person to the agent's own product (reading an inbox, "
         "deciding an item): the agent made no such call, and nothing counts it as the agent's",
+    )
+    grpc: GrpcStatus | None = Field(
+        default=None,
+        description="Set for a gRPC call: how it ended. `path` is the method (`/package.Service/Method`), `status` "
+        "the HTTP status (200 for any call answered in gRPC), and the bodies the request and answer messages as "
+        "proto3 JSON when the provider's server read them",
+    )
+    frame: SocketFrame | None = Field(
+        default=None,
+        description="Set for one message on a WebSocket connection: `method` and `path` are the upgrade's, `status` "
+        "101, and the message is `request_body` (or `request_bytes`) when the agent sent it, `response_body` (or "
+        "`response_bytes`) when the service did",
     )
 
 
@@ -369,8 +436,29 @@ class InboxItemSnapshot(Model):
     refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
 
 
+class FileSnapshot(Model):
+    """A file in a watched folder of the agent's machine (`AgentUnderTest.watches`), as it stood after a change."""
+
+    kind: Literal["file"] = "file"
+    path: str = Field(description="Absolute")
+    size: int = Field(ge=0, description="Bytes, as the file system reports them")
+
+
+class ToolCallSnapshot(Model):
+    """A tool the agent called on an MCP server (`tools/call`), with what the server answered."""
+
+    kind: Literal["tool_call"] = "tool_call"
+    server: str = Field(description="The server's host, or the name its relay was started with")
+    tool: str
+    arguments: str = Field(description="The call's arguments, as JSON text")
+    result: str | None = Field(default=None, description="The text of the result's content; None when none came")
+    is_error: bool = Field(default=False, description="The server answered an error, or a result marked isError")
+
+
 Snapshot = Annotated[
-    TicketSnapshot
+    ToolCallSnapshot
+    | FileSnapshot
+    | TicketSnapshot
     | MessageSnapshot
     | DocumentSnapshot
     | GrantSnapshot

@@ -10,6 +10,12 @@ word when that is a Python, else that command with `-c`): with exactly the envir
 client library installed there sends one plain request to a canary host that does not exist. A request the proxy
 sees reached it; one that fails to resolve the canary went around it. With `--agent`, the declared outbound hosts
 and model hosts are also checked against the handed-out `NO_PROXY`, as each library reads it.
+
+An agent in a container can lose the handed-out `NO_PROXY` before it starts: the Docker CLI copies the client
+config's `proxies.<daemon>.noProxy` into `NO_PROXY` and `no_proxy` of every container it starts, over a value from
+`--env-file` though not one from `-e` or Compose's `environment:` or `env_file:`. Docker Desktop writes `"*"` there,
+which sends every call straight to the real service. `docker_warnings` reads that file for the doctor and for
+`minutehand env`.
 """
 
 from __future__ import annotations
@@ -20,12 +26,12 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import Registry
@@ -160,6 +166,87 @@ def _documented(host: str, no_proxy: Sequence[str]) -> list[str]:
     return found + (["node"] if any(_node(host, e) for e in no_proxy) else [])
 
 
+DOCKER_CONFIG = "DOCKER_CONFIG"
+"""The variable naming the Docker client's config folder, as the Docker CLI reads it; unset is `~/.docker`."""
+
+
+class _DockerProxies(BaseModel):
+    """One daemon's entry under `proxies` in the Docker client config; the rest of it is Docker's."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    no_proxy: str | None = Field(default=None, alias="noProxy")
+
+
+class _DockerConfig(BaseModel):
+    """The part of the Docker client config the CLI copies into a container's environment; the rest is Docker's."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    proxies: dict[str, _DockerProxies] = {}
+
+
+def docker_config(environ: Mapping[str, str]) -> Path:
+    """The Docker client config the Docker CLI on this machine reads."""
+    folder = Path(environ[DOCKER_CONFIG]) if DOCKER_CONFIG in environ else Path.home() / ".docker"
+    return folder / "config.json"
+
+
+def claimed_hosts(agent: AgentUnderTest | None) -> list[str]:
+    """Every host a call must reach the proxy for: each installed provider's, and the agent's declared hosts."""
+    hosts = [host for manifest in Registry.installed().manifests for host in manifest.hosts]
+    hosts += [d.host for d in agent.outbound] if agent is not None else []
+    return list(dict.fromkeys(hosts))
+
+
+def _covers(entry: str, host: str) -> bool:
+    """Whether a `NO_PROXY` entry sends a host matching `host` (exact, or `*.` and a domain) direct, by curl's rule,
+    the widest a client reads: the entry is the host, a domain it is under, or a host under its wildcard."""
+    bare = entry.strip().lower().removeprefix("*").lstrip(".")
+    domain = host.lower().removeprefix("*.")
+    return _named(domain, bare) or (host.startswith("*.") and bool(bare) and bare.endswith("." + domain))
+
+
+def docker_warnings(hosts: Sequence[str], environ: Mapping[str, str]) -> list[str]:
+    """One warning per daemon entry in the Docker client config whose `noProxy` would replace the `NO_PROXY` handed
+    to an agent in a container and send a call to one of `hosts` around the proxy: `*`, or an entry covering one."""
+    path = docker_config(environ)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        return [f"{path} could not be read, so its proxies' noProxy was not checked: {e}"]
+    try:
+        config = _DockerConfig.model_validate_json(text)
+    except ValidationError as e:
+        said = str(e).splitlines()
+        return [
+            f"{path} could not be read as a Docker client config, so its proxies' noProxy was not checked: {said[0]}"
+        ]
+    found: list[str] = []
+    for daemon, proxies in config.proxies.items():
+        if proxies.no_proxy is None:
+            continue
+        entries = [e.strip() for e in proxies.no_proxy.split(",") if e.strip()]
+        if "*" in entries:
+            what = "every call"
+        else:
+            covered = [h for h in hosts if any(_covers(e, h) for e in entries)]
+            if not covered:
+                continue
+            more = f" and {len(covered) - 5} more" if len(covered) > 5 else ""
+            what = f"calls to {', '.join(covered[:5])}{more}"
+        found.append(
+            f"{path} sets proxies.{daemon}.noProxy to {proxies.no_proxy!r}: the Docker CLI copies it into NO_PROXY "
+            "and no_proxy of every container it starts, over the values in an --env-file, so an agent in a container "
+            f"sends {what} straight to the real service and the run records nothing. Hand the container both "
+            "NO_PROXY and no_proxy with -e, Compose's environment: or env_file:, or its entrypoint; or remove "
+            "noProxy from that file (docs/containers.md)"
+        )
+    return found
+
+
 class LibraryCheck(Model):
     library: str
     result: str = Field(description="reached, not installed, or bypassed with the error")
@@ -183,6 +270,11 @@ class Diagnosis(Model):
     notes: list[str]
 
     no_proxy: list[str] = Field(default=[], description="The NO_PROXY the agent is handed, entry by entry")
+    docker: list[str] = Field(
+        default=[],
+        description="Warnings about the Docker client config: a noProxy that would replace the handed-out NO_PROXY "
+        "in a container and send calls to claimed hosts around the proxy",
+    )
 
     @property
     def bypasses(self) -> bool:
@@ -261,9 +353,18 @@ async def diagnose(
         "host or a domain it is under; undici and proxy-from-env: the host exactly, a suffix only for an entry "
         "starting with . or *)"
     )
-    notes.append("Node's built-in fetch needs NODE_USE_ENV_PROXY=1 to read HTTPS_PROXY (not probed here)")
+    notes.append(
+        "Node's built-in fetch reads HTTPS_PROXY only with NODE_USE_ENV_PROXY=1, which Minutehand hands every agent and "
+        "Node 24 and later read; an older Node's fetch goes around the proxy (not probed here): give it a base URL, or "
+        "run it in a container with --transparent-port"
+    )
     return Diagnosis(
-        interpreter=" ".join(probe.argv), libraries=libraries, hosts=checked, notes=notes, no_proxy=no_proxy
+        interpreter=" ".join(probe.argv),
+        libraries=libraries,
+        hosts=checked,
+        notes=notes,
+        no_proxy=no_proxy,
+        docker=docker_warnings(claimed_hosts(agent), os.environ),
     )
 
 
@@ -291,5 +392,7 @@ def described(diagnosis: Diagnosis) -> str:
                 )
             if not host.bypassed_by and not host.unreachable_by:
                 lines.append(f"  ok   {host.host}")
+    if diagnosis.docker:
+        lines += ["", *[f"WARN {warning}" for warning in diagnosis.docker]]
     lines += ["", *[f"note: {n}" for n in diagnosis.notes]]
     return "\n".join(lines)

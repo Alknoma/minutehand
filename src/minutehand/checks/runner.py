@@ -14,11 +14,14 @@ when `asked_about` judged it so.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import importlib.util
 import inspect
 import pkgutil
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from datetime import datetime
+from pathlib import Path
 from types import ModuleType
 from typing import Protocol
 
@@ -31,8 +34,10 @@ from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.ledger import build
 from minutehand.domain.agent import Commitment, CommitmentStatus
 from minutehand.domain.checks import (
+    AroundProxy,
     Check,
     CheckReport,
+    CommitmentsReported,
     Effectiveness,
     Finding,
     FindingKind,
@@ -43,9 +48,10 @@ from minutehand.domain.checks import (
     WakeModelCalls,
     WakeRecord,
 )
+from minutehand.domain.clock import DueEntry
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
-from minutehand.domain.scenario import Model, PersonAsked, Scenario, Silent
+from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario, Silent
 from minutehand.domain.world import CallOutcome, EntityRef, Exchange, RecordedCall, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
@@ -117,10 +123,37 @@ def _unique[C: _Identified](found: list[C]) -> list[C]:
     return sorted(found, key=lambda c: c.id)
 
 
-def discover() -> list[Check]:
-    """One instance of every check class defined in this package, ordered by id."""
+def discover(own: Sequence[Check] = ()) -> list[Check]:
+    """One instance of every check class defined in this package, and `own`, the agent's (`load_checks`), ordered
+    by id. An agent's check may not take an id of Minutehand's."""
     found: list[Check] = [cls() for cls in _classes(package, _is_check)]
-    return _unique(found)
+    return _unique([*found, *own])
+
+
+class ChecksRefused(ValueError):
+    """An agent's check file that could not be loaded, or holds no check."""
+
+
+def load_checks(paths: Sequence[str]) -> list[Check]:
+    """One instance of every check class defined in each of the agent's check files (`AgentUnderTest.checks`),
+    loaded as a module of its own. Refused, naming the file, when it cannot be read or run, or defines no check."""
+    found: list[Check] = []
+    for path in paths:
+        source = Path(path)
+        name = "minutehand_agent_checks_" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
+        spec = importlib.util.spec_from_file_location(name, source)
+        if spec is None or spec.loader is None or not source.is_file():
+            raise ChecksRefused(f"{path}: no such check file")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as e:
+            raise ChecksRefused(f"{path}: could not be loaded: {type(e).__name__}: {e}") from e
+        mine = [cls for _, cls in inspect.getmembers(module, _is_check) if cls.__module__ == name]
+        if not mine:
+            raise ChecksRefused(f"{path}: defines no check (a class with `id`, `needs` and `run`)")
+        found += [cls() for cls in mine]
+    return found
 
 
 def discover_judged() -> list[JudgedCheck]:
@@ -177,7 +210,9 @@ def verdict(
     Two refinements of "open", both read from the world and neither from the content of any message:
 
     - **Done, with an ask abandoned.** An agent that reports DONE while a question it asked is unanswered and it
-      never followed it up has not finished: it stopped waiting. Work handed to someone (a ticket) is not this. That is unfinished, not passed.
+      never followed it up has not finished: it stopped waiting. A "follow-up" sent in the same wake as the ask
+      (`Chase.instant`) chased nothing, since the agent never waited, and does not count. Work handed to someone (a
+      ticket) is not this. That is unfinished, not passed.
     - **The owner told the result.** Once every expectation of the scenario is met, a message to an owner who
       never answers (`Silent`), sent with or after the last of them, opens a wait nobody will settle; it is the
       result being reported, and neither keeps a run unfinished nor counts as an ask abandoned.
@@ -200,7 +235,9 @@ def verdict(
     abandoned = [
         c
         for c in still
-        if not c.follow_ups and c.obligation.kind is ObligationKind.ANSWER_FROM_PERSON and c not in told_after
+        if all(s in c.instant for s in c.follow_ups)
+        and c.obligation.kind is ObligationKind.ANSWER_FROM_PERSON
+        and c not in told_after
     ]
     open_waits = len(still) - len(told_after)
     open_work = open_waits + (commitments or 0)
@@ -231,9 +268,10 @@ def verdict(
     elif stop is StopReason.AGENT_DONE and abandoned:
         kind = VerdictKind.UNFINISHED
         people = sorted({c.obligation.person or "someone" for c in abandoned})
+        waited = " after the wake it asked in" if any(c.instant for c in abandoned) else ""
         words = (
             f"Not finished: no check failed, but the agent reported it was done with {_count(len(abandoned), 'ask')} "
-            f"it made still unanswered and never followed up ({', '.join(people)})."
+            f"it made still unanswered and never followed up{waited} ({', '.join(people)})."
         )
     elif stop is StopReason.AGENT_DONE or open_work == 0:
         kind = VerdictKind.PASSED
@@ -310,9 +348,9 @@ def _count(n: int, thing: str) -> str:
     return f"{n} {thing}{'' if n == 1 else 's'}"
 
 
-def _deterministic(view: RunView) -> _Tally:
+def _deterministic(view: RunView, own: Sequence[Check] = ()) -> _Tally:
     tally = _Tally(view)
-    for check in discover():
+    for check in discover(own):
         report: CheckReport = check.run(view)
         tally.add(check.id, report)
         if isinstance(check, Expectations):
@@ -326,19 +364,26 @@ def failed_entities(view: RunView, findings: list[Finding]) -> frozenset[EntityR
     return frozenset(e.entity for e in view.events if e.seq in seqs)
 
 
-def evaluate(view: RunView, *, stop: StopReason | None, ended: datetime | None = None) -> RunResult:
+def evaluate(
+    view: RunView, *, stop: StopReason | None, ended: datetime | None = None, own: Sequence[Check] = ()
+) -> RunResult:
     """Every deterministic check over a view that is already built. Judged checks are not run, and an `about`
     expectation, which only `asked_about` can settle, is not counted as met. `stop` is how the run ended, None
     for a run captured elsewhere that does not say."""
-    return _deterministic(view).result(view, ended, stop)
+    return _deterministic(view, own).result(view, ended, stop)
 
 
 async def evaluate_judged(
-    view: RunView, model: LanguageModel | None, *, stop: StopReason | None, ended: datetime | None = None
+    view: RunView,
+    model: LanguageModel | None,
+    *,
+    stop: StopReason | None,
+    ended: datetime | None = None,
+    own: Sequence[Check] = (),
 ) -> RunResult:
     """Every deterministic check, then every judged check on what they did not fail. With no model, each judged
     check is blocked; a model that fails partway blocks the check it failed in."""
-    tally = _deterministic(view)
+    tally = _deterministic(view, own)
     failed = failed_entities(view, tally.findings)
     for check in discover_judged():
         if model is None:
@@ -393,6 +438,10 @@ def view_of(
     model_calls: list[WakeModelCalls] | None = None,
     broken_calls: list[Exchange] | None = None,
     contract_breaks: list[Exchange] | None = None,
+    dues: list[DueEntry] | None = None,
+    reported: list[CommitmentsReported] | None = None,
+    around_proxy: list[AroundProxy] | None = None,
+    uncalled_providers: Sequence[ProviderKey] = (),
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -407,6 +456,10 @@ def view_of(
         model_calls=model_calls,
         broken_calls=broken_calls or [],
         contract_breaks=contract_breaks or [],
+        dues=dues,
+        reported=reported,
+        around_proxy=around_proxy,
+        uncalled_providers=list(uncalled_providers),
     )
 
 
