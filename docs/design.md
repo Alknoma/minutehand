@@ -9,13 +9,13 @@ Minutehand is how a team builds its own proactive agent and finds out whether it
 Two pillars, in this order:
 
 1. **Evaluating proactive effectiveness.** What the agent did and when, against what the world did and when, judged by the rules the team writes for its own agent. Minutehand states the facts; whether a follow-up was late, a reminder one too many, or an answer acknowledged too slowly is the team's policy, written in YAML (`docs/assessments.md`). A rule may name the design that fixes what it finds.
-2. **Rewind.** Any run can be restarted from any moment with the prompt, the model, the people or the world changed, and played forward again, with no change to the agent's code.
+2. **Rewind.** Any run can be restarted from any moment with the prompt, the model, the people or the world changed, and played forward again. Minutehand owns the agent's time and its memory: the agent keeps what it remembers through one import (`minutehand.agent.store`), and a fork starts from that memory as it stood at the moment, with nothing else asked of the agent.
 
 It is one process: it intercepts the agent's outbound API calls, owns the clock, plays the people and records every change. A coding agent reaches it over MCP, so "simulate it and fix what it finds" is a loop that needs no person in it.
 
 ## What exists
 
-Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto` runs every one that needs neither a package index nor Docker, with sockets disabled except to `127.0.0.1`, `::1` and `localhost`. The rest are marked `packaging` or `firestore`.
+Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto` runs every one that needs neither a package index nor Docker, with sockets disabled except to `127.0.0.1`, `::1` and `localhost`. The rest are marked `packaging`, `docker`, `benchmark` or `recipes`.
 
 | Part | What it does | State | Tests | Known limits |
 |---|---|---|---|---|
@@ -34,16 +34,15 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | GitHub provider: `adapters/providers/github/` | REST at `api.github.com` (`/user`, `/user/repos`, a repository, its languages, branches, contents, blobs, trees and commits, code search with text matches, `/rate_limit`) and `/graphql` (`viewer`, `repository`); classic and fine-grained personal access tokens; primary rate limits counted per user and per address in the store; seeded faults (`rate_limited`, `secondary_rate_limited`, `server_error`); see its `README.md` and `CLAIMS.md` | Built and tested | 155 (`tests/providers/github/`) | Repository reads only: no issues, pull requests, webhooks, OAuth web flow or App tokens. A GraphQL query costs one point. Every branch and commit shows the head's files. No `ETag` or conditional requests. The seed comes beside the scenario (`GitHubProvider.seed_with`), not from it. |
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
 | Google Cloud Tasks provider: `adapters/providers/google_cloud_tasks/` | Queues and HTTP tasks over the REST API and over gRPC, the client's default, from the same operations and world; a task's `scheduleTime` booked as a wake and delivered as an HTTP call to the agent's handler with Cloud Tasks' headers; a non-2xx answer retried with the queue's backoff until its attempts run out; a task's name taken for an hour after it ran or was deleted; queues seeded by `CloudTasksSeed`; see its `CLAIMS.md` | Built and tested | 20 (`tests/providers/google_cloud_tasks/` 16 through the real proxy with Google's own `google-cloud-tasks`, 11 on its REST transport and 5 on gRPC; `tests/e2e/test_cloud_tasks_run.py` 4 whole runs, one on gRPC) | gRPC needs `minutehand[grpc]` (grpcio and Google's messages); without it a gRPC call is answered UNIMPLEMENTED, saying so. Tasks asking for signed OIDC or OAuth tokens, App Engine tasks, `tasks:run` and batch calls answer 501. Only a task URL on this machine is called. Backoff stops growing after `maxDoublings` instead of growing linearly. |
-| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. Only `Scripted` and `Silent` people: `Answers` is refused. |
-| Rewinding the agent's own state: `application/restore.py`, `examples/state/` | Settles before every checkpoint, restores as a sequence (`stop`, `restore`, `start`, answer), verifies the report against the checkpoint's; recipes for SQLite and a Firestore emulator | Built and tested | 24 in `tests/orchestrator/` (counted above), 4 in `tests/state/` (1 marked `firestore`) | The verify step compares the report and, when the hooks declare `fingerprint`, a digest of the agent's state; what the fingerprint command does not cover it cannot see. An agent with neither a `Reported` source nor a fingerprint is restored unverified, and says so. Without a `busy` command, settling sees only the report and the proxy, and each checkpoint says it is unconfirmed. A PostgreSQL database is fronted instead (next row). |
-| The agent's database, recorded at the wire: `domain/database.py`, `adapters/database/postgres/`, `application/databases.py` | Minutehand listens as PostgreSQL where the agent's database URL points, relays every connection, records each committed transaction in the run's log, takes a base at the run's start, and puts the database back for a fork by replaying onto the base, comparing every answer | Built and tested; prototype | 14 in `tests/state/test_postgres_wire.py`, 2 marked `docker` in `tests/state/test_postgres_recipe.py` (CI job `postgres`) | PostgreSQL only, in the clear only. Values the database makes up (`now()`, `random()`) are detected only when a write returns them. See "The agent's database, recorded at the wire". |
+| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a checkpoint after which the agent did not go on writing its memory in the same wake. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| The agent's memory: `minutehand/agent/` (`store`, `wake`), `domain/memory.py`, `application/memory.py`, `application/restore.py`, the receiver's `/minutehand/agent` routes | What the agent remembers, as JSON under string keys, through one import inert in production; under Minutehand every write recorded in the run's log and every read answered from it, so each run and fork has its own memory and a fork starts from its parent's at the checkpoint with no hooks; the agent's next wake marked the same way; a fork's agent proven by its memory's digest and its report; a fresh empty SQLite file per run for each database of its own the agent file names | Built and tested | `tests/agent/` 21, `tests/e2e/test_memory_run.py` 4, `tests/orchestrator/test_rewind.py`, `tests/orchestrator/test_fork_start.py` 8 | Only state written through the store is part of a run: anything the agent keeps elsewhere is not simulated, not kept apart between runs and not rewound, and is seen only when its report shows it or the agent file names the database ("The agent's memory"). The package ships inside `minutehand`, whose own dependencies are heavy; it imports none of them. |
 | Facts, assessments, ledger, scorecard, patterns: `checks/`, `domain/assessments.py` | The facts of a run (`checks/facts.py`), the team's YAML rules over them (`checks/assessments.py`), the checks that state the scenario's own words and the run's integrity (`expectations`, `near_miss_name`, `agent_contract_changed`, `around_proxy`, `unmatched_call`), the agent's own checks, the obligations ledger, `Effectiveness` (facts only), 10 patterns | Built and tested | `tests/checks/`, `tests/orchestrator/test_team_rules.py`, `tests/test_checks_on_reference_run.py`, `tests/e2e/test_around_proxy_run.py` | A rule counts; whether a message meant something is a judgement no rule makes. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP and, with `minutehand[grpc]`, gRPC on the same port. Metrics are dropped; a log record is kept only when it carries GenAI content. A span is placed in a wake by comparing its SDK's clock with this machine's. |
-| Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Samples without `StateHooks` are not independent. |
+| Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Each sample has a memory of its own; what the agent keeps outside the store is carried from one sample into the next. |
 | Standing mode: `serve.py`, `application/standing.py`, `adapters/control/`, `adapters/proxy/worlds.py`, `adapters/proxy/credentials.py`, `minutehand.testing` | `minutehand serve`: one process holding many worlds at once for a test suite; each call routed to the world that claims its host, a world key its URL names (`Manifest.world_keys`), or a credential (including a JSON or form token request's refresh token, code, client id and secret, and client assertion); a control API under `/v1` that also fires a happening, presses a control, declares a provider's own faults and switches, seeds more into an open world, changes people's accounts and permissions, deletes a ticket as a person, mints the credentials a pushed request carries, resets a world in place and shows its raw state; a pytest client and plugin; a composite action for another repository's CI; the image serves by default | Built and tested | 104 (`tests/serve/` 95, `tests/testing/` 3, `tests/e2e/test_cli.py` 2, `tests/test_scenario.py` 3, `tests/packaging/test_stack.py` 1) | Isolation is as fine as the credentials the services carry: one fixed token per stack means one world at a time. A base-URL call is routed as a proxied one. A call whose only claim is a `common` or `organizations` sign-in path, or a shared host with no credential, still reaches the default world only. A recorded call whose response body is binary is answered but not kept (see Known issues). Booked wakes are never fired. See `docs/serve.md`. |
-| Reference agent: `examples/reference_agent/` | Two processes (an API on `requests`, a worker on `httpx`) over a job queue in SQLite or a Firestore emulator, email by a captured channel with replies, a pass-through search, a model API on a local HTTPS server, OpenTelemetry over HTTP or gRPC, five behaviours; `docs/reference-agent.md` | Built and tested | 9 (`tests/architecture/`) | Firestore variant measured by hand, not in a marked test |
-| Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Samples without `StateHooks` are not independent. |
+| Reference agent: `examples/reference_agent/` | Two processes (an API on `requests`, a worker on `httpx`) over a job queue in its memory (`minutehand.agent.store`, SQLite in production), email by a captured channel with replies, a pass-through search, a model API on a local HTTPS server, OpenTelemetry over HTTP or gRPC, five behaviours; `docs/reference-agent.md` | Built and tested | 9 (`tests/architecture/`) | |
+| Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Each sample has a memory of its own. |
 | Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
 | Inboxes in the agent's own product: `domain/inboxes.py`, `application/inboxes.py`, `adapters/agent/inboxes.py`, `adapters/agent/openapi.py` | What waits on a person in the agent's own product (an approval, a question on its page), read and decided as that person; an item is an ask, a decision its answer; templates or OpenAPI operations; `docs/inboxes.md` | Built and tested | 41 (`tests/inboxes/` 33, `tests/architecture/test_approvals.py` 7, `tests/web/test_viewer_decisions.py` 1), and 2 driven in `tests/architecture/test_driven_approvals.py` | HTTP only; MCP is a designed second `kind`. An item raised and withdrawn between two readings is missed. |
 | Scenario library: `src/minutehand/library/`, `domain/library.py`, `application/library.py` | Eleven ready-made scenarios with the team's goal, owner, person asked and answer as `{team.*}` placeholders; `minutehand scenarios`, `scenarios show`, `scenarios new`; see `docs/scenarios.md` | Built and tested | 22 functions, 113 cases (`tests/test_library.py` 18 functions, 51 cases; `tests/architecture/test_library.py` 4 functions, 62 cases, 60 of them one run each of a scenario against an example agent's behaviour) | Not graded and no pass mark. Conflicting answers are not in it. Three scenarios' main check never fires against either example agent. |
@@ -194,9 +193,9 @@ scorecard
   failed checks: 2
 
 checkpoints
-  seq 14, after wake 0: not restorable: the agent declares no state hooks
-  seq 18, after wake 1: not restorable: the agent declares no state hooks
-  seq 19, after wake 1: not restorable: the agent declares no state hooks
+  seq 14, after wake 0: restorable
+  seq 18, after wake 1: restorable
+  seq 19, after wake 1: restorable
 exit 1
 ```
 
@@ -232,6 +231,8 @@ The same loop is served as MCP tools by `minutehand mcp` (see "What a coding age
 
 ```
 src/minutehand/
+  agent/              what an agent imports, standard library only: store.py (its memory), wake.py (its next wake),
+                      _store.py (the adapters and the run's backend), _wire.py (HTTP to the run's receiver)
   domain/             pure: no I/O, no clock reads
     scenario.py       Model, Scenario, Person, Account, Answers, Scripted, ScriptedReply, ScriptedPress, FormInput,
                       Silent, DelayRange, WorkingHours, Absence, SeededTicket, SeededComment, SeededDocument,
@@ -245,7 +246,7 @@ src/minutehand/
                       TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, GrantSnapshot,
                       RecordSnapshot, InteractionSnapshot
     agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
-                      GoalByWake, GoalByMessage, HumanAction, Inbox, StateHooks
+                      GoalByWake, GoalByMessage, HumanAction, Inbox, Marked, OwnDatabase
     outbound.py       Acknowledge, PassThrough, Replay, Forward, HostHeader, Answer, Route, MessageReading, InForks, OnMiss
     emulator.py       ExternalEmulator, Upstream, ReadyHttp, ReadyTcp, ReadyLog, Health, ErrorMarker, EmulatorHealth,
                       EmulatorChange, ADDED_HEADERS
@@ -261,13 +262,14 @@ src/minutehand/
     clock.py          Due, Jump, next_jump()
     run.py            RunRecord, StopReason, Verdict, VerdictKind, EmulatorUse, WakeLimit, wake_limit()
     errors.py         ServiceRefusal, Rendered, Asked: what leaves a provider's app
+    memory.py         SeededMemory, StoreCall (MemoryGet, MemoryList, MemoryWrite), WakeMark: the agent's memory on the wire
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
   ports/              Store, Clock, Provider, PushesEvents, PushesInteractions, HoldsTickets, EditsTickets,
                       ActsOnTickets, DeletesTickets, ChangesDocuments, NotifiesChanges, DeclaresFaults,
                       ChangesPeople, GrantsPermissions, MintsInboundCredentials, OwnsSeed, BooksWakes, Wakes,
                       AgentDriver, Reports, Replier, Telemetry
-  application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (settle, restore,
-                      verify), replier_scripted.py, run_clock.py, state_hooks.py, files.py, refusals.py,
+  application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (a fork's agent proven),
+                      memory.py (the agent's memory in the log), replier_scripted.py, run_clock.py, files.py, refusals.py,
                       model_calls.py (the join), standing.py and further_seed.py (`minutehand serve`)
   checks/             facts.py (the facts, public), assessments.py (the team's rules read over them), ledger.py,
                       runner.py, effectiveness.py, patterns.py, and the checks of the scenario's words and the
@@ -281,7 +283,8 @@ src/minutehand/
     providers/<key>/  manifest.py, provider.py, app.py, wire.py, state.py, seed.py
     store/            sqlite.py
     agent/            reported.py, polled.py, command.py, reach.py
-    telemetry/        otel.py (what Minutehand sends), receiver.py, otlp.py, forward.py (what the agent sends)
+    telemetry/        otel.py (what Minutehand sends), receiver.py (also the agent's memory and next wake), otlp.py,
+                      forward.py (what the agent sends)
   session.py          the composition root: play(), fork(), load(), runs(), fork_points()
   cli.py              minutehand run | findings | fork | runs
 lints/                discovered by directory, no registration
@@ -325,7 +328,7 @@ class AgentUnderTest(Model):
     wakes: list[WakeSource] = []
     inbound: list[InboundTarget] = []
     inboxes: list[HttpInbox] = []
-    state: StateHooks | None = None
+    own_databases: list[OwnDatabase] = []
 ```
 
 `WakeReason` is `START | DUE | PERSON_REPLIED | DIRECTION | TICK`; `AgentStatus` is `WORKING | IDLE | DONE`. `AgentUnderTest` refuses a goal sent by message on a provider it declares no inbound target for, and a goal handed over in a wake when it declares no way to be woken. `wakes` may be empty when the goal comes by message.
@@ -659,9 +662,8 @@ Orchestrator.run():
                            -> Replier.decide -> a pending reply
                            an agent ticket assigned to a person with a TicketFate -> a pending fate
       AgentReport.next_wake replaces the agent's previous DUE wake
-      checkpoint: with StateHooks, settle (not WORKING, and no call through the proxy for `quiet`), then
-                  StateHooks.snapshot, or NotRestorable with the reason after `settle_limit`;
-                  then a Checkpoint row in the log, carrying the agent's report
+      the last next wake the agent marked in the wake (`minutehand.agent.wake`) replaces its next wake
+      checkpoint: a Checkpoint row in the log, carrying the agent's report and its memory's digest
       stop on DONE (AGENT_DONE), the wake limit (WAKE_LIMIT), AgentFailed (AGENT_FAILED)
   RunRecord -> Scorer (the team's rules and checks, the core's checks) -> Telemetry.found, Telemetry.run_ended
 ```
@@ -700,16 +702,12 @@ What a run leaves behind (`session.py`):
 <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
 <state>/runs/<run_id>/captured.jsonl every call the run captured to a host no provider claims, redacted, for
                                      a later replay (`docs/capture.md`)
-<state>/runs/<run_id>/world.pool/    the agent's snapshots, each file once, zstd-compressed, named by its
-                                     SHA-256, for a root run and all its forks
-<state>/runs/<run_id>/wake-<n>/      where the snapshot command writes after wake n; removed once kept
-<state>/runs/<run_id>/restoring/     a snapshot written back out for the restore that starts this run;
-                                     removed once the restore is over
-<state>/runs/<run_id>/restore.json   for a fork, or a sample after the first: each restore step with its
-                                     command's output, and whether the restore was verified
+<state>/runs/<run_id>/own/           a fresh empty SQLite file per variable the agent file names under
+                                     `own_databases`, outside forks
+<state>/runs/<run_id>/restore.json   for a fork: how its agent was found at its start (its memory, its report)
 ```
 
-`world.db` holds twelve tables: `run` (each run and the seq, call count and wake it was forked at), `event`, `entity_version`, `exchange`, `reply`, `span` (the agent's spans, see "Telemetry"), `wake_edge` (the real moment each wake began and ended), `forward_failure`, and four that keep bytes once: `content` (stored bodies), `span_body` (which span attribute values are stored bodies), `snapshot` and `snapshot_file` (the agent's snapshots as manifests into `world.pool/`).
+`world.db` holds ten tables: `run` (each run and the seq, call count and wake it was forked at), `event`, `entity_version`, `exchange`, `reply`, `span` (the agent's spans, see "Telemetry"), `wake_edge` (the real moment each wake began and ended), `forward_failure`, and two that keep bytes once: `content` (stored bodies) and `span_body` (which span attribute values are stored bodies). The agent's memory is entity versions like any other.
 
 - `entity_version` is the world: append-only, one row per change, read "as of" a sequence number. Providers page through it with `Store.children`; nothing is held in process memory between requests.
 - `event` and `exchange` are append-only too. A call that produced no event is recorded with `first_seq > last_seq`.
@@ -717,14 +715,14 @@ What a run leaves behind (`session.py`):
 - One file per root run isolates parallel runs. A fork lives in its root's file.
 - One `sqlite3` connection per store, shared across threads behind one lock: a provider served from a worker thread writes through it.
 - `span` is append-only and keyed like `exchange`: each row carries the wake it is placed in, the wake it arrived in and `after_seq`, the head of the log when it arrived. A fork sees its parent's rows placed in wakes up to the one whose checkpoint it was forked at (`run.forked_wake`), however late they arrived.
-- `SCHEMA_VERSION = 6` is stamped into `user_version`; a file with tables and another version is refused, not guessed at. Changes: 5 let an exchange carry `captured` and a message `answerable`; 6 moved every body of 512 bytes or more into `content` and the agent's snapshots into manifests. A version 5 file (bodies inline, snapshots as `wake-<n>/` directories) is refused; there is no migration.
+- `SCHEMA_VERSION = 8` is stamped into `user_version`; a file with tables and another version is refused, not guessed at. Changes: 5 let an exchange carry `captured` and a message `answerable`; 6 moved every body of 512 bytes or more into `content` and the agent's snapshots into manifests; 7 kept a body that is not UTF-8 as its bytes; 8 dropped the snapshots and their pool with the state hooks that wrote them. An older file is refused; there is no migration.
 
 #### Bytes kept once
 
 The rule: what goes in is what comes out, and the record is exactly that. Every body is kept verbatim (after redaction, which applies to the stored copy only); nothing is dropped or summarised to save space. Space is saved only by not storing the same bytes twice.
 
 - **Bodies.** Every body passes one door, `SqliteStore._keep`: an entity version's body, an event's snapshot (as its JSON), an exchange's request and response bodies, and each string value of a span attribute. Under `INLINE_LIMIT` (512) bytes of UTF-8 it stays in its row. At 512 or more it goes into `content` under the SHA-256 of its UTF-8 bytes, once per file whoever wrote it, compressed with zstd (level 3) when that is smaller, and the row holds the 32-byte hash. The hash is over the uncompressed bytes. Every reader (`get`, `children`, `versions`, `events`, `calls`, `spans`, and through them the viewer, the MCP tools and the control API) gets back the exact text written: `test_an_awkward_body_reads_back_identical_from_every_reader` writes an empty body, odd JSON spacing, all 256 byte values as the proxy decodes a binary body, bodies one under, at and one over the limit (in one- and two-byte characters), NULs, and 2 MB, through every reader.
-- **Where the bytes live.** A body in a table of the same file, not in files beside it: one file to copy, and the body commits in the same transaction as the row that refers to it, so a sweep in another connection never sees it unreferenced in between. The largest body the proxy keeps is bounded (`body_limit`, 1 MiB by default for a captured host; a provider's own limits, 5 MiB for a Drive file), so SQLite's per-value limit is never near. A snapshot file is the opposite case (an agent's database can be gigabytes and must be streamed), so snapshot files live beside the file, in `world.pool/`.
+- **Where the bytes live.** A body in a table of the same file, not in files beside it: one file to copy, and the body commits in the same transaction as the row that refers to it, so a sweep in another connection never sees it unreferenced in between. The largest body the proxy keeps is bounded (`body_limit`, 1 MiB by default for a captured host; a provider's own limits, 5 MiB for a Drive file), so SQLite's per-value limit is never near.
 - **The threshold**, measured on run A below: a body under 512 bytes compresses to about its own size (49,577 bytes of 712 distinct bodies under 256 became 52,542), and a stored body costs about 110 bytes of hash, index entry and row header, so moving it saves nothing unless it repeats; between 512 and 1,024 bytes zstd halves a body (564,278 → 303,954 bytes over 1,000 bodies), so even one that never repeats is smaller stored.
 - **Compression.** zstd rather than zlib: within 6% of zlib's size on small JSON and three times faster (2.6 ms against 8.0 ms over those 1,000 bodies); `zstandard` was already installed under mitmproxy and is now a direct dependency.
 - **Redaction comes first.** The proxy redacts before it hands a body to the store, so a secret never reaches `content` and two bodies that differ only in a redacted value are one row (`test_bodies_that_differ_only_in_a_redacted_secret_are_stored_once_and_no_secret_is_kept`). The stored-bytes searches read every stored body and pooled file decompressed (`tests/support/stored.py`), since a compressed secret would not appear in the raw bytes.
@@ -732,19 +730,9 @@ The rule: what goes in is what comes out, and the record is exactly that. Every 
 - **Discarding** a run deletes its rows and every body no remaining row in any run refers to, in one transaction (a sweep over the five reference columns, not a reference count, so no write path can get a count wrong): a process killed halfway rolls back and every row still reads its body (`test_a_process_killed_while_discarding_deletes_no_body_a_row_still_refers_to`).
 - **The write-ahead log** is cut back to 1 MiB after each checkpoint (`journal_size_limit`) and to nothing when a store closes (`wal_checkpoint(TRUNCATE)`, which also runs when a `play` finishes, a fork ends, and a standing world closes).
 
-#### The agent's snapshots
-
-The one place a full copy per step cannot be avoided, since the agent's own state cannot be replayed from the log, except a PostgreSQL database Minutehand fronts, whose writes are recorded and replayed instead ("The agent's database, recorded at the wire"). The snapshot command fills `wake-<n>/` as before; then `Store.keep_snapshot` records the directory as a manifest (`snapshot_file`: path, regular file or directory, SHA-256, mode, size) and stores each file in `world.pool/<2 hex>/<sha256>.zst`, unless the pool already holds those bytes, and the directory is removed. A restore gets `Store.materialise`: the same paths, bytes and modes written into a fresh `restoring/` directory, each file's hash checked as it is written, removed when the restore is over.
-
-- **Manifest and pool, not hard links.** A hard link shares the inode, so a `restore` command that opened a snapshot file for writing would change every snapshot linked to it, a file's mode would be shared by every snapshot holding the same bytes, and a pooled file could not be compressed. A manifest costs a copy on restore (30 MB in about 130 ms here) and nothing else.
-- **Pooled files are always compressed** (streamed, so a file of any size); on the benchmark's random bytes zstd adds under 0.1%, on an agent's database it saves most of it.
-- **Only regular files and directories** are kept. A link or a socket fails the checkpoint, naming it: a restore could not put it back as it was.
-- **Retention.** `StateHooks.keep: N` prunes after each snapshot: the newest N stay restorable, and so do one pinned (`minutehand pin <run> <seq>`), the run's start (every later sample restores from it) and any a fork was taken from, or a fork of that fork. A pruned checkpoint is shown everywhere as "not restorable: its snapshot was pruned", and a fork from it is refused with that reason. Default: keep all.
-- **Crash safety.** Pruning commits the manifests' removal first, then removes the files no manifest names, holding the file's write lock so no new manifest can name a file while it goes. A process killed before the commit changes nothing; one killed after it leaves only unreferenced files, which the next sweep removes (`test_a_process_killed_between_pruning_and_removing_files_leaves_every_kept_snapshot_whole`).
-
 #### Measured: before and after
 
-`uv run pytest -q -m benchmark tests/benchmarks -s` (`tests/benchmarks/test_storage_size.py`) builds three runs through the real proxy and store: **A** 5,000 calls to Slack, 4,500 of them `users.list` answering the same 20,044-byte listing and 500 `chat.postMessage`; **B** 50 uploads to Drive of a 4 MiB text file with 10 distinct contents, each read back 5 times; **C** 200 wakes, each ending in a checkpoint whose snapshot command copies a 30 MB directory of 300 files of random bytes, 3 of which change per wake. Before is `integration-main` at `465507a`; the runs were interleaved, three of each, on a shared machine with a load average of 13 to 17, and the medians are shown. On disk is the world file, its log and the snapshots once the store has closed.
+`uv run pytest -q -m benchmark tests/benchmarks -s` (`tests/benchmarks/test_storage_size.py`) builds three runs through the real proxy and store: **A** 5,000 calls to Slack, 4,500 of them `users.list` answering the same 20,044-byte listing and 500 `chat.postMessage`; **B** 50 uploads to Drive of a 4 MiB text file with 10 distinct contents, each read back 5 times; **C** (as measured then) 200 wakes, each ending in a checkpoint whose snapshot command copied a 30 MB directory of 300 files of random bytes, 3 of which changed per wake; snapshots are gone, and the benchmark's run C now writes an agent's memory instead, not measured here. Before is `integration-main` at `465507a`; the runs were interleaved, three of each, on a shared machine with a load average of 13 to 17, and the medians are shown. On disk is the world file, its log and the snapshots once the store has closed.
 
 | Run | On disk before | On disk after | Write before | Write after | Read as of mid-run, before | after |
 |---|---|---|---|---|---|---|
@@ -760,7 +748,7 @@ The one place a full copy per step cannot be avoided, since the agent's own stat
 
 #### Housekeeping
 
-`minutehand runs` shows each run's size on disk in three parts that do not overlap: its rows, the stored bodies only it refers to, and the snapshot files only its snapshots name. `minutehand checkpoints <run>` lists each checkpoint, whether it is restorable and its snapshot's size and the bytes only it holds. `minutehand gc` sweeps every world file under the state directory of stored bodies and pooled files nothing refers to and prints what it freed. A standing server's retention of closed worlds is the same function (`session.collect`): it removes the directories of worlds beyond `keep`, then sweeps the rest. `minutehand rm <run>...` removes runs with every fork of each through it too, and drops the base of a fronted database once no world file left records it ("The agent's database, recorded at the wire").
+`minutehand runs` shows each run's size on disk in two parts that do not overlap: its rows and the stored bodies only it refers to. `minutehand checkpoints <run>` lists each checkpoint and whether a fork can start at it. `minutehand gc` sweeps every world file under the state directory of stored bodies nothing refers to and prints what it freed. A standing server's retention of closed worlds is the same function (`session.collect`): it removes the directories of worlds beyond `keep`, then sweeps the rest. `minutehand rm <run>...` removes runs with every fork of each.
 
 ### One container
 
@@ -781,7 +769,7 @@ services:
   agent:
     environment:
       HTTPS_PROXY: http://minutehand:8080
-      NO_PROXY: localhost,firestore
+      NO_PROXY: localhost,minutehand
       SSL_CERT_FILE: /ca/minutehand-ca-bundle.pem          # httpx, requests, slack_sdk
       REQUESTS_CA_BUNDLE: /ca/minutehand-ca-bundle.pem
       HTTPLIB2_CA_CERTS: /ca/minutehand-ca-bundle.pem      # googleapiclient
@@ -790,7 +778,7 @@ services:
 ```
 
 Three limits of the design:
-- **The agent's own database is not a SaaS fake.** Firebase's emulator suite is Google's and stays a separate container.
+- **The agent's own database is not a SaaS fake.** What the agent remembers goes through `minutehand.agent.store` to the run; a database it keeps beside that (Firebase's emulator, a PostgreSQL) stays a container of the team's.
 - **The agent's container must trust the CA.** One environment variable per HTTP library, as above, each naming the bundle: certifi's public roots and then the proxy's CA. A file holding the proxy's CA alone replaces a library's roots, and every call the proxy tunnels to a real host, a model API, fails verification.
 - **A client that ignores proxy settings** is given a base URL instead (`AgentUnderTest.base_urls`, below), which is a configuration change in the agent, or, in a Linux container, captured with no change at all ("Transparent capture", below). Node's built-in `fetch` reads the proxy on Node 24 and later once `NODE_USE_ENV_PROXY=1`, which every agent is handed.
 
@@ -1176,7 +1164,7 @@ CREATE TABLE IF NOT EXISTS entity_version(
 - **The world as of any moment is a query:** the latest version of each entity at or below a sequence number. Rewinding does not restore anything; it moves the point the fakes read from.
 - **A fork is a child run that shares its parent's log up to a sequence number** and writes its own rows after it (`SqliteStore.fork`). No copy is made. It also sees the calls its parent had recorded by then, and none after.
 - **Providers do not know.** They read and write through the store, which applies "as of" for them.
-- **A fork starts only at a checkpoint.** At the end of every wake, and at setup and at the deadline the clock runs on to, the run loop appends a `Checkpoint` (the clock, the decided reply count, scheduled fates, commitments, everything pending, and whether the agent's own state there can be put back) as an entity in the same log (`application/checkpoint.py`). `fork_run` refuses any other `at_seq`; `minutehand run` and `findings` list the ones that exist and say which are restorable.
+- **A fork starts only at a checkpoint.** At the end of every wake, and at setup and at the deadline the clock runs on to, the run loop appends a `Checkpoint` (the clock, the decided reply count, scheduled fates, commitments, everything pending, and the agent's last report and its memory's digest) as an entity in the same log (`application/checkpoint.py`). `fork_run` refuses any other `at_seq`; `minutehand run` and `findings` list the ones that exist and say which are restorable.
 
 What a rewind needs beyond the world:
 
@@ -1184,96 +1172,60 @@ What a rewind needs beyond the world:
 |---|---|---|
 | The clock and everything pending | The `Checkpoint` row at the fork's seq | Built |
 | People's replies already given | The `reply` table; copied up to the fork, decided fresh after it | Built |
-| The agent's own state | Locally: `StateHooks`, a procedure Minutehand owns (below) | Built and tested: SQLite in the default suite, a Firestore emulator against a real container (`-m firestore`) |
-| | A PostgreSQL database the agent file declares under `databases:`: its base and the writes the relay recorded, replayed (below); no hooks | Built and tested against a real PostgreSQL (`-m docker`, CI job `postgres`); prototype |
-| | Hosted: a snapshot of the whole virtual machine the agent runs in, which needs no hooks | Designed, not built |
+| The agent's memory | It is the same log: a fork reads its parent's up to the checkpoint, and proves it by its digest (below) | Built and tested |
+| What the agent keeps outside its memory | Not at all: a database it names is handed fresh and empty; anything else is the agent's. A fork whose agent's report differs from the checkpoint's is refused, naming it (below) | Refused when the report shows it; silently wrong when it does not |
 | AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. The manifest says so (`Manifest.state_outside_log`), and a fork at any checkpoint after the parent first called AWS, or wrote an AWS record, is refused, naming the provider, its first call and what it keeps (`application/rewind.py`; `tests/e2e/test_booked_on_aws.py`). A fork before the first call runs. | Refused, never silently wrong |
 
-#### The agent's own state: settle, restore, verify
+#### The agent's memory
 
-The agent supplies commands; Minutehand decides when they run and checks what they did (`application/restore.py`).
+Built and tested (`src/minutehand/agent/`, `domain/memory.py`, `application/memory.py`, the receiver's `/minutehand/agent` routes; `tests/agent/test_store.py`, `tests/e2e/test_memory_run.py`, `tests/orchestrator/test_rewind.py`, `tests/orchestrator/test_fork_start.py`). Minutehand owns the agent's time and its memory; recording and rewinding follow from that. An agent's whole contact with Minutehand is one import, inert in production:
 
 ```python
-class StateHooks(Model):
-    snapshot: list[str] = Field(min_length=1)
-    restore: list[str] = Field(min_length=1)
-    stop: list[str] | None = Field(default=None, min_length=1, description="Stops the agent's processes")
-    start: list[str] | None = Field(default=None, min_length=1, description="Starts them again after `restore`")
-    quiet: timedelta = Field(default=timedelta(seconds=1), ge=timedelta(0), ...)
-    settle_limit: timedelta = Field(default=timedelta(seconds=60), gt=timedelta(0), ...)
-    answer_limit: timedelta = Field(default=timedelta(seconds=120), gt=timedelta(0), ...)
-    step_limit: timedelta = Field(default=timedelta(minutes=5), gt=timedelta(0), ...)
-    keep: int | None = Field(default=None, ge=1, ...)
+from minutehand.agent import store, wake
+
+store.configure(store.SqliteBackend("agent.db"))  # production: where the memory lives; ignored under Minutehand
+
+
+def on_wake(now: datetime) -> None:
+    for key, ask in store.query("asks/", where={"status": "asked"}):
+        if datetime.fromisoformat(ask["expected_by"]) <= now:
+            follow_up(key)
+            store.put(key, {**ask, "status": "chased", "expected_by": (now + timedelta(days=2)).isoformat()})
+    wake.at(earliest_expected_by())  # the next wake; does nothing in production
 ```
 
-- **Settle.** A checkpoint is snapshotted only when the agent reports it is not `WORKING` and no outbound call of its has been seen for `quiet`, measured from the later of the moment settling began and its last call. The proxy remembers the latest call it saw (`Proxy.last_call`, `Traffic`): every request it answers, edits or refuses, every `CONNECT`, every new tunnelled connection, and every message of bytes on a tunnel. Nothing it sent may still await an answer (`Traffic.waiting`): a call sent on to a real host until its answer has passed, and a tunnel, never decrypted, from a request on it until the server's bytes answer it. A tunnel's bytes are read only as far as TLS record headers, which are in the clear (`adapters/proxy/tunnel.py`): on a TLS 1.3 connection (the server sends an encrypted record before the client has) the client's first encrypted record is its `Finished`, and the first encrypted message the server sends after it is its session tickets, sent unasked; they arrive after a request sent straight after the `Finished` and are not its answer. What record headers cannot tell: a server that sends no tickets and answers the first request so fast that the answer is read with them holds the tunnel as awaiting until the client sends again or closes it (a refusal at the settle limit, never a wrong checkpoint); tickets sent in two separate writes, or an HTTP/2 server's own preface, read as an answer. Proved by `tests/proxy/test_tunnel_settle.py`: tickets at once, the answer two seconds later. An agent with a `Reported` wake source is asked for its report again once quiet (`ports.agent.Reports`); a call made while it is asked starts the quiet again. One that has not settled within `settle_limit` is written as `NotRestorable(reason)`, e.g. "the agent was still making outbound calls when the settle limit (0.5 s) ran out: its last, GET /testchat/inbox, …", and is never snapshotted. A settled one is `Restorable(snapshot_of, wake, report)`: the report is what the restore must bring back. A run with hooks and nothing watching the agent's calls is refused.
-- **Restore** is a sequence, each step's output kept in the child's `restore.json`: `stop` (the agent's command, when Minutehand started it with `--`, then the agent's own `stop`), `restore`, `start` (the agent's own, then Minutehand's command), then `answer`: the report endpoint must answer within `answer_limit`. A step that fails, cannot be started or runs past `step_limit` refuses the fork: "the restore of the agent from the checkpoint at seq 18 failed at step `restore`: … exited 5 after 0.1 s. Its output: …". `minutehand fork` names each step on stderr as it is taken. A sample after the first is restored the same way from the first sample's setup.
-- **Verify.** The report after the restore is compared with the recorded one (`differences`). Equal means: the same `status`; a `next_wake` that is the same instant, or both none; the same commitments as a set keyed by `Commitment.key`, each with the same `status`, where none reported and an empty list are the same. A difference refuses the fork field by field: `next_wake: 2026-08-26T09:00:00+00:00 at the checkpoint, none after` is a restore that silently did nothing; `…, 2026-08-28T09:00:00+00:00 after` is the snapshot of another wake restored.
-- **What the comparison cannot see:** anything the report does not carry (a conversation, a cache, a draft, a commitment's description and dates); a restore that put back another moment whose report reads the same; state in a service the agent uses that was not restored and is not reflected in its report; in-memory state in a process the restore did not stop and start. An agent with no `Reported` source (`Command`, `Polled`, by message only) cannot be asked between wakes: it is restored, and `restore.json` and `minutehand fork` say it was not verified and why.
-- **Refusals leave nothing.** No hooks, no checkpoint at the seq, a checkpoint not restorable, its snapshot never kept or pruned, a booking pending, a ticket edit that cannot land: each is refused before `Store.fork`. A restore that fails after the child exists discards it (`Store.discard`) and `session.fork` removes its directory. Before, every refusal after `Store.fork` left an empty child run in the world file.
+| | Production (MINUTEHAND_ON unset) | Under Minutehand (`minutehand run` sets MINUTEHAND_ON and MINUTEHAND_AGENT_URL) |
+|---|---|---|
+| `store` | A pass-through to the backend `configure` named: a three-method adapter (`Backend`: `get`, `scan`, `write` over JSON text). `SqliteBackend`, shared by every process opening the same file, and `MemoryBackend` ship; any other database is an adapter of its own (`docs/agent-contract.md`, "Writing an adapter"). Nothing is recorded. | The run's memory, over HTTP to the receiver (`POST /minutehand/agent/store`, the receiver's host being in the agent's `NO_PROXY`). The backend `configure` named is never called, so the agent's real database is not opened (`SqliteBackend` opens its file at its first call). |
+| `wake` | Does nothing; the agent's own scheduler does the work. | `wake.at(moment)` is recorded as the agent's next wake (`EntityKind.NEXT_WAKE`, actor AGENT): the last said in a wake replaces any it marked or reported before; `wake.clear()` says none. |
 
-#### The agent's database, recorded at the wire
+- **The API.** `get(key, default)`, `put(key, value)`, `delete(key)`, `list(prefix)` (ordered by key), `query(prefix, where={field: value})` (a field may be a dotted path), `batch()` (all or none, `with` or `async with`), `collection(name)` (a namespace of its own keys), and `aget`, `aput`, `adelete`, `alist`, `aquery`. Values are JSON; anything else is refused when written. The package imports the standard library only (`test_the_agent_package_imports_nothing_but_the_standard_library`).
+- **What a run records.** Each write is an entity version in the world's log: `EntityKind.MEMORY`, provider `memory`, external id `<collection>/<key>`, actor AGENT, the wake and simulated moment it was made at, the value as canonical JSON in its `MemorySnapshot`. A batch is one transaction (`Store.apply_all`). Each read is an event with no version (`READ` for a get, `SEARCH` for a listing), so `WakeRecord.memory_reads` and `memory_writes` count both per wake. Neither counts as a change to the world (`world_changes`, `writes`), the viewer's events or a fork's first difference: they are the agent's own memory, not something a person could see.
+- **Where a run's memory starts.** From the scenario's `memory:` (`SeededMemory`: a key, its JSON value, an optional collection), written as actor SCENARIO before the first wake, and nothing else. Each sample is a run of its own, so samples are independent in their memory.
+- **Robustness.** A call that never reached Minutehand, or one answered 502, 503 or 504, is tried again, six times over about three seconds; then `MinutehandUnreachable`, naming the URL. With MINUTEHAND_ON set the store never falls back to the agent's own database. Any other refusal is `MinutehandRefused` with what the receiver said. `minutehand env` hands MINUTEHAND_ON always, and MINUTEHAND_AGENT_URL when the receiver's port is fixed (`--telemetry-port`; the receiver runs whether or not telemetry is received); an agent handed the first without the second refuses to use its store. Under `minutehand serve` neither is handed: a standing world holds no agent's memory, and the store stays the team's own.
+- **A fork** reads its parent's log up to the checkpoint, so its memory is exactly the parent's there, with nothing copied, replayed or restarted. Every checkpoint keeps the memory's digest (`Remembered.memory`) and the agent's last report. A fork (`application/restore.start_fork`) proves the memory it sees digests the same, starts the agent's program once the fork exists when Minutehand runs it (so whatever it reads as it starts is the fork's: the receiver holds the agent's calls until then), and asks for the agent's report, which must equal the one recorded at the checkpoint (`differences`). A report that differs is refused, naming the likely cause: state outside the store. An agent with no report endpoint is forked with its memory proven and its report unverified, and `restore.json` says so.
+- **A fork that changes the agent's memory** (`MemoryEdit`: keys `put` and `delete`d, written as actor SCENARIO once the fork's memory is proven the checkpoint's) leaves the agent's plan at the checkpoint, made from the old memory, possibly wrong: a follow-up planned for a person the edit marks as answered. So such a fork asks the agent for its report again, and its own planned wakes in the table (its reported or marked next wake, its sandbox timer, a booking) are replaced by the next wake it now names, each closed `REPLACED` in the log; what the scenario owes (replies, happenings, directions, fates, machine commands, late or second deliveries) and a `Polled` agent's declared rhythm stay as the checkpoint holds them. Its report is then not compared, and `restore.json` keeps it as `replanned`. An agent with no report endpoint cannot be asked, and a fork that edits its memory is refused. A fork without memory changes needs no re-ask: its memory and its plan match by construction, and its report is compared as above (`test_a_fork_that_marks_the_person_answered_in_memory_drops_the_follow_up_the_agent_had_planned`).
+- **A checkpoint a fork cannot start from.** One after which the agent went on writing its memory in the same wake (it reported IDLE while a process of its own still wrote) holds memory it had not finished writing: `minutehand checkpoints` and `findings` list it as not restorable, naming the first late write, and a fork from it is refused.
 
-Built and tested as a prototype, PostgreSQL only (`domain/database.py`, `adapters/database/postgres/`, `application/databases.py`, `examples/state/postgres/`, `tests/state/test_postgres_wire.py`, `tests/state/test_postgres_recipe.py`, `tests/state/test_postgres_drivers.py`, `tests/state/test_postgres_replay.py`, `tests/state/test_postgres_cli.py`). Three drivers are tested end to end against a real PostgreSQL, with no driver-specific code in Minutehand: psycopg 3 (the recipe's `agent.py`), asyncpg (`agent_asyncpg.py`, the same agent: run, fork, verified) and node-postgres (a script of writes, recorded and replayed into an equal database). The agent's database is treated like every other boundary: Minutehand sits on it and records what crosses, so a fork needs nothing from the agent and the log grows with what the agent wrote, not with the size of the database.
+**What is not part of a run.** Only state written through the store is. Whatever the agent writes anywhere else, its own database, files, a cache, a variable in a process that outlives a wake, is not simulated, not kept apart between runs, and not rewound by a fork, so the agent's later calls can depend on state from another moment or another run. What Minutehand can see of it, it reports:
 
-```yaml
-databases:
-  - kind: postgres
-    name: app
-    listen: 127.0.0.1:6543                          # Minutehand listens as PostgreSQL here
-    upstream: postgres://agent:secret@db:5432/app   # and relays every connection to the real database
-    env: DATABASE_URL                               # set for the agent's program to the upstream, pointed at the relay
-    base: {kind: template}                          # or {kind: command, take: [...], put_back: [...], drop: [...]}
-    digest: {}                                      # optional: digest the database at each checkpoint (schemas: [public])
-```
-
-- **The relay.** An asyncio server speaking PostgreSQL's protocol version 3. Every byte goes through unchanged, authentication included (the agent signs in with its own credentials); the relay reads a copy. An SSL or GSS encryption request is answered `N`: a driver that prefers TLS carries on in the clear, one that insists (`sslmode=require`) stops with its own "server does not support SSL". An upstream with `sslmode=require` is refused when the agent file loads. TLS is never decrypted.
-- **What is recorded.** A connection is followed message by message (`Conversation`): simple `Query`, extended `Parse`/`Bind`/`Execute`/`Sync` with each parameter as sent (text, or binary in hex) and its type OIDs and formats, the row limit its `Execute` asked for, each statement's `CommandComplete` tag, and a SHA-256 of the rows a write returned (`RETURNING`). A statement prepared by name once and bound many times (asyncpg's `__asyncpg_stmt_N__`, reused across transactions) is recorded each time it runs, with its text; a `Describe` is read past. An `Execute` with a row limit (asyncpg's `fetchrow` and `fetchval` ask for one row) that the database stops with `PortalSuspended` sends no tag, though an `INSERT ... RETURNING` in it has run whole: it is kept by its text when that names a write, recorded as `suspended`, and replayed with the same limit; a further `Execute` of the same portal is more rows of it, not another statement. The settings the connection's startup packet asked for (asyncpg's `server_settings`, libpq's `options=-c ...`, `client_encoding`, `TimeZone`) are the first of its `SET` statements, since a text parameter or literal read under another `TimeZone` or `DateStyle` is another value; a `RESET ALL` or `DISCARD ALL` (asyncpg's pool runs one on every connection it takes back) puts the list back to them. A statement is kept when its tag says it changed something (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY`, `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `GRANT`, `CALL`, `DO`, ...; savepoints and rollbacks to them inside a transaction, in place), or when a `SELECT`'s text names a write (`nextval`, `WITH ... INSERT`, `SELECT ... INTO`). A `ReadyForQuery` going idle ends a transaction: committed when its last ending tag is `COMMIT` (outside an explicit transaction, when the batch raised no error). A committed transaction is one record (`Committed`) with its statements in order, the connection's `SET` statements, and every sequence's last value read on Minutehand's own connection; it is written before the `ReadyForQuery` is passed to the agent, so no checkpoint can come before the commit it follows. A transaction that did not commit records nothing, except the sequence values it drew, when they moved (`SequencesMoved`), since PostgreSQL does not roll a sequence back. Every record is an entity of `EntityKind.DATABASE`, actor SCENARIO as the run loop's own records are, left out of the viewer's events and the fork comparison; the store needed no change and keeps its append-only rule.
-- **The base.** Taken before the agent's program starts (a template copy needs no other connection to its source): `CREATE DATABASE <db>_mh_<run> TEMPLATE <db>`, recorded as `BaseTaken`. A database too large to copy names a copy-on-write branch as the base instead (`base: {kind: command}`: a Neon branch, a ZFS or btrfs snapshot, a cloud volume snapshot), made by the agent's `take` command at the run's start and restored by its `put_back`; Minutehand replays on top either way. The base is shared by every fork of the run (which lives in the run's world file) and every later sample (which records it in its own); it is dropped once the last world file recording it is removed (`session.collect`): by `minutehand rm <run>`, which removes a run with every fork of it (a fork alone is refused: its record is part of its root's world file), and by a standing server's retention. A command base is removed by its `drop` command, and kept, said so, without one. A base whose run directory was removed by hand is an orphan: `minutehand gc --agent agent.yaml` lists the databases on each fronted server named as Minutehand names a base (`<db>_mh_...`) and drops those no world file under `--state` records; it names each one it drops (`tests/state/test_postgres_cli.py`).
-- **A fork.** It shares the parent's log up to its checkpoint, so it sees exactly the records written before it. The restore gains a step, `database`, between stopping the agent's program and starting it: drop the database (`WITH (FORCE)`), create it again from the base, then replay each record in order on one connection: `RESET ALL`, the connection's settings, `BEGIN`, each statement as the agent sent it (the same parameter bytes, formats, types and row limit), `COMMIT`, and the sequences, all sent at once and answered in one round trip (the settings are left out when the transaction before left them as this one needs); a `SequencesMoved` is a `setval`. Every statement's tags and returned rows, and every sequence after each transaction, must equal the record; the first difference refuses the fork, naming the transaction, the statement and both answers, and no run is left behind (`test_a_replay_that_parts_from_the_record_is_refused_and_leaves_no_run`). An agent with no `state:` hooks whose state is in fronted databases checkpoints as `Replayable` (its last report, compared after the restore); one with hooks as well has both put back. A sample after the first starts from the first sample's base.
-- **Several connections at once.** The record is in the order the relay passed each commit's `ReadyForQuery` to the agent, which is the order the database committed them, and the replay runs them in that order on one connection. Two connections interleaving their transactions, one beginning first and committing last with a write that depends on the other's commit, and then forty transactions each at once taking numbers from one counter row and returning them, replay to an equal database (`test_two_connections_interleaving_their_transactions_are_replayed_in_commit_order_to_the_same_database`; replayed by connection instead, it fails at the first dependent statement). What commit order cannot put back is two open transactions drawing from one sequence: the one that drew first may commit last, and on replay draws the lower number. That is refused, not renumbered: the sequence after the first commit differs from the record (`test_interleaved_draws_from_one_sequence_are_refused_on_replay_rather_than_renumbered`).
-- **The digest.** A database that declares `digest:` is digested at every checkpoint, once none of the agent's connections awaits an answer and no commit landed while it was read: every row of every table in its schemas (default `public`), in the order of their text, and every sequence, as one SHA-256 kept in the checkpoint (`Replayable.digests`, `Restorable.digests`). After a fork's replay the database is digested again, and a difference refuses the fork at step `database`, with both digests and their table and row counts. It catches what no statement's answer shows: a value the database made up in a write that did not return it, a write that did not pass the relay, a table changed beside the record (`test_a_base_changed_beside_the_record_where_no_replayed_statement_looks_is_refused_by_the_digest`, `test_a_value_the_database_made_up_is_caught_by_the_digest_where_every_statement_answered_the_same`). It costs a scan of those tables per checkpoint, so it is declared, not on by default; a fork of a run played before it was declared is refused, since there is nothing to compare with.
-- **Values the database makes up, named at the run's end.** Every distinct statement a run committed whose SQL calls something the database makes up when it runs (`now()`, `current_timestamp` and its kin, `clock_timestamp()`, `random()`, `gen_random_uuid()`, `uuid_generate_v4()`, `nextval()` called by name, `txid_current()`, ...; outside string literals and comments) is a finding (`database_replay`, a warning for review) naming the statement, how often, the seq of its first commit and the connection, since a replay may differ silently. A column default that does so (`DEFAULT now()` in recorded DDL) is named as one; `nextval` as a default is a serial column, whose sequence the replay puts back, and is not.
-- **Refused, never silently wrong:** a fork after the client copied rows in (`COPY ... FROM STDIN`), called the function-call protocol, or prepared a two-phase transaction (`NotReplayable`, from that seq on); a fork of a run with no base recorded; a replay that answers otherwise than the record.
-
-What it costs, measured on this machine against `postgres:16` in Docker:
-
-| | Measured |
+| Detected | How |
 |---|---|
-| The recipe's run (`tests/state/test_postgres_recipe.py`): 4 committed transactions, 12 statements, 3 sequence moves | 8 records, 4,209 bytes as JSON, against a database of 7,953,431 bytes; the whole world file 147,456 bytes |
-| Its base (`TEMPLATE` of the 8 MB database) | 0.02 to 0.03 s |
-| Its fork's `database` step: drop, create from the base, replay 2 transactions | 0.06 to 0.19 s; the whole fork 0.8 to 1.2 s |
-| 1,000 single-row autocommit inserts, direct and through the relay | 0.35 s and 1.00 s: about 0.65 ms a commit, most of it the sequence read before the commit is passed on |
-| 10,000 single-row autocommit inserts with `RETURNING`, through the relay (`tests/state/test_postgres_replay_time.py`, `-m benchmark -s`) | 10.3 to 10.7 s to commit; 10,001 records, 5,138,173 bytes as JSON (514 bytes a record: field names, the startup settings and the sequence list, repeated in each) |
-| Replaying those 10,001 transactions onto the base, each compared | 17.60 s (1.76 ms a transaction) with five round trips a transaction; 5.39 to 5.91 s (0.54 to 0.59 ms a transaction) with each transaction sent at once and answered in one round trip, over two runs; the digest after it equal to the one before |
-| `TEMPLATE` copy of a 1.18 GB database | 1.6 s, growing with the database: that is where a copy-on-write base is wanted |
+| What the agent read and wrote through the store, per wake | `WakeRecord.memory_reads`, `memory_writes`; the `memory` count of the assessment language reads the keys at any moment (`docs/assessments.md`) |
+| A database of the agent's own | The agent file names the variable it reads the location from (`own_databases: [{env: AGENT_DB, form: file \| sqlite_url}]`); every run and every fork is handed a fresh empty SQLite file in it (`<state>/runs/<run_id>/own/<VARIABLE>.sqlite`), so no run reads another's or production's. The run's notes say it is outside forks, and each checkpoint at which the file holds anything says so (`Remembered.outside`), which `checkpoints`, `findings` and the fork's account repeat. A PostgreSQL or other server is the team's to provide per run. |
+| State outside the store that the agent's report reflects | The fork's report comparison, above |
+| State outside the store that its report does not reflect | Nothing. A fork from it plays on silently wrong. |
 
-The first three rows are what `tests/state/test_postgres_recipe.py` prints with `-s`, over three runs, before the startup settings and the row limit were recorded (the psycopg recipe's record is now 4,581 bytes, the asyncpg one's 6,023 bytes over 10 transactions); the 10,000-transaction rows are what `tests/state/test_postgres_replay_time.py` prints; the rest are a one-off script against the same server, not kept in the repository. The recipe's database is mostly PostgreSQL's own catalog, so the ratio says little; what holds in general is that the record grows by about the size of what the agent sent, and a fork costs one copy of the base (or one branch) plus a replay that grows with the writes before the checkpoint.
+What no fork can rewind, beside that, said in the refusals: what a real third-party service the run reached keeps (the proxy refuses unclaimed hosts, but a tunnelled host, a model API, is reached for real); what a model provider keeps on its side (a stored conversation or response, a cache, a batch, an uploaded file); the AWS provider's queues and schedules, in moto's memory.
 
-What it does not cover:
-
-- **TLS** between the agent and its database: the relay speaks in the clear and never decrypts.
-- **Writes that do not pass the relay**: another process, a migration run by hand, `pg_cron`, a trigger or a foreign server calling out. One that draws from a sequence or changes what a recorded write answers refuses the fork (seen once, by hand: 1,000 inserts made beside the relay were caught at the first replayed transaction's sequence check; no test covers it); one that does neither is silently missing.
-- **Values the database makes up itself**: `now()`, `random()`, `gen_random_uuid()`, a default from the machine's clock. A replay makes them up again. A write that returns them (`RETURNING`) refuses the fork; one that does not leaves the restored database silently different unless the database declares `digest:`, and the run's findings name the statement either way. A default evaluated by an insert that leaves the column out is named only where the DDL that set it was recorded. The agent should pass its moments as parameters, from the wake's `now`, as the recipe does.
-- **A function called in a `SELECT` that writes**, unless its text names a write; **DDL** is replayed as it ran, so a migration the agent ran is part of the record, but a schema changed beside it is not.
-- **Ordering across connections** is the order the database committed them (above); open transactions on two connections drawing from one sequence are refused, not put back.
-- **Session state beyond `SET`**: temporary tables, `LISTEN`, advisory locks, prepared transactions.
-- **Other databases**: MySQL, SQLite, MongoDB and the rest each need a relay of their own; the record and the replay are written against PostgreSQL's protocol.
-
-What no fork can rewind, said in the refusals and in `examples/state/README.md`:
-
-- what a real third-party service the run reached keeps: the proxy refuses unclaimed hosts, but a tunnelled host (a model API) is reached for real;
-- what a model provider keeps on its side: a stored conversation or response, a cache, a batch, an uploaded file;
-- the AWS provider's queues and schedules, in moto's memory;
-- background work in the agent that outlives the quiet period, and calls that never pass the proxy (to `localhost`, or on a tunnel already open), which settling cannot see.
-
-Without `StateHooks`, `fork_run` is refused: a world rewound under an agent that remembers the future is not a rerun.
+Replaced: user-written `snapshot`, `restore`, `stop`, `start`, `busy` and `fingerprint` commands (`StateHooks`), snapshots kept in a pool beside the world file, settling on the proxy's quiet before each checkpoint, and a PostgreSQL relay that recorded the agent's committed transactions and replayed them onto a base for a fork. They asked the team to write and maintain the procedure that put its agent back, could not see a process that held another moment, and covered one database engine; the store asks one import and covers any agent that keeps its state through it.
 
 A fork can change something, and none of it touches the agent's code:
 
 ```python
 Override = Annotated[
-    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift | DispatchChange, Field(discriminator="kind")
+    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift | DispatchChange | MemoryEdit,
+    Field(discriminator="kind"),
 ]
 
 
@@ -1289,6 +1241,7 @@ class Fork(Model):
 | `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every message to them not answered by the fork is put to them again; a reply decided before the fork that had not landed by it is withdrawn first, since it was never said | `changed_scenario`, `_ask_again` in `application/rewind.py` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
 | `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | `EditsTickets.edit` | `tests/orchestrator/test_rewind.py` |
 | `DeadlineShift` | The scenario's deadline | `changed_scenario` | `tests/orchestrator/test_rewind.py` |
+| `MemoryEdit` | Keys of the agent's memory set or removed at the fork; the agent's own planned wakes replaced by the report it gives after | `memory.edit`, `start_fork`, `Orchestrator.resume(replan=)` | Through a whole run (`tests/e2e/test_memory_run.py`) |
 | `DispatchChange` | The scenario's dispatch rules, from the fork on: the same run with the agent's wakes delivered late, twice or dropped; an nth counts the wakes before the fork | `changed_scenario` | `tests/orchestrator/test_dispatch.py` |
 | `PromptPatch`, `ModelSwap` | The agent's prompt or model | On the wire: the proxy's `EDIT` policy rewrites the body of the agent's request to its model API | At the proxy only (`tests/proxy/test_model_hosts.py`); not through a whole run |
 
@@ -1301,8 +1254,8 @@ class Fork(Model):
 A fork is told the same way on every surface (`application/forks.py`, `ForkAccount`; `minutehand findings` and
 `runs`, the viewer's `GET /api/runs/{run_id}` as `fork` and its run list as `changed`, and MCP `list_runs` and the
 run results as `fork`): the checkpoint it split from, after which wake and at what simulated moment; each override
-in words, from what to what (the `Fork` is kept as `fork.json` beside `restore.json`); whether the restore was
-verified and by what (`Restored.verified_by`: the report, the fingerprint) or why not; and, once both runs have
+in words, from what to what (the `Fork` is kept as `fork.json` beside `restore.json`); whether its agent was
+verified and by what (`Restored.verified_by`: its memory, its report) or why not; and, once both runs have
 finished, the two verdicts, each scorecard line that differs, findings gained, lost and changed, and the first
 change in the world after the split at which the two records part (`tests/web/test_fork_account.py`). The viewer
 shades the parent's shared record left of the split, fades its marks, and draws what the parent did after the
@@ -1318,7 +1271,7 @@ Designed, not built. Hosted Minutehand keeps every run's log and can rewind or f
 
 | Problem locally | Why the virtual machine removes it |
 |---|---|
-| The agent's own state needs snapshot and restore commands | The whole machine is snapshotted: the agent, its database, its files |
+| State the agent keeps outside `minutehand.agent.store` is not rewound | The whole machine is snapshotted: the agent, its database, its files |
 | A faked date must stay near the real one | The machine's clock is set to the simulated time; the proxy outside holds the real clock and issues certificates valid for the simulated date |
 | An agent that reads the clock without the system library is out of reach | Every process on the machine sees the same clock |
 
@@ -1333,6 +1286,7 @@ The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`
 | **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider: pushed (Slack, Teams), or landed where the agent reads them and found on its next poll (a Gmail reply, a Calendar guest's answer: `LandsReplies`, which wakes nobody) | Yes | None | Built (Slack, Microsoft, Google Workspace) |
 | **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built and tested through a whole run on AWS (`tests/e2e/test_booked_on_aws.py`) |
 | **`Reported`**: the agent answers `next_wake` at `report_url` | An endpoint, or an adapter beside its tests | Yes | None | Built and tested |
+| **`Marked`**: the agent marks its next wake with `minutehand.agent.wake`, and is woken at `wake_url` | One import, and a wake endpoint whose call returns when the wake is done | Yes | None | Built and tested (`tests/orchestrator/test_wake_marks.py`); a mark is also the next wake of any other source, replacing what it reported in that wake |
 | **`Command`**: one process per wake, `WakeRequest` on stdin, `AgentReport` on stdout | A command | Yes | None | Built and tested |
 | **`Polled`**: the agent is invoked every `every` (default 5 minutes) and decides for itself | Declare the rhythm | Yes, at that rhythm | One call per tick: 4,032 calls for 14 days at 5 minutes, each a wake counted against the wake limit, which a deadline and this rhythm size | Built and tested |
 
@@ -1551,7 +1505,7 @@ minutehand scenarios [show <name> | new <name>...|--all --goal TEXT --owner 'Nam
 
 ### Distribution: a tool beside the codebase, never a dependency of it
 
-The target is zero lines changed in the project under test. Minutehand is installed and run the way a linter is, outside the project's own dependencies.
+The target is one import in the project under test, inert in production (`minutehand.agent`: what the agent remembers and when it next wakes), and nothing else changed. Minutehand itself is installed and run the way a linter is, outside the project's own dependencies.
 
 | Channel | For | Touches the project | State |
 |---|---|---|---|
@@ -1576,7 +1530,7 @@ minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 | The agent agrees on what time it is | `WakeRequest.now`; `libfaketime` preloaded through the same wrapper | `WakeRequest.now` built; `libfaketime` not built |
 | Scenarios and the agent file | Plain YAML or JSON files, in the project or anywhere else | Built |
 
-- A run needs no client package and nothing imported. A suite that uses `minutehand serve` imports `minutehand.testing` (a client and a pytest plugin), which is test tooling, never a dependency of the code under test.
+- An agent's whole contact with Minutehand is one import, `minutehand.agent` (`store`, what it remembers; `wake`, when it next wants to be woken), inert in production unless MINUTEHAND_ON is set ("The agent's memory"). An agent that keeps no state across wakes and reports its next wake needs none. The package imports the standard library only, but ships inside `minutehand`, whose dependencies (mitmproxy among them) an agent installing it pulls in; a distribution of its own is not built. A suite that uses `minutehand serve` imports `minutehand.testing` (a client and a pytest plugin), which is test tooling, never a dependency of the code under test.
 - mitmproxy requires Python 3.12 and pins many dependencies, which is one more reason the tool never enters a project's environment.
 - Providers register under the entry-point group `minutehand.providers`. Five ship inside `minutehand`; anything else is `minutehand-provider-<name>`, installed into the tool's environment with `uvx --with`.
 
@@ -1703,7 +1657,7 @@ The contracts came first, alone; the parallel tracks were written against them.
 |---|---|
 | **Contracts**: the models in `domain/`, the protocols in `ports/` | Built |
 | **Proxy runtime**: host routing, lazy load, CA, tunnel, edit and refusal policy, base-URL mode | Built. |
-| **Store**: schema, events, checkpoints, bodies and snapshots kept once | Built. Checkpoints are rows in the log; bodies of 512 bytes or more and snapshot files are content-addressed. |
+| **Store**: schema, events, checkpoints, bodies kept once, the agent's memory | Built. Checkpoints and the agent's memory are rows in the log; bodies of 512 bytes or more are content-addressed. |
 | **Clock and orchestrator**: `next_jump`, wake sources, the run loop, forks | Built. The fork is `minutehand fork --at <seq>`, not `rerun_from`. |
 | **Providers**: Slack, YouTrack, Asana, Drive | Built, each written new over the store and the clock rather than mounting the parent repository's fakes |
 | **Scheduler provider** (`Booked`) | Built for AWS |
@@ -1801,11 +1755,11 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 
 ## Known issues / limitations
 
-- **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample after the first starts from the agent's state at the first sample's start, restored and verified as a fork's is; without hooks the samples are not independent.
+- **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample is a run of its own with a memory of its own; what the agent keeps outside the store is carried from one sample into the next.
 - **One proxy per process.** mitmproxy keeps its master in a module global; `Proxy` refuses a second and is moved from run to run with `mount`, or, under `minutehand serve`, routes each call to its world (`route`).
 - **A standing world isolates only by what the call carries.** Services that hold one fixed credential per provider put every test's calls in one world (`docs/serve.md`).
-- **A fork starts only at a restorable checkpoint,** and only for an agent with `StateHooks` or a fronted database (`databases:`). A checkpoint at which the agent did not settle within `settle_limit` is not restorable.
-- **A Firestore emulator restore is a restart:** Google's emulator imports only as it starts; measured at 4.5 to 16.7 s over four restores here, about 58 s on a more loaded machine.
+- **Only state written through `minutehand.agent.store` is part of a run.** Whatever the agent writes elsewhere (its own database, files, a cache, a process that outlives a wake) is not simulated, not kept apart between runs, and not rewound by a fork, so its later calls can depend on state from another moment or run. A fork whose agent's report differs from the checkpoint's is refused naming it, and a database the agent file names is handed fresh and empty and said to be outside forks; state its report does not reflect is not seen at all.
+- **A fork starts only at a checkpoint the agent did not go on writing its memory after, in the same wake.** An agent that reports IDLE while a process of its own still writes makes that wake's checkpoints not restorable.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork from any checkpoint after the agent first used AWS is refused, naming what it cannot rewind. Re-creating moto's state from the log is not built: queue creation, sends and receives are calls, not log entries, and SQS visibility timeouts run on the machine clock. moto reads the machine clock.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
 - **Slack's default workspace accepts any token.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`, in which any `xoxb-` or `xoxp-` token acts as the bot; a world that declares workspaces accepts only their tokens.
@@ -1816,22 +1770,21 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 - **A rule cannot read meaning.** It counts facts between moments: a thank-you and a chase under an answered ask are both a message `in_thread`, and two messages minutes apart are close whether or not they ask the same thing. Such a rule is best `severity: review`; telling them apart is a judgement, for a check a model judges (not built) or the team's own Python.
 - **The enum-comparison lint judges a field by its name, not its type** (`docs/lints.md`).
 - **The store's file carries a schema version and refuses other versions;** there is no migration.
-- **Bytes are kept once per world file, not across files.** A root run and its forks share every body and snapshot file; two root runs (two samples, two `minutehand run`s) each keep their own copy.
-- **A pruned snapshot cannot be forked from.** `StateHooks.keep` trades restorable checkpoints for disk; pin the ones that matter before they are pruned.
+- **Bytes are kept once per world file, not across files.** A root run and its forks share every body; two root runs (two samples, two `minutehand run`s) each keep their own copy.
 - **A span is placed by comparing two clocks.** Its start comes from the agent's SDK, a wake's window from this machine's clock. On one machine they agree; an agent in a container or on another host whose clock is off by more than the gap between wakes has spans placed in the wrong wake, or by arrival when its start falls outside every window. A span started between two wakes (the agent working after it reported it was idle) is placed by arrival.
 - **Replay matches a body by its hash.** A timestamp, nonce, request id or signature in the query or body that is not listed in `ignore_query` or `ignore_body` makes every replay miss; a multipart or compressed body cannot have fields ignored; a body kept only in part can be matched only whole, and an answer kept only in part cannot be replayed.
 - **`--capture-unknown` sends for real.** An undeclared email API is passed through in discovery mode, and the email goes out. `--capture-unknown reads` passes only GET, HEAD and OPTIONS and refuses the rest, at the cost of refusing a read sent as a POST.
 - **A fork's lookups replay its parent's by default** (`in_forks: replay`): a pass-through host is answered from the parent's recording of the same call, falling back to the real host on a miss.
-- **A restore is proven by what the report and the fingerprint cover.** A `fingerprint` that digests only the database misses a process left running with another moment in memory; the reference agent's covers each process's memory digest too (`examples/reference_agent/hooks.py`).
+- **A fork is proven by its memory's digest and its agent's report.** The report carries status, next wake and commitments; state outside the store it does not reflect, and a process left running with another moment in memory whose report reads the same, are not seen.
 - **A tunnelled call is a burst of bytes, not a request.** Within one wake, two requests on one connection less than `BURST_QUIET` apart are one record (the agent sending in a later wake always starts a new one, so wakes never share a record), and requests multiplexed at once on HTTP/2 are one; an answer streamed with a pause longer than `BURST_QUIET` is two records, the second opened by the server. A burst still unanswered at the end of a run is written as far as it had gone.
-- **Settling cannot see work the proxy cannot see unless the agent says so.** Writes to a database on this machine, or computation, are seen only through the report's WORKING and the `busy` command; a checkpoint settled without `busy` is marked unconfirmed. On a tunnel, server bytes are read as an answer by their TLS record headers alone: a TLS 1.3 server that sends its session tickets in two writes, or an HTTP/2 server's preface, still reads as answering the first request on a new connection (`adapters/proxy/tunnel.py`).
+- **Every read of the agent's memory is an event in the log.** An agent that polls its memory (a worker reading its queue every 50 ms) fills the log with reads, and a read made between two wakes counts in the wake before it (`memory_reads`). The ids a provider derives from the log's seq move when memory events are added. Reads are not aggregated.
+- **A checkpoint is taken when the agent's driver says the wake is over.** Work the agent goes on doing after it reported IDLE belongs to the next moment; only its late writes to its memory are seen (the checkpoint is then not restorable). On a tunnel, server bytes are read as an answer by their TLS record headers alone: a TLS 1.3 server that sends its session tickets in two writes, or an HTTP/2 server's preface, still reads as answering the first request on a new connection (`adapters/proxy/tunnel.py`); a sandbox whose clock Minutehand owns waits on that before it is released.
 - **A booked delivery is taken only when everything its schedule delivered is deleted.** A recurring schedule whose earlier delivery the agent never deleted holds each later wake until `Booked.take_limit`.
 - **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; curl and Node are checked by their documented `NO_PROXY` rules, not run.
 - **An agent elsewhere (a container) is handed `localhost` by name,** since the proxy cannot forward to its loopback: `requests`, `urllib`, `aiohttp` and `curl` send every `*.localhost` host it declares direct. `minutehand doctor --agent-host` names each. A name given with `--no-proxy` is read the same way.
 - **httpx cannot reach an IPv6 literal through any proxy** (its CONNECT omits the brackets): the proxy answers 400 saying so, and `minutehand doctor` names each declared IPv6 literal.
 - **A fork's first difference from its parent is found among changes in the world only,** compared in order by actor, operation, entity, snapshot and simulated time: a fork whose agent read or searched differently and changed nothing differently reads as not diverged. Findings are paired by check and kind, so two findings of one check are matched in order.
 - **Base-URL mode always reaches the real host over HTTPS,** names no IPv6 literal (`/_host/[::1]` is refused 400), and rewrites only URLs written out in full: one percent-encoded inside a query (`?redir=https%3A%2F%2F…`), one a client assembles from parts, and one in a body the proxy streamed through from a real host are left as they came. A web page's URL on a host that is also an API host with no path prefix (a SharePoint `webUrl`, Slack's workspace `url`) is rewritten too. A proxied plain-HTTP call whose own host nothing routes and whose path starts with `/_host/` is taken for a base-URL call.
-- **A fronted database is replayed, not copied.** A write that does not pass the relay, or a value the database makes up and the write does not return, is not caught; PostgreSQL only, in the clear only ("The agent's database, recorded at the wire").
 - **gRPC is unary, and an extra.** A provider's gRPC methods are unary; streaming methods are not served. The gRPC servers and Google's messages need `minutehand[grpc]`, which the container image does not install: there every gRPC call is answered UNIMPLEMENTED, saying so.
 - **A WebSocket connection is routed by its host alone.** Under `minutehand serve` a Socket Mode connection, which carries no credential, reaches only a world its host selects.
 - **Out of scope:** browser OAuth flows, certificate-pinned clients, reading back from real providers in production, the hosted service.
