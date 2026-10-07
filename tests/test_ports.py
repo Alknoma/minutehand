@@ -30,4 +30,6 @@ def test_a_port_something_is_listening_on_is_passed_over(monkeypatch: pytest.Mon
     with socket.socket() as held:
         held.bind(("127.0.0.1", first + 1))
         held.listen()
-        assert ports.free_port() == first + 2
+        after = ports.free_port()
+    # ports after the held one may be in use by earlier tests' agents in this worker: only the held one must not come back
+    assert after > first + 1
