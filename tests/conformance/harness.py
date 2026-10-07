@@ -119,6 +119,15 @@ def require(provider: str, family: Family) -> Driver:
     return driver
 
 
+def holds_channels(provider: str) -> bool:
+    """Whether a messaging provider's conversations are channels a seed can declare: every one's are, but where its
+    driver declares `messaging.channels` absent. A provider with no driver is taken to, so its cases fail by name."""
+    try:
+        return "messaging.channels" not in driver_of(provider).absent
+    except NoDriver:
+        return True
+
+
 # ---------------------------------------------------------------------------------------------- cases
 
 
@@ -269,13 +278,14 @@ class Harness:
 
 def seed(provider: str, **more: object) -> dict[str, object]:
     """The base seed every property starts from: three people, and for each family the provider is in, the place
-    its operations act in: a project `Launch` holding one ticket, a channel `launch` everyone is in."""
+    its operations act in: a project `Launch` holding one ticket, a channel `launch` everyone is in (where the
+    provider's conversations are channels at all)."""
     found: dict[str, object] = {"starts_at": START, "people": [dict(p) for p in PEOPLE]}
     held = families(MANIFESTS[provider])
     if Family.TICKETS in held:
         found["tickets"] = [{"provider": provider, "project": STAMP_PROJECT, "title": "Book the venue",
                              "assignee": "sofia"}]  # fmt: skip
-    if Family.MESSAGING in held:
+    if Family.MESSAGING in held and holds_channels(provider):
         found["channels"] = [{"provider": provider, "name": STAMP_CHANNEL, "members": ["owen", "sofia", "mila"]}]
     return found | more
 

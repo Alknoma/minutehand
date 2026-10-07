@@ -38,7 +38,8 @@ def test_every_driver_states_the_id_format_of_each_kind_its_families_hold(provid
     held = families(MANIFESTS[provider])
     wanted = [] if "accounts.people" in driver.absent else [IdKind.PERSON]
     wanted += [IdKind.TICKET] if Family.TICKETS in held else []
-    wanted += [IdKind.CHANNEL, IdKind.MESSAGE] if Family.MESSAGING in held else []
+    if Family.MESSAGING in held:
+        wanted += [IdKind.MESSAGE] if "messaging.channels" in driver.absent else [IdKind.CHANNEL, IdKind.MESSAGE]
     wanted += [IdKind.DOCUMENT] if Family.DOCUMENTS in held else []
     missing = [k.value for k in wanted if k not in driver.id_formats]
     assert not missing, f"{provider}'s driver states no id format for {missing}"

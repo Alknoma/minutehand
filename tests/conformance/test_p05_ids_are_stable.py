@@ -22,6 +22,7 @@ from tests.conformance.harness import (
     absent,
     cases,
     families,
+    holds_channels,
     parametrize,
     require,
     tag,
@@ -39,7 +40,7 @@ def _original(provider: str) -> dict[str, list[dict[str, object]]]:
             {"provider": provider, "project": "Launch", "title": "Original one", "assignee": "sofia"},
             {"provider": provider, "project": "Launch", "title": "Original two"},
         ]
-    if Family.MESSAGING in held:
+    if Family.MESSAGING in held and holds_channels(provider):
         found["channels"] = [
             {"provider": provider, "name": "launch", "members": ["owen", "sofia", "mila"],
              "history": [{"by": "sofia", "text": "Original post", "ago": "PT2H"},
@@ -61,7 +62,7 @@ def _one_more(provider: str) -> dict[str, list[dict[str, object]]]:
     }
     if Family.TICKETS in held:
         found["tickets"] = [{"provider": provider, "project": "Launch", "title": "Added ticket"}]
-    if Family.MESSAGING in held:
+    if Family.MESSAGING in held and holds_channels(provider):
         found["channels"] = [{"provider": provider, "name": "added", "members": ["owen"],
                               "history": [{"by": "owen", "text": "Added post", "ago": "PT3H"}]}]  # fmt: skip
     if Family.DOCUMENTS in held:
@@ -78,7 +79,7 @@ def inventory(session: Session, driver: Driver, record: Record) -> Inventory:
     if isinstance(session, Tickets):
         for title, ticket in session.ticket_ids().items():
             found[(IdKind.TICKET, title)] = ticket
-    if isinstance(session, Messaging):
+    if isinstance(session, Messaging) and not absent(driver, "messaging.channels", record):
         for channel in session.channels():
             if channel.name is not None:
                 found[(IdKind.CHANNEL, channel.name)] = channel.id

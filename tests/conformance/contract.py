@@ -274,6 +274,14 @@ class Session(ABC):
     def people_pages(self, page_size: int) -> list[list[str]]:
         """The account listing paged at `page_size`: each page's ids, in the order answered."""
 
+    def person_id(self, email: str) -> str:
+        """The vendor id of the account with that email, as `direct` and `assign` take it: by default, the one
+        `people` lists."""
+        found = [p.id for p in self.people() if p.email == email]
+        if len(found) != 1:
+            raise AssertionError(f"the vendor lists {len(found)} accounts with the email {email}")
+        return found[0]
+
     @abstractmethod
     def unknown_credential(self) -> httpx.Response:
         """One request the vendor would answer, sent with a credential nobody seeded and nothing else naming a world
@@ -515,6 +523,7 @@ class PermissionCase:
 
 CAPABILITIES: dict[str, str] = {
     "accounts.people": "the vendor lists accounts at all",
+    "accounts.whoami": "the API answers who the credential in use is",
     "accounts.person_credentials": "a person can hold a credential of their own and act through the API with it",
     "accounts.title": "an account shows a job title",
     "accounts.bot": "an account can be a bot or app user, and says so",
@@ -527,6 +536,8 @@ CAPABILITIES: dict[str, str] = {
     "tickets.link": "two tickets can be linked",
     "tickets.labels": "a ticket carries labels or tags",
     "tickets.changed_by": "the API says who made a ticket's latest change",
+    "messaging.channels": "messages sit in named channels a seed declares, and in the seeded direct chats",
+    "messaging.edit": "a message already sent can be edited",
     "messaging.react": "a message takes a reaction",
     "messaging.button": "a message carries a button a person can press",
     "messaging.files": "a message carries files",

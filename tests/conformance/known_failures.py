@@ -97,21 +97,9 @@ KNOWN: tuple[Known, ...] = (
     Known("aws", Property.SEEDED, "sign_in", "NotImplementedError: AwsDriver has no sign-in"),
     Known(
         "aws",
-        Property.STATE,
-        "a_world_reopened_answers_as_in_a_fresh_server",
-        "VendorRefused: CreateSchedule label-<id>: 500 ASGI Error.",
-    ),
-    Known(
-        "aws",
-        Property.STATE,
-        "reset_returns_the_seeded_answers",
-        "VendorRefused: CreateSchedule label-<id>: 500 ASGI Error.",
-    ),
-    Known(
-        "aws",
         Property.TIME,
         "new_things_carry_the_worlds_clock",
-        "VendorRefused: CreateSchedule label-<id>: 500 ASGI Error.",
+        "created at the world's 2031-02-03 04:05:06+00:00, the vendor says <the machine's clock>: GetSchedule's CreationDate is moto's wall clock",
     ),
     Known(
         "github",
@@ -217,38 +205,47 @@ KNOWN: tuple[Known, ...] = (
         'VendorRefused: create or update file contents: 405 {"message":"Method Not Allowed","documentation_url":"https://docs.github.com/rest","status":"405"}',
     ),
     Known(
-        "google_drive",
+        "google_cloud_tasks",
+        Property.RECORD,
+        "unknown_credential_refused_and_unclaimed",
+        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "cloudtasks.googleapis.com"}\'; the vendor\'s documented refusal is 401 holding \'Request had invalid authentication credentials\'',
+    ),
+    Known(
+        "google_workspace",
         Property.FAMILY,
         "documents",
         "the document's first neutral change is [('create', {'title': 'My Drive', 'text': '', 'parent': 'None', 'owner': 'owen@example.com', 'space': 'None', 'mime': 'application/vnd.google",
     ),
     Known(
-        "google_drive",
+        "google_workspace",
         Property.IDS,
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, document Original doc: 1F00000000000099875f5ee919c73f -> 1F00000000000199875f5ee919c73f",
     ),
-    Known("google_drive", Property.PEOPLE_ACT, "happening_moved", "the API shows the folder None"),
+    Known("google_workspace", Property.PEOPLE_ACT, "happening_moved", "the API shows the folder None"),
     Known(
-        "google_drive",
+        "google_workspace",
         Property.RECORD,
         "every_call_kept_once_in_order_verbatim",
         "call 1 (POST oauth2.googleapis.com/token): the answer kept differs from what was answered (130 bytes)",
     ),
     Known(
-        "google_drive",
+        "google_workspace",
         Property.RECORD,
         "unknown_credential_refused_and_unclaimed",
         'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "www.googleapis.com"}\'; the vendor\'s documented refusal is 401 holding \'Invalid Cre',
     ),
     Known(
-        "google_drive",
+        "google_workspace",
         Property.SEEDED,
         "document_file",
         "the world's neutral text of 'Fact document' lacks ['fact,csv']: ''",
     ),
     Known(
-        "google_drive", Property.SEEDED, "document_folder", "seeded in Fact/Nested, the neutral view's parent is None"
+        "google_workspace",
+        Property.SEEDED,
+        "document_folder",
+        "seeded in Fact/Nested, the neutral view's parent is None",
     ),
     Known(
         "jira",
@@ -332,7 +329,7 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.FAMILY,
-        "same_as_google_drive_documents",
+        "same_as_google_workspace_documents",
         "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
     ),
     Known(
@@ -416,12 +413,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.SEEDED,
-        "document_space",
-        "seeded in Fact Space, the API shows the space 'Cc1367Fd45 Team'",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
         "document_spreadsheet",
         "'Fact document' was seeded a spreadsheet; the API shows a document (application/vnd.openxmlformats-officedocument.wordprocessingml.document)",
     ),
@@ -459,7 +450,7 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "notion",
         Property.FAMILY,
-        "same_as_google_drive_documents",
+        "same_as_google_workspace_documents",
         'VendorRefused: move a page: 400 {"object": "error", "status": 400, "code": "invalid_request_url", "message": "There is no endpoint at this path.", "request_id": "<uuid>"}',
     ),
     Known(

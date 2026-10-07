@@ -72,22 +72,23 @@ pass, and a vendor that genuinely differs is a declared, reasoned exception in i
 
 ## The matrix
 
-Generated from a run of trunk (`b6e252a`) on 2026-10-05. Each cell is **pass / known failure / not applicable**,
-counted in cases; — means the property does not apply to the provider's families. Every known failure is one line of
+Generated from a run of `test/conformance` with `integration-main` merged (`eb0663d`) on 2026-10-07. Each cell is
+**pass / known failure / not applicable**, counted in cases; — means the property does not apply to the provider's families. Every known failure is one line of
 `tests/conformance/known_failures.py`, which says what was observed.
 
 | Provider | 1 Seeded | 2 Family | 3 People act | 4 Accounts | 5 Ids | 6 Record | 7 State | 8 Time | 9 Faults | 10 Listing |
 |---|---|---|---|---|---|---|---|---|---|---|
 | asana | 8 / 3 / 3 | 0 / 1 / 0 | 9 / 6 / 0 | 1 / 0 / 3 | 1 / 1 / 1 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
-| aws | 0 / 1 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 1 / 1 / 0 | 0 / 2 / 1 | 0 / 1 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
+| aws | 0 / 1 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 1 / 1 / 0 | 2 / 0 / 1 | 0 / 1 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
 | github | 0 / 5 / 2 | — | 4 / 0 / 0 | 0 / 4 / 0 | 0 / 2 / 1 | 0 / 2 / 0 | 0 / 3 / 0 | 0 / 1 / 0 | 4 / 0 / 0 | 0 / 1 / 0 |
-| google_drive | 8 / 2 / 6 | 0 / 1 / 0 | 7 / 1 / 3 | 0 / 0 / 4 | 0 / 1 / 2 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 8 / 0 / 0 | 1 / 0 / 1 |
+| google_cloud_tasks | 1 / 0 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 0 / 1 / 1 | 3 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
+| google_workspace | 8 / 2 / 16 | 0 / 1 / 2 | 11 / 1 / 12 | 0 / 0 / 4 | 0 / 1 / 2 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 11 / 0 / 0 | 1 / 0 / 2 |
 | jira | 7 / 5 / 2 | 1 / 1 / 0 | 15 / 0 / 0 | 2 / 1 / 1 | 2 / 1 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
-| microsoft | 8 / 16 / 2 | 0 / 4 / 0 | 19 / 4 / 1 | 1 / 2 / 1 | 1 / 1 / 1 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 |
+| microsoft | 9 / 15 / 2 | 0 / 4 / 0 | 19 / 4 / 1 | 1 / 2 / 1 | 1 / 1 / 1 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 |
 | notion | 2 / 5 / 9 | 0 / 2 / 0 | 9 / 1 / 1 | 0 / 0 / 4 | 1 / 1 / 1 | 1 / 2 / 0 | 3 / 0 / 0 | 0 / 1 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
 | slack | 15 / 2 / 0 | 2 / 2 / 0 | 17 / 0 / 0 | 0 / 3 / 1 | 3 / 0 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 5 / 0 / 0 | 2 / 0 / 0 |
 | youtrack | 7 / 4 / 3 | 1 / 1 / 0 | 15 / 0 / 0 | 1 / 2 / 1 | 2 / 1 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
-| **all** | **55 / 43 / 33** | **4 / 12 / 0** | **96 / 12 / 8** | **5 / 12 / 19** | **10 / 8 / 9** | **8 / 13 / 0** | **21 / 5 / 1** | **6 / 3 / 0** | **34 / 0 / 0** | **14 / 1 / 2** |
+| **all** | **57 / 42 / 49** | **4 / 12 / 2** | **101 / 12 / 20** | **5 / 12 / 23** | **10 / 8 / 12** | **8 / 14 / 1** | **26 / 3 / 1** | **7 / 3 / 0** | **38 / 0 / 0** | **14 / 1 / 4** |
 
 ### Not applicable, and why
 
@@ -108,9 +109,16 @@ a known failure.
 - github accounts.deactivated: GitHub.com keeps no deactivated account an organization still lists: a removed member drops out of the members listing, and suspending a user exists only on GitHub Enterprise Server.
 - github accounts.title: A GitHub account has a name, company, location and bio, and no job title anywhere in the REST or GraphQL user objects.
 - github: its docs let a seed declare no id
-- google_drive accounts.people: Drive v3 lists no accounts: it knows users only as a file's owners, last modifier and permissions, and as `about.get`'s own user (https://developers.google.com/workspace/drive/api/reference/rest/v3/about); listing a domain's accounts is the Admin SDK Directory API's `users.list`, a separate product for Workspace domains
-- google_drive listing.people: Drive v3 has no account listing to page (see accounts.people); the Admin SDK Directory API's users.list is a separate product
-- google_drive: its docs let a seed declare no id
+- google_cloud_tasks accounts.people: the scenario's people are no Cloud Tasks principals: Cloud Tasks has queues and tasks and no accounts, and who may call it is IAM's business (https://cloud.google.com/tasks/docs/reference-access-control), so it has no account of theirs to list or act as
+- google_cloud_tasks accounts.whoami: the Cloud Tasks API has no call that answers who the caller is: its resources are locations, queues and tasks (https://cloud.google.com/tasks/docs/reference/rest); reading a token's identity is Google's token endpoint's business, which this provider does not serve
+- google_cloud_tasks listing.people: the scenario's people are no Cloud Tasks principals: Cloud Tasks has queues and tasks and no accounts, and who may call it is IAM's business (https://cloud.google.com/tasks/docs/reference-access-control), so it has no account of theirs to list or act as
+- google_cloud_tasks: its docs let a seed declare no id
+- google_cloud_tasks: nothing of the shared seed is its to show
+- google_workspace accounts.people: Drive v3 lists no accounts: it knows users only as a file's owners, last modifier and permissions, and as `about.get`'s own user (https://developers.google.com/workspace/drive/api/reference/rest/v3/about), and Gmail and Calendar know people only as addresses; listing a domain's accounts is the Admin SDK Directory API's `users.list`, a separate product for Workspace domains
+- google_workspace listing.people: Drive v3 has no account listing to page (see accounts.people); the Admin SDK Directory API's users.list is a separate product
+- google_workspace messaging.channels: Gmail has no channels: mail is exchanged between addresses and grouped in threads, and a mailbox's labels hold no members (https://developers.google.com/workspace/gmail/api/guides/threads); the provider refuses a seeded channel, naming itself
+- google_workspace messaging.edit: a sent email cannot be changed: Gmail's messages resource offers send, insert, import, modify (labels only), trash and delete, and no edit (https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages)
+- google_workspace: its docs let a seed declare no id
 - jira accounts.guest: A Jira Cloud user says nothing of being a guest: its accountType is atlassian, app or customer, and no field of the REST v3 user marks an account as invited from outside.
 - jira accounts.title: A Jira Cloud user object carries no job title: the REST v3 user has an accountId, a display name, an email, an account type, avatars, a time zone and whether it is active, nothing more.
 - jira accounts.vendor_login: Jira Cloud accounts have no username since Atlassian's 2019 privacy change: an account is named only by its accountId, its display name and its email.

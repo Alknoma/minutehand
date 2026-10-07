@@ -1,10 +1,16 @@
-"""Google Drive, driven through Drive v3 (https://developers.google.com/workspace/drive/api/reference/rest/v3) and
-Docs v1 (https://developers.google.com/workspace/docs/api/reference/rest), as an installed app's client calls them:
+"""Google Workspace, driven through Drive v3 (https://developers.google.com/workspace/drive/api/reference/rest/v3),
+Docs v1 (https://developers.google.com/workspace/docs/api/reference/rest), Gmail v1
+(https://developers.google.com/workspace/gmail/api/reference/rest) and Calendar v3
+(https://developers.google.com/workspace/calendar/api/v3/reference), as an installed app's client calls them:
 it signs in at `https://oauth2.googleapis.com/token` with a refresh token (the `refresh_token` grant,
 https://developers.google.com/identity/protocols/oauth2/native-app#offline), sends the access token it is answered
 as a bearer, and reads every answer as Google documents it. Every call on a file says it supports shared drives
 (`supportsAllDrives=true`), as Google asks of every client that may meet one
 (https://developers.google.com/workspace/drive/api/guides/enable-shareddrives).
+
+Drive is its documents family; Gmail its messaging family, whose one conversation is the mail between the agent's
+mailbox and a person's address (Gmail has no channel, and a sent message cannot be edited or reacted to); Calendar
+is in no family, and is read where the agent's answers are read (`observe`) and faulted (`faults`).
 
 A world is reached by its refresh tokens, its own by `tag`: one the agent signs in with (as the scenario's owner,
 whose Drive the agent works in) and one per person, each declared as a Google sign-in for that person, so the world
@@ -13,11 +19,14 @@ answers exactly these and nothing else.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from email.message import EmailMessage
+from email.utils import parseaddr
 from typing import Any, ClassVar
 from urllib.parse import quote, urlsplit
 
@@ -37,25 +46,34 @@ from minutehand.adapters.control.wire import Claims, CreateWorld, WorldView
 from minutehand.domain.scenario import AccessRole, DocumentKind, Seed
 from tests.conformance.contract import (
     Api,
+    ChannelSeen,
     CommentSeen,
     Documents,
     DocumentSeen,
     Driver,
     FaultCase,
     IdKind,
+    MessageSeen,
+    Messaging,
     PersonSeen,
     Session,
     ok,
 )
 
-PROVIDER = "google_drive"
+PROVIDER = "google_workspace"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 DRIVE = "https://www.googleapis.com/drive/v3/"
 UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
 DOCS = "https://docs.googleapis.com/v1/documents/"
+GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/"
+CALENDAR = "https://www.googleapis.com/calendar/v3/"
 CLIENT_ID = "conformance.apps.googleusercontent.com"
 CLIENT_SECRET = "conformance-client-secret"
-SCOPES = "https://www.googleapis.com/auth/drive"
+SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar",
+]
 UNSEEDED = "ya29.a0unseededaccesstokennobodywasevergiven0000"
 """An access token of Google's shape (`ya29.`) that no world's token endpoint minted."""
 
@@ -168,12 +186,12 @@ def service_account_grant(email: str) -> dict[str, str]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
     now = int(time.time())
-    claims = {"iss": email, "scope": SCOPES, "aud": TOKEN_URI, "iat": now, "exp": now + 3600}
+    claims = {"iss": email, "scope": " ".join(SCOPES), "aud": TOKEN_URI, "iat": now, "exp": now + 3600}
     assertion = google_jwt.encode(crypt.RSASigner.from_string(pem.decode()), claims).decode()
     return {"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion}
 
 
-class DriveSession(Documents):
+class WorkspaceSession(Documents, Messaging):
     def __init__(self, api: Api, grant: Mapping[str, str]) -> None:
         self._http = api.http()
         try:
@@ -288,6 +306,8 @@ class DriveSession(Documents):
         )
 
     def observe(self) -> str:
+        """About and every file through Drive, the mailbox's messages through Gmail, and the primary calendar's
+        events through Calendar."""
         answered: list[str] = []
         for path, params in (
             ("about", {"fields": "user(displayName,emailAddress,permissionId)"}),
@@ -305,6 +325,11 @@ class DriveSession(Documents):
             ),
         ):
             answered.append(self._drive(f"GET {path}", "GET", path, params=params).text)
+        answered.append(
+            ok("users.messages.list", self._http.get(GMAIL + "messages", params={"maxResults": "500"})).text
+        )
+        events = CALENDAR + "calendars/primary/events"
+        answered.append(ok("events.list", self._http.get(events, params={"maxResults": "2500"})).text)
         return "\n".join(answered)
 
     def change(self, label: str) -> None:
@@ -517,18 +542,173 @@ class DriveSession(Documents):
             "files.get (media)", "GET", f"files/{document}", params={"alt": "media", "supportsAllDrives": "true"}
         ).content
 
+    # ------------------------------------------------------------------ mail
 
+    def person_id(self, email: str) -> str:
+        """Gmail names a correspondent by address: a message's `From`, `To` and `Cc` hold addresses, and searching
+        by `from:` and `to:` takes one (https://support.google.com/mail/answer/7190)."""
+        return email
+
+    def channel(self, name: str) -> str:
+        raise NotImplementedError(ABSENT_CHANNELS)
+
+    def channels(self) -> list[ChannelSeen]:
+        raise NotImplementedError(ABSENT_CHANNELS)
+
+    def direct(self, person: str) -> str:
+        """The conversation with a person is the mail between the agent's mailbox and their address."""
+        if "@" not in person:
+            raise ValueError(f"{person!r} is not an address, which is how Gmail names a correspondent")
+        return person
+
+    def _gmail(self, what: str, method: str, path: str, **more: Any) -> Doc:
+        answered = ok(what, self._http.request(method, GMAIL + path, **more)).json()
+        if not isinstance(answered, dict):
+            raise TypeError(f"{what} answered no JSON object")
+        return answered
+
+    def _send(self, to: str, text: str, *, subject: str = "", thread: Doc | None = None) -> str:
+        """`users.messages.send` with the whole RFC 2822 message base64url in `raw`
+        (https://developers.google.com/workspace/gmail/api/guides/sending); a reply names the thread and the message
+        it answers, and keeps its subject, as Gmail's threading asks
+        (https://developers.google.com/workspace/gmail/api/guides/threads)."""
+        message = EmailMessage()
+        message["To"] = to
+        if subject:
+            message["Subject"] = subject
+        body: dict[str, str] = {}
+        if thread is not None:
+            message["In-Reply-To"] = str(thread["message_id"])
+            message["References"] = str(thread["message_id"])
+            body["threadId"] = str(thread["threadId"])
+        message.set_content(text)
+        body["raw"] = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        return str(self._gmail("users.messages.send", "POST", "messages/send", json=body)["id"])
+
+    def post(self, channel: str, text: str) -> str:
+        return self._send(self.direct(channel), text)
+
+    def post_button(self, channel: str, text: str, action_id: str, label: str) -> str:
+        raise NotImplementedError(ABSENT_BUTTON)
+
+    def reply(self, channel: str, thread: str, text: str) -> str:
+        answered = self._gmail(
+            "users.messages.get",
+            "GET",
+            f"messages/{thread}",
+            params={"format": "metadata", "metadataHeaders": ["Message-ID", "Subject"]},
+        )
+        headers = _headers(answered["payload"])
+        subject = headers.get("subject", "")
+        replied = subject if not subject or subject.lower().startswith("re:") else f"Re: {subject}"
+        named = {"threadId": answered["threadId"], "message_id": headers["message-id"]}
+        return self._send(self.direct(channel), text, subject=replied, thread=named)
+
+    def edit(self, channel: str, message: str, text: str) -> None:
+        raise NotImplementedError(ABSENT_EDIT)
+
+    def react(self, channel: str, message: str, reaction: str) -> None:
+        raise NotImplementedError(ABSENT_REACT)
+
+    def delete_message(self, channel: str, message: str) -> None:
+        """`users.messages.trash`: Gmail's way to take a message out of the mailbox's conversations, as its delete
+        is permanent and needs the full mail scope
+        (https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/trash)."""
+        self._gmail("users.messages.trash", "POST", f"messages/{message}/trash")
+
+    def _listed(self, channel: str, page_size: int) -> list[list[str]]:
+        """Every page of `users.messages.list` for the mail to or from the address, newest first."""
+        address = self.direct(channel)
+        pages: list[list[str]] = []
+        token = ""
+        while True:
+            params = {
+                "q": f"from:{address} OR to:{address}",
+                "maxResults": str(page_size),
+                **({"pageToken": token} if token else {}),
+            }
+            answered = self._gmail("users.messages.list", "GET", "messages", params=params)
+            pages.append([str(m["id"]) for m in answered["messages"]] if "messages" in answered else [])
+            token = str(answered["nextPageToken"]) if "nextPageToken" in answered else ""
+            if not token:
+                return pages
+
+    def history(self, channel: str) -> list[MessageSeen]:
+        """Each message to or from the address, read in full, oldest first. A message is in the thread of the
+        thread's first message, whose id is the thread's (observed)."""
+        found: list[MessageSeen] = []
+        for message in reversed([m for page in self._listed(channel, LISTING) for m in page]):
+            answered = self._gmail("users.messages.get", "GET", f"messages/{message}", params={"format": "full"})
+            payload = answered["payload"]
+            thread = str(answered["threadId"])
+            found.append(
+                MessageSeen(
+                    id=str(answered["id"]),
+                    text=_mail_text(payload).strip(),
+                    author_email=parseaddr(_headers(payload).get("from", ""))[1] or None,
+                    thread_of=thread if thread != str(answered["id"]) else None,
+                    at=datetime.fromtimestamp(int(answered["internalDate"]) / 1000, UTC),
+                    files=tuple(_files(payload)),
+                )
+            )
+        return found
+
+    def history_pages(self, channel: str, page_size: int) -> list[list[str]]:
+        return self._listed(channel, page_size)
+
+
+def _headers(part: Doc) -> dict[str, str]:
+    """A MIME part's headers as Gmail serves them, by lowercase name."""
+    return {str(h["name"]).lower(): str(h["value"]) for h in part["headers"]} if "headers" in part else {}
+
+
+def _mail_text(part: Doc) -> str:
+    """The first `text/plain` part's text, its `body.data` base64url as Gmail serves it."""
+    if str(part["mimeType"]) == "text/plain" and "data" in part["body"]:
+        data = str(part["body"]["data"])
+        return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8")
+    for child in part["parts"] if "parts" in part else []:
+        found = _mail_text(child)
+        if found:
+            return found
+    return ""
+
+
+def _files(part: Doc) -> list[str]:
+    filename = str(part["filename"]) if "filename" in part else ""
+    named = [filename] if filename else []
+    return named + [f for child in (part["parts"] if "parts" in part else []) for f in _files(child)]
+
+
+ABSENT_CHANNELS = (
+    "Gmail has no channels: mail is exchanged between addresses and grouped in threads, and a mailbox's labels "
+    "hold no members (https://developers.google.com/workspace/gmail/api/guides/threads); the provider refuses a "
+    "seeded channel, naming itself"
+)
+ABSENT_EDIT = (
+    "a sent email cannot be changed: Gmail's messages resource offers send, insert, import, modify (labels only), "
+    "trash and delete, and no edit (https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages)"
+)
+ABSENT_REACT = (
+    "the Gmail API has no reactions: a message carries labels, and the emoji reactions of Gmail's web client are "
+    "not in the API (https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages)"
+)
+ABSENT_BUTTON = (
+    "an email carries no button a person presses back through the Gmail API: what is sent is an RFC 2822 message "
+    "(https://developers.google.com/workspace/gmail/api/guides/sending), and nothing a reader clicks reaches the API"
+)
 ABSENT_PEOPLE = (
     "Drive v3 lists no accounts: it knows users only as a file's owners, last modifier and permissions, and as "
-    "`about.get`'s own user (https://developers.google.com/workspace/drive/api/reference/rest/v3/about); listing a "
-    "domain's accounts is the Admin SDK Directory API's `users.list`, a separate product for Workspace domains"
+    "`about.get`'s own user (https://developers.google.com/workspace/drive/api/reference/rest/v3/about), and Gmail "
+    "and Calendar know people only as addresses; listing a domain's accounts is the Admin SDK Directory API's "
+    "`users.list`, a separate product for Workspace domains"
 )
 
 
 # ---------------------------------------------------------------------------------------------- faults
 
 
-def _client(api: Api, world: WorldView) -> tuple[Any, httplib2.Http]:
+def _client(api: Api, world: WorldView, service: str) -> tuple[Any, httplib2.Http]:
     """`googleapiclient` over `httplib2`, as `googleapiclient.http.build_http` makes it, through the proxy and
     trusting the CA bundle the server hands out, signed in by `google-auth` with the agent's refresh token."""
     proxy = urlsplit(api.proxy)
@@ -545,30 +725,39 @@ def _client(api: Api, world: WorldView) -> tuple[Any, httplib2.Http]:
         token_uri=TOKEN_URI,
         client_id=CLIENT_ID,
         client_secret=CLIENT_SECRET,
-        scopes=[SCOPES],
+        scopes=SCOPES,
     )
     authorized = google_auth_httplib2.AuthorizedHttp(credentials, http=http)
-    return build("drive", "v3", http=authorized, cache_discovery=False, static_discovery=True), http
+    version = VERSIONS[service]
+    return build(service, version, http=authorized, cache_discovery=False, static_discovery=True), http
 
 
-def _call(operation: str) -> Callable[[Any], object]:
-    """The one call each fault is declared on, through the client library."""
-    calls: dict[str, Callable[[Any], object]] = {
-        "files.list": lambda drive: drive.files().list(pageSize=10, fields="files(id)").execute(),
-        "files.get": lambda drive: drive.files().get(fileId="root", fields="id").execute(),
-        "about.get": lambda drive: drive.about().get(fields="user(emailAddress)").execute(),
-        "changes.list": lambda drive: (
+VERSIONS = {"drive": "v3", "gmail": "v1", "calendar": "v3"}
+
+CALLS: dict[str, tuple[str, Callable[[Any], object]]] = {
+    "files.list": ("drive", lambda drive: drive.files().list(pageSize=10, fields="files(id)").execute()),
+    "files.get": ("drive", lambda drive: drive.files().get(fileId="root", fields="id").execute()),
+    "about.get": ("drive", lambda drive: drive.about().get(fields="user(emailAddress)").execute()),
+    "changes.list": (
+        "drive",
+        lambda drive: (
             drive.changes().list(pageToken=drive.changes().getStartPageToken().execute()["startPageToken"]).execute()
         ),
-    }
-    return calls[operation]
+    ),
+    "users.messages.list": ("gmail", lambda gmail: gmail.users().messages().list(userId="me").execute()),
+    "users.getProfile": ("gmail", lambda gmail: gmail.users().getProfile(userId="me").execute()),
+    "events.list": ("calendar", lambda calendar: calendar.events().list(calendarId="primary").execute()),
+}
+"""The one call each fault is declared on, by Google's method name: the service it is in and the call through the
+client library."""
 
 
 def _raised(operation: str) -> Callable[[Api, WorldView], BaseException | None]:
     def trigger(api: Api, world: WorldView) -> BaseException | None:
-        drive, http = _client(api, world)
+        service, call = CALLS[operation]
+        client, http = _client(api, world, service)
         try:
-            _call(operation)(drive)
+            call(client)
         except HttpError as refused:
             return refused
         finally:
@@ -580,9 +769,10 @@ def _raised(operation: str) -> Callable[[Api, WorldView], BaseException | None]:
 
 def _succeeds(operation: str) -> Callable[[Api, WorldView], None]:
     def then(api: Api, world: WorldView) -> None:
-        drive, http = _client(api, world)
+        service, call = CALLS[operation]
+        client, http = _client(api, world, service)
         try:
-            _call(operation)(drive)
+            call(client)
         finally:
             http.close()
 
@@ -604,9 +794,9 @@ def _fault(name: str, operation: str, kind: str, status: int, holds: str, *, tim
 # ---------------------------------------------------------------------------------------------- the driver
 
 
-class DriveDriver(Driver):
+class WorkspaceDriver(Driver):
     provider: ClassVar[str] = PROVIDER
-    session: ClassVar[type[Session]] = DriveSession
+    session: ClassVar[type[Session]] = WorkspaceSession
     absent: ClassVar[Mapping[str, str]] = {
         "accounts.people": ABSENT_PEOPLE,
         "listing.people": "Drive v3 has no account listing to page (see accounts.people); the Admin SDK Directory "
@@ -621,6 +811,10 @@ class DriveDriver(Driver):
         "account is the Admin SDK Directory API's business",
         "accounts.no_email": "every Google account signs in with an email address, which Drive shows as the user's "
         "emailAddress (https://developers.google.com/workspace/drive/api/reference/rest/v3/User)",
+        "messaging.channels": ABSENT_CHANNELS,
+        "messaging.edit": ABSENT_EDIT,
+        "messaging.react": ABSENT_REACT,
+        "messaging.button": ABSENT_BUTTON,
         "accounts.vendor_login": "a Google account signs in with its email address; there is no separate login name "
         "(https://support.google.com/accounts/answer/27441)",
     }
@@ -633,11 +827,18 @@ class DriveDriver(Driver):
         # `/document/d/([a-zA-Z0-9-_]+)` (https://developers.google.com/workspace/docs/api/concepts/document#document_id);
         # a Drive file id is the same string.
         IdKind.DOCUMENT: re.compile(r"^[a-zA-Z0-9_-]+$"),
+        # A Gmail message's `id` is "the immutable ID of the message"
+        # (https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages); Google publishes no
+        # format, and every one Gmail answers is sixteen lowercase hex digits (observed).
+        IdKind.MESSAGE: re.compile(r"^[0-9a-f]{16}$"),
     }
     page_floor: ClassVar[Mapping[str, int]] = {
         # files.list `pageSize`: "Acceptable values are 1 to 1000, inclusive"
         # (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list).
         "documents": 1,
+        # users.messages.list `maxResults`: "The default value is 100. The maximum allowed value for this field is
+        # 500" (https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list).
+        "history": 1,
     }
     unknown_refusal: ClassVar[tuple[int, str]] = (401, "Invalid Credentials")
     """Drive's answer to an access token it does not accept: 401, reason `authError`, message "Invalid Credentials"
@@ -661,14 +862,14 @@ class DriveDriver(Driver):
     def connect(self, api: Api, world: WorldView, *, person: str | None = None) -> Session:
         credential = self.credential_of(world, person)
         assert credential is not None
-        return DriveSession(api, refresh_grant(credential))
+        return WorkspaceSession(api, refresh_grant(credential))
 
     def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
         """A refresh token signs in with the refresh-token grant; a service account (named by its email, as the
         seed's sign-in names one) with the JWT-bearer grant."""
         if "@" in credential:
-            return DriveSession(api, service_account_grant(credential))
-        return DriveSession(api, refresh_grant(credential))
+            return WorkspaceSession(api, service_account_grant(credential))
+        return WorkspaceSession(api, refresh_grant(credential))
 
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         tag = tag_of(world)
@@ -676,7 +877,10 @@ class DriveDriver(Driver):
 
     def faults(self) -> list[FaultCase]:
         """Each `wire.FaultKind`, on a Drive call it is documented for
-        (https://developers.google.com/workspace/drive/api/guides/handle-errors)."""
+        (https://developers.google.com/workspace/drive/api/guides/handle-errors); and on Gmail and Calendar, a rate
+        limit as 429 `rateLimitExceeded` (https://developers.google.com/workspace/gmail/api/guides/handle-errors,
+        https://developers.google.com/workspace/calendar/api/guides/errors) and a backend error as 503
+        `backendError`."""
         return [
             _fault("rate_limited", "files.list", "rate_limited", 403, "rateLimitExceeded"),
             _fault("user_rate_limited", "files.list", "user_rate_limited", 403, "userRateLimitExceeded"),
@@ -688,6 +892,9 @@ class DriveDriver(Driver):
             _fault("unauthenticated", "about.get", "unauthenticated", 401, "Invalid Credentials", times=3),
             _fault("expired", "changes.list", "expired", 410, "expired"),
             _fault("unavailable", "files.list", "unavailable", 503, "backendError"),
+            _fault("gmail_rate_limited", "users.messages.list", "rate_limited", 429, "rateLimitExceeded"),
+            _fault("gmail_unavailable", "users.getProfile", "unavailable", 503, "backendError"),
+            _fault("calendar_rate_limited", "events.list", "rate_limited", 429, "rateLimitExceeded"),
         ]
 
 
@@ -698,4 +905,4 @@ def _objects(seed: Mapping[str, object], key: str) -> list[Mapping[str, Any]]:
     return [x for x in found if isinstance(x, Mapping)]
 
 
-DRIVER = DriveDriver()
+DRIVER = WorkspaceDriver()

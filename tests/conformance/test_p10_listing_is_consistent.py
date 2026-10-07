@@ -113,6 +113,8 @@ def test_a_listing_paged_at_the_smallest_page_returns_each_item_once_in_a_stable
         return
     if listing.name == "people" and absent(driver, "accounts.people", record_property):
         return
+    if listing.name == "history" and absent(driver, "messaging.channels", record_property):
+        return
     floor = _floor(driver, listing.name)
     seeded = merged(seed(case.provider), listing.seeded(case.provider, 2 * floor + 1))
     with harness.world(driver, seeded) as world, harness.session(driver, world) as session:

@@ -14,7 +14,7 @@ import re
 from collections.abc import Callable, Sequence
 
 from minutehand.domain.world import RecordedCall
-from tests.conformance.contract import Documents, Family, Messaging, Property, Sent, Session, Tickets
+from tests.conformance.contract import Documents, Driver, Family, Messaging, Property, Sent, Session, Tickets
 from tests.conformance.harness import Case, Harness, absent, cases, parametrize, require, seed
 
 type Record = Callable[[str, object], None]
@@ -22,10 +22,11 @@ type Record = Callable[[str, object], None]
 BINARY = bytes(range(256)) * 8 + b"\x00\xff\xfe end"
 
 
-def _script(session: Session, people: bool) -> None:
+def _script(session: Session, driver: Driver, record: Record) -> None:
     """A little of everything the session's families do: reads, creates, updates."""
-    session.whoami()
-    if people:
+    if not absent(driver, "accounts.whoami", record):
+        session.whoami()
+    if "accounts.people" not in driver.absent:
         session.people()
     else:
         session.observe()
@@ -34,7 +35,11 @@ def _script(session: Session, people: bool) -> None:
         session.comment(made, "recorded comment")
         session.read_ticket(made)
     if isinstance(session, Messaging):
-        channel = session.channel("launch")
+        channel = (
+            session.direct(session.person_id("sofia@example.com"))
+            if absent(driver, "messaging.channels", record)
+            else session.channel("launch")
+        )
         session.post(channel, "recorded message ünïcode")
         session.history(channel)
     if isinstance(session, Documents):
@@ -98,7 +103,7 @@ def test_every_request_the_driver_makes_is_kept_once_in_order_and_byte_for_byte(
     with harness.world(driver, seed(case.provider)) as world:
         mark = harness.api.recorder.mark()
         with harness.session(driver, world) as session:
-            _script(session, "accounts.people" not in driver.absent)
+            _script(session, driver, record_property)
             secrets = session.secrets
         broken = _compare(harness.api.recorder.since(mark), world.calls(), secrets)
     assert not broken, "\n".join(broken)

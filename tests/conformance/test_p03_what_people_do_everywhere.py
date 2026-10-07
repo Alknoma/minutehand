@@ -35,7 +35,7 @@ from tests.conformance.contract import (
     Property,
     Tickets,
 )
-from tests.conformance.harness import Case, Harness, absent, cases, parametrize, require, seed
+from tests.conformance.harness import Case, Harness, absent, cases, holds_channels, parametrize, require, seed
 from tests.conformance.neutral import grants, merged
 from tests.conformance.receiver import receiver
 
@@ -357,6 +357,9 @@ def test_what_a_person_does_to_a_document_is_seen_through_the_api_as_theirs_or_r
 
 
 def _messaging_seed(provider: str) -> dict[str, object]:
+    """Channels to act in, where the provider's conversations are channels; a direct conversation needs none."""
+    if not holds_channels(provider):
+        return {}
     return {
         "channels": [
             {
@@ -404,8 +407,7 @@ def _in(channel: str, text: str, *, thread_of: str | None = None) -> Callable[[M
 
 def _direct_holds(text: str) -> Callable[[Messaging, OpenWorld], None]:
     def seen(session: Messaging, world: OpenWorld) -> None:
-        sofia = next(p.id for p in session.people() if p.email == "sofia@example.com")
-        history = session.history(session.direct(sofia))
+        history = session.history(session.direct(session.person_id("sofia@example.com")))
         found = [m for m in history if m.text == text]
         assert len(found) == 1, f"the DM holds {[m.text for m in history]}"
         assert found[0].author_email == "sofia@example.com", f"{text!r} is shown as {found[0].author_email}'s"
@@ -469,24 +471,24 @@ def _press_recorded(session: Messaging, world: OpenWorld) -> None:
 MESSAGING_ACTS = {
     a.name: a
     for a in [
-        MessagingAct("happening_posts_in_a_channel", (), _messaging({"kind": "posts", "channel": "talk", "text": "Posted by Sofia"}), _in("talk", "Posted by Sofia")),
+        MessagingAct("happening_posts_in_a_channel", ("messaging.channels",), _messaging({"kind": "posts", "channel": "talk", "text": "Posted by Sofia"}), _in("talk", "Posted by Sofia")),
         MessagingAct("happening_posts_directly", ("messaging.direct",), _messaging({"kind": "posts", "text": "Direct from Sofia"}), _direct_holds("Direct from Sofia")),
         MessagingAct(
             "happening_posts_in_a_thread",
-            (),
+            ("messaging.channels",),
             _messaging({"kind": "posts", "channel": "talk", "text": "Sofia in the thread", "in_thread_of": "root"}),
             _in("talk", "Sofia in the thread", thread_of="Seeded root"),
         ),
-        MessagingAct("happening_edits", (), _messaging({"kind": "edits", "post": "mine", "text": "Sofia's edited post"}), _in("talk", "Sofia's edited post")),
-        MessagingAct("happening_deletes", (), _messaging({"kind": "deletes", "post": "mine"}), _without("talk", "Sofia's own post")),
-        MessagingAct("happening_reacts", ("messaging.react",), _messaging({"kind": "reacts", "post": "mine", "reaction": "eyes"}), _reacted),
-        MessagingAct("happening_joins", (), _messaging({"kind": "joins", "channel": "side"}), _member("side")),
-        MessagingAct("happening_adds_agent", (), _messaging({"kind": "adds_agent", "channel": "quiet"}), _agent_reads("quiet")),
+        MessagingAct("happening_edits", ("messaging.channels",), _messaging({"kind": "edits", "post": "mine", "text": "Sofia's edited post"}), _in("talk", "Sofia's edited post")),
+        MessagingAct("happening_deletes", ("messaging.channels",), _messaging({"kind": "deletes", "post": "mine"}), _without("talk", "Sofia's own post")),
+        MessagingAct("happening_reacts", ("messaging.channels", "messaging.react"), _messaging({"kind": "reacts", "post": "mine", "reaction": "eyes"}), _reacted),
+        MessagingAct("happening_joins", ("messaging.channels",), _messaging({"kind": "joins", "channel": "side"}), _member("side")),
+        MessagingAct("happening_adds_agent", ("messaging.channels",), _messaging({"kind": "adds_agent", "channel": "quiet"}), _agent_reads("quiet")),
         MessagingAct("happening_opens_agent", (), _messaging({"kind": "opens_agent"}), _no_vendor_trace),
         MessagingAct("happening_commands", (), _messaging({"kind": "commands", "command": "/conform", "text": "go"}), _no_vendor_trace),
         MessagingAct("act_say", ("messaging.direct",), _said, _direct_holds("Said by Sofia")),
-        MessagingAct("act_reply", (), _replied, _in("talk", "Sofia answers")),
-        MessagingAct("act_press", ("messaging.button",), _pressed, _press_recorded),
+        MessagingAct("act_reply", ("messaging.channels",), _replied, _in("talk", "Sofia answers")),
+        MessagingAct("act_press", ("messaging.channels", "messaging.button"), _pressed, _press_recorded),
     ]
 }  # fmt: skip
 

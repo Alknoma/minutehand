@@ -9,8 +9,9 @@ Two checks per lifecycle. Against the RULE: the sequence the neutral model state
 unassigned, assigned, commented, done, reopened, deleted; a message posted, replied to in its thread, edited,
 deleted; a document created, written, renamed, moved, shared, trashed). Between PROVIDERS: each provider's whole
 neutral sequence, every neutral change it recorded and not only those the rule names, equals the first provider's of
-its family (alphabetically), so two providers that disagree on what an unnamed step means (a reaction, a link, the
-folder a move made, what trashing is) are told apart.
+its family (alphabetically) that can drive the lifecycle, so two providers that disagree on what an unnamed step
+means (a reaction, a link, the folder a move made, what trashing is) are told apart. A provider whose driver declares
+a capability the lifecycle needs absent does not drive it, and the lifecycle is reported not applicable to it.
 """
 
 from __future__ import annotations
@@ -32,7 +33,18 @@ from minutehand.domain.world import (
 )
 from minutehand.testing.world import OpenWorld
 from tests.conformance.contract import Documents, Driver, Family, Messaging, Progress, Property, Session, Tickets
-from tests.conformance.harness import Case, Harness, absent, cases, in_family, parametrize, require, seed
+from tests.conformance.harness import (
+    Case,
+    Harness,
+    NoDriver,
+    absent,
+    cases,
+    driver_of,
+    in_family,
+    parametrize,
+    require,
+    seed,
+)
 
 type Step = tuple[str, str, str, str, tuple[tuple[str, str], ...]]
 """(actor, operation, kind, thing, neutral fields): one neutral change."""
@@ -94,10 +106,28 @@ class Lifecycle:
     drive: Callable[[Session, Driver, Callable[[str, object], None]], None]
     rule: Callable[[list[Step]], list[str]]
     """What the neutral model says the sequence must hold; each broken expectation as a sentence."""
+    requires: tuple[str, ...] = ()
+    """Capabilities every step of the lifecycle needs: a provider declaring one absent cannot drive it, so the
+    lifecycle does not apply to it (reported) and it is no one's measure."""
+
+
+def drives(provider: str, lifecycle: Lifecycle) -> bool:
+    """Whether the provider's driver can drive the whole lifecycle; one with no driver is taken to, so its cases
+    fail by name."""
+    try:
+        driver = driver_of(provider)
+    except NoDriver:
+        return True
+    return not any(c in driver.absent for c in lifecycle.requires)
+
+
+def drivers_of(lifecycle: Lifecycle) -> list[str]:
+    """The providers of the lifecycle's family that drive it, alphabetically: the first is the family's measure."""
+    return [p for p in in_family(lifecycle.family) if drives(p, lifecycle)]
 
 
 def _sofia(session: Session) -> str:
-    return next(p.id for p in session.people() if p.email == "sofia@example.com")
+    return session.person_id("sofia@example.com")
 
 
 def _tickets(session: Session, driver: Driver, record: Callable[[str, object], None]) -> None:
@@ -223,8 +253,20 @@ LIFECYCLES = {
     lc.name: lc
     for lc in [
         Lifecycle("tickets", Family.TICKETS, _tickets, _ticket_rule),
-        Lifecycle("messages_in_a_channel", Family.MESSAGING, _messages("channel"), _message_rule),
-        Lifecycle("messages_in_a_direct_conversation", Family.MESSAGING, _messages("direct"), _message_rule),
+        Lifecycle(
+            "messages_in_a_channel",
+            Family.MESSAGING,
+            _messages("channel"),
+            _message_rule,
+            ("messaging.channels", "messaging.edit"),
+        ),
+        Lifecycle(
+            "messages_in_a_direct_conversation",
+            Family.MESSAGING,
+            _messages("direct"),
+            _message_rule,
+            ("messaging.direct", "messaging.edit"),
+        ),
         Lifecycle("documents", Family.DOCUMENTS, _documents, _document_rule),
     ]
 }
@@ -256,6 +298,9 @@ def test_a_lifecycle_leaves_the_neutral_record_the_rule_states(
     """Driven through the vendor's API, the lifecycle's neutral record holds what the neutral model says it means,
     every change the agent's, at the world's clock."""
     lifecycle = LIFECYCLES[case.case]
+    driver = require(case.provider, lifecycle.family)
+    if any(absent(driver, c, record_property) for c in lifecycle.requires):
+        return
     steps = run(harness, case.provider, lifecycle, record_property)
     broken = lifecycle.rule(steps)
     assert not broken, "\n".join(broken) + "\nthe neutral record:\n" + _show(steps)
@@ -264,7 +309,7 @@ def test_a_lifecycle_leaves_the_neutral_record_the_rule_states(
 PAIRS = [
     Case(other, Property.FAMILY, f"same_as_{first}_{lc.name}")
     for lc in LIFECYCLES.values()
-    for first, *others in [in_family(lc.family)]
+    for first, *others in [drivers_of(lc)]
     for other in others
 ]
 
@@ -277,7 +322,7 @@ def test_every_provider_of_a_family_leaves_the_same_neutral_sequence_as_the_firs
     lifecycle: what an unnamed step means (a reaction, a link, a folder made, a trash) is the same everywhere."""
     name = next(n for n in LIFECYCLES if case.case.endswith(f"_{n}"))
     lifecycle = LIFECYCLES[name]
-    first = in_family(lifecycle.family)[0]
+    first = drivers_of(lifecycle)[0]
     try:
         theirs = run(harness, first, lifecycle, record_property)
     except Exception as failed:

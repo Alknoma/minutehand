@@ -422,20 +422,26 @@ def _history(
 
 def _direct(session: Session, events: Sequence[WorldEvent], provider: str) -> None:
     assert isinstance(session, Messaging)
-    sofia = next(p for p in session.people() if p.email == "sofia@example.com")
-    history = session.history(session.direct(sofia.id))
+    history = session.history(session.direct(session.person_id("sofia@example.com")))
     assert "Fact direct message" in [m.text for m in history], [m.text for m in history]
 
 
 POST = {"by": "sofia", "text": "Fact post", "ago": "PT2H"}
 
 MESSAGING_FACTS = [
-    Fact("channel_name", Family.MESSAGING, ("channel",), (), _channel(), _setting("named", lambda c: True)),
+    Fact(
+        "channel_name",
+        Family.MESSAGING,
+        ("channel",),
+        ("messaging.channels",),
+        _channel(),
+        _setting("named", lambda c: True),
+    ),
     Fact(
         "channel_private",
         Family.MESSAGING,
         ("private",),
-        ("messaging.private",),
+        ("messaging.channels", "messaging.private"),
         _channel(private=True),
         _setting("private", lambda c: c.private),
     ),
@@ -443,7 +449,7 @@ MESSAGING_FACTS = [
         "channel_archived",
         Family.MESSAGING,
         ("archived",),
-        ("messaging.archived",),
+        ("messaging.channels", "messaging.archived"),
         _channel(archived=True),
         _setting("archived", lambda c: c.archived),
     ),
@@ -451,7 +457,7 @@ MESSAGING_FACTS = [
         "channel_topic",
         Family.MESSAGING,
         ("topic",),
-        ("messaging.topic",),
+        ("messaging.channels", "messaging.topic"),
         _channel(topic="Fact topic"),
         _setting("with a topic", lambda c: c.topic == "Fact topic"),
     ),
@@ -459,7 +465,7 @@ MESSAGING_FACTS = [
         "channel_purpose",
         Family.MESSAGING,
         ("purpose",),
-        ("messaging.purpose",),
+        ("messaging.channels", "messaging.purpose"),
         _channel(purpose="Fact purpose"),
         _setting("with a purpose", lambda c: c.purpose == "Fact purpose"),
     ),
@@ -467,7 +473,7 @@ MESSAGING_FACTS = [
         "channel_members",
         Family.MESSAGING,
         ("members",),
-        (),
+        ("messaging.channels",),
         _channel(members=["sofia", "mila"]),
         _setting(
             "with sofia and mila",
@@ -481,7 +487,7 @@ MESSAGING_FACTS = [
         "history_post",
         Family.MESSAGING,
         ("history",),
-        (),
+        ("messaging.channels",),
         _channel(history=[POST]),
         _history("sofia@example.com", "Fact post", timedelta(hours=2)),
     ),
@@ -489,7 +495,7 @@ MESSAGING_FACTS = [
         "history_thread_reply",
         Family.MESSAGING,
         ("replies",),
-        (),
+        ("messaging.channels",),
         _channel(history=[POST | {"replies": [{"by": "owen", "text": "Fact reply", "ago": "PT1H"}]}]),
         _history("owen@example.com", "Fact reply", timedelta(hours=1), thread="Fact post"),
     ),
@@ -497,7 +503,7 @@ MESSAGING_FACTS = [
         "history_files",
         Family.MESSAGING,
         ("files",),
-        ("messaging.files",),
+        ("messaging.channels", "messaging.files"),
         _channel(history=[POST | {"files": [{"name": "fact.txt", "text": "fact file"}]}]),
         _history("sofia@example.com", "Fact post", timedelta(hours=2), files=("fact.txt",)),
     ),
@@ -505,7 +511,7 @@ MESSAGING_FACTS = [
         "direct_history",
         Family.MESSAGING,
         ("history",),
-        ("messaging.direct",),
+        ("messaging.channels", "messaging.direct"),
         lambda provider: {
             "channels": [
                 {
