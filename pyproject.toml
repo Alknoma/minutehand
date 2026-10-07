@@ -92,6 +92,7 @@ dev = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
     "psycopg[binary]>=3.2",
     "asyncpg>=0.32.0",
+    "pytest-split>=0.10",
 ]
 recipes = [
     "anthropic>=1.11.0",
