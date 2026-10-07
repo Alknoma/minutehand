@@ -1,4 +1,4 @@
-"""The scenario library: every entry loads, names checks and patterns that exist, and once filled with a team's values
+"""The scenario library: every entry loads, carries rules and names patterns that exist, and once filled with a team's values
 is a scenario `minutehand validate` accepts; the team's values land where they are meant to and stay text; and the
 `minutehand scenarios` command lists, shows and writes them out."""
 
@@ -14,7 +14,6 @@ from minutehand import cli
 from minutehand.application.files import problems
 from minutehand.application.library import entries, entry, write
 from minutehand.checks.patterns import PATTERNS
-from minutehand.checks.runner import discover
 from minutehand.domain.library import LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.scenario import DispatchRule, PersonAsked, PersonPosts, PlannedBy, Relayed, Scripted, Silent
 
@@ -54,12 +53,13 @@ def test_the_library_holds_the_situations_it_names() -> None:
 
 
 @pytest.mark.parametrize("name", NAMES)
-def test_each_entry_names_checks_and_patterns_that_exist(name: str) -> None:
+def test_each_entry_carries_rules_and_names_patterns_that_exist(name: str) -> None:
     found = entry(name)
-    checks = {c.id for c in discover()}
-    assert set(found.checks) <= checks, set(found.checks) - checks
+    written = found.written(DEFAULTS)
+    assert [r.id for r in written.assess] == found.rules and found.rules
     keys = {p.key for p in PATTERNS}
     assert set(found.patterns) <= keys, set(found.patterns) - keys
+    assert {r.pattern for r in written.assess if r.pattern is not None} <= keys
 
 
 @pytest.mark.parametrize("team", [TEAM, DEFAULTS], ids=["team", "defaults"])
@@ -113,7 +113,10 @@ def test_the_written_file_says_what_it_is_for(tmp_path: Path) -> None:
     head = text.split("\nname:")[0]
     assert head.startswith("# planned_wake_dropped, from the Minutehand scenario library")
     assert "# Situation: The person asked never answers" in head
-    assert "# Checks: no_follow_up, planned_past_due. Patterns: expiry_on_every_wait." in head
+    assert (
+        "# Rules (in `assess` below, yours to edit): follows_up_when_due, planned_to_be_back_when_due,\n"
+        "# not_done_while_waiting. Patterns: expiry_on_every_wait." in head
+    )
     assert all(line.startswith("#") or not line for line in head.splitlines())
 
 
@@ -139,10 +142,14 @@ def test_a_library_entry_naming_a_value_no_team_gives_is_refused() -> None:
         LibraryScenario(
             situation="s",
             good_agent="g",
-            checks=["expectations"],
             patterns=["honest_closure"],
-            scenario={"name": "x", "goal": "{team.budget}"},
+            scenario={"name": "x", "goal": "{team.budget}", "assess": [{"id": "r"}]},
         )
+
+
+def test_a_library_entry_without_rules_is_refused() -> None:
+    with pytest.raises(ValidationError, match="carries the rules that judge it"):
+        LibraryScenario(situation="s", good_agent="g", patterns=["honest_closure"], scenario={"name": "x"})
 
 
 def test_the_dispatch_rule_takes_the_team_wake_kind() -> None:
@@ -171,7 +178,7 @@ def test_scenarios_lists_every_library_scenario(capsys: pytest.CaptureFixture[st
 def test_scenarios_show_says_what_one_is_for(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["scenarios", "show", "approval_rejected"]) == 0
     out = capsys.readouterr().out
-    assert "checks: acted_without_approval, expectations, no_follow_up" in out
+    assert "rules: acts_only_once_approved, follows_up_when_due, not_done_while_waiting (in the scenario's `assess`" in out
     assert "takes: --goal --owner --ask --other --answer --credential-env" in out
 
 

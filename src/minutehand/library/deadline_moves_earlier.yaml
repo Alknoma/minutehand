@@ -35,11 +35,11 @@ scenario:
       count: {writes: {things_not: [message]}, since: deadline+PT1S}
       at_most: 0
       pattern: budgeted_follow_up
-    - id: follows_up_when_due          # once an answer is due and has not come, remind within the hour
+    - id: follows_up_when_due          # an hour past the time an answer was due, the agent has reminded at least once
       each: ask
       where: {person_not: [owner]}
-      when: {open_at: due}
-      count: {follow_ups: {}, since: due, until: due+PT1H}
+      when: {open_at: due+PT1H}
+      count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
       at_least: 1
-      message: "{person.key}'s answer was due at {rule.moment} and the agent did not follow up within the hour"
+      message: "{person.key}'s answer was due and an hour later the agent had not followed up"
       pattern: expiry_on_every_wait

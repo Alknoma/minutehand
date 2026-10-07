@@ -25,13 +25,13 @@ scenario:
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
   assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
-    - id: follows_up_when_due          # once an answer is due and has not come, remind within the hour
+    - id: follows_up_when_due          # an hour past the time an answer was due, the agent has reminded at least once
       each: ask
       where: {person_not: [owner]}
-      when: {open_at: due}
-      count: {follow_ups: {}, since: due, until: due+PT1H}
+      when: {open_at: due+PT1H}
+      count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
       at_least: 1
-      message: "{person.key}'s answer was due at {rule.moment} and the agent did not follow up within the hour"
+      message: "{person.key}'s answer was due and an hour later the agent had not followed up"
       pattern: expiry_on_every_wait
     - id: planned_to_be_back_when_due  # the agent's own plan, not luck, brought it back when the answer fell due
       each: ask
@@ -41,3 +41,9 @@ scenario:
       at_least: 1
       severity: review
       pattern: expiry_on_every_wait
+    - id: not_done_while_waiting       # the agent does not report done while someone it asked has not answered
+      when: {stopped: [agent_done]}
+      count: {asks: {open_at: end}}
+      at_most: 0
+      message: "the agent reported done with {rule.count} ask(s) still unanswered"
+      pattern: honest_closure
