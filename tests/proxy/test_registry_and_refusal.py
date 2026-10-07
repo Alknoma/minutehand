@@ -18,6 +18,7 @@ from minutehand.adapters.proxy.registry import ENTRY_POINT_GROUP, ProviderConfli
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
+from minutehand.domain.experiment import ModelSwap
 from minutehand.domain.provider import Manifest, Tier
 from minutehand.domain.scenario import Scenario
 from minutehand.ports.clock import Clock
@@ -110,6 +111,20 @@ def test_policy_for_each_kind_of_host(registry: Registry) -> None:
     assert routing.policy("api.anthropic.com") is HostPolicy.TUNNEL
     assert routing.policy("generativelanguage.googleapis.com") is HostPolicy.TUNNEL
     assert routing.policy("example.org") is HostPolicy.REFUSE
+
+
+def test_a_model_vendors_own_infrastructure_is_tunnelled_and_never_edited(registry: Registry) -> None:
+    """Claude Code under a person's sign-in calls Anthropic beside its model API: the relay to the account's remote
+    MCP connectors, Anthropic's own MCP servers and the token refresh. Refused as unknown, each was a 502 and an
+    `unmatched_call`; it is tunnelled as a model host is, whatever model hosts the run names, and an edit with no
+    host, which would write a `model` into an MCP request, never applies to it."""
+    routing = Routing(registry, model_hosts=["models.example"], overrides=[ModelSwap(to="model-terra")])
+    assert routing.policy("models.example") is HostPolicy.EDIT
+    for host in ("mcp-proxy.anthropic.com", "slack.mcp.claude.com", "platform.claude.com"):
+        assert routing.policy(host) is HostPolicy.TUNNEL, host
+        assert routing.edits_for(host) == [], host
+    assert "mcp-proxy.anthropic.com" in routing.model_hosts
+    assert routing.policy("claude.com") is HostPolicy.REFUSE
 
 
 async def test_unclaimed_host_is_refused_and_recorded_without_contacting_it(
