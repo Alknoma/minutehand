@@ -18,6 +18,7 @@ scenario declared.
   calendars, and the faults: the next `times` calls of a Google operation, from `after` on, refused with a
   `wire.FaultKind`. A person the seed names by a key that is nobody's, or an email it answers that is not seeded
   before it, is refused before anything is written.
+- A `SeededChannel` on this provider is refused: Gmail has no channel or chat to hold it.
 
 Everything is written as actor SCENARIO.
 """
@@ -256,8 +257,17 @@ def seed(scenario: Scenario, world: Store) -> None:
 
 
 def _check(own: WorkspaceSeed, scenario: Scenario) -> None:
-    """Every name the seed gives must name something, checked before anything is written."""
+    """Every name the seed gives must name something, and nothing the shared seed puts here may be dropped, checked
+    before anything is written."""
     people = {p.key: p for p in scenario.people}
+    for channel in scenario.channels:
+        if channel.provider == MANIFEST.key:
+            what = f"the seeded channel {channel.name!r}" if channel.name is not None else "a seeded direct chat"
+            raise ValueError(
+                f"{what} is on {MANIFEST.key}, which holds no channels: Gmail has no channel or chat a conversation "
+                "could be, so it would be dropped; mail a scenario starts with is seeded as this provider's own "
+                "`emails`"
+            )
     keys: set[str] = set()
     for n, email in enumerate(own.emails, start=1):
         what = f"seeded email {n}"

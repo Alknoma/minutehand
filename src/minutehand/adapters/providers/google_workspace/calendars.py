@@ -575,14 +575,14 @@ class CalendarApi:
         offset = self._offset(request)
         page = [self._served(e, calendar.id, caller) for _, e in found[offset : offset + size]]
         more = offset + size < len(found)
-        head = self._calendars.store.head()
+        seq, changed = self._last_change(calendar.id)
         answer = cal.EventList(
-            etag=f'"{head}"',
+            etag=f'"{seq}"',
             summary=calendar.id,
-            updated=wire.rfc3339(self._clock.now()),
+            updated=wire.rfc3339(changed),
             timeZone=calendar.timeZone,
             nextPageToken=wire.encode_page(offset + size) if more else None,
-            nextSyncToken=None if more else f"s{head}",
+            nextSyncToken=None if more else f"s{seq}",
             items=page,
         )
         self._calendars.saw(record_ref(calendar_parent(calendar.id)), Operation.SEARCH)
@@ -597,42 +597,65 @@ class CalendarApi:
         store = self._calendars.store
         if not sync.startswith("s") or not sync[1:].isdigit() or int(sync[1:]) > store.head():
             raise cal.refused(410, "fullSyncRequired", "Sync token is no longer valid, a full sync is required.")
-        mine = calendar.id.lower()
-        latest: dict[str, int] = {}
-        for event in store.events(since=int(sync[1:])):
-            ref = event.entity
-            if (
-                ref.provider == MANIFEST.key
-                and ref.kind is EntityKind.MESSAGE
-                and event.operation is not Operation.READ
-            ):
-                latest[ref.external_id] = event.seq
         items: list[cal.StoredEvent | cal.CancelledEvent] = []
-        for event_key, seq in sorted(latest.items(), key=lambda pair: pair[1]):
-            versions = [v for v in store.versions(event_ref(event_key)) if v.seq <= seq]
-            kept = [k for k in (cal.KEPT.validate_json(v.body) for v in versions) if isinstance(k, cal.StoredEvent)]
-            if not kept:
-                continue
-            last = kept[-1]
-            on_it = last.organizer.email.lower() == mine or any(a.email.lower() == mine for a in last.attendees or [])
-            if not on_it:
-                continue
+        for event_key, seq, _ in self._changes(calendar.id, since=int(sync[1:])):
             current = self._calendars.event(event_key)
             if current is None:
                 items.append(cal.CancelledEvent(etag=f'"{seq}"', id=event_key))
             else:
                 items.append(self._served(current[0], calendar.id, caller))
-        head = store.head()
+        last, changed = self._last_change(calendar.id)
         answer = cal.IncrementalList(
-            etag=f'"{head}"',
+            etag=f'"{last}"',
             summary=calendar.id,
-            updated=wire.rfc3339(self._clock.now()),
+            updated=wire.rfc3339(changed),
             timeZone=calendar.timeZone,
-            nextSyncToken=f"s{head}",
+            nextSyncToken=f"s{last}",
             items=items,
         )
         self._calendars.saw(record_ref(calendar_parent(calendar.id)), Operation.SEARCH)
         return _json(answer, request, cal.IncrementalList)
+
+    def _changes(self, calendar: str, *, since: int) -> list[tuple[str, int, datetime]]:
+        """Each event on the calendar changed after `since`, a deleted one included: its id, and the event and the
+        moment of its latest change, oldest change first."""
+        store = self._calendars.store
+        mine = calendar.lower()
+        latest: dict[str, tuple[int, datetime]] = {}
+        for event in store.events(since=since):
+            ref = event.entity
+            if (
+                ref.provider == MANIFEST.key
+                and ref.kind is EntityKind.MESSAGE
+                and event.operation not in (Operation.READ, Operation.SEARCH)
+            ):
+                latest[ref.external_id] = (event.seq, event.sim_time)
+        found: list[tuple[str, int, datetime]] = []
+        for event_key, (seq, moment) in sorted(latest.items(), key=lambda pair: pair[1][0]):
+            versions = [v for v in store.versions(event_ref(event_key)) if v.seq <= seq]
+            kept = [k for k in (cal.KEPT.validate_json(v.body) for v in versions) if isinstance(k, cal.StoredEvent)]
+            if not kept:
+                continue
+            last = kept[-1]
+            if last.organizer.email.lower() == mine or any(a.email.lower() == mine for a in last.attendees or []):
+                found.append((event_key, seq, moment))
+        return found
+
+    def _last_change(self, calendar: str) -> tuple[int, datetime]:
+        """When the calendar last changed: the latest change to an event on it, else the calendar's making. An
+        events list answers it as `updated`, "the last modification time of the calendar"
+        (https://developers.google.com/workspace/calendar/api/v3/reference/events/list#response), and its etag and
+        sync token follow it, so a list read again with nothing changed answers the same."""
+        made = self._calendars.store.get(record_ref(calendar_parent(calendar)))
+        since = made.seq if made is not None else 0
+        changes = self._changes(calendar, since=since)
+        if changes:
+            _, seq, moment = changes[-1]
+            return seq, moment
+        if made is not None:
+            return made.seq, made.sim_time
+        first = self._calendars.store.events(since=0)
+        return 0, first[0].sim_time if first else self._clock.now()
 
     def _searchable(self, event: cal.StoredEvent) -> str:
         guests = [f"{a.email} {a.displayName or ''}" for a in event.attendees or []]
