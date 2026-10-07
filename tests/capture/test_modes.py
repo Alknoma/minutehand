@@ -8,14 +8,19 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from minutehand.adapters.proxy.capture import Capturing, write_recordings
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.outbound import described, outbound_uses, suggested
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.outbound import Acknowledge, Answer, PassThrough, Route
+from minutehand.domain.outbound import Acknowledge, Answer, PassThrough, Route, UnknownHosts
 from minutehand.domain.world import AnsweredBy, BodyKept, CaptureMode
+from minutehand.ports.model import Model as LanguageModel
+from minutehand.ports.model import ModelFailed
 from tests.capture.support import (
     SECRET_API_KEY,
     SECRET_BODY,
@@ -44,7 +49,8 @@ def _proxy(
     tmp_path: Path,
     authority: Authority,
     *declared: Acknowledge | PassThrough,
-    capture_unknown: bool = False,
+    capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
+    model: LanguageModel | None = None,
 ) -> Proxy:
     return Proxy(
         Routing(registry),
@@ -54,6 +60,7 @@ def _proxy(
         upstream_ca=authority.ca_cert,
         capturing=Capturing(declared),
         capture_unknown=capture_unknown,
+        model=model,
     )
 
 
@@ -172,13 +179,34 @@ async def test_capture_unknown_passes_an_undeclared_host_through_and_keeps_it(
 ) -> None:
     async with (
         model_api(authority, host=V6) as real,
-        _proxy(registry, store, clock, tmp_path, authority, capture_unknown=True) as proxy,
+        _proxy(registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.ALL) as proxy,
     ):
         [found] = await by_environment(proxy, [Call("GET", f"https://[::1]:{real.port}/search?q=x")])
     assert found.status == 200 and len(real.received) == 1
     [call] = store.calls()
     assert not call.refused and call.exchange.captured is not None
     assert (call.exchange.captured.mode, call.exchange.captured.declared_as) == (CaptureMode.DISCOVERED, None)
+
+
+async def test_capturing_unknown_reads_passes_a_get_through_and_a_post_to_the_same_host_is_refused(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    async with (
+        model_api(authority, host=V6) as real,
+        _proxy(registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.READS) as proxy,
+    ):
+        read, write = await by_environment(
+            proxy,
+            [
+                Call("GET", f"https://[::1]:{real.port}/search?q=x"),
+                Call("POST", f"https://[::1]:{real.port}/charges", json.dumps({"amount": 500})),
+            ],
+        )
+    assert (read.status, write.status) == (200, 502)
+    assert len(real.received) == 1, "the write never reached the real host"
+    kept, refused = store.calls()
+    assert kept.exchange.captured is not None and kept.exchange.captured.mode is CaptureMode.DISCOVERED
+    assert refused.refused and refused.exchange.method == "POST"
 
 
 async def test_no_secret_reaches_the_store_from_headers_query_or_bodies(
@@ -254,3 +282,120 @@ async def test_a_body_past_the_limit_is_cut_and_a_binary_one_is_kept_as_its_byte
     assert binary.exchange.captured.request.size == 8
     assert too_long.exchange.captured is not None and too_long.exchange.request_bytes is None
     assert (too_long.exchange.captured.request.kept, too_long.exchange.captured.request.size) == (BodyKept.BINARY, 100)
+
+
+@pytest.mark.parametrize(
+    ("flags", "means"),
+    [
+        ([], UnknownHosts.REFUSE),
+        (["--capture-unknown"], UnknownHosts.ALL),
+        (["--capture-unknown", "reads"], UnknownHosts.READS),
+    ],
+)
+def test_the_capture_unknown_flag_says_which_calls_pass(flags: list[str], means: UnknownHosts) -> None:
+    from minutehand.cli import _parser
+
+    args = _parser().parse_args(["run", "scenario.yaml", "--agent", "agent.yaml", *flags])
+    assert UnknownHosts(args.capture_unknown) is means
+
+
+class PaymentsModel:
+    """Stands in for the model port: answers as a payments API would, from the history it is shown."""
+
+    model_id = "stand-in"
+
+    def __init__(self, *, fails: bool = False) -> None:
+        self.fails = fails
+        self.shown: list[str] = []
+
+    async def answer(self, system, messages, answer, *, model=None, temperature=None):
+        asked = messages[-1].text
+        self.shown.append(asked)
+        if self.fails:
+            raise ModelFailed("the model answered twice with something that is not the answer asked for")
+        if asked.rstrip().split("The request to answer now:\n", 1)[1].startswith("POST /charges"):
+            return answer(status=201, body=json.dumps({"id": "ch_1", "amount": 500}))
+        listed = (
+            [{"id": "ch_1", "amount": 500}] if "POST /charges" in asked.split("The request to answer now:")[0] else []
+        )
+        return answer(status=200, body=json.dumps({"data": listed}))
+
+
+async def test_a_model_answers_writes_to_an_undeclared_host_and_every_call_after_from_what_it_answered(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    stand_in = PaymentsModel()
+    async with (
+        model_api(authority, host=V6) as real,
+        _proxy(
+            registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.MODEL, model=stand_in
+        ) as proxy,
+    ):
+        before, made, after = await by_environment(
+            proxy,
+            [
+                Call("GET", f"https://[::1]:{real.port}/charges"),
+                Call("POST", f"https://[::1]:{real.port}/charges", json.dumps({"amount": 500})),
+                Call("GET", f"https://[::1]:{real.port}/charges"),
+            ],
+        )
+    assert before.status == 200 and len(real.received) == 1, "only the read before any write reached the real host"
+    assert (made.status, after.status) == (201, 200) and json.loads(after.body)["data"][0]["id"] == "ch_1"
+    modes = [(c.exchange.captured.mode, c.exchange.captured.answered_by) for c in store.calls() if c.exchange.captured]
+    assert modes == [
+        (CaptureMode.DISCOVERED, AnsweredBy.REAL_HOST),
+        (CaptureMode.MODELED, AnsweredBy.MODEL),
+        (CaptureMode.MODELED, AnsweredBy.MODEL),
+    ]
+    assert "(none: the service is empty)" in stand_in.shown[0] and '"amount": 500' in stand_in.shown[1]
+    modeled_use = [u for u in outbound_uses(store.calls()) if u.mode is CaptureMode.MODELED]
+    assert [described(u) for u in modeled_use] == [
+        "::1: 2 calls, answered by a model standing in for it (--capture-unknown model), never sent"
+    ]
+    assert "host: ::1" in suggested(outbound_uses(store.calls()))
+
+
+async def test_a_model_that_fails_is_answered_502_and_nothing_is_sent_is_refused(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    async with (
+        model_api(authority, host=V6) as real,
+        _proxy(
+            registry,
+            store,
+            clock,
+            tmp_path,
+            authority,
+            capture_unknown=UnknownHosts.MODEL,
+            model=PaymentsModel(fails=True),
+        ) as proxy,
+    ):
+        [made] = await by_environment(proxy, [Call("POST", f"https://[::1]:{real.port}/charges", "{}")])
+    assert made.status == 502 and real.received == []
+    [call] = store.calls()
+    assert call.exchange.captured is not None and call.exchange.captured.answered_by is AnsweredBy.REFUSAL
+
+
+async def test_capturing_unknown_by_model_with_no_model_configured_is_refused(tmp_path: Path) -> None:
+    from minutehand import session
+    from minutehand.application.refusals import RunRefused
+    from minutehand.domain.agent import AgentUnderTest, Reported
+    from minutehand.domain.scenario import Person, Scenario, Silent
+
+    scn = Scenario.model_validate(
+        {
+            "name": "modeled",
+            "goal": "g",
+            "owner": "owen",
+            "starts_at": "2026-08-24T09:00:00Z",
+            "people": [Person(key="owen", name="Owen", email="owen@example.com", reply=Silent())],
+        }
+    )
+    agent = AgentUnderTest(
+        name="a", wakes=[Reported(wake_url="http://127.0.0.1:9/w", report_url="http://127.0.0.1:9/r")]
+    )
+    with pytest.raises(RunRefused, match="--capture-unknown model needs a model"):
+        await session.play(
+            scn, agent, state=tmp_path / "state", listen=session.Listen(capture_unknown=UnknownHosts.MODEL), model=None
+        )
+    assert not (tmp_path / "state").exists() or not any((tmp_path / "state").iterdir())

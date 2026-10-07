@@ -260,7 +260,11 @@
           "document",
           "channel",
           "record",
-          "inbox_item"
+          "inbox_item",
+          "due",
+          "file",
+          "tool_call",
+          "database"
         ],
         "title": "EntityKind",
         "type": "string"

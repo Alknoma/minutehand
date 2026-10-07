@@ -36,6 +36,7 @@ from minutehand.adapters.control.wire import (
     StepView,
     WorldView,
 )
+from minutehand.domain.agent import AgentReport
 from minutehand.domain.people import InboundCredential, InboundCredentialAsk, PermissionGrant, Press
 from minutehand.domain.provider import PersonChange
 from minutehand.domain.scenario import Happening, Person, TicketState
@@ -213,6 +214,10 @@ class OpenWorld:
                 self.end_step()
 
     # -- acting -------------------------------------------------------------------------------------------------
+
+    def report(self, reported: AgentReport) -> Checked:
+        """Relay what the agent says of its own work: see `MinutehandClient.report`."""
+        return self.client.report(self.world_id, reported)
 
     def say(self, person: str, text: str, *, provider: str = "slack") -> WorldEvent:
         """`person` messages the agent directly; the event is pushed to the world's inbound target, signed."""
@@ -430,6 +435,13 @@ class OpenCase:
     def checks(self) -> Checked:
         """The case scored as one run, as it stands."""
         return self._client.case_checks(self.case_id)
+
+    def report(self, reported: AgentReport) -> Checked:
+        """Relay what the agent says of its own work, for the case: see `MinutehandClient.report`."""
+        for world in self.worlds:
+            if world.closed is None:
+                return world.report(reported)
+        raise ClosedWorld(f"every world of case {self.case_id} was already closed")
 
     def close(self, *, quiet: Quiet | bool = True) -> Checked:
         """Close every world still open, in the order opened: the last close answers the case's final checks."""

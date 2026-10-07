@@ -1,0 +1,32 @@
+# Rosa answers two and a half days after she is asked: after the agent's follow-up, which is due at two days.
+name: recipe_venue_late
+goal: Confirm the venue for the team offsite with Rosa.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P14D
+
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    reply: {kind: scripted, replies: []}   # told the outcome; owes no answer
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    reply:
+      kind: scripted
+      delay: {shortest: PT60H, longest: PT60H}
+      replies:
+        - to_ask: 1
+          text: The lakeside hall, booked for the 14th.
+
+expect:
+  - kind: person_asked
+    person: rosa
+  - kind: person_asked
+    person: owen
+    mentions: [confirmed]
+  - kind: relayed            # Owen is told what Rosa said: a phrase only her answer holds
+    said_by: rosa
+    to: owen
+    tell: lakeside hall

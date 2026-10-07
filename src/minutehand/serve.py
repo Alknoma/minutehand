@@ -84,7 +84,9 @@ from minutehand.application.standing import (
 )
 from minutehand.application.steps import Stepping, steps
 from minutehand.checks.runner import RunResult
+from minutehand.domain.agent import AgentReport, AgentStatus
 from minutehand.domain.emulator import EmulatorChange
+from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scenario
@@ -153,8 +155,9 @@ class ServeOptions(Model):
     )
     no_proxy: list[str] = Field(default=[], description="Hosts services reach directly")
     keep: int = Field(default=DEFAULT_KEEP, ge=0, description="Closed worlds kept; older ones are removed")
-    capture_unknown: bool = Field(
-        default=False, description="Pass through and keep a call to a host nobody claims or declares, not refuse it"
+    capture_unknown: UnknownHosts = Field(
+        default=UnknownHosts.REFUSE,
+        description="Which calls to a host nobody claims or declares are passed through and kept: none, reads, or all",
     )
     upstream_ca: Path | None = Field(
         default=None, description="The CAs a real host is verified against when a call is passed through"
@@ -193,6 +196,8 @@ class World:
     case: Case | None = None
     stepping: Stepping | None = None
     """Its own steps, for a world opened under no case label; a case's world is stepped by its case."""
+    reported: AgentReport | None = None
+    """The agent's own report, as whoever drives it last relayed it; a case's world is reported on by its case."""
 
     @property
     def steps(self) -> Stepping:
@@ -220,6 +225,17 @@ class Case:
     worlds: list[str] = field(default_factory=list)
     members: dict[str, StandingWorld] = field(default_factory=dict)
     ended: datetime | None = None
+    reported: AgentReport | None = None
+
+
+def _stopped(reported: AgentReport | None, *, environment: bool) -> StopReason:
+    """How a world that is being closed stopped: on its environment failing, on the agent's own word that it was
+    done (as whoever drove it relayed it), or only because whoever opened it closed it."""
+    if environment:
+        return StopReason.ENVIRONMENT_FAILED
+    if reported is not None and reported.status is AgentStatus.DONE:
+        return StopReason.AGENT_DONE
+    return StopReason.CLOSED
 
 
 def _nothing_relayed(world: Mounted) -> None:
@@ -622,7 +638,7 @@ class Standing:
             await member.look()
         scenario = merged(case.name, self._scenarios(case))
         with self._reading_case(case) as world:
-            return score(scenario, world, stop=stop, ended=self._case_now(case))
+            return score(scenario, world, stop=stop, ended=self._case_now(case), reported=case.reported)
 
     def _case_now(self, case: Case) -> datetime:
         return max([case.clock.now(), *(m.clock.now() for m in case.members.values())])
@@ -632,7 +648,17 @@ class Standing:
         world = self.get(world_id)
         if world.case is not None:
             return await self.case_checks(world.case, stop=None)
-        return await world.standing.checks(stop=None)
+        return await world.standing.checks(stop=None, reported=world.reported)
+
+    def report(self, world_id: str, reported: AgentReport) -> None:
+        """What the agent says of its own work, relayed by whoever drives it, who can read what the world cannot:
+        whether it is done and what it still holds open. The latest report stands; a case's world reports for its
+        case. It is what `minutehand run` asks the agent itself at the end of every wake."""
+        world = self.get(world_id)
+        if world.case is not None:
+            world.case.reported = reported
+        else:
+            world.reported = reported
 
     async def perform_due(self, world_id: str) -> list[WorldEvent]:
         """The decisions a world's people owe by its clock, its case's, or the moment its latest step began, whichever
@@ -670,6 +696,7 @@ class Standing:
                 ended_at=self._case_now(case),
                 wall_seconds=time.monotonic() - case.opened,
                 stop=stop,
+                reported=case.reported,
                 providers=list(dict.fromkeys(c.provider for c in calls if c.provider is not None)),
                 outbound=outbound_uses(calls),
                 emulators=emulator_uses(calls),
@@ -828,9 +855,10 @@ class Standing:
         case = world.case
         stores = [world.store] if case is None else [m.store for m in case.members.values()]
         environment = any(c.exchange.outcome is CallOutcome.UNAVAILABLE for s in stores for c in s.calls())
-        stop = StopReason.ENVIRONMENT_FAILED if environment else StopReason.CLOSED
+        reported = world.reported if case is None else case.reported
+        stop = _stopped(reported, environment=environment)
         if case is None:
-            result = await world.standing.checks(stop=stop)
+            result = await world.standing.checks(stop=stop, reported=reported)
             wakes = steps(world.store)
         else:
             if len(case.members) == 1:
@@ -850,6 +878,7 @@ class Standing:
             ended_at=world.standing.clock.now(),
             wall_seconds=time.monotonic() - world.opened,
             stop=stop,
+            reported=reported,
             providers=list(dict.fromkeys(c.provider for c in world.store.calls() if c.provider is not None)),
             outbound=outbound_uses(world.store.calls()),
             emulators=emulator_uses(world.store.calls()),

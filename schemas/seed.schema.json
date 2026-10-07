@@ -257,6 +257,62 @@
       "title": "Direction",
       "type": "object"
     },
+    "DispatchFault": {
+      "description": "What goes wrong delivering one of the agent's own wakes, as real schedulers go wrong.",
+      "enum": [
+        "late",
+        "twice",
+        "dropped"
+      ],
+      "title": "DispatchFault",
+      "type": "string"
+    },
+    "DispatchRule": {
+      "additionalProperties": false,
+      "description": "A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.\n\nOnly the agent's own wakes are covered: when a person answers is their `reply`, and a ticket's pace its fate.",
+      "properties": {
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How late, or how long after the first the second delivery comes; not for dropped",
+          "title": "By"
+        },
+        "fault": {
+          "$ref": "#/$defs/DispatchFault"
+        },
+        "nth": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The nth wake of that kind to fall due, from 1; None: each",
+          "title": "Nth"
+        },
+        "wakes": {
+          "$ref": "#/$defs/PlannedBy"
+        }
+      },
+      "required": [
+        "wakes",
+        "fault"
+      ],
+      "title": "DispatchRule",
+      "type": "object"
+    },
     "DocumentCreated": {
       "additionalProperties": false,
       "description": "The agent created a document: with these words in its title, in this shared place, owned by this person, and\nholding these words as it last read (by `by`, when given). One document counts once, however often it changed.",
@@ -565,6 +621,62 @@
       "title": "FieldSet",
       "type": "object"
     },
+    "FileRemoved": {
+      "additionalProperties": false,
+      "description": "The agent removed a file from a watched folder of its machine (`AgentUnderTest.watches`): moved it away or\ndeleted it. `at_most: 0` says it must not.",
+      "properties": {
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "file_removed",
+          "default": "file_removed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "description": "A glob the file's absolute path must match, e.g. '*/Downloads/*.zip'",
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "FileRemoved",
+      "type": "object"
+    },
     "FormInput": {
       "additionalProperties": false,
       "description": "What a person types into one field of a form the agent opens for them.",
@@ -627,6 +739,46 @@
       ],
       "title": "Helpfulness",
       "type": "string"
+    },
+    "MachineCommand": {
+      "additionalProperties": false,
+      "description": "Something that happens to the agent's own machine at a moment: a file appears, a cache grows, a repository\ngoes stale. Minutehand runs the command then, in the folder the run was started from, with MINUTEHAND_NOW set\nto the simulated moment (ISO 8601), so it can stamp what it makes; nobody is woken, as on a real machine.",
+      "properties": {
+        "after": {
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Argv",
+          "type": "array"
+        },
+        "limit": {
+          "default": "PT1M",
+          "description": "Real time it may take",
+          "format": "duration",
+          "title": "Limit",
+          "type": "string"
+        },
+        "said": {
+          "description": "What it does, in the run's record",
+          "minLength": 1,
+          "title": "Said",
+          "type": "string"
+        }
+      },
+      "required": [
+        "after",
+        "argv",
+        "said"
+      ],
+      "title": "MachineCommand",
+      "type": "object"
     },
     "Moved": {
       "additionalProperties": false,
@@ -1317,6 +1469,16 @@
       ],
       "title": "PersonReacts",
       "type": "object"
+    },
+    "PlannedBy": {
+      "description": "How the agent asked for one of its own wakes: which of them a dispatch rule is about.",
+      "enum": [
+        "reported",
+        "booked",
+        "polled"
+      ],
+      "title": "PlannedBy",
+      "type": "string"
     },
     "ProviderSeed": {
       "additionalProperties": false,
@@ -2436,6 +2598,96 @@
       "title": "TicketState",
       "type": "string"
     },
+    "ToolCalled": {
+      "additionalProperties": false,
+      "description": "The agent called this tool on an MCP server (`ToolCallSnapshot`), with these words in its arguments.",
+      "properties": {
+        "at_least": {
+          "default": 1,
+          "minimum": 0,
+          "title": "At Least",
+          "type": "integer"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Offset from the scenario's start",
+          "title": "By"
+        },
+        "kind": {
+          "const": "tool_called",
+          "default": "tool_called",
+          "title": "Kind",
+          "type": "string"
+        },
+        "mentions": {
+          "default": [],
+          "description": "Words the arguments must contain, any case",
+          "items": {
+            "type": "string"
+          },
+          "title": "Mentions",
+          "type": "array"
+        },
+        "server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The server's host, or its relay's --name; None: any",
+          "title": "Server"
+        },
+        "succeeded": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: only calls the server did not answer with an error",
+          "title": "Succeeded"
+        },
+        "tool": {
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "ToolCalled",
+      "type": "object"
+    },
     "Trashed": {
       "additionalProperties": false,
       "properties": {
@@ -2515,6 +2767,15 @@
       "title": "Directions",
       "type": "array"
     },
+    "dispatch": {
+      "default": [],
+      "description": "Faults in delivering the agent's own wakes: late, twice or dropped. Without any, each is delivered at the moment it was asked for",
+      "items": {
+        "$ref": "#/$defs/DispatchRule"
+      },
+      "title": "Dispatch",
+      "type": "array"
+    },
     "documents": {
       "default": [],
       "items": {
@@ -2531,11 +2792,13 @@
           "mapping": {
             "document_created": "#/$defs/DocumentCreated",
             "document_shared": "#/$defs/DocumentShared",
+            "file_removed": "#/$defs/FileRemoved",
             "person_asked": "#/$defs/PersonAsked",
             "relayed": "#/$defs/Relayed",
             "ticket_created": "#/$defs/TicketCreated",
             "ticket_deleted": "#/$defs/TicketDeleted",
-            "ticket_in_state": "#/$defs/TicketInState"
+            "ticket_in_state": "#/$defs/TicketInState",
+            "tool_called": "#/$defs/ToolCalled"
           },
           "propertyName": "kind"
         },
@@ -2560,6 +2823,12 @@
           },
           {
             "$ref": "#/$defs/DocumentShared"
+          },
+          {
+            "$ref": "#/$defs/FileRemoved"
+          },
+          {
+            "$ref": "#/$defs/ToolCalled"
           }
         ]
       },
@@ -2625,6 +2894,15 @@
         ]
       },
       "title": "Happenings",
+      "type": "array"
+    },
+    "machine": {
+      "default": [],
+      "description": "What happens to the agent's own machine, at moments the scenario sets",
+      "items": {
+        "$ref": "#/$defs/MachineCommand"
+      },
+      "title": "Machine",
       "type": "array"
     },
     "max_wakes": {

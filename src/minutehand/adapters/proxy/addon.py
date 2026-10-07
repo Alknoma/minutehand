@@ -36,7 +36,7 @@ from mitmproxy.proxy.layers import modes
 
 from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, kind_of
 from minutehand.adapters.emulator import answers
-from minutehand.adapters.proxy import capture, connect, credentials, redact
+from minutehand.adapters.proxy import capture, connect, credentials, mcp, modeled, redact
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.hosts import loopback_name
@@ -46,7 +46,16 @@ from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.application.restore import SeenCall
 from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
-from minutehand.domain.outbound import BODY_LIMIT, Acknowledge, Forward, HostHeader, OnMiss, PassThrough
+from minutehand.domain.outbound import (
+    BODY_LIMIT,
+    READ_METHODS,
+    Acknowledge,
+    Forward,
+    HostHeader,
+    OnMiss,
+    PassThrough,
+    UnknownHosts,
+)
 from minutehand.domain.provider import Manifest, world_keys
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.telemetry import SpanSource
@@ -69,6 +78,8 @@ from minutehand.domain.world import (
     TunnelRoute,
 )
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import Model as LanguageModel
+from minutehand.ports.model import ModelFailed
 from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -177,11 +188,13 @@ class ProxyAddon:
         *,
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
-        capture_unknown: bool = False,
+        capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
+        model: LanguageModel | None = None,
     ) -> None:
         self.routing = routing
         self.capturing = capturing or Capturing()
         self.capture_unknown = capture_unknown
+        self._model = model
         self.worlds: Worlds = one_run(
             store, clock, {}, scenario=None, provider=routing.registry.provider, capturing=self.capturing
         )
@@ -472,7 +485,16 @@ class ProxyAddon:
             return
         held = world or self.worlds.lobby
         declaration = held.capturing.find(host) if manifest is None else None
-        if declaration is not None or (manifest is None and self.capture_unknown):
+        if (
+            declaration is None
+            and manifest is None
+            and self.capture_unknown is UnknownHosts.MODEL
+            and self._model is not None
+            and (request.method.upper() not in READ_METHODS or modeled.earlier(held.store.calls(), host))
+        ):
+            await self._modeled(flow, host, held, self._model)
+            return
+        if declaration is not None or (manifest is None and self.capture_unknown.captures(request.method)):
             await self._capture(flow, host, held, declaration)
             return
         refused = held
@@ -701,6 +723,31 @@ class ProxyAddon:
             return
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
+
+    async def _modeled(self, flow: http.HTTPFlow, host: str, world: Mounted, model: LanguageModel) -> None:
+        """Answer a write to a host nobody declared, and every call to it after, as a model standing in for the
+        service says, from what it answered for that host before: never sent anywhere. A model that fails is
+        answered 502, naming it."""
+        request = flow.request
+        content_type = _first_header(request, "content-type")
+        shown = capture.keep(request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=[])
+        try:
+            found = await modeled.answer(
+                model,
+                host,
+                request.method,
+                redact.path(request.path),
+                shown.text,
+                modeled.earlier(world.store.calls(), host),
+            )
+        except ModelFailed as e:
+            flow.response = _json_response(502, f"the model standing in for this host failed: {e}", host)
+            await self._keep(flow, host, world, None, CaptureMode.MODELED, AnsweredBy.REFUSAL, note=str(e))
+            return
+        flow.response = http.Response.make(found.status, found.body.encode(), {"content-type": found.content_type})
+        await self._keep(
+            flow, host, world, None, CaptureMode.MODELED, AnsweredBy.MODEL, note=f"answered by {model.model_id}"
+        )
 
     async def _forward(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Forward) -> None:
         """Send the call to its external emulator through the emulator's relay, unchanged but for the headers
@@ -1060,8 +1107,27 @@ class ProxyAddon:
             ),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
+        before = world.store.head()
+        for n, call in enumerate(
+            mcp.tool_calls(
+                host,
+                asked.text,
+                _first_header(request, "content-type"),
+                answered.text,
+                _first_header(response, "content-type"),
+            )
+        ):
+            world.store.apply(
+                Change(
+                    entity=EntityRef(provider="mcp", kind=EntityKind.TOOL_CALL, external_id=f"{host}/{before + 1}/{n}"),
+                    operation=Operation.CREATE,
+                    actor=Actor.AGENT,
+                    body=call.model_dump_json(),
+                    after=call,
+                )
+            )
         head = world.store.head()
-        world.store.attach(exchange, first_seq=first if first is not None else head + 1, last_seq=head)
+        world.store.attach(exchange, first_seq=first if first is not None else before + 1, last_seq=head)
         self.worlds.answered(world, exchange, [])
         return exchange
 

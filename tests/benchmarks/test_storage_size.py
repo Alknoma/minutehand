@@ -29,7 +29,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from minutehand.adapters.providers.google_drive.provider import build as build_drive
+from minutehand.adapters.providers.google_workspace.provider import build as build_drive
 from minutehand.adapters.providers.slack import state as slack_state
 from minutehand.adapters.providers.slack.provider import build as build_slack
 from minutehand.adapters.proxy.policy import Routing
@@ -197,7 +197,7 @@ async def run_b(directory: Path) -> Measured:
         owner="mara",
         starts_at=START,
         people=[Person(key="mara", name="Mara Lindqvist", email="mara@example.com")],
-        sign_ins=[SignIn(provider="google_drive", credential=REFRESH, person="mara")],
+        sign_ins=[SignIn(provider="google_workspace", credential=REFRESH, person="mara")],
     )
     clock = RunClock(START)
     store = SqliteStore(directory / "world.db", "b", clock)
@@ -209,7 +209,7 @@ async def run_b(directory: Path) -> Measured:
     bodies = contents()
     began = time.perf_counter()
     async with proxied(
-        store, clock, scenario, "google_drive", provider.app(store, clock), directory.parent / "ca"
+        store, clock, scenario, "google_workspace", provider.app(store, clock), directory.parent / "ca"
     ) as client:
         token = await client.post(
             "https://oauth2.googleapis.com/token",
@@ -235,7 +235,9 @@ async def run_b(directory: Path) -> Measured:
             clock.jump(clock.now() + timedelta(seconds=30))
     written = time.perf_counter() - began
     assert len([c for c in store.calls() if c.exchange.method == "GET"]) == 250
-    blob = EntityRef(provider="google_drive", kind=EntityKind.RECORD, external_id=hashlib.sha256(mid_body).hexdigest())
+    blob = EntityRef(
+        provider="google_workspace", kind=EntityKind.RECORD, external_id=hashlib.sha256(mid_body).hexdigest()
+    )
     seconds, size = as_of(store, mid_seq, blob, clock)
     wal = close(store, directory)
     return Measured(

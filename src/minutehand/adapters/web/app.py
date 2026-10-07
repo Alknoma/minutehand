@@ -86,6 +86,7 @@ from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
     Actor,
+    EntityKind,
     EntityRef,
     InboxItemSnapshot,
     ItemStatus,
@@ -156,7 +157,16 @@ def create_app(state: Path) -> Starlette:
 
     def events(run_id: str) -> Response:
         with session.reading(state, run_id) as world:
-            return _json(EventsResponse(events=[e for e in world.events() if e.entity not in (CHECKPOINT, STEP)]))
+            return _json(
+                EventsResponse(
+                    events=[
+                        e
+                        for e in world.events()
+                        if e.entity not in (CHECKPOINT, STEP)
+                        and e.entity.kind not in (EntityKind.DUE, EntityKind.DATABASE)
+                    ]
+                )
+            )
 
     def calls(run_id: str) -> Response:
         with session.reading(state, run_id) as world:

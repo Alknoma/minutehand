@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
+from minutehand.domain.database import Database, refuse_repeated_databases
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -143,7 +144,37 @@ class Command(Model):
     argv: list[str]
 
 
-WakeSource = Annotated[Reported | Booked | Polled | Command, Field(discriminator="kind")]
+class Contained(Model):
+    """The agent runs in a sandbox whose clock Minutehand owns (a patched gVisor; docs/design.md, "A sandbox whose
+    clock Minutehand owns"), so its own in-process timers are its next wakes, with no code of Minutehand's in it.
+
+    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "earliest_ns": int}`
+    (whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and
+    `advance` moves the sandbox's clock forward by `{nanoseconds}`. Minutehand moves it with every jump of the
+    run's clock, so the two agree, and when the sandbox is idle and no call of the agent's is in flight, its
+    earliest deadline is a wake the agent asked for."""
+
+    kind: Literal["contained"] = "contained"
+    deadlines: list[str] = Field(min_length=1)
+    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step goes")
+    quiet: timedelta = Field(
+        default=timedelta(milliseconds=50), gt=timedelta(0), description="Idle on two reads this far apart is idle"
+    )
+    settle_limit: timedelta = Field(
+        default=timedelta(seconds=30), gt=timedelta(0), description="Real time a wake may take to fall idle"
+    )
+
+    @model_validator(mode="after")
+    def _steps(self) -> Self:
+        if not any("{nanoseconds}" in part for part in self.advance):
+            raise ValueError("`advance` must hold {nanoseconds}, where the step it moves the clock by goes")
+        return self
+
+
+WakeSource = Annotated[Reported | Booked | Polled | Command | Contained, Field(discriminator="kind")]
+
+ANSWER_LIMIT = timedelta(seconds=120)
+"""How long after a restore the agent's report endpoint has to answer, unless its `StateHooks` say otherwise."""
 
 
 class StateHooks(Model):
@@ -193,7 +224,7 @@ class StateHooks(Model):
         description="How long a checkpoint waits to settle before it is recorded as not restorable",
     )
     answer_limit: timedelta = Field(
-        default=timedelta(seconds=120),
+        default=ANSWER_LIMIT,
         gt=timedelta(0),
         description="How long after `start` the agent's report endpoint has to answer",
     )
@@ -268,6 +299,18 @@ class AgentUnderTest(Model):
         "own page), read and decided as each person (`domain.inboxes`)",
     )
     state: StateHooks | None = None
+    watches: list[str] = Field(
+        default=[],
+        description="Folders of the agent's own machine whose files Minutehand records: what the agent creates, "
+        "changes or removes in a wake, and what a scenario's machine commands do. A relative path is read from the "
+        "agent file's folder",
+    )
+    checks: list[str] = Field(
+        default=[],
+        description="Python files holding checks of the agent's own, written as Minutehand's are: a class with `id`, "
+        "`needs` and `run(view) -> CheckReport`. Run with Minutehand's after every run and fork. A relative path is "
+        "read from the agent file's folder",
+    )
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"
     )
@@ -276,6 +319,11 @@ class AgentUnderTest(Model):
     )
     emulators: list[ExternalEmulator] = Field(
         default=[], description="Fakes outside Minutehand that `forward` hosts are sent to, started or attached to"
+    )
+    databases: list[Database] = Field(
+        default=[],
+        description="The agent's own databases Minutehand fronts: it relays every connection, records the agent's "
+        "committed writes, and puts each back for a fork from a base and those writes, with no state hooks",
     )
 
     @model_validator(mode="after")
@@ -291,6 +339,7 @@ class AgentUnderTest(Model):
         if clash:
             raise ValueError(f"an inbox and an outbound host are both recorded as {', '.join(clash)}")
         refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
+        refuse_repeated_databases(self.databases)
         named = [b.env for b in self.base_urls]
         if len(named) != len(set(named)):
             raise ValueError(

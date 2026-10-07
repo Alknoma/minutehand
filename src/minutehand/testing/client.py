@@ -52,6 +52,7 @@ from minutehand.adapters.control.wire import (
     WorldView,
 )
 from minutehand.application.steps import StepEdge
+from minutehand.domain.agent import AgentReport
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, EntityKind, Operation
 
@@ -342,6 +343,12 @@ class MinutehandClient:
     def end_step(self, world_id: str) -> StepView:
         return self._post(f"/worlds/{world_id}/steps", _ENDED, StepView)
 
+    def report(self, world_id: str, reported: AgentReport) -> Checked:
+        """Relay the agent's own report of its work (its case's, for a world of a case): whether it is done and what
+        it still holds open, which only the service itself can say. The latest report stands, and the verdict reads
+        it: DONE is how the run stopped, and a commitment still open keeps it from passing."""
+        return self._post(f"/worlds/{world_id}/report", reported.model_dump_json(), Checked)
+
     def cases(self) -> list[CaseView]:
         return self._get("/cases", CaseList).cases
 
@@ -507,6 +514,9 @@ class AsyncMinutehandClient:
 
     async def end_step(self, world_id: str) -> StepView:
         return await self._post(f"/worlds/{world_id}/steps", _ENDED, StepView)
+
+    async def report(self, world_id: str, reported: AgentReport) -> Checked:
+        return await self._post(f"/worlds/{world_id}/report", reported.model_dump_json(), Checked)
 
     async def cases(self) -> list[CaseView]:
         return (await self._get("/cases", CaseList)).cases

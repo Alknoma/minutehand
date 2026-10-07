@@ -1,0 +1,18 @@
+{
+  "name": "minutehand-recipe-vercel-ai-sdk",
+  "private": true,
+  "type": "module",
+  "description": "A Vercel AI SDK agent wired into Minutehand: asks in Slack, remembers when it expects an answer, follows up once.",
+  "scripts": {
+    "start": "node agent.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^4.0.85",
+    "@slack/web-api": "^8.2.0",
+    "ai": "^7.0.129",
+    "zod": "^4.6.5"
+  }
+}

@@ -27,7 +27,7 @@ FAULTS: dict[str, tuple[str, list[dict[str, object]]]] = {
     "slack": ("faults", [{"call": "auth.test", "answer": {"kind": "refused", "error": "account_inactive"}},
                          {"call": "users.list", "answer": {"kind": "rate_limited"}}]),
     "github": ("faults", [{"kind": "server_error"}, {"kind": "server_error"}]),
-    "google_drive": ("faults", [{"operation": "files.list", "kind": "rate_limited", "times": 2},
+    "google_workspace": ("faults", [{"operation": "files.list", "kind": "rate_limited", "times": 2},
                                 {"operation": "files.get", "kind": "rate_limited"}]),
     "microsoft": ("faults", [{"call": "/v1.0/me", "answer": {"kind": "refused", "error": "Forbidden"}},
                              {"answer": {"kind": "rate_limited"}}]),

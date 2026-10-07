@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -166,6 +167,29 @@ def test_env_writes_a_compose_override_that_injects_the_variables_and_mounts_the
     assert environment["SSL_CERT_FILE"] == environment["NODE_EXTRA_CA_CERTS"] == "/etc/minutehand/ca-bundle.pem"
     assert environment["NO_PROXY"] == "127.0.0.1,platform,worker,firestore,host.docker.internal,localhost"
     assert environment["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://host.docker.internal:18081"
+
+
+def test_env_warns_of_a_docker_config_whose_no_proxy_would_replace_the_one_it_hands_out(tmp_path: Path) -> None:
+    """Docker Desktop writes `"noProxy": "*"` into the client config, and the Docker CLI copies it into the NO_PROXY
+    of every container it starts: the agent's calls would skip the proxy and the run would record nothing."""
+    agent_file = _dump(tmp_path / "agent.yaml", RUNNING_AGENT)
+    wild, plain = tmp_path / "wild", tmp_path / "plain"
+    for folder, no_proxy in ((wild, "*"), (plain, "127.0.0.1,localhost")):
+        folder.mkdir()
+        (folder / "config.json").write_text(json.dumps({"proxies": {"default": {"noProxy": no_proxy}}}))
+    base = ("env", "--agent", str(agent_file), "--proxy-port", "18080", "--no-receive-telemetry")
+    compose = ("--proxy-host", "0.0.0.0", "--agent-proxy-host", "agentnet", "--format", "compose", "--service", "a")
+
+    warned = _cli(*base, *compose, "--state", str(tmp_path / "s"), env={**os.environ, "DOCKER_CONFIG": str(wild)})
+    quiet = _cli(*base, "--state", str(tmp_path / "s"), env={**os.environ, "DOCKER_CONFIG": str(plain)})
+
+    assert warned.returncode == 0, warned.stderr
+    assert warned.stderr.startswith(
+        f"minutehand env: warning: {wild / 'config.json'} sets proxies.default.noProxy to '*'"
+    )
+    assert "Hand the container both NO_PROXY and no_proxy with -e" in warned.stderr
+    assert yaml.safe_load(warned.stdout)["services"]["a"]["environment"]["NO_PROXY"].startswith("127.0.0.1,a")
+    assert quiet.returncode == 0 and quiet.stderr == ""
 
 
 def test_env_without_a_telemetry_port_is_refused_and_without_receiving_names_no_endpoint(tmp_path: Path) -> None:
