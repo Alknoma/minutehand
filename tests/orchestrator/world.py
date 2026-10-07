@@ -214,7 +214,7 @@ class Chat:
             )
         )
         async with httpx.AsyncClient() as client:
-            (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
+            (await client.post(target.request_url(), content=body, headers={SIGNATURE: secret})).raise_for_status()
 
     async def say(
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
@@ -232,7 +232,7 @@ class Chat:
             )
         )
         async with httpx.AsyncClient() as client:
-            (await client.post(target.url, content=body, headers={SIGNATURE: secret})).raise_for_status()
+            (await client.post(target.request_url(), content=body, headers={SIGNATURE: secret})).raise_for_status()
 
     async def happen(
         self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str

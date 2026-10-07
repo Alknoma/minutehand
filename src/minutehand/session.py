@@ -32,7 +32,8 @@ import os
 import secrets
 import shutil
 import sqlite3
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Coroutine, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -45,7 +46,7 @@ from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
-from minutehand.adapters.database.postgres.relay import PostgresFront
+from minutehand.adapters.database.postgres.relay import PostgresFront, bases_on_server, drop_base
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
@@ -59,6 +60,7 @@ from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
+from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.application.cases import CASE, CaseKept, CaseStore
 from minutehand.application.checkpoint import (
     CHECKPOINT,
@@ -70,7 +72,8 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
-from minutehand.application.databases import Recorder, start_again, take_bases
+from minutehand.application.databases import Recorder, nondeterministic, start_again, take_bases
+from minutehand.application.databases import records as database_records
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
@@ -105,9 +108,11 @@ from minutehand.checks.runner import (
 )
 from minutehand.domain.agent import AgentUnderTest, Booked, Contained, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, WakeRecord
+from minutehand.domain.database import BaseTaken, CommandBase, Database
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge, UnknownHosts
+from minutehand.domain.people import Delivery
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import (
     Answers,
@@ -132,6 +137,7 @@ from minutehand.ports.provider import (
     HoldsTickets,
     Provider,
     PushesEvents,
+    ServesSockets,
 )
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -156,6 +162,12 @@ CA_VARIABLES = (
 )
 """Each HTTP library's own name for the file of CAs it trusts. httplib2 reads only its own and ignores
 `SSL_CERT_FILE`; gRPC reads only `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`. stripe reads none: it passes its bundled CA."""
+
+NODE_PROXY = "NODE_USE_ENV_PROXY"
+"""Node's built-in `fetch` (undici, and so `@slack/web-api` v8 and every SDK on it) reads no proxy variable unless this
+is `1` (Node 24 and later; Node 25 applies it to `http` and `https` too). Set for every agent, whatever its command:
+a Node process started by a shell script or by another program is reached all the same, and every other runtime
+ignores it. An older Node may not read it: such an agent needs a base URL or transparent capture."""
 
 LISTEN_TIMEOUT = 30.0
 """Seconds the agent's process has to accept connections on its wake or inbound URL."""
@@ -255,7 +267,9 @@ async def play(
                 await start_again(fronts, first[0], proxy.recorder)
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
-            scorer = _Judge(scenario, model if judge else None, judging=judge, own=own_checks)
+            scorer = _Judge(
+                scenario, model if judge else None, judging=judge, own=own_checks, claims=_claims(registry, services)
+            )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
             env = (
@@ -286,6 +300,7 @@ async def play(
                     channels=replies_for(agent, scenario, signing),
                     environment=emulators,
                     inboxes=inboxes_for(agent, scenario, signing),
+                    databases=fronts,
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -380,7 +395,9 @@ async def fork(
         agent, registry, state=state, parent=parent_run, after_wake=forked_after, model_hosts=listen.model_hosts
     )
     child_id = _new_run_id()
-    scorer = _Judge(changed, model if judge else None, judging=judge, own=own_checks)
+    scorer = _Judge(
+        changed, model if judge else None, judging=judge, own=own_checks, claims=_claims(registry, services)
+    )
     signing = signing_for(agent, changed.people)
 
     def open_parent(clock: Clock) -> Store:
@@ -681,12 +698,22 @@ class Collected(Model):
     removed_bytes: int = Field(default=0, ge=0)
     swept: int = Field(default=0, ge=0, description="World files swept")
     skipped: list[str] = Field(default=[], description="World files that could not be swept, and why")
+    bases: list[str] = Field(
+        default=[],
+        description="Each base of a fronted database that no run left under the state directory needs, and what "
+        "became of it: dropped, kept, or why it could not be dropped",
+    )
 
 
 def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
     """Remove the run directories named in `remove`, then sweep every world file left under `state` of the stored
-    bodies and snapshot files nothing refers to. `minutehand gc`, and a standing server's retention of closed
-    worlds, are this."""
+    bodies and snapshot files nothing refers to. `minutehand gc`, `minutehand rm`, and a standing server's
+    retention of closed worlds, are this.
+
+    A base of a fronted database (`AgentUnderTest.databases`) is taken once per run and shared by its forks and
+    its later samples, each of which records it; once the last world file recording it is removed, it is dropped
+    (`relay.drop_base`)."""
+    held = {base.base: (database, base) for run_id in remove for database, base in _bases_of(run_dir(state, run_id))}
     removed_bytes = 0
     for run_id in remove:
         directory = run_dir(state, run_id)
@@ -717,7 +744,132 @@ def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
             files=totals.files + freed.files,
             file_bytes=totals.file_bytes + freed.file_bytes,
         )
-    return Collected(freed=totals, removed=list(remove), removed_bytes=removed_bytes, swept=swept, skipped=skipped)
+    bases: list[str] = []
+    if held:
+        needed, unread = _needed_bases(state)
+        if unread:
+            bases = [
+                f"base {name} of database {database.name} kept: {unread[0]} could not be read, and may need it"
+                for name, (database, _) in held.items()
+            ]
+        else:
+            bases = _on_own_loop(_drop_bases([pair for name, pair in held.items() if name not in needed]))
+    return Collected(
+        freed=totals,
+        removed=list(remove),
+        removed_bytes=removed_bytes,
+        swept=swept,
+        skipped=skipped,
+        bases=bases,
+    )
+
+
+def remove(state: Path, run_ids: Sequence[str]) -> Collected:
+    """`minutehand rm`: each run named, with every fork of it, since they share its world file; then `collect`,
+    which drops the bases of fronted databases nothing left needs. A fork alone is refused: its record is part of
+    its root's world file, which is removed with the root."""
+    whole: list[str] = []
+    for run_id in run_ids:
+        entry = find(state, run_id)
+        if entry.root != run_id:
+            raise RunRefused(
+                f"run {run_id} is a fork of run {entry.root} and is kept in its world file: remove {entry.root}, "
+                "which removes it with every other fork of that run"
+            )
+        whole += [r for r, _, _ in _ReadOnlyStore.runs_in(run_dir(state, run_id) / WORLD) if r not in whole]
+    return collect(state, remove=whole)
+
+
+def drop_orphans(state: Path, agent: AgentUnderTest) -> list[str]:
+    """`minutehand gc --agent`: every base of the agent's fronted databases left on its server (`<database>_mh_...`,
+    made by `TEMPLATE`) that no world file under `state` records, dropped: what a run directory removed by hand, or
+    a run that stopped before it was kept, left behind. A command base is not named on the server, so it is said
+    to be left to its own tooling."""
+    needed, unread = _needed_bases(state)
+    if unread:
+        return [f"no base dropped: {unread[0]} could not be read, and may record any of them"]
+
+    async def sweep() -> list[str]:
+        said: list[str] = []
+        for database in agent.databases:
+            if isinstance(database.base, CommandBase):
+                said.append(f"database {database.name}: its base is made by a command, which Minutehand cannot list")
+                continue
+            try:
+                found = await bases_on_server(database)
+            except RunRefused as e:
+                said.append(str(e))
+                continue
+            orphans = [n for n in found if n not in needed]
+            said += await _drop_bases(
+                [(database, BaseTaken(database=database.name, base=n, how="template", seconds=0)) for n in orphans]
+            )
+            if not orphans:
+                said.append(f"database {database.name}: no base left on its server that no run needs")
+        return said
+
+    return _on_own_loop(sweep())
+
+
+def _bases_of(directory: Path) -> list[tuple[Database, BaseTaken]]:
+    """The bases a run directory's world file records, each with the database its agent file declares; none when
+    either cannot be read."""
+    world, written = directory / WORLD, directory / AGENT
+    if not world.is_file() or not written.is_file():
+        return []
+    try:
+        declared = {
+            d.name: d for d in AgentUnderTest.model_validate_json(written.read_text(encoding="utf-8")).databases
+        }
+        return [(declared[b.database], b) for b in _bases_in(world) if b.database in declared]
+    except (RunRefused, sqlite3.Error, ValueError):
+        return []
+
+
+def _needed_bases(state: Path) -> tuple[set[str], list[str]]:
+    """The name of every base some world file under `state` still records, and the world files that could not be
+    read, which may record any."""
+    base = state / RUNS
+    needed: set[str] = set()
+    unread: list[str] = []
+    for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        try:
+            needed |= {b.base for b in _bases_in(directory / WORLD)}
+        except (RunRefused, sqlite3.Error, ValueError) as e:
+            unread.append(f"{directory / WORLD} ({e})")
+    return needed, unread
+
+
+def _bases_in(world: Path) -> list[BaseTaken]:
+    if not world.is_file():
+        return []
+    found: list[BaseTaken] = []
+    for run_id, parent, _ in _ReadOnlyStore.runs_in(world):
+        if parent is not None:
+            continue  # a fork records no base of its own: it replays onto its root's
+        store = _ReadOnlyStore(world, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
+        try:
+            found += [r for r in database_records(store) if isinstance(r, BaseTaken)]
+        finally:
+            store.close()
+    return found
+
+
+async def _drop_bases(pairs: Sequence[tuple[Database, BaseTaken]]) -> list[str]:
+    said: list[str] = []
+    for database, base in pairs:
+        try:
+            said.append(await drop_base(database, base))
+        except RunRefused as e:
+            said.append(f"base {base.base} of database {database.name} could not be dropped, so it is left: {e}")
+    return said
+
+
+def _on_own_loop[T](work: Coroutine[object, object, T]) -> T:
+    """Run `work` to its end on an event loop of its own, in a thread of its own: housekeeping is called both from
+    the command line and from inside a standing server's loop."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, work).result()
 
 
 class Logged(Model):
@@ -904,13 +1056,38 @@ def _own_checks(agent: AgentUnderTest) -> list[Check]:
         raise RunRefused(f"the agent's checks: {e}") from e
 
 
+@dataclass(frozen=True)
+class _Claims:
+    """Which provider claims a host, and the providers the run names: what tells a call that went around the proxy
+    (`application.around_proxy`)."""
+
+    registry: Registry
+    named: frozenset[ProviderKey]
+
+    def provider(self, host: str) -> ProviderKey | None:
+        found = self.registry.claimant(host)
+        return found.key if found is not None else None
+
+
+def _claims(registry: Registry, services: Services) -> _Claims:
+    return _Claims(registry, frozenset(p.manifest.key for p in services.providers))
+
+
 class _Judge:
     """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it;
-    with `judging`, the judged checks too, by `model` or blocked for want of one."""
+    with `judging`, the judged checks too, by `model` or blocked for want of one. With `claims`, the calls the agent
+    made around the proxy are counted too."""
 
     def __init__(
-        self, scenario: Scenario, model: LanguageModel | None, *, judging: bool, own: Sequence[Check] = ()
+        self,
+        scenario: Scenario,
+        model: LanguageModel | None,
+        *,
+        judging: bool,
+        own: Sequence[Check] = (),
+        claims: _Claims | None = None,
     ) -> None:
+        self._claims = claims
         self._scenario = scenario
         self._own = list(own)
         self._model = model
@@ -921,6 +1098,9 @@ class _Judge:
 
     async def score(self, record: RunRecord, world: Store) -> RunResult:
         last = read_checkpoint(world)
+        calls = world.calls()
+        spans = world.spans()
+        claims = self._claims
         view = view_of(
             self._scenario,
             world.events(),
@@ -928,19 +1108,25 @@ class _Judge:
             world.replies(),
             withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
-            unmatched_calls=[call.exchange for call in world.calls() if call.refused],
-            model_calls=per_wake(world.spans(), [w.index for w in record.wakes]),
-            broken_calls=broken(world.calls()),
-            contract_breaks=contract_breaks(world.calls()),
+            unmatched_calls=[call.exchange for call in calls if call.refused],
+            model_calls=per_wake(spans, [w.index for w in record.wakes]),
+            broken_calls=broken(calls),
+            contract_breaks=contract_breaks(calls),
             dues=due_entries(world),
             reported=reported_of(world),
+            around_proxy=around_proxy(spans, calls, claims.provider) if claims is not None else None,
+            uncalled_providers=(
+                uncalled_providers(claims.named, calls, woken=bool(record.wakes)) if claims is not None else []
+            ),
         )
         result = (
             await evaluate_judged(view, self._model, stop=record.stop, own=self._own)
             if self._judging
             else evaluate(view, stop=record.stop, own=self._own)
         )
-        result = result.model_copy(update={"findings": [*result.findings, *emulator_findings(world)]})
+        result = result.model_copy(
+            update={"findings": [*result.findings, *emulator_findings(world), *nondeterministic(world)]}
+        )
         heard = self.receiver.notices if self.receiver is not None else []
         if heard:
             told = [
@@ -1066,6 +1252,9 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
             tickets[key] = provider
         if isinstance(provider, EditsTickets):
             editors[key] = provider
+        socket_mode = any(t.provider == key and t.delivery is Delivery.SOCKET_MODE for t in agent.inbound)
+        if socket_mode and not isinstance(provider, ServesSockets):
+            raise RunRefused(f"agent {agent.name} takes {key}'s events in socket mode, and {key} serves no sockets")
     return Services(providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers)
 
 
@@ -1169,23 +1358,31 @@ class Listen(Model):
         description="The CAs a real host is verified against when a call is passed through, edited or recorded; "
         "None trusts the system's",
     )
+    transparent_port: int | None = Field(
+        default=None,
+        ge=0,
+        le=65535,
+        description="A second listener, on `host`, for connections the agent's container redirects to the proxy "
+        "without asking for one (`adapters.proxy.redirected`): a client that ignores HTTPS_PROXY is captured all the "
+        "same. None serves none; 0 lets the system pick one",
+    )
     model_hosts: list[str] = Field(
         default=list(DEFAULT_MODEL_HOSTS),
         description="Hosts that are model APIs: tunnelled, or opened to edit or record their calls. The three "
         "public ones by default; a self-hosted or other provider's API is added here",
     )
 
-    def _reached_at(self) -> str:
+    def reached_at(self) -> str:
         """This machine as the agent names it. Binding every interface is not an address: it is reached on loopback."""
         return self.agent_host or ("127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host)
 
     def proxy_url(self, port: int) -> str:
         """The proxy as the agent reaches it."""
-        return f"http://{self._reached_at()}:{port}"
+        return f"http://{self.reached_at()}:{port}"
 
     def telemetry_url(self, port: int) -> str:
         """The telemetry receiver as the agent reaches it."""
-        return f"http://{self._reached_at()}:{port}"
+        return f"http://{self.reached_at()}:{port}"
 
     def elsewhere(self) -> bool:
         """Whether the agent runs on another machine than the proxy (a container): its `localhost` is then not the
@@ -1198,8 +1395,8 @@ class Listen(Model):
         named only for an agent `elsewhere`: on this machine the proxy forwards it (`ProxyAddon.forwarded`), and
         named it would send every `*.localhost` host direct under requests, urllib, aiohttp and curl."""
         hosts = [*DIRECT, *self.no_proxy]
-        if self.receive_telemetry and not loopback(self._reached_at()):
-            hosts.append(self._reached_at())
+        if self.receive_telemetry and not loopback(self.reached_at()):
+            hosts.append(self.reached_at())
         if self.elsewhere():
             hosts.append(LOOPBACK_NAME)
         return list(dict.fromkeys(hosts))
@@ -1217,7 +1414,8 @@ def agent_environment(
 ) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
     spellings libraries read, the hosts it reaches directly (also as `no_grpc_proxy`: gRPC applies `http_proxy`
-    even to an insecure channel to an in-stack emulator), the one CA file in each library's variable
+    even to an insecure channel to an in-stack emulator), Node's switch that makes its built-in `fetch` read them
+    (`NODE_PROXY`), the one CA file in each library's variable
     (`ca_bundle`, as the agent sees the path), the signing secrets it is handed, and, unless `telemetry_port`
     is None (receiving is off), its OTLP exporter pointed at the receiver."""
     proxy = listen.proxy_url(port)
@@ -1233,6 +1431,7 @@ def agent_environment(
         "http_proxy": proxy,
         "no_proxy": direct,
         "no_grpc_proxy": direct,
+        NODE_PROXY: "1",
         **{name: str(ca_bundle) for name in CA_VARIABLES},
         **exporter,
         **secrets,
@@ -1249,6 +1448,11 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
     run, which only reaches a command Minutehand starts."""
     if listen.port == 0:
         raise RunRefused("an agent configured before the run needs the proxy on a fixed port: give --proxy-port")
+    if listen.transparent_port == 0:
+        raise RunRefused(
+            "an agent configured before the run needs the redirected listener on a fixed port: give "
+            "--transparent-port a port"
+        )
     generated = [f"{t.provider} ({t.secret.env})" for t in agent.inbound if isinstance(t.secret, GeneratedSecret)]
     generated += [
         f"{d.host} replies ({d.replies.signing.secret.env})"
@@ -1351,6 +1555,7 @@ async def intercepting(
         capturing=capturing,
         capture_unknown=listen.capture_unknown,
         model=model,
+        redirect_port=listen.transparent_port,
     ) as proxy:
         if not listen.receive_telemetry:
             yield Intercepting(proxy, None)
@@ -1422,7 +1627,7 @@ def _listens_on(agent: AgentUnderTest) -> str | None:
     for source in agent.wakes:
         if isinstance(source, Reported | Polled):
             return source.wake_url
-    return agent.inbound[0].url if agent.inbound else None
+    return next((t.url for t in agent.inbound if t.url is not None), None)
 
 
 def _tail(log: Path) -> str:

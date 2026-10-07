@@ -105,8 +105,26 @@ def test_a_wait_due_when_the_scenario_dropped_the_agents_wake_says_so() -> None:
     )
     [finding] = LateFollowUp().run(_sofia_chased_at(10, dropped)).findings
     assert finding.message.endswith(
-        "the agent had asked for no wake of its own, though it had asked for one then (reported in wake 1) that the "
-        "scenario's dispatch rules dropped"
+        "the scenario's dispatch rules had dropped the wake the agent asked for (reported in wake 1, due then), and it "
+        "had asked for no other"
+    )
+
+
+def test_a_wait_abandoned_after_its_reminder_wake_was_dropped_names_the_dropped_wake() -> None:
+    """Dania never answers and her wait falls due at 66 hours; the agent planned to remind her at 48, the scenario
+    dropped that wake, and nothing else brought the agent back: the finding names the lost wake as the cause, not an
+    agent that planned nothing."""
+    log = Log()
+    log.message([DANIA], 0)
+    log.message([OWNER], 120, text="status")
+    reminder = planned(at(48)).model_copy(
+        update={"closed": DueClosed.DROPPED, "closed_at": at(48), "fault": DispatchFault.DROPPED}
+    )
+    built = view(scenario(OWNER, DANIA), log, []).model_copy(update={"dues": [reminder]})
+    [finding] = NoFollowUp().run(built).findings
+    assert finding.message.endswith(
+        "; when it fell due, the scenario's dispatch rules had dropped the wake the agent asked for (reported in "
+        "wake 1, due 18 hours before), and it had asked for no other"
     )
 
 

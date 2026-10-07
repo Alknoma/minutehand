@@ -64,7 +64,7 @@ Built and tested (`docs/design.md`, "What exists", counts the tests for each par
   agent's own state restored and verified, and `minutehand serve` for test suites that open many worlds at once.
 - Providers: Slack, Microsoft Teams and Graph, Asana, Jira, YouTrack, Notion, GitHub, Google Drive with Docs and Slides,
   AWS EventBridge Scheduler and SQS (through moto), and Google Cloud Tasks over its REST transport.
-- 18 checks, the scorecard and 10 patterns. Among them, `planned_past_due` flags a follow-up that was on time
+- 19 checks, the scorecard and 10 patterns. Among them, `planned_past_due` flags a follow-up that was on time
   only because something other than the agent's own plan woke it; the loop's table of what was due is recorded
   to answer that. `reported_against_world` holds what the agent says it is waiting on against what the world
   shows.

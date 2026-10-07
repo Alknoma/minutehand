@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import time
 from collections.abc import Sequence
@@ -25,18 +26,22 @@ from urllib.parse import urlsplit, urlunsplit
 from minutehand.adapters.database.postgres import wire
 from minutehand.adapters.database.postgres.client import (
     Address,
+    Answer,
     Connection,
     ServerRefused,
     quote_ident,
     quote_literal,
+    sent,
 )
-from minutehand.adapters.database.postgres.conversation import Abandon, Commit, Conversation
+from minutehand.adapters.database.postgres.conversation import Abandon, Commit, Conversation, startup_settings
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.database import (
     BaseTaken,
     CommandBase,
     Committed,
     Database,
+    DatabaseDigest,
+    Digest,
     NotReplayable,
     Replayed,
     SequencesMoved,
@@ -52,6 +57,8 @@ BASE_ENV = "MINUTEHAND_DB_BASE"
 URL_ENV = "MINUTEHAND_DB_URL"
 COMMAND_LIMIT = 600.0
 """Seconds a base's `take` or `put_back` command may run: a copy-on-write branch is quick, a copy is not."""
+QUIET_TRIES = 100
+"""How many times a digest waits 20 ms for the agent's connections to have nothing awaiting an answer."""
 SHOWN = 200
 """Characters of a statement shown where a replay parted from the record."""
 
@@ -67,6 +74,8 @@ class PostgresFront:
         self._watcher: Connection | None = None
         self._watching = asyncio.Lock()
         self._known: list[SequenceValue] = []
+        self._conversations: set[Conversation] = set()
+        self._commits = 0
 
     @property
     def database(self) -> Database:
@@ -107,6 +116,7 @@ class PostgresFront:
         assert task is not None
         self._tasks.add(task)
         upstream: asyncio.StreamWriter | None = None
+        conversation: Conversation | None = None
         try:
             packet = await wire.read_startup(reader)
             while wire.startup_code(packet) in (wire.SSL_REQUEST, wire.GSSENC_REQUEST):
@@ -119,7 +129,8 @@ class PostgresFront:
             if wire.startup_code(packet) == wire.CANCEL_REQUEST:
                 return
             self._connections += 1
-            conversation = Conversation()
+            conversation = Conversation(startup_settings(wire.startup_params(packet)))
+            self._conversations.add(conversation)
             pumps = [
                 asyncio.create_task(self._from_agent(reader, upstream, conversation)),
                 asyncio.create_task(self._from_database(up_reader, writer, conversation, self._connections)),
@@ -139,6 +150,8 @@ class PostgresFront:
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         finally:
+            if conversation is not None:
+                self._conversations.discard(conversation)
             for side in (writer, upstream):
                 if side is not None:
                     side.close()
@@ -174,6 +187,7 @@ class PostgresFront:
                         sequences=sequences,
                     )
                 )
+                self._commits += 1
                 self._known = sequences
             elif isinstance(ended, Abandon):
                 sequences = await self._sequences()
@@ -201,6 +215,54 @@ class PostgresFront:
             if self._watcher is not None:
                 await self._watcher.close()
                 self._watcher = None
+
+    async def digest(self) -> DatabaseDigest:
+        declared = self._database.digest or Digest()
+        for _ in range(QUIET_TRIES):
+            if any(c.busy for c in self._conversations):
+                await asyncio.sleep(0.02)
+                continue
+            commits = self._commits
+            found = await self._digest(declared)
+            if commits == self._commits and not any(c.busy for c in self._conversations):
+                return found
+        return await self._digest(declared)
+
+    async def _digest(self, declared: Digest) -> DatabaseDigest:
+        try:
+            connection = await Connection.open(self._address)
+        except (OSError, ServerRefused) as e:
+            raise RunRefused(f"database {self._database.name} could not be digested: {e}") from e
+        try:
+            schemas = ", ".join(quote_literal(s) for s in declared.schemas)
+            listed = await connection.must(
+                "SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) FROM pg_tables "
+                f"WHERE schemaname IN ({schemas}) ORDER BY 1"
+            )
+            hashed = hashlib.sha256()
+            rows = 0
+            for (table,) in listed.values:
+                assert table is not None
+                answer = await connection.must(
+                    f"SELECT count(*)::text, coalesce(md5(string_agg(t::text, E'\\n' ORDER BY t::text)), '') "
+                    f"FROM {table} t"
+                )
+                [[count, md5]] = answer.values
+                rows += int(count or 0)
+                hashed.update(f"{table} {count} {md5}\n".encode())
+            sequences = await connection.must(
+                "SELECT schemaname || '.' || sequencename, last_value::text FROM pg_sequences "
+                f"WHERE schemaname IN ({schemas}) ORDER BY 1"
+            )
+            for name, value in sequences.values:
+                hashed.update(f"sequence {name} {value}\n".encode())
+        except ServerRefused as e:
+            raise RunRefused(f"database {self._database.name} could not be digested: {e}") from e
+        finally:
+            await connection.close()
+        return DatabaseDigest(
+            database=self._database.name, digest=hashed.hexdigest(), tables=len(listed.values), rows=rows
+        )
 
     # -- the base and the put-back ------------------------------------------------------------------------------
 
@@ -239,6 +301,8 @@ class PostgresFront:
         transactions = statements = 0
         diverged: str | None = None
         connection = await Connection.open(self._address)
+        settled: list[str] | None = None
+        """The settings the last transaction replayed left on the connection, while nothing else changed them."""
         try:
             for n, item in enumerate(history, start=1):
                 if isinstance(item, SequencesMoved):
@@ -248,9 +312,10 @@ class PostgresFront:
                             target = quote_literal(f"{quote_ident(schema)}.{quote_ident(name)}")
                             await connection.must(f"SELECT setval({target}, {sequence.value}, true)")
                     continue
-                diverged = await _replay(connection, item, n, len(history))
+                diverged = await _replay(connection, item, n, len(history), settled=settled == item.settings)
                 if diverged is not None:
                     break
+                settled = None if _sets(item) else item.settings
                 transactions += 1
                 statements += len(item.statements)
         finally:
@@ -268,51 +333,42 @@ class PostgresFront:
     async def _maintain(self, sql: str, *, hint: str = "") -> None:
         """One statement on the server's `postgres` database, where databases are made and dropped."""
         try:
-            connection = await Connection.open(self._address.on("postgres"))
-        except (OSError, ServerRefused) as e:
-            raise RunRefused(
-                f"database {self._database.name}: Minutehand could not reach {self._address.host}: {e}"
-            ) from e
-        try:
-            answer = await connection.run(sql)
-        finally:
-            await connection.close()
-        if answer.error is not None:
-            raise RunRefused(
-                f"database {self._database.name}: {sql} failed: {answer.error}" + (f". {hint}" if hint else "")
-            )
+            await _on_server(self._database, sql)
+        except RunRefused as e:
+            raise RunRefused(str(e) + (f". {hint}" if hint else "")) from e
 
 
-async def _replay(connection: Connection, item: Committed, n: int, of: int) -> str | None:
-    """One committed transaction again, inside a transaction of its own; the first way it answers otherwise than
-    the agent's did, or None."""
+async def _replay(connection: Connection, item: Committed, n: int, of: int, *, settled: bool) -> str | None:
+    """One committed transaction again, inside a transaction of its own, in one round trip: the connection's
+    settings (unless `settled`: the last transaction replayed left them as this one needs), `BEGIN`, each statement
+    as the agent sent it, `COMMIT`, and the sequences, all sent at once. Answers the first way it answered
+    otherwise than the agent's did, or None. A transaction that parts from the record has committed what it did:
+    the fork is refused and the database is made again before any other is taken from it."""
     where = f"transaction {n} of {of} (the agent's connection {item.connection})"
-    await connection.must("RESET ALL")
-    for setting in item.settings:
-        await connection.must(setting)
-    await connection.must("BEGIN")
-    for i, statement in enumerate(item.statements, start=1):
-        answer = await connection.replay(statement)
+    opening = "BEGIN" if settled else "; ".join(["RESET ALL", *item.settings, "BEGIN"])
+    units = [wire.query(opening), *(sent(s) for s in item.statements), wire.query("COMMIT")]
+    if item.sequences:
+        units.append(wire.query(SEQUENCES))
+    answers = await connection.pipeline(units)
+    if answers[0].error is not None:
+        return f"{where}: its settings failed on replay: {answers[0].error}"
+    for i, (statement, answer) in enumerate(zip(item.statements, answers[1:], strict=False), start=1):
         shown = statement.sql if len(statement.sql) <= SHOWN else statement.sql[:SHOWN] + "…"
         said = f"{where}, statement {i}: `{shown}`"
         if answer.error is not None:
-            await connection.run("ROLLBACK")
             return f"{said} failed on replay: {answer.error}"
-        if answer.tags != statement.tags:
-            await connection.run("ROLLBACK")
+        if answer.tags != statement.tags or answer.suspended != statement.suspended:
             return f"{said} answered {answer.tags} on replay; the agent's answered {statement.tags}"
         if answer.rows != statement.rows:
-            await connection.run("ROLLBACK")
             return (
                 f"{said} returned other rows on replay than it returned the agent: a value the database made up "
                 "itself (now(), random(), a sequence drawn outside a recorded write) differs"
             )
-    committed = await connection.must("COMMIT")
+    committed = answers[len(item.statements) + 1]
     if committed.tags != ["COMMIT"]:
         return f"{where} did not commit on replay: {committed.tags}"
     if item.sequences:
-        answer = await connection.must(SEQUENCES)
-        now = {name: v for name, v in answer.values}
+        now = {name: v for name, v in answers[-1].values}
         for sequence in item.sequences:
             held = now[sequence.name] if sequence.name in now else None
             if held != (str(sequence.value) if sequence.value is not None else None):
@@ -322,6 +378,11 @@ async def _replay(connection: Connection, item: Committed, n: int, of: int) -> s
                     "(a SELECT of a function that draws, or a statement from outside the agent)"
                 )
     return None
+
+
+def _sets(item: Committed) -> bool:
+    """Whether a transaction changed a session setting in itself (a plain `SET` inside it outlives its commit)."""
+    return any(t.split(" ")[0] in ("SET", "RESET", "DISCARD") for s in item.statements for t in s.tags)
 
 
 async def _command(argv: list[str], env: dict[str, str]) -> str:
@@ -345,3 +406,42 @@ async def _command(argv: list[str], env: dict[str, str]) -> str:
     if process.returncode != 0:
         raise RunRefused(f"{' '.join(argv)} exited {process.returncode}: {text.strip()[-2000:]}")
     return text
+
+
+async def drop_base(database: Database, base: BaseTaken) -> str:
+    """Remove a base no run needs any more, answering what was done for a person: a template is dropped on the
+    upstream server, a command base by its `drop` command, and one with no `drop` is kept and said to be kept.
+    Raises `RunRefused` when the drop was tried and failed."""
+    own = database.base
+    if base.how == "command":
+        if not isinstance(own, CommandBase) or own.drop is None:
+            return f"base {base.base} of database {database.name} kept: its `base` declares no `drop` command"
+        await _command(own.drop, {URL_ENV: database.upstream, BASE_ENV: base.base})
+        return f"base {base.base} of database {database.name} removed by its `drop` command"
+    await _on_server(database, f"DROP DATABASE IF EXISTS {quote_ident(base.base)} WITH (FORCE)")
+    return f"base {base.base} of database {database.name} dropped"
+
+
+async def bases_on_server(database: Database) -> list[str]:
+    """Every database on the upstream server named as Minutehand names a base of this one (`<database>_mh_...`)."""
+    pattern = database.database.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%") + "\\_mh\\_%"
+    answer = await _on_server(
+        database, f"SELECT datname FROM pg_database WHERE datname LIKE {quote_literal(pattern)} ORDER BY 1"
+    )
+    return [name for (name,) in answer.values if name is not None]
+
+
+async def _on_server(database: Database, sql: str) -> Answer:
+    """One statement on the server's `postgres` database, where databases are listed, made and dropped."""
+    address = Address.of(database.upstream).on("postgres")
+    try:
+        connection = await Connection.open(address)
+    except (OSError, ServerRefused) as e:
+        raise RunRefused(f"database {database.name}: Minutehand could not reach {address.host}: {e}") from e
+    try:
+        answer = await connection.run(sql)
+    finally:
+        await connection.close()
+    if answer.error is not None:
+        raise RunRefused(f"database {database.name}: {sql} failed: {answer.error}")
+    return answer

@@ -14,7 +14,7 @@ from minutehand.domain.agent import Commitment
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Model, Scenario
+from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.world import EntityRef, Exchange, WorldEvent
 
 
@@ -248,11 +248,33 @@ class RunView(Model):
         description="Every entry of the run loop's table of what is due next, as each last stood: what the agent "
         "planned and when, and what else was due; None when the run kept no table (a captured run, a standing world)",
     )
+    around_proxy: list[AroundProxy] | None = Field(
+        default=None,
+        description="Hosts a provider claims that the agent's telemetry says it called more often than the proxy saw; "
+        "None when the agent exported no span of an HTTP client call, so nobody can say",
+    )
+    uncalled_providers: list[ProviderKey] = Field(
+        default=[],
+        description="The providers the scenario and the agent file name, when the agent was woken and the proxy saw no "
+        "call to any of them; empty when it saw one",
+    )
     broken_calls: list[Exchange] = Field(
         default=[],
         description="Calls Minutehand failed to answer (`CallOutcome.INTERNAL_ERROR`): the run says nothing about the "
         "agent while any is here",
     )
+
+
+class AroundProxy(Model):
+    """Calls to a host a provider claims that the agent's own telemetry says it made and the proxy never saw: its HTTP
+    client went around Minutehand, to the real host (`application.around_proxy`)."""
+
+    host: str
+    provider: ProviderKey
+    by_agent: int = Field(ge=1, description="Spans of HTTP client calls to the host the agent exported")
+    through_proxy: int = Field(ge=0, description="Calls to the host the proxy recorded")
+    around: int = Field(ge=1, description="Calls the agent made that the proxy did not see")
+    example: str = Field(description="One such call as its span names it: the span's name and its URL")
 
 
 class Check(Protocol):

@@ -163,9 +163,27 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync
-      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py -s
+      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py tests/state/test_postgres_drivers.py tests/state/test_postgres_replay.py tests/state/test_postgres_cli.py -s
         env:
           MINUTEHAND_TEST_POSTGRES: postgresql://postgres:secret@127.0.0.1:5432
+
+  # Transparent capture (docs/containers.md): a client that ignores every proxy variable, in a Linux container whose
+  # connections to ports 80 and 443 are sent to the proxy's redirected listener by `minutehand env --format redirect`'s
+  # iptables script, is answered by the Slack fake. Needs Docker and alpine's package index; the default run skips it.
+  transparent:
+    name: Transparent capture in a container
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -q -m docker tests/providers/slack/test_slack_redirected_container.py
 
   # What a user installs, as they would install it: the wheel in an environment with none of the
   # dev dependencies, and the image, each running examples/follow_up end to end. Nothing is pushed.
@@ -277,7 +295,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, postgres, build, action, promotion]
+    needs: [types, style, lints, workflows, tests, recipes, postgres, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

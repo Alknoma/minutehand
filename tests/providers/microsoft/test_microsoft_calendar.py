@@ -10,13 +10,11 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.providers.microsoft.seed import microsoft_seed
-from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import ProviderSeed
 from minutehand.domain.world import Actor, InteractionSnapshot, MessageSnapshot, RecordSnapshot
 from tests.providers.microsoft.outlook import AGENT, OUTLOOK, reply, sent_by_agent, signed_in
 from tests.providers.microsoft.tenant import GRAPH, START, Intercepted, Tenant, Webhook, bearer, seeded, token
 
-NEVER_PUSHED = InboundTarget(provider="microsoft", url="http://127.0.0.1:9/never-pushed")
 """Where Teams would push; nothing is pushed for an invitation's answer, and a push here would fail."""
 
 REVIEW = {
@@ -67,12 +65,10 @@ async def test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_
         assert (seen["isOrganizer"], seen["responseStatus"]["response"]) == (False, "none")
 
         tenant.clock.jump(START + timedelta(hours=2))
-        await tenant.provider.press(
+        await tenant.provider.land(
             reply("sofia", request, press="Accept", after=timedelta(hours=2)),
-            NEVER_PUSHED,
             tenant.store,
             tenant.clock,
-            secret="unused",
         )
         now = (await http.get(f"{GRAPH}/me/events/{event['id']}", headers=auth)).json()
         assert now["attendees"][0]["status"] == {"response": "accepted", "time": "2026-09-14T10:30:00.000Z"}
@@ -109,16 +105,14 @@ async def test_a_moved_event_asks_again_and_an_answer_to_the_old_request_changes
         second = sent_by_agent(tenant)[-1]
         assert second.entity != first.entity and isinstance(second.after, MessageSnapshot)
         assert second.after.channel == first.after.channel, "the new request is in the event's conversation"  # type: ignore[union-attr]
-        await tenant.provider.press(
-            reply("sofia", first, press="Decline", after=timedelta(hours=1)), NEVER_PUSHED, tenant.store,
-            tenant.clock, secret="unused",
-        )  # fmt: skip
+        await tenant.provider.land(
+            reply("sofia", first, press="Decline", after=timedelta(hours=1)), tenant.store, tenant.clock
+        )
         unchanged = (await http.get(f"{GRAPH}/me/events/{event['id']}", headers=auth)).json()
         assert unchanged["attendees"][0]["status"]["response"] == "none"
-        await tenant.provider.press(
-            reply("sofia", second, press="Tentative", after=timedelta(hours=1)), NEVER_PUSHED, tenant.store,
-            tenant.clock, secret="unused",
-        )  # fmt: skip
+        await tenant.provider.land(
+            reply("sofia", second, press="Tentative", after=timedelta(hours=1)), tenant.store, tenant.clock
+        )
         answered = (await http.get(f"{GRAPH}/me/events/{event['id']}", headers=auth)).json()
         assert answered["attendees"][0]["status"]["response"] == "tentativelyAccepted"
 

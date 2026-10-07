@@ -39,7 +39,17 @@ class GoogleWorkspaceProvider:
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed(scenario, world)
 
-    def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
+    def lands(self, reply: PersonReply, world: Store) -> bool:
+        """Every reply on Google Workspace lands: it pushes no message to the agent."""
+        del reply, world
+        return True
+
+    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool:
+        """Gmail and Calendar push nothing (`users.watch` and `events.watch` answer 501): the agent polls."""
+        del reply, world, clock
+        return False
+
+    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
         """A reply to an email lands as the person's email in the asking mailbox; an answer to an invitation as the
         guest's response on the event."""
         held = world.get(reply.in_reply_to)

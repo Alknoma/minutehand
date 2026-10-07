@@ -53,6 +53,14 @@ def startup_code(packet: bytes) -> int:
     return struct.unpack(">I", packet[4:8])[0]
 
 
+def startup_params(packet: bytes) -> list[tuple[str, str]]:
+    """A protocol-3 startup packet's parameters, in the order the client sent them: `user`, `database`, `options`
+    and any run-time setting it asks for (`TimeZone`, `client_encoding`, `search_path`, ...)."""
+    parts = packet[8:].split(b"\0")
+    names, values = parts[0:-2:2], parts[1:-1:2]
+    return [(n.decode(errors="replace"), v.decode(errors="replace")) for n, v in zip(names, values, strict=False) if n]
+
+
 def startup_message(params: Sequence[tuple[str, str]]) -> bytes:
     body = struct.pack(">I", PROTOCOL_3) + b"".join(k.encode() + b"\0" + v.encode() + b"\0" for k, v in params) + b"\0"
     return struct.pack(">I", len(body) + 4) + body

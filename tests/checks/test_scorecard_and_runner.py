@@ -21,6 +21,7 @@ CHECKS = {
     "acted_on_repeated_wake",
     "acted_without_approval",
     "agent_contract_changed",
+    "around_proxy",
     "chased_absent_person",
     "duplicate_ticket",
     "expectations",
@@ -165,6 +166,32 @@ def test_follow_ups_before_each_due_moment_are_counted_and_past_what_the_person_
     )
     patient = view(scenario(sofia.model_copy(update={"early_follow_ups": 5})), log)
     assert [f for f in evaluate(patient, stop=None).findings if f.check == "nagged"] == []
+
+
+def test_a_follow_up_in_the_same_wake_as_the_ask_is_reviewed_as_nagging() -> None:
+    """One "follow-up" seconds after the ask, in its wake, is within the budget of early ones, and was once said by
+    nothing: the person could not have answered yet."""
+    sofia = person("sofia", Silent())
+    log = Log()
+    log.message([sofia], 0)
+    log.message([sofia], 0.01, text="Just following up.")
+
+    [nagged] = [f for f in evaluate(view(scenario(sofia), log), stop=None).findings if f.check == "nagged"]
+
+    assert nagged.kind is FindingKind.REVIEW and nagged.evidence == [1, 2]
+    assert nagged.message == (
+        "sofia was followed up in the same wake as the ask, 36 seconds after it, before they could have answered"
+    )
+
+
+def test_the_ask_edited_in_its_own_wake_or_a_follow_up_in_a_later_wake_is_not_instant_nagging() -> None:
+    sofia = person("sofia", Silent())
+    log = Log()
+    ask = log.message([sofia], 0, text="Thinking...")
+    log.edit(ask, 0.01, "Could you send the signed contract?")
+    log.message([sofia], 0.5, text="Just following up.", wake=2)
+
+    assert [f for f in evaluate(view(scenario(sofia), log), stop=None).findings if f.check == "nagged"] == []
 
 
 def test_a_run_whose_scorecard_counts_a_missed_follow_up_is_never_passed_without_a_finding() -> None:

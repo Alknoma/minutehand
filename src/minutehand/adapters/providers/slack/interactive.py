@@ -23,7 +23,7 @@ from minutehand.adapters.providers.slack.inbound import DeliveryRefused
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.application.refusals import AgentFailed
-from minutehand.domain.people import InboundTarget, PersonReply, Press
+from minutehand.domain.people import Delivery, InboundTarget, PersonReply, Press
 from minutehand.domain.scenario import FormInput, PersonCommands
 from minutehand.domain.world import (
     Actor,
@@ -46,8 +46,19 @@ class FormNeverOpened(AgentFailed):
     """The person pressed something meaning to fill in the form it opens, and the agent opened none in time."""
 
 
+def _refuse_socket_mode(target: InboundTarget) -> None:
+    """Over Socket Mode a press or a slash command goes as an `interactive` or `slash_commands` envelope, which is
+    not served: refused, naming that, rather than sent anywhere else."""
+    if target.delivery is Delivery.SOCKET_MODE:
+        raise NotImplementedError(
+            "a press or a slash command over Socket Mode (an `interactive` or `slash_commands` envelope) is not "
+            "served; give the agent's Slack target a request URL to play presses and commands"
+        )
+
+
 def _url(target: InboundTarget) -> str:
-    return target.interactivity_url or target.url
+    _refuse_socket_mode(target)
+    return target.interactivity_url or target.request_url()
 
 
 def _person(slack: SlackWorld, author: str) -> wire.PayloadUser:
@@ -109,6 +120,7 @@ async def _send(url: str, body: bytes, secret: str, what: str) -> httpx.Response
 
 async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str) -> None:
     inbound.refuse_foreign(target)
+    _refuse_socket_mode(target)
     pressed = reply.press
     if pressed is None:
         raise ValueError(f"{reply.person}'s reply presses nothing; it is delivered as a message")
@@ -347,6 +359,7 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
     """The person runs one of the agent's slash commands: form fields to the agent's URL, and what it answers at
     once shown to them alone, or to the channel when it says `in_channel`."""
     inbound.refuse_foreign(target)
+    _refuse_socket_mode(target)
     slack = inbound.acting(world, happening.person, happening.channel)
     author = state.user_id(happening.person, slack.team.id)
     channel = inbound.conversation(slack, happening.channel, author)
@@ -369,7 +382,7 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
         response_url=state.response_url(hook.id, hook.secret, command=True, team=slack.team.id),
         trigger_id=trigger.id,
     )
-    answered = await _send(target.url, body, secret, f"the slash command {happening.command}")
+    answered = await _send(target.request_url(), body, secret, f"the slash command {happening.command}")
     if not answered.content.strip():
         return
     try:

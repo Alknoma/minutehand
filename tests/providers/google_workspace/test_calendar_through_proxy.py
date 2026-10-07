@@ -156,7 +156,7 @@ say(answered=answered, moved=moved, changes=[e["id"] for e in changes["items"]],
             ),
             PersonReply(person="rosa", in_reply_to=invited.entity, text="Could we do 4pm?", at=google.clock.now()),
         ):
-            google.provider.land(reply, google.store, google.clock)
+            await google.provider.land(reply, google.store, google.clock)
         await client.go()
         second = await client.heard()
         await client.finished()

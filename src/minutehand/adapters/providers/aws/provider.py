@@ -31,7 +31,8 @@ What the world log holds, and what it does not:
   pickled or deep-copied, so there is no per-run snapshot to restore instead.
 - **moto reads the machine clock.** SQS DelaySeconds, VisibilityTimeout,
   MessageRetentionPeriod, long-poll WaitTimeSeconds and every Sent/Creation
-  timestamp run on real time, not the run's clock; and moto refuses a cron
+  timestamp run on real time, not the run's clock (a schedule's CreationDate and
+  LastModificationDate are restamped from the run's clock, `_stamp`); and moto refuses a cron
   schedule whose StartDate is more than five minutes before the machine's now,
   which is every StartDate taken from a simulated clock in the past.
 
@@ -191,12 +192,23 @@ class AwsProvider:
             account=self.account,
             now=clock.now(),
         )
+        self._stamp(call, clock)
         if call.kind is CallKind.UPDATE:
             wakes.cancel(arn)
         if record.next_at is not None:
             wakes.book(Due(at=record.next_at, kind=DueKind.AGENT_WAKE, ref=arn))
         operation = Operation.CREATE if call.kind is CallKind.CREATE else Operation.UPDATE
         world.apply(_schedule_change(record, operation, Actor.AGENT))
+
+    def _stamp(self, call: ScheduleCall, clock: Clock) -> None:
+        """moto stamps a schedule's CreationDate and LastModificationDate from the machine clock; both are
+        restamped in moto's copy from the run's clock as the create or update lands, so every later GetSchedule
+        and ListSchedules answers the world's time."""
+        made = scheduler_backends[self.account][call.region].get_schedule(call.group, call.name)
+        at = clock.now().timestamp()
+        made.last_modified_date = at
+        if call.kind is CallKind.CREATE:
+            made.creation_date = at
 
     def _deliveries(self, deleting: SqsDelete, world: Store) -> list[QueueMessageRecord]:
         """The delivered messages still live in the world that these receipt handles name. Read before moto

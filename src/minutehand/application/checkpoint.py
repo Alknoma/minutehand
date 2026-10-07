@@ -13,6 +13,7 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import AgentReport, Commitment, WakeReason
 from minutehand.domain.clock import Due
+from minutehand.domain.database import DatabaseDigest
 from minutehand.domain.scenario import Model, ProviderKey, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.store import Store
@@ -118,6 +119,9 @@ class Restorable(Model):
     fingerprint: str | None = Field(
         default=None, description="What the agent's `fingerprint` printed once settled; None when it declares none"
     )
+    digests: list[DatabaseDigest] = Field(
+        default=[], description="Each fronted database that declares `digest`, as it stood here"
+    )
     unconfirmed: str | None = Field(
         default=None,
         description="Why this snapshot may hold work in flight: settling saw only the report and the proxy, and "
@@ -140,6 +144,9 @@ class Replayable(Model):
 
     kind: Literal["replayable"] = "replayable"
     report: AgentReport | None = Field(description="The agent's last report, which a restore must bring back")
+    digests: list[DatabaseDigest] = Field(
+        default=[], description="Each fronted database that declares `digest`, as it stood here"
+    )
 
 
 class NoHooks(Model):

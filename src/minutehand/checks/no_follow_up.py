@@ -40,7 +40,7 @@ class NoFollowUp:
                     kind=FindingKind.FAIL,
                     message=_message(chased, left)
                     + (
-                        f"; when it fell due, {plan_at(view.dues, left.expired).said()}"
+                        f"; when it fell due, {plan_at(view.dues, left.expired, since=chased.since(left.expired)).said()}"
                         if view.dues is not None
                         else ""
                     ),

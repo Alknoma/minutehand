@@ -80,9 +80,12 @@ manifest, and because the tenant, its bot and its users are one directory every 
 
 ## People
 
-**By email and on invitations.** A reply (`deliver`) to a message in a mailbox is an email from the person to
-whoever sent it, `RE:` its subject, in its conversation, landing in that mailbox's Inbox at its moment and notified
-to a subscription on it; nothing is pushed to the bot. A press (`Scripted` `press: {label: Accept}`, or
+**By email and on invitations.** A reply to a message in a mailbox lands (`LandsReplies.land`): an email from the
+person to whoever sent it, `RE:` its subject, in its conversation, landing in that mailbox's Inbox at its moment and
+notified to a subscription on it; nothing is pushed to the bot, so an agent that talks to people only by email
+declares no Microsoft inbound target. The landing wakes the agent when a live subscription watches a mailbox (or, for
+an invitation's answer, a calendar) it lands in (`LandsReplies.heard`); otherwise the agent finds it on its next
+poll, as a Gmail reply is found. A press (`Scripted` `press: {label: Accept}`, or
 `Tentative`, `Decline`) on a meeting request sets the person's `responseStatus` on the event, recorded as their
 press (`InteractionSnapshot`) and their change to the event, and sends the organizer `Accepted: …` (a response
 message, `answerable: false`: it tells, it asks nothing) in the event's conversation. A press on a request a newer
@@ -136,9 +139,8 @@ every pushed activity is.
   `Prefer: outlook.timezone` (answers are UTC) and no Windows time zone names (501). An attendee's copy of an event
   is the organizer's one item, so an attendee cannot change or delete it (501); deleting an event sends no
   cancellation.
-- A person writes by email only in reply: `say` and messaging happenings are Teams. A run still needs the agent to
-  declare a Microsoft inbound target for a person to answer it, by email or on an invitation, though nothing is
-  pushed there for either.
+- A person writes by email only in reply: `say` and messaging happenings are Teams, and need the agent to declare a
+  Microsoft inbound target.
 - No lifecycle notifications (`reauthorizationRequired`, `missed`), no encrypted resource data, no rich
   notifications.
 - Reactions are recorded and pushed but not listed on Graph's `chatMessage.reactions`; a deleted message is gone

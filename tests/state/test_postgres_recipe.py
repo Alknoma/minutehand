@@ -5,12 +5,8 @@ and those writes, with no state hooks. Needs Docker, or MINUTEHAND_TEST_POSTGRES
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import secrets
 import sqlite3
-import subprocess
 import sys
 import time
 from collections.abc import Iterator
@@ -19,11 +15,10 @@ from pathlib import Path
 
 import psycopg
 import pytest
-from psycopg import sql
 
 from minutehand import session
 from minutehand.adapters.database.postgres.conversation import CHANGES, WRITE_IN_SELECT
-from minutehand.application.checkpoint import CHECKPOINT, Replayable
+from minutehand.application.checkpoint import CHECKPOINT, Replayable, checkpoints
 from minutehand.application.databases import base_name, records
 from minutehand.application.files import load_agent, load_fork, load_scenario
 from minutehand.application.refusals import RunRefused
@@ -36,75 +31,14 @@ from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Scenario
 from minutehand.domain.world import RecordedCall, WorldEvent
 from tests.e2e.support import free_port
+from tests.state.postgres import create, digest, drop_like
 
 pytestmark = pytest.mark.docker
 
 RECIPE = Path(__file__).parents[2] / "examples" / "state" / "postgres"
 SQLITE = Path(__file__).parents[2] / "examples" / "state" / "sqlite"
-IMAGE = "postgres:16"
-
-
-@pytest.fixture(scope="module")
-def server() -> Iterator[str]:
-    """A PostgreSQL server: the one MINUTEHAND_TEST_POSTGRES names, or a container of its own."""
-    given = os.environ.get("MINUTEHAND_TEST_POSTGRES")
-    if given:
-        yield given.rstrip("/")
-        return
-    name = f"minutehand-ext-postgres-{secrets.token_hex(4)}"
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "-d",
-            "--rm",
-            "--name",
-            name,
-            "-e",
-            "POSTGRES_PASSWORD=secret",
-            "-p",
-            "127.0.0.1::5432",
-            IMAGE,
-        ],
-        check=True,
-        capture_output=True,
-    )
-    try:
-        port = (
-            subprocess.run(["docker", "port", name, "5432/tcp"], check=True, capture_output=True, text=True)
-            .stdout.split(":")[-1]
-            .strip()
-        )
-        url = f"postgresql://postgres:secret@127.0.0.1:{port}"
-        give_up = time.monotonic() + 60
-        while True:
-            try:
-                psycopg.connect(f"{url}/postgres", connect_timeout=2).close()
-                break
-            except psycopg.OperationalError:
-                if time.monotonic() > give_up:
-                    raise
-                time.sleep(0.5)
-        yield url
-    finally:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-
-
-def create(server: str, database: str) -> None:
-    with psycopg.connect(f"{server}/postgres", autocommit=True) as db:
-        db.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
-
-
-def digest(server: str, database: str) -> str:
-    """Every table's rows and every sequence's position, in no particular order of writing."""
-    with psycopg.connect(f"{server}/{database}") as db:
-        tables = [r[0] for r in db.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1")]
-        held: dict[str, object] = {}
-        for table in tables:
-            rows = db.execute(sql.SQL("SELECT * FROM {}").format(sql.Identifier(table))).fetchall()
-            held[table] = sorted(json.dumps(r, default=str) for r in rows)
-        held["sequences"] = db.execute("SELECT sequencename, last_value FROM pg_sequences ORDER BY 1").fetchall()
-    return hashlib.sha256(json.dumps(held, sort_keys=True, default=str).encode()).hexdigest()
+PROGRAMS = ["agent.py", "agent_asyncpg.py"]
+"""The same agent by psycopg 3 and by asyncpg, under the same agent file."""
 
 
 class AtCheckpoints:
@@ -129,12 +63,20 @@ class AtCheckpoints:
     def run_ended(self, record: RunRecord, effectiveness: Effectiveness | None) -> None: ...
 
 
-def recipe_agent(port: int, listen: int, upstream: str) -> AgentUnderTest:
-    """agent.yaml as written, on ports of the test's own, fronting a database of the test's own."""
+def recipe_agent(port: int, listen: int, upstream: str, *, digested: bool = False) -> AgentUnderTest:
+    """agent.yaml as written, on ports of the test's own, fronting a database of the test's own; with `digested`,
+    declaring `digest: {}` on it."""
     agent = load_agent(RECIPE / "agent.yaml")
     moved = AgentUnderTest.model_validate_json(agent.model_dump_json().replace("127.0.0.1:8701", f"127.0.0.1:{port}"))
     [database] = moved.databases
-    fronted = Database.model_validate({**database.model_dump(), "listen": f"127.0.0.1:{listen}", "upstream": upstream})
+    fronted = Database.model_validate(
+        {
+            **database.model_dump(),
+            "listen": f"127.0.0.1:{listen}",
+            "upstream": upstream,
+            "digest": {} if digested else None,
+        }
+    )
     return moved.model_copy(update={"databases": [fronted]})
 
 
@@ -148,17 +90,16 @@ def fresh(server: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[str, i
     try:
         yield name, port
     finally:
-        with psycopg.connect(f"{server}/postgres", autocommit=True) as db:
-            for (other,) in db.execute("SELECT datname FROM pg_database WHERE datname LIKE %s", (f"{name}%",)):
-                db.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(other)))
+        drop_like(server, name)
 
 
-def command() -> list[str]:
-    return [sys.executable, str(RECIPE / "agent.py")]
+def command(program: str = "agent.py") -> list[str]:
+    return [sys.executable, str(RECIPE / program)]
 
 
+@pytest.mark.parametrize("program", PROGRAMS)
 async def test_a_fork_from_the_middle_puts_the_database_back_as_it_was_there_from_the_base_and_the_writes(
-    tmp_path: Path, server: str, fresh: tuple[str, int]
+    tmp_path: Path, server: str, fresh: tuple[str, int], program: str
 ) -> None:
     name, port = fresh
     state = tmp_path / "state"
@@ -166,7 +107,7 @@ async def test_a_fork_from_the_middle_puts_the_database_back_as_it_was_there_fro
     watched = AtCheckpoints(server, name)
     began = time.monotonic()
     [parent] = await session.play(
-        load_scenario(SQLITE / "scenario_silent.yaml"), agent, state=state, command=command(), telemetry=watched
+        load_scenario(SQLITE / "scenario_silent.yaml"), agent, state=state, command=command(program), telemetry=watched
     )
     played = time.monotonic() - began
     assert parent.record.stop is StopReason.NOTHING_PENDING, parent.record.failure
@@ -206,7 +147,7 @@ async def test_a_fork_from_the_middle_puts_the_database_back_as_it_was_there_fro
 
     changes = load_fork(SQLITE / "fork_rosa_answers.yaml", parent_run=parent.record.run_id, at_seq=after_ask.seq)
     began = time.monotonic()
-    [child] = await session.fork(parent.record.run_id, changes, state=state, command=command(), progress=heard)
+    [child] = await session.fork(parent.record.run_id, changes, state=state, command=command(program), progress=heard)
     forked = time.monotonic() - began
 
     assert restored_digest == [watched.digests[after_ask.seq]], said
@@ -263,3 +204,32 @@ async def test_a_replay_that_parts_from_the_record_is_refused_and_leaves_no_run(
     assert "parted from the record" in message
     assert "answered ['INSERT 0 0'] on replay; the agent's answered ['INSERT 0 1']" in message
     assert sorted(p.name for p in (state / session.RUNS).iterdir()) == directories
+
+
+async def test_a_base_changed_beside_the_record_where_no_replayed_statement_looks_is_refused_by_the_digest(
+    tmp_path: Path, server: str, fresh: tuple[str, int]
+) -> None:
+    name, port = fresh
+    state = tmp_path / "state"
+    agent = recipe_agent(port, free_port(), f"{server}/{name}", digested=True)
+    [parent] = await session.play(load_scenario(SQLITE / "scenario_silent.yaml"), agent, state=state, command=command())
+    after_ask = session.fork_points(state, parent.record.run_id)[1]
+    with session.reading(state, parent.record.run_id) as kept:
+        recorded = checkpoints(kept)[after_ask.seq].agent
+    assert isinstance(recorded, Replayable)
+    [taken] = recorded.digests
+    assert (taken.database, taken.tables) == ("app", 3)
+    # A table the agent never touches, made in the base behind the record's back: every replayed statement
+    # answers as it did, and only the digest can tell.
+    with psycopg.connect(f"{server}/{base_name(name, parent.record.run_id)}") as db:
+        db.execute("CREATE TABLE stray(id integer)")
+        db.execute("INSERT INTO stray VALUES (1)")
+    changes = load_fork(SQLITE / "fork_rosa_answers.yaml", parent_run=parent.record.run_id, at_seq=after_ask.seq)
+
+    with pytest.raises(RunRefused) as refused:
+        await session.fork(parent.record.run_id, changes, state=state, command=command())
+
+    message = str(refused.value)
+    assert "failed at step `database`" in message, message
+    assert "its digest differs from the one taken at the checkpoint" in message
+    assert "(3 tables, " in message and "(4 tables, " in message

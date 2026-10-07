@@ -56,6 +56,7 @@ from minutehand.domain.agent import (
 )
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
+from minutehand.domain.database import DatabaseDigest
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
@@ -70,6 +71,7 @@ from minutehand.domain.world import (
 )
 from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
 from minutehand.ports.clock import Clock
+from minutehand.ports.database import FrontsDatabase
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
     ActsOnTickets,
@@ -227,6 +229,7 @@ class Orchestrator:
         channels: Mapping[ProviderKey, TakesReplies] | None = None,
         environment: Environment | None = None,
         inboxes: Inboxes | None = None,
+        databases: Sequence[FrontsDatabase] = (),
     ) -> None:
         if inboxes is not None:
             reaches = list(inboxes.reaches.values())
@@ -268,6 +271,7 @@ class Orchestrator:
         self._channels = dict(channels or {})
         self._environment = environment
         self._inboxes = inboxes
+        self._databases = list(databases)
         self._mounted = False
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
@@ -613,8 +617,8 @@ class Orchestrator:
                     await self._inboxes.decide(reply, self._store, self._clock)
                 elif provider in self._channels:
                     await self._channels[provider].deliver(reply, self._store, self._clock)
-                elif (lands := self._lands(provider)) is not None:
-                    lands.land(reply, self._store, self._clock)
+                elif (lands := self._lands(reply)) is not None:
+                    await lands.land(reply, self._store, self._clock)
                 elif reply.press is not None:
                     await self._interactions(provider).press(
                         reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
@@ -697,12 +701,15 @@ class Orchestrator:
     def _unheard(self, pending: Pending) -> bool:
         """Something due the agent is not told of as it lands: a happening on a ticket or a document, which the
         agent finds on its next read (a document's provider may then tell a watching agent, `_watched`), and a reply
-        that lands where the agent reads it (`LandsReplies`: a reply email, an attendee's response). A messaging
-        happening is pushed to the agent, and that push is a wake, as a pushed reply's is."""
+        that lands where the agent reads it (`LandsReplies`: a reply email, an attendee's response) and that the
+        service tells the agent nothing of. A messaging happening is pushed to the agent, and that push is a wake, as
+        a pushed reply's is, and so is the service's own notice of a landed reply (`LandsReplies.heard`)."""
         if isinstance(pending, PendingReply):
             reply = self._replies[pending.reply]
-            provider = reply.in_reply_to.provider
-            return reply.decides is None and provider not in self._channels and self._lands(provider) is not None
+            if reply.decides is not None or reply.in_reply_to.provider in self._channels:
+                return False
+            lands = self._lands(reply)
+            return lands is not None and not lands.heard(reply, self._store, self._clock)
         return isinstance(pending, PendingHappening) and isinstance(
             self._scenario.happenings[pending.happening], TicketHappening | DocumentHappening
         )
@@ -967,7 +974,7 @@ class Orchestrator:
         if reply.decides is not None:
             if self._inboxes is None or not self._inboxes.holds(reply.in_reply_to):
                 raise RunRefused(f"{person.key} decided on {reply.in_reply_to.provider}, which is no inbox of the run")
-        elif reply.in_reply_to.provider not in self._channels and self._lands(reply.in_reply_to.provider) is None:
+        elif reply.in_reply_to.provider not in self._channels and self._lands(reply) is None:
             self._pushes(reply.in_reply_to.provider)
             if reply.press is not None:
                 self._interactions(reply.in_reply_to.provider)
@@ -1043,7 +1050,9 @@ class Orchestrator:
         restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
         hooks = self._agent.state
         if hooks is None:
-            return Replayable(report=self._last_report) if self._agent.databases else NoHooks()
+            if not self._agent.databases:
+                return NoHooks()
+            return Replayable(report=self._last_report, digests=await self._digests())
         assert self._state_dir is not None
         directory = wake_dir(self._state_dir, self._store.run_id, wake)
         if settled is None:
@@ -1068,8 +1077,13 @@ class Orchestrator:
             wake=wake,
             report=settled.report,
             fingerprint=fingerprint,
+            digests=await self._digests(),
             unconfirmed=settled.unconfirmed,
         )
+
+    async def _digests(self) -> list[DatabaseDigest]:
+        """Each fronted database that declares `digest`, as it stands at this checkpoint."""
+        return [await front.digest() for front in self._databases if front.database.digest is not None]
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
 
@@ -1095,10 +1109,11 @@ class Orchestrator:
             raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
         return self._signing[provider]
 
-    def _lands(self, provider: ProviderKey) -> LandsReplies | None:
-        """The provider a reply on `provider` lands in without a push, if it is one."""
+    def _lands(self, reply: PersonReply) -> LandsReplies | None:
+        """The provider `reply` lands in without a push, if it lands: then the agent needs no inbound target."""
+        provider = reply.in_reply_to.provider
         found = next((p for p in self._services.providers if p.manifest.key == provider), None)
-        return found if isinstance(found, LandsReplies) else None
+        return found if isinstance(found, LandsReplies) and found.lands(reply, self._store) else None
 
     def _changes(self, provider: ProviderKey) -> ChangesDocuments:
         found = next((p for p in self._services.providers if p.manifest.key == provider), None)
@@ -1209,6 +1224,7 @@ async def run_scenario(
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
     environment: Environment | None = None,
     inboxes: Inboxes | None = None,
+    databases: Sequence[FrontsDatabase] = (),
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
@@ -1232,4 +1248,5 @@ async def run_scenario(
         channels=channels,
         environment=environment,
         inboxes=inboxes,
+        databases=databases,
     ).run()

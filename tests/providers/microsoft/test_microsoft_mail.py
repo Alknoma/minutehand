@@ -11,13 +11,11 @@ from typing import Any
 import pytest
 
 from minutehand.adapters.providers.microsoft.seed import microsoft_seed
-from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import ProviderSeed
 from minutehand.domain.world import Actor, MessageSnapshot
 from tests.providers.microsoft.outlook import AGENT, OUTLOOK, reply, sent_by_agent, signed_in
 from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, seeded, token
 
-NEVER_PUSHED = InboundTarget(provider="microsoft", url="http://127.0.0.1:9/never-pushed")
 """Where Teams would push; nothing is pushed for an email, and a push here would fail."""
 
 
@@ -93,12 +91,10 @@ async def test_a_persons_reply_lands_in_the_senders_inbox_in_the_conversation_an
         assert sent.status_code == 202
         [asked] = sent_by_agent(tenant)
         assert webhook.notifications == [], "the agent's own send lands in Sent Items, not its Inbox"
-        await tenant.provider.deliver(
+        await tenant.provider.land(
             reply("sofia", asked, "Room Ferris is free.", after=timedelta(hours=4)),
-            NEVER_PUSHED,
             tenant.store,
             tenant.clock,
-            secret="unused",
         )
         [note] = webhook.notifications
         assert note["value"][0]["clientState"] == "inbox" and note["value"][0]["changeType"] == "created"

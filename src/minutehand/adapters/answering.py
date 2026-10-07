@@ -29,8 +29,8 @@ from dataclasses import dataclass
 
 from starlette.requests import Request
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
-from minutehand.domain.world import CallFailure, CallOutcome
+from minutehand.domain.errors import Asked, GrpcRefusal, Rendered, ServiceRefusal
+from minutehand.domain.world import CallFailure, CallOutcome, GrpcCode
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope
 
@@ -122,6 +122,55 @@ def convert(error: Exception, renders: RendersErrors, *, provider: str, asked: A
         ),
     )
     return renders.error(500, INTERNAL_ERROR_CODE, message)
+
+
+@dataclass(frozen=True)
+class GrpcEnded:
+    """How a gRPC method that raised ends: its status, its `grpc-message`, and why Minutehand answered in the fake's
+    place when it did."""
+
+    code: GrpcCode
+    message: str
+    failure: CallFailure | None = None
+
+
+def grpc_ended(error: Exception, *, provider: str, path: str) -> GrpcEnded:
+    """THE converter for a gRPC method (`ports.provider.GrpcMethod`): `error`, raised while answering `path` for
+    `provider`, as the status the call ends with, logged by its kind as `convert` logs."""
+    if isinstance(error, GrpcRefusal):
+        logger.debug("%s refused gRPC %s: %s", provider, path, error.code)
+        return GrpcEnded(error.code, error.message)
+    if isinstance(error, NotImplementedError):
+        said = f": {error}" if str(error) else ""
+        message = f"minutehand's {provider} fake does not implement gRPC {path}{said}"
+        logger.info("%s", message)
+        failure = CallFailure(kind=CallOutcome.NOT_IMPLEMENTED, message=message, exception_type=_qualified(error))
+        return GrpcEnded(GrpcCode.UNIMPLEMENTED, message, failure)
+    message = f"{INTERNAL_PREFIX} {provider} gRPC {path}: {type(error).__name__}: {error}"
+    logger.error("%s", message, exc_info=error)
+    failure = CallFailure(
+        kind=CallOutcome.INTERNAL_ERROR,
+        message=message,
+        exception_type=_qualified(error),
+        traceback="".join(traceback.format_exception(error)),
+    )
+    return GrpcEnded(GrpcCode.INTERNAL, message, failure)
+
+
+GRPC_INTERNAL = frozenset({GrpcCode.INTERNAL, GrpcCode.UNKNOWN, GrpcCode.DATA_LOSS})
+
+
+def grpc_outcome(code: GrpcCode, failure: CallFailure | None) -> CallOutcome:
+    """What a gRPC call's answer was, by the status it ended with: as its failure says when Minutehand answered in
+    the fake's place, else answered on OK, not implemented on UNIMPLEMENTED, Minutehand's error on a status that
+    says the server broke, and refused on any other."""
+    if failure is not None:
+        return failure.kind
+    if code is GrpcCode.OK:
+        return CallOutcome.ANSWERED
+    if code is GrpcCode.UNIMPLEMENTED:
+        return CallOutcome.NOT_IMPLEMENTED
+    return CallOutcome.INTERNAL_ERROR if code in GRPC_INTERNAL else CallOutcome.REFUSED
 
 
 class _Plain:

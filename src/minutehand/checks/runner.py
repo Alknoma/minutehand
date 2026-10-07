@@ -34,6 +34,7 @@ from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.ledger import build
 from minutehand.domain.agent import Commitment, CommitmentStatus
 from minutehand.domain.checks import (
+    AroundProxy,
     Check,
     CheckReport,
     CommitmentsReported,
@@ -50,7 +51,7 @@ from minutehand.domain.checks import (
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
-from minutehand.domain.scenario import Model, PersonAsked, Scenario, Silent
+from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario, Silent
 from minutehand.domain.world import CallOutcome, EntityRef, Exchange, RecordedCall, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
@@ -209,7 +210,9 @@ def verdict(
     Two refinements of "open", both read from the world and neither from the content of any message:
 
     - **Done, with an ask abandoned.** An agent that reports DONE while a question it asked is unanswered and it
-      never followed it up has not finished: it stopped waiting. Work handed to someone (a ticket) is not this. That is unfinished, not passed.
+      never followed it up has not finished: it stopped waiting. A "follow-up" sent in the same wake as the ask
+      (`Chase.instant`) chased nothing, since the agent never waited, and does not count. Work handed to someone (a
+      ticket) is not this. That is unfinished, not passed.
     - **The owner told the result.** Once every expectation of the scenario is met, a message to an owner who
       never answers (`Silent`), sent with or after the last of them, opens a wait nobody will settle; it is the
       result being reported, and neither keeps a run unfinished nor counts as an ask abandoned.
@@ -232,7 +235,9 @@ def verdict(
     abandoned = [
         c
         for c in still
-        if not c.follow_ups and c.obligation.kind is ObligationKind.ANSWER_FROM_PERSON and c not in told_after
+        if all(s in c.instant for s in c.follow_ups)
+        and c.obligation.kind is ObligationKind.ANSWER_FROM_PERSON
+        and c not in told_after
     ]
     open_waits = len(still) - len(told_after)
     open_work = open_waits + (commitments or 0)
@@ -263,9 +268,10 @@ def verdict(
     elif stop is StopReason.AGENT_DONE and abandoned:
         kind = VerdictKind.UNFINISHED
         people = sorted({c.obligation.person or "someone" for c in abandoned})
+        waited = " after the wake it asked in" if any(c.instant for c in abandoned) else ""
         words = (
             f"Not finished: no check failed, but the agent reported it was done with {_count(len(abandoned), 'ask')} "
-            f"it made still unanswered and never followed up ({', '.join(people)})."
+            f"it made still unanswered and never followed up{waited} ({', '.join(people)})."
         )
     elif stop is StopReason.AGENT_DONE or open_work == 0:
         kind = VerdictKind.PASSED
@@ -434,6 +440,8 @@ def view_of(
     contract_breaks: list[Exchange] | None = None,
     dues: list[DueEntry] | None = None,
     reported: list[CommitmentsReported] | None = None,
+    around_proxy: list[AroundProxy] | None = None,
+    uncalled_providers: Sequence[ProviderKey] = (),
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -450,6 +458,8 @@ def view_of(
         contract_breaks=contract_breaks or [],
         dues=dues,
         reported=reported,
+        around_proxy=around_proxy,
+        uncalled_providers=list(uncalled_providers),
     )
 
 

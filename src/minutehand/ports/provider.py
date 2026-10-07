@@ -7,7 +7,10 @@ pushes events or books wakes to the port it claims, and refuse it loudly when it
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+from google.protobuf.message import Message as ProtoMessage
 
 from minutehand.domain.clock import Due
 from minutehand.domain.errors import Rendered
@@ -48,6 +51,42 @@ class Provider(Protocol):
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """Write the scenario's people, tickets and documents for this service, as actor SCENARIO."""
+        ...
+
+
+@dataclass(frozen=True)
+class GrpcMethod:
+    """One unary method of a service's gRPC API: the path its clients call (`/package.Service/Method`), the message
+    it takes, and what answers it. `answer` is handed the request decoded as `request` and returns the answer
+    message; it raises `domain.errors.GrpcRefusal` where the real service refuses, `NotImplementedError` for what
+    the fake does not do (answered UNIMPLEMENTED), and anything else is Minutehand's bug (answered INTERNAL). A
+    table of handlers, not a model: nothing of it is stored or sent."""
+
+    path: str
+    request: type[ProtoMessage]
+    answer: Callable[[ProtoMessage], Awaitable[ProtoMessage]]
+
+
+@runtime_checkable
+class ServesGrpc(Protocol):
+    """A provider whose real service also speaks gRPC on its hosts, as Google's client libraries do by default.
+    Minutehand serves `grpc` from a gRPC server of its own on a loopback port, one per world, and the proxy sends
+    each gRPC call to the provider's hosts there (HTTP/2, `content-type: application/grpc`) and records it."""
+
+    def grpc(self, world: Store, clock: Clock) -> Sequence[GrpcMethod]:
+        """The methods served, over `world` and stamped from `clock`, as `app` answers the same API's REST calls.
+        A method the real service has and this list leaves out is answered UNIMPLEMENTED."""
+        ...
+
+
+@runtime_checkable
+class ServesSockets(Protocol):
+    """A provider whose real service answers WebSocket upgrades on its hosts: Slack's Socket Mode. Minutehand serves
+    `sockets` on a loopback port, one per world; the proxy sends each upgrade to the provider's hosts there and
+    records every message that crosses the connection afterwards, either way."""
+
+    def sockets(self, world: Store, clock: Clock) -> ASGIApp:
+        """An ASGI app answering `websocket` scopes, over `world` and stamped from `clock`."""
         ...
 
 
@@ -106,15 +145,27 @@ class PushesInteractions(Protocol):
 
 @runtime_checkable
 class LandsReplies(Protocol):
-    """A provider where a person's answer lands where the agent reads it, and nothing is pushed: a reply email in the
-    agent's mailbox, an attendee's response on the agent's calendar event. The agent finds it on its next read, as it
-    finds a ticket's fate, so its landing wakes nobody."""
+    """A provider where a person's answer lands where the agent reads it, and nothing is pushed to the agent's inbound
+    target: a reply email in the agent's mailbox, an attendee's response on the agent's calendar event. The agent
+    needs no inbound target for it. It finds the answer on its next read, as it finds a ticket's fate, so its landing
+    wakes nobody, unless the service itself tells the agent of it (`heard`). A provider that also `PushesEvents`
+    lands only the replies `lands` names and pushes the rest."""
 
-    def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
+    def lands(self, reply: PersonReply, world: Store) -> bool:
+        """Whether `reply` lands here rather than being pushed: it answers something the agent reads by polling (an
+        email in a mailbox, an invitation), not a message the service pushes answers to."""
+        ...
+
+    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool:
+        """Whether landing `reply` tells the agent, by a push of the service's own that the agent asked for (a live
+        Graph subscription on the mailbox it lands in): that push is a wake, as a pushed reply's is."""
+        ...
+
+    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
         """Write the person's answer to `reply.in_reply_to` as the real service would, recorded as actor PERSON: what
-        they wrote as their message, a control they used (`reply.press`) as its effect. A message no longer there
-        is left alone and nothing is written. A press on a control the message does not carry raises
-        `ValueError`: the replier offered what the provider never showed."""
+        they wrote as their message, a control they used (`reply.press`) as its effect, and tell whoever `heard`
+        names. A message no longer there is left alone and nothing is written. A press on a control the message
+        does not carry raises `ValueError`: the replier offered what the provider never showed."""
         ...
 
 

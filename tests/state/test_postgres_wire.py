@@ -5,14 +5,26 @@ from __future__ import annotations
 
 import hashlib
 import struct
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from minutehand.adapters.database.postgres import wire
-from minutehand.adapters.database.postgres.conversation import Abandon, Commit, Conversation, Ended
+from minutehand.adapters.database.postgres.conversation import (
+    Abandon,
+    Commit,
+    Conversation,
+    Ended,
+    startup_settings,
+)
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.databases import DATABASE_CHECK, Recorder, made_up, nondeterministic
+from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest
-from minutehand.domain.database import Database, StatementProtocol
+from minutehand.domain.checks import FindingKind
+from minutehand.domain.database import Committed, Database, Executed, StatementProtocol
 
 
 def _split(message: bytes) -> tuple[bytes, bytes]:
@@ -211,3 +223,102 @@ def test_an_agent_file_with_two_databases_on_one_address_is_refused() -> None:
                 "databases": [{**database, "name": "one"}, {**database, "name": "two"}],
             }
         )
+
+
+def test_a_write_returning_under_a_row_limit_is_kept_though_the_database_sends_no_tag() -> None:
+    # asyncpg's fetchval: Execute asks for one row; the insert runs whole and the database answers PortalSuspended.
+    c = Conversation()
+    send(
+        c,
+        wire.parse("__asyncpg_stmt_1__", "INSERT INTO note(body) VALUES ($1) RETURNING id", []),
+        wire.frame(b"D", b"S__asyncpg_stmt_1__\0"),
+        wire.frame(b"H"),
+    )
+    assert answer(c, wire.frame(b"1"), wire.frame(b"t", b"\0\1\0\0\0\x19"), wire.frame(b"T", b"\0\0")) == [None] * 3
+    send(c, wire.bind("", "__asyncpg_stmt_1__", [1], [b"hi"], [1]), wire.execute("", 1), wire.sync())
+    ended = answer(c, wire.frame(b"2"), row(b"\0\0\0\7"), wire.frame(b"s"), ready(b"I"))[-1]
+    assert isinstance(ended, Commit)
+    [statement] = ended.statements
+    assert (statement.max_rows, statement.suspended, statement.tags) == (1, True, [])
+    assert statement.rows == hashlib.sha256(row(b"\0\0\0\7")[5:]).hexdigest()
+
+
+def test_a_read_under_a_row_limit_is_not_kept_and_a_portal_continued_is_not_a_second_statement() -> None:
+    c = Conversation()
+    simple(c, "BEGIN", done("BEGIN"), ready(b"T"))
+    send(c, wire.parse("", "SELECT id FROM note", []), wire.bind("c1", "", [], [], []), wire.execute("c1", 1))
+    send(c, wire.sync())
+    assert answer(c, wire.frame(b"1"), wire.frame(b"2"), row(b"1"), wire.frame(b"s"), ready(b"T"))[-1] is None
+    send(c, wire.parse("", "INSERT INTO note VALUES (2) RETURNING id", []), wire.bind("c2", "", [], [], []))
+    send(c, wire.execute("c2", 1), wire.sync())
+    answer(c, wire.frame(b"1"), wire.frame(b"2"), row(b"2"), wire.frame(b"s"), ready(b"T"))
+    send(c, wire.execute("c2", 1), wire.sync())  # the rest of its rows: the insert does not run again
+    answer(c, done("INSERT 0 1"), ready(b"T"))
+    ended = simple(c, "COMMIT", done("COMMIT"), ready(b"I"))
+    assert isinstance(ended, Commit)
+    assert [s.sql for s in ended.statements] == ["INSERT INTO note VALUES (2) RETURNING id"]
+
+
+def test_settings_from_the_startup_packet_go_with_every_transaction_and_reset_all_puts_them_back() -> None:
+    packet = wire.startup_message(
+        [
+            ("user", "agent"),
+            ("database", "app"),
+            ("client_encoding", "utf-8"),
+            ("timezone", "Asia/Tokyo"),
+            ("options", r"-c search_path=app\ two --DateStyle=ISO,DMY"),
+        ]
+    )
+    startup = startup_settings(wire.startup_params(packet))
+    assert startup == [
+        "SET client_encoding TO 'utf-8'",
+        "SET timezone TO 'Asia/Tokyo'",
+        "SET search_path TO 'app two'",
+        "SET DateStyle TO 'ISO,DMY'",
+    ]
+    c = Conversation(startup)
+    simple(c, "SET statement_timeout = 5", done("SET"), ready(b"I"))
+    ended = simple(c, "INSERT INTO note VALUES (1)", done("INSERT 0 1"), ready(b"I"))
+    assert isinstance(ended, Commit) and ended.settings == [*startup, "SET statement_timeout = 5"]
+    # asyncpg's pool resets a connection it takes back in one query
+    reset = "SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;"
+    simple(c, reset, row(b""), done("SELECT 1"), done("CLOSE CURSOR ALL"), done("UNLISTEN"), done("RESET"), ready(b"I"))
+    ended = simple(c, "INSERT INTO note VALUES (2)", done("INSERT 0 1"), ready(b"I"))
+    assert isinstance(ended, Commit) and ended.settings == startup
+
+
+@pytest.mark.parametrize(
+    ("sql", "found"),
+    [
+        ("INSERT INTO note(at) VALUES (now())", ["now()"]),
+        (
+            "UPDATE job SET seen = CURRENT_TIMESTAMP, token = gen_random_uuid()",
+            ["current_timestamp", "gen_random_uuid()"],
+        ),
+        ("INSERT INTO note(id, body) VALUES (nextval('note_id_seq'), $1)", ["nextval()"]),
+        (
+            "CREATE TABLE note(id serial, n bigint DEFAULT nextval('n_seq'), at timestamptz DEFAULT now())",
+            ["a column default now()"],
+        ),
+        ("INSERT INTO note(body) VALUES ('now() and random()') -- now()", []),
+        ("INSERT INTO note(at, body) VALUES ($1, $2)", []),
+        ('SELECT "random"(1) FROM x', []),
+    ],
+)
+def test_what_the_database_makes_up_is_named_from_the_statement(sql: str, found: list[str]) -> None:
+    assert made_up(sql) == found
+
+
+def test_a_committed_write_that_calls_now_is_a_finding_naming_the_statement_once(tmp_path: Path) -> None:
+    store = SqliteStore(tmp_path / "world.db", "r1", RunClock(datetime(2026, 8, 24, 9, tzinfo=UTC)))
+    recorder = Recorder()
+    recorder.mount(store)
+    stamped = Executed(protocol=StatementProtocol.SIMPLE, sql="UPDATE job SET seen = now()", tags=["UPDATE 1"])
+    plain = Executed(protocol=StatementProtocol.SIMPLE, sql="UPDATE job SET n = 1", tags=["UPDATE 1"])
+    for statements in ([plain], [stamped], [plain, stamped]):
+        recorder.heard(Committed(database="app", connection=2, statements=statements))
+    [finding] = nondeterministic(store)
+    assert finding.check == DATABASE_CHECK and finding.kind is FindingKind.REVIEW
+    assert "`UPDATE job SET seen = now()` (2 times in the run, first at seq 2, on its connection 2)" in finding.message
+    assert "calls now()" in finding.message and finding.evidence == [2, 3]
+    store.close()

@@ -45,11 +45,14 @@ dependencies = [
     "mcp>=1.2,<2",
     "zstandard>=0.23",
     "jsonschema>=4.20",
+    # uvicorn's WebSocket protocol for the providers' socket servers (Slack's Socket Mode); mitmproxy needs it too.
+    "wsproto>=1.2",
 ]
 
 [project.optional-dependencies]
-# Receiving an agent's OTLP over gRPC, on the same port as OTLP/HTTP.
-grpc = ["grpcio>=1.60"]
+# gRPC: receiving an agent's OTLP over gRPC on the same port as OTLP/HTTP, and answering the gRPC transport of
+# Google's client libraries (Cloud Tasks), whose messages come from Google's own package.
+grpc = ["grpcio>=1.60", "google-cloud-tasks>=2.16"]
 
 [project.urls]
 Repository = "https://github.com/Alknoma/minutehand"
@@ -64,11 +67,32 @@ minutehand = "minutehand.cli:main"
 minutehand = "minutehand.testing.plugin"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "pyright>=1.1.390", "ruff>=0.8", "boto3>=1.35", "slack_sdk>=3.33", "psutil>=6",
-       "uvicorn>=0.30", "asana>=5", "google-api-python-client>=2.150", "google-auth>=2.35", "google-cloud-tasks>=2.16",
-       "pytest-socket>=0.7", "pytest-timeout>=2.3", "pytest-randomly>=3.15", "pytest-xdist>=3.6", "aiohttp>=3.10", "pysocks>=1.7",
-       "notion-client==2.2.1", "pyjwt[crypto]>=2.10", "python-docx==1.2.0",
-       "opentelemetry-exporter-otlp-proto-grpc>=1.27", "psycopg[binary]>=3.2"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pyright>=1.1.390",
+    "ruff>=0.8",
+    "boto3>=1.35",
+    "slack_sdk>=3.33",
+    "psutil>=6",
+    "uvicorn>=0.30",
+    "asana>=5",
+    "google-api-python-client>=2.150",
+    "google-auth>=2.35",
+    "google-cloud-tasks>=2.16",
+    "pytest-socket>=0.7",
+    "pytest-timeout>=2.3",
+    "pytest-randomly>=3.15",
+    "pytest-xdist>=3.6",
+    "aiohttp>=3.10",
+    "pysocks>=1.7",
+    "notion-client==2.2.1",
+    "pyjwt[crypto]>=2.10",
+    "python-docx==1.2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+    "psycopg[binary]>=3.2",
+    "asyncpg>=0.32.0",
+]
 recipes = [
     "anthropic>=1.11.0",
     "claude-agent-sdk>=0.2.163",
