@@ -96,12 +96,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known("aws", Property.SEEDED, "sign_in", "NotImplementedError: AwsDriver has no sign-in"),
     Known(
-        "aws",
-        Property.TIME,
-        "new_things_carry_the_worlds_clock",
-        "created at the world's 2031-02-03 04:05:06+00:00, the vendor says <the machine's clock>: GetSchedule's CreationDate is moto's wall clock",
-    ),
-    Known(
         "github",
         Property.ACCOUNTS,
         "bot",
