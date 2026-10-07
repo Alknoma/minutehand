@@ -120,6 +120,7 @@ markers = [
     "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
     "docker: runs a downloaded open-source emulator, or PostgreSQL, in a container named minutehand-ext-* (or the server MINUTEHAND_TEST_POSTGRES names); needs Docker; run with -m docker",
     "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
+    "conformance: one property of docs/conformance.md held against one provider through its vendor API, the control API and the world's record; runs by default",
 ]
 filterwarnings = [
     # A warning raised against our own code is an error. Third-party internals are left alone.

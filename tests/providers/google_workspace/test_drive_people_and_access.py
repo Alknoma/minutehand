@@ -22,6 +22,7 @@ from minutehand.domain.scenario import (
     FieldSet,
     Moved,
     ProviderSeed,
+    SeededChannel,
     SeededDocument,
     Shared,
     SharedSpace,
@@ -145,6 +146,17 @@ def test_a_fault_naming_a_call_this_fake_does_not_answer_is_refused_at_seeding(t
         ValueError, match=r"'files\.watch', which is not a Google Drive, Docs, Slides, Gmail or Calendar call"
     ):
         build().seed(faulty, SqliteStore(tmp_path / "w.db", "root", RunClock(START)))
+
+
+def test_a_seeded_channel_on_google_workspace_is_refused_at_seeding(tmp_path: Path) -> None:
+    """Gmail has no channel or chat, so a seeded channel would be dropped; it is refused, naming the provider."""
+    chatty = SCENARIO.model_copy(
+        update={"channels": [SeededChannel(provider="google_workspace", name="launch", members=["dov"])]}
+    )
+    with pytest.raises(
+        ValueError, match=r"the seeded channel 'launch' is on google_workspace, which holds no channels"
+    ):
+        build().seed(chatty, SqliteStore(tmp_path / "w.db", "root", RunClock(START)))
 
 
 async def test_a_fault_is_played_once_per_time_and_its_count_is_in_the_world(tmp_path: Path) -> None:

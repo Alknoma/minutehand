@@ -275,6 +275,13 @@ class CloudTasksProvider:
         return wire.error_answer(status, "UNIMPLEMENTED" if status == 501 else "INTERNAL", message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
+        """The queues `CloudTasksSeed` declares. A `SignIn` on this provider is refused: Cloud Tasks has no sign-in
+        of its own (a client brings the access token Google's token endpoint mints), so it would be dropped."""
+        if any(s.provider == MANIFEST.key for s in scenario.sign_ins):
+            raise ValueError(
+                f"a seeded sign_in is on {MANIFEST.key}, which has no sign-in of its own: a Cloud Tasks client sends "
+                "the access token Google's token endpoint mints, and no credential names a person here"
+            )
         given = scenario.provider_seed(MANIFEST.key)
         if given is None:
             return

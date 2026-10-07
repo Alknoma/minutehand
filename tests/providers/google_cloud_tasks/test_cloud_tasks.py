@@ -28,7 +28,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Scripted
+from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Scripted, SignIn
 from minutehand.domain.world import Actor, RecordSnapshot
 from minutehand.ports.provider import BooksWakes, ConfirmsDelivery
 from tests.orchestrator.world import serving as handler_at
@@ -165,6 +165,15 @@ def test_it_satisfies_the_ports() -> None:
     provider = build()
     assert isinstance(provider, BooksWakes) and isinstance(provider, ConfirmsDelivery)
     assert provider.manifest.books_wakes and provider.manifest.hosts == ["cloudtasks.googleapis.com"]
+
+
+def test_a_seeded_sign_in_on_cloud_tasks_is_refused_at_seeding(tmp_path: Path) -> None:
+    """Cloud Tasks has no sign-in of its own, so a `SignIn` for it would be dropped; it is refused, naming it."""
+    signed = seeded().model_copy(
+        update={"sign_ins": [SignIn(provider="google_cloud_tasks", credential="ya29.owen", person="owen")]}
+    )
+    with pytest.raises(ValueError, match=r"a seeded sign_in is on google_cloud_tasks, which has no sign-in"):
+        build().seed(signed, SqliteStore(tmp_path / "world.db", "run", RunClock(START)))
 
 
 async def test_a_task_created_by_googles_client_is_booked_at_its_schedule_time_and_read_back(tasks: Tasks) -> None:
