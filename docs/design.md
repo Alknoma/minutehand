@@ -31,6 +31,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Microsoft provider | Identity platform sign-in (client credentials, authorization code, refresh) issuing RS256 JWTs from a published key; the Bot Framework connector (10 routes) and its OpenID metadata; Graph `v1.0` for users, teams, channels, chats and messages, SharePoint and OneDrive files (sites, drives, items by id and path, children, 302 downloads, simple and session uploads, folders, move, copy, delete, invite, links, search, `delta`), subscriptions with the validation handshake; people's messages, edits, deletes, reactions, joins, installs (`PersonAddsAgent`) and card presses pushed with a Bot Framework JWT; people's file changes (`ChangesDocuments`) notified to subscriptions (`NotifiesChanges`); Outlook mail (`sendMail`, messages listed with the filters and orderings clients send, read, marked read, replied to, `delta`, subscriptions on a mailbox) and calendars (events, `calendarView`, `getSchedule`, answers), a sent email being the agent's ask threaded by `conversationId` and an invitation its ask of each attendee; people's replies by email into the mailbox they answer and their Accept, Tentative or Decline on an invitation at its moment; `MicrosoftSeed.mailbox`, `.emails`, `.events`, `.faults` and `.holds` | Built and tested | 111 (`tests/providers/microsoft/`), one a whole run of an agent emailing a person and booking her (`test_microsoft_outlook_whole_run.py`), through the real proxy with plain `httpx`, PyJWT and `python-docx` | Token lifetimes are real time. Ids derive from the scenario's name. No comments on files and no record-shaped documents. No drafts, attachments or recurring events; an event is one item seen from every attendee's calendar; a person's email is only ever a reply. A production client's adapters were run against it once, outside this repo (see Evidence). See the provider's `README.md`. |
 | Jira provider | Jira Cloud REST v3 and Agile 1.0 at `<site>.atlassian.net` and `api.atlassian.com/ex/jira/{cloudId}`: issues, transitions through per-project workflows and screens, comments in ADF, changelog, links, JQL search, projects, users, permissions by project role, boards and sprints; OAuth refresh at `auth.atlassian.com`; people's acts (`ActsOnTickets`); `JiraSeed.rate_limits` | Built and tested | 103 (`tests/providers/jira/`) | No webhooks, no authorization-code grant, no API v2. Link direction read from Atlassian's reference, not verified live. See its `README.md`. |
 | Notion provider | Notion API `2022-06-28` at `api.notion.com`: pages, blocks, databases and their queries, search, users, comments, OAuth tokens; seeded workspaces, integrations and what is shared with them; people's changes (`ChangesDocuments`); integration webhooks (`NotifiesChanges`), verified and signed; `NotionSeed.faults` | Built and tested | 88 (`tests/providers/notion/`; most through the official SDK) | Webhook signing, verification and payloads are written from the reference, not verified live; events are not aggregated, delayed or retried. A person cannot move or share a page. See its `README.md`. |
+| GitHub provider: `adapters/providers/github/` | REST at `api.github.com` (`/user`, `/user/repos`, a repository, its languages, branches, contents, blobs, trees and commits, code search with text matches, `/rate_limit`) and `/graphql` (`viewer`, `repository`); classic and fine-grained personal access tokens; primary rate limits counted per user and per address in the store; seeded faults (`rate_limited`, `secondary_rate_limited`, `server_error`); see its `README.md` and `CLAIMS.md` | Built and tested | 155 (`tests/providers/github/`) | Repository reads only: no issues, pull requests, webhooks, OAuth web flow or App tokens. A GraphQL query costs one point. Every branch and commit shows the head's files. No `ETag` or conditional requests. The seed comes beside the scenario (`GitHubProvider.seed_with`), not from it. |
 | AWS provider | moto in the process; EventBridge Scheduler bookings become wakes delivered to SQS | Built and tested at the provider | 17 (`tests/providers/aws/`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. moto reads the machine clock for delays, visibility and timestamps. A target other than SQS raises when it fires. No whole run with a `Booked` agent is tested. |
 | Google Cloud Tasks provider: `adapters/providers/google_cloud_tasks/` | Queues and HTTP tasks over the REST API; a task's `scheduleTime` booked as a wake and delivered as an HTTP call to the agent's handler with Cloud Tasks' headers; a non-2xx answer retried with the queue's backoff until its attempts run out; a task's name taken for an hour after it ran or was deleted; queues seeded by `CloudTasksSeed`; see its `CLAIMS.md` | Built and tested | 14 (`tests/providers/google_cloud_tasks/` 11 through the real proxy with Google's own `google-cloud-tasks` on its REST transport, `tests/e2e/test_cloud_tasks_run.py` 3 whole runs) | The gRPC transport, the client's default, cannot be answered. Tasks asking for signed OIDC or OAuth tokens, App Engine tasks, `tasks:run` and batch calls answer 501. Only a task URL on this machine is called. Backoff stops growing after `maxDoublings` instead of growing linearly. |
 | Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a restorable checkpoint (the end of a wake at which the agent settled). A fork needs `StateHooks`. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. Only `Scripted` and `Silent` people: `Answers` is refused. |
@@ -47,7 +48,9 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Inboxes in the agent's own product: `domain/inboxes.py`, `application/inboxes.py`, `adapters/agent/inboxes.py`, `adapters/agent/openapi.py` | What waits on a person in the agent's own product (an approval, a question on its page), read and decided as that person; an item is an ask, a decision its answer; templates or OpenAPI operations; `docs/inboxes.md` | Built and tested | 41 (`tests/inboxes/` 33, `tests/architecture/test_approvals.py` 7, `tests/web/test_viewer_decisions.py` 1), and 2 driven in `tests/architecture/test_driven_approvals.py` | HTTP only; MCP is a designed second `kind`. An item raised and withdrawn between two readings is missed. |
 | Scenario library: `src/minutehand/library/`, `domain/library.py`, `application/library.py` | Eleven ready-made scenarios with the team's goal, owner, person asked and answer as `{team.*}` placeholders; `minutehand scenarios`, `scenarios show`, `scenarios new`; see `docs/scenarios.md` | Built and tested | 22 functions, 113 cases (`tests/test_library.py` 18 functions, 51 cases; `tests/architecture/test_library.py` 4 functions, 62 cases, 60 of them one run each of a scenario against an example agent's behaviour) | Not graded and no pass mark. Conflicting answers are not in it. Three scenarios' main check never fires against either example agent. |
 | The agent contract: `agent_api.py`, `schemas/`, `minutehand schema`, `minutehand validate` | One page of every touch point (`docs/agent-contract.md`), JSON Schemas of the files, an OpenAPI document of what an agent may implement, a file validated without a run | Built and tested | 5 functions, 7 cases (`tests/test_schemas.py`) | The older placeholders and dotted paths are listed as debt, not changed. |
-| MCP tools, control API and viewer, container image, model-written people, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
+| MCP tools: `adapters/mcp/`, `minutehand mcp` | Seven tools over stdio (`list_scenarios`, `run_scenario`, `list_findings`, `show_evidence`, `rerun_from`, `list_outbound_calls`, `list_runs`) reading and writing the state directory through `session`, as the command line does; see "What a coding agent calls" | Built and tested | 14 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | One run at a time per process: a second `run_scenario` or `rerun_from` while one plays is refused, not queued. |
+| Run viewer: `adapters/web/`, `minutehand view` | A read-only JSON API over a state directory (runs and the fork tree, wakes, events, calls, obligations, findings, scorecard, messages, model calls and traffic, steps and spans) and the one page that draws it, its libraries vendored under `static/` | Built and tested | 20 (`tests/web/`) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. |
+| Container image, model-written people, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
 No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
 
@@ -203,7 +206,7 @@ minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
 minutehand runs
 ```
 
-Designed, not built: the same loop as MCP tools (see "What a coding agent calls").
+The same loop is served as MCP tools by `minutehand mcp` (see "What a coding agent calls").
 
 ## Architecture
 
@@ -1473,17 +1476,19 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 
 ### What a coding agent calls
 
-Designed, not built. `mcp` is a declared dependency; no module imports it.
+Built and tested (`adapters/mcp/server.py`, `minutehand mcp`, `tests/mcp/`): served over stdio, one run at a time per process.
 
 | MCP tool | Returns |
 |---|---|
-| `list_scenarios` | names and goals |
-| `run_scenario(name, agent)` | `run_id`, counts by `FindingKind` |
+| `list_scenarios(directory)` | names and goals |
+| `run_scenario(scenario, agent, command, samples)` | `run_id`, counts by `FindingKind`, the verdict, the scorecard, the checkpoints |
 | `list_findings(run_id)` | `list[Finding]` |
 | `show_evidence(run_id, finding)` | the `WorldEvent`s, their `Exchange`s, the wake, the trace id, and for each event the agent's model call that led to it when the run received its telemetry |
-| `rerun_from(run_id, wake)` | a new `run_id` started from that checkpoint |
+| `rerun_from(run_id, at_seq, changes, command, samples)` | a new `run_id` started from that checkpoint with the overrides applied |
+| `list_outbound_calls(run_id)` | per declared outbound host its use, and every captured call with the events it wrote |
+| `list_runs()` | every run in the state directory, forks saying what they changed |
 
-What exists is the command line (`cli.py`):
+The command line (`cli.py`) does the same:
 
 ```
 minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--json] [-- <command...>]
@@ -1656,7 +1661,7 @@ The contracts came first, alone; the parallel tracks were written against them.
 | **Checks and the obligations ledger** | Built |
 | **Telemetry export** | Built |
 | **Telemetry received from the agent**: receiver, storage, forwarding, the join, `--record-model-calls` | Built |
-| **Surfaces**: CLI, MCP, viewer | CLI built. MCP and viewer not built. |
+| **Surfaces**: CLI, MCP, viewer | Built: `minutehand mcp` serves the tools over stdio, `minutehand view` the read-only viewer. |
 | **Composition and end-to-end**: `session.py`, files, agent drivers, a real agent process on stock `slack_sdk` | Built |
 | **Adoption in the parent repository**: one container in compose and CI, the adapter, the deletions | Not built here; see the adoption guide in `docs/` |
 | **People written by a model** | Not built |
