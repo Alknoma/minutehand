@@ -75,6 +75,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+import minutehand
 from minutehand import agent_api, mcp_relay, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
@@ -148,6 +149,7 @@ class Played(Model):
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="minutehand", description="Simulated days for a proactive agent.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {minutehand.__version__}")
     parser.add_argument(
         DEBUG,
         action="store_true",

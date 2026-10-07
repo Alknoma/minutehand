@@ -9,6 +9,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 |---|---|---|
 | `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor over workflows and `.github/actions`), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `promotion`, `gate` |
 | `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency), `firestore` (builds `examples/state/firestore_emulator`'s image and runs `pytest -m firestore`: a real rewind through Google's Firestore emulator; not a required check) |
+| `release.yml` | a GitHub Release being published, and nothing else | `build` (sdist and wheel, `twine check`, the installed-package tests), `pypi` (Trusted Publishing from the `pypi` environment), `image` (`ghcr.io/alknoma/minutehand`, amd64 and arm64). `docs/releasing.md` |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
 
