@@ -28,9 +28,11 @@ process. The secret is given to the provider with each push; it is never set in 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import secrets
 import shutil
+import signal
 import sqlite3
 from collections.abc import AsyncIterator, Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -1653,12 +1655,14 @@ class _Program:
     async def start(self) -> None:
         with self._log.open("ab") as out:
             try:
+                # a group of its own, so stopping it stops whatever it started too
                 self._process = await asyncio.create_subprocess_exec(
                     *self._command,
                     env=self._env,
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=out,
                     stderr=out,
+                    start_new_session=True,
                 )
             except OSError as e:
                 raise RunRefused(f"the agent's command {self._command[0]} could not be started: {e}") from e
@@ -1670,15 +1674,22 @@ class _Program:
         return self._process.returncode if self._process is not None else None
 
     async def stop(self) -> None:
+        """Stop the command and every process it started. A child the command was still waiting on when the
+        timeout ran out would otherwise outlive it, still listening on the agent's port, and answer for the agent
+        a restore starts next with the state of another moment."""
         process, self._process = self._process, None
-        if process is None or process.returncode is not None:
+        if process is None:
             return
-        process.terminate()
-        try:
+        _signal_group(process.pid, signal.SIGTERM)
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(process.wait(), STOP_TIMEOUT)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
+        _signal_group(process.pid, signal.SIGKILL)  # whatever is left of the group, the command itself included
+        await process.wait()
+
+
+def _signal_group(pgid: int, sig: signal.Signals) -> None:
+    with contextlib.suppress(ProcessLookupError):  # the group is already gone
+        os.killpg(pgid, sig)
 
 
 @asynccontextmanager
