@@ -1,0 +1,9 @@
+{
+  "name": "minutehand-node-pg-writes",
+  "private": true,
+  "description": "node-postgres writing through Minutehand's relay: tests/state/test_postgres_drivers.py",
+  "type": "module",
+  "dependencies": {
+    "pg": "8.16.3"
+  }
+}

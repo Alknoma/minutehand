@@ -32,7 +32,8 @@ import os
 import secrets
 import shutil
 import sqlite3
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Coroutine, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -45,7 +46,7 @@ from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
-from minutehand.adapters.database.postgres.relay import PostgresFront
+from minutehand.adapters.database.postgres.relay import PostgresFront, bases_on_server, drop_base
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
@@ -71,7 +72,8 @@ from minutehand.application.checkpoint import (
     checkpoints,
     read_checkpoint,
 )
-from minutehand.application.databases import Recorder, start_again, take_bases
+from minutehand.application.databases import Recorder, nondeterministic, start_again, take_bases
+from minutehand.application.databases import records as database_records
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
@@ -106,6 +108,7 @@ from minutehand.checks.runner import (
 )
 from minutehand.domain.agent import AgentUnderTest, Booked, Contained, GoalByMessage, Polled, Reported
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, WakeRecord
+from minutehand.domain.database import BaseTaken, CommandBase, Database
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge, UnknownHosts
@@ -295,6 +298,7 @@ async def play(
                     channels=replies_for(agent, scenario, signing),
                     environment=emulators,
                     inboxes=inboxes_for(agent, scenario, signing),
+                    databases=fronts,
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -692,12 +696,22 @@ class Collected(Model):
     removed_bytes: int = Field(default=0, ge=0)
     swept: int = Field(default=0, ge=0, description="World files swept")
     skipped: list[str] = Field(default=[], description="World files that could not be swept, and why")
+    bases: list[str] = Field(
+        default=[],
+        description="Each base of a fronted database that no run left under the state directory needs, and what "
+        "became of it: dropped, kept, or why it could not be dropped",
+    )
 
 
 def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
     """Remove the run directories named in `remove`, then sweep every world file left under `state` of the stored
-    bodies and snapshot files nothing refers to. `minutehand gc`, and a standing server's retention of closed
-    worlds, are this."""
+    bodies and snapshot files nothing refers to. `minutehand gc`, `minutehand rm`, and a standing server's
+    retention of closed worlds, are this.
+
+    A base of a fronted database (`AgentUnderTest.databases`) is taken once per run and shared by its forks and
+    its later samples, each of which records it; once the last world file recording it is removed, it is dropped
+    (`relay.drop_base`)."""
+    held = {base.base: (database, base) for run_id in remove for database, base in _bases_of(run_dir(state, run_id))}
     removed_bytes = 0
     for run_id in remove:
         directory = run_dir(state, run_id)
@@ -728,7 +742,132 @@ def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
             files=totals.files + freed.files,
             file_bytes=totals.file_bytes + freed.file_bytes,
         )
-    return Collected(freed=totals, removed=list(remove), removed_bytes=removed_bytes, swept=swept, skipped=skipped)
+    bases: list[str] = []
+    if held:
+        needed, unread = _needed_bases(state)
+        if unread:
+            bases = [
+                f"base {name} of database {database.name} kept: {unread[0]} could not be read, and may need it"
+                for name, (database, _) in held.items()
+            ]
+        else:
+            bases = _on_own_loop(_drop_bases([pair for name, pair in held.items() if name not in needed]))
+    return Collected(
+        freed=totals,
+        removed=list(remove),
+        removed_bytes=removed_bytes,
+        swept=swept,
+        skipped=skipped,
+        bases=bases,
+    )
+
+
+def remove(state: Path, run_ids: Sequence[str]) -> Collected:
+    """`minutehand rm`: each run named, with every fork of it, since they share its world file; then `collect`,
+    which drops the bases of fronted databases nothing left needs. A fork alone is refused: its record is part of
+    its root's world file, which is removed with the root."""
+    whole: list[str] = []
+    for run_id in run_ids:
+        entry = find(state, run_id)
+        if entry.root != run_id:
+            raise RunRefused(
+                f"run {run_id} is a fork of run {entry.root} and is kept in its world file: remove {entry.root}, "
+                "which removes it with every other fork of that run"
+            )
+        whole += [r for r, _, _ in _ReadOnlyStore.runs_in(run_dir(state, run_id) / WORLD) if r not in whole]
+    return collect(state, remove=whole)
+
+
+def drop_orphans(state: Path, agent: AgentUnderTest) -> list[str]:
+    """`minutehand gc --agent`: every base of the agent's fronted databases left on its server (`<database>_mh_...`,
+    made by `TEMPLATE`) that no world file under `state` records, dropped: what a run directory removed by hand, or
+    a run that stopped before it was kept, left behind. A command base is not named on the server, so it is said
+    to be left to its own tooling."""
+    needed, unread = _needed_bases(state)
+    if unread:
+        return [f"no base dropped: {unread[0]} could not be read, and may record any of them"]
+
+    async def sweep() -> list[str]:
+        said: list[str] = []
+        for database in agent.databases:
+            if isinstance(database.base, CommandBase):
+                said.append(f"database {database.name}: its base is made by a command, which Minutehand cannot list")
+                continue
+            try:
+                found = await bases_on_server(database)
+            except RunRefused as e:
+                said.append(str(e))
+                continue
+            orphans = [n for n in found if n not in needed]
+            said += await _drop_bases(
+                [(database, BaseTaken(database=database.name, base=n, how="template", seconds=0)) for n in orphans]
+            )
+            if not orphans:
+                said.append(f"database {database.name}: no base left on its server that no run needs")
+        return said
+
+    return _on_own_loop(sweep())
+
+
+def _bases_of(directory: Path) -> list[tuple[Database, BaseTaken]]:
+    """The bases a run directory's world file records, each with the database its agent file declares; none when
+    either cannot be read."""
+    world, written = directory / WORLD, directory / AGENT
+    if not world.is_file() or not written.is_file():
+        return []
+    try:
+        declared = {
+            d.name: d for d in AgentUnderTest.model_validate_json(written.read_text(encoding="utf-8")).databases
+        }
+        return [(declared[b.database], b) for b in _bases_in(world) if b.database in declared]
+    except (RunRefused, sqlite3.Error, ValueError):
+        return []
+
+
+def _needed_bases(state: Path) -> tuple[set[str], list[str]]:
+    """The name of every base some world file under `state` still records, and the world files that could not be
+    read, which may record any."""
+    base = state / RUNS
+    needed: set[str] = set()
+    unread: list[str] = []
+    for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        try:
+            needed |= {b.base for b in _bases_in(directory / WORLD)}
+        except (RunRefused, sqlite3.Error, ValueError) as e:
+            unread.append(f"{directory / WORLD} ({e})")
+    return needed, unread
+
+
+def _bases_in(world: Path) -> list[BaseTaken]:
+    if not world.is_file():
+        return []
+    found: list[BaseTaken] = []
+    for run_id, parent, _ in _ReadOnlyStore.runs_in(world):
+        if parent is not None:
+            continue  # a fork records no base of its own: it replays onto its root's
+        store = _ReadOnlyStore(world, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
+        try:
+            found += [r for r in database_records(store) if isinstance(r, BaseTaken)]
+        finally:
+            store.close()
+    return found
+
+
+async def _drop_bases(pairs: Sequence[tuple[Database, BaseTaken]]) -> list[str]:
+    said: list[str] = []
+    for database, base in pairs:
+        try:
+            said.append(await drop_base(database, base))
+        except RunRefused as e:
+            said.append(f"base {base.base} of database {database.name} could not be dropped, so it is left: {e}")
+    return said
+
+
+def _on_own_loop[T](work: Coroutine[object, object, T]) -> T:
+    """Run `work` to its end on an event loop of its own, in a thread of its own: housekeeping is called both from
+    the command line and from inside a standing server's loop."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, work).result()
 
 
 class Logged(Model):
@@ -983,7 +1122,9 @@ class _Judge:
             if self._judging
             else evaluate(view, stop=record.stop, own=self._own)
         )
-        result = result.model_copy(update={"findings": [*result.findings, *emulator_findings(world)]})
+        result = result.model_copy(
+            update={"findings": [*result.findings, *emulator_findings(world), *nondeterministic(world)]}
+        )
         heard = self.receiver.notices if self.receiver is not None else []
         if heard:
             told = [

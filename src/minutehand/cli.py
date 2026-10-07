@@ -10,7 +10,9 @@
                                                  a run's checkpoints, whether each is restorable, its snapshot's size
     minutehand pin <run_id> <seq> [--state DIR]  keep a checkpoint's snapshot whatever `state: keep` says
     minutehand unpin <run_id> <seq> [--state DIR]
-    minutehand gc [--state DIR]                  remove stored bodies and snapshot files nothing refers to
+    minutehand gc [--state DIR] [--agent FILE]   remove stored bodies and snapshot files nothing refers to; with
+                                                 --agent, the agent's database bases no run needs
+    minutehand rm <run_id>... [--state DIR]      remove runs with their forks, and the database bases nobody needs
     minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--agent-host H] [--no-proxy H]... [--json] -- <command...>
                                                  which HTTP clients in the agent's interpreter would go around the
                                                  proxy, and which declared hosts NO_PROXY would send directly
@@ -300,7 +302,20 @@ def _parser() -> argparse.ArgumentParser:
         state(pinning)
 
     swept = commands.add_parser("gc", help="remove stored bodies and snapshot files nothing refers to")
+    swept.add_argument(
+        "--agent",
+        type=Path,
+        default=None,
+        help="also drop every base of this agent file's fronted databases left on their server that no run under "
+        "--state needs (a run directory removed by hand leaves its base behind)",
+    )
     state(swept)
+
+    removing = commands.add_parser(
+        "rm", help="remove runs with every fork of each, and drop the database bases no run left needs"
+    )
+    removing.add_argument("run_ids", nargs="+", metavar="run_id")
+    state(removing)
 
     tools = commands.add_parser("mcp", help="serve the tools a coding agent calls, over MCP on stdio")
     state(tools)
@@ -496,7 +511,9 @@ def _main(args_in: list[str]) -> int:
         if args.command in ("pin", "unpin"):
             return _pin(state, args.run_id, args.seq, pinned=args.command == "pin")
         if args.command == "gc":
-            return _gc(state)
+            return _gc(state, load_agent(args.agent) if args.agent is not None else None)
+        if args.command == "rm":
+            return _rm(state, args.run_ids)
         return _runs(state)
     except (RunRefused, FileRefused, ModelFailed, OSError) as e:
         print(f"minutehand: the run could not be performed: {e}", file=sys.stderr)
@@ -898,7 +915,7 @@ def _pin(state: Path, run_id: str, seq: int, *, pinned: bool) -> int:
     return 0
 
 
-def _gc(state: Path) -> int:
+def _gc(state: Path, agent: AgentUnderTest | None) -> int:
     collected = session.collect(state)
     freed = collected.freed
     print(
@@ -907,6 +924,16 @@ def _gc(state: Path) -> int:
     )
     for skipped in collected.skipped:
         print(f"  not swept: {skipped}")
+    for said in session.drop_orphans(state, agent) if agent is not None else []:
+        print(f"  {said}")
+    return 0
+
+
+def _rm(state: Path, run_ids: list[str]) -> int:
+    collected = session.remove(state, run_ids)
+    print(f"removed {len(collected.removed)} runs ({_size(collected.removed_bytes)}): {', '.join(collected.removed)}")
+    for said in collected.bases:
+        print(f"  {said}")
     return 0
 
 

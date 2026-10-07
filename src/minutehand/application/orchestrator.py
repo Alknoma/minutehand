@@ -56,6 +56,7 @@ from minutehand.domain.agent import (
 )
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
+from minutehand.domain.database import DatabaseDigest
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
@@ -70,6 +71,7 @@ from minutehand.domain.world import (
 )
 from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
 from minutehand.ports.clock import Clock
+from minutehand.ports.database import FrontsDatabase
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
     ActsOnTickets,
@@ -227,6 +229,7 @@ class Orchestrator:
         channels: Mapping[ProviderKey, TakesReplies] | None = None,
         environment: Environment | None = None,
         inboxes: Inboxes | None = None,
+        databases: Sequence[FrontsDatabase] = (),
     ) -> None:
         if inboxes is not None:
             reaches = list(inboxes.reaches.values())
@@ -268,6 +271,7 @@ class Orchestrator:
         self._channels = dict(channels or {})
         self._environment = environment
         self._inboxes = inboxes
+        self._databases = list(databases)
         self._mounted = False
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
@@ -1046,7 +1050,9 @@ class Orchestrator:
         restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
         hooks = self._agent.state
         if hooks is None:
-            return Replayable(report=self._last_report) if self._agent.databases else NoHooks()
+            if not self._agent.databases:
+                return NoHooks()
+            return Replayable(report=self._last_report, digests=await self._digests())
         assert self._state_dir is not None
         directory = wake_dir(self._state_dir, self._store.run_id, wake)
         if settled is None:
@@ -1071,8 +1077,13 @@ class Orchestrator:
             wake=wake,
             report=settled.report,
             fingerprint=fingerprint,
+            digests=await self._digests(),
             unconfirmed=settled.unconfirmed,
         )
+
+    async def _digests(self) -> list[DatabaseDigest]:
+        """Each fronted database that declares `digest`, as it stands at this checkpoint."""
+        return [await front.digest() for front in self._databases if front.database.digest is not None]
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
 
@@ -1213,6 +1224,7 @@ async def run_scenario(
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
     environment: Environment | None = None,
     inboxes: Inboxes | None = None,
+    databases: Sequence[FrontsDatabase] = (),
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
@@ -1236,4 +1248,5 @@ async def run_scenario(
         channels=channels,
         environment=environment,
         inboxes=inboxes,
+        databases=databases,
     ).run()
