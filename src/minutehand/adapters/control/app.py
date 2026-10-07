@@ -32,18 +32,30 @@ stretch before each reset first, and says in `resets` where each reset falls.
     POST   /v1/worlds/{id}/inbound-credential          `MintInbound` -> `Minted`: headers for a request a test builds
     POST   /v1/worlds/{id}/reset                       -> `WorldView`: back to its seed, same id and claims
     GET    /v1/worlds/{id}/state?provider=P            `RawState`: every version of every entity (unstable)
-    GET    /v1/worlds/{id}/checks                      `Checked`
+    GET    /v1/worlds/{id}/checks                      `Checked`; for a world of a case, the case's
+    POST   /v1/worlds/{id}/steps                       `MarkStep` -> `StepView`: a step begins or ends (a case's, for
+                                                a world of a case)
+    GET    /v1/cases                                   `CaseList`: every open case
+    GET    /v1/cases/{case_id}                         `CaseView`
+    POST   /v1/cases/{case_id}/steps                   `MarkStep` -> `StepView`: a step of every world of the case
+    GET    /v1/cases/{case_id}/checks                  `Checked`: the case scored as one run
+    POST   /v1/worlds/{id}/report                      `AgentReport` -> `Checked`: the agent's own report of its work,
+                                                relayed by whoever drives it (a case's, for a world of a case)
     GET    /v1/providers                               `ProvidersView`: what each provider can do while open
-    GET    /v1/unmatched?since=N[&late_for=W]          `Unmatched`: calls no open world claimed, tunnels among them;
-                                                `late_for`: only those that came for world W after it closed
+    GET    /v1/unmatched?since=N[&late_for=W][&kind=K]... `Unmatched`: the lobby; by default only `unclaimed` calls
+                                                (no world claimed them, nothing declared them); `kind` names others
+                                                (`model_host`, `pass_through`); `late_for`: those for world W after
+                                                it closed
 
-A refusal is `Refusal`: 404 for a world that is not open, 409 for what a world cannot do (with `kind`
-`unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a query
-parameter that is not what its route takes, 502 when the service an event was pushed to refused it.
+A refusal is `Refusal`: 404 for a world that is not open or a thing it does not hold, 409 for what a world cannot do
+(with `kind` `unsupported` when the provider cannot do it in any world), 422 for a body that is not the model or a
+query parameter that is not what its route takes, 502 when the service an event was pushed to refused it. Anything
+else is Minutehand's own failure, never a refusal: 500, `kind` `internal_error`, the traceback in the server's log.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from enum import StrEnum
@@ -56,6 +68,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters.answering import INTERNAL_PREFIX
 from minutehand.adapters.control.wire import (
     API,
     QUIET_AT_MOST,
@@ -65,11 +78,17 @@ from minutehand.adapters.control.wire import (
     Advance,
     Advanced,
     CallsPage,
+    CaseList,
+    CaseView,
     ChangePerson,
     Checked,
     CreateWorld,
+    DecideNow,
+    DecisionsDone,
+    DecisionView,
     DeclareFaults,
     DeleteTicket,
+    DueDecisionView,
     EditTicket,
     EntitiesPage,
     Environment,
@@ -78,10 +97,14 @@ from minutehand.adapters.control.wire import (
     FiredView,
     FurtherSeed,
     Happen,
+    InboxesView,
+    LobbyKind,
+    MarkStep,
     Minted,
     MintInbound,
     MoveTicket,
     OwedView,
+    PendingItemView,
     Permit,
     PressControl,
     ProvidersView,
@@ -94,21 +117,38 @@ from minutehand.adapters.control.wire import (
     Say,
     Seeded,
     SpansPage,
+    StepView,
     Unmatched,
     WorldList,
     WorldView,
+    lobby_kind,
 )
 from minutehand.application.refusals import AgentFailed, RunRefused
-from minutehand.application.standing import Unsupported
+from minutehand.application.standing import NotFound, StandingWorld, Unsupported
+from minutehand.application.steps import STEP, StepEdge, Stepping
+from minutehand.domain.agent import AgentReport
+from minutehand.domain.people import Decides
 from minutehand.domain.scenario import Model
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, RecordedCall, Stored, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityKind,
+    EntityRef,
+    InboxItemSnapshot,
+    ItemStatus,
+    Operation,
+    RecordedCall,
+    Stored,
+    WorldEvent,
+)
 from minutehand.ports.store import Store
 from minutehand.session import reading_file
 
 if TYPE_CHECKING:
-    from minutehand.serve import Serving, World
+    from minutehand.serve import Case, Serving, World
 
 Handler = Callable[[Request], Awaitable[Response]]
+
+logger = logging.getLogger(__name__)
 
 
 def _json(model: Model, status: int = 200) -> Response:
@@ -120,6 +160,9 @@ def _refused(status: int, error: str, kind: RefusalKind | None = None) -> Respon
 
 
 def _guarded(handler: Handler) -> Handler:
+    """THE converter of the control API: each typed refusal to its status, and anything else to 500, an internal
+    error, so a bug in Minutehand is never answered as though the caller's request were refused."""
+
     async def guarded(request: Request) -> Response:
         try:
             return await handler(request)
@@ -127,14 +170,20 @@ def _guarded(handler: Handler) -> Handler:
             return _refused(422, str(e))
         except _BadQuery as e:
             return _refused(422, str(e))
-        except LookupError as e:
-            return _refused(404, str(e.args[0]) if e.args else str(e))
+        except NotFound as e:
+            return _refused(404, str(e))
         except AgentFailed as e:
             return _refused(502, str(e))
         except Unsupported as e:
             return _refused(409, str(e), RefusalKind.UNSUPPORTED)
-        except (RunRefused, ValueError) as e:
+        except RunRefused as e:
             return _refused(409, str(e))
+        except Exception as e:
+            where = f"{request.method} {request.url.path}"
+            message = f"{INTERNAL_PREFIX} the control API {where}: {type(e).__name__}: {e}"
+            logger.error("%s", message, exc_info=e)
+            kind = f"{type(e).__module__}.{type(e).__qualname__}"
+            return _json(Refusal(error=message, kind=RefusalKind.INTERNAL_ERROR, exception_type=kind), 500)
 
     return guarded
 
@@ -150,6 +199,23 @@ def _view(world: World) -> WorldView:
         head=world.store.head(),
         owed=[OwedView(at=at, what=what) for at, what in standing.owed()],
         resets=world.resets,
+        case_id=world.case.case_id if world.case is not None else None,
+        case=world.case.name if world.case is not None else None,
+        step=standing.clock.wake(),
+    )
+
+
+def _steps(stepping: Stepping) -> StepView:
+    return StepView(step=stepping.wake, open=stepping.open, by_hand=stepping.by_hand, at=stepping.at)
+
+
+def _case(case: Case) -> CaseView:
+    return CaseView(
+        case_id=case.case_id,
+        name=case.name,
+        worlds=list(case.worlds),
+        open_worlds=list(case.members),
+        steps=_steps(case.stepping),
     )
 
 
@@ -218,6 +284,12 @@ def _across[T](stretches: Sequence[Path], world: World, read: Callable[[Store], 
     return found + read(world.store), resets
 
 
+def _decision(event: WorldEvent) -> DecisionView:
+    item = event.after
+    assert isinstance(item, InboxItemSnapshot)
+    return DecisionView(event=event, accepted=item.status is ItemStatus.DECIDED, refused=item.refused)
+
+
 def create_app(serving: Serving) -> Starlette:
     standing = serving.standing
 
@@ -253,6 +325,7 @@ def create_app(serving: Serving) -> Starlette:
 
     async def create(request: Request) -> Response:
         spec = CreateWorld.model_validate_json(await request.body())
+        await standing.start_emulators(spec)
         return _json(_view(standing.create(spec)), 201)
 
     async def world(request: Request) -> Response:
@@ -292,7 +365,7 @@ def create_app(serving: Serving) -> Starlette:
             )
 
         def read(store: Store) -> list[WorldEvent]:
-            return [e for e in store.events(since=since if store is found.store else 0) if keep(e)]
+            return [e for e in store.events(since=since if store is found.store else 0) if keep(e) and e.entity != STEP]
 
         found_events, resets = _across(earlier(request, found), found, read)
         return _json(EventsPage(events=found_events, head=found.store.head(), resets=resets))
@@ -304,6 +377,8 @@ def create_app(serving: Serving) -> Starlette:
         refs: dict[EntityRef, None] = {}
         for event in found.store.events():
             ref = event.entity
+            if ref == STEP:
+                continue
             if (provider is None or ref.provider == provider) and (wanted_kind is None or ref.kind is wanted_kind):
                 refs[ref] = None
         current: list[Stored] = [s for s in (found.store.get(r) for r in refs) if s is not None]
@@ -410,7 +485,7 @@ def create_app(serving: Serving) -> Starlette:
         else:
             assert asked.by is not None
             to = live.clock.now() + asked.by
-        fired = await live.advance(to)
+        fired = await standing.advance(found.world_id, to)
         return _json(
             Advanced(now=live.clock.now(), fired=[FiredView(at=f.at, what=f.what, events=f.events) for f in fired])
         )
@@ -427,18 +502,105 @@ def create_app(serving: Serving) -> Starlette:
         return _json(_view(found))
 
     async def checks(request: Request) -> Response:
-        return _json(Checked(result=await world_of(request).standing.checks(stop=None)))
+        return _json(Checked(result=await standing.checks(world_of(request).world_id)))
+
+    async def mark(stepping: Stepping, members: Sequence[StandingWorld], request: Request) -> Response:
+        asked = MarkStep.model_validate_json(await request.body())
+        if asked.edge is StepEdge.BEGAN:
+            stepping.begin(asked.at, asked.reason)
+        else:
+            if stepping.open:
+                for member in members:
+                    await member.look()  # what the step left waiting on people is asked in that step
+            stepping.end()
+        return _json(_steps(stepping))
+
+    async def world_steps(request: Request) -> Response:
+        found = world_of(request)
+        members = list(found.case.members.values()) if found.case is not None else [found.standing]
+        return await mark(found.steps, members, request)
+
+    async def report(request: Request) -> Response:
+        found = world_of(request)
+        standing.report(found.world_id, AgentReport.model_validate_json(await request.body()))
+        return _json(Checked(result=await standing.checks(found.world_id)))
+
+    async def read_inboxes(request: Request) -> Response:
+        live = world_of(request).standing
+        looked = await live.look()
+        names = {r.declared.name for r in live.inboxes.reaches.values()} if live.inboxes is not None else set()
+        pending = [
+            PendingItemView(
+                inbox=item.inbox,
+                item=ref,
+                person=item.person,
+                summary=item.summary,
+                decisions=item.decisions,
+                gates=item.gates,
+                seen_at=seen,
+            )
+            for ref, item, seen in live.pending_items()
+            if item.inbox in names
+        ]
+        due = [
+            DueDecisionView(
+                at=at,
+                inbox=reply.in_reply_to.provider,
+                item=reply.in_reply_to,
+                person=reply.person,
+                decision=reply.decides.decision,
+                inputs=reply.decides.inputs,
+            )
+            for at, reply in live.due_decisions()
+            if reply.decides is not None
+        ]
+        return _json(InboxesView(pending=pending, due=due, unread=looked.unread))
+
+    async def perform_due(request: Request) -> Response:
+        done = await standing.perform_due(world_of(request).world_id)
+        return _json(DecisionsDone(decisions=[_decision(e) for e in done]))
+
+    async def decide(request: Request) -> Response:
+        asked = DecideNow.model_validate_json(await request.body())
+        made = await world_of(request).standing.decide_now(
+            asked.person, asked.item, Decides(decision=asked.decision, inputs=asked.inputs)
+        )
+        return _json(_decision(made))
+
+    async def cases(_: Request) -> Response:
+        return _json(CaseList(cases=[_case(c) for c in standing.cases.values()]))
+
+    async def case(request: Request) -> Response:
+        return _json(_case(standing.case(request.path_params["case_id"])))
+
+    async def case_steps(request: Request) -> Response:
+        found = standing.case(request.path_params["case_id"])
+        return await mark(found.stepping, list(found.members.values()), request)
+
+    async def case_checks(request: Request) -> Response:
+        found = standing.case(request.path_params["case_id"])
+        return _json(Checked(result=await standing.case_checks(found, stop=None)))
 
     async def unmatched(request: Request) -> Response:
         since = _count(request, "since")
         late_for = _query(request, "late_for")
+        asked = request.query_params.getlist("kind")
+        wanted: set[LobbyKind] = set()
+        for given in asked:
+            try:
+                wanted.add(LobbyKind(given))
+            except ValueError:
+                raise _BadQuery(f"?kind= is one of {', '.join(k.value for k in LobbyKind)}, not {given!r}") from None
+        wanted = wanted or {LobbyKind.UNCLAIMED}
         recorded = standing.lobby_store.calls()
         kept = [
             c
             for c in recorded[since:]
             if not standing.shared(c.exchange.host) and (late_for is None or c.exchange.late_for == late_for)
         ]
-        return _json(Unmatched(calls=kept, head=len(recorded)))
+        kinds = {k: sum(1 for c in kept if lobby_kind(c) is k) for k in LobbyKind}
+        listed = [c for c in kept if lobby_kind(c) in wanted]
+        return _json(Unmatched(calls=listed, head=len(recorded), kinds=kinds))
 
     def route(path: str, handler: Handler, methods: list[str]) -> Route:
         return Route(f"{API}{path}", _guarded(handler), methods=methods)
@@ -469,6 +631,15 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/reset", reset, ["POST"]),
             route("/worlds/{world_id}/state", state, ["GET"]),
             route("/worlds/{world_id}/checks", checks, ["GET"]),
+            route("/worlds/{world_id}/steps", world_steps, ["POST"]),
+            route("/worlds/{world_id}/report", report, ["POST"]),
+            route("/worlds/{world_id}/inboxes/read", read_inboxes, ["POST"]),
+            route("/worlds/{world_id}/inboxes/due", perform_due, ["POST"]),
+            route("/worlds/{world_id}/inboxes/decide", decide, ["POST"]),
+            route("/cases", cases, ["GET"]),
+            route("/cases/{case_id}", case, ["GET"]),
+            route("/cases/{case_id}/steps", case_steps, ["POST"]),
+            route("/cases/{case_id}/checks", case_checks, ["GET"]),
             route("/providers", providers, ["GET"]),
             route("/unmatched", unmatched, ["GET"]),
         ]

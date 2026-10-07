@@ -66,6 +66,50 @@ SEARCH = {"host": "search.localhost", "name": "search", "kind": "pass_through"}
 
 GENERATED = {"kind": "generated", "env": "REFERENCE_MAIL_SECRET"}
 
+APPROVER_TOKEN_VARIABLE = "NADIA_APPROVER_TOKEN"
+APPROVER_TOKEN = "nadia-signs-in-with-this-3e1f"
+"""Nadia's credential in the reference agent's web app for a standing world: the server reads it from its own
+environment, and the agent is configured with the same."""
+
+
+def approvals(port: int) -> dict[str, object]:
+    """The reference agent's approvals in its own web app, as `agent.yaml` declares them, on `port`."""
+    decide = f"http://127.0.0.1:{port}/approvals/{{item.id}}/decision"
+    return {
+        "name": "approvals",
+        "kind": "http",
+        "as_person": {"headers": {"Authorization": "Bearer {person.credential}"}},
+        "pending": {
+            "request": {"kind": "template", "url": f"http://127.0.0.1:{port}/approvals?approver={{person.email}}"},
+            "items": "$.items[*]",
+            "id": "$.id",
+            "summary": "$.summary",
+            "decisions": "$.actions",
+            "gates": "$.operation",
+            "paging": {"next": "$.next", "param": "cursor"},
+        },
+        "decisions": [
+            {
+                "name": "approve",
+                "reads": "approved",
+                "permits": True,
+                "request": {"kind": "template", "method": "POST", "url": decide, "body": {"decision": "approve"}},
+            },
+            {
+                "name": "reject",
+                "reads": "rejected",
+                "permits": False,
+                "request": {
+                    "kind": "template",
+                    "method": "POST",
+                    "url": decide,
+                    "body": {"decision": "reject", "reason": "{input.reason}"},
+                },
+                "inputs": [{"name": "reason", "description": "Why the booking is turned down"}],
+            },
+        ],
+    }
+
 
 def replies(port: int, secret: Mapping[str, object] = GENERATED) -> dict[str, object]:
     """How a person's answer to the agent's email reaches its inbound webhook, signed as it checks."""
@@ -89,6 +133,7 @@ def agent_file(
     answered: bool = True,
     secret: Mapping[str, object] = GENERATED,
     wakes: Mapping[str, object] | None = None,
+    inbox: bool = False,
 ) -> Path:
     """The reference agent's file, on `port`, its hooks run by this interpreter; with `answered`, people can
     answer its email."""
@@ -117,6 +162,8 @@ def agent_file(
         "outbound": [mail, SEARCH],
         "state": hooks,
     }
+    if inbox:
+        doc["inboxes"] = [approvals(port)]
     path.write_text(yaml.safe_dump(doc, sort_keys=False))
     return path
 

@@ -13,8 +13,11 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
+from minutehand.application.steps import StepEdge
 from minutehand.checks.runner import RunResult
-from minutehand.domain.outbound import OutboundHost, refuse_repeats
+from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
+from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
+from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundCredential, InboundCredentialAsk, InboundTarget, PermissionGrant, Press
 from minutehand.domain.provider import PersonChange
 from minutehand.domain.scenario import (
@@ -140,10 +143,35 @@ class CreateWorld(Model):
         description="Model APIs this world declares, each tunnelled or recorded as it says; a host belongs to one "
         "open world, and one a provider claims or this world captures is refused",
     )
+    emulators: list[ExternalEmulator] = Field(
+        default=[],
+        description="External emulators this world's `forward` hosts go to: one per server shared by every world "
+        "that declares it the same, unless it says `per_world`",
+    )
+    inboxes: list[HttpInbox] = Field(
+        default=[],
+        description="Where work waits on a person in the service's own product, read and decided as each person "
+        "(`domain.inboxes`, as an agent file declares them); a person's `credential` is read from the server's "
+        "environment, or given in `credentials`",
+    )
+    credentials: dict[str, str] = Field(
+        default={},
+        description="Each person's credential in the service's own product, by `Person.key`, when whoever opens the "
+        "world holds it (a key the service minted for this run): used to act as that person in `inboxes`, kept in "
+        "memory for the life of the world and never written to the record. It wins over `Person.credential`",
+    )
+    case: str | None = Field(
+        default=None,
+        min_length=1,
+        description="A case label: worlds opened under one label while any of them is open are one case, read, "
+        "stepped and scored as one run (one timeline, one set of people, one verdict). None: a world of its own",
+    )
 
     @model_validator(mode="after")
     def _one_declaration_per_host(self) -> Self:
         refuse_repeats(self.outbound)
+        refuse_repeated_inboxes(self.inboxes)
+        refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
         hosts = [m.host for m in self.model_hosts]
         repeated = sorted({h for h in hosts if hosts.count(h) > 1})
         if repeated:
@@ -165,6 +193,9 @@ class WorldView(Model):
     head: int = Field(description="The latest WorldEvent.seq")
     owed: list[OwedView] = Field(default=[], description="What falls due as the clock moves")
     resets: int = Field(default=0, ge=0, description="How many times it was reset; its record from before each is kept")
+    case_id: str | None = Field(default=None, description="The case it belongs to; also that case's run id")
+    case: str | None = Field(default=None, description="The case label it was opened under")
+    step: int = Field(default=1, ge=1, description="The step (wake) its events are written in now")
 
 
 class WorldList(Model):
@@ -206,14 +237,42 @@ class SpansPage(Model):
     )
 
 
+class LobbyKind(StrEnum):
+    """What a call kept in the lobby is. Only `unclaimed` is a call nobody expected: the others are traffic the
+    server was told about, kept so the record is complete."""
+
+    UNCLAIMED = "unclaimed"
+    """No open world claimed it and nothing declared its host: refused with 502 (a late call for a closed world among
+    them, `Exchange.late_for`). The lobby a suite asserts empty."""
+    MODEL_HOST = "model_host"
+    """A burst on a tunnel to a host the server was told is a model host (a default one, or `serve --model-host`),
+    relayed unopened (`Exchange.tunnelled`), when no world declared that host."""
+    PASS_THROUGH = "pass_through"
+    """A call to a host no provider claims, passed through and kept because the server was told to
+    (`serve --capture-unknown`, `Exchange.captured`)."""
+
+
+def lobby_kind(call: RecordedCall) -> LobbyKind:
+    """What a call the lobby kept is, read from how it was answered."""
+    if call.exchange.tunnelled is not None:
+        return LobbyKind.MODEL_HOST
+    if call.exchange.captured is not None:
+        return LobbyKind.PASS_THROUGH
+    return LobbyKind.UNCLAIMED
+
+
 class Unmatched(Model):
-    """Calls no open world claimed, oldest first: refused with 502, or bursts on a tunnel to a model host no world
-    declared, relayed unopened (`Exchange.tunnelled`, route `none`). `since` and `head` count every call the lobby
-    kept across the life of the server (a call to a provider's shared host, answered there and not listed here,
-    among them), so `since` reads only what is new."""
+    """Calls kept in the lobby, oldest first, of the kinds asked for (`?kind=`, repeated; by default only
+    `unclaimed`: calls no open world claimed and nothing declared, refused with 502). `kinds` counts every call the
+    lobby kept since `since`, by kind, whichever were asked for, so traffic left out of `calls` is never out of
+    sight. `since` and `head` count every call the lobby kept across the life of the server (a call to a provider's
+    shared host, answered there and listed under no kind, among them), so `since` reads only what is new."""
 
     calls: list[RecordedCall]
     head: int
+    kinds: dict[LobbyKind, int] = Field(
+        default={}, description="How many calls of each kind the lobby kept since `since`, listed or not"
+    )
 
 
 class Say(Model):
@@ -338,6 +397,41 @@ class Quieted(Model):
     last_call: str | None = Field(default=None, description="The latest call routed to the world, for a person")
 
 
+class MarkStep(Model):
+    """Where one go of the agent begins or ends, for a harness that drives the agent itself. `began`: a step begins
+    at `at` (simulated; the latest moment reached when None), ending the one in progress, and `reason` says why;
+    `ended`: the step in progress ends. Setting the clock stays a separate act."""
+
+    edge: StepEdge
+    at: AwareDatetime | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _only_a_beginning_has_a_moment(self) -> Self:
+        if self.edge is StepEdge.ENDED and (self.at is not None or self.reason is not None):
+            raise ValueError("a step ends where it is: `at` and `reason` belong to its beginning")
+        return self
+
+
+class StepView(Model):
+    step: int = Field(ge=1, description="The step in progress, or the last one")
+    open: bool = Field(description="A step is in progress")
+    by_hand: bool = Field(description="Steps are marked by whoever drives; False: inferred from forward clock moves")
+    at: AwareDatetime = Field(description="The latest moment the steps have reached, simulated")
+
+
+class CaseView(Model):
+    case_id: str = Field(description="Also its run id: `minutehand findings`, `view` and the MCP tools read it")
+    name: str = Field(description="The label its worlds were opened under")
+    worlds: list[str] = Field(description="Every world of the case, in the order they opened")
+    open_worlds: list[str]
+    steps: StepView
+
+
+class CaseList(Model):
+    cases: list[CaseView]
+
+
 class Checked(Model):
     result: RunResult
     quiet: Quieted | None = Field(
@@ -354,11 +448,16 @@ class Environment(Model):
 class RefusalKind(StrEnum):
     UNSUPPORTED = "unsupported"
     """The provider cannot do what was asked at all, in any world: a capability it does not have."""
+    INTERNAL_ERROR = "internal_error"
+    """Not a refusal of the request: Minutehand failed while answering it (status 500)."""
 
 
 class Refusal(Model):
     error: str
     kind: RefusalKind | None = Field(default=None, description="Set when the refusal is of a known kind")
+    exception_type: str | None = Field(
+        default=None, description="Set for an internal error: the exception's qualified class name"
+    )
 
 
 class FurtherSeed(Model):
@@ -447,3 +546,54 @@ class RawState(Model):
 
     provider: ProviderKey
     entities: list[RawEntity]
+
+
+class PendingItemView(Model):
+    """One item waiting on a person in the service's own product, as the world last read it."""
+
+    inbox: ProviderKey
+    item: EntityRef = Field(description="How the world names it: the inbox, and the product's own id")
+    person: str | None = Field(description="Person.key it waits on")
+    summary: str
+    decisions: list[str]
+    gates: str | None = None
+    seen_at: AwareDatetime = Field(description="When it was first seen, simulated")
+
+
+class DueDecisionView(Model):
+    """A decision one of the world's people has made and will carry out at `at`, simulated."""
+
+    at: AwareDatetime
+    inbox: ProviderKey
+    item: EntityRef
+    person: str
+    decision: str
+    inputs: dict[str, str] = {}
+
+
+class InboxesView(Model):
+    """What waits on people now, and what they have decided and when they will do it: a harness that keeps its own
+    clock jumps to the earliest `due`."""
+
+    pending: list[PendingItemView]
+    due: list[DueDecisionView]
+    unread: list[str] = Field(default=[], description="Each inbox a person's list could not be read in, and why")
+
+
+class DecideNow(Model):
+    """A person decides an item now, with a decision and its inputs, as the product's page would send it."""
+
+    person: str = Field(description="Person.key")
+    item: EntityRef
+    decision: str
+    inputs: dict[str, str] = {}
+
+
+class DecisionView(Model):
+    event: WorldEvent = Field(description="The person's change: decided, or still pending with the product's refusal")
+    accepted: bool
+    refused: str | None = Field(default=None, description="The product's answer when it did not take it")
+
+
+class DecisionsDone(Model):
+    decisions: list[DecisionView]

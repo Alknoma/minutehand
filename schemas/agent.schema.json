@@ -1,0 +1,2302 @@
+{
+  "$defs": {
+    "Acknowledge": {
+      "additionalProperties": false,
+      "description": "The call never leaves the machine: it is kept, and answered as declared. For sends: an email API, a\nwebhook, an SMS.",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/Answer",
+          "default": {
+            "headers": {},
+            "json_body": null,
+            "status": 200,
+            "text": null
+          }
+        },
+        "body_limit": {
+          "default": 1048576,
+          "description": "Bytes of a text or JSON body kept",
+          "minimum": 0,
+          "title": "Body Limit",
+          "type": "integer"
+        },
+        "host": {
+          "description": "An exact lower-case host, or '*.' and a domain for any host under it",
+          "title": "Host",
+          "type": "string"
+        },
+        "kind": {
+          "const": "acknowledge",
+          "default": "acknowledge",
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageReading"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When given, each call is also a message from the agent to a person"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What its world events are recorded under; derived from the host when None",
+          "title": "Name"
+        },
+        "redact": {
+          "default": [],
+          "description": "Body fields kept as [redacted], in the request and the answer, besides credentials",
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "title": "Redact",
+          "type": "array"
+        },
+        "replies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplyDelivery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When given, the people a send reaches can answer it: each answer is delivered to the agent as declared, and a send to someone who will answer opens a wait like any other ask"
+        },
+        "routes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Route"
+          },
+          "title": "Routes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "Acknowledge",
+      "type": "object"
+    },
+    "Answer": {
+      "additionalProperties": false,
+      "description": "What an acknowledged call is answered with. With neither body, the JSON `{}`. Any `{message_id}` in its\nstrings is replaced by an id made for that call.",
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Sent as given; content-type follows the body",
+          "title": "Headers",
+          "type": "object"
+        },
+        "json_body": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null,
+          "description": "Answered as JSON"
+        },
+        "status": {
+          "default": 200,
+          "maximum": 599,
+          "minimum": 100,
+          "title": "Status",
+          "type": "integer"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Answered as text/plain",
+          "title": "Text"
+        }
+      },
+      "title": "Answer",
+      "type": "object"
+    },
+    "AsPerson": {
+      "additionalProperties": false,
+      "description": "How Minutehand signs in as a person: headers sent with every call it makes as them. A header naming\n`{person.credential}` makes the people who hold a `Person.credential` the only ones it can act as.",
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Header name -> template",
+          "minProperties": 1,
+          "title": "Headers",
+          "type": "object"
+        }
+      },
+      "required": [
+        "headers"
+      ],
+      "title": "AsPerson",
+      "type": "object"
+    },
+    "BaseUrl": {
+      "additionalProperties": false,
+      "description": "A host the agent reaches by a base URL it is handed rather than through the proxy, for a client that cannot be\ngiven a proxy: `env` is set to `http://<minutehand>/_host/<host><path>`, which the proxy answers exactly as a call\nto `https://<host><path>` made through it.",
+      "properties": {
+        "env": {
+          "description": "The variable the agent reads its base URL from",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Env",
+          "type": "string"
+        },
+        "host": {
+          "description": "The real host, with a port when it is not 443",
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$",
+          "title": "Host",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "description": "Appended to the base URL, e.g. '/api/1.0'; empty for none",
+          "pattern": "^(/[^?#]*)?$",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "env"
+      ],
+      "title": "BaseUrl",
+      "type": "object"
+    },
+    "Booked": {
+      "additionalProperties": false,
+      "description": "The agent books its own wake-ups with a scheduler the proxy intercepts.\n\nNothing is asked of the agent: the booking is an outbound call like any other,\nand the scheduler provider calls the agent back when the clock reaches it.",
+      "properties": {
+        "kind": {
+          "const": "booked",
+          "default": "booked",
+          "title": "Kind",
+          "type": "string"
+        },
+        "take_limit": {
+          "default": "PT30S",
+          "description": "How long, in real time, the run waits for the agent to take a booking's delivery from its own queue before it moves on, when the scheduler can tell (`ConfirmsDelivery`)",
+          "format": "duration",
+          "title": "Take Limit",
+          "type": "string"
+        }
+      },
+      "title": "Booked",
+      "type": "object"
+    },
+    "Command": {
+      "additionalProperties": false,
+      "description": "A command run per wake; it reads a WakeRequest on stdin and prints an AgentReport.",
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Argv",
+          "type": "array"
+        },
+        "kind": {
+          "const": "command",
+          "default": "command",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "title": "Command",
+      "type": "object"
+    },
+    "CommandBase": {
+      "additionalProperties": false,
+      "description": "The base is made and put back by commands of the agent's: a copy-on-write branch (Neon, a ZFS or btrfs\nsnapshot, a cloud volume snapshot) for a database too large to copy. Each command gets MINUTEHAND_DB_URL (the\nupstream) and MINUTEHAND_DB_BASE.\n\n`take` runs at the run's start with MINUTEHAND_DB_BASE set to a name Minutehand suggests; the last line it\nprints names the base it made. `put_back` runs before a fork's replay with MINUTEHAND_DB_BASE set to that name,\nand must leave the agent's database exactly as the base holds it.",
+      "properties": {
+        "kind": {
+          "const": "command",
+          "default": "command",
+          "title": "Kind",
+          "type": "string"
+        },
+        "put_back": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Put Back",
+          "type": "array"
+        },
+        "take": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Take",
+          "type": "array"
+        }
+      },
+      "required": [
+        "take",
+        "put_back"
+      ],
+      "title": "CommandBase",
+      "type": "object"
+    },
+    "Contained": {
+      "additionalProperties": false,
+      "description": "The agent runs in a sandbox whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox whose\nclock Minutehand owns\"), so its own in-process timers are its next wakes, with no code of Minutehand's in it.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, `{\"idle\": bool, \"earliest_ns\": int}`\n(whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and\n`advance` moves the sandbox's clock forward by `{nanoseconds}`. Minutehand moves it with every jump of the\nrun's clock, so the two agree, and when the sandbox is idle and no call of the agent's is in flight, its\nearliest deadline is a wake the agent asked for.",
+      "properties": {
+        "advance": {
+          "description": "Holds {nanoseconds} where the step goes",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Advance",
+          "type": "array"
+        },
+        "deadlines": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Deadlines",
+          "type": "array"
+        },
+        "kind": {
+          "const": "contained",
+          "default": "contained",
+          "title": "Kind",
+          "type": "string"
+        },
+        "quiet": {
+          "default": "PT0.05S",
+          "description": "Idle on two reads this far apart is idle",
+          "format": "duration",
+          "title": "Quiet",
+          "type": "string"
+        },
+        "settle_limit": {
+          "default": "PT30S",
+          "description": "Real time a wake may take to fall idle",
+          "format": "duration",
+          "title": "Settle Limit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deadlines",
+        "advance"
+      ],
+      "title": "Contained",
+      "type": "object"
+    },
+    "Database": {
+      "additionalProperties": false,
+      "description": "A PostgreSQL database of the agent's that Minutehand fronts. The relay speaks PostgreSQL's wire protocol in\nthe clear only: a client asking for `sslmode=require` is told the server does not support SSL, and an upstream\nasking for it is refused here.",
+      "properties": {
+        "base": {
+          "default": {
+            "kind": "template"
+          },
+          "discriminator": {
+            "mapping": {
+              "command": "#/$defs/CommandBase",
+              "template": "#/$defs/TemplateBase"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TemplateBase"
+            },
+            {
+              "$ref": "#/$defs/CommandBase"
+            }
+          ],
+          "title": "Base"
+        },
+        "env": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A variable set, for the agent's program, to the upstream's URL pointed at the relay",
+          "title": "Env"
+        },
+        "kind": {
+          "const": "postgres",
+          "default": "postgres",
+          "title": "Kind",
+          "type": "string"
+        },
+        "listen": {
+          "description": "host:port the relay listens on for the agent",
+          "pattern": "^[A-Za-z0-9.\\-]+:[0-9]{1,5}$",
+          "title": "Listen",
+          "type": "string"
+        },
+        "name": {
+          "description": "What the run's records call this database",
+          "pattern": "^[a-z][a-z0-9_]{0,30}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "postgres://user:password@host:port/database: the real database, reached by the relay and by Minutehand's own connections (the base, the replay)",
+          "minLength": 1,
+          "title": "Upstream",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "listen",
+        "upstream"
+      ],
+      "title": "Database",
+      "type": "object"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "description": "One decision a person can make on an item: the request the product's own page sends when they make it.",
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "What it means; a model-written person reads it",
+          "title": "Description",
+          "type": "string"
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DecisionInput"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "permits": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whether it lets what the item gates go ahead (approve: true, reject: false); None: it says nothing about that (an answer to a question)",
+          "title": "Permits"
+        },
+        "reads": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How the record says it was made ('approved'); None: 'decided <name>'",
+          "title": "Reads"
+        },
+        "request": {
+          "discriminator": {
+            "mapping": {
+              "operation": "#/$defs/OperationRequest",
+              "template": "#/$defs/TemplateRequest"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TemplateRequest"
+            },
+            {
+              "$ref": "#/$defs/OperationRequest"
+            }
+          ],
+          "title": "Request"
+        },
+        "succeeds": {
+          "$ref": "#/$defs/Succeeds",
+          "default": {
+            "at": null,
+            "equals": null,
+            "statuses": []
+          }
+        }
+      },
+      "required": [
+        "name",
+        "request"
+      ],
+      "title": "Decision",
+      "type": "object"
+    },
+    "DecisionInput": {
+      "additionalProperties": false,
+      "description": "Something a person gives with a decision: a reason, an answer. A request names it as `{input.<name>}`.",
+      "properties": {
+        "description": {
+          "description": "What it is; a model-written person reads it",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "DecisionInput",
+      "type": "object"
+    },
+    "ErrorMarker": {
+      "additionalProperties": false,
+      "description": "An answer that is an error of a known kind: its status, and, with `at`, a value in its JSON body at that path\n(`equals` it, or present at all when `equals` is None). For GraphQL: `errors[*].extensions.code`.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At"
+        },
+        "equals": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Equals"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "title": "ErrorMarker",
+      "type": "object"
+    },
+    "ExternalEmulator": {
+      "additionalProperties": false,
+      "description": "One service's fake that Minutehand does not hold: started with the run (or, in `minutehand serve`, with the\nfirst world that declares it, and shared by every world declaring it the same, until the server stops), or\nattached to when it has no command. Minutehand never restarts one: an emulator that dies or turns unhealthy\nstays down, every call to it is answered 502 or 504, and the run's environment has failed.",
+      "properties": {
+        "answer_within": {
+          "default": "PT30S",
+          "description": "A forwarded call with no byte of answer after this is answered 504, and the emulator failed",
+          "format": "duration",
+          "title": "Answer Within",
+          "type": "string"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Started with the run and stopped with it; None: already running",
+          "title": "Command"
+        },
+        "directory": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where its command runs; None: Minutehand's own",
+          "title": "Directory"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Added to its environment, beside the OTLP variables",
+          "title": "Env",
+          "type": "object"
+        },
+        "faithful": {
+          "default": [],
+          "description": "Errors it answers on purpose, as the real API would; a 4xx is always one",
+          "items": {
+            "$ref": "#/$defs/ErrorMarker"
+          },
+          "title": "Faithful",
+          "type": "array"
+        },
+        "health": {
+          "$ref": "#/$defs/Health",
+          "default": {
+            "answer_within": "PT2S",
+            "every": "PT1S",
+            "fails": 2,
+            "path": null,
+            "status": 200
+          }
+        },
+        "name": {
+          "description": "What its calls and findings are recorded under",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "not_implemented": {
+          "default": [
+            {
+              "at": null,
+              "equals": null,
+              "status": 501
+            }
+          ],
+          "description": "Answers that mean it has no implementation of the call",
+          "items": {
+            "$ref": "#/$defs/ErrorMarker"
+          },
+          "title": "Not Implemented",
+          "type": "array"
+        },
+        "ready": {
+          "default": {
+            "kind": "tcp"
+          },
+          "description": "When it counts as up",
+          "discriminator": {
+            "mapping": {
+              "http": "#/$defs/ReadyHttp",
+              "log": "#/$defs/ReadyLog",
+              "tcp": "#/$defs/ReadyTcp"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ReadyHttp"
+            },
+            {
+              "$ref": "#/$defs/ReadyTcp"
+            },
+            {
+              "$ref": "#/$defs/ReadyLog"
+            }
+          ],
+          "title": "Ready"
+        },
+        "ready_within": {
+          "default": "PT30S",
+          "format": "duration",
+          "title": "Ready Within",
+          "type": "string"
+        },
+        "upstream": {
+          "$ref": "#/$defs/Upstream"
+        }
+      },
+      "required": [
+        "name",
+        "upstream"
+      ],
+      "title": "ExternalEmulator",
+      "type": "object"
+    },
+    "Forward": {
+      "additionalProperties": false,
+      "description": "The call is sent to an external emulator the same file declares (`domain.emulator.ExternalEmulator`), and\nkept, both sides verbatim, as a passed-through call is: request and answer streamed through untouched but for\nthe headers `domain.emulator.ADDED_HEADERS` lists and `traceparent`, set on the forwarded copy only.\n\n`strip` is taken off the front of the path and `prefix` put before what is left, so `/graphql` on the agent's\nside can be `/tracker/graphql` at the emulator.",
+      "properties": {
+        "body_limit": {
+          "default": 1048576,
+          "description": "Bytes of a text or JSON body kept",
+          "minimum": 0,
+          "title": "Body Limit",
+          "type": "integer"
+        },
+        "emulator": {
+          "description": "The `name` of the emulator that answers this host",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Emulator",
+          "type": "string"
+        },
+        "host": {
+          "description": "An exact lower-case host, or '*.' and a domain for any host under it",
+          "title": "Host",
+          "type": "string"
+        },
+        "host_header": {
+          "$ref": "#/$defs/HostHeader",
+          "default": "preserve"
+        },
+        "kind": {
+          "const": "forward",
+          "default": "forward",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What its world events are recorded under; derived from the host when None",
+          "title": "Name"
+        },
+        "prefix": {
+          "default": "",
+          "pattern": "^(/[^?#]*)?$",
+          "title": "Prefix",
+          "type": "string"
+        },
+        "redact": {
+          "default": [],
+          "description": "Body fields kept as [redacted], in the request and the answer, besides credentials",
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "title": "Redact",
+          "type": "array"
+        },
+        "strip": {
+          "default": "",
+          "pattern": "^(/[^?#]*)?$",
+          "title": "Strip",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "emulator"
+      ],
+      "title": "Forward",
+      "type": "object"
+    },
+    "GeneratedSecret": {
+      "additionalProperties": false,
+      "description": "A fresh secret made for every run and handed to the agent's command in the variable `env`.\n\nOnly a command Minutehand starts receives it; an agent already running has a secret of its own.",
+      "properties": {
+        "env": {
+          "description": "The variable the agent reads its signing secret from",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Env",
+          "type": "string"
+        },
+        "kind": {
+          "const": "generated",
+          "default": "generated",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "env"
+      ],
+      "title": "GeneratedSecret",
+      "type": "object"
+    },
+    "GoalByMessage": {
+      "additionalProperties": false,
+      "description": "The scenario's owner sends the goal as a message through this provider, as a person would, and every\nscripted direction the same way. An agent reached like this may expose no wake endpoint at all.",
+      "properties": {
+        "kind": {
+          "const": "by_message",
+          "default": "by_message",
+          "title": "Kind",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "title": "GoalByMessage",
+      "type": "object"
+    },
+    "GoalByWake": {
+      "additionalProperties": false,
+      "description": "The goal arrives in the START wake's `WakeRequest.goal`, and directions in DIRECTION wakes.",
+      "properties": {
+        "kind": {
+          "const": "by_wake",
+          "default": "by_wake",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "GoalByWake",
+      "type": "object"
+    },
+    "Health": {
+      "additionalProperties": false,
+      "description": "Polled for as long as the emulator is in use: `path` answering `status`, or, with no path, its upstream\naccepting a connection. `fails` failures in a row make it unhealthy.",
+      "properties": {
+        "answer_within": {
+          "default": "PT2S",
+          "format": "duration",
+          "title": "Answer Within",
+          "type": "string"
+        },
+        "every": {
+          "default": "PT1S",
+          "format": "duration",
+          "title": "Every",
+          "type": "string"
+        },
+        "fails": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Fails",
+          "type": "integer"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "pattern": "^/",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "status": {
+          "default": 200,
+          "maximum": 599,
+          "minimum": 100,
+          "title": "Status",
+          "type": "integer"
+        }
+      },
+      "title": "Health",
+      "type": "object"
+    },
+    "HostHeader": {
+      "description": "The `Host` a forwarded call reaches its emulator with.",
+      "enum": [
+        "preserve",
+        "upstream"
+      ],
+      "title": "HostHeader",
+      "type": "string"
+    },
+    "HtmlAt": {
+      "additionalProperties": false,
+      "description": "A text candidate whose value is HTML, reduced to its text.",
+      "properties": {
+        "html": {
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+          "title": "Html",
+          "type": "string"
+        }
+      },
+      "required": [
+        "html"
+      ],
+      "title": "HtmlAt",
+      "type": "object"
+    },
+    "HttpInbox": {
+      "additionalProperties": false,
+      "description": "One inbox in the agent's own product, reached over HTTP and JSON. Its `name` is what the items seen in it are\nrecorded under, as a provider's key or a captured host's name is, and may be neither.\n\nAn MCP inbox (a server whose tools list and settle what waits on a person) would be a second member with its own\n`kind` beside this one; the people, the ledger and the checks read only what is seen, never how.",
+      "properties": {
+        "as_person": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AsPerson"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None: Minutehand sends no credential as anyone"
+        },
+        "decisions": {
+          "items": {
+            "$ref": "#/$defs/Decision"
+          },
+          "minItems": 1,
+          "title": "Decisions",
+          "type": "array"
+        },
+        "kind": {
+          "const": "http",
+          "default": "http",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "pending": {
+          "$ref": "#/$defs/Listing"
+        }
+      },
+      "required": [
+        "name",
+        "pending",
+        "decisions"
+      ],
+      "title": "HttpInbox",
+      "type": "object"
+    },
+    "InForks": {
+      "description": "What a pass-through host does in a fork of a run.",
+      "enum": [
+        "replay",
+        "pass_through"
+      ],
+      "title": "InForks",
+      "type": "string"
+    },
+    "InboundTarget": {
+      "additionalProperties": false,
+      "description": "Where a provider pushes events to the agent, the way the real service would.",
+      "properties": {
+        "interactivity_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where a person's use of a control or a form is pushed (Slack's interactivity request URL); None: the same as `url`",
+          "title": "Interactivity Url"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "secret": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "from_env": "#/$defs/SecretFromEnvironment",
+                  "generated": "#/$defs/GeneratedSecret"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/GeneratedSecret"
+                },
+                {
+                  "$ref": "#/$defs/SecretFromEnvironment"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where the secret that signs pushed events comes from; None signs with one made per run and given to no one, for an agent that does not verify",
+          "title": "Secret"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "url"
+      ],
+      "title": "InboundTarget",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Listing": {
+      "additionalProperties": false,
+      "description": "How to list what waits on one person: one request, read as that person, and where each item's parts are.\n\n`waits_on` makes it a list of everyone's items (or a team's): each item names whom it waits on, by email or\n`Person.key`, and only the person read for keeps theirs. Without it the list is that person's own.",
+      "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: its kind in the product's words",
+          "title": "Category"
+        },
+        "decisions": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: the names of the decisions allowed on it; None: every one declared",
+          "title": "Decisions"
+        },
+        "gates": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: the id of the operation it holds back, which a later call of the agent's carries when it goes ahead (`checks.acted_without_approval`)",
+          "title": "Gates"
+        },
+        "id": {
+          "description": "In an item: its own id",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "items": {
+          "description": "Every node it selects in the answer is one item: `$.items[*]`, or `$[*]`",
+          "minLength": 1,
+          "title": "Items",
+          "type": "string"
+        },
+        "paging": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Paging"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "request": {
+          "discriminator": {
+            "mapping": {
+              "operation": "#/$defs/OperationRequest",
+              "template": "#/$defs/TemplateRequest"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TemplateRequest"
+            },
+            {
+              "$ref": "#/$defs/OperationRequest"
+            }
+          ],
+          "title": "Request"
+        },
+        "summary": {
+          "description": "In an item: what it asks, in words a person reads",
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "waits_on": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: whom it waits on, an email or a key",
+          "title": "Waits On"
+        }
+      },
+      "required": [
+        "request",
+        "items",
+        "id",
+        "summary"
+      ],
+      "title": "Listing",
+      "type": "object"
+    },
+    "MessageReading": {
+      "additionalProperties": false,
+      "description": "How a captured send is read as a message to a person, by paths into its request body.\n\nRecipients are every value found at every path, a string or a list of strings, each split on commas, with\n`Name <address>` read as the address. Each is matched to a scenario person by email, any case, or by\n`handles` (an SMS number, a webhook's user id); one that matches nobody stays in the message as written.\nThe text is the first candidate present and not empty.",
+      "properties": {
+        "handles": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "A recipient value -> the Person.key it reaches",
+          "title": "Handles",
+          "type": "object"
+        },
+        "recipients": {
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Recipients",
+          "type": "array"
+        },
+        "subject": {
+          "default": [],
+          "description": "Candidates, first present wins",
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "title": "Subject",
+          "type": "array"
+        },
+        "text": {
+          "description": "Candidates, first present wins",
+          "items": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/HtmlAt"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Text",
+          "type": "array"
+        }
+      },
+      "required": [
+        "recipients",
+        "text"
+      ],
+      "title": "MessageReading",
+      "type": "object"
+    },
+    "OnMiss": {
+      "enum": [
+        "pass_through",
+        "refuse"
+      ],
+      "title": "OnMiss",
+      "type": "string"
+    },
+    "OperationRequest": {
+      "additionalProperties": false,
+      "description": "An operation of an OpenAPI document, by its `operationId`: the method, the path, where each parameter goes\nand the schema of a successful answer come from the document. `parameters` fill the operation's parameters by\nname (path, query or header), `body` its JSON request body; both may name values as a template does.\n\n`document` is a file (relative to the directory Minutehand runs in), an http(s) URL, or `minutehand` for\nMinutehand's own default shape. `server` is the base URL the operation's path is put after; None: the document's\nfirst server.",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "document": {
+          "minLength": 1,
+          "title": "Document",
+          "type": "string"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Headers",
+          "type": "object"
+        },
+        "kind": {
+          "const": "operation",
+          "default": "operation",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operation": {
+          "description": "The operation's operationId",
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Parameters",
+          "type": "object"
+        },
+        "server": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Server"
+        }
+      },
+      "required": [
+        "document",
+        "operation"
+      ],
+      "title": "OperationRequest",
+      "type": "object"
+    },
+    "Paging": {
+      "additionalProperties": false,
+      "description": "A list read page by page: `next` finds the cursor of the next page in an answer (absent, null or empty on the\nlast); the cursor is sent as the parameter `param` (a query parameter of a template's URL, or a parameter of the\noperation), or wherever the request names `{page.cursor}`.",
+      "properties": {
+        "most": {
+          "default": 50,
+          "description": "Pages read at most in one reading",
+          "minimum": 1,
+          "title": "Most",
+          "type": "integer"
+        },
+        "next": {
+          "description": "A JSONPath query (RFC 9535)",
+          "minLength": 1,
+          "title": "Next",
+          "type": "string"
+        },
+        "param": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None: the request places `{page.cursor}`",
+          "title": "Param"
+        }
+      },
+      "required": [
+        "next"
+      ],
+      "title": "Paging",
+      "type": "object"
+    },
+    "PassThrough": {
+      "additionalProperties": false,
+      "description": "The call goes to the real host unchanged; the request and the answer are both kept. For lookups: a\nsearch, a page fetch. A streamed answer reaches the agent as a stream.",
+      "properties": {
+        "body_limit": {
+          "default": 1048576,
+          "description": "Bytes of a text or JSON body kept",
+          "minimum": 0,
+          "title": "Body Limit",
+          "type": "integer"
+        },
+        "host": {
+          "description": "An exact lower-case host, or '*.' and a domain for any host under it",
+          "title": "Host",
+          "type": "string"
+        },
+        "ignore_body": {
+          "default": [],
+          "description": "Body fields a fork's replay does not match on",
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "title": "Ignore Body",
+          "type": "array"
+        },
+        "ignore_query": {
+          "default": [],
+          "description": "Query parameters a fork's replay does not match on",
+          "items": {
+            "type": "string"
+          },
+          "title": "Ignore Query",
+          "type": "array"
+        },
+        "in_forks": {
+          "$ref": "#/$defs/InForks",
+          "default": "replay",
+          "description": "In a fork: replay the parent's answer to the same call, so the fork differs from its parent only by what it changed; pass_through calls the real host again"
+        },
+        "kind": {
+          "const": "pass_through",
+          "default": "pass_through",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What its world events are recorded under; derived from the host when None",
+          "title": "Name"
+        },
+        "redact": {
+          "default": [],
+          "description": "Body fields kept as [redacted], in the request and the answer, besides credentials",
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "title": "Redact",
+          "type": "array"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "PassThrough",
+      "type": "object"
+    },
+    "Polled": {
+      "additionalProperties": false,
+      "description": "The agent is invoked on a fixed rhythm and decides for itself whether anything is due.",
+      "properties": {
+        "every": {
+          "default": "PT5M",
+          "format": "duration",
+          "title": "Every",
+          "type": "string"
+        },
+        "kind": {
+          "const": "polled",
+          "default": "polled",
+          "title": "Kind",
+          "type": "string"
+        },
+        "wake_url": {
+          "title": "Wake Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "wake_url"
+      ],
+      "title": "Polled",
+      "type": "object"
+    },
+    "ReadyHttp": {
+      "additionalProperties": false,
+      "description": "Ready once `path` answers `status` (Testcontainers' `forHttp(path).forStatusCode(status)`).",
+      "properties": {
+        "kind": {
+          "const": "http",
+          "default": "http",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "default": "/",
+          "pattern": "^/",
+          "title": "Path",
+          "type": "string"
+        },
+        "status": {
+          "default": 200,
+          "maximum": 599,
+          "minimum": 100,
+          "title": "Status",
+          "type": "integer"
+        }
+      },
+      "title": "ReadyHttp",
+      "type": "object"
+    },
+    "ReadyLog": {
+      "additionalProperties": false,
+      "description": "Ready once its log has printed a line matching `line`, a regular expression, `times` times\n(Testcontainers' `forLogMessage`). Only for an emulator Minutehand starts, whose output it reads.",
+      "properties": {
+        "kind": {
+          "const": "log",
+          "default": "log",
+          "title": "Kind",
+          "type": "string"
+        },
+        "line": {
+          "minLength": 1,
+          "title": "Line",
+          "type": "string"
+        },
+        "times": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Times",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line"
+      ],
+      "title": "ReadyLog",
+      "type": "object"
+    },
+    "ReadyTcp": {
+      "additionalProperties": false,
+      "description": "Ready once its upstream accepts a connection (Testcontainers' `forListeningPort()`).",
+      "properties": {
+        "kind": {
+          "const": "tcp",
+          "default": "tcp",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "ReadyTcp",
+      "type": "object"
+    },
+    "RecordedRun": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "run",
+          "default": "run",
+          "title": "Kind",
+          "type": "string"
+        },
+        "run": {
+          "description": "A run id under the state directory",
+          "minLength": 1,
+          "title": "Run",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "title": "RecordedRun",
+      "type": "object"
+    },
+    "RecordingsDirectory": {
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "description": "A directory holding a run's captured.jsonl",
+          "minLength": 1,
+          "title": "Directory",
+          "type": "string"
+        },
+        "kind": {
+          "const": "directory",
+          "default": "directory",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "directory"
+      ],
+      "title": "RecordingsDirectory",
+      "type": "object"
+    },
+    "Replay": {
+      "additionalProperties": false,
+      "description": "The call is answered from the recording of an earlier run, matched on method, host, path, query and a\nhash of the body with `ignore_query` and `ignore_body` left out (timestamps, nonces). The nth identical call\ngets the nth recorded answer to it, and the last one again after that.",
+      "properties": {
+        "body_limit": {
+          "default": 1048576,
+          "description": "Bytes of a text or JSON body kept",
+          "minimum": 0,
+          "title": "Body Limit",
+          "type": "integer"
+        },
+        "host": {
+          "description": "An exact lower-case host, or '*.' and a domain for any host under it",
+          "title": "Host",
+          "type": "string"
+        },
+        "ignore_body": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "title": "Ignore Body",
+          "type": "array"
+        },
+        "ignore_query": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Ignore Query",
+          "type": "array"
+        },
+        "kind": {
+          "const": "replay",
+          "default": "replay",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What its world events are recorded under; derived from the host when None",
+          "title": "Name"
+        },
+        "on_miss": {
+          "$ref": "#/$defs/OnMiss",
+          "default": "refuse"
+        },
+        "redact": {
+          "default": [],
+          "description": "Body fields kept as [redacted], in the request and the answer, besides credentials",
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+            "type": "string"
+          },
+          "title": "Redact",
+          "type": "array"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "directory": "#/$defs/RecordingsDirectory",
+              "run": "#/$defs/RecordedRun"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RecordedRun"
+            },
+            {
+              "$ref": "#/$defs/RecordingsDirectory"
+            }
+          ],
+          "title": "Source"
+        }
+      },
+      "required": [
+        "host",
+        "source"
+      ],
+      "title": "Replay",
+      "type": "object"
+    },
+    "ReplyDelivery": {
+      "additionalProperties": false,
+      "description": "How a person's answer to a captured send reaches the agent: the request its own inbound webhook expects.\n\n`body` is the JSON (or, with `form`, the form fields) the agent's endpoint reads, as structure; each string in\nit may name the reply's fields as `{name}` (`REPLY_FIELDS`). `thread` is a path into the acknowledged send's\nown answer (its `{message_id}`, as the email API answered it), giving `{in_reply_to}`; without it,\n`{in_reply_to}` is the id of the message in the run.",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null,
+          "description": "The body, as structure, with `{name}` placeholders in its strings; None: the default shape (`DeliveredReply`), every reply field under its own name"
+        },
+        "form": {
+          "default": false,
+          "description": "Sent as application/x-www-form-urlencoded: `body` is flat",
+          "title": "Form",
+          "type": "boolean"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Headers",
+          "type": "object"
+        },
+        "method": {
+          "default": "POST",
+          "enum": [
+            "POST",
+            "PUT"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "signing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplySigning"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "thread": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread"
+        },
+        "url": {
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "ReplyDelivery",
+      "type": "object"
+    },
+    "ReplySigning": {
+      "additionalProperties": false,
+      "description": "An HMAC-SHA256 over the delivered body, in a header: `format` holds `{hex}` or `{base64}` for the digest,\nand may hold `{timestamp}` (the simulated moment, in Unix seconds), which then also leads what is signed as\n`<timestamp>.<body>`, as several webhook senders do.",
+      "properties": {
+        "format": {
+          "default": "sha256={hex}",
+          "pattern": "\\{(hex|base64)\\}",
+          "title": "Format",
+          "type": "string"
+        },
+        "header": {
+          "minLength": 1,
+          "title": "Header",
+          "type": "string"
+        },
+        "secret": {
+          "discriminator": {
+            "mapping": {
+              "from_env": "#/$defs/SecretFromEnvironment",
+              "generated": "#/$defs/GeneratedSecret"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/GeneratedSecret"
+            },
+            {
+              "$ref": "#/$defs/SecretFromEnvironment"
+            }
+          ],
+          "title": "Secret"
+        },
+        "timestamp_header": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A header that carries `{timestamp}` by itself, when the sender sends one",
+          "title": "Timestamp Header"
+        }
+      },
+      "required": [
+        "secret",
+        "header"
+      ],
+      "title": "ReplySigning",
+      "type": "object"
+    },
+    "Reported": {
+      "additionalProperties": false,
+      "description": "The agent says when it next needs to wake. Exact, and needs an endpoint or adapter.\n\nA wake is over when `report_url` answers anything but WORKING. The defaults suit an agent whose turn takes\nminutes: the report is asked for quickly at first and then less often, the wait doubling from\n`report_first_after` up to `report_at_most_every`, and a wake still WORKING after `working_limit` stops the\nrun as AGENT_FAILED.",
+      "properties": {
+        "kind": {
+          "const": "reported",
+          "default": "reported",
+          "title": "Kind",
+          "type": "string"
+        },
+        "report_at_most_every": {
+          "default": "PT10S",
+          "description": "The longest wait between two asks for the report",
+          "format": "duration",
+          "title": "Report At Most Every",
+          "type": "string"
+        },
+        "report_first_after": {
+          "default": "PT0.1S",
+          "description": "The wait before the first ask for the report",
+          "format": "duration",
+          "title": "Report First After",
+          "type": "string"
+        },
+        "report_url": {
+          "title": "Report Url",
+          "type": "string"
+        },
+        "wake_timeout": {
+          "default": "PT2M",
+          "description": "How long one call to wake_url or report_url may take",
+          "format": "duration",
+          "title": "Wake Timeout",
+          "type": "string"
+        },
+        "wake_url": {
+          "title": "Wake Url",
+          "type": "string"
+        },
+        "working_limit": {
+          "default": "PT30M",
+          "description": "How long one wake may stay WORKING",
+          "format": "duration",
+          "title": "Working Limit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "wake_url",
+        "report_url"
+      ],
+      "title": "Reported",
+      "type": "object"
+    },
+    "Route": {
+      "additionalProperties": false,
+      "description": "A different answer for the calls that match: `method` (any when None) and `path`, a shell-style pattern\nover the path without its query (`/v3/mail/*`). The first route that matches answers.",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/Answer"
+        },
+        "method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Method"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "answer"
+      ],
+      "title": "Route",
+      "type": "object"
+    },
+    "SecretFromEnvironment": {
+      "additionalProperties": false,
+      "description": "The agent's own secret, configured where it already runs: Minutehand reads the same value from its own\nvariable `env` when the run starts, and refuses the run when it is not set.",
+      "properties": {
+        "env": {
+          "description": "The variable in Minutehand's own environment that holds the secret",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Env",
+          "type": "string"
+        },
+        "kind": {
+          "const": "from_env",
+          "default": "from_env",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "env"
+      ],
+      "title": "SecretFromEnvironment",
+      "type": "object"
+    },
+    "StateHooks": {
+      "additionalProperties": false,
+      "description": "How the agent's own state is saved and put back, so a run can be rewound. Without hooks a run cannot be\nforked, and a sample after the first starts from whatever the agent remembers.\n\nEvery command receives MINUTEHAND_SNAPSHOT_DIR, the directory one checkpoint's snapshot lives in.\n\nA checkpoint is snapshotted only once the agent has settled: it reports it is not working, no outbound call of\nits has been seen for `quiet`, none it sent is still awaiting its answer, and, when it declares `busy`, that\ncommand says it is idle. One that has not settled after `settle_limit` is recorded as not restorable, with the\nreason, and is never snapshotted. Without `busy`, work the proxy cannot see (writes to a database on this\nmachine, a process computing) is not asked about, and each checkpoint says it was not confirmed.\n\nA restore is a sequence: `stop`, `restore`, `start`, then the agent's report endpoint must answer within\n`answer_limit`, and its report must equal the one recorded at the checkpoint, and its `fingerprint`, when it\ndeclares one, the one taken there. Any command running longer than `step_limit` fails its step.\n\nWhat the snapshot command writes is kept by the run's store, each file once across every snapshot of the run\nand its forks, and written back out as a plain directory for `restore`. `keep` bounds how many are kept.",
+      "properties": {
+        "answer_limit": {
+          "default": "PT2M",
+          "description": "How long after `start` the agent's report endpoint has to answer",
+          "format": "duration",
+          "title": "Answer Limit",
+          "type": "string"
+        },
+        "busy": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Asks the agent whether any of its work is still in flight: exit 0 means busy, 1 idle, anything else that it could not tell",
+          "title": "Busy"
+        },
+        "fingerprint": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Prints a digest of the agent's state (its database, and what its processes hold); taken at each checkpoint and compared after a restore, beside the report. Its last line of output is the digest",
+          "title": "Fingerprint"
+        },
+        "keep": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How many of the run's newest snapshots are kept restorable; older ones are pruned, except one pinned (`minutehand pin`), the run's start and one a fork was taken from. None keeps every one",
+          "title": "Keep"
+        },
+        "quiet": {
+          "default": "PT1S",
+          "description": "How long no outbound call of the agent's must be seen before a checkpoint is taken",
+          "format": "duration",
+          "title": "Quiet",
+          "type": "string"
+        },
+        "restore": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Restore",
+          "type": "array"
+        },
+        "settle_limit": {
+          "default": "PT1M",
+          "description": "How long a checkpoint waits to settle before it is recorded as not restorable",
+          "format": "duration",
+          "title": "Settle Limit",
+          "type": "string"
+        },
+        "snapshot": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Snapshot",
+          "type": "array"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Starts them again after `restore`",
+          "title": "Start"
+        },
+        "step_limit": {
+          "default": "PT5M",
+          "description": "How long one hook command may run",
+          "format": "duration",
+          "title": "Step Limit",
+          "type": "string"
+        },
+        "stop": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stops the agent's processes",
+          "title": "Stop"
+        }
+      },
+      "required": [
+        "snapshot",
+        "restore"
+      ],
+      "title": "StateHooks",
+      "type": "object"
+    },
+    "Succeeds": {
+      "additionalProperties": false,
+      "description": "What a decision's answer looks like when the product took it: one of `statuses` (any 2xx when empty), and,\nwith `at`, the JSON answer holding `equals` there.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At"
+        },
+        "equals": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        },
+        "statuses": {
+          "default": [],
+          "description": "Empty: any 2xx",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Statuses",
+          "type": "array"
+        }
+      },
+      "title": "Succeeds",
+      "type": "object"
+    },
+    "TemplateBase": {
+      "additionalProperties": false,
+      "description": "The base is a copy of the agent's database made by PostgreSQL itself at the run's start:\n`CREATE DATABASE <base> TEMPLATE <database>`, a file-level copy. Quick for a database of a few gigabytes; it\nneeds no other connection to the agent's database while it is made, so it is made before the agent starts.",
+      "properties": {
+        "kind": {
+          "const": "template",
+          "default": "template",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "TemplateBase",
+      "type": "object"
+    },
+    "TemplateRequest": {
+      "additionalProperties": false,
+      "description": "A request written out: method, URL, headers and a body as structure, each string a template.",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null,
+          "description": "As structure, with `{namespace.name}` in its strings"
+        },
+        "form": {
+          "default": false,
+          "description": "Sent as application/x-www-form-urlencoded: `body` is flat",
+          "title": "Form",
+          "type": "boolean"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Headers",
+          "type": "object"
+        },
+        "kind": {
+          "const": "template",
+          "default": "template",
+          "title": "Kind",
+          "type": "string"
+        },
+        "method": {
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "url": {
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "TemplateRequest",
+      "type": "object"
+    },
+    "Upstream": {
+      "additionalProperties": false,
+      "description": "Where the emulator listens: `http://host:port`, `https://host:port` (verified against `ca` when given, else\nthe system's roots), or `unix:///path/to.sock`. A path on an http(s) URL is put before every forwarded path.",
+      "properties": {
+        "ca": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A PEM file of the CAs an https upstream is verified against",
+          "title": "Ca"
+        },
+        "url": {
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "Upstream",
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "How the monitor reaches the agent. Replies and pushed events always wake it;\n`wakes` lists every other way it comes back to work, and may be empty when the goal is sent as a message.",
+  "properties": {
+    "base_urls": {
+      "default": [],
+      "description": "Hosts the agent is handed a base URL for, each in its own variable, beside the proxy",
+      "items": {
+        "$ref": "#/$defs/BaseUrl"
+      },
+      "title": "Base Urls",
+      "type": "array"
+    },
+    "checks": {
+      "default": [],
+      "description": "Python files holding checks of the agent's own, written as Minutehand's are: a class with `id`, `needs` and `run(view) -> CheckReport`. Run with Minutehand's after every run and fork. A relative path is read from the agent file's folder",
+      "items": {
+        "type": "string"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "databases": {
+      "default": [],
+      "description": "The agent's own databases Minutehand fronts: it relays every connection, records the agent's committed writes, and puts each back for a fork from a base and those writes, with no state hooks",
+      "items": {
+        "$ref": "#/$defs/Database"
+      },
+      "title": "Databases",
+      "type": "array"
+    },
+    "emulators": {
+      "default": [],
+      "description": "Fakes outside Minutehand that `forward` hosts are sent to, started or attached to",
+      "items": {
+        "$ref": "#/$defs/ExternalEmulator"
+      },
+      "title": "Emulators",
+      "type": "array"
+    },
+    "goal": {
+      "default": {
+        "kind": "by_wake"
+      },
+      "discriminator": {
+        "mapping": {
+          "by_message": "#/$defs/GoalByMessage",
+          "by_wake": "#/$defs/GoalByWake"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/GoalByWake"
+        },
+        {
+          "$ref": "#/$defs/GoalByMessage"
+        }
+      ],
+      "title": "Goal"
+    },
+    "inbound": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/InboundTarget"
+      },
+      "title": "Inbound",
+      "type": "array"
+    },
+    "inboxes": {
+      "default": [],
+      "description": "Where work waits on a person inside the agent's own product (an approval, a question on its own page), read and decided as each person (`domain.inboxes`)",
+      "items": {
+        "$ref": "#/$defs/HttpInbox"
+      },
+      "title": "Inboxes",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "outbound": {
+      "default": [],
+      "description": "Hosts that are not places the agent keeps state, captured rather than faked",
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "acknowledge": "#/$defs/Acknowledge",
+            "forward": "#/$defs/Forward",
+            "pass_through": "#/$defs/PassThrough",
+            "replay": "#/$defs/Replay"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Acknowledge"
+          },
+          {
+            "$ref": "#/$defs/PassThrough"
+          },
+          {
+            "$ref": "#/$defs/Replay"
+          },
+          {
+            "$ref": "#/$defs/Forward"
+          }
+        ]
+      },
+      "title": "Outbound",
+      "type": "array"
+    },
+    "state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StateHooks"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The agent file version it is written for; absent: the current one",
+      "title": "Version"
+    },
+    "wakes": {
+      "default": [],
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "booked": "#/$defs/Booked",
+            "command": "#/$defs/Command",
+            "contained": "#/$defs/Contained",
+            "polled": "#/$defs/Polled",
+            "reported": "#/$defs/Reported"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Reported"
+          },
+          {
+            "$ref": "#/$defs/Booked"
+          },
+          {
+            "$ref": "#/$defs/Polled"
+          },
+          {
+            "$ref": "#/$defs/Command"
+          },
+          {
+            "$ref": "#/$defs/Contained"
+          }
+        ]
+      },
+      "title": "Wakes",
+      "type": "array"
+    },
+    "watches": {
+      "default": [],
+      "description": "Folders of the agent's own machine whose files Minutehand records: what the agent creates, changes or removes in a wake, and what a scenario's machine commands do. A relative path is read from the agent file's folder",
+      "items": {
+        "type": "string"
+      },
+      "title": "Watches",
+      "type": "array"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "AgentUnderTest",
+  "type": "object"
+}

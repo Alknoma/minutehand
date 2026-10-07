@@ -82,10 +82,19 @@ Per provider, given only what a client sends:
 ## The control API
 
 Every request and answer is a model in `src/minutehand/adapters/control/wire.py`: frozen, and an unknown field
-is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open, 409 for what a world
-cannot do (with `"kind": "unsupported"` when the provider cannot do it in any world; the client raises
-`Unsupported`), 422 for a body that is not the model or a query parameter that is not what its route takes (a
-`since` that is no number, a `kind` that names no kind), 502 when the service an event was pushed to refused it.
+is refused with 422. A refusal is `{"error": "...", "kind": null}`: 404 for a world that is not open or a thing it does
+not hold (a ticket, a message a reply names), 409 for what a world cannot do (with `"kind": "unsupported"` when the
+provider cannot do it in any world; the client raises `Unsupported`), 422 for a body that is not the model or a query
+parameter that is not what its route takes (a `since` that is no number, a `kind` that names no kind), 502 when the
+service an event was pushed to refused it.
+
+A 500 is never a refusal: Minutehand itself failed while answering, and the request may have been fine. Its body is
+`{"error": "minutehand internal error while answering the control API POST /v1/...: KeyError: ...", "kind":
+"internal_error", "exception_type": "builtins.KeyError"}`, the traceback is in the server's log at error level, and
+the client raises `ServerFailed`, not `Refused`. Each status comes from one converter (`_guarded` in
+`adapters/control/app.py`), which maps the typed refusals (`NotFound` and `UnknownWorld`, `WorldRefused`,
+`Unsupported`, `RunRefused`, `AgentFailed`, a pydantic `ValidationError`) and nothing else: a bare `ValueError` or
+`LookupError` from a bug used to be answered 409 or 404, as though the caller had asked for something wrong.
 
 | Route | Body → answer | What it does |
 |---|---|---|
@@ -112,7 +121,16 @@ cannot do (with `"kind": "unsupported"` when the provider cannot do it in any wo
 | `POST /v1/worlds/{id}/inbound-credential` | `MintInbound` → `Minted` | The headers a provider's service would send with a request the test builds itself |
 | `POST /v1/worlds/{id}/reset` | → `WorldView` | Back to the seed it was opened with, in place: the same id, claims, inbound targets and secrets; its record kept |
 | `GET /v1/worlds/{id}/state?provider=P` | → `RawState` | Every version of every entity the provider holds, deleted ones too. For a person debugging; unstable |
-| `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now |
+| `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now; for a world of a case, the case's |
+| `POST /v1/worlds/{id}/steps` | `MarkStep` → `StepView` | A step begins (`edge: began`, `at`, `reason`) or ends (`edge: ended`); a world of a case steps its case |
+| `POST /v1/worlds/{id}/report` | `AgentReport` → `Checked` | The agent's own report of its work, relayed by whoever drives it: `status` (`done` is how the run stopped) and the `commitments` it still holds open, which keep the run from passing. The latest stands; a world of a case reports for its case |
+| `POST /v1/worlds/{id}/inboxes/read` | → `InboxesView` | Read the world's inboxes as each person now: what waits on people, and the decisions owed with when each falls due |
+| `POST /v1/worlds/{id}/inboxes/due` | → `DecisionsDone` | Make every decision due by the world's clock, its case's, or its latest step's moment, as its person |
+| `POST /v1/worlds/{id}/inboxes/decide` | `DecideNow` → `DecisionView` | A person decides an item now, with a decision and its inputs |
+| `GET /v1/cases` | → `CaseList` | Every open case |
+| `GET /v1/cases/{case_id}` | → `CaseView` | Its label, its worlds, its step |
+| `POST /v1/cases/{case_id}/steps` | `MarkStep` → `StepView` | A step of every world of the case |
+| `GET /v1/cases/{case_id}/checks` | → `Checked` | The case scored as one run |
 | `GET /v1/providers` | → `ProvidersView` | What each installed provider can be asked to do while a world is open |
 | `GET /v1/unmatched?since=N[&late_for=W]` | → `Unmatched` | Calls no open world claimed, among them bursts on tunnels to a model host no world declared (`--model-host`, or a default one); `head` is the position to read on from |
 
@@ -128,7 +146,7 @@ server's state directory. A call reaches a world's declarations only once it is 
 a service's email client that carries the world's token (or posts to a host the world claims) is answered by
 its own world's declaration; another world may declare the same host differently, and a world that declares
 nothing refuses it. A declared host a provider claims is refused with 409, naming both. `serve
---capture-unknown` passes every undeclared call through instead, kept in its world or the lobby.
+--capture-unknown` passes every undeclared call through instead, kept in its world or the lobby; `--capture-unknown reads` passes only GET, HEAD and OPTIONS.
 
 ### Model hosts
 
@@ -145,7 +163,7 @@ decrypted, or, under `serve --record-model-calls`, opened, sent on unchanged and
 Each is tunnelled, or recorded when `record` says so, and belongs to that world until it closes: a second open
 world that declares an overlapping host is refused with 409, as is a host a provider claims or the world
 captures under `outbound`. A recorded call is kept in the world that declared its host, else in the world whose
-calls carried its trace (`traceparent`), else in the lobby; `GET /v1/worlds/{id}/spans` reads it.
+calls carried its trace (`traceparent`), else in the lobby (a world of a case keeps neither: its case does); `GET /v1/worlds/{id}/spans` reads it.
 
 ### A seed
 
@@ -193,6 +211,17 @@ The clock of a world stands still. Nothing fires on its own.
 - **Booked wakes** (a scheduler provider such as AWS) are recorded in the log and never fired: a booking
   becomes a wake only in the run loop.
 
+### Inboxes in the service's own product
+
+`CreateWorld.inboxes` declares where work waits on a person in the service's own product (an approval, a question on
+its own page), as an agent file does (`docs/inboxes.md`); a person's `credential` is read from the server's own
+environment. The inboxes are read as each person at a step's end, on `advance` and on `checks`: a new item is the
+agent asking that person, recorded in the world. With scripted people on, each person's scripted decision is owed
+like a reply and made when the clock passes it. A harness that keeps its own clock asks `inboxes/read` for the
+earliest decision due, marks its next step there, and has it made with `inboxes/due`; one that keeps its own timing
+has a person decide now with `inboxes/decide`. `OpenWorld.inboxes()`, `.perform_due()`, `.decide()` (and the same on
+`OpenCase`) send them.
+
 ### Faults
 
 A fault armed through this route is answered by the server in front of the provider: the next `times` calls of
@@ -205,6 +234,16 @@ created, or on an open world with `provider-faults`: `{"provider": "slack", "see
 fragment of the provider's seed model setting only its fault fields. The provider validates it (409 naming what
 else it sets or what it names that the world does not hold) and records it as seeding does, its offsets counted
 from the world's now. `OpenWorld.declare_faults(provider, fragment)` sends it.
+
+### How each call was answered
+
+Every call a world records says how it was answered, in `Exchange.outcome` (`CallOutcome`, the field forwarded calls carry too): `answered` by the fake; `refused` as the
+real service refuses (a status of 400 or more, or Slack's `ok: false`, which comes at 200); `injected_fault`, by a
+fault armed through `faults` or declared in a provider's seed, never counted as the service's refusal;
+`not_implemented`, a 501 in the service's error shape for an operation the fake does not have; `internal_error`, a
+500 in the service's error shape for Minutehand's own bug. For the last two, `Exchange.failure` holds what the agent
+was answered, the exception's type and, for an internal error, the traceback. A world with any `internal_error` call
+is not scored as the agent's work: its checks' verdict is `tool_failed`, naming the first such call.
 
 ### Changing a world while it is open
 
@@ -265,6 +304,48 @@ the Bot Framework, `Authorization: Bearer <JWT>` for the `service_url` and `audi
 the fake publishes. A world with no Slack inbound target has no signing secret, and the request is refused. The
 supported path is still the acts above, which build, sign and push the request themselves.
 
+## Scoring a run you drive yourself
+
+A harness that drives its own agent and its own simulated time, and uses this server only for the fakes and the
+record, adds four things and nothing else:
+
+```python
+from minutehand.testing.world import open_case
+
+case = open_case(client, "timed_dm", [messaging_spec, documents_spec, tracker_spec])  # 1. one case label
+for cycle in cycles:
+    case.advance(to=cycle.now)  # the clock, as before: a separate act
+    with case.step(at=cycle.now, reason=cycle.why):  # 2. where one go of the agent begins and ends
+        run_the_agent_once()
+case.report(AgentReport(status=..., commitments=[...]))  # 3. what the service itself says of its work
+result = case.close().result  # 4. the case's checks, once, when its last world closes
+```
+
+Over the wire: `CreateWorld.case` on each world, `POST /v1/cases/{case_id}/steps` with `{"edge": "began", "at":
+…, "reason": …}` and `{"edge": "ended"}`, and the `Checked` that closing the last world answers
+(`GET /v1/cases/{case_id}/checks` at any time before).
+
+- **A case.** Worlds opened under one label while any of them is open are one run: one timeline (every world's
+  events by simulated time, then the real moment each was written), one set of people (a person is the same in
+  every world whose seed gives their email, whatever key), one set of steps, one verdict. `checks` on any of its
+  worlds answers the case's. Its run id is `WorldView.case_id`, read by `findings`, `view` and the MCP tools like
+  any run's; its worlds are not listed alone. Once its last world closes, the label opens a new case. Its own
+  store holds its steps, the model traffic its worlds made (a model host one of them declared, tunnelled or
+  recorded, is kept with the case and not in that world's calls), and every span that reached the receiver with
+  no trace link to a recorded call while the case was open (its real-time window, opened to closed). Two cases
+  open at once both holding such a span is ambiguous, and it stays in the lobby. A world opened under no label
+  behaves as before.
+- **Steps.** A step begun is recorded as the run loop records a wake: the clock's wake moves on, so every event,
+  call and span in it carries its number, its real edges place spans, and the checks, the scorecard ("took 4
+  steps, 1 of which changed nothing") and the viewer read it as a wake. A harness that never marks a step and only
+  moves the clock gets steps inferred, each marked `inferred`: the stretch from opening to the first forward move is
+  the first, each forward move begins the next; a move to the moment the clock already shows begins nothing. The
+  first step marked by hand stops inference, and the inferred steps before it are no longer counted.
+- **Not judged.** A run whose checks could not run (no step, so `idle_wake` has nothing to read) or that held
+  nothing to judge (no expectation, no wait, no step) is `not_judged`, exit 5, never `passed`; its verdict lists
+  each reason. A world that held asks and messages is judged on them with no expectation declared.
+- **Probes.** A standing world no call reached is not listed by `minutehand runs`, `list_runs` or the viewer.
+
 ## Each world is a run
 
 A world is a run in the state directory, named by its `world_id`:
@@ -313,7 +394,7 @@ def test_the_reminder_reaches_sofia(minutehand_world, gateway):
 |---|---|---|
 | `minutehand` | session | `MinutehandClient` to `$MINUTEHAND_URL`, or to a server started in this process |
 | `minutehand_spec` | test | The suite defines it; the default fails with how to |
-| `minutehand_world` | test | `OpenWorld`: `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `spans()` (each since the last reset, or `since_reset=False`), `late_calls()`, `raw_state()`; `quiet()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
+| `minutehand_world` | test | `OpenWorld`: `inboxes()`, `perform_due()`, `decide()`; `events()`, `entities()`, `calls()`, `unmatched_calls()`, `captured_calls()`, `spans()` (each since the last reset, or `since_reset=False`), `late_calls()`, `raw_state()`; `quiet()`; `say()`, `reply()`, `happen()`, `press()`, `move_ticket()`, `edit_ticket()`, `delete_ticket()`; `seed()`, `add_person()`, `remove_person()`, `deactivate_person()`, `reactivate_person()`, `grant()`, `withhold()`, `declare_faults()`, `arm()`, `reset()`, `inbound_credential()`; `advance()`, `checks()`, `assert_events()`, `assert_message()`, `assert_ticket()`; closed after the test |
 
 A failed `assert_*` prints the world's latest changes. `AsyncMinutehandClient` is the same client for an async
 suite.
@@ -369,6 +450,10 @@ volumes:
 A container that cannot share a volume downloads the bundle at start from `GET http://minutehand:8081/v1/ca.pem`
 (`tests/packaging/test_stack.py` does exactly that from a second container on the same network). The test
 process on the host reaches the control API at the published port and sets `MINUTEHAND_URL`.
+
+A service started with `docker run --env-file` instead loses its `NO_PROXY` to the Docker client config's
+`noProxy`, which Docker Desktop sets to `*`: see `docs/containers.md`, "The NO_PROXY trap". An agent in a container
+under `minutehand run`, with Minutehand on the host, is in the same page.
 
 ## Measured
 

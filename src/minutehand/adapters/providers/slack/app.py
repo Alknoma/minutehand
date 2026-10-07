@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.slack import state, wire
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.world import (
@@ -103,6 +104,7 @@ class SlackApi:
             faulted = self._fault(method, presented)
             answer: wire.Response = faulted if faulted is not None else self._methods[method](presented)
         except wire.Refusal as refusal:
+            answering.refused()
             answer = wire.Failed(error=refusal.error)
         if isinstance(answer, wire.RateLimitedAnswer):
             return Response(
@@ -132,6 +134,7 @@ class SlackApi:
                 parent=state.FAULTS,
                 after=RecordSnapshot(resource="faults", text=f"{method} failed on purpose: {fault.error}"),
             )
+            answering.injected()
             if fault.retry_after is not None:
                 return wire.RateLimitedAnswer(error=fault.error, retry_after=fault.retry_after)
             return wire.Failed(error=fault.error)
@@ -606,7 +609,12 @@ class SlackApi:
             raise wire.Refusal("message_not_found")
         if message.user != self._world.bot:
             raise wire.Refusal("cant_delete_message")
-        self._world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel.id)
+        self._world.delete(
+            state.message_ref(message.ts),
+            actor=Actor.AGENT,
+            parent=channel.id,
+            before=self._snapshot(channel.id, message),
+        )
         return wire.Deleted(channel=channel.id, ts=message.ts)
 
     def reactions_add(self, presented: wire.Presented) -> wire.Ok:
@@ -849,7 +857,12 @@ class SlackApi:
                 return JSONResponse({"ok": False, "error": "message_not_found"}, status_code=404)
             channel, message = original
             if body.delete_original:
-                world.delete(state.message_ref(message.ts), actor=Actor.AGENT, parent=channel)
+                world.delete(
+                    state.message_ref(message.ts),
+                    actor=Actor.AGENT,
+                    parent=channel,
+                    before=self._snapshot_in(world, channel, message),
+                )
                 return JSONResponse({"ok": True})
             replaced = message.model_copy(
                 update={

@@ -138,7 +138,7 @@ def test_a_document_happening_lands_when_the_clock_passes_it(served: Served) -> 
             "after": "PT2H",
             "action": {"kind": "renamed", "to": "Plan (final)"},
         },
-        documents=[{"provider": "google_drive", "title": "Plan", "text": "draft", "owner": "sofia"}],
+        documents=[{"provider": "google_workspace", "title": "Plan", "text": "draft", "owner": "sofia"}],
     )
     try:
         assert world.advance(timedelta(hours=1)).fired == []

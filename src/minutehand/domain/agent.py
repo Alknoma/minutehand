@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from minutehand.domain.outbound import OutboundHost, refuse_repeats
+from minutehand.domain.database import Database, refuse_repeated_databases
+from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
+from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
+from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityRef
@@ -141,37 +144,37 @@ class Command(Model):
     argv: list[str]
 
 
-WakeSource = Annotated[Reported | Booked | Polled | Command, Field(discriminator="kind")]
+class Contained(Model):
+    """The agent runs in a sandbox whose clock Minutehand owns (a patched gVisor; docs/design.md, "A sandbox whose
+    clock Minutehand owns"), so its own in-process timers are its next wakes, with no code of Minutehand's in it.
+
+    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "earliest_ns": int}`
+    (whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and
+    `advance` moves the sandbox's clock forward by `{nanoseconds}`. Minutehand moves it with every jump of the
+    run's clock, so the two agree, and when the sandbox is idle and no call of the agent's is in flight, its
+    earliest deadline is a wake the agent asked for."""
+
+    kind: Literal["contained"] = "contained"
+    deadlines: list[str] = Field(min_length=1)
+    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step goes")
+    quiet: timedelta = Field(
+        default=timedelta(milliseconds=50), gt=timedelta(0), description="Idle on two reads this far apart is idle"
+    )
+    settle_limit: timedelta = Field(
+        default=timedelta(seconds=30), gt=timedelta(0), description="Real time a wake may take to fall idle"
+    )
+
+    @model_validator(mode="after")
+    def _steps(self) -> Self:
+        if not any("{nanoseconds}" in part for part in self.advance):
+            raise ValueError("`advance` must hold {nanoseconds}, where the step it moves the clock by goes")
+        return self
 
 
-class ActionArgument(Model):
-    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    description: str
+WakeSource = Annotated[Reported | Booked | Polled | Command | Contained, Field(discriminator="kind")]
 
-
-class HumanAction(Model):
-    """Something a person does in the agent's OWN product, where no SaaS fake can stand in:
-    approving an operation in its web app, answering a question on its own page.
-
-    Declared here, or learned from the agent's API description wherever an operation
-    carries `x-minutehand: human_action`. Either way it becomes a tool the simulated
-    person can use, beside replying in chat and pressing a button.
-    """
-
-    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    description: str = Field(description="When a person would do this; the persona reads it")
-    method: Literal["POST", "PUT", "PATCH", "DELETE"] = "POST"
-    url: str = Field(description="May hold {argument} placeholders")
-    body: str | None = Field(default=None, description="JSON text with {argument} placeholders")
-    arguments: list[ActionArgument] = []
-
-
-class Inbox(Model):
-    """Where the monitor learns what is waiting on a person in the agent's own product."""
-
-    url: str = Field(description="Lists what is pending; may hold {person_email}")
-    id_field: str
-    summary_field: str
+ANSWER_LIMIT = timedelta(seconds=120)
+"""How long after a restore the agent's report endpoint has to answer, unless its `StateHooks` say otherwise."""
 
 
 class StateHooks(Model):
@@ -221,7 +224,7 @@ class StateHooks(Model):
         description="How long a checkpoint waits to settle before it is recorded as not restorable",
     )
     answer_limit: timedelta = Field(
-        default=timedelta(seconds=120),
+        default=ANSWER_LIMIT,
         gt=timedelta(0),
         description="How long after `start` the agent's report endpoint has to answer",
     )
@@ -274,27 +277,69 @@ class BaseUrl(Model):
     )
 
 
+AGENT_FILE_VERSION = 1
+"""The version of the agent file this Minutehand reads. A file may say which it was written for (`version`); one
+naming a later version is refused, since it may hold what this one would misread. Absent: this one."""
+
+
 class AgentUnderTest(Model):
     """How the monitor reaches the agent. Replies and pushed events always wake it;
     `wakes` lists every other way it comes back to work, and may be empty when the goal is sent as a message."""
 
+    version: int | None = Field(
+        default=None, ge=1, description="The agent file version it is written for; absent: the current one"
+    )
     name: str
     goal: GoalSource = GoalByWake()
     wakes: list[WakeSource] = []
     inbound: list[InboundTarget] = []
-    human_actions: list[HumanAction] = []
-    inbox: Inbox | None = None
+    inboxes: list[HttpInbox] = Field(
+        default=[],
+        description="Where work waits on a person inside the agent's own product (an approval, a question on its "
+        "own page), read and decided as each person (`domain.inboxes`)",
+    )
     state: StateHooks | None = None
+    watches: list[str] = Field(
+        default=[],
+        description="Folders of the agent's own machine whose files Minutehand records: what the agent creates, "
+        "changes or removes in a wake, and what a scenario's machine commands do. A relative path is read from the "
+        "agent file's folder",
+    )
+    checks: list[str] = Field(
+        default=[],
+        description="Python files holding checks of the agent's own, written as Minutehand's are: a class with `id`, "
+        "`needs` and `run(view) -> CheckReport`. Run with Minutehand's after every run and fork. A relative path is "
+        "read from the agent file's folder",
+    )
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"
     )
     base_urls: list[BaseUrl] = Field(
         default=[], description="Hosts the agent is handed a base URL for, each in its own variable, beside the proxy"
     )
+    emulators: list[ExternalEmulator] = Field(
+        default=[], description="Fakes outside Minutehand that `forward` hosts are sent to, started or attached to"
+    )
+    databases: list[Database] = Field(
+        default=[],
+        description="The agent's own databases Minutehand fronts: it relays every connection, records the agent's "
+        "committed writes, and puts each back for a fork from a base and those writes, with no state hooks",
+    )
 
     @model_validator(mode="after")
     def _goal_reaches_it(self) -> AgentUnderTest:
+        if self.version is not None and self.version > AGENT_FILE_VERSION:
+            raise ValueError(
+                f"this agent file is written for version {self.version} of the agent file, and this Minutehand reads "
+                f"up to version {AGENT_FILE_VERSION}: upgrade Minutehand to run it"
+            )
         refuse_repeats(self.outbound)
+        refuse_repeated_inboxes(self.inboxes)
+        clash = sorted({i.name for i in self.inboxes} & {d.key for d in self.outbound})
+        if clash:
+            raise ValueError(f"an inbox and an outbound host are both recorded as {', '.join(clash)}")
+        refuse_unknown_emulators([d.emulator for d in self.outbound if isinstance(d, Forward)], self.emulators)
+        refuse_repeated_databases(self.databases)
         named = [b.env for b in self.base_urls]
         if len(named) != len(set(named)):
             raise ValueError(

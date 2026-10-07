@@ -25,16 +25,24 @@ from minutehand.application.checkpoint import (
     PendingDirection,
     PendingFate,
     PendingHappening,
+    PendingMachine,
     PendingReply,
+    PendingTimer,
     PendingWake,
+    Replayable,
     Restorable,
     write_checkpoint,
 )
-from minutehand.application.outbound import outbound_uses
+from minutehand.application.dues import Dues
+from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_undecided
+from minutehand.application.machine import record_machine, run_machine
+from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
+from minutehand.application.sandbox import SandboxClock
 from minutehand.application.state_hooks import take_snapshot, wake_dir
+from minutehand.application.watching import Watcher
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import (
     AgentReport,
@@ -51,7 +59,15 @@ from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
-from minutehand.domain.world import Actor, EntityRef, MessageSnapshot, Operation, TicketSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityRef,
+    InboxItemSnapshot,
+    MessageSnapshot,
+    Operation,
+    TicketSnapshot,
+    WorldEvent,
+)
 from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -64,6 +80,7 @@ from minutehand.ports.provider import (
     DeletesTickets,
     EditsTickets,
     HoldsTickets,
+    LandsReplies,
     NotifiesChanges,
     Provider,
     PushesEvents,
@@ -92,6 +109,13 @@ class Mounts(Protocol):
         """Record every call still in progress as far as it has gone (a burst on a tunnel it relays unopened, kept
         once it falls quiet): the run is about to be summarised."""
         ...
+
+
+class Environment(Protocol):
+    """What the run stands on besides the agent and Minutehand's own fakes: the external emulators it forwards to.
+    Asked after every wake, and when the run ends, whether any has failed under it."""
+
+    def failure(self) -> str | None: ...
 
 
 class Scorer(Protocol):
@@ -150,6 +174,8 @@ class Reach:
     main: AgentDriver | None
     ticks: AgentDriver | None = None
     every: timedelta | None = None
+    sandbox: SandboxClock | None = None
+    """The sandbox whose clock Minutehand owns (`Contained`): moved with every jump, its timers read as wakes."""
 
     def __post_init__(self) -> None:
         if (self.ticks is None) != (self.every is None):
@@ -199,7 +225,13 @@ class Orchestrator:
         prior_wakes: Sequence[WakeRecord] = (),
         traffic: Traffic | None = None,
         channels: Mapping[ProviderKey, TakesReplies] | None = None,
+        environment: Environment | None = None,
+        inboxes: Inboxes | None = None,
     ) -> None:
+        if inboxes is not None:
+            reaches = list(inboxes.reaches.values())
+            refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
+            refuse_undecided(scenario, reaches)
         if agent.state is not None and state_dir is None:
             raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
         if agent.state is not None and traffic is None:
@@ -234,11 +266,20 @@ class Orchestrator:
         self._forked_at = forked_at
         self._traffic = traffic
         self._channels = dict(channels or {})
+        self._environment = environment
+        self._inboxes = inboxes
         self._mounted = False
         self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
-        self._pending: list[Pending] = []
+        self._dues = Dues(store, clock, scenario.dispatch)
+        self._machine_failed: str | None = None
+        self._sandbox_owed = 0
+        self._quiet_tasks: dict[int, int] = {}
+        """A task's housekeeping period: its timer fired at this distance and did nothing."""
+        self._timer_tasks: set[int] = set()
+        self._timer_ns = -1
+        self._watcher = Watcher(agent.watches)
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
@@ -251,19 +292,17 @@ class Orchestrator:
     # -- Wakes, for scheduler providers ---------------------------------------------------------------------
 
     def book(self, provider: ProviderKey, due: Due) -> None:
-        self.cancel(provider, due.ref)
-        self._pending.append(
+        self._dues.replace(
+            lambda p: isinstance(p, PendingBooking) and p.provider == provider and p.ref == due.ref,
             PendingBooking(
                 due=Due(at=due.at, kind=DueKind.AGENT_WAKE, ref=f"booking:{provider}:{due.ref}"),
                 provider=provider,
                 ref=due.ref,
-            )
+            ),
         )
 
     def cancel(self, provider: ProviderKey, ref: str) -> None:
-        self._pending = [
-            p for p in self._pending if not (isinstance(p, PendingBooking) and p.provider == provider and p.ref == ref)
-        ]
+        self._dues.cancel(lambda p: isinstance(p, PendingBooking) and p.provider == provider and p.ref == ref)
 
     # -- the run ------------------------------------------------------------------------------------------------
 
@@ -274,7 +313,7 @@ class Orchestrator:
         for provider in self._services.providers:
             provider.seed(self._scenario, self._store)
         for i, direction in enumerate(self._scenario.directions):
-            self._pending.append(
+            self._dues.enter(
                 PendingDirection(
                     due=Due(
                         at=self._scenario.starts_at + direction.after, kind=DueKind.DIRECTION, ref=f"direction:{i}"
@@ -282,8 +321,15 @@ class Orchestrator:
                     text=direction.text,
                 )
             )
+        for i, command in enumerate(self._scenario.machine):
+            self._dues.enter(
+                PendingMachine(
+                    due=Due(at=self._scenario.starts_at + command.after, kind=DueKind.MACHINE, ref=f"machine:{i}"),
+                    command=i,
+                )
+            )
         for i, happening in enumerate(self._scenario.happenings):
-            self._pending.append(
+            self._dues.enter(
                 PendingHappening(
                     due=Due(
                         at=self._scenario.starts_at + happening.after, kind=DueKind.HAPPENING, ref=f"happening:{i}"
@@ -293,6 +339,7 @@ class Orchestrator:
             )
         if self._reach.every is not None:
             self._schedule_tick()
+        self._watcher.look()
         self._record_new()
         try:
             await self._checkpoint()
@@ -319,13 +366,14 @@ class Orchestrator:
             raise RunRefused(
                 f"the checkpoint counts {checkpoint.replies} replies; the store holds {len(self._replies)}"
             )
-        self._pending = list(checkpoint.pending)
+        self._dues.resume(list(checkpoint.pending))
         self._fated = list(checkpoint.fated)
         self._commitments = checkpoint.commitments
         self._agent_state = checkpoint.agent
-        if isinstance(checkpoint.agent, Restorable):
+        if isinstance(checkpoint.agent, Restorable | Replayable):
             self._last_report = checkpoint.agent.report
         self._seen = self._store.head()
+        self._watcher.look()
         stop = await self._start() if checkpoint.wake == 0 else None
         if stop is None:
             stop = await self._loop()
@@ -357,6 +405,10 @@ class Orchestrator:
     async def _end(self, stop: StopReason, started: float) -> RunRecord:
         if self._mounts is not None:
             self._mounts.flush()
+        failed = self._environment.failure() if self._environment is not None else None
+        if failed is not None:
+            # Whatever the agent did after its emulator failed under it, the run is the environment's failure.
+            stop, self._failure = StopReason.ENVIRONMENT_FAILED, failed
         record = RunRecord(
             run_id=self._store.run_id,
             scenario=self._scenario.name,
@@ -370,6 +422,7 @@ class Orchestrator:
             failure=self._failure,
             providers=list(dict.fromkeys(c.provider for c in self._store.calls() if c.provider is not None)),
             outbound=outbound_uses(self._store.calls()),
+            emulators=emulator_uses(self._store.calls()),
             wakes=self._wakes,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None
@@ -406,17 +459,35 @@ class Orchestrator:
     async def _loop(self) -> StopReason:
         deadline = self._scenario.deadline
         while True:
-            jump = next_jump(self._clock.now(), [p.due for p in self._pending])
+            await self._look()  # what waits on people now, before the clock moves past what they owe
+            await self._schedule(self._record_new())
+            if not await self._plan_timer():
+                return StopReason.AGENT_FAILED
+            jump = next_jump(self._clock.now(), [p.due for p in self._dues.items])
             if jump is None:
-                self._run_on_to(deadline)
+                await self._run_on_to(deadline)
                 return StopReason.NOTHING_PENDING
             if deadline is not None and jump.now > deadline:
-                self._run_on_to(deadline)
+                await self._run_on_to(deadline)
                 return StopReason.DEADLINE_PASSED
-            fired = [p for p in self._pending if p.due in jump.firing]
-            self._pending = [p for p in self._pending if p.due not in jump.firing]
-            self._clock.jump(jump.now)
+            await self._jump(jump.now)
+            dispatched = self._dues.dispatch(jump.firing)
+            for item in dispatched.withheld:
+                if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
+                    self._schedule_tick()  # the rhythm goes on from the tick the scheduler held back
+            for item in dispatched.finished:
+                # a dropped occurrence of a booking is over undelivered: the schedule books its next, or completes
+                await self._services.schedulers[item.provider].advance_booking(item.ref, self._store, self._clock)
+            fired = dispatched.delivered
+            if not await self._machine([p for p in fired if isinstance(p, PendingMachine)]):
+                self._failure = self._machine_failed
+                return StopReason.ENVIRONMENT_FAILED
+            rest: list[Pending] = [p for p in fired if not isinstance(p, PendingMachine)]
+            fired = rest
+            if not fired:
+                continue
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
+                await self._release()
                 await self._fire(fired)
                 watched = self._watched(fired)
                 if not watched:
@@ -432,10 +503,13 @@ class Orchestrator:
                     return stop
                 continue
             wake = self._clock.begin_wake()
+            if all(isinstance(p, PendingTimer) for p in fired) and not await self._timer_did_something(wake):
+                continue
             requests, reason = self._requests(fired)
             settle = [d for d, _ in requests] or self._delivered_to(fired)
 
             async def fire(due: list[Pending] = fired) -> None:
+                await self._release()
                 await self._fire(due)
                 await self._notify(self._watched(due))
                 await self._taken(due)
@@ -444,13 +518,67 @@ class Orchestrator:
             if stop is not None:
                 return stop
 
-    def _run_on_to(self, deadline: datetime | None) -> None:
+    async def _jump(self, to: datetime) -> None:
+        """Move the run's clock. A contained agent's sandbox is owed the same step, released (`_release`) once the
+        wake it may start has begun, so what the agent's timers do is that wake's."""
+        was = self._clock.now()
+        self._clock.jump(to)
+        if self._reach.sandbox is not None and to > was:
+            self._sandbox_owed += int((to - was).total_seconds() * 1e9)
+
+    async def _release(self) -> None:
+        """Move the sandbox's clock by what the run's has moved since, so the two agree again."""
+        if self._reach.sandbox is not None and self._sandbox_owed > 0:
+            owed, self._sandbox_owed = self._sandbox_owed, 0
+            await self._reach.sandbox.advance(owed)
+
+    async def _timer_did_something(self, wake: int) -> bool:
+        """Release the sandbox's clock to a timer and let it settle. A timer that wrote nothing and called nothing
+        (a runtime's own housekeeping: an HTTP server's poll, a garbage collector's tick) is no wake of the agent's,
+        and `wake` is withdrawn; one that did something is a wake, played on as one."""
+        head, calls = self._store.head(), len(self._store.calls())
+        await self._release()
+        sandbox = self._reach.sandbox
+        assert sandbox is not None
+        await sandbox.settle(self._traffic)
+        if self._store.head() == head and len(self._store.calls()) == calls:
+            self._clock.withdraw(wake)
+            # a task whose timer fired and did nothing is a runtime's own (an HTTP server's poll): planned no more,
+            # it fires once and re-arms whenever the clock is released past it
+            for task in self._timer_tasks:
+                self._quiet_tasks[task] = max(self._quiet_tasks.get(task, 0), self._timer_ns)
+            return False
+        return True
+
+    async def _plan_timer(self) -> bool:
+        """For a contained agent, its earliest timer, read from the sandbox once it is idle and nothing of its is in
+        flight, is the wake it asked for, in place of the one read before. False when it never fell idle."""
+        sandbox = self._reach.sandbox
+        if sandbox is None:
+            return True
+        await self._release()  # a deadline is read from the sandbox's clock, which must be the run's
+        found = await sandbox.settle(self._traffic)
+        if found is None:
+            self._failure = "the agent's sandbox did not fall idle within its settle limit"
+            return False
+        earliest = found.earliest(self._quiet_tasks)
+        self._timer_tasks = found.tasks_at(earliest)
+        self._timer_ns = earliest
+        if earliest < 0:
+            self._dues.cancel(_timer)
+            return True
+        at = self._clock.now() + timedelta(microseconds=earliest / 1000)
+        self._dues.replace(_timer, PendingTimer(due=Due(at=at, kind=DueKind.AGENT_WAKE, ref="timer")))
+        return True
+
+    async def _run_on_to(self, deadline: datetime | None) -> None:
         """The world does not stop when the agent goes quiet: with nothing more due before it, the clock runs on
         to the scenario's deadline, and a checkpoint there records the moment the run reached. Without it a run
         would end where the agent stopped, and a wait it abandoned would never be seen to expire."""
         if deadline is None or self._clock.now() >= deadline:
             return
-        self._clock.jump(deadline)
+        await self._jump(deadline)
+        await self._release()
         write_checkpoint(
             self._store,
             Checkpoint(
@@ -460,7 +588,7 @@ class Orchestrator:
                 withdrawn=self._withdrawn,
                 fated=self._fated,
                 commitments=self._commitments,
-                pending=self._pending,
+                pending=self._dues.items,
                 agent=self._agent_state,
             ),
         )
@@ -480,8 +608,13 @@ class Orchestrator:
             if isinstance(item, PendingReply):
                 reply = self._replies[item.reply]
                 provider = reply.in_reply_to.provider
-                if provider in self._channels:
+                if reply.decides is not None:
+                    assert self._inboxes is not None
+                    await self._inboxes.decide(reply, self._store, self._clock)
+                elif provider in self._channels:
                     await self._channels[provider].deliver(reply, self._store, self._clock)
+                elif (lands := self._lands(provider)) is not None:
+                    lands.land(reply, self._store, self._clock)
                 elif reply.press is not None:
                     await self._interactions(provider).press(
                         reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
@@ -499,10 +632,31 @@ class Orchestrator:
                 await self._say(by_message, item.text)
         for item in fired:
             if isinstance(item, PendingBooking):
-                await self._services.schedulers[item.provider].fire(item.ref, self._store, self._clock)
+                scheduler = self._services.schedulers[item.provider]
+                if item.deliver:
+                    await scheduler.deliver_booking(item.ref, self._store, self._clock)
+                if item.advance:
+                    await scheduler.advance_booking(item.ref, self._store, self._clock)
         for item in fired:
-            if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
+            if isinstance(item, PendingWake) and item.reason is WakeReason.TICK and not item.repeat:
                 self._schedule_tick()
+
+    async def _machine(self, due: list[PendingMachine]) -> bool:
+        """Run what the scenario does to the agent's machine at this moment, before anything else due then, and
+        record each. A change to the machine wakes nobody: the agent finds it when it next looks. False when one
+        failed, which stops the run as the environment's failure, before anyone is woken."""
+        for item in due:
+            command = self._scenario.machine[item.command]
+            ran = await run_machine(command, self._clock.now())
+            record_machine(self._store, item.command, ran)
+            self._watcher.record(self._store, Actor.SCENARIO)
+            if ran.exit_code != 0:
+                self._machine_failed = (
+                    f"the scenario's machine command {command.said!r} exited {ran.exit_code}: "
+                    f"{ran.output.strip()[-300:]}"
+                )
+                return False
+        return True
 
     async def _happen(self, happening: Happening) -> None:
         """What a person does by themselves lands through the port its family has: a ticket happening through the
@@ -541,9 +695,14 @@ class Orchestrator:
                 await asyncio.sleep(TAKEN_EVERY)
 
     def _unheard(self, pending: Pending) -> bool:
-        """A pending happening the agent is not told of as it lands: one on a ticket or a document, which the agent
-        finds on its next read (a document's provider may then tell a watching agent, `_watched`). A messaging
-        happening is pushed to the agent, and that push is a wake, as a reply's is."""
+        """Something due the agent is not told of as it lands: a happening on a ticket or a document, which the
+        agent finds on its next read (a document's provider may then tell a watching agent, `_watched`), and a reply
+        that lands where the agent reads it (`LandsReplies`: a reply email, an attendee's response). A messaging
+        happening is pushed to the agent, and that push is a wake, as a pushed reply's is."""
+        if isinstance(pending, PendingReply):
+            reply = self._replies[pending.reply]
+            provider = reply.in_reply_to.provider
+            return reply.decides is None and provider not in self._channels and self._lands(provider) is not None
         return isinstance(pending, PendingHappening) and isinstance(
             self._scenario.happenings[pending.happening], TicketHappening | DocumentHappening
         )
@@ -609,9 +768,12 @@ class Orchestrator:
         agent's spans are placed in the wake whose window holds their start, however late they arrive."""
         self._store.wake_began(wake)
         try:
-            return await self._played(wake, reason, fire, requests, settle)
+            stop = await self._played(wake, reason, fire, requests, settle)
         finally:
             self._store.wake_ended(wake)
+        if self._environment is not None and self._environment.failure() is not None:
+            return StopReason.ENVIRONMENT_FAILED
+        return stop
 
     async def _played(
         self,
@@ -630,6 +792,8 @@ class Orchestrator:
             await fire()
             for driver, request in requests:
                 await driver.wake(request)
+            if self._reach.sandbox is not None and await self._reach.sandbox.settle(self._traffic) is None:
+                raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
             for driver in settle:
                 report = await driver.settled()
                 done = done or report.status is AgentStatus.DONE
@@ -644,6 +808,9 @@ class Orchestrator:
             # its driver first answered, and what it wrote meanwhile belongs to this wake.
             commitments_changed = self._adopt(settled.report) or commitments_changed
             done = done or settled.report.status is AgentStatus.DONE
+        if not failed:
+            self._watcher.record(self._store, Actor.AGENT)
+            await self._look()
         new = self._record_new()
         if not failed:
             await self._schedule(new)
@@ -674,13 +841,14 @@ class Orchestrator:
 
     def _adopt(self, report: AgentReport) -> bool:
         """Take the agent's next wake, replacing the one it named before. Answers whether its commitments changed."""
-        self._pending = [p for p in self._pending if not (isinstance(p, PendingWake) and p.reason is WakeReason.DUE)]
-        if report.next_wake is not None:
-            self._pending.append(
+        if report.next_wake is None:
+            self._dues.cancel(_reported_wake)
+        else:
+            self._dues.replace(
+                _reported_wake,
                 PendingWake(
-                    due=Due(at=report.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"),
-                    reason=WakeReason.DUE,
-                )
+                    due=Due(at=report.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE
+                ),
             )
         changed = report.commitments != self._commitments
         self._commitments = report.commitments
@@ -689,7 +857,7 @@ class Orchestrator:
 
     def _schedule_tick(self) -> None:
         assert self._reach.every is not None
-        self._pending.append(
+        self._dues.enter(
             PendingWake(
                 due=Due(at=self._clock.now() + self._reach.every, kind=DueKind.AGENT_WAKE, ref="tick"),
                 reason=WakeReason.TICK,
@@ -729,6 +897,13 @@ class Orchestrator:
                     history = self._store.events()
                 if event.operation is Operation.CREATE or _text_changed(event, history):
                     shown[event.entity] = event
+            if event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot) and after.person:
+                if history is None:
+                    history = self._store.events()
+                asked = next((p for p in self._scenario.people if p.key == after.person), None)
+                if asked is not None:
+                    await self._ask(asked, event, [h for h in history if h.seq <= event.seq])
+                continue
             if (
                 event.operation in (Operation.CREATE, Operation.UPDATE)
                 and isinstance(after, TicketSnapshot)
@@ -748,6 +923,20 @@ class Orchestrator:
                     continue
                 await self._ask(person, event, [h for h in history if h.seq <= event.seq])
 
+    async def _look(self) -> None:
+        """Read every inbox in the agent's own product as each person: an item seen first is the agent asking them,
+        written now and decided when the new events are scheduled; one gone undecided withdraws whatever its person
+        had decided to it and not yet done, which never reaches anyone."""
+        if self._inboxes is None:
+            return
+        looked = await self._inboxes.look(self._store, self._clock)
+        for item in looked.withdrawn:
+            mine = [i for i, r in enumerate(self._replies) if r.in_reply_to == item and i not in self._withdrawn]
+            waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
+            unsaid = [i for i in mine if i in waiting]
+            self._dues.cancel(lambda p, unsaid=unsaid: isinstance(p, PendingReply) and p.reply in unsaid)
+            self._withdrawn += unsaid
+
     def _withdraw(self, message: EntityRef, person: Person) -> bool:
         """Before an edited message is put to `person` again: withdraw their reply to it that has not landed yet,
         and record it as withdrawn, so it settles nothing. False when they have already answered it, and the edit
@@ -757,10 +946,10 @@ class Orchestrator:
             for i, r in enumerate(self._replies)
             if r.in_reply_to == message and r.person == person.key and i not in self._withdrawn
         ]
-        waiting = {p.reply for p in self._pending if isinstance(p, PendingReply)}
+        waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
         if any(i not in waiting for i in mine):
             return False
-        self._pending = [p for p in self._pending if not (isinstance(p, PendingReply) and p.reply in mine)]
+        self._dues.cancel(lambda p: isinstance(p, PendingReply) and p.reply in mine)
         self._withdrawn += mine
         return True
 
@@ -775,7 +964,10 @@ class Orchestrator:
         reply = await self._replier.decide(person, asked, history, self._clock)
         if reply is None:
             return
-        if reply.in_reply_to.provider not in self._channels:
+        if reply.decides is not None:
+            if self._inboxes is None or not self._inboxes.holds(reply.in_reply_to):
+                raise RunRefused(f"{person.key} decided on {reply.in_reply_to.provider}, which is no inbox of the run")
+        elif reply.in_reply_to.provider not in self._channels and self._lands(reply.in_reply_to.provider) is None:
             self._pushes(reply.in_reply_to.provider)
             if reply.press is not None:
                 self._interactions(reply.in_reply_to.provider)
@@ -783,7 +975,7 @@ class Orchestrator:
         self._store.remember(reply)
         position = len(self._replies)
         self._replies.append(reply)
-        self._pending.append(
+        self._dues.enter(
             PendingReply(
                 due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{position}"),
                 reply=position,
@@ -800,7 +992,7 @@ class Orchestrator:
             self._tickets(assigned.entity.provider)
         self._fated.append(assigned.entity)
         ticket = assigned.entity
-        self._pending.append(
+        self._dues.enter(
             PendingFate(
                 due=Due(
                     at=assigned.sim_time + fate.after,
@@ -840,7 +1032,7 @@ class Orchestrator:
                 withdrawn=self._withdrawn,
                 fated=self._fated,
                 commitments=self._commitments,
-                pending=self._pending,
+                pending=self._dues.items,
                 agent=self._agent_state,
             ),
         )
@@ -851,7 +1043,7 @@ class Orchestrator:
         restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
         hooks = self._agent.state
         if hooks is None:
-            return NoHooks()
+            return Replayable(report=self._last_report) if self._agent.databases else NoHooks()
         assert self._state_dir is not None
         directory = wake_dir(self._state_dir, self._store.run_id, wake)
         if settled is None:
@@ -902,6 +1094,11 @@ class Orchestrator:
         if provider not in self._signing:
             raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
         return self._signing[provider]
+
+    def _lands(self, provider: ProviderKey) -> LandsReplies | None:
+        """The provider a reply on `provider` lands in without a push, if it is one."""
+        found = next((p for p in self._services.providers if p.manifest.key == provider), None)
+        return found if isinstance(found, LandsReplies) else None
 
     def _changes(self, provider: ProviderKey) -> ChangesDocuments:
         found = next((p for p in self._services.providers if p.manifest.key == provider), None)
@@ -968,6 +1165,17 @@ def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, servi
         raise RunRefused(f"happening {n} ({what}) lands on {provider}, which {why}")
 
 
+def _timer(pending: Pending) -> bool:
+    """The agent's earliest timer as last read from its sandbox, which the next reading replaces."""
+    return isinstance(pending, PendingTimer)
+
+
+def _reported_wake(pending: Pending) -> bool:
+    """The wake the agent last named in its report, which the next one it names replaces. A late or second delivery
+    of one is already on its way, as a real scheduler's is, and a new report does not take it back."""
+    return isinstance(pending, PendingWake) and pending.reason is WakeReason.DUE and not pending.repeat
+
+
 def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:
     """Whether an edit changed what the message says or what a reader can press on it, against its version before
     the edit: a card whose buttons appear in an edit asks something new."""
@@ -999,6 +1207,8 @@ async def run_scenario(
     signing: Mapping[ProviderKey, str] | None = None,
     traffic: Traffic | None = None,
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
+    environment: Environment | None = None,
+    inboxes: Inboxes | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
@@ -1020,4 +1230,6 @@ async def run_scenario(
         signing=signing,
         traffic=traffic,
         channels=channels,
+        environment=environment,
+        inboxes=inboxes,
     ).run()

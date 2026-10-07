@@ -54,11 +54,13 @@ from moto.moto_server.werkzeug_app import DomainDispatcherApplication, create_ba
 from moto.scheduler.models import scheduler_backends
 from moto.sqs.models import Queue, sqs_backends
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.aws.manifest import MANIFEST
 from minutehand.adapters.providers.aws.schedule import ScheduleRecord
 from minutehand.adapters.providers.aws.wire import (
     ActionAfterCompletion,
     CallKind,
+    NotImplementedByProvider,
     Refusal,
     ScheduleCall,
     SqsDelete,
@@ -67,7 +69,9 @@ from minutehand.adapters.providers.aws.wire import (
     sqs_delete,
     sqs_target,
 )
+from minutehand.adapters.providers.aws.wire import error as aws_error
 from minutehand.domain.clock import Due, DueKind
+from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, RecordSnapshot
@@ -110,6 +114,9 @@ class AwsProvider:
     def bind(self, wakes: Wakes) -> None:
         self._wakes = wakes
 
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return aws_error(status, code, message)
+
     def seed(self, scenario: Scenario, world: Store) -> None:
         """A scenario declares no AWS resources: the agent creates its own queues and schedules."""
 
@@ -143,6 +150,8 @@ class AwsProvider:
                     body,
                 )
             except Refusal as refused:
+                if isinstance(refused, NotImplementedByProvider):
+                    answering.unimplemented(refused, refused.message)
                 await _respond(
                     send,
                     refused.status,
@@ -231,13 +240,17 @@ class AwsProvider:
         A message merely received is not taken: it is in flight, and returns to the queue if the agent fails."""
         return not world.children(MANIFEST.key, EntityKind.RECORD, ref, limit=1)
 
-    async def fire(self, ref: str, world: Store, clock: Clock) -> None:
+    def _due(self, ref: str, world: Store) -> ScheduleRecord:
         stored = world.get(_schedule_entity(ref))
         if stored is None:
             raise LookupError(f"no schedule {ref} in the world: it was deleted or never created")
         record = ScheduleRecord.model_validate_json(stored.body)
         if record.next_at is None:
             raise RuntimeError(f"schedule {ref} fired with nothing booked: it is disabled or complete")
+        return record
+
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        record = self._due(ref, world)
         queue = sqs_target(record.target_arn)
         if queue.account != self.account:
             raise LookupError(f"schedule {ref} targets account {queue.account}; this run is account {self.account}")
@@ -265,6 +278,10 @@ class AwsProvider:
                 after=RecordSnapshot(resource="queue_message", text=record.target_input),
             )
         )
+
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        record = self._due(ref, world)
+        assert record.next_at is not None
         following = record.occurrence_after(max(clock.now(), record.next_at))
         if following is not None:
             self._bound().book(Due(at=following, kind=DueKind.AGENT_WAKE, ref=ref))

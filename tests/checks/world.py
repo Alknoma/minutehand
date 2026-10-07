@@ -169,6 +169,11 @@ def reply(who: Person, to: WorldEvent, hours: float) -> PersonReply:
     return PersonReply(person=who.key, in_reply_to=to.entity, text="Here it is.", at=at(hours))
 
 
+ONE_WAKE = WakeRecord(index=1, sim_time=START, world_changes=1, commitments_changed=True)
+"""What a hand-built view stands in for is a played run, and a played run has its wakes: one that did something,
+so no check is blocked for want of one and none reads it as idle."""
+
+
 def view(
     world: Scenario,
     log: Log,
@@ -180,7 +185,7 @@ def view(
     return RunView(
         scenario=world,
         events=log.events,
-        wakes=wakes or [],
+        wakes=wakes if wakes is not None else [ONE_WAKE],
         obligations=build(world, log.events, replies or []),
         replies=replies or [],
         unmatched_calls=unmatched,

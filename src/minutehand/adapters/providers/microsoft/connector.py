@@ -37,6 +37,7 @@ from minutehand.adapters.providers.microsoft.state import (
     message_ref,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -50,12 +51,18 @@ PAGE_MAX = 500
 DENIED = '{"message":"Authorization has been denied for this request."}'
 
 
-class ConnectorRefusal(Exception):
+class ConnectorRefusal(ServiceRefusal):
+    """The Bot Framework connector refused a call, in its `{"error": {"code", "message"}}`."""
+
     def __init__(self, status: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
+
+    def render(self, asked: Asked) -> Rendered:
+        body = wire.ConnectorError(error=wire.ConnectorErrorBody(code=self.code, message=self.message))
+        return Rendered(status=self.status, content_type=JSON, body=wire.dump(body).encode())
 
 
 def _refused(refusal: ConnectorRefusal) -> Response:
@@ -253,7 +260,12 @@ class Connector:
             raise ConnectorRefusal(404, "ActivityNotFoundInConversation", "Conversation not found.")
         if found[1].sender.id != bot_mri(app.app_id):
             raise ConnectorRefusal(403, "NotEnoughPermissions", "A bot can delete only the activities it sent.")
-        self._world.remove(message_ref(found[1].id), actor=Actor.AGENT, parent=conversation.id)
+        self._world.remove(
+            message_ref(found[1].id),
+            actor=Actor.AGENT,
+            parent=conversation.id,
+            before=snapshot(self._world, conversation, found[1], None),
+        )
         return Response(status_code=200)
 
     # ------------------------------------------------------------------ create conversation
@@ -394,8 +406,11 @@ class Connector:
             return _refused(refusal)
 
 
-class _Denied(Exception):
+class _Denied(ServiceRefusal):
     """The call carries no token the connector accepts."""
+
+    def render(self, asked: Asked) -> Rendered:
+        return Rendered(status=401, content_type=JSON, body=DENIED.encode())
 
 
 def connector_router(store: Store, clock: Clock) -> Router:

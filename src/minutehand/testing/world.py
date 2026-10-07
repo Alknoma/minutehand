@@ -3,7 +3,8 @@ says what the world last did, so the failure explains itself."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from minutehand.adapters.control.wire import (
@@ -12,12 +13,16 @@ from minutehand.adapters.control.wire import (
     Advanced,
     ChangePerson,
     Checked,
+    CreateWorld,
+    DecideNow,
+    DecisionView,
     DeclareFaults,
     DeleteTicket,
     EditTicket,
     Fault,
     FurtherSeed,
     Happen,
+    InboxesView,
     MintInbound,
     MoveTicket,
     Permit,
@@ -28,8 +33,10 @@ from minutehand.adapters.control.wire import (
     Reply,
     Say,
     Seeded,
+    StepView,
     WorldView,
 )
+from minutehand.domain.agent import AgentReport
 from minutehand.domain.people import InboundCredential, InboundCredentialAsk, PermissionGrant, Press
 from minutehand.domain.provider import PersonChange
 from minutehand.domain.scenario import Happening, Person, TicketState
@@ -65,11 +72,34 @@ def describe(event: WorldEvent) -> str:
     )
 
 
+class ClosedWorld(Exception):
+    """A handle used after its world was closed: whatever it was asked would have reached no world, or, had the
+    id been handed out again, another test's."""
+
+
 class OpenWorld:
+    """One open world. Once `close()`d (the plugin closes it after its test), every use of the handle raises
+    `ClosedWorld`, and the server never hands the id out again."""
+
     def __init__(self, client: MinutehandClient, view: WorldView) -> None:
-        self.client = client
+        self._client = client
         self.view = view
         self.world_id = view.world_id
+        self.closed: Checked | None = None
+
+    @property
+    def client(self) -> MinutehandClient:
+        """The client, while the world is open; a closed world's handle reaches nothing through it."""
+        if self.closed is not None:
+            raise ClosedWorld(f"world {self.world_id} was closed; open a new world rather than reuse this one")
+        return self._client
+
+    def close(self, *, quiet: Quiet | bool = True) -> Checked:
+        """Close the world (once it is quiet, unless `quiet` is False): its checks as it stood. A second close
+        raises `ClosedWorld`."""
+        found = self.client.close_world(self.world_id, quiet=quiet)
+        self.closed = found
+        return found
 
     # -- reading ------------------------------------------------------------------------------------------------
 
@@ -117,8 +147,20 @@ class OpenWorld:
         return self.client.spans(self.world_id, since_reset=since_reset).spans
 
     def late_calls(self) -> list[RecordedCall]:
-        """Calls that came for this world after it was closed, refused into the lobby (`Exchange.late_for`)."""
-        return self.client.unmatched(late_for=self.world_id).calls
+        """Calls that came for this world after it was closed, refused into the lobby (`Exchange.late_for`): the
+        one read a closed world's handle still answers."""
+        return self._client.unmatched(late_for=self.world_id).calls
+
+    def assert_nothing_unclaimed(self) -> None:
+        """Fail, listing each one, when a call of this world went to a host no provider claims and nothing the
+        world declares captures (refused 502). Calls to model hosts and declared outbound hosts are not that."""
+        found = self.unmatched_calls()
+        if found:
+            lines = [f"{c.exchange.method} {c.exchange.host}{c.exchange.path} -> {c.exchange.status}" for c in found]
+            raise AssertionError(
+                f"{len(found)} call(s) of world {self.world_id} reached no provider and no declaration:\n"
+                + "\n".join(lines)
+            )
 
     def quiet(self, *, quiet_for: timedelta = QUIET_FOR, at_most: timedelta = QUIET_AT_MOST) -> Quieted:
         """Return once no call has reached this world for `quiet_for` and nothing Minutehand pushed to the service
@@ -129,9 +171,53 @@ class OpenWorld:
         return self.client.world(self.world_id).now
 
     def checks(self) -> Checked:
+        """The world's checks as it stands; for a world of a case, the case's."""
         return self.client.checks(self.world_id)
 
+    # -- what waits on people in the service's own product ------------------------------------------------------
+
+    def inboxes(self) -> InboxesView:
+        """Read the inboxes now: what waits on people, and the decisions they owe with when each falls due."""
+        return self.client.read_inboxes(self.world_id)
+
+    def perform_due(self) -> list[DecisionView]:
+        """Make every decision due at the world's clock, as its person."""
+        return self.client.perform_due_decisions(self.world_id).decisions
+
+    def decide(
+        self, person: str, item: EntityRef, decision: str, inputs: Mapping[str, str] | None = None
+    ) -> DecisionView:
+        """`person` decides `item` now, as the product's page would send it."""
+        asked = DecideNow(person=person, item=item, decision=decision, inputs=dict(inputs or {}))
+        return self.client.decide(self.world_id, asked)
+
+    @property
+    def case_id(self) -> str | None:
+        """The case this world belongs to (`CreateWorld.case`), None for a world of its own."""
+        return self.view.case_id
+
+    def begin_step(self, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins (in every world of its case, for a world of one); the clock is not moved."""
+        return self.client.begin_step(self.world_id, at=at, reason=reason)
+
+    def end_step(self) -> StepView:
+        return self.client.end_step(self.world_id)
+
+    @contextmanager
+    def step(self, *, at: datetime | None = None, reason: str | None = None) -> Iterator[StepView]:
+        """One step of the agent, begun on entering and ended on leaving."""
+        began = self.begin_step(at=at, reason=reason)
+        try:
+            yield began
+        finally:
+            if self.closed is None:
+                self.end_step()
+
     # -- acting -------------------------------------------------------------------------------------------------
+
+    def report(self, reported: AgentReport) -> Checked:
+        """Relay what the agent says of its own work: see `MinutehandClient.report`."""
+        return self.client.report(self.world_id, reported)
 
     def say(self, person: str, text: str, *, provider: str = "slack") -> WorldEvent:
         """`person` messages the agent directly; the event is pushed to the world's inbound target, signed."""
@@ -243,7 +329,12 @@ class OpenWorld:
         return found
 
     def assert_message(
-        self, *, containing: str, by: Actor = Actor.AGENT, to: str | None = None, at_least: int = 1
+        self,
+        *,
+        containing: str,
+        by: Actor = Actor.AGENT,
+        to: str | None = None,
+        at_least: int = 1,
     ) -> list[WorldEvent]:
         """A message written by `by` holding `containing` (any case), sent to the person with email `to`."""
 
@@ -263,7 +354,12 @@ class OpenWorld:
         )
 
     def assert_ticket(
-        self, *, titled: str, state: TicketState | None = None, assignee: str | None = None, at_least: int = 1
+        self,
+        *,
+        titled: str,
+        state: TicketState | None = None,
+        assignee: str | None = None,
+        at_least: int = 1,
     ) -> list[WorldEvent]:
         """A ticket whose title holds `titled` (any case) was written with this state and assignee email."""
 
@@ -277,3 +373,91 @@ class OpenWorld:
             )
 
         return self.assert_events(where, at_least=at_least, what=f"ticket writes titled {titled!r}")
+
+
+class OpenCase:
+    """Several worlds a test opened under one case label (`CreateWorld.case`): one run, stepped and scored as one.
+    `open_case` opens it; closing its last world closes it."""
+
+    def __init__(self, client: MinutehandClient, case_id: str, worlds: Sequence[OpenWorld]) -> None:
+        self._client = client
+        self.case_id = case_id
+        self.worlds = list(worlds)
+
+    def begin_step(self, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins in every world of the case; the clocks are not moved."""
+        return self._client.begin_case_step(self.case_id, at=at, reason=reason)
+
+    def end_step(self) -> StepView:
+        return self._client.end_case_step(self.case_id)
+
+    @contextmanager
+    def step(self, *, at: datetime | None = None, reason: str | None = None) -> Iterator[StepView]:
+        """One step of the agent across the case, begun on entering and ended on leaving."""
+        began = self.begin_step(at=at, reason=reason)
+        try:
+            yield began
+        finally:
+            if any(w.closed is None for w in self.worlds):
+                self.end_step()
+
+    def advance(self, by: timedelta | None = None, *, to: datetime | None = None) -> None:
+        """Move every world's clock to the same moment: `to`, or `by` past the latest of them."""
+        if to is None:
+            assert by is not None, "give by or to"
+            to = max(w.client.world(w.world_id).now for w in self.worlds) + by
+        for world in self.worlds:
+            world.advance(to=to)
+
+    def inboxes(self) -> InboxesView:
+        """Every world's inboxes read now, as one view: what waits on people, and the decisions owed, earliest
+        first."""
+        read = [w.inboxes() for w in self.worlds if w.closed is None]
+        return InboxesView(
+            pending=[p for r in read for p in r.pending],
+            due=sorted((d for r in read for d in r.due), key=lambda d: d.at),
+            unread=[u for r in read for u in r.unread],
+        )
+
+    def perform_due(self) -> list[DecisionView]:
+        """Make every decision due at each world's clock, as its person."""
+        return [d for w in self.worlds if w.closed is None for d in w.perform_due()]
+
+    def decide(
+        self, person: str, item: EntityRef, decision: str, inputs: Mapping[str, str] | None = None
+    ) -> DecisionView:
+        """`person` decides `item` now, in the world whose inbox it was seen in."""
+        for world in self.worlds:
+            if world.closed is None and any(p.item == item for p in world.inboxes().pending):
+                return world.decide(person, item, decision, inputs)
+        raise AssertionError(f"no open world of case {self.case_id} holds {item.external_id} pending")
+
+    def checks(self) -> Checked:
+        """The case scored as one run, as it stands."""
+        return self._client.case_checks(self.case_id)
+
+    def report(self, reported: AgentReport) -> Checked:
+        """Relay what the agent says of its own work, for the case: see `MinutehandClient.report`."""
+        for world in self.worlds:
+            if world.closed is None:
+                return world.report(reported)
+        raise ClosedWorld(f"every world of case {self.case_id} was already closed")
+
+    def close(self, *, quiet: Quiet | bool = True) -> Checked:
+        """Close every world still open, in the order opened: the last close answers the case's final checks."""
+        found: Checked | None = None
+        for world in self.worlds:
+            if world.closed is None:
+                found = world.close(quiet=quiet)
+        if found is None:
+            raise ClosedWorld(f"every world of case {self.case_id} was already closed")
+        return found
+
+
+def open_case(client: MinutehandClient, case: str, specs: Sequence[CreateWorld]) -> OpenCase:
+    """Open one world per spec under the case label `case` (each spec's own `case` is set to it): a case of them."""
+    worlds = [OpenWorld(client, client.create_world(spec.model_copy(update={"case": case}))) for spec in specs]
+    case_ids = {w.view.case_id for w in worlds}
+    if len(case_ids) != 1 or None in case_ids:
+        raise AssertionError(f"the worlds opened under {case!r} are in cases {sorted(map(str, case_ids))}")
+    return OpenCase(client, next(iter(case_ids)) or "", worlds)

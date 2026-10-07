@@ -18,9 +18,10 @@ import pytest
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported, StateHooks
-from minutehand.domain.people import GeneratedSecret, InboundTarget
+from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import (
     DelayRange,
+    GeneratedSecret,
     Person,
     PersonAsked,
     ReplyBehaviour,

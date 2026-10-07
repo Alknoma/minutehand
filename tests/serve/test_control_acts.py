@@ -82,7 +82,7 @@ def test_a_happening_its_provider_cannot_show_is_refused_and_nothing_changes(ser
         {
             "starts_at": "2026-09-01T09:00:00Z",
             "people": [{"key": "owen", "name": "Owen Owner", "email": "owen@example.com", "reply": {"kind": "silent"}}],
-            "documents": [{"provider": "google_drive", "title": "Plan", "text": "x"}],
+            "documents": [{"provider": "google_workspace", "title": "Plan", "text": "x"}],
         }
     )
     world = OpenWorld(
@@ -148,7 +148,7 @@ def test_a_fault_declaration_setting_anything_but_faults_is_refused(served: Serv
     world = OpenWorld(served.client, served.client.create_world(spec("xoxb-not-faults")))
     try:
         with pytest.raises(Refused) as refused:
-            world.declare_faults("google_drive", {"faults": [], "tokens": []})
+            world.declare_faults("google_workspace", {"faults": [], "tokens": []})
         assert refused.value.status in (409, 422)
         with pytest.raises(Refused) as unknown:
             world.declare_faults("slack", {"faults": [{"answer": {"kind": "melted"}}]})

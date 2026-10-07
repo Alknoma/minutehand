@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import AwareDatetime, Field
 
 from minutehand.application.forks import ForkAccount
-from minutehand.application.model_calls import EventTrace
+from minutehand.application.model_calls import EventTrace, JoinedBy
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.checks import Effectiveness, Finding, Obligation, Pattern, WakeRecord
 from minutehand.domain.run import RunRecord, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.telemetry import ForwardFailure, StoredSpan
-from minutehand.domain.world import RecordedCall, WorldEvent
+from minutehand.domain.world import Actor, RecordedCall, WorldEvent
 from minutehand.session import ForkPoint
 
 
@@ -33,6 +35,8 @@ class RunRow(Model):
     )
     changed: str | None = Field(description="For a fork, what it changed, in a few words; None for a root run")
     children: list[str]
+    case: str | None = Field(default=None, description="A case: the label its worlds were opened under")
+    worlds: list[str] = Field(default=[], description="A case: its worlds, read here as this one run")
 
 
 class RunsResponse(Model):
@@ -46,10 +50,82 @@ class RunResponse(Model):
     record: RunRecord | None = Field(description="None until the run finishes")
     reached: AwareDatetime = Field(description="The latest simulated moment the run has recorded")
     checkpoints: list[ForkPoint]
+    driven: bool = Field(
+        default=False, description="Driven from outside (`minutehand serve`): its wakes are steps, marked or inferred"
+    )
     fork: ForkAccount | None = Field(
         description="For a fork: where it split, what it changed, whether its restore was verified, and how its "
         "outcome differs from its parent's; None for a run started from the beginning"
     )
+
+
+class MessageChange(StrEnum):
+    SENT = "sent"
+    EDITED = "edited"  # rewritten in place after it was sent
+    DELETED = "deleted"
+    ASKED = "asked"  # an item left waiting on a person in the agent's own product
+    DECIDED = "decided"  # the person decided it
+    REFUSED = "refused"  # the person decided it, and the product did not take the decision
+    WITHDRAWN = "withdrawn"  # the agent took it back undecided
+
+
+class WrittenBy(Model):
+    """The model call that wrote a message, and how it was found (`application.model_calls.JoinedBy`)."""
+
+    span_id: str
+    model: str | None
+    joined_by: JoinedBy
+
+
+class MessageLine(Model):
+    """One message as a person reads the record: when, to whom, what it said, and for an edit what it said before."""
+
+    seq: int
+    at: AwareDatetime = Field(description="Simulated")
+    wake: int
+    actor: Actor
+    change: MessageChange
+    to: list[str] = Field(description="The people it reached, by name; empty: it reached nobody in the scenario")
+    text: str
+    before: str | None = Field(description="An edit: the text it replaced")
+    thread: bool = Field(description="Sent in a thread")
+    written_by: WrittenBy | None = Field(default=None, description="The agent's model call that wrote it, if joined")
+    words: str | None = Field(
+        default=None, description="An item in the agent's own product, said whole: 'asked Nadia Ek to approve: ...'"
+    )
+
+
+class MessagesResponse(Model):
+    messages: list[MessageLine] = Field(description="Every message created, edited or deleted, in record order")
+
+
+class TrafficCall(Model):
+    """One model call the run holds a span of."""
+
+    span_id: str
+    trace_id: str
+    step: int = Field(description="The wake or step it is placed in")
+    started: AwareDatetime = Field(description="Real time")
+    model: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    wrote: list[int] = Field(description="Seqs of the messages it is joined to as their writer")
+    joined_by: JoinedBy | None = Field(description="How it was joined to the first of them")
+
+
+class HostTraffic(Model):
+    """The calls to one model host relayed unopened on tunnels: counted, never read."""
+
+    host: str
+    calls: int = Field(ge=0, description="Bursts on its tunnels")
+    connections: int = Field(ge=0)
+    bytes_sent: int = Field(ge=0)
+    bytes_received: int = Field(ge=0)
+
+
+class ModelTrafficResponse(Model):
+    calls: list[TrafficCall] = Field(description="Every model call a span was received or recorded of, by start")
+    hosts: list[HostTraffic] = Field(description="Model hosts reached on tunnels never opened, one line each")
 
 
 class WakesResponse(Model):

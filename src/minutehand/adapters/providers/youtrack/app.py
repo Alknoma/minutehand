@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.youtrack import fields, state, wire
 from minutehand.adapters.providers.youtrack.access import Access, fault_for
 from minutehand.adapters.providers.youtrack.activities import Feed, categories
@@ -98,6 +99,7 @@ class YouTrackApi:
                 now = self.now()
                 fault = fault_for(self.world, request.method, fault_path(request), now)
                 if fault is not None:
+                    answering.injected()
                     raise fault
                 caller = None if open_route else self.access.caller(header(request, "authorization"), now)
                 status, payload = handler(Call(request, await request.body(), caller, now))

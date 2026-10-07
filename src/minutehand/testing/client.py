@@ -1,6 +1,6 @@
 """`MinutehandClient` and `AsyncMinutehandClient`: the control API of `minutehand serve`, typed both ways with
 the server's own models (`minutehand.adapters.control.wire`). A refusal raises `Refused` with its status and
-the server's words."""
+the server's words; Minutehand's own failure (500) raises `ServerFailed`, never `Refused`."""
 
 from __future__ import annotations
 
@@ -17,15 +17,23 @@ from minutehand.adapters.control.wire import (
     Advance,
     Advanced,
     CallsPage,
+    CaseList,
+    CaseView,
     ChangePerson,
     Checked,
     CreateWorld,
+    DecideNow,
+    DecisionsDone,
+    DecisionView,
     DeclareFaults,
     EntitiesPage,
     Environment,
     EventsPage,
     Fault,
     FurtherSeed,
+    InboxesView,
+    LobbyKind,
+    MarkStep,
     Minted,
     MintInbound,
     Permit,
@@ -38,10 +46,13 @@ from minutehand.adapters.control.wire import (
     RefusalKind,
     Seeded,
     SpansPage,
+    StepView,
     Unmatched,
     WorldList,
     WorldView,
 )
+from minutehand.application.steps import StepEdge
+from minutehand.domain.agent import AgentReport
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, EntityKind, Operation
 
@@ -86,6 +97,16 @@ class Unsupported(Refused):
     which it has)."""
 
 
+class ServerFailed(Exception):
+    """Not a refusal: Minutehand itself failed while answering (500, `RefusalKind.INTERNAL_ERROR`). The traceback
+    is in the server's log."""
+
+    def __init__(self, status: int, error: str) -> None:
+        super().__init__(f"{status}: {error}")
+        self.status = status
+        self.error = error
+
+
 def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
     if answered.is_success:
         return model.model_validate_json(answered.content)
@@ -95,6 +116,8 @@ def _read[M: Model](answered: httpx.Response, model: type[M]) -> M:
         raise Refused(answered.status_code, answered.text) from None
     if refusal.kind is RefusalKind.UNSUPPORTED:
         raise Unsupported(answered.status_code, refusal.error)
+    if refusal.kind is RefusalKind.INTERNAL_ERROR:
+        raise ServerFailed(answered.status_code, refusal.error)
     raise Refused(answered.status_code, refusal.error)
 
 
@@ -132,8 +155,37 @@ def _close_query(quiet: Quiet | bool) -> dict[str, str]:
     return {"quiet_for": str(quiet.quiet_for.total_seconds()), "quiet_at_most": str(quiet.at_most.total_seconds())}
 
 
-def _unmatched_query(since: int, late_for: str | None) -> dict[str, str]:
-    return {"since": str(since)} | ({"late_for": late_for} if late_for is not None else {})
+def _began(at: datetime | None, reason: str | None) -> str:
+    return MarkStep(edge=StepEdge.BEGAN, at=at, reason=reason).model_dump_json(exclude_none=True)
+
+
+_ENDED = MarkStep(edge=StepEdge.ENDED).model_dump_json(exclude_none=True)
+
+
+def _unmatched_query(since: int, late_for: str | None, kinds: Sequence[LobbyKind]) -> httpx.QueryParams:
+    found: list[tuple[str, str | int | float | bool | None]] = [("since", str(since))]
+    found += [("late_for", late_for)] if late_for is not None else []
+    return httpx.QueryParams([*found, *(("kind", k.value) for k in kinds)])
+
+
+def unclaimed_offenders(found: Unmatched) -> str:
+    """The unclaimed calls of a lobby page, one line each, for a failed assertion: what was called, and for a late
+    call, the closed world it came for."""
+    lines = [
+        f"{c.exchange.method} {c.exchange.host}{c.exchange.path} -> {c.exchange.status}"
+        + (f" (late, for closed world {c.exchange.late_for})" if c.exchange.late_for is not None else "")
+        for c in found.calls
+    ]
+    others = ", ".join(f"{n} {k.value}" for k, n in found.kinds.items() if n and k is not LobbyKind.UNCLAIMED)
+    kept = f"\n(also kept, and not unclaimed: {others})" if others else ""
+    return "\n".join(lines) + kept
+
+
+def _assert_unclaimed(found: Unmatched) -> None:
+    if found.calls:
+        raise AssertionError(
+            f"{len(found.calls)} call(s) reached no world and nothing declared them:\n{unclaimed_offenders(found)}"
+        )
 
 
 class MinutehandClient:
@@ -152,7 +204,9 @@ class MinutehandClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def _get[M: Model](self, path: str, model: type[M], params: Mapping[str, str] | None = None) -> M:
+    def _get[M: Model](
+        self, path: str, model: type[M], params: Mapping[str, str] | httpx.QueryParams | None = None
+    ) -> M:
         return _read(self._http.get(path, params=params), model)
 
     def _post[M: Model](self, path: str, body: str, model: type[M]) -> M:
@@ -265,11 +319,65 @@ class MinutehandClient:
         return self._get("/providers", ProvidersView).providers
 
     def checks(self, world_id: str) -> Checked:
+        """The world's checks as it stands; for a world of a case, the case's."""
         return self._get(f"/worlds/{world_id}/checks", Checked)
 
-    def unmatched(self, *, since: int = 0, late_for: str | None = None) -> Unmatched:
-        """Calls no open world claimed; with `late_for`, only those that came for that world after it closed."""
-        return self._get("/unmatched", Unmatched, _unmatched_query(since, late_for))
+    def read_inboxes(self, world_id: str) -> InboxesView:
+        """Read the world's inboxes now, as each person: what waits on people, and what they have decided and when
+        each falls due (the earliest `due` is the next moment a harness with its own clock jumps to)."""
+        return self._post(f"/worlds/{world_id}/inboxes/read", "{}", InboxesView)
+
+    def perform_due_decisions(self, world_id: str) -> DecisionsDone:
+        """Have every decision due at the world's clock made, as its person; the clock does not move."""
+        return self._post(f"/worlds/{world_id}/inboxes/due", "{}", DecisionsDone)
+
+    def decide(self, world_id: str, decision: DecideNow) -> DecisionView:
+        """A person decides an item now, with the decision and inputs given, whatever their script says."""
+        return self._post(f"/worlds/{world_id}/inboxes/decide", decision.model_dump_json(), DecisionView)
+
+    def begin_step(self, world_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins in the world (in every world of its case, for a world of one), at `at`
+        (simulated; the latest moment reached when None), ending the one in progress. The clock is not moved."""
+        return self._post(f"/worlds/{world_id}/steps", _began(at, reason), StepView)
+
+    def end_step(self, world_id: str) -> StepView:
+        return self._post(f"/worlds/{world_id}/steps", _ENDED, StepView)
+
+    def report(self, world_id: str, reported: AgentReport) -> Checked:
+        """Relay the agent's own report of its work (its case's, for a world of a case): whether it is done and what
+        it still holds open, which only the service itself can say. The latest report stands, and the verdict reads
+        it: DONE is how the run stopped, and a commitment still open keeps it from passing."""
+        return self._post(f"/worlds/{world_id}/report", reported.model_dump_json(), Checked)
+
+    def cases(self) -> list[CaseView]:
+        return self._get("/cases", CaseList).cases
+
+    def case(self, case_id: str) -> CaseView:
+        return self._get(f"/cases/{case_id}", CaseView)
+
+    def begin_case_step(self, case_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        """A step of the agent begins in every world of the case."""
+        return self._post(f"/cases/{case_id}/steps", _began(at, reason), StepView)
+
+    def end_case_step(self, case_id: str) -> StepView:
+        return self._post(f"/cases/{case_id}/steps", _ENDED, StepView)
+
+    def case_checks(self, case_id: str) -> Checked:
+        """The case scored as one run, as it stands."""
+        return self._get(f"/cases/{case_id}/checks", Checked)
+
+    def unmatched(
+        self, *, since: int = 0, late_for: str | None = None, kinds: Sequence[LobbyKind] = (LobbyKind.UNCLAIMED,)
+    ) -> Unmatched:
+        """The lobby: by default only calls no open world claimed and nothing declared (`LobbyKind.UNCLAIMED`);
+        `kinds` names others (tunnelled model calls, passed-through calls), and `Unmatched.kinds` counts them all.
+        With `late_for`, only those that came for that world after it closed."""
+        return self._get("/unmatched", Unmatched, _unmatched_query(since, late_for, kinds))
+
+    def assert_nothing_unclaimed(self, *, since: int = 0) -> None:
+        """Fail, listing each one, when the lobby kept a call since `since` that no world claimed and nothing
+        declared. Tunnelled model calls and declared pass-through traffic are not unclaimed."""
+        _assert_unclaimed(self.unmatched(since=since))
 
 
 class AsyncMinutehandClient:
@@ -288,7 +396,9 @@ class AsyncMinutehandClient:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
-    async def _get[M: Model](self, path: str, model: type[M], params: Mapping[str, str] | None = None) -> M:
+    async def _get[M: Model](
+        self, path: str, model: type[M], params: Mapping[str, str] | httpx.QueryParams | None = None
+    ) -> M:
         return _read(await self._http.get(path, params=params), model)
 
     async def _post[M: Model](self, path: str, body: str, model: type[M]) -> M:
@@ -390,5 +500,43 @@ class AsyncMinutehandClient:
     async def checks(self, world_id: str) -> Checked:
         return await self._get(f"/worlds/{world_id}/checks", Checked)
 
-    async def unmatched(self, *, since: int = 0, late_for: str | None = None) -> Unmatched:
-        return await self._get("/unmatched", Unmatched, _unmatched_query(since, late_for))
+    async def read_inboxes(self, world_id: str) -> InboxesView:
+        return await self._post(f"/worlds/{world_id}/inboxes/read", "{}", InboxesView)
+
+    async def perform_due_decisions(self, world_id: str) -> DecisionsDone:
+        return await self._post(f"/worlds/{world_id}/inboxes/due", "{}", DecisionsDone)
+
+    async def decide(self, world_id: str, decision: DecideNow) -> DecisionView:
+        return await self._post(f"/worlds/{world_id}/inboxes/decide", decision.model_dump_json(), DecisionView)
+
+    async def begin_step(self, world_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        return await self._post(f"/worlds/{world_id}/steps", _began(at, reason), StepView)
+
+    async def end_step(self, world_id: str) -> StepView:
+        return await self._post(f"/worlds/{world_id}/steps", _ENDED, StepView)
+
+    async def report(self, world_id: str, reported: AgentReport) -> Checked:
+        return await self._post(f"/worlds/{world_id}/report", reported.model_dump_json(), Checked)
+
+    async def cases(self) -> list[CaseView]:
+        return (await self._get("/cases", CaseList)).cases
+
+    async def case(self, case_id: str) -> CaseView:
+        return await self._get(f"/cases/{case_id}", CaseView)
+
+    async def begin_case_step(self, case_id: str, *, at: datetime | None = None, reason: str | None = None) -> StepView:
+        return await self._post(f"/cases/{case_id}/steps", _began(at, reason), StepView)
+
+    async def end_case_step(self, case_id: str) -> StepView:
+        return await self._post(f"/cases/{case_id}/steps", _ENDED, StepView)
+
+    async def case_checks(self, case_id: str) -> Checked:
+        return await self._get(f"/cases/{case_id}/checks", Checked)
+
+    async def unmatched(
+        self, *, since: int = 0, late_for: str | None = None, kinds: Sequence[LobbyKind] = (LobbyKind.UNCLAIMED,)
+    ) -> Unmatched:
+        return await self._get("/unmatched", Unmatched, _unmatched_query(since, late_for, kinds))
+
+    async def assert_nothing_unclaimed(self, *, since: int = 0) -> None:
+        _assert_unclaimed(await self.unmatched(since=since))

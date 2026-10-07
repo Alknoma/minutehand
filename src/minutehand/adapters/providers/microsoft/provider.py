@@ -1,12 +1,14 @@
-"""The Microsoft provider: sign-in, the Bot Framework connector, Graph for Teams and files, and the people of the
-tenant acting in Teams and on files.
+"""The Microsoft provider: sign-in, the Bot Framework connector, Graph for Teams, files, Outlook mail and calendars,
+and the people of the tenant acting in Teams, on files, by email and on invitations.
 
 It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesInteractions`,
 `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `ChangesPeople` (a user removed, disabled or enabled again
 by an administrator) and `MintsInboundCredentials` (the Bot Framework's token for an activity a test posts itself). A person's change to a seeded document (edit, rename, move, share, delete)
 lands at its moment as that person, recorded as actor PERSON, and owes every live Graph subscription on the drive a
 notification; `notify` sends what is owed, through the same `subscriptions.notify` an agent's own change goes
-through. A file held open is not something a person does here: it is a fault the scenario declares
+through. A person's reply to an email is an email back into the mailbox it answers, and a press of Accept, Tentative or
+Decline on a meeting request answers the invitation (`_by_mail`); neither is pushed to the bot. A file held open is
+not something a person does here: it is a fault the scenario declares
 (`MicrosoftSeed.holds`).
 """
 
@@ -14,7 +16,10 @@ from __future__ import annotations
 
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
+from minutehand.adapters.providers.microsoft.common import error_answer
+from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
 from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of
+from minutehand.adapters.providers.microsoft.graph_mail import Mail
 from minutehand.adapters.providers.microsoft.inbound import People, activity_token
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
@@ -25,6 +30,7 @@ from minutehand.adapters.providers.microsoft.state import (
     item_text,
     user_ref,
 )
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
     InboundCredential,
@@ -46,7 +52,7 @@ from minutehand.domain.scenario import (
     Shared,
     Trashed,
 )
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.world import Actor, EntityKind, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -67,6 +73,9 @@ class MicrosoftProvider:
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
 
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        return error_answer(status, code, message)
+
     def seed(self, scenario: Scenario, world: Store) -> None:
         seed.seed(scenario, MicrosoftWorld(world))
 
@@ -75,7 +84,11 @@ class MicrosoftProvider:
     async def deliver(
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
-        """`secret` is not used: the Bot Framework signs with its published key, never a shared secret."""
+        """A reply to an email is an email back, put in the mailbox it answers (a press on a meeting request answers
+        the invitation); anything else is a Teams message pushed to the bot. `secret` is not used: the Bot
+        Framework signs with its published key, never a shared secret."""
+        if await _by_mail(reply, world, clock):
+            return
         await People(world, clock).deliver(reply, target)
 
     async def say(
@@ -93,6 +106,8 @@ class MicrosoftProvider:
     async def press(
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
+        if await _by_mail(reply, world, clock):
+            return
         await People(world, clock).press(reply, target)
 
     # ------------------------------------------------------------------ ChangesDocuments
@@ -203,6 +218,22 @@ class MicrosoftProvider:
                 item=owed.item,
             )
             mw.paid(ref)
+
+
+async def _by_mail(reply: PersonReply, world: Store, clock: Clock) -> bool:
+    """Answer a message in a mailbox by mail: a press on a meeting request answers its invitation, anything else is
+    an email back. False when no mailbox holds what the reply answers."""
+    if reply.in_reply_to.provider != MANIFEST.key or reply.in_reply_to.kind is not EntityKind.MESSAGE:
+        return False
+    mw = MicrosoftWorld(world)
+    mail = Mail(mw, clock)
+    if not mail.holds(reply.in_reply_to.external_id):
+        return False
+    if reply.press is not None:
+        await Calendar(mw, clock, mail).person_responds(reply)
+    else:
+        await mail.person_replies(reply)
+    return True
 
 
 def _folder(files: Files, mw: MicrosoftWorld, drive: DriveRecord, path: str, by: wire.IdentitySet) -> wire.StoredItem:

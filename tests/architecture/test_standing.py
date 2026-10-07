@@ -6,20 +6,17 @@ nothing of the other's."""
 from __future__ import annotations
 
 import os
-import subprocess
 import threading
 import time
-from collections.abc import Iterator
 from pathlib import Path
 
-import httpx
 import pytest
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
 from minutehand.domain.scenario import Seed
 from minutehand.testing.client import MinutehandClient
 from minutehand.testing.world import OpenWorld
-from tests.architecture.support import MAIL, MINUTEHAND, SEARCH, free_port, post, settled, started
+from tests.architecture.support import MAIL, SEARCH, free_port, post, settled, started
 
 MODEL = {"host": "model.localhost", "name": "model", "kind": "pass_through"}
 NOW = "2026-08-24T09:00:00+00:00"
@@ -45,44 +42,6 @@ def _spec(tag: str) -> CreateWorld:
             "outbound": [MAIL, SEARCH, MODEL],
         }
     )
-
-
-@pytest.fixture(scope="module")
-def minutehand(outside: object, tmp_path_factory: pytest.TempPathFactory) -> Iterator[MinutehandClient]:
-    """`minutehand serve` as the installed command, trusting the outside world's CA for what it passes through."""
-    state = tmp_path_factory.mktemp("serve")
-    control, proxy, telemetry = free_port(), free_port(), free_port()
-    server = subprocess.Popen(
-        [
-            str(MINUTEHAND),
-            "serve",
-            "--state",
-            str(state),
-            "--proxy-port",
-            str(proxy),
-            "--control-port",
-            str(control),
-            "--telemetry-port",
-            str(telemetry),
-            "--upstream-ca",
-            str(outside.ca),  # type: ignore[attr-defined]
-        ]
-    )
-    try:
-        with MinutehandClient(f"http://127.0.0.1:{control}") as client:
-            give_up = time.monotonic() + 90
-            while True:
-                try:
-                    if client.health():
-                        break
-                except httpx.TransportError:
-                    pass
-                assert time.monotonic() < give_up, "minutehand serve did not answer"
-                time.sleep(0.1)
-            yield client
-    finally:
-        server.terminate()
-        server.wait(timeout=15)
 
 
 @pytest.fixture

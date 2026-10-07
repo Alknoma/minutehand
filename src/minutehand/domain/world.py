@@ -17,6 +17,11 @@ class EntityKind(StrEnum):
     DOCUMENT = "document"
     CHANNEL = "channel"
     RECORD = "record"
+    INBOX_ITEM = "inbox_item"  # something waiting on a person in the agent's own product (`domain.inboxes`)
+    DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
+    FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
+    TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
+    DATABASE = "database"  # a record of a database of the agent's that Minutehand fronts (`domain.database`)
 
 
 class Operation(StrEnum):
@@ -46,13 +51,17 @@ class CaptureMode(StrEnum):
     PASS_THROUGH = "pass_through"
     REPLAY = "replay"
     DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
+    FORWARD = "forward"  # sent to an external emulator the agent file or world declares (`domain.emulator`)
+    MODELED = "modeled"  # declared by nobody; answered by a model standing in for the service (`UnknownHosts.MODEL`)
 
 
 class AnsweredBy(StrEnum):
     DECLARATION = "declaration"  # the declared answer; the call never left the machine
     REAL_HOST = "real_host"  # the real host, reached through the proxy
     RECORDING = "recording"  # an earlier run's recording of the same call
-    REFUSAL = "refusal"  # nobody: a replay that missed, declared to refuse
+    REFUSAL = "refusal"  # nobody: a replay that missed, declared to refuse, or an emulator that was unavailable
+    EMULATOR = "emulator"  # an external emulator, named in `Captured.emulator`
+    MODEL = "model"  # a language model standing in for a service nobody declared; never sent
 
 
 class BodyKept(StrEnum):
@@ -70,6 +79,20 @@ class Body(Model):
     size: int = Field(ge=0, description="Bytes, the whole body as it crossed the wire, decoded")
     kept: BodyKept
     sha256: str = Field(description="Of the whole body with credentials and declared fields redacted")
+
+
+class CallOutcome(StrEnum):
+    """What a call's answer was, as distinct from its status: who is at fault when it is not a plain answer.
+
+    Set on every forwarded call (`CaptureMode.FORWARD`) and on every call a provider in this process answered
+    (`adapters.answering`); None on a call nothing classified."""
+
+    ANSWERED = "answered"  # the service answered as it would
+    REFUSED = "refused"  # the service refused it, as the real one would: a 4xx, or an error declared faithful
+    NOT_IMPLEMENTED = "not_implemented"  # the fake has no answer for it: a 501, or a declared not-implemented marker
+    INTERNAL_ERROR = "internal_error"  # the fake broke answering it: a 5xx nobody declared a faithful error
+    INJECTED_FAULT = "injected_fault"  # a fault the scenario or the test declared
+    UNAVAILABLE = "unavailable"  # nothing answered: the external emulator was down, unhealthy or did not answer
 
 
 class Recipient(Model):
@@ -94,6 +117,16 @@ class Captured(Model):
     response: Body
     streamed: bool = Field(default=False, description="The answer reached the agent chunk by chunk")
     recipients: list[Recipient] = Field(default=[], description="Read out of a send declared as a message")
+    emulator: str | None = Field(default=None, description="The external emulator it was forwarded to, by name")
+    operation: str | None = Field(
+        default=None,
+        description="What a forwarded call asked for: a GraphQL operation's name, else its method and path",
+    )
+    forwarded_traceparent: str | None = Field(
+        default=None,
+        description="The `traceparent` the forwarded copy carried: the agent's trace (or one begun for it) with "
+        "Minutehand's span of this call as the parent, under which the emulator's own spans sit",
+    )
 
 
 class TunnelRoute(StrEnum):
@@ -127,6 +160,36 @@ class Tunnelled(Model):
     route: TunnelRoute
 
 
+class CallFailure(Model):
+    """Why Minutehand answered a call in the provider's place: an operation the fake does not implement, or its own
+    error, with the exception's type and, for an internal error, its traceback."""
+
+    kind: CallOutcome = Field(description="`NOT_IMPLEMENTED` or `INTERNAL_ERROR`")
+    message: str = Field(description="What the agent was answered, as its client reads it")
+    exception_type: str = Field(description="The exception's qualified class name")
+    traceback: str | None = Field(default=None, description="Set for an internal error")
+
+
+class InboxAct(StrEnum):
+    """What Minutehand did as a person in the agent's own product (`domain.inboxes`)."""
+
+    LIST = "list"  # read what is waiting on the person
+    DECIDE = "decide"  # made the person's decision on one item
+
+
+class InboxCall(Model):
+    """A call Minutehand made itself, as a person, to the agent's own product: never one of the agent's."""
+
+    inbox: ProviderKey = Field(description="The inbox's `name`")
+    person: str = Field(description="Person.key it acted as")
+    act: InboxAct
+    contract: str | None = Field(
+        default=None,
+        description="Set when the answer departed from the agent's own API description (`OperationRequest`): the "
+        "agent's contract changed, and this says how, naming the field",
+    )
+
+
 class Exchange(Model):
     """One HTTP call as it crossed the wire. Bodies are the provider's own format.
 
@@ -151,10 +214,21 @@ class Exchange(Model):
         description="Set for a burst on a tunnel the proxy never opened: `method` is CONNECT, `path` its "
         "host:port, `status` the 200 the proxy answered the CONNECT with, and no body is kept",
     )
+    outcome: CallOutcome | None = Field(
+        default=None, description="What its answer was; None when nothing classified it (see `CallOutcome`)"
+    )
     late_for: str | None = Field(
         default=None,
         description="Set for a call refused into the lobby of `minutehand serve` that carried a claim of a world "
         "already closed: the id of the world it would have belonged to, had it come before that world closed",
+    )
+    failure: CallFailure | None = Field(
+        default=None, description="Set when Minutehand answered in the fake's place: not implemented, or its own error"
+    )
+    inbox_call: InboxCall | None = Field(
+        default=None,
+        description="Set for a call Minutehand made as a person to the agent's own product (reading an inbox, "
+        "deciding an item): the agent made no such call, and nothing counts it as the agent's",
     )
 
 
@@ -266,8 +340,70 @@ class RecordSnapshot(Model):
     text: str = Field(description="Every string field of the body, joined")
 
 
+class ItemStatus(StrEnum):
+    PENDING = "pending"  # waiting on the person
+    DECIDED = "decided"  # the person decided it, and the product took the decision
+    WITHDRAWN = "withdrawn"  # gone from the person's inbox without their deciding it: the agent took it back
+
+
+class InboxItemSnapshot(Model):
+    """Something waiting on a person in the agent's own product (`domain.inboxes`): an operation to approve, a
+    question raised on its own page. Seen by Minutehand reading the person's inbox, it is the agent asking that
+    person, as a message is; the person's decision is their answer.
+
+    Written as actor AGENT when first seen (`PENDING`) and when it is gone undecided (`WITHDRAWN`); as actor
+    PERSON when they decided (`DECIDED`), or tried to and the product refused (`PENDING`, with `refused`)."""
+
+    kind: Literal["inbox_item"] = "inbox_item"
+    inbox: ProviderKey = Field(description="The inbox's `name`")
+    item_id: str = Field(description="The product's own id for it")
+    person: str | None = Field(description="Person.key it waits on; None when it names nobody in the scenario")
+    waits_on: str = Field(description="Who it waits on, as the product named them, or the person whose list held it")
+    summary: str = Field(description="What it asks, as the product words it")
+    category: str | None = Field(default=None, description="Its kind in the product's own words, when listed")
+    decisions: list[str] = Field(description="The decisions the person can make on it, by name")
+    gates: str | None = Field(
+        default=None, description="The product's id for the operation it holds back, when the inbox says where"
+    )
+    status: ItemStatus
+    decision: str | None = Field(default=None, description="The decision made or tried, by name")
+    said: str | None = Field(default=None, description="The decision as the record says it: 'approved'")
+    permits: bool | None = Field(
+        default=None, description="Whether the decision lets what the item gates go ahead; None when it says nothing"
+    )
+    inputs: dict[str, str] = Field(default={}, description="What the person gave with the decision, by input name")
+    refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
+
+
+class FileSnapshot(Model):
+    """A file in a watched folder of the agent's machine (`AgentUnderTest.watches`), as it stood after a change."""
+
+    kind: Literal["file"] = "file"
+    path: str = Field(description="Absolute")
+    size: int = Field(ge=0, description="Bytes, as the file system reports them")
+
+
+class ToolCallSnapshot(Model):
+    """A tool the agent called on an MCP server (`tools/call`), with what the server answered."""
+
+    kind: Literal["tool_call"] = "tool_call"
+    server: str = Field(description="The server's host, or the name its relay was started with")
+    tool: str
+    arguments: str = Field(description="The call's arguments, as JSON text")
+    result: str | None = Field(default=None, description="The text of the result's content; None when none came")
+    is_error: bool = Field(default=False, description="The server answered an error, or a result marked isError")
+
+
 Snapshot = Annotated[
-    TicketSnapshot | MessageSnapshot | DocumentSnapshot | GrantSnapshot | RecordSnapshot | InteractionSnapshot,
+    ToolCallSnapshot
+    | FileSnapshot
+    | TicketSnapshot
+    | MessageSnapshot
+    | DocumentSnapshot
+    | GrantSnapshot
+    | RecordSnapshot
+    | InteractionSnapshot
+    | InboxItemSnapshot,
     Field(discriminator="kind"),
 ]
 
@@ -323,7 +459,8 @@ class RecordedCall(Model):
     """One HTTP call the proxy saw, with the events it produced, if any.
 
     `provider` is None when no provider claimed the host: the call was captured (`exchange.captured`), relayed
-    unopened on a tunnel (`exchange.tunnelled`) or, when both are None, refused. `first_seq > last_seq` means the
+    unopened on a tunnel (`exchange.tunnelled`), made by Minutehand as a person (`exchange.inbox_call`) or, when
+    all three are None, refused. `first_seq > last_seq` means the
     call produced no event. `wake` and `sim_time` are those in progress when the call began.
     """
 
@@ -338,4 +475,9 @@ class RecordedCall(Model):
     def refused(self) -> bool:
         """No provider claimed it, nothing captured it and no tunnel carried it: it was answered 502 and reached
         nothing."""
-        return self.provider is None and self.exchange.captured is None and self.exchange.tunnelled is None
+        return (
+            self.provider is None
+            and self.exchange.captured is None
+            and self.exchange.tunnelled is None
+            and self.exchange.inbox_call is None
+        )

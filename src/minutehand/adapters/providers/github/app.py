@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.github import content, graphql, search, state, wire
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.world import Operation
@@ -201,6 +202,7 @@ class GitHubApi:
             if armed.answered >= fault.times or (fault.resource is not None and fault.resource is not resource):
                 continue
             self._world.spend(ref, armed)
+            answering.injected()
             return self._faulted(fault, resource, caller)
         return None
 

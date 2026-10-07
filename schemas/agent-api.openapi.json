@@ -1,0 +1,637 @@
+{
+  "components": {
+    "schemas": {
+      "AgentReport": {
+        "additionalProperties": false,
+        "description": "The answer to \"are you still working?\" and \"when do you next need to wake?\".",
+        "properties": {
+          "commitments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Commitment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Commitments"
+          },
+          "next_wake": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next Wake"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "AgentReport",
+        "type": "object"
+      },
+      "AgentStatus": {
+        "enum": [
+          "working",
+          "idle",
+          "done"
+        ],
+        "title": "AgentStatus",
+        "type": "string"
+      },
+      "Commitment": {
+        "additionalProperties": false,
+        "description": "Something the agent says it is waiting for. Optional; unlocks the time checks.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "expected_by": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected By"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "person_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Person Email"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommitmentStatus",
+            "default": "open"
+          },
+          "waiting_on": {
+            "$ref": "#/components/schemas/WaitingOn"
+          }
+        },
+        "required": [
+          "key",
+          "description",
+          "waiting_on",
+          "opened_at"
+        ],
+        "title": "Commitment",
+        "type": "object"
+      },
+      "CommitmentStatus": {
+        "enum": [
+          "open",
+          "met",
+          "dropped"
+        ],
+        "title": "CommitmentStatus",
+        "type": "string"
+      },
+      "Decider": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "email",
+          "name"
+        ],
+        "title": "Decider",
+        "type": "object"
+      },
+      "DecisionMade": {
+        "additionalProperties": false,
+        "description": "The default shape of `decide`'s request body: who decided what on which item, and what they gave.",
+        "properties": {
+          "decided_at": {
+            "description": "The simulated moment, ISO 8601",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Inputs",
+            "type": "object"
+          },
+          "item": {
+            "description": "The item's own id",
+            "title": "Item",
+            "type": "string"
+          },
+          "person": {
+            "$ref": "#/components/schemas/Decider"
+          }
+        },
+        "required": [
+          "item",
+          "decision",
+          "person",
+          "decided_at"
+        ],
+        "title": "DecisionMade",
+        "type": "object"
+      },
+      "DeliveredReply": {
+        "additionalProperties": false,
+        "description": "The default shape of a person's answer delivered to the agent's inbound webhook (`ReplyDelivery.body` None).",
+        "properties": {
+          "from": {
+            "description": "The email of the person who answers",
+            "title": "From",
+            "type": "string"
+          },
+          "from_name": {
+            "description": "Their name",
+            "title": "From Name",
+            "type": "string"
+          },
+          "in_reply_to": {
+            "description": "The id of the send it answers (`ReplyDelivery.thread`)",
+            "title": "In Reply To",
+            "type": "string"
+          },
+          "reply_id": {
+            "description": "The reply's own id in the run",
+            "title": "Reply Id",
+            "type": "string"
+          },
+          "sent_at": {
+            "description": "The simulated moment it is sent, ISO 8601",
+            "title": "Sent At",
+            "type": "string"
+          },
+          "subject": {
+            "description": "'Re: ' and the send's subject; empty when it had none",
+            "title": "Subject",
+            "type": "string"
+          },
+          "text": {
+            "description": "What they wrote",
+            "title": "Text",
+            "type": "string"
+          },
+          "to": {
+            "description": "The address the agent sent from, else the first it wrote to",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reply_id",
+          "from",
+          "from_name",
+          "to",
+          "subject",
+          "text",
+          "in_reply_to",
+          "sent_at"
+        ],
+        "title": "DeliveredReply",
+        "type": "object"
+      },
+      "EntityKind": {
+        "enum": [
+          "message",
+          "ticket",
+          "comment",
+          "document",
+          "channel",
+          "record",
+          "inbox_item",
+          "due",
+          "file",
+          "tool_call",
+          "database"
+        ],
+        "title": "EntityKind",
+        "type": "string"
+      },
+      "EntityRef": {
+        "additionalProperties": false,
+        "properties": {
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EntityKind"
+          },
+          "provider": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "kind",
+          "external_id"
+        ],
+        "title": "EntityRef",
+        "type": "object"
+      },
+      "PendingItem": {
+        "additionalProperties": false,
+        "description": "One item in the default shape of a list: what `listPending` answers each item as.",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category"
+          },
+          "decisions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The decisions allowed on it; None: every one",
+            "title": "Decisions"
+          },
+          "gates": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The id of the operation it holds back",
+            "title": "Gates"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "waits_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The email of whom it waits on, for a list of everyone's",
+            "title": "Waits On"
+          }
+        },
+        "required": [
+          "id",
+          "summary"
+        ],
+        "title": "PendingItem",
+        "type": "object"
+      },
+      "PendingPage": {
+        "additionalProperties": false,
+        "description": "The default shape of `listPending`'s answer: one page of what waits on the person asked for.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PendingItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The cursor of the next page; None on the last",
+            "title": "Next"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PendingPage",
+        "type": "object"
+      },
+      "WaitingOn": {
+        "enum": [
+          "person",
+          "system",
+          "date",
+          "result"
+        ],
+        "title": "WaitingOn",
+        "type": "string"
+      },
+      "WakeReason": {
+        "enum": [
+          "start",
+          "due",
+          "person_replied",
+          "direction",
+          "tick"
+        ],
+        "title": "WakeReason",
+        "type": "string"
+      },
+      "WakeRequest": {
+        "additionalProperties": false,
+        "description": "\"It is now `now`; go.\" Sent each time the clock reaches a due moment.",
+        "properties": {
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What the owner said; set on a DIRECTION wake only",
+            "title": "Direction"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Set on the START wake only",
+            "title": "Goal"
+          },
+          "now": {
+            "format": "date-time",
+            "title": "Now",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/WakeReason"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "now",
+          "reason"
+        ],
+        "title": "WakeRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Every operation is optional. The agent file names the URL of each one it implements.",
+    "title": "What an agent may implement for Minutehand",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/inboxes/{inbox}/items/{item}/decision": {
+      "post": {
+        "operationId": "decide",
+        "parameters": [
+          {
+            "description": "The inbox's name in the agent file",
+            "in": "path",
+            "name": "inbox",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The item's own id",
+            "in": "path",
+            "name": "item",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionMade"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "The decision was taken; any other status is the product refusing it"
+          }
+        },
+        "summary": "A person decides one item"
+      }
+    },
+    "/inboxes/{inbox}/pending": {
+      "get": {
+        "operationId": "listPending",
+        "parameters": [
+          {
+            "description": "The inbox's name in the agent file",
+            "in": "path",
+            "name": "inbox",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The email of the person whose items are asked for",
+            "in": "query",
+            "name": "person",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The `next` of the page before; absent for the first",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingPage"
+                }
+              }
+            },
+            "description": "One page of items"
+          }
+        },
+        "summary": "What waits on one person in the agent's own product, a page at a time"
+      }
+    },
+    "/replies": {
+      "post": {
+        "operationId": "deliverReply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveredReply"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "The reply was taken"
+          }
+        },
+        "summary": "A person's answer to one of the agent's captured sends, in the default shape"
+      }
+    },
+    "/report": {
+      "get": {
+        "operationId": "report",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentReport"
+                }
+              }
+            },
+            "description": "The agent's report now"
+          }
+        },
+        "summary": "Whether the agent is still working, and when it next needs to wake"
+      }
+    },
+    "/wake": {
+      "post": {
+        "operationId": "wake",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WakeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "The wake was taken"
+          }
+        },
+        "summary": "It is now `now`; go. Answered at once; the work may go on after"
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Wherever the agent listens",
+      "url": "http://127.0.0.1:8790"
+    }
+  ]
+}

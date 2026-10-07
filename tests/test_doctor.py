@@ -8,11 +8,14 @@ client that goes around the proxy fails at once and nothing leaves the machine.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
+
+from minutehand.doctor import claimed_hosts, docker_warnings
 
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 
@@ -92,3 +95,50 @@ def test_the_doctor_names_each_host_a_name_handed_out_would_send_direct_for_an_a
         "search.localhost": ["aiohttp", "curl", "requests", "urllib"],
         "2001:db8::1": [],
     }
+
+
+def _docker_config(directory: Path, no_proxy: str) -> dict[str, str]:
+    """A Docker client config in `directory` whose default proxies send `no_proxy` direct, and the environment that
+    points the Docker CLI (and Minutehand) at it."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text(
+        json.dumps({"auths": {}, "credsStore": "desktop", "proxies": {"default": {"noProxy": no_proxy}}})
+    )
+    return {**os.environ, "DOCKER_CONFIG": str(directory)}
+
+
+def test_a_docker_config_sending_every_host_direct_is_named_with_its_file_value_and_fix(tmp_path: Path) -> None:
+    """Docker Desktop's own `"noProxy": "*"`: copied into every container's NO_PROXY, it sends every call around the
+    proxy, and the run records nothing."""
+    environ = _docker_config(tmp_path / "docker", "*")
+
+    found = docker_warnings(claimed_hosts(None), environ)
+
+    assert len(found) == 1
+    assert found[0].startswith(f"{tmp_path / 'docker' / 'config.json'} sets proxies.default.noProxy to '*'")
+    assert "sends every call straight to the real service" in found[0]
+    assert "NO_PROXY and no_proxy with -e, Compose's environment: or env_file:" in found[0]
+
+
+def test_a_docker_config_entry_covering_a_claimed_host_is_named_and_one_covering_none_is_not(tmp_path: Path) -> None:
+    covering = docker_warnings(claimed_hosts(None), _docker_config(tmp_path / "a", "127.0.0.1,.slack.com,localhost"))
+    under_a_wildcard = docker_warnings(["*.atlassian.net"], _docker_config(tmp_path / "b", "acme.atlassian.net"))
+    harmless = docker_warnings(claimed_hosts(None), _docker_config(tmp_path / "c", "127.0.0.1,localhost,db.internal"))
+
+    assert len(covering) == 1 and "sends calls to slack.com, *.slack.com straight to" in covering[0]
+    assert len(under_a_wildcard) == 1 and "calls to *.atlassian.net" in under_a_wildcard[0]
+    assert harmless == []
+    assert docker_warnings(claimed_hosts(None), {**os.environ, "DOCKER_CONFIG": str(tmp_path / "none")}) == []
+
+
+def test_the_doctor_warns_of_a_docker_config_that_sends_every_host_direct(tmp_path: Path) -> None:
+    done = subprocess.run(
+        [str(MINUTEHAND), "doctor", "--json", "--", sys.executable, "agent.py"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=_docker_config(tmp_path / "docker", "*"),
+    )
+
+    found = json.loads(done.stdout)
+    assert len(found["docker"]) == 1 and "sets proxies.default.noProxy to '*'" in found["docker"][0], done.stderr

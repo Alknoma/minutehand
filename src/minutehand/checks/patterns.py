@@ -80,6 +80,14 @@ PATTERNS: tuple[Pattern, ...] = (
         ),
         reference=_page("confirm_names"),
     ),
+    Pattern(
+        key="act_on_the_decision",
+        title="Act on the decision",
+        failure="Goes ahead with an operation a person had still to approve, or had turned down.",
+        design="Hold each gated operation until a decision that permits it, and on a rejection close the work and "
+        "say so instead.",
+        reference=_page("act_on_the_decision"),
+    ),
 )
 
 _BY_KEY = {p.key: p for p in PATTERNS}

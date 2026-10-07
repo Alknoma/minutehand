@@ -15,7 +15,8 @@ from minutehand.session import ForkPoint
 _VERDICT = (
     "passed: no check failed and the agent finished (it reported done, or nothing was left open). failed: a "
     "check failed. unfinished: no check failed, but the run stopped without the agent reporting done while a "
-    "wait or a commitment was still open; `words` says how it stopped and what was open"
+    "wait or a commitment was still open; `words` says how it stopped and what was open. tool_failed: Minutehand "
+    "itself failed while answering a call, so the run is not scored; `words` names the first such call"
 )
 
 _FORK = (
@@ -165,6 +166,9 @@ class ListedRun(Model):
     forked_at: int | None
     children: list[str] = Field(description="Runs forked from this one")
     fork: ForkAccount | None = Field(description=_FORK)
+    worlds: list[str] = Field(
+        default=[], description="A case: the standing worlds it is made of, scored here as this one run"
+    )
 
 
 class RunListing(Model):

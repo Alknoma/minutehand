@@ -6,7 +6,8 @@ asked for again, except for a person a `PersonChange` changes: each message to t
 (no reply decided, or one decided that had not landed yet) is put to them again under their new behaviour.
 
 The agent's own state comes back through the restore sequence in `application.restore`, and is verified there
-against the report recorded at the checkpoint. Without hooks the fork is refused, because a world rewound under
+against the report recorded at the checkpoint: a database Minutehand fronts is made again from its base and the
+writes recorded up to the checkpoint (`application.databases`), and everything else through the agent's hooks. Without hooks the fork is refused, because a world rewound under
 an agent that remembers the future is not a rerun; so is a fork from a checkpoint at which the agent did not
 settle. Every refusal that can be decided from the parent is decided before the child run exists, and a child
 refused after it exists (its restore failed) is discarded, so no refusal leaves a run behind.
@@ -32,23 +33,35 @@ from minutehand.application.checkpoint import (
     NotRestorable,
     PendingBooking,
     PendingReply,
+    Replayable,
     Restorable,
     checkpoints,
 )
-from minutehand.application.orchestrator import Mounts, Orchestrator, Reach, Scorer, Services
+from minutehand.application.databases import PutBack, refuse_unreplayable
+from minutehand.application.inboxes import Inboxes, items_in
+from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, Reach, Scorer, Services
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, Traffic, restore_agent
 from minutehand.application.run_clock import RunClock
 from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.experiment import DeadlineShift, Fork, ModelSwap, PersonChange, PromptPatch, TicketEdit
+from minutehand.domain.experiment import (
+    DeadlineShift,
+    DispatchChange,
+    Fork,
+    ModelSwap,
+    PersonChange,
+    PromptPatch,
+    TicketEdit,
+)
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
-from minutehand.domain.world import Actor, MessageSnapshot, Operation
+from minutehand.domain.world import Actor, InboxItemSnapshot, ItemStatus, MessageSnapshot, Operation, RecordedCall
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
+from minutehand.ports.database import FrontsDatabase
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -64,7 +77,7 @@ FORK_RECORD = "fork.json"
 CANNOT_REWIND = (
     "A fork rewinds the fakes' world and the agent's own state; it cannot rewind what a real third-party service "
     "the run reached keeps, what a model provider keeps on its side, the AWS provider's queues and schedules, "
-    "or work the agent does in the background after the quiet period."
+    "what an external emulator holds, or work the agent does in the background after the quiet period."
 )
 
 
@@ -75,9 +88,10 @@ class OnTheWire(Protocol):
 
 
 def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
-    """The scenario the child runs: people and deadline as the fork's overrides say."""
+    """The scenario the child runs: people, deadline and dispatch rules as the fork's overrides say."""
     people = {p.key: p for p in scenario.people}
     deadline_after = scenario.deadline_after
+    dispatch = scenario.dispatch
     for override in fork.overrides:
         if isinstance(override, PersonChange):
             if override.person not in people:
@@ -87,12 +101,15 @@ def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
             if deadline_after is None:
                 raise RunRefused(f"the fork shifts the deadline of scenario {scenario.name}, which has none")
             deadline_after += override.by
+        elif isinstance(override, DispatchChange):
+            dispatch = override.rules
     try:
         return Scenario.model_validate(
             {
                 **scenario.model_dump(),
                 "people": [p.model_dump() for p in people.values()],
                 "deadline_after": deadline_after,
+                "dispatch": [r.model_dump() for r in dispatch],
             }
         )
     except ValidationError as e:
@@ -122,6 +139,9 @@ async def fork_run(
     progress: Progress | None = None,
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
     manifests: Sequence[Manifest] = (),
+    environment: Environment | None = None,
+    inboxes: Inboxes | None = None,
+    databases: Sequence[FrontsDatabase] = (),
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -132,14 +152,23 @@ async def fork_run(
 
     `manifests` are those of every installed provider, beside the run's own `services`: a provider the agent called
     without the scenario or agent file naming it is still one whose state may be outside the log.
+
+    `databases` are the relays of the agent's fronted databases (`AgentUnderTest.databases`): each is made again from
+    its base and the writes the child can see, between the agent's program stopping and starting.
     """
     if fork.parent_run != parent.run_id:
         raise RunRefused(f"the fork names parent {fork.parent_run}; the record given is {parent.run_id}")
     hooks = agent.state
-    if hooks is None:
+    if [d.name for d in agent.databases] != [f.database.name for f in databases]:
         raise RunRefused(
-            f"agent {agent.name} has no state hooks, so its own state cannot be rewound; "
-            "declare `state: {snapshot: [...], restore: [...]}` or rerun from the beginning. " + CANNOT_REWIND
+            f"agent {agent.name} declares databases {[d.name for d in agent.databases]} and the fork was handed "
+            f"relays for {[f.database.name for f in databases]}"
+        )
+    if hooks is None and not databases:
+        raise RunRefused(
+            f"agent {agent.name} has no state hooks and fronts no database, so its own state cannot be rewound; "
+            "declare `state: {snapshot: [...], restore: [...]}` or `databases:`, or rerun from the beginning. "
+            + CANNOT_REWIND
         )
     on_wire = [o for o in fork.overrides if isinstance(o, (PromptPatch, ModelSwap))]
     if on_wire and wire is None:
@@ -158,11 +187,14 @@ async def fork_run(
         parent_store = open_parent(clock)
         checkpoint = _checkpoint_at(parent_store, parent.run_id, fork.at_seq)
         restorable = _restorable(checkpoint, agent, parent.run_id, fork.at_seq)
-        _refuse_unkept(parent_store, restorable, agent, parent.run_id, fork.at_seq)
+        if isinstance(restorable, Restorable):
+            _refuse_unkept(parent_store, restorable, agent, parent.run_id, fork.at_seq)
+        refuse_unreplayable(databases, parent_store, fork.at_seq)
         _refuse_pending_bookings(checkpoint, parent.run_id, fork.at_seq)
         _refuse_state_outside_log(
             parent_store, [*manifests, *(p.manifest for p in services.providers)], checkpoint, fork.at_seq
         )
+        _refuse_emulated(parent_store, checkpoint, fork.at_seq)
         child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         try:
             clock.jump(checkpoint.now)
@@ -187,20 +219,37 @@ async def fork_run(
                 prior_wakes=[w for w in parent.wakes if w.index <= checkpoint.wake],
                 traffic=traffic,
                 channels=channels,
+                environment=environment,
+                inboxes=Inboxes(changed, list(inboxes.reaches.values())) if inboxes is not None else None,
             )
             orchestrator.mount()
-            with materialised(
-                parent_store, restorable.snapshot_of, restorable.wake, restore_dir(state_dir, child_id)
-            ) as snapshot:
+            put_back = PutBack(databases, child) if databases else None
+            if isinstance(restorable, Restorable):
+                assert hooks is not None
+                with materialised(
+                    parent_store, restorable.snapshot_of, restorable.wake, restore_dir(state_dir, child_id)
+                ) as snapshot:
+                    restored = await restore_agent(
+                        hooks,
+                        snapshot,
+                        checkpoint_seq=fork.at_seq,
+                        recorded=restorable.report,
+                        reports=reports,
+                        own=own,
+                        progress=progress,
+                        fingerprint=restorable.fingerprint,
+                        databases=put_back,
+                    )
+            else:
                 restored = await restore_agent(
-                    hooks,
-                    snapshot,
+                    None,
+                    None,
                     checkpoint_seq=fork.at_seq,
                     recorded=restorable.report,
                     reports=reports,
                     own=own,
                     progress=progress,
-                    fingerprint=restorable.fingerprint,
+                    databases=put_back,
                 )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)
@@ -227,8 +276,9 @@ def _checkpoint_at(store: Store, parent: str, at_seq: int) -> Checkpoint:
     return found[at_seq]
 
 
-def _restorable(checkpoint: Checkpoint, agent: AgentUnderTest, parent: str, at_seq: int) -> Restorable:
-    """The snapshot to restore from, or the reason there is none, recorded when the checkpoint was taken."""
+def _restorable(checkpoint: Checkpoint, agent: AgentUnderTest, parent: str, at_seq: int) -> Restorable | Replayable:
+    """The snapshot to restore from, or that the agent's state is all in its fronted databases, or the reason there
+    is neither, recorded when the checkpoint was taken."""
     state = checkpoint.agent
     if isinstance(state, NotRestorable):
         raise RunRefused(
@@ -328,6 +378,30 @@ def _refuse_state_outside_log(store: Store, manifests: Sequence[Manifest], check
         )
 
 
+def _refuse_emulated(store: Store, checkpoint: Checkpoint, at_seq: int) -> None:
+    """An external emulator keeps its state outside the run's record, where no fork can put it back: a fork after
+    the parent's first call to one would be answered by the emulator as it is now, holding everything the parent
+    did after the fork as well. Refused, naming the emulator and that call, as a provider whose state is outside
+    the log is (`_refuse_state_outside_log`)."""
+    first: dict[str, RecordedCall] = {}
+    for call in store.calls():
+        captured = call.exchange.captured
+        if captured is None or captured.emulator is None or call.wake > checkpoint.wake:
+            continue
+        first.setdefault(captured.emulator, call)
+    if first:
+        named = "; ".join(
+            f"{name} (first {c.exchange.method} {c.exchange.host}{c.exchange.path.split('?')[0]} at wake {c.wake})"
+            for name, c in first.items()
+        )
+        raise RunRefused(
+            f"the fork at seq {at_seq} of run {store.run_id} cannot rewind the external emulator(s) it had used: "
+            f"{named}. An external emulator keeps its state outside the run's record, so a fork would be answered "
+            "by it as the parent left it. Fork from a checkpoint before the agent first called it, or rerun from "
+            "the beginning"
+        )
+
+
 async def _ask_again(
     child: Store,
     scenario: Scenario,
@@ -336,8 +410,8 @@ async def _ask_again(
     replier: Replier,
     clock: Clock,
 ) -> Checkpoint:
-    """Put every message to a changed person that they have not answered by the fork again, under their new
-    behaviour.
+    """Put every message to a changed person that they have not answered by the fork again, and every item still
+    waiting on them in the agent's own product, under their new behaviour.
 
     A reply that landed before the fork stays as it was: a `PersonChange` does not withdraw what was already said.
     A reply decided before the fork that had not landed by it was never said: it is withdrawn, as an edited
@@ -356,16 +430,23 @@ async def _ask_again(
     changed = {p.email: p for p in scenario.people if p.key in people}
     pending = [p for p in checkpoint.pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
     count = len(replies)
+    held = items_in(events)
     for event in events:
         after = event.after
-        if not (
+        if event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot):
+            emails = [p.email for p in scenario.people if p.key == after.person]
+            if held[event.entity].status is not ItemStatus.PENDING:
+                continue  # decided or withdrawn by the fork: nothing is left to decide
+        elif (
             event.actor is Actor.AGENT
             and event.operation is Operation.CREATE
             and isinstance(after, MessageSnapshot)
             and after.answerable
         ):
+            emails = after.recipient_emails
+        else:
             continue
-        for email in after.recipient_emails:
+        for email in emails:
             if email not in changed or (event.entity, changed[email].key) in answered:
                 continue
             reply = await replier.decide(changed[email], event, [e for e in events if e.seq <= event.seq], clock)

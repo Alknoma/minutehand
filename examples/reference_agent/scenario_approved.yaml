@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# Telling Owen waits on Nadia's approval (REFERENCE_APPROVER=nadia@example.com); she approves within a day.
+name: venue_approved
+goal: Get a venue confirmed for the team's offsite on Friday, and tell Owen its booking reference.
+owner: owen
+starts_at: 2026-08-24T09:00:00Z      # a Monday
+deadline_after: P5D
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, replies: []}}
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@lakeside.example
+    reply:
+      kind: scripted
+      delay: {shortest: PT20H, longest: P2D}
+      replies:
+        - {to_ask: 1, text: "Yes, Lakeside Hall is free on Friday. Your booking reference is LH-2291."}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    credential: {kind: generated, env: REFERENCE_APPROVER_TOKEN}   # how she signs in to the agent's web app
+    reply:
+      kind: scripted
+      delay: {shortest: PT2H, longest: P1D}
+      replies: []
+      decisions: [{decision: approve}]
+expect:
+  - {kind: person_asked, person: rosa, by: PT1H}
+  - {kind: relayed, said_by: rosa, to: owen, tell: LH-2291}

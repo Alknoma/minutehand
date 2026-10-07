@@ -25,6 +25,7 @@ from typing import Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 Json = dict[str, JsonValue]
@@ -39,7 +40,11 @@ class Wire(Model):
 # --------------------------------------------------------------------------- errors
 
 
-class Refusal(Exception):
+ERROR_TYPE = "application/json;charset=UTF-8"
+"""The content type Jira answers with, refusals included."""
+
+
+class Refusal(ServiceRefusal):
     """Jira answered with an error status: `messages` are its `errorMessages`, `fields` its `errors` map."""
 
     def __init__(
@@ -56,9 +61,27 @@ class Refusal(Exception):
         self.fields = dict(fields or {})
         self.retry_after = retry_after
 
+    def render(self, asked: Asked) -> Rendered:
+        """`{"errorMessages", "errors"}`, with `Retry-After` when it says when to retry and Basic's challenge on a
+        401."""
+        headers = [("retry-after", str(self.retry_after))] if self.retry_after is not None else []
+        if self.status == 401:
+            headers = [("www-authenticate", 'Basic realm="protected-area"')]
+        return Rendered(status=self.status, content_type=ERROR_TYPE, body=error_body(self), headers=headers)
+
 
 def error_body(refusal: Refusal) -> bytes:
     return json.dumps({"errorMessages": refusal.messages, "errors": refusal.fields}).encode()
+
+
+def error_answer(status: int, message: str) -> Rendered:
+    """What Minutehand answers in Jira's place (501, 500), in `{"errorMessages": [message], "errors": {}}`, the body
+    every Jira client reads a failure from. Jira's body has no code."""
+    return Rendered(
+        status=status,
+        content_type=ERROR_TYPE,
+        body=json.dumps({"errorMessages": [message], "errors": {}}).encode(),
+    )
 
 
 def unauthenticated() -> Refusal:

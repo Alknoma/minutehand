@@ -51,7 +51,7 @@ HISTORY = [
     {"by": "mila", "text": "third", "ago": "PT1H"},
 ]  # fmt: skip
 TRACKERS = ("jira", "youtrack", "asana")
-DOCUMENTS = ("google_drive", "notion", "microsoft")
+DOCUMENTS = ("google_workspace", "notion", "microsoft")
 MESSAGING = ("slack", "microsoft")
 
 
@@ -126,12 +126,12 @@ def additions(provider: str) -> dict[str, dict[str, list[dict[str, object]]]]:
         found["person and their channel"] = {"people": [IVY], "channels": [
             {"provider": provider, "name": "ivys-room", "members": ["ivy", "owen"],
              "history": [{"by": "ivy", "text": "hello", "ago": "PT2H"}]}]}  # fmt: skip
-    if provider == "google_drive":
+    if provider == "google_workspace":
         found["space"] = {"spaces": [{"provider": provider, "name": "Team", "members": [{"person": "owen"}]}]}
     return found
 
 
-PROVIDERS = ["slack", "asana", "jira", "youtrack", "google_drive", "notion", "microsoft", "github"]
+PROVIDERS = ["slack", "asana", "jira", "youtrack", "google_workspace", "notion", "microsoft", "github"]
 CASES = [(p, name) for p in PROVIDERS for name in additions(p)]
 
 

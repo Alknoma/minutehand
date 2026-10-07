@@ -1,0 +1,27 @@
+# The Vercel AI SDK recipe, as Minutehand reaches it. The port is the one agent.mjs listens on.
+name: vercel_ai_sdk_recipe
+
+# The goal arrives on the first wake (POST /wake, reason "start").
+goal:
+  kind: by_wake
+
+# After every wake Minutehand asks GET /report, and wakes the agent again (reason "due") at the next_wake it names:
+# the earliest expected-by date in the agent's memory.
+wakes:
+  - kind: reported
+    wake_url: http://127.0.0.1:8715/wake
+    report_url: http://127.0.0.1:8715/report
+
+# A person's Slack message to the agent is pushed here, signed with a secret made for each run.
+inbound:
+  - provider: slack
+    url: http://127.0.0.1:8715/slack/events
+    secret:
+      kind: generated
+      env: AGENT_SLACK_SIGNING_SECRET
+
+# @slack/web-api takes no proxy from the environment, so it reaches Slack by a base URL: Minutehand sets SLACK_API_URL
+# to its proxy's http://127.0.0.1:<port>/_host/slack.com/api/, answered exactly as https://slack.com/api/ through the
+# proxy would be.
+base_urls:
+  - {host: slack.com, env: SLACK_API_URL, path: /api/}

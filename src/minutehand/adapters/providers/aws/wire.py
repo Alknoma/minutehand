@@ -18,10 +18,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, ValidationError
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 
-class Refusal(Exception):
+class Refusal(ServiceRefusal):
     """A request AWS itself would refuse. Answered as AWS answers it, without reaching moto."""
 
     def __init__(self, error_type: str, message: str, status: int = 400) -> None:
@@ -32,6 +33,21 @@ class Refusal(Exception):
 
     def body(self) -> bytes:
         return json.dumps({"message": self.message}).encode()
+
+    def render(self, asked: Asked) -> Rendered:
+        """AWS's JSON error: the type in `x-amzn-errortype`, `{"message": …}` in the body."""
+        return error(self.status, self.error_type, self.message)
+
+
+def error(status: int, error_type: str, message: str) -> Rendered:
+    """An error as AWS's JSON protocols answer one, which botocore raises as `ClientError` with `error_type` as its
+    code and `message` as its message."""
+    return Rendered(
+        status=status,
+        content_type="application/json",
+        body=json.dumps({"message": message}).encode(),
+        headers=[("x-amzn-errortype", error_type)],
+    )
 
 
 class NotImplementedByProvider(Refusal):

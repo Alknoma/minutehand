@@ -48,6 +48,7 @@ outbound:
 | `acknowledge` | Never leaves the machine. Answered with the declared status, headers and JSON or text body, or a route's | The request, the declared answer | Sends: an email, a webhook, an SMS |
 | `pass_through` | Sent to the real host unchanged; the answer reaches the agent chunk by chunk as it arrives (the tee `--record-model-calls` uses) | The request and the real answer | Lookups: a search, a page fetch |
 | `replay` | Answered from an earlier run's recording of the same call, marked `x-minutehand-replayed: <source>` | The request and the replayed answer, with `replayed_from` | Lookups whose answers must not drift between runs |
+| `forward` | Sent to an external emulator the same file declares (`emulators:`), streamed, with `x-minutehand-world`, `x-minutehand-wake`, `x-minutehand-time` and a continued `traceparent` added to the forwarded copy only | The request and the emulator's answer, with the emulator, the operation and what the answer was (`Exchange.outcome`) | A service with a fake outside Minutehand: `docs/external-emulators.md` |
 
 `name` (default: the host with every other character an underscore, `api_mail_example`) is what a send's
 messages are recorded under. Two declarations of one host, or of overlapping hosts, are refused. **A host a
@@ -57,7 +58,13 @@ provider claims, or a model API, cannot be declared:** the run is refused before
 A path into a body is dotted keys, `[n]` for one list item and `[*]` for every item. A JSON body is read as
 JSON and a form body by its fields; anything else has no paths.
 
+A `forward` host's emulator that is down or does not answer is never bypassed: the call is answered 502 or 504
+naming it and kept `unavailable`, and the run's environment failed (exit 2). A fork after the run first used an
+emulator is refused, since what it holds is outside the record (`docs/external-emulators.md`).
+
 ## Discovery: `--capture-unknown`
+
+**Only reads: `--capture-unknown reads`.** A GET, HEAD or OPTIONS to an undeclared host is passed through and kept, as below; any other method is refused with 502 and recorded, as without the flag, so nothing is written anywhere real. A read an API sends as a POST (GraphQL, an RPC) is refused: declare its host. `UnknownHosts.READS`, `tests/capture/test_modes.py`.
 
 For an agent's first run, when nobody knows yet what it calls: `minutehand run … --capture-unknown` (and `fork`,
 and `serve`) passes every undeclared, unclaimed host through and keeps the call, instead of refusing it. The
@@ -142,7 +149,8 @@ the request that endpoint expects, with no provider code:
         timestamp_header: null                                  # a header carrying {timestamp} alone, if any
 ```
 
-The body is structure, and each string in it may name `{reply_id}`, `{from}`, `{from_name}`, `{to}`,
+Without `body`, the reply is sent in the default shape, every field under its own name (`DeliveredReply`,
+`deliverReply` in `schemas/agent-api.openapi.json`). The body is structure, and each string in it may name `{reply_id}`, `{from}`, `{from_name}`, `{to}`,
 `{subject}` (`Re: ` and the send's), `{text}`, `{in_reply_to}` and `{sent_at}`; any other name is refused when
 the file is read. `{message_id}` in an acknowledged answer is replaced by `<name>-<seq>`, so each send has the id a
 real email API would hand back, and `thread` reads it back from the answer as stored. A secret `generated` is

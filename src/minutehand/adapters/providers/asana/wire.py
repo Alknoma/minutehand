@@ -30,6 +30,7 @@ from urllib.parse import parse_qsl
 
 from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, TypeAdapter, model_serializer
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 API_BASE = "https://app.asana.com/api/1.0"
@@ -49,7 +50,11 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TAG = re.compile(r"<[^>]+>")
 
 
-class Refusal(Exception):
+JSON = "application/json; charset=utf-8"
+"""The content type of every answer, refusals included."""
+
+
+class Refusal(ServiceRefusal):
     """Asana answered with an error. `status` and `message` are Asana's own."""
 
     def __init__(self, status: int, message: str, *, retry_after: int | None = None) -> None:
@@ -57,6 +62,17 @@ class Refusal(Exception):
         self.status = status
         self.message = message
         self.retry_after = retry_after
+
+    def render(self, asked: Asked) -> Rendered:
+        """Asana's envelope, `{"errors": [{"message", "help"}]}`, with `Retry-After` when it says when to retry."""
+        headers = [("retry-after", str(self.retry_after))] if self.retry_after is not None else []
+        return Rendered(status=self.status, content_type=JSON, body=failed(self.message), headers=headers)
+
+
+def error_answer(status: int, message: str) -> Rendered:
+    """What Minutehand answers in Asana's place (501, 500), in Asana's envelope: the `asana` client raises
+    `ApiException` with the body. The envelope has no place for a code."""
+    return Rendered(status=status, content_type=JSON, body=failed(message))
 
 
 def bad(message: str) -> Refusal:
@@ -751,13 +767,16 @@ def _enum_option(definition: AsanaCustomField, gid: str, where: str) -> str:
     return gid
 
 
-class OAuthRefusal(Exception):
+class OAuthRefusal(ServiceRefusal):
     """The OAuth endpoint's own error shape (RFC 6749), not the API's envelope."""
 
     def __init__(self, error: str, description: str) -> None:
         super().__init__(description)
         self.error = error
         self.description = description
+
+    def render(self, asked: Asked) -> Rendered:
+        return Rendered(status=400, content_type=JSON, body=oauth_failed(self))
 
 
 class TokenGrant(Model):

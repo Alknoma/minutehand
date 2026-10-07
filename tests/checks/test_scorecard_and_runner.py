@@ -11,13 +11,16 @@ from minutehand.checks.runner import RunResult, discover, evaluate, evaluate_run
 from minutehand.domain.checks import FindingKind, PersonBurden
 from minutehand.domain.run import StopReason, VerdictKind
 from minutehand.domain.scenario import Silent, TicketCreated
-from tests.checks.world import Log, at, person, reply, scenario, view
+from tests.checks.world import ONE_WAKE, Log, at, person, reply, scenario, view
 from tests.test_checks_on_reference_run import TIMELINE, WORLD
 
 OWNER, SOFIA = person("owner"), person("sofia")
 
 CHECKS = {
     "acted_after_deadline",
+    "acted_on_repeated_wake",
+    "acted_without_approval",
+    "agent_contract_changed",
     "chased_absent_person",
     "duplicate_ticket",
     "expectations",
@@ -27,7 +30,9 @@ CHECKS = {
     "nagged",
     "near_miss_name",
     "no_follow_up",
+    "planned_past_due",
     "repeated_message",
+    "reported_against_world",
     "slow_to_react",
     "unmatched_call",
 }
@@ -80,11 +85,13 @@ def test_the_reference_capture_fails_with_the_known_findings_and_names_what_did_
     assert sorted({f.check for f in result.findings}) == ["expectations", "near_miss_name", "repeated_message"]
     assert result.effectiveness.expectations_met == 3 and result.effectiveness.failed_checks == 5
     assert {b.split(":")[0] for b in result.blocked} == {
+        "acted_on_repeated_wake",
         "idle_wake",
         "kept_chasing_after_done",
         "late_follow_up",
         "nagged",
         "no_follow_up",
+        "planned_past_due",
         "slow_to_react",
         "unmatched_call",
     }
@@ -98,7 +105,7 @@ def test_a_clean_run_exits_zero_and_the_ledger_is_built_from_the_world() -> None
     result = evaluate_run(
         scenario(SOFIA, expect=[TicketCreated(assignee="sofia")]),
         log.events,
-        [],
+        [ONE_WAKE],
         [reply(SOFIA, ask, 1.5)],
         unmatched_calls=[],
         stop=StopReason.AGENT_DONE,
@@ -115,7 +122,7 @@ def _result(failing: bool) -> RunResult:
     return (
         evaluate(WORLD, stop=None)
         if failing
-        else evaluate_run(scenario(OWNER), [], [], [], unmatched_calls=[], stop=None)
+        else evaluate_run(scenario(OWNER), [], [ONE_WAKE], [], unmatched_calls=[], stop=None)
     )
 
 

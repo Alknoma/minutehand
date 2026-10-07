@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from minutehand.adapters.providers.microsoft.state import ConversationRecord, UserRecord
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from tests.providers.microsoft.tenant import CONNECTOR, Intercepted, Tenant, bearer, token
 
 
@@ -81,6 +81,13 @@ async def test_update_and_delete_change_only_the_bots_own_activity(connector: Bo
     assert connector.tenant.world.message(sent["id"]) is None
     last = connector.tenant.store.events()[-1]
     assert (last.actor, last.operation) == (Actor.AGENT, Operation.DELETE)
+    said = [e for e in connector.tenant.store.events() if e.entity == last.entity and e.operation is not Operation.READ]
+    assert [(e.operation, e.after.text if isinstance(e.after, MessageSnapshot) else None) for e in said] == [
+        (Operation.CREATE, "draft"),
+        (Operation.UPDATE, "final"),
+        (Operation.DELETE, "final"),
+    ], "every change to a message carries what it said, a delete what it said when it went"
+    assert isinstance(last.after, MessageSnapshot) and last.after.recipient_emails == ["sofia@example.com"]
 
 
 async def test_an_update_with_text_and_a_card_together_is_refused(connector: Bot) -> None:

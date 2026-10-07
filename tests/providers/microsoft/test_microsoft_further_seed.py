@@ -17,9 +17,18 @@ import pytest
 from minutehand.adapters.providers.microsoft.state import MicrosoftWorld
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
-from minutehand.application.standing import StandingWorld
-from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Seed, SeededChannel, SeededDocument
+from minutehand.application.standing import StandingWorld, WorldRefused
+from minutehand.domain.scenario import (
+    Person,
+    ProviderSeed,
+    Scenario,
+    Seed,
+    SeededChannel,
+    SeededDocument,
+    SharedSpace,
+)
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -229,3 +238,26 @@ def test_a_message_seeded_into_an_open_world_is_listed_in_its_order_before_what_
         assert all(i < sent for i, _ in texts)
     finally:
         store.close()
+
+
+SPACE = {"provider": "microsoft", "name": "Team", "members": [{"person": "owen"}]}
+
+
+def test_a_shared_space_in_a_microsoft_seed_is_refused_at_load_naming_it() -> None:
+    """Microsoft holds no shared space here: one in its seed used to be dropped in silence when the world opened."""
+    registry = Registry.installed()
+    manifests = {m.key: m for m in registry.manifests}
+    seed = Seed.model_validate({**BASE, "spaces": [SPACE]})
+
+    with pytest.raises(RunRefused, match="the shared space 'Team' is on microsoft, which holds no shared spaces"):
+        refuse_unheld(seed, manifests)
+
+
+def test_a_shared_space_added_to_an_open_microsoft_world_is_refused_naming_it(tmp_path: Path) -> None:
+    """A further seed adding one is refused with nothing written, rather than dropped."""
+    world, store = _open(tmp_path)
+    head = store.head()
+
+    with pytest.raises(WorldRefused, match="the shared space 'Team' is on microsoft"):
+        world.extend(spaces=[SharedSpace.model_validate(SPACE)], directory=tmp_path, scratch=_scratch)
+    assert store.head() == head

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from minutehand.adapters.providers.asana.provider import build as asana
-from minutehand.adapters.providers.google_drive.provider import build as google_drive
+from minutehand.adapters.providers.google_workspace.provider import build as google_workspace
 from minutehand.adapters.providers.slack.provider import build as slack
 from minutehand.adapters.providers.youtrack.provider import build as youtrack
 from minutehand.adapters.proxy.policy import Routing
@@ -36,7 +36,7 @@ async def test_one_run_plays_a_ticket_happening_on_asana_and_youtrack_a_document
     scenario = load_scenario(SCENARIO).starting(START)
     clock = RunClock(scenario.starts_at)
     store = SqliteStore(tmp_path / "world.db", "run", clock)
-    providers = [asana(), google_drive(), slack(), youtrack()]
+    providers = [asana(), google_workspace(), slack(), youtrack()]
     chat = providers[2]
     async with Proxy(Routing(Registry.installed()), store, clock, confdir=tmp_path / "ca") as proxy:
         record = await run_scenario(
@@ -58,7 +58,7 @@ async def test_one_run_plays_a_ticket_happening_on_asana_and_youtrack_a_document
         (timedelta(0), "slack", EntityKind.MESSAGE, Operation.CREATE),
         (timedelta(days=1), "asana", EntityKind.TICKET, Operation.UPDATE),
         (timedelta(days=2), "youtrack", EntityKind.COMMENT, Operation.CREATE),
-        (timedelta(days=3), "google_drive", EntityKind.DOCUMENT, Operation.UPDATE),
+        (timedelta(days=3), "google_workspace", EntityKind.DOCUMENT, Operation.UPDATE),
         (timedelta(days=4), "slack", EntityKind.MESSAGE, Operation.CREATE),
     ]
     assert isinstance(by_person[1].after, TicketSnapshot) and by_person[1].after.state is TicketState.DONE

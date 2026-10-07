@@ -14,6 +14,9 @@ and every call to it is captured with the run:
         kind: replay                            # answered from an earlier run's recording
         source: {run: 3f2a9c1e07bb}
         on_miss: pass_through
+      - host: api.tracker.example
+        kind: forward                           # sent to an external emulator (`domain.emulator`)
+        emulator: tracker
 
 A host a provider claims, or a model API, cannot also be declared. A host nobody declares or claims is still
 refused, unless the run captures unknown hosts (`--capture-unknown`).
@@ -28,10 +31,30 @@ import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, model_validator
 
-from minutehand.domain.people import SigningSecret
-from minutehand.domain.scenario import Model, ProviderKey
+from minutehand.domain.scenario import Model, ProviderKey, SigningSecret
+
+
+class UnknownHosts(StrEnum):
+    """What becomes of a call to a host no provider claims and nothing declares."""
+
+    REFUSE = "refuse"  # answered 502 and recorded: the default
+    READS = "reads"  # a GET, HEAD or OPTIONS passed through and kept; anything else refused as above
+    ALL = "all"  # passed through and kept, whatever it is: a first run, to see what an agent calls
+    MODEL = "model"  # a read passed through and kept until the host is written to; a write, and every call after
+    #                  it, answered by a model standing in for the service, never sent
+
+    def captures(self, method: str) -> bool:
+        """Whether a call with this method is passed through and kept rather than refused, before a model answers
+        anything of its host."""
+        if self is UnknownHosts.ALL:
+            return True
+        return self in (UnknownHosts.READS, UnknownHosts.MODEL) and method.upper() in READ_METHODS
+
+
+READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+"""Methods that read by HTTP's own definition. A read sent as a POST (GraphQL, an RPC) is not one of them."""
 
 BODY_LIMIT = 1024 * 1024
 """Bytes of a text or JSON body kept by default. A longer body is kept up to this and marked truncated."""
@@ -101,6 +124,26 @@ email and name), who it goes to (the address the agent sent from, else the first
 text, the id of the message it answers (`thread`), and the simulated moment it is sent (ISO 8601)."""
 
 
+DEFAULT_REPLY_BODY: dict[str, JsonValue] = {name: "{" + name + "}" for name in REPLY_FIELDS}
+"""The body a reply is delivered with when its declaration writes none: every reply field under its own name, the
+shape `DeliveredReply` describes (`deliverReply` in `schemas/agent-api.openapi.json`)."""
+
+
+class DeliveredReply(Model):
+    """The default shape of a person's answer delivered to the agent's inbound webhook (`ReplyDelivery.body` None)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    reply_id: str = Field(description="The reply's own id in the run")
+    sender: str = Field(alias="from", description="The email of the person who answers")
+    from_name: str = Field(description="Their name")
+    to: str = Field(description="The address the agent sent from, else the first it wrote to")
+    subject: str = Field(description="'Re: ' and the send's subject; empty when it had none")
+    text: str = Field(description="What they wrote")
+    in_reply_to: str = Field(description="The id of the send it answers (`ReplyDelivery.thread`)")
+    sent_at: str = Field(description="The simulated moment it is sent, ISO 8601")
+
+
 class ReplySigning(Model):
     """An HMAC-SHA256 over the delivered body, in a header: `format` holds `{hex}` or `{base64}` for the digest,
     and may hold `{timestamp}` (the simulated moment, in Unix seconds), which then also leads what is signed as
@@ -125,33 +168,43 @@ class ReplyDelivery(Model):
     url: str = Field(min_length=1)
     method: Literal["POST", "PUT"] = "POST"
     headers: dict[str, str] = {}
-    body: JsonValue = Field(description="The body, as structure, with `{name}` placeholders in its strings")
+    body: JsonValue = Field(
+        default=None,
+        description="The body, as structure, with `{name}` placeholders in its strings; None: the default shape "
+        "(`DeliveredReply`), every reply field under its own name",
+    )
     form: bool = Field(default=False, description="Sent as application/x-www-form-urlencoded: `body` is flat")
     thread: BodyPath | None = None
     signing: ReplySigning | None = None
 
     @model_validator(mode="after")
     def _names_known_fields(self) -> Self:
-        named = set(_placeholders(self.body))
+        named = set(placeholders(self.body))
         unknown = sorted(named - set(REPLY_FIELDS))
         if unknown:
             raise ValueError(f"a reply's body names {', '.join(unknown)}; it may name {', '.join(REPLY_FIELDS)}")
-        if self.form and not (isinstance(self.body, dict) and all(isinstance(v, str) for v in self.body.values())):
+        if (
+            self.form
+            and self.body is not None
+            and not (isinstance(self.body, dict) and all(isinstance(v, str) for v in self.body.values()))
+        ):
             raise ValueError("a reply sent as a form has a flat body of strings")
         return self
 
 
-def _placeholders(value: JsonValue) -> list[str]:
+def placeholders(value: JsonValue) -> list[str]:
+    """Every `{name}` inside the strings of a template, in order: what it asks to be filled with."""
     if isinstance(value, str):
-        return [m.group(1) for m in _PLACEHOLDER.finditer(value)]
+        return [m.group(1) for m in PLACEHOLDER.finditer(value)]
     if isinstance(value, list):
-        return [n for v in value for n in _placeholders(v)]
+        return [n for v in value for n in placeholders(v)]
     if isinstance(value, dict):
-        return [n for v in value.values() for n in _placeholders(v)]
+        return [n for v in value.values() for n in placeholders(v)]
     return []
 
 
-_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+"""A name to be filled inside a template's string: `{reply_id}`, `{item_id}`."""
 
 
 class _Declared(Model):
@@ -247,10 +300,32 @@ class Replay(_Declared):
     ignore_body: list[BodyPath] = []
 
 
-OutboundHost = Annotated[Acknowledge | PassThrough | Replay, Field(discriminator="kind")]
+class HostHeader(StrEnum):
+    """The `Host` a forwarded call reaches its emulator with."""
+
+    PRESERVE = "preserve"  # the host the agent called (`api.tracker.example`): one emulator can serve several
+    UPSTREAM = "upstream"  # the upstream's own host and port, for a server that checks its own name
 
 
-def refuse_repeats(declared: list[Acknowledge | PassThrough | Replay]) -> None:
+class Forward(_Declared):
+    """The call is sent to an external emulator the same file declares (`domain.emulator.ExternalEmulator`), and
+    kept, both sides verbatim, as a passed-through call is: request and answer streamed through untouched but for
+    the headers `domain.emulator.ADDED_HEADERS` lists and `traceparent`, set on the forwarded copy only.
+
+    `strip` is taken off the front of the path and `prefix` put before what is left, so `/graphql` on the agent's
+    side can be `/tracker/graphql` at the emulator."""
+
+    kind: Literal["forward"] = "forward"
+    emulator: ProviderKey = Field(description="The `name` of the emulator that answers this host")
+    strip: str = Field(default="", pattern=r"^(/[^?#]*)?$")
+    prefix: str = Field(default="", pattern=r"^(/[^?#]*)?$")
+    host_header: HostHeader = HostHeader.PRESERVE
+
+
+OutboundHost = Annotated[Acknowledge | PassThrough | Replay | Forward, Field(discriminator="kind")]
+
+
+def refuse_repeats(declared: list[Acknowledge | PassThrough | Replay | Forward]) -> None:
     """Two declarations of one host, or one name, would leave a call's mode to their order."""
     hosts = [d.host for d in declared]
     keys = [d.key for d in declared]

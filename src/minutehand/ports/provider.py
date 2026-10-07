@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from typing import Protocol, runtime_checkable
 
 from minutehand.domain.clock import Due
+from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     InboundCredential,
     InboundCredentialAsk,
@@ -47,6 +48,17 @@ class Provider(Protocol):
 
     def seed(self, scenario: Scenario, world: Store) -> None:
         """Write the scenario's people, tickets and documents for this service, as actor SCENARIO."""
+        ...
+
+
+@runtime_checkable
+class RendersErrors(Protocol):
+    """A provider whose service has an error shape for what Minutehand answers in its place: an operation the fake
+    does not implement (501) and Minutehand's own error (500), rendered so the agent's client library raises its
+    own error type with `message` intact. A provider without it is answered in a plain JSON body."""
+
+    def error(self, status: int, code: str, message: str) -> Rendered:
+        """The vendor's error answer for `status`, carrying `code` and `message` where its clients read them."""
         ...
 
 
@@ -89,6 +101,20 @@ class PushesInteractions(Protocol):
         `target`'s interactivity URL signed with `secret`, and the agent's answer applied as the real service applies
         it. A form the agent opens in answer is filled with `reply.press.form` and submitted the same way. A
         reply with no press, or a control the message does not carry, is refused loudly."""
+        ...
+
+
+@runtime_checkable
+class LandsReplies(Protocol):
+    """A provider where a person's answer lands where the agent reads it, and nothing is pushed: a reply email in the
+    agent's mailbox, an attendee's response on the agent's calendar event. The agent finds it on its next read, as it
+    finds a ticket's fate, so its landing wakes nobody."""
+
+    def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
+        """Write the person's answer to `reply.in_reply_to` as the real service would, recorded as actor PERSON: what
+        they wrote as their message, a control they used (`reply.press`) as its effect. A message no longer there
+        is left alone and nothing is written. A press on a control the message does not carry raises
+        `ValueError`: the replier offered what the provider never showed."""
         ...
 
 
@@ -160,12 +186,16 @@ class BooksWakes(Protocol):
         """Called once before the run; the provider books through `wakes` as the agent's calls arrive."""
         ...
 
-    async def fire(self, ref: str, world: Store, clock: Clock) -> None:
-        """The clock reached a booking: deliver it the way the real scheduler would.
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        """Deliver this occurrence of the booking the way the real scheduler would: put what it carries where the
+        agent finds it. Called once when the clock reaches it, and again when the scenario delivers it twice
+        (`DispatchFault.TWICE`); it leaves the booking as it was, so the second delivery carries the same."""
+        ...
 
-        The booking has already left the pending set when this is called, so a recurring
-        schedule books its next occurrence under the same `ref` from here.
-        """
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        """This occurrence is over, delivered or dropped: book the next occurrence of a recurring schedule under the
+        same `ref` (the first after now, as a real scheduler skips what it missed), or complete a one-off one. The
+        booking has already left the pending set when this is called."""
         ...
 
 

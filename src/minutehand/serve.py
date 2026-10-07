@@ -42,7 +42,7 @@ import shutil
 import socket
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -51,7 +51,12 @@ import uvicorn
 from pydantic import Field
 from starlette.applications import Starlette
 
+from minutehand.adapters.agent.inboxes import HttpInboxReach
+from minutehand.adapters.agent.openapi import OperationUnresolved
+from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
+from minutehand.adapters.emulator.fleet import Emulators
+from minutehand.adapters.emulator.process import EmulatorRefused
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -59,16 +64,34 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.worlds import Mounted
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.forward import Forwarding
-from minutehand.adapters.telemetry.receiver import Receiver
-from minutehand.application.outbound import outbound_uses
+from minutehand.adapters.telemetry.receiver import Receiver, exporter_environment
+from minutehand.application.cases import CASE, CaseKept, CaseStore, merged
+from minutehand.application.emulators import findings as emulator_findings
+from minutehand.application.emulators import record_health
+from minutehand.application.inboxes import Inboxes
+from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.run_clock import RunClock
-from minutehand.application.standing import StandingWorld, Unsupported, WorldRefused
+from minutehand.application.standing import (
+    FIRST_WAKE,
+    Fired,
+    StandingWorld,
+    UnknownCase,
+    UnknownWorld,
+    Unsupported,
+    WorldRefused,
+    score,
+)
+from minutehand.application.steps import Stepping, steps
 from minutehand.checks.runner import RunResult
+from minutehand.domain.agent import AgentReport, AgentStatus
+from minutehand.domain.emulator import EmulatorChange
+from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import Model, ProviderKey
-from minutehand.domain.world import Exchange
+from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scenario
+from minutehand.domain.telemetry import ReceivedSpan
+from minutehand.domain.world import CallOutcome, Exchange, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import (
     ASGIApp,
@@ -83,6 +106,7 @@ from minutehand.ports.provider import (
 )
 from minutehand.ports.store import Store
 from minutehand.session import (
+    KEPT,
     RECORD,
     RESULT,
     RUNS,
@@ -92,10 +116,11 @@ from minutehand.session import (
     Listen,
     agent_environment,
     collect,
+    reading_file,
     run_dir,
+    scenario_of,
 )
 
-KEPT = "world.json"
 LOBBY = "lobby"
 RESETS = "resets"
 """Where a standing world keeps its log from before each reset, `<n>.db` for the n-th, oldest first."""
@@ -115,6 +140,8 @@ class Kept(Model):
     name: str
     claims: Claims
     scripted_people: bool
+    case_id: str | None = Field(default=None, description="The case it belongs to; None when opened under no label")
+    case: str | None = Field(default=None, description="The case label it was opened under")
 
 
 class ServeOptions(Model):
@@ -128,8 +155,9 @@ class ServeOptions(Model):
     )
     no_proxy: list[str] = Field(default=[], description="Hosts services reach directly")
     keep: int = Field(default=DEFAULT_KEEP, ge=0, description="Closed worlds kept; older ones are removed")
-    capture_unknown: bool = Field(
-        default=False, description="Pass through and keep a call to a host nobody claims or declares, not refuse it"
+    capture_unknown: UnknownHosts = Field(
+        default=UnknownHosts.REFUSE,
+        description="Which calls to a host nobody claims or declares are passed through and kept: none, reads, or all",
     )
     upstream_ca: Path | None = Field(
         default=None, description="The CAs a real host is verified against when a call is passed through"
@@ -165,6 +193,49 @@ class World:
     signing: dict[ProviderKey, str] = field(default_factory=dict)
     capturing: Capturing = field(default_factory=Capturing)
     resets: int = 0
+    case: Case | None = None
+    stepping: Stepping | None = None
+    """Its own steps, for a world opened under no case label; a case's world is stepped by its case."""
+    reported: AgentReport | None = None
+    """The agent's own report, as whoever drives it last relayed it; a case's world is reported on by its case."""
+
+    @property
+    def steps(self) -> Stepping:
+        if self.case is not None:
+            return self.case.stepping
+        assert self.stepping is not None
+        return self.stepping
+
+
+@dataclass
+class Case:
+    """Worlds opened under one case label while any of them is open: one run (`application.cases`). Its own store
+    holds its steps, the model traffic its worlds made, and the spans that came with no trace link while it was
+    open."""
+
+    case_id: str
+    name: str
+    store: SqliteStore
+    clock: RunClock
+    mounted: Mounted
+    stepping: Stepping
+    began: datetime = field(default_factory=lambda: _real_now())
+    """The real moment it opened: with `ended`, the window that places the spans that reach it by time."""
+    opened: float = field(default_factory=time.monotonic)
+    worlds: list[str] = field(default_factory=list)
+    members: dict[str, StandingWorld] = field(default_factory=dict)
+    ended: datetime | None = None
+    reported: AgentReport | None = None
+
+
+def _stopped(reported: AgentReport | None, *, environment: bool) -> StopReason:
+    """How a world that is being closed stopped: on its environment failing, on the agent's own word that it was
+    done (as whoever drove it relayed it), or only because whoever opened it closed it."""
+    if environment:
+        return StopReason.ENVIRONMENT_FAILED
+    if reported is not None and reported.status is AgentStatus.DONE:
+        return StopReason.AGENT_DONE
+    return StopReason.CLOSED
 
 
 def _nothing_relayed(world: Mounted) -> None:
@@ -174,6 +245,14 @@ def _nothing_relayed(world: Mounted) -> None:
 def _nothing_in(world: Mounted) -> tuple[float | None, list[str]]:
     """Before a proxy routes to the worlds, no call has been seen in any of them."""
     return None, []
+
+
+ENDED_KEPT_OPEN = 20
+"""How many closed cases keep their store open, for the spans their services export after the close."""
+
+
+def _no_provider(manifest: Manifest) -> ASGIApp:
+    raise RunRefused(f"a case answers no provider: a call to {manifest.key} belongs to one of its worlds")
 
 
 CLOSED_REMEMBERED = 1000
@@ -221,6 +300,30 @@ class Standing:
         """When a call routed to a world was last seen and which are still in progress: the proxy's
         `ProxyAddon.activity_in`, once it routes to these worlds."""
         self._closed: list[_Closed] = []
+        self._handed: set[str] = set()
+        self.cases: dict[str, Case] = {}
+        """Every open case, by its id: worlds opened under one case label while any of them is open."""
+        self._labels: dict[str, str] = {}
+        self._ended: list[Case] = []
+        """The latest closed cases, their stores still open for spans that arrive after the close
+        (`ENDED_KEPT_OPEN`)."""
+        self.emulators = Emulators(state / "emulators", {}, self._emulator_changed)
+        """Every external emulator a world has declared: one per server, shared by every world declaring it the
+        same, started with the first and stopped with the server."""
+
+    def _emulator_changed(self, change: EmulatorChange) -> None:
+        """A health change, recorded in every open world that declares the emulator."""
+        for world in self.worlds.values():
+            if any(e.name == change.emulator for e in world.spec.emulators):
+                record_health(world.store, change)
+
+    async def start_emulators(self, spec: CreateWorld) -> None:
+        """The emulators `spec` declares, running and ready before the world opens; refused (409) with the end of
+        one's log when it does not come up, or when another world runs one of that name declared otherwise."""
+        try:
+            await self.emulators.start(spec.emulators)
+        except EmulatorRefused as e:
+            raise WorldRefused(str(e)) from e
 
     def shared(self, host: str) -> bool:
         """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
@@ -275,16 +378,38 @@ class Standing:
                 owner.traces.add(parts[1])
 
     def keeping(self, host: str, trace_id: str | None) -> Mounted:
+        """Where a model host's call is kept: the world that declared the host, else the world whose calls carried
+        its trace, else the lobby. A world of a case keeps none: the model traffic its services make belongs to the
+        case, not to one provider's world, and is kept in the case's own store."""
         declared = self.routing.declared(host)
         if declared is not None and declared in self._models:
-            return self.worlds[self._models[declared]].mounted
+            return self._model_traffic(self.worlds[self._models[declared]])
         if trace_id is not None and trace_id in self._traces:
-            return self.worlds[self._traces[trace_id]].mounted
+            return self._model_traffic(self.worlds[self._traces[trace_id]])
         return self._lobby
 
+    @staticmethod
+    def _model_traffic(world: World) -> Mounted:
+        return world.case.mounted if world.case is not None else world.mounted
+
     def by_trace(self, trace_id: str) -> Store | None:
-        """`Receiver.route`: the world whose calls carried this trace."""
+        """The world whose calls carried this trace."""
         return self.worlds[self._traces[trace_id]].store if trace_id in self._traces else None
+
+    def by_span(self, span: ReceivedSpan) -> Store | None:
+        """`Receiver.route`: the world whose calls carried the span's trace; else, for a span with no trace link
+        to any call, the one case whose real-time window (opened to closed, or now) holds the span's start, where
+        it is placed in the step whose window holds it; else None, the lobby. Two cases open at once both holding
+        it is ambiguous, and it stays in the lobby."""
+        found = self.by_trace(span.trace_id)
+        if found is not None:
+            return found
+        holding = [
+            c
+            for c in [*self.cases.values(), *self._ended]
+            if c.began <= span.start and (c.ended is None or span.start <= c.ended)
+        ]
+        return holding[0].store if len(holding) == 1 else None
 
     # -- opening and closing ------------------------------------------------------------------------------------
 
@@ -307,7 +432,14 @@ class Standing:
             refuse_claimed(
                 spec.outbound, self._registry, [*self.routing.model_hosts, *(m.host for m in spec.model_hosts)]
             )
-            capturing = Capturing(spec.outbound, replaying=replaying_for(spec.outbound, state=self._state))
+            capturing = Capturing(
+                spec.outbound,
+                replaying=replaying_for(spec.outbound, state=self._state),
+                emulators=self.emulators.running,
+            )
+            stopped = sorted({e.name for e in spec.emulators} - set(self.emulators.running))
+            if stopped:
+                raise FileNotFoundError(f"emulator {', '.join(stopped)} is not running: start it first")
         except (ProviderConflict, FileNotFoundError) as e:
             raise WorldRefused(f"this world's outbound hosts: {e}") from e
         try:
@@ -321,21 +453,36 @@ class Standing:
         )
         if unseeded:
             raise Unsupported(f"{', '.join(unseeded)} has no seed of its own: give it no provider seed")
-        world_id = secrets.token_hex(6)
+        world_id = self._fresh_id()
         self._declare_models(world_id, spec)
         directory = run_dir(self._state, world_id)
         directory.mkdir(parents=True)
         signing = {i.provider: i.secret or secrets.token_hex(16) for i in spec.inbound}
+        now = _now()
+        case = self._case_for(spec.case, spec.seed.starting(now).starts_at) if spec.case is not None else None
         try:
-            world = self._open(world_id, spec, signing, capturing, _now())
+            world = self._open(world_id, spec, signing, capturing, now, case=case)
         except Exception:
             shutil.rmtree(directory)
             self._withdraw_models(world_id)
+            if case is not None and not case.worlds:
+                self._discard_case(case)
             raise
         name = spec.seed.name
-        kept = Kept(world_id=world_id, name=name, claims=spec.claims, scripted_people=spec.scripted_people)
+        kept = Kept(
+            world_id=world_id,
+            name=name,
+            claims=spec.claims,
+            scripted_people=spec.scripted_people,
+            case_id=case.case_id if case is not None else None,
+            case=spec.case,
+        )
         (directory / KEPT).write_text(kept.model_dump_json(indent=2), encoding="utf-8")
         self.worlds[world_id] = world
+        if case is not None:
+            case.worlds.append(world_id)
+            case.members[world_id] = world.standing
+            self._write_case(case)
         for token in spec.claims.tokens:
             self._tokens[token] = world_id
         for host in spec.claims.hosts:
@@ -362,9 +509,17 @@ class Standing:
             del self._models[host]
 
     def _open(
-        self, world_id: str, spec: CreateWorld, signing: dict[ProviderKey, str], capturing: Capturing, now: datetime
+        self,
+        world_id: str,
+        spec: CreateWorld,
+        signing: dict[ProviderKey, str],
+        capturing: Capturing,
+        now: datetime,
+        *,
+        case: Case | None,
     ) -> World:
-        """The world's store, seeded from `spec` as of `now`, with every provider its seed names seeded already."""
+        """The world's store, seeded from `spec` as of `now`, with every provider its seed names seeded already; in
+        the step its case is in, or, under no case label, stepped on its own."""
         scenario = spec.seed.starting(now)
         directory = run_dir(self._state, world_id)
         clock = RunClock(scenario.starts_at)
@@ -378,6 +533,7 @@ class Standing:
                 inbound=[i.to_target() for i in spec.inbound],
                 signing=signing,
                 scripted=spec.scripted_people,
+                inboxes=_inboxes(spec, scenario),
             )
             named = sorted(
                 {t.provider for t in scenario.tickets}
@@ -386,7 +542,7 @@ class Standing:
                 | {s.provider for s in scenario.provider_seeds}
                 | {c.provider for c in scenario.channels}
             )
-            standing.open(named)
+            standing.open(named, wake=case.stepping.wake if case is not None else FIRST_WAKE)
         except Exception:
             store.close()
             (directory / WORLD).unlink(missing_ok=True)
@@ -408,7 +564,164 @@ class Standing:
             faults=[_Armed(f, f.times) for f in spec.faults],
             signing=signing,
             capturing=capturing,
+            case=case,
+            stepping=None
+            if case is not None
+            else Stepping(store, start=scenario.starts_at, members=lambda: [standing]),
         )
+
+    # -- cases ----------------------------------------------------------------------------------------------------
+
+    def _case_for(self, label: str, starts: datetime) -> Case:
+        """The open case of this label, or a new one: worlds opened under one label while any of them is open are
+        one case; once its last world closes, the label opens a new case."""
+        if label in self._labels:
+            return self.cases[self._labels[label]]
+        case_id = f"case-{self._fresh_id()}"
+        directory = run_dir(self._state, case_id)
+        directory.mkdir(parents=True)
+        clock = RunClock(starts)
+        store = SqliteStore(directory / WORLD, case_id, clock)
+        clock.enter(FIRST_WAKE)
+        store.wake_began(FIRST_WAKE)
+        members: dict[str, StandingWorld] = {}
+        case = Case(
+            case_id=case_id,
+            name=label,
+            store=store,
+            clock=clock,
+            mounted=Mounted(store=store, clock=clock, app_for=_no_provider),
+            stepping=Stepping(store, start=starts, members=lambda: list(members.values()), own=clock),
+            members=members,
+        )
+        self.cases[case_id] = case
+        self._labels[label] = case_id
+        return case
+
+    def _discard_case(self, case: Case) -> None:
+        case.store.close()
+        shutil.rmtree(run_dir(self._state, case.case_id), ignore_errors=True)
+        del self.cases[case.case_id]
+        del self._labels[case.name]
+
+    def case(self, case_id: str) -> Case:
+        if case_id not in self.cases:
+            raise UnknownCase(f"no open case {case_id}")
+        return self.cases[case_id]
+
+    def _scenarios(self, case: Case) -> list[Scenario]:
+        """Each world's scenario as it plays it now: an open world's from memory, a closed one's from its file."""
+        return [case.members[w].scenario if w in case.members else scenario_of(self._state, w) for w in case.worlds]
+
+    def _write_case(self, case: Case) -> None:
+        directory = run_dir(self._state, case.case_id)
+        kept = CaseKept(case_id=case.case_id, name=case.name, worlds=case.worlds)
+        (directory / CASE).write_text(kept.model_dump_json(indent=2), encoding="utf-8")
+        scenario = merged(case.name, self._scenarios(case))
+        (directory / SCENARIO).write_text(scenario.model_dump_json(indent=2), encoding="utf-8")
+
+    @contextmanager
+    def _reading_case(self, case: Case) -> Iterator[CaseStore]:
+        """The case as one run: its open worlds' stores, its closed worlds' files, and its own store."""
+        with ExitStack() as stack:
+            parts: list[Store] = []
+            for world_id in case.worlds:
+                if world_id in case.members:
+                    parts.append(case.members[world_id].store)
+                else:
+                    parts.append(stack.enter_context(reading_file(run_dir(self._state, world_id) / WORLD, world_id)))
+            yield CaseStore(case.case_id, [*parts, case.store])
+
+    async def case_checks(self, case: Case, *, stop: StopReason | None) -> RunResult:
+        """Every check and the scorecard over the case as one run, as it stands."""
+        for member in case.members.values():
+            await member.look()
+        scenario = merged(case.name, self._scenarios(case))
+        with self._reading_case(case) as world:
+            return score(scenario, world, stop=stop, ended=self._case_now(case), reported=case.reported)
+
+    def _case_now(self, case: Case) -> datetime:
+        return max([case.clock.now(), *(m.clock.now() for m in case.members.values())])
+
+    async def checks(self, world_id: str) -> RunResult:
+        """A world's checks as it stands; for a world of a case, the case's."""
+        world = self.get(world_id)
+        if world.case is not None:
+            return await self.case_checks(world.case, stop=None)
+        return await world.standing.checks(stop=None, reported=world.reported)
+
+    def report(self, world_id: str, reported: AgentReport) -> None:
+        """What the agent says of its own work, relayed by whoever drives it, who can read what the world cannot:
+        whether it is done and what it still holds open. The latest report stands; a case's world reports for its
+        case. It is what `minutehand run` asks the agent itself at the end of every wake."""
+        world = self.get(world_id)
+        if world.case is not None:
+            world.case.reported = reported
+        else:
+            world.reported = reported
+
+    async def perform_due(self, world_id: str) -> list[WorldEvent]:
+        """The decisions a world's people owe by its clock, its case's, or the moment its latest step began, whichever
+        is latest: a harness that keeps its own clock marks its steps at its own moments and never moves the world's."""
+        world = self.get(world_id)
+        now = self._case_now(world.case) if world.case is not None else world.standing.clock.now()
+        return await world.standing.perform_due(max(now, world.steps.at))
+
+    async def advance(self, world_id: str, to: datetime) -> list[Fired]:
+        """Move a world's clock: a step is inferred first when the move goes forward and nobody marks steps
+        (`application.steps`), so what falls due fires in the new step."""
+        world = self.get(world_id)
+        if to < world.standing.clock.now():
+            raise WorldRefused(
+                f"the clock only moves forward: {to.isoformat()} is before {world.standing.clock.now().isoformat()}"
+            )
+        world.steps.moved(to)
+        return await world.standing.advance(to)
+
+    def _close_case(self, case: Case, stop: StopReason, result: RunResult) -> None:
+        """The last world of the case has closed: its own record is written, as any run's."""
+        self.flush_in(case.mounted)
+        if case.stepping.open:
+            case.stepping.end()
+        else:
+            case.store.wake_ended(case.clock.wake())
+        scenario = merged(case.name, self._scenarios(case))
+        with self._reading_case(case) as world:
+            calls = world.calls()
+            record = RunRecord(
+                run_id=case.case_id,
+                scenario=scenario.name,
+                seed=scenario.seed,
+                started_at=scenario.starts_at,
+                ended_at=self._case_now(case),
+                wall_seconds=time.monotonic() - case.opened,
+                stop=stop,
+                reported=case.reported,
+                providers=list(dict.fromkeys(c.provider for c in calls if c.provider is not None)),
+                outbound=outbound_uses(calls),
+                emulators=emulator_uses(calls),
+                wakes=steps(world),
+                worlds=case.worlds,
+            )
+        directory = run_dir(self._state, case.case_id)
+        self._write_case(case)
+        (directory / RECORD).write_text(record.model_dump_json(indent=2), encoding="utf-8")
+        (directory / RESULT).write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        case.ended = _real_now()
+        del self.cases[case.case_id]
+        del self._labels[case.name]
+        self._ended.append(case)
+        for old in self._ended[:-ENDED_KEPT_OPEN]:
+            old.store.close()
+        del self._ended[:-ENDED_KEPT_OPEN]
+
+    # -- steps ----------------------------------------------------------------------------------------------------
+
+    def stepping_of(self, world_id: str | None, case_id: str | None) -> Stepping:
+        if case_id is not None:
+            return self.case(case_id).stepping
+        assert world_id is not None
+        return self.get(world_id).steps
 
     def reset(self, world_id: str) -> World:
         """The world back to the seed it was opened with, in place: the same id, the same claims, the same inbound
@@ -427,9 +740,13 @@ class Standing:
             found = directory / f"{WORLD}{suffix}"
             if found.exists():
                 found.rename(kept.with_name(kept.name + suffix))
-        world = self._open(world_id, old.spec, old.signing, old.capturing, old.standing.scenario.starts_at)
+        world = self._open(
+            world_id, old.spec, old.signing, old.capturing, old.standing.scenario.starts_at, case=old.case
+        )
         world.resets = old.resets + 1
         self.worlds[world_id] = world
+        if old.case is not None:
+            old.case.members[world_id] = world.standing
         claimed = set(old.spec.claims.tokens)
         self._tokens = {t: w for t, w in self._tokens.items() if w != world_id or t in claimed}
         for trace in old.traces:
@@ -493,9 +810,20 @@ class Standing:
             raise WorldRefused(f"no installed provider is named {key}; installed: {', '.join(sorted(self._manifests))}")
         return key
 
+    def _fresh_id(self) -> str:
+        """An id this server has never handed out and no world under its state directory has: a closed world's id
+        is never a new world's, so a test still holding one reaches nothing rather than another test's world."""
+        while True:
+            found = secrets.token_hex(6)
+            if found not in self._handed and not run_dir(self._state, found).exists():
+                self._handed.add(found)
+                return found
+
     def get(self, world_id: str) -> World:
         if world_id not in self.worlds:
-            raise LookupError(f"no open world {world_id}")
+            if world_id in self._handed:
+                raise UnknownWorld(f"world {world_id} is closed, and a closed world is never open again")
+            raise UnknownWorld(f"no open world {world_id}")
         return self.worlds[world_id]
 
     async def quiet(self, world_id: str, ask: Quiet) -> Quieted:
@@ -524,7 +852,23 @@ class Standing:
         quieted = await self.quiet(world_id, quiet) if quiet is not None else None
         world = self.get(world_id)
         self.flush_in(world.mounted)
-        result = await world.standing.checks(stop=StopReason.CLOSED)
+        case = world.case
+        stores = [world.store] if case is None else [m.store for m in case.members.values()]
+        environment = any(c.exchange.outcome is CallOutcome.UNAVAILABLE for s in stores for c in s.calls())
+        reported = world.reported if case is None else case.reported
+        stop = _stopped(reported, environment=environment)
+        if case is None:
+            result = await world.standing.checks(stop=stop, reported=reported)
+            wakes = steps(world.store)
+        else:
+            if len(case.members) == 1:
+                self.flush_in(case.mounted)
+            result = await self.case_checks(case, stop=stop)
+            with self._reading_case(case) as whole:
+                wakes = steps(whole)
+        result = result.model_copy(
+            update={"findings": [*result.findings, *(f for s in stores for f in emulator_findings(s))]}
+        )
         world.standing.close()
         record = RunRecord(
             run_id=world_id,
@@ -533,10 +877,12 @@ class Standing:
             started_at=world.standing.scenario.starts_at,
             ended_at=world.standing.clock.now(),
             wall_seconds=time.monotonic() - world.opened,
-            stop=StopReason.CLOSED,
+            stop=stop,
+            reported=reported,
             providers=list(dict.fromkeys(c.provider for c in world.store.calls() if c.provider is not None)),
             outbound=outbound_uses(world.store.calls()),
-            wakes=[],
+            emulators=emulator_uses(world.store.calls()),
+            wakes=wakes,
         )
         directory = run_dir(self._state, world_id)
         write_recordings(directory, world.store.calls())
@@ -545,6 +891,10 @@ class Standing:
         world.store.close()
         world.open = False
         del self.worlds[world_id]
+        if case is not None:
+            del case.members[world_id]
+            if not case.members:
+                self._close_case(case, stop, result)
         self._closed.append(
             _Closed(
                 world_id=world_id,
@@ -568,15 +918,30 @@ class Standing:
     async def close_all(self) -> None:
         for world_id in list(self.worlds):
             await self.close(world_id)
+        for case in self._ended:
+            case.store.close()
+        self._ended.clear()
+        await self.emulators.stop()
         self.lobby_store.close()
 
     def _retain(self) -> Collected:
-        """Keep the newest `keep` closed standing worlds; remove the rest, and sweep what is left as `minutehand gc`
-        does."""
+        """Keep the newest `keep` closed standing worlds, a closed case counting as one with its worlds; remove the
+        rest, and sweep what is left as `minutehand gc` does."""
         base = self._state / RUNS
-        closed = [d for d in base.iterdir() if (d / KEPT).is_file() and (d / RECORD).is_file()]
-        closed.sort(key=lambda d: (d / RECORD).stat().st_mtime_ns)
-        return collect(self._state, remove=[d.name for d in closed[: max(0, len(closed) - self._keep)]])
+        closed: list[tuple[Path, list[str]]] = []
+        for d in base.iterdir():
+            if not (d / RECORD).is_file():
+                continue
+            if (d / CASE).is_file():
+                kept = CaseKept.model_validate_json((d / CASE).read_text(encoding="utf-8"))
+                closed.append((d, [d.name, *kept.worlds]))
+            elif (d / KEPT).is_file():
+                if Kept.model_validate_json((d / KEPT).read_text(encoding="utf-8")).case_id is None:
+                    closed.append((d, [d.name]))
+        closed.sort(key=lambda found: (found[0] / RECORD).stat().st_mtime_ns)
+        old = closed[: max(0, len(closed) - self._keep)]
+        still = {c.case_id for c in self._ended}
+        return collect(self._state, remove=[n for d, names in old if d.name not in still for n in names])
 
     # -- faults -------------------------------------------------------------------------------------------------
 
@@ -614,6 +979,7 @@ class Standing:
                 await app(scope, receive, send)
                 return
             armed.left -= 1
+            injected()
             fault = armed.fault
             headers = [(b"content-type", fault.content_type.encode())]
             if fault.retry_after is not None:
@@ -626,6 +992,37 @@ class Standing:
         return answer
 
 
+def _inboxes(spec: CreateWorld, scenario: Scenario) -> Inboxes | None:
+    """The inboxes a world declares, reached as its people. A person's credential is the one given with the world
+    (`CreateWorld.credentials`: a key the service minted for this run), else read from this server's own
+    environment: a credential generated per run reaches only a command Minutehand starts, and a standing world
+    starts none."""
+    if not spec.inboxes:
+        return None
+    known = {person.key for person in scenario.people}
+    unknown = sorted(set(spec.credentials) - known)
+    if unknown:
+        raise WorldRefused(f"credentials are given for {', '.join(unknown)}, who are not people of this world")
+    credentials: dict[str, str] = dict(spec.credentials)
+    for person in scenario.people:
+        source = person.credential
+        if source is None or person.key in credentials:
+            continue
+        if isinstance(source, GeneratedSecret):
+            raise WorldRefused(
+                f"{person.key}'s credential is generated per run ({source.env}), and a standing world starts no "
+                "command to hand it to: say `credential: {kind: from_env, env: <variable>}` with the one the service "
+                "was configured with"
+            )
+        if source.env not in os.environ:
+            raise WorldRefused(f"{person.key}'s credential is read from {source.env}, which the server does not have")
+        credentials[person.key] = os.environ[source.env]
+    try:
+        return Inboxes(scenario, [HttpInboxReach(declared, credentials) for declared in spec.inboxes])
+    except OperationUnresolved as e:
+        raise WorldRefused(f"this world's inboxes: {e}") from e
+
+
 @contextmanager
 def _scratch(path: Path, clock: Clock) -> Iterator[Store]:
     """An empty store at `path` for `application.further_seed`, closed when done."""
@@ -634,6 +1031,11 @@ def _scratch(path: Path, clock: Clock) -> Iterator[Store]:
         yield store
     finally:
         store.close()
+
+
+def _real_now() -> datetime:
+    """The real moment, for a case's window, which places spans that carry no trace link by their own real start."""
+    return datetime.now(UTC)  # clock-lint: exempt a case's real-time window is compared with spans' real starts
 
 
 def _now() -> datetime:
@@ -731,8 +1133,10 @@ async def _receiver(standing: Standing, options: ServeOptions) -> AsyncIterator[
         forwarding=Forwarding.from_environment(os.environ),
         agent_host=options.agent_host,
     )
-    receiver.route(standing.by_trace)
+    receiver.route(standing.by_span)
     async with receiver:
+        # An emulator exports to the receiver as the services do; its spans follow the forwarded trace to a world.
+        standing.emulators.environment = exporter_environment(f"http://127.0.0.1:{receiver.port}")
         yield receiver
 
 

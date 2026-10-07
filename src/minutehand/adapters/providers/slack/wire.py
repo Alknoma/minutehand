@@ -10,6 +10,8 @@ Three families of model live here:
   keeps is validated.
 - **Responses** — the `ok` envelope, error codes, cursors, and the Events API
   `event_callback` a pushed message arrives in.
+- **Errors** — `Refusal`, the `ServiceRefusal` Slack answers with, and `error_answer`,
+  what Minutehand answers in Slack's place.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from urllib.parse import parse_qsl, urlencode
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
+from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 TRUNCATED_AT = 40_000
@@ -37,12 +40,40 @@ PAGE_DEFAULT = 100
 PAGE_MAX = 1000
 
 
-class Refusal(Exception):
+JSON = "application/json; charset=utf-8"
+"""The content type of every Web API answer, refusals included."""
+
+
+class Refusal(ServiceRefusal):
     """Slack answered `ok: false`. `error` is Slack's own code."""
 
     def __init__(self, error: str) -> None:
         super().__init__(error)
         self.error = error
+
+    def render(self, asked: Asked) -> Rendered:
+        """`{"ok": false, "error": …}` at 200, as the Web API refuses."""
+        return Rendered(status=200, content_type=JSON, body=respond(Failed(error=self.error)))
+
+
+class ErrorMessages(Model):
+    messages: list[str]
+
+
+class ErrorAnswer(Model):
+    """An error with words beside its code, as Slack sends `invalid_arguments` with what was wrong."""
+
+    ok: Literal[False] = False
+    error: str
+    response_metadata: ErrorMessages
+
+
+def error_answer(status: int, code: str, message: str) -> Rendered:
+    """What Minutehand answers in Slack's place (501, 500), as the Web API words an error: `error` the code, and
+    `message` in `response_metadata.messages`, where Slack puts what it says beside a code. `slack_sdk` raises
+    `SlackApiError` for it, the whole body on `.response`."""
+    body = ErrorAnswer(error=code, response_metadata=ErrorMessages(messages=[message]))
+    return Rendered(status=status, content_type=JSON, body=body.model_dump_json().encode())
 
 
 # --------------------------------------------------------------------------- stored
