@@ -68,7 +68,7 @@ def header(found: LibraryScenario) -> str:
         f"{found.name}, from the Minutehand scenario library (`minutehand scenarios show {found.name}`).",
         f"Situation: {found.situation}",
         f"A good agent: {found.good_agent}",
-        f"Checks: {', '.join(found.checks)}. Patterns: {', '.join(found.patterns)}.",
+        f"Rules (in `assess` below, yours to edit): {', '.join(found.rules)}. Patterns: {', '.join(found.patterns)}.",
     ]
     lines: list[str] = []
     for paragraph in paragraphs:

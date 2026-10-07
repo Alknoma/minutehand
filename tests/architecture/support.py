@@ -128,9 +128,10 @@ def agent_file(
     secret: Mapping[str, object] = GENERATED,
     wakes: Mapping[str, object] | None = None,
     inbox: bool = False,
+    policy: bool = True,
 ) -> Path:
-    """The reference agent's file, on `port`, its hooks run by this interpreter; with `answered`, people can
-    answer its email."""
+    """The reference agent's file, on `port`, its hooks run by this interpreter; with `policy`, judged by its team's
+    rules as examples/reference_agent/agent.yaml writes them; with `answered`, people can answer its email."""
     hooks: dict[str, object] = {
         "snapshot": [PY, HOOKS, "snapshot"],
         "restore": [PY, HOOKS, "restore"],
@@ -155,6 +156,7 @@ def agent_file(
         ],
         "outbound": [mail, SEARCH],
         "state": hooks,
+        "assess": yaml.safe_load((AGENT_DIR / "agent.yaml").read_text())["assess"] if policy else [],
     }
     if inbox:
         doc["inboxes"] = [approvals(port)]

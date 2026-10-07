@@ -1,6 +1,6 @@
 # Honest closure
 
-**Found by:** `expectations`.
+**Found by:** `expectations` (the scenario's `expect`), and rules of the team's own such as `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0` (done with an ask unanswered).
 
 ## The failure
 

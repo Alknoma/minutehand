@@ -127,7 +127,7 @@ async def test_a_finished_run_answers_every_path_with_its_shape(
     [wait] = [w.obligation for w in obligations.obligations if w.obligation.kind is ObligationKind.ANSWER_FROM_PERSON]
     assert (wait.person, wait.opened_by, wait.settled_at) == ("sofia", asked.seq, None)
     assert findings.finished
-    [silence] = [x for x in findings.findings if x.finding.check == "no_follow_up"]
+    [silence] = [x for x in findings.findings if x.finding.check == "follows_up_when_due"]
     assert silence.finding.kind is FindingKind.FAIL and silence.pattern == pattern("expiry_on_every_wait")
     assert asked.seq in silence.finding.evidence
     assert scorecard.scorecard is not None and scorecard.scorecard.expectations_total == 2

@@ -31,6 +31,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.application.steps import STEP, steps
 from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, view_of
 from minutehand.domain.agent import AgentReport
+from minutehand.domain.assessments import merged
 from minutehand.domain.clock import Due
 from minutehand.domain.people import (
     Decides,
@@ -796,9 +797,10 @@ def score(
     ended: datetime,
     reported: AgentReport | None = None,
 ) -> RunResult:
-    """Every deterministic check and the scorecard over a standing world's record, or a case's merged one, as it
-    stands: its steps are its wakes, and `reported` is the agent's own report as whoever drives it last relayed
-    it."""
+    """Every deterministic check, the scenario's own rules and the scorecard over a standing world's record, or a
+    case's merged one, as it stands: its steps are its wakes, and `reported` is the agent's own report as whoever
+    drives it last relayed it. A standing world is opened without an agent file, so only the scenario's rules
+    judge it."""
     wakes = steps(world)
     calls = world.calls()
     view = view_of(
@@ -811,6 +813,8 @@ def score(
         model_calls=per_wake(world.spans(), [w.index for w in wakes]),
         broken_calls=broken(calls),
         contract_breaks=contract_breaks(calls),
+        rules=merged([], scenario.assess, scenario.assess_off),
+        stop=stop,
     )
     return evaluate(view, stop=stop, ended=ended)
 

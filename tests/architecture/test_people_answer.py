@@ -32,7 +32,7 @@ def test_an_unanswered_email_question_opens_a_wait_that_is_followed_up(rig: Rig)
     done = rig.run("scenario_silent.yaml", env={"REFERENCE_BEHAVIOUR": "forgetful"})
 
     assert done.code == 1, done.out + done.err[-2000:]
-    assert "no_follow_up: wait on rosa expired" in done.out
+    assert "follows_up_when_due: wait on rosa: their answer was due and an hour later" in done.out
     assert "waits opened: 1, still open at the end: 1" in done.out
 
 

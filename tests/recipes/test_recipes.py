@@ -1,5 +1,5 @@
 """examples/recipes, each run as its README runs it: an agent written with a framework, its model the recipes' fake
-model, through both scenarios. A late answer passes; silence draws one follow-up, and no no_follow_up finding.
+model, through both scenarios. A late answer passes; silence draws one follow-up, and no follows_up_when_due finding.
 
 Run with `uv sync --group recipes` and `uv run pytest -m recipes`. The Node recipe runs when `node` is on the PATH
 and `npm ci` succeeds in its folder; with RECIPES_NODE_REQUIRED set (as CI sets it) either failing fails the test.
@@ -101,7 +101,7 @@ def assert_late_answer_passes(played: Played, recipe: Recipe) -> None:
 
 
 def assert_silence_draws_one_follow_up(played: Played, recipe: Recipe) -> None:
-    assert "no_follow_up" not in played.checks_failed
+    assert "follows_up_when_due" not in played.checks_failed
     assert played.verdict is VerdictKind.PASSED, (played.words, played.checks_failed)
     assert [text.startswith("Following up") for to, text in played.said if to == ROSA] == [False, True]
     assert [text.startswith("No answer from") for to, text in played.said if to == OWEN] == [True]

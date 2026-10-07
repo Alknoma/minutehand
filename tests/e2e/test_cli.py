@@ -27,7 +27,7 @@ def _cli(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run([str(MINUTEHAND), *args], capture_output=True, text=True, env=env, timeout=120)
 
 
-def test_a_forgetful_agent_fails_no_follow_up_and_the_command_exits_1(
+def test_a_forgetful_agent_fails_the_teams_follow_up_rule_and_the_command_exits_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
@@ -52,14 +52,14 @@ def test_a_forgetful_agent_fails_no_follow_up_and_the_command_exits_1(
     assert "because nothing more was due and the agent asked for no wake" in out
     assert "\n  providers the agent called: slack\n" in out
     failed = out[out.index("\nfail (") : out.index("\nscorecard")]
-    assert "no_follow_up: wait on sofia expired" in failed
+    assert "follows_up_when_due: wait on sofia expired" in failed
     assert "pattern expiry_on_every_wait: An expiry on every wait." in failed
     assert "expectations met: 1 of 2" in out
     run_id = re.search(r"^run ([0-9a-f]+):", out, re.MULTILINE)
     assert run_id is not None
 
     again = _cli("findings", run_id.group(1), "--state", str(state), env=dict(os.environ))
-    assert again.returncode == 1 and "no_follow_up: wait on sofia expired" in again.stdout
+    assert again.returncode == 1 and "follows_up_when_due: wait on sofia expired" in again.stdout
     listed = _cli("runs", "--state", str(state), env=dict(os.environ))
     assert listed.returncode == 0 and f"{run_id.group(1)}  partner_pricing  nothing_pending" in listed.stdout
 

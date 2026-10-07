@@ -12,6 +12,8 @@ reused after, so an agent configured once keeps trusting every later run.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import certifi
@@ -40,9 +42,12 @@ def authority(confdir: Path) -> Path:
 def write_bundle(confdir: Path, *, public_roots: str | None = None) -> Path:
     """The one file every CA variable names: `public_roots` (certifi's by default), then the proxy's CA.
 
-    Rewritten on every call, so a newer certifi or a remade CA reaches the next run."""
+    Rewritten on every call, so a newer certifi or a remade CA reaches the next run; written beside and moved into
+    place, so an agent of another run on the same state directory reading it meanwhile reads it whole."""
     roots = certifi.contents() if public_roots is None else public_roots
     ours = authority(confdir).read_text(encoding="utf-8")
     bundle = confdir / BUNDLE
-    bundle.write_text(roots.rstrip("\n") + "\n\n# Minutehand's proxy CA\n" + ours, encoding="utf-8")
+    with tempfile.NamedTemporaryFile("w", dir=confdir, prefix=f".{BUNDLE}.", delete=False, encoding="utf-8") as kept:
+        kept.write(roots.rstrip("\n") + "\n\n# Minutehand's proxy CA\n" + ours)
+    os.replace(kept.name, bundle)
     return bundle

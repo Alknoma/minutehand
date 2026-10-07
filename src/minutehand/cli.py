@@ -1,6 +1,11 @@
 """`minutehand`: run a scenario against an agent, read a run's findings, fork a run, list the runs.
 
     minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--judge] [--json] [PROXY] [-- <command...>]
+    minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--state DIR] [--judge] [--json] [-- <command...>]
+                                                 every scenario in the folder, in parallel, each in a run of its own;
+                                                 {run.port} and {run.dir} in the agent file and the command are filled
+                                                 per scenario; exits 1 when a verdict differs from the scenario's
+                                                 expect_outcome, 2 when a run could not be performed
     minutehand findings <run_id> [--state DIR] [--json]
     minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--judge] [--json] [PROXY] [-- <command...>]
     minutehand env --agent <agent.yaml> --proxy-port N [PROXY] [--format shell|compose|redirect] [--service NAME...]
@@ -45,18 +50,24 @@ the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
 
+A run is judged only by what its files declare: the team's rules (`assess:` in the agent file and the scenario,
+docs/assessments.md), the scenario's `expect:` and `protected_names`, and the agent's own `checks:`. With --json,
+`run`, `fork` and `findings` print one shape: {"outcomes": [...], "stability": ...}.
+
 Exit codes of `run`, `fork` and `findings`, which follow the verdict each report starts with:
-  0  passed: no check failed, and the agent finished: it reported done, or nothing was left open
-  1  failed: a check failed
+  0  passed: nothing failed, and the agent finished: it reported done, or nothing was left open
+  1  failed: a rule, an expectation or a check failed
   2  the run could not be performed
-  3  not finished: no check failed, but the run stopped without the agent reporting done (the wake limit, the
+  3  not finished: nothing failed, but the run stopped without the agent reporting done (the wake limit, the
      deadline, an agent that asked for no further wake, an agent that failed) while a wait or a commitment
      was still open
   4  not scored: Minutehand itself failed while answering one of the agent's calls, so the run says nothing about
      the agent; any command exits 4 too when Minutehand fails, naming where its traceback was written (--debug
      prints it as well)
+  5  not judged: nothing was assessed (the files declare no rule, expectation, protected name or check of the
+     agent's own; the facts are still reported), or a check that needs wakes had none
 With samples: 2 when an external emulator was unavailable in any sample, else 4 when Minutehand failed in any,
-else 1 when any failed, else 3 when any did not finish, else 0.
+else 1 when any failed, else 5 when any was not judged, else 3 when any did not finish, else 0.
 """
 
 from __future__ import annotations
@@ -79,7 +90,7 @@ import yaml
 from pydantic import ValidationError
 
 import minutehand
-from minutehand import agent_api, mcp_relay, session
+from minutehand import agent_api, mcp_relay, run_all, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
@@ -95,14 +106,15 @@ from minutehand.application.library import NotInLibrary, entries, entry, write
 from minutehand.application.outbound import described, emulator_described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
-from minutehand.checks.patterns import pattern
+from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
 from minutehand.domain.agent import AgentUnderTest
-from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Stability
+from minutehand.domain.assessments import merged, refuse_unknown_people
+from minutehand.domain.checks import Effectiveness, Finding, FindingKind
 from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
-from minutehand.domain.scenario import Model, PlannedBy
+from minutehand.domain.scenario import PlannedBy, WrittenScenario
 from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
 
@@ -123,7 +135,7 @@ STATE_VARIABLE = "MINUTEHAND_STATE"
 
 _STOPPED = {
     StopReason.AGENT_DONE: "the agent reported it was done",
-    StopReason.WAKE_LIMIT: "the scenario's wake limit was reached",
+    StopReason.WAKE_LIMIT: "its wake limit was reached",
     StopReason.DEADLINE_PASSED: "the clock reached the scenario's deadline",
     StopReason.NOTHING_PENDING: "nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
@@ -144,13 +156,6 @@ class LibraryAction(StrEnum):
 
     SHOW = "show"
     NEW = "new"
-
-
-class Played(Model):
-    """What `run` and `fork` print with --json."""
-
-    outcomes: list[Outcome]
-    stability: Stability | None = None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -243,6 +248,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--json", action="store_true")
     proxy(run)
     state(run)
+
+    run_all = commands.add_parser(
+        "run-all", help="run every scenario in a folder against one agent, in parallel, and compare each verdict"
+    )
+    run_all.add_argument("folder", type=Path)
+    run_all.add_argument("--agent", type=Path, required=True)
+    run_all.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1), help="runs at once (default 4)")
+    run_all.add_argument("--judge", action="store_true", help="also run the checks a model judges")
+    run_all.add_argument("--json", action="store_true")
+    state(run_all)
 
     findings = commands.add_parser("findings", help="what the checks said about a finished run")
     findings.add_argument("run_id")
@@ -488,7 +503,7 @@ def _main(args_in: list[str]) -> int:
     if args.command == "scenarios":
         return _scenarios(args)
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
-    if command is not None and args.command not in ("run", "fork"):
+    if command is not None and args.command not in ("run", "fork", "run-all"):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
         return 2
     try:
@@ -496,6 +511,8 @@ def _main(args_in: list[str]) -> int:
             return _run(args, state, command)
         if args.command == "fork":
             return _fork(args, state, command)
+        if args.command == "run-all":
+            return _run_all(args, state, command)
         if args.command == "findings":
             return _findings(args, state)
         if args.command == "env":
@@ -531,12 +548,25 @@ def _schema(kind: str) -> int:
 
 
 def _validate(paths: Sequence[Path], kind: FileKind | None) -> int:
-    """Each file loaded as a run would load it, and each inbox operation found in its OpenAPI document: every
-    problem on its own line naming the file and the place in it; exit 1 when there is any."""
+    """Each file loaded as a run would load it, and each inbox operation found in its OpenAPI document; given an agent
+    file with scenarios, the rules each run would be judged by (`assess`): every problem on its own line naming the
+    file and the place in it; exit 1 when there is any."""
     found: list[str] = []
+    agents: list[tuple[Path, AgentUnderTest]] = []
+    scenarios: list[tuple[Path, WrittenScenario]] = []
     for path in paths:
         read_as, model, said = problems(path, kind)
+        if isinstance(model, WrittenScenario):
+            scenarios.append((path, model))
+        if isinstance(model, (WrittenScenario, AgentUnderTest)):
+            known = {p.key for p in PATTERNS}
+            said += [
+                f"{path}: assess[{n}].pattern: no pattern {rule.pattern!r}; the patterns are in docs/patterns/"
+                for n, rule in enumerate(model.assess)
+                if rule.pattern is not None and rule.pattern not in known
+            ]
         if isinstance(model, AgentUnderTest):
+            agents.append((path, model))
             try:
                 load_checks(model.checks)
             except ChecksRefused as e:
@@ -549,6 +579,13 @@ def _validate(paths: Sequence[Path], kind: FileKind | None) -> int:
         found += said
         if not said and read_as is not None:
             print(f"{path}: a valid {read_as.value} file")
+    for agent_path, agent in agents:
+        for scenario_path, scenario in scenarios:
+            try:
+                rules = merged(agent.assess, scenario.assess, scenario.assess_off)
+                refuse_unknown_people(rules, [p.key for p in scenario.people])
+            except ValueError as e:
+                found.append(f"{scenario_path} with {agent_path}: assess: {e}")
     for line in found:
         print(line, file=sys.stderr)
     return 1 if found else 0
@@ -596,7 +633,7 @@ def _shown(found: LibraryScenario) -> str:
             "",
             *textwrap.wrap(f"A good agent: {found.good_agent}", 116),
             "",
-            f"checks: {', '.join(found.checks)}",
+            f"rules: {', '.join(found.rules)} (in the scenario's `assess`, yours to edit once written)",
             f"patterns: {', '.join(found.patterns)}",
             f"takes: {' '.join(takes[u] for u in found.uses)}",
         ]
@@ -808,6 +845,15 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
     return _report(outcomes, state, as_json=args.json, sampled=args.samples > 1)
 
 
+def _run_all(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
+    load_agent(args.agent)  # refused here, once, rather than once per scenario
+    batch = asyncio.run(
+        run_all.play_all(args.folder, args.agent, state=state, command=command, jobs=args.jobs, judge=args.judge)
+    )
+    print(batch.model_dump_json(indent=2) if args.json else run_all.described(batch))
+    return batch.exit_code
+
+
 def _progress(command: str) -> Callable[[str], None]:
     """Each step of a restore, as it is taken, on stderr: stdout carries the report, or the JSON."""
 
@@ -843,7 +889,7 @@ def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> i
 def _findings(args: argparse.Namespace, state: Path) -> int:
     outcome = session.load(state, args.run_id)
     if args.json:
-        print(outcome.model_dump_json(indent=2))
+        print(session.Played(outcomes=[outcome]).model_dump_json(indent=2))
     else:
         print(
             _describe(
@@ -1003,7 +1049,7 @@ def _view(state: Path, port: int) -> int:
 def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: bool) -> int:
     stable = stability([o.result for o in outcomes]) if sampled else None
     if as_json:
-        print(Played(outcomes=outcomes, stability=stable).model_dump_json(indent=2))
+        print(session.Played(outcomes=outcomes, stability=stable).model_dump_json(indent=2))
     else:
         print(
             "\n\n".join(
@@ -1033,6 +1079,11 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
     lines.append(f"  stopped at {record.ended_at:%Y-%m-%d %H:%M} UTC (simulated) because {_STOPPED[record.stop]}")
     if record.failure is not None:
         lines.append(f"  {record.failure}")
+    if record.stop is StopReason.WAKE_LIMIT and record.wake_limit is not None:
+        lines.append(
+            f"  the wake limit was {record.wake_limit.wakes}: {record.wake_limit.why}; set `max_wakes` in the "
+            "scenario, or declare the agent's rhythm (`tick` in the agent file) so the deadline sizes it"
+        )
     lines.append(f"  providers the agent called: {', '.join(record.providers) or 'none'}")
     if record.outbound:
         lines.append("\noutbound calls")

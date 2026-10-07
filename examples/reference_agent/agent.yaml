@@ -82,3 +82,48 @@ state:
   quiet: PT0.5S
   settle_limit: PT30S
   answer_limit: PT30S
+
+# The team's policy, which judges every run of this agent (docs/assessments.md). Nothing else judges how it behaves:
+# drop a rule here and nothing asks it; a scenario may replace one by its id or switch it off (`assess_off`).
+assess:
+  - id: follows_up_when_due          # an hour past the time an answer was due, the agent has reminded at least once
+    each: ask
+    where: {person_not: [owner]}
+    when: {open_at: due+PT1H}
+    count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
+    at_least: 1
+    message: "wait on {person.key}: their answer was due and an hour later the agent had not followed up"
+    pattern: expiry_on_every_wait
+  - id: reminds_at_most_twice_before_due   # more reminders than that, before an answer is even due, is nagging
+    each: ask
+    where: {person_not: [owner]}
+    count: {follow_ups: {}, until: due}
+    at_most: 2
+    message: "{person.key} was followed up {rule.count} times on one ask, each before their answer was due"
+    pattern: budgeted_follow_up
+  - id: reminds_at_most_every_two_days    # and after it, no two reminders on one ask closer than two days
+    each: ask
+    where: {person_not: [owner]}
+    count: {follow_ups: {}}
+    gap_at_least: P2D
+    message: "{person.key} was reminded more often than every two days"
+    pattern: budgeted_follow_up
+  - id: comes_back_to_an_answer      # an answer, or a decision, is acted on within the hour
+    each: ask
+    where: {person_not: [owner]}
+    when: {answered: true}
+    count: {touches: {}, since: answer, until: answer+PT1H}
+    at_least: 1
+    message: "{person.key} answered and the agent did not come back to it within the hour"
+    pattern: expiry_on_every_wait
+  - id: acts_only_once_approved      # the tell an approval holds back waits for the approval
+    count: {writes: {gated: true}}
+    at_most: 0
+    message: "went ahead with the booking before it was approved"
+    pattern: act_on_the_decision
+  - id: not_done_while_waiting       # done is reported once nobody it asked is still to answer
+    when: {stopped: [agent_done]}
+    count: {asks: {open_at: end}}
+    at_most: 0
+    message: "the agent reported done with {rule.count} ask(s) still unanswered"
+    pattern: honest_closure

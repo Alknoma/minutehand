@@ -10,9 +10,9 @@ from minutehand.application.checkpoint import PendingWake, checkpoint_seqs
 from minutehand.application.dues import Dues, due_entries
 from minutehand.application.forks import change_words, short_words
 from minutehand.application.rewind import changed_scenario
-from minutehand.checks.acted_on_repeated_wake import ActedOnRepeatedWake
-from minutehand.checks.runner import view_of
+from minutehand.checks.runner import evaluate, view_of
 from minutehand.domain.agent import AgentUnderTest, Booked, Polled, WakeReason
+from minutehand.domain.checks import FindingKind
 from minutehand.domain.clock import Due, DueClosed, DueKind, DueSource
 from minutehand.domain.experiment import DispatchChange, Fork
 from minutehand.domain.run import StopReason
@@ -21,6 +21,14 @@ from tests.orchestrator.rig import T0, Rig, scenario
 from tests.orchestrator.test_http_agents import TickingAgent, _run
 from tests.orchestrator.test_rewind import fork
 from tests.orchestrator.world import RecordingClock, serving
+from tests.support.rules import rules
+
+TWICE = """
+- id: nothing_new_in_a_repeated_wake
+  count: {writes: {in_repeated_wake: true}}
+  at_most: 0
+  severity: review
+"""
 
 
 def rule(
@@ -60,7 +68,7 @@ async def test_a_reported_wake_dropped_is_never_delivered_and_the_agent_is_not_w
     )
 
 
-async def test_a_wake_delivered_twice_to_an_agent_with_no_guard_is_reviewed(rig: Rig) -> None:
+async def test_a_wake_delivered_twice_to_an_agent_with_no_guard_is_reviewed_by_the_teams_rule(rig: Rig) -> None:
     scn = scenario(
         max_wakes=3,
         ticket_fates=[],
@@ -69,13 +77,11 @@ async def test_a_wake_delivered_twice_to_an_agent_with_no_guard_is_reviewed(rig:
     record, store, _ = await rig.run(scn, rig.agent("keep_writing"))
 
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=2), T0 + timedelta(hours=2, minutes=10)]
-    view = view_of(scn, store.events(), record.wakes, store.replies(), dues=due_entries(store))
-    [finding] = ActedOnRepeatedWake().run(view).findings
-    assert finding.wake == 3 and len(finding.evidence) == 1
-    assert finding.message == (
-        f"wake 3 was the second delivery of the agent's own wake for {(T0 + timedelta(hours=2)):%Y-%m-%d %H:%M} UTC, "
-        "10 minutes after the first, and the agent changed the world 1 time in it"
-    )
+    view = view_of(scn, store.events(), record.wakes, store.replies(), dues=due_entries(store), rules=rules(TWICE))
+    [finding] = [f for f in evaluate(view, stop=record.stop).findings if f.check == "nothing_new_in_a_repeated_wake"]
+    [written] = finding.evidence
+    assert next(e for e in store.events() if e.seq == written).wake == 3
+    assert finding.kind is FindingKind.REVIEW
 
 
 async def test_a_booking_made_late_reaches_the_scheduler_late(rig: Rig) -> None:
@@ -149,8 +155,8 @@ async def test_a_wake_delivered_twice_to_an_agent_that_writes_nothing_on_it_is_n
     record, store, _ = await rig.run(scn, rig.agent("keep_waking"))
 
     assert len(record.wakes) == 3
-    view = view_of(scn, store.events(), record.wakes, store.replies(), dues=due_entries(store))
-    assert ActedOnRepeatedWake().run(view).findings == []
+    view = view_of(scn, store.events(), record.wakes, store.replies(), dues=due_entries(store), rules=rules(TWICE))
+    assert [f for f in evaluate(view, stop=record.stop).findings if f.check == "nothing_new_in_a_repeated_wake"] == []
 
 
 async def test_a_booking_delivered_twice_reaches_the_queue_twice_and_finishes_its_occurrence_once(rig: Rig) -> None:

@@ -25,14 +25,18 @@ from pathlib import Path
 from types import ModuleType
 from typing import Protocol
 
+from pydantic import Field
+
 from minutehand import checks as package
 from minutehand.checks import judged as judged_package
-from minutehand.checks._waits import chases, ended_at
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
+from minutehand.checks.facts import ended_at
 from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.ledger import build
+from minutehand.checks.near_miss_name import NearMissName
 from minutehand.domain.agent import Commitment, CommitmentStatus
+from minutehand.domain.assessments import Rule, StoppedBy, merged
 from minutehand.domain.checks import (
     AroundProxy,
     Check,
@@ -67,6 +71,11 @@ class RunResult(Model):
     notes: list[str]
     effectiveness: Effectiveness
     verdict: Verdict
+    assessed_by: list[str] = Field(
+        default=[],
+        description="What judged the run, all of it the team's own: each rule of `assess` by its id, `expectations` "
+        "and `near_miss_name` when the scenario declares them, and each of the agent's own checks; empty: nothing did",
+    )
 
     @property
     def exit_code(self) -> int:
@@ -165,7 +174,8 @@ def discover_judged() -> list[JudgedCheck]:
 class _Tally:
     """What the checks have said so far, and how many expectations are met."""
 
-    def __init__(self, view: RunView) -> None:
+    def __init__(self, view: RunView, own: Sequence[Check] = ()) -> None:
+        self.assessed_by = assessed_by(view, own)
         self.findings: list[Finding] = []
         self.blocked: list[str] = []
         self.notes: list[str] = []
@@ -185,13 +195,26 @@ class _Tally:
             blocked=self.blocked,
             notes=self.notes,
             effectiveness=card,
-            verdict=verdict(view, card, stop, self.findings, ended or ended_at(view)),
+            verdict=verdict(view, card, stop, self.findings, ended or ended_at(view), assessed=bool(self.assessed_by)),
+            assessed_by=self.assessed_by,
         )
+
+
+def assessed_by(view: RunView, own: Sequence[Check] = ()) -> list[str]:
+    """What the team declared to judge the run: its rules, the scenario's expectations and protected names, and the
+    agent's own checks. Minutehand's integrity checks (a call around the proxy, a contract the agent broke) are not
+    an assessment: they say whether the run can be trusted, not how the agent should behave."""
+    found = [r.id for r in view.rules]
+    if view.scenario.expect:
+        found.append(Expectations.id)
+    if view.scenario.protected_names:
+        found.append(NearMissName.id)
+    return found + [c.id for c in own]
 
 
 _STOPPED = {
     StopReason.AGENT_DONE: "the agent reported it was done",
-    StopReason.WAKE_LIMIT: "the run stopped at the scenario's wake limit",
+    StopReason.WAKE_LIMIT: "the run stopped at its wake limit",
     StopReason.DEADLINE_PASSED: "the run stopped at the scenario's deadline",
     StopReason.NOTHING_PENDING: "the run stopped because nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the run stopped because the agent could not be reached or answered with an error",
@@ -201,47 +224,41 @@ _STOPPED = {
 
 
 def verdict(
-    view: RunView, card: Effectiveness, stop: StopReason | None, findings: list[Finding], ended: datetime
+    view: RunView,
+    card: Effectiveness,
+    stop: StopReason | None,
+    findings: list[Finding],
+    ended: datetime,
+    *,
+    assessed: bool = True,
 ) -> Verdict:
-    """Tool failed when Minutehand broke answering any call: such a run says nothing about the agent, so it is
-    neither passed nor failed. Otherwise failed when a check failed; passed when the agent reported done with
-    nothing it asked left abandoned, or nothing was left open; unfinished otherwise.
+    """Read from the findings of the run's own rules and checks, and from how the run stopped; nothing else.
 
-    Two refinements of "open", both read from the world and neither from the content of any message:
+    Tool failed when Minutehand broke answering any call: such a run says nothing about the agent. Otherwise failed
+    when a finding failed; not judged when nothing was assessed or a check could not run; passed when the agent
+    reported done, or nothing was left open; unfinished otherwise. Whether the agent should have done anything
+    else is the team's to say, in its rules (`domain/assessments.py`).
 
-    - **Done, with an ask abandoned.** An agent that reports DONE while a question it asked is unanswered and it
-      never followed it up has not finished: it stopped waiting. A "follow-up" sent in the same wake as the ask
-      (`Chase.instant`) chased nothing, since the agent never waited, and does not count. Work handed to someone (a
-      ticket) is not this. That is unfinished, not passed.
-    - **The owner told the result.** Once every expectation of the scenario is met, a message to an owner who
-      never answers (`Silent`), sent with or after the last of them, opens a wait nobody will settle; it is the
-      result being reported, and neither keeps a run unfinished nor counts as an ask abandoned.
+    "Open" is read from the world: a wait the world had not settled, or a commitment the agent's last report held
+    open. One reading of the ledger's: once every expectation of the scenario is met, a message to an owner who
+    never answers (`Silent`), sent with or after the last of them, opens a wait nobody will settle; it is the result
+    being reported, and does not keep a run unfinished.
     """
     commitments = (
         None if view.commitments is None else sum(1 for c in view.commitments if c.status is CommitmentStatus.OPEN)
     )
-    waits = chases(view, ended)
-    still = [c for c in waits if c.obligation.settled_at is None]
+    still = [o for o in view.obligations if o.kind is not ObligationKind.DATE and o.settled_at is None]
     met_by = _all_met_at(view, card, findings)
     owner = next(p for p in view.scenario.people if p.key == view.scenario.owner)
     told_after = [
-        c
-        for c in still
-        if met_by is not None
-        and isinstance(owner.reply, Silent)
-        and c.obligation.person == owner.key
-        and c.obligation.opened_by >= met_by
-    ]
-    abandoned = [
-        c
-        for c in still
-        if all(s in c.instant for s in c.follow_ups)
-        and c.obligation.kind is ObligationKind.ANSWER_FROM_PERSON
-        and c not in told_after
+        o
+        for o in still
+        if met_by is not None and isinstance(owner.reply, Silent) and o.person == owner.key and o.opened_by >= met_by
     ]
     open_waits = len(still) - len(told_after)
     open_work = open_waits + (commitments or 0)
     how = _STOPPED[stop] if stop is not None else "how the run stopped was not recorded"
+    reasons = unjudged(view, assessed=assessed)
     if stop is StopReason.ENVIRONMENT_FAILED:
         kind = VerdictKind.ENVIRONMENT_FAILED
         words = (
@@ -259,19 +276,14 @@ def verdict(
     elif card.failed_checks:
         kind = VerdictKind.FAILED
         words = f"Failed: {_count(card.failed_checks, 'check')} failed; {how}."
-    elif reasons := unjudged(view):
+    elif not assessed:
+        kind = VerdictKind.NOT_JUDGED
+        words = f"Not assessed: {NOTHING_ASSESSED}; {how}. The facts of the run are below."
+    elif reasons:
         kind = VerdictKind.NOT_JUDGED
         words = (
             f"Not judged: no check failed, but {_count(len(reasons), 'thing')} kept this run from being judged; "
             f"{how}: " + "; ".join(reasons) + "."
-        )
-    elif stop is StopReason.AGENT_DONE and abandoned:
-        kind = VerdictKind.UNFINISHED
-        people = sorted({c.obligation.person or "someone" for c in abandoned})
-        waited = " after the wake it asked in" if any(c.instant for c in abandoned) else ""
-        words = (
-            f"Not finished: no check failed, but the agent reported it was done with {_count(len(abandoned), 'ask')} "
-            f"it made still unanswered and never followed up{waited} ({', '.join(people)})."
         )
     elif stop is StopReason.AGENT_DONE or open_work == 0:
         kind = VerdictKind.PASSED
@@ -300,34 +312,28 @@ def verdict(
         open_waits=open_waits,
         open_commitments=commitments,
         words=words,
-        unjudged=unjudged(view) if kind is VerdictKind.NOT_JUDGED else [],
+        unjudged=reasons if kind is VerdictKind.NOT_JUDGED else [],
     )
 
 
-def unjudged(view: RunView) -> list[str]:
-    """Why a run with no failed check cannot be called passed or unfinished, one reason each; empty when it can.
+NOTHING_ASSESSED = (
+    "nothing judged this run, since neither the scenario nor the agent file declares an assessment (`assess`, "
+    "`expect`, `protected_names`, or the agent's own `checks`)"
+)
 
-    A check that could not read its input did not run, and a run whose checks did not run is not one they passed:
-    each check that needs the agent's wakes, in a run that recorded none (a standing world nobody marked a step in
-    and whose clock never moved). And a run in which nothing was there to judge (no expectation declared, and no wait opened: nobody was asked
-    anything the world saw answered, and nothing was handed to anyone) passed nothing. A check blocked because the
-    ledger found nothing to wait on is not a reason by itself: an agent that asked nobody anything and met every
-    expectation was judged, on its expectations."""
-    reasons: list[str] = []
+
+def unjudged(view: RunView, *, assessed: bool = True) -> list[str]:
+    """Why a run with no failed check cannot be called passed or unfinished, one reason each; empty when it can:
+    nothing was assessed, or a check that needs the agent's wakes ran over a run that recorded none (a standing world
+    nobody marked a step in and whose clock never moved). A check that could not read its input did not run, and a
+    run whose checks did not run is not one they passed."""
+    reasons: list[str] = [] if assessed else [NOTHING_ASSESSED]
     for check in discover():
-        needed: list[str] = []
         if Needs.WAKES in check.needs and not view.wakes:
-            needed.append(
-                "the agent's wakes, and no step was recorded (mark each step, or move the world's clock forward)"
+            reasons.append(
+                f"{check.id} could not run, it needs the agent's wakes, and no step was recorded (mark each step, or "
+                "move the world's clock forward)"
             )
-        if needed:
-            reasons.append(f"{check.id} could not run, it needs {' and '.join(needed)}")
-    waits = [o for o in view.obligations if o.kind is not ObligationKind.DATE]
-    if not view.scenario.expect and not waits and not view.wakes:
-        reasons.append(
-            "nothing was there to judge: no expectation is declared and no wait was opened (nobody was asked "
-            "anything the world saw answered, and no work was handed to anyone)"
-        )
     return reasons
 
 
@@ -349,7 +355,7 @@ def _count(n: int, thing: str) -> str:
 
 
 def _deterministic(view: RunView, own: Sequence[Check] = ()) -> _Tally:
-    tally = _Tally(view)
+    tally = _Tally(view, own)
     for check in discover(own):
         report: CheckReport = check.run(view)
         tally.add(check.id, report)
@@ -412,8 +418,10 @@ def evaluate_run(
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
     ended: datetime | None = None,
+    rules: Sequence[Rule] | None = None,
 ) -> RunResult:
-    """Build the obligations ledger from the world and the replies, then run every deterministic check."""
+    """Build the obligations ledger from the world and the replies, then run every deterministic check and the
+    team's rules: `rules`, or the scenario's own when none are given."""
     view = view_of(
         scenario,
         events,
@@ -422,6 +430,8 @@ def evaluate_run(
         withdrawn=withdrawn,
         commitments=commitments,
         unmatched_calls=unmatched_calls,
+        rules=merged([], scenario.assess, scenario.assess_off) if rules is None else rules,
+        stop=stop,
     )
     return evaluate(view, stop=stop, ended=ended)
 
@@ -442,6 +452,8 @@ def view_of(
     reported: list[CommitmentsReported] | None = None,
     around_proxy: list[AroundProxy] | None = None,
     uncalled_providers: Sequence[ProviderKey] = (),
+    rules: Sequence[Rule] = (),
+    stop: StopReason | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
     which `withdrawn` (positions) were withdrawn before they landed."""
@@ -460,7 +472,20 @@ def view_of(
         reported=reported,
         around_proxy=around_proxy,
         uncalled_providers=list(uncalled_providers),
+        rules=list(rules),
+        stopped=_STOPPED_BY[stop] if stop is not None else None,
     )
+
+
+_STOPPED_BY = {
+    StopReason.AGENT_DONE: StoppedBy.AGENT_DONE,
+    StopReason.WAKE_LIMIT: StoppedBy.WAKE_LIMIT,
+    StopReason.DEADLINE_PASSED: StoppedBy.DEADLINE_PASSED,
+    StopReason.NOTHING_PENDING: StoppedBy.NOTHING_PENDING,
+    StopReason.AGENT_FAILED: StoppedBy.AGENT_FAILED,
+    StopReason.CLOSED: StoppedBy.CLOSED,
+    StopReason.ENVIRONMENT_FAILED: StoppedBy.ENVIRONMENT_FAILED,
+}
 
 
 def broken(calls: list[RecordedCall]) -> list[Exchange]:

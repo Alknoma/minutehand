@@ -58,7 +58,7 @@ from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.database import DatabaseDigest
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.run import RunRecord, StopReason
+from minutehand.domain.run import RunRecord, StopReason, wake_limit
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
 from minutehand.domain.world import (
     Actor,
@@ -255,6 +255,7 @@ class Orchestrator:
         _refuse_unlanded_happenings(scenario, agent, services)
         self._scenario = scenario
         self._agent = agent
+        self._limit = wake_limit(scenario, agent)
         self._reach = reach
         self._store = store
         self._clock = clock
@@ -428,6 +429,7 @@ class Orchestrator:
             outbound=outbound_uses(self._store.calls()),
             emulators=emulator_uses(self._store.calls()),
             wakes=self._wakes,
+            wake_limit=self._limit,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None
         if self._telemetry is not None:
@@ -842,7 +844,7 @@ class Orchestrator:
             return StopReason.AGENT_FAILED
         if done:
             return StopReason.AGENT_DONE
-        if len(self._wakes) >= self._scenario.max_wakes:
+        if len(self._wakes) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
 

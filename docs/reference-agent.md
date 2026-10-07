@@ -56,8 +56,9 @@ On `integration-main` before this work, through the real CLI: Rosa could not ans
 failed and the forgetful one was unscored); snapshots of the worker mid-job were labelled restorable; a restore of
 another moment with the same report, and one that left the worker running, were verified; the gRPC exporter
 delivered nothing; the liar passed a lenient scenario; the nagging agent scored as the diligent one. After: the
-diligent agent passes in about 3 s of real time; the forgetful one fails `no_follow_up` with 2.2 days lost; the
-nagging one fails `nagged` with 10 early follow-ups; the liar is `Not finished`; checkpoints wait for the worker;
+diligent agent passes in about 3 s of real time; the forgetful one failed for a wait left 2.2 days past due; the
+nagging one failed for 10 follow-ups before an answer was due (judged then by built-in checks, which are now the
+team's own rules: `docs/assessments.md`); the liar is `Not finished`; checkpoints wait for the worker;
 both wrong restores are refused by the fingerprint; gRPC spans are received and placed. `tests/architecture/`
 holds the proofs that run in the default suite.
 
@@ -68,6 +69,6 @@ holds the proofs that run in the default suite.
 - Fingerprint every place your state lives, including what a long-running process caches: a database digest alone
   passes a restore that left a process holding the future.
 - Take "now" from the wake request only. A deadline computed from the machine clock lands weeks away from the
-  simulated one (`REFERENCE_REAL_CLOCK=1` fails `no_follow_up`).
+  simulated one (`REFERENCE_REAL_CLOCK=1` fails the scenario's follow-up rule).
 - Run `minutehand doctor --agent agent.yaml -- <your command>` once: it names every client that would go around
   the proxy.

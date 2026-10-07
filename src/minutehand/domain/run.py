@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import math
+from datetime import timedelta
 from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.domain.agent import AgentReport
+from minutehand.domain.agent import AgentReport, AgentUnderTest, Polled
 from minutehand.domain.checks import WakeRecord
-from minutehand.domain.scenario import Model, ProviderKey
+from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.world import CaptureMode
 
 
@@ -113,6 +115,44 @@ class EmulatorUse(Model):
     first_unavailable: str | None = Field(default=None, description="The first call it was unavailable for")
 
 
+DEFAULT_WAKES = 20
+"""The wake limit of a scenario that sets none and gives no deadline to size one from; also the room left, beyond the
+agent's own rhythm, for the wakes replies and happenings bring."""
+
+
+class WakeLimit(Model):
+    """The most wakes a run plays, and where that number came from."""
+
+    wakes: int = Field(ge=1)
+    why: str
+
+
+def wake_limit(scenario: Scenario, agent: AgentUnderTest) -> WakeLimit:
+    """The scenario's `max_wakes`; else, with a deadline and a rhythm the agent keeps (a polled wake's `every`, or
+    the agent file's `tick`), every tick up to the deadline and `DEFAULT_WAKES` more; else `DEFAULT_WAKES`."""
+    if scenario.max_wakes is not None:
+        return WakeLimit(wakes=scenario.max_wakes, why="the scenario's max_wakes")
+    ticks = [w.every for w in agent.wakes if isinstance(w, Polled)] + ([agent.tick] if agent.tick else [])
+    if scenario.deadline_after is not None and ticks:
+        tick = min(ticks)
+        rhythm = math.ceil(scenario.deadline_after / tick)
+        return WakeLimit(
+            wakes=rhythm + DEFAULT_WAKES,
+            why=f"{rhythm} wakes of the agent's {_said(tick)} rhythm before the scenario's deadline, and "
+            f"{DEFAULT_WAKES} more for what else wakes it",
+        )
+    missing = "no deadline" if scenario.deadline_after is None else "a deadline, but the agent file declares no tick"
+    return WakeLimit(
+        wakes=DEFAULT_WAKES,
+        why=f"the default: the scenario sets no max_wakes and has {missing} to size one from",
+    )
+
+
+def _said(tick: timedelta) -> str:
+    minutes = round(tick.total_seconds() / 60)
+    return f"{minutes // 60}-hour" if minutes % 60 == 0 else f"{minutes}-minute"
+
+
 class RunRecord(Model):
     run_id: str
     scenario: str
@@ -137,6 +177,9 @@ class RunRecord(Model):
     )
     emulators: list[EmulatorUse] = Field(default=[], description="Every external emulator the agent's calls reached")
     wakes: list[WakeRecord]
+    wake_limit: WakeLimit | None = Field(
+        default=None, description="The most wakes the run would play, and why; None for a standing world"
+    )
     worlds: list[str] = Field(
         default=[],
         description="A case (`minutehand serve`, worlds opened under one case label): the worlds it is made of, in "

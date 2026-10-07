@@ -22,3 +22,14 @@ expect:
   - kind: person_asked
     person: owen
     mentions: [confirmed]
+
+# How the agent must behave, as this team sees it (docs/assessments.md): Minutehand judges nothing else.
+assess:
+  - id: follows_up_when_due          # an hour past the time an answer was due, the agent has followed up at least once
+    each: ask
+    where: {person_not: [owner]}
+    when: {open_at: due+PT1H}
+    count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
+    at_least: 1
+    message: "{person.key}'s answer was due and no follow-up came by an hour later"
+    pattern: expiry_on_every_wait

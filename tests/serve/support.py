@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+import yaml
 from slack_sdk import WebClient
 from slack_sdk.web import SlackResponse
 
@@ -56,12 +57,18 @@ def dm(served: Served, token: str, email: str) -> str:
     return answer(slack.conversations_open(users=[user]))["channel"]["id"]
 
 
-def seed(*people: tuple[str, str], scripted: dict[str, str] | None = None) -> Seed:
-    """People by key and name; `scripted` gives a person one scripted reply to their first ask, an hour later."""
+ASKS_SOFIA = "[{id: asks_sofia, count: {messages: {to: [sofia]}}, at_least: 1}]"
+"""A team's rule a test world is judged by, so its verdict is about how the agent finished, not "not assessed"."""
+
+
+def seed(*people: tuple[str, str], scripted: dict[str, str] | None = None, assess: str | None = None) -> Seed:
+    """People by key and name; `scripted` gives a person one scripted reply to their first ask, an hour later;
+    `assess`, the team's rules in YAML."""
     replies = scripted or {}
     return Seed.model_validate(
         {
             "starts_at": "2026-09-01T09:00:00Z",
+            "assess": yaml.safe_load(assess) if assess is not None else [],
             "people": [
                 {
                     "key": key,
@@ -83,9 +90,11 @@ def seed(*people: tuple[str, str], scripted: dict[str, str] | None = None) -> Se
     )
 
 
-def spec(token: str, *, inbound: str | None = None, scripted: dict[str, str] | None = None) -> CreateWorld:
+def spec(
+    token: str, *, inbound: str | None = None, scripted: dict[str, str] | None = None, assess: str | None = None
+) -> CreateWorld:
     return CreateWorld(
-        seed=seed(("owen", "Owen Owner"), ("sofia", "Sofia Romano"), scripted=scripted),
+        seed=seed(("owen", "Owen Owner"), ("sofia", "Sofia Romano"), scripted=scripted, assess=assess),
         claims=Claims(tokens=[token]),
         inbound=[Inbound(provider="slack", url=inbound, secret=SECRET)] if inbound is not None else [],
         scripted_people=scripted is not None,

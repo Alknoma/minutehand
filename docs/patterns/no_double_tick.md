@@ -1,6 +1,6 @@
 # One instance per period
 
-**Found by:** `acted_on_repeated_wake` (a REVIEW: a scenario that delivers a wake twice, `dispatch`, and an agent that writes again on the second).
+**Found by:** a rule of the team's own (`docs/assessments.md`), such as `count: {writes: {in_repeated_wake: true}}, at_most: 0, severity: review`, in a scenario that delivers a wake twice (`dispatch`).
 
 ## The failure
 

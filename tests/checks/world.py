@@ -6,9 +6,14 @@ them; the obligations come from the real ledger, never written by hand.
 
 from __future__ import annotations
 
+import textwrap
 from datetime import UTC, datetime, timedelta
 
+import yaml
+from pydantic import TypeAdapter
+
 from minutehand.checks.ledger import build
+from minutehand.domain.assessments import Rule, StoppedBy
 from minutehand.domain.checks import RunView, WakeRecord
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import (
@@ -174,6 +179,14 @@ ONE_WAKE = WakeRecord(index=1, sim_time=START, world_changes=1, commitments_chan
 so no check is blocked for want of one and none reads it as idle."""
 
 
+_RULES: TypeAdapter[list[Rule]] = TypeAdapter(list[Rule])
+
+
+def rules(written: str) -> list[Rule]:
+    """Rules as a team writes them in YAML: the list under `assess:`."""
+    return _RULES.validate_python(yaml.safe_load(textwrap.dedent(written)))
+
+
 def view(
     world: Scenario,
     log: Log,
@@ -181,6 +194,8 @@ def view(
     *,
     wakes: list[WakeRecord] | None = None,
     unmatched: list[Exchange] | None = None,
+    assess: list[Rule] | None = None,
+    stopped: StoppedBy | None = None,
 ) -> RunView:
     return RunView(
         scenario=world,
@@ -189,4 +204,6 @@ def view(
         obligations=build(world, log.events, replies or []),
         replies=replies or [],
         unmatched_calls=unmatched,
+        rules=assess or [],
+        stopped=stopped,
     )

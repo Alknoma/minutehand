@@ -19,7 +19,7 @@ from minutehand.domain.run import StopReason, VerdictKind
 from minutehand.testing.background import serve_in_background
 from minutehand.testing.client import MinutehandClient
 from minutehand.testing.world import OpenWorld, open_case
-from tests.serve.support import Served, dm, event_receiver, spec
+from tests.serve.support import ASKS_SOFIA, Served, dm, event_receiver, spec
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +34,7 @@ def served(state: Path) -> Iterator[Served]:
 
 
 def _spec(token: str, inbound: str) -> CreateWorld:
-    return spec(token, inbound=inbound, scripted={"sofia": "Yes, it is."})
+    return spec(token, inbound=inbound, scripted={"sofia": "Yes, it is."}, assess=ASKS_SOFIA)
 
 
 def _asked_and_answered(served: Served, world: OpenWorld, token: str) -> None:
