@@ -24,11 +24,13 @@ from mitmproxy import options
 from mitmproxy.addons import default_addons
 from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.master import Master
+from mitmproxy.proxy import mode_specs
 
 from minutehand.adapters.proxy.addon import ProxyAddon
 from minutehand.adapters.proxy.base_url import BaseUrls
 from minutehand.adapters.proxy.capture import Capturing
 from minutehand.adapters.proxy.policy import Routing
+from minutehand.adapters.proxy.redirected import RedirectedMode
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
 from minutehand.application.restore import SeenCall
 from minutehand.domain.outbound import UnknownHosts
@@ -64,8 +66,10 @@ class Proxy:
         capturing: Capturing | None = None,
         capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
         model: LanguageModel | None = None,
+        redirect_port: int | None = None,
     ) -> None:
-        """`upstream_ca` replaces the system trust store when verifying the hosts an edited, recorded or
+        """`redirect_port`, when given, opens a second listener on `host` for connections the network redirects to
+        the proxy with no proxy asked for (`adapters.proxy.redirected`; 0 lets the system pick it). `upstream_ca` replaces the system trust store when verifying the hosts an edited, recorded or
         passed-through call is sent on to. `public_roots` replaces certifi's roots in the bundle the agent is
         handed (`ca_bundle`). `record_model_calls` opens the agent's calls to model APIs and keeps each as a span.
         `capturing` is what every run mounted on this proxy captures of the hosts nobody claims;
@@ -88,6 +92,7 @@ class Proxy:
         self._master: Master | None = None
         self.host = host
         self.port = port
+        self.redirect_port = redirect_port
 
     @property
     def url(self) -> str:
@@ -145,11 +150,21 @@ class Proxy:
         assert isinstance(server, Proxyserver)
         if not await server.setup_servers():
             raise OSError(f"the proxy could not listen on {self._listen[0]}:{self._listen[1]}")
+        if self.redirect_port is not None:
+            # Added beside the regular listener rather than in the `mode` option, whose check refuses two listeners
+            # on one host when both ports are left to the system (0).
+            redirected = mode_specs.ProxyMode.parse(f"redirected@{self._listen[0]}:{self.redirect_port}")
+            if not await server.servers.update([*(instance.mode for instance in server.servers), redirected]):
+                await server.servers.update([])
+                raise OSError(f"the proxy could not listen on {self._listen[0]}:{self.redirect_port} for redirects")
         await master.running()
-        bound = server.listen_addrs()
-        if not bound:
+        bound = {type(instance.mode): instance.listen_addrs for instance in server.servers}
+        regular, redirected = bound.get(mode_specs.RegularMode), bound.get(RedirectedMode)
+        if not regular or (self.redirect_port is not None and not redirected):
             raise OSError("the proxy started but reports no listening address")
-        self.host, self.port = bound[0][0], bound[0][1]
+        self.host, self.port = regular[0][0], regular[0][1]
+        if redirected:
+            self.redirect_port = redirected[0][1]
         self._master = master
         _running.append(self)
         return self

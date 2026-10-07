@@ -353,7 +353,11 @@ async def diagnose(
         "host or a domain it is under; undici and proxy-from-env: the host exactly, a suffix only for an entry "
         "starting with . or *)"
     )
-    notes.append("Node's built-in fetch needs NODE_USE_ENV_PROXY=1 to read HTTPS_PROXY (not probed here)")
+    notes.append(
+        "Node's built-in fetch reads HTTPS_PROXY only with NODE_USE_ENV_PROXY=1, which Minutehand hands every agent and "
+        "Node 24 and later read; an older Node's fetch goes around the proxy (not probed here): give it a base URL, or "
+        "run it in a container with --transparent-port"
+    )
     return Diagnosis(
         interpreter=" ".join(probe.argv),
         libraries=libraries,
