@@ -27,6 +27,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import urllib.request
 from contextlib import closing
 from pathlib import Path
@@ -103,6 +104,8 @@ def restore() -> None:
         _firestore("restore", source)
     else:
         _copy(source / "agent.db", _database())
+    for name in MEMORY:  # the stopped processes' memory goes with them; each restarted one writes its own
+        (HOME / name).unlink(missing_ok=True)
     print(f"restored from {source}")
 
 
@@ -120,8 +123,16 @@ def clear() -> None:
     urllib.request.urlopen(urllib.request.Request(url, method="DELETE"), timeout=30).close()
 
 
+MEMORY_WAIT = 10.0
+"""How long `fingerprint` waits for a process just started to write its memory: the API answers before the worker
+is necessarily up, and reading too early would read nothing. A process a restore did not restart never writes it."""
+
+
 def fingerprint() -> None:
     parts = [open_store().digest()]
+    deadline = time.monotonic() + MEMORY_WAIT
+    while not all((HOME / name).is_file() for name in MEMORY) and time.monotonic() < deadline:
+        time.sleep(0.05)
     for name in MEMORY:
         path = HOME / name
         parts.append(f"{name}={path.read_text().strip() if path.is_file() else 'absent'}")
