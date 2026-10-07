@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from minutehand.adapters.providers.google_cloud_tasks.manifest import MANIFEST
 from minutehand.adapters.providers.google_cloud_tasks.provider import (
     CloudTasksProvider,
     CloudTasksSeed,
@@ -39,15 +40,19 @@ pytestmark = pytest.mark.timeout(120)
 START = datetime(2026, 8, 24, 9, tzinfo=UTC)
 QUEUE = "projects/sim-project/locations/us-central1/queues/follow-ups"
 
-PRELUDE = f"""
+REST = 'transport="rest", '
+"""How a client is made on Cloud Tasks' REST transport; `GRPC` leaves the transport to the client's default."""
+GRPC = ""
+
+PRELUDE = """
 import json, sys, datetime
 from google.auth.credentials import AnonymousCredentials
 from google.api_core import exceptions
 from google.cloud import tasks_v2
 from google.protobuf import timestamp_pb2
 
-client = tasks_v2.CloudTasksClient(transport="rest", credentials=AnonymousCredentials())
-QUEUE = {QUEUE!r}
+client = tasks_v2.CloudTasksClient({transport}credentials=AnonymousCredentials())
+QUEUE = {queue!r}
 
 def say(**found):
     print(json.dumps(found), flush=True)
@@ -89,14 +94,15 @@ class Tasks:
     wakes: ListWakes
     environment: dict[str, str]
 
-    async def client(self, program: str) -> Client:
+    async def client(self, program: str, *, transport: str = REST) -> Client:
+        """Google's own client, in a process of its own, on its REST transport, or with `GRPC` on its default."""
         import asyncio
         import sys
 
         child = await asyncio.create_subprocess_exec(
             sys.executable,
             "-c",
-            PRELUDE + program,
+            PRELUDE.format(transport=transport, queue=QUEUE) + program,
             env=self.environment,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -122,12 +128,14 @@ def seeded(**retry: object) -> Scenario:
 async def opened(tmp_path: Path, scenario: Scenario) -> AsyncIterator[Tasks]:
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "world.db", "run", clock)
-    provider = build()
+    registry = Registry()
+    registry.discover("minutehand.adapters.providers")
+    # The registry's own instance, bound: the proxy asks the registry for the provider whose gRPC it serves.
+    provider = registry.provider(MANIFEST)
+    assert isinstance(provider, CloudTasksProvider)
     wakes = ListWakes()
     provider.bind(wakes)
     provider.seed(scenario, store)
-    registry = Registry()
-    registry.discover("minutehand.adapters.providers")
     async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
         proxy.mount(store, clock, {"google_cloud_tasks": provider.app(store, clock)}, scenario=scenario)
         yield Tasks(proxy, store, clock, provider, wakes, client_environment(proxy))

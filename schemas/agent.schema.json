@@ -528,6 +528,15 @@
       "title": "DecisionInput",
       "type": "object"
     },
+    "Delivery": {
+      "description": "How a provider's events reach the agent.",
+      "enum": [
+        "request_url",
+        "socket_mode"
+      ],
+      "title": "Delivery",
+      "type": "string"
+    },
     "Digest": {
       "additionalProperties": false,
       "description": "A digest of the database at every checkpoint, and again after a fork has put it back: a difference refuses\nthe fork. It reads every row of every table in `schemas` and every sequence, so it costs a scan of the\ndatabase per checkpoint; it catches what replaying cannot see, such as a value the database made up itself\n(`now()`, `random()`) in a write that did not return it, or a write that did not pass the relay.",
@@ -997,6 +1006,10 @@
       "additionalProperties": false,
       "description": "Where a provider pushes events to the agent, the way the real service would.",
       "properties": {
+        "delivery": {
+          "$ref": "#/$defs/Delivery",
+          "default": "request_url"
+        },
         "interactivity_url": {
           "anyOf": [
             {
@@ -1043,13 +1056,21 @@
           "title": "Secret"
         },
         "url": {
-          "title": "Url",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where events are pushed; required for `request_url` delivery, refused for `socket_mode`, where the agent opens the connection itself",
+          "title": "Url"
         }
       },
       "required": [
-        "provider",
-        "url"
+        "provider"
       ],
       "title": "InboundTarget",
       "type": "object"

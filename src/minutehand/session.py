@@ -112,6 +112,7 @@ from minutehand.domain.database import BaseTaken, CommandBase, Database
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge, UnknownHosts
+from minutehand.domain.people import Delivery
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import (
     Answers,
@@ -136,6 +137,7 @@ from minutehand.ports.provider import (
     HoldsTickets,
     Provider,
     PushesEvents,
+    ServesSockets,
 )
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -1250,6 +1252,9 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
             tickets[key] = provider
         if isinstance(provider, EditsTickets):
             editors[key] = provider
+        socket_mode = any(t.provider == key and t.delivery is Delivery.SOCKET_MODE for t in agent.inbound)
+        if socket_mode and not isinstance(provider, ServesSockets):
+            raise RunRefused(f"agent {agent.name} takes {key}'s events in socket mode, and {key} serves no sockets")
     return Services(providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers)
 
 
@@ -1622,7 +1627,7 @@ def _listens_on(agent: AgentUnderTest) -> str | None:
     for source in agent.wakes:
         if isinstance(source, Reported | Polled):
             return source.wake_url
-    return agent.inbound[0].url if agent.inbound else None
+    return next((t.url for t in agent.inbound if t.url is not None), None)
 
 
 def _tail(log: Path) -> str:

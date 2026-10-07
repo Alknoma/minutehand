@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.slack import inbound, interactive, state, wire
+from minutehand.adapters.providers.slack import inbound, interactive, socket_mode, state, wire
 from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.seed import SlackSeed, seed, write_faults
@@ -30,6 +30,10 @@ class SlackProvider:
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         return build_app(world, clock)
+
+    def sockets(self, world: Store, clock: Clock) -> ASGIApp:
+        """Socket Mode's connections, at the URL `apps.connections.open` hands out (`socket_mode`)."""
+        return socket_mode.socket_app(world, clock)
 
     def error(self, status: int, code: str, message: str) -> Rendered:
         return wire.error_answer(status, code, message)
@@ -113,6 +117,6 @@ def _declare(faults: str, world: Store, clock: Clock) -> None:
 
 
 def build() -> SlackProvider:
-    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `DeclaresFaults`, `ChangesPeople` and
-    `MintsInboundCredentials`; the tests hold it to each."""
+    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `ServesSockets`, `DeclaresFaults`,
+    `ChangesPeople` and `MintsInboundCredentials`; the tests hold it to each."""
     return SlackProvider()

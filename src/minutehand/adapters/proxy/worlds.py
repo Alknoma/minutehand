@@ -24,13 +24,16 @@ from minutehand.ports.store import Store
 @dataclass
 class Mounted:
     """One world the proxy answers for: where its calls are recorded, the clock they are stamped from, and how
-    a provider's app is had in it. `lock` holds one answered call at a time in this world, so the events
+    a provider's app, and the provider itself (for the gRPC and WebSocket servers `adapters.proxy.local` starts for
+    it), are had in it. `lock` holds one answered call at a time in this world, so the events
     between two reads of its head are exactly the events that call produced; calls in different worlds do
     not wait on each other."""
 
     store: Store
     clock: Clock
     app_for: Callable[[Manifest], ASGIApp]
+    provider_for: Callable[[Manifest], Provider]
+    """The provider as this world has it: built, bound and seeded as `app_for` has it built."""
     capturing: Capturing = field(default_factory=Capturing)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     seen: float | None = None
@@ -116,7 +119,11 @@ def one_run(
             built[manifest.key] = found.app(store, clock)
         return built[manifest.key]
 
+    def provider_for(manifest: Manifest) -> Provider:
+        app_for(manifest)
+        return provider(manifest)
+
     captures = capturing or Capturing()
     if scenario is not None:
         captures = captures.for_people(scenario.people)
-    return One(Mounted(store=store, clock=clock, app_for=app_for, capturing=captures))
+    return One(Mounted(store=store, clock=clock, app_for=app_for, provider_for=provider_for, capturing=captures))

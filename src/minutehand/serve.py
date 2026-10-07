@@ -102,6 +102,7 @@ from minutehand.ports.provider import (
     Message,
     MintsInboundCredentials,
     OwnsSeed,
+    Provider,
     Scope,
 )
 from minutehand.ports.store import Store
@@ -255,6 +256,10 @@ def _no_provider(manifest: Manifest) -> ASGIApp:
     raise RunRefused(f"a case answers no provider: a call to {manifest.key} belongs to one of its worlds")
 
 
+def _no_case_provider(manifest: Manifest) -> Provider:
+    raise RunRefused(f"a case answers no provider: a call to {manifest.key} belongs to one of its worlds")
+
+
 CLOSED_REMEMBERED = 1000
 """How many closed worlds' claims the server remembers, to tell a late call for one of them from a stray one."""
 
@@ -292,7 +297,12 @@ class Standing:
         self.lobby_store = SqliteStore(directory / WORLD, lobby_id, self._lobby_clock)
         self._shared = {h.lower(): m for m in registry.manifests for h in m.shared_hosts}
         self._shared_apps: dict[ProviderKey, ASGIApp] = {}
-        self._lobby = Mounted(store=self.lobby_store, clock=self._lobby_clock, app_for=self._shared_app)
+        self._lobby = Mounted(
+            store=self.lobby_store,
+            clock=self._lobby_clock,
+            app_for=self._shared_app,
+            provider_for=self._shared_provider,
+        )
         self.flush_in: Callable[[Mounted], None] = _nothing_relayed
         """What records the calls still in progress in a world before it is closed or reset: the proxy's
         `ProxyAddon.flush_in`, once it routes to these worlds."""
@@ -329,11 +339,16 @@ class Standing:
         """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
         return host.lower() in self._shared
 
+    def _shared_provider(self, manifest: Manifest) -> Provider:
+        """The lobby has a provider only for its shared hosts; any other is refused, as `_shared_app` refuses it."""
+        if manifest.key not in {m.key for m in self._shared.values()}:
+            raise RunRefused(f"the lobby answers no provider; a call to {manifest.key} here is refused")
+        return self._registry.provider(manifest)
+
     def _shared_app(self, manifest: Manifest) -> ASGIApp:
         """The lobby answers a provider only for its shared hosts (published keys, the same in every world), over the
         lobby's own store; any other call to it here is refused."""
-        if manifest.key not in {m.key for m in self._shared.values()}:
-            raise RunRefused(f"the lobby answers no provider; a call to {manifest.key} here is refused")
+        self._shared_provider(manifest)
         if manifest.key not in self._shared_apps:
             self._shared_apps[manifest.key] = self._registry.provider(manifest).app(self.lobby_store, self._lobby_clock)
         return self._shared_apps[manifest.key]
@@ -558,6 +573,7 @@ class Standing:
                 store=store,
                 clock=clock,
                 app_for=lambda m: self._faulted(world_id, standing.app_for(m), m),
+                provider_for=lambda m: standing.provider(m.key),
                 capturing=capturing.for_people(scenario.people),
             ),
             opened=time.monotonic(),
@@ -590,7 +606,7 @@ class Standing:
             name=label,
             store=store,
             clock=clock,
-            mounted=Mounted(store=store, clock=clock, app_for=_no_provider),
+            mounted=Mounted(store=store, clock=clock, app_for=_no_provider, provider_for=_no_case_provider),
             stepping=Stepping(store, start=starts, members=lambda: list(members.values()), own=clock),
             members=members,
         )
