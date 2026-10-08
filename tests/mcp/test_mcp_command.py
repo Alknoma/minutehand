@@ -19,6 +19,10 @@ TOOLS = {
     "list_outbound_calls",
     "rerun_from",
     "list_runs",
+    "schema",
+    "query_run",
+    "trace",
+    "explain",
 }
 
 

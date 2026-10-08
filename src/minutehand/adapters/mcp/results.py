@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.adapters.query.reader import Value
+from minutehand.adapters.query.schema import View
 from minutehand.application.forks import ForkAccount
 from minutehand.application.model_calls import JoinedBy, ModelCall
 from minutehand.domain.checks import Effectiveness, FindingKind, Pattern, Severity, Stability, WakeRecord
@@ -191,3 +193,17 @@ class OutboundCalls(Model):
         "many were replayed or refused, and addresses its sends named that match no person"
     )
     calls: list[OutboundCall] = Field(description="Every captured call, in order; refused calls are not here")
+
+
+class ReadModelSchema(Model):
+    version: int = Field(description="The read model's version: a column removed, renamed or changed is a new one")
+    views: list[View] = Field(description="Every view, its columns in order, and the order its rows come in")
+
+
+class QueryAnswer(Model):
+    run_id: str = Field(description="The run read, its id in full")
+    columns: list[str]
+    rows: list[list[Value]] = Field(description="One page of rows, each a list of values in the order of `columns`")
+    offset: int = Field(description="Rows skipped before this page")
+    more: bool = Field(description="True when more rows follow this page")
+    next_offset: int | None = Field(description="The offset to ask for the next page; None when this page is the last")
