@@ -51,7 +51,8 @@ USER root
 COPY --from=build /dist/*.whl /tmp/
 RUN pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore slack_sdk==3.45.0 \
  && pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore --no-deps /tmp/minutehand-*.whl \
- && rm /tmp/*.whl
+ && rm /tmp/*.whl \
+ && ln -sf /opt/minutehand/bin/minutehand /usr/local/bin/minutehand  # the wheel's own script would shadow the tool
 USER minutehand
 
 # -- runtime: the image a user runs. Last, so a plain `docker build` builds it ------------------------------
