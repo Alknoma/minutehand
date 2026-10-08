@@ -54,9 +54,6 @@ async def test_a_files_urls_lead_back_through_the_base_url(slack: Intercepted, t
     async with httpx.AsyncClient(trust_env=False) as http:
         got = await http.get(file["url_private_download"], headers={"Authorization": "Bearer xoxb-1"})
         anonymous = await http.get(file["url_private"])
-        signed_out = await http.get(file["url_private"], follow_redirects=True)
     assert got.status_code == 200 and got.text == "# The brief"
-    assert anonymous.status_code == 302
-    assert anonymous.headers["location"].startswith(f"{slack.proxy.url}/_host/"), anonymous.headers["location"]
-    assert signed_out.status_code == 200 and signed_out.text.startswith("<!DOCTYPE html>")
-    assert {c.exchange.host for c in store.calls()} == {"slack.com", "files.slack.com", "simulated.slack.com"}
+    assert anonymous.status_code == 200 and anonymous.text == "# The brief"
+    assert {c.exchange.host for c in store.calls()} == {"slack.com", "files.slack.com"}

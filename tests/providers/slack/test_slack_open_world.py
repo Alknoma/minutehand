@@ -127,7 +127,6 @@ JOINED = _slack({"joined": [{"team_id": "TALPHA", "person": "ivy"}]})
 ADDITIONS = {
     "a person": Addition(people=[IVY]),
     "a channel with history": Addition(channels=[SeededChannel.model_validate(OPS)]),
-    "a sign-in": Addition(sign_ins=[SignIn(provider="slack", credential="xoxb-added", person="owen")]),
     "a fault": Addition(provider_seeds=[_slack({"faults": [REFUSED]})]),
     "a second workspace": Addition(opened_with=WORKSPACES, provider_seeds=[_slack({"workspaces": [BETA]})]),
     "a person joining a declared workspace": Addition(opened_with=WORKSPACES, people=[IVY], provider_seeds=[JOINED]),

@@ -20,7 +20,12 @@ Hosts: `slack.com` and `*.slack.com` (the Web API at `/api/<method>`, `files.sla
 | `chat.postMessage/postEphemeral/update/delete`, `reactions.add` | as Slack keeps them |
 | `views.open/update/publish` | modals opened with a press's `trigger_id`, the Home tab |
 | `oauth.v2.access` | the install's code exchanged for a bot token of the workspace it is for |
-| `apps.connections.open` | with an app-level token (`xapp-`), a one-use `wss://wss-primary.slack.com/link/?ticket=…` URL |
+| `apps.connections.open` | a `wss://wss-primary.slack.com/link/?ticket=…` URL |
+
+Every other method Slack lists (370 of them) is refused 501 `not_implemented`, naming the method (`methods.py`), and
+an argument of a served method the fake does not model is refused the same way, naming the argument
+(`app.UNSERVED_ARGUMENTS`). `CLAIMS.md` gives the source of every behaviour, and the credential checks Slack makes
+that this fake deliberately does not: any token, or none, is answered.
 
 Pushed to the app (`PushesEvents`, `PushesInteractions`), signed with the world's signing secret: messages in a DM,
 a channel or a thread, `app_mention`, `message_changed`, `message_deleted`, `reaction_added`,
@@ -30,11 +35,11 @@ and `view_submission`. `credential` (`MintsInboundCredentials`) signs a request 
 
 Socket Mode (`ServesSockets`, `socket_mode.py`): an agent whose Slack target says `delivery: socket_mode` names no
 URL. It opens the URL `apps.connections.open` handed it through the proxy, which sends the upgrade to the provider's
-socket server; a ticket the world handed out and nobody used is let in and told `hello`, any other refused before the
-handshake completes. Every event above that is pushed to a request URL goes instead on the agent's newest connection
-as an `events_api` envelope, and the push waits for its acknowledgement: unacknowledged for three seconds it is sent
-again with `retry_attempt` counted up and `retry_reason: timeout`, three times, and then fails the agent; an event
-due with no connection open for 30 seconds fails it too. Every message either way is recorded by the proxy
+socket server; every connection is let in, whatever ticket it carries, and told `hello`. Every event above that is
+pushed to a request URL goes instead on the agent's newest connection as an `events_api` envelope, and the push waits
+for its acknowledgement: unacknowledged for three seconds it is sent again as a new envelope with `retry_attempt`
+counted up, three times, and then fails the agent; an event due with no connection open for 30 seconds fails it
+too. Every message either way is recorded by the proxy
 (`Exchange.frame`).
 
 Faults (`SlackSeed.faults`): `ratelimited` with `Retry-After`, or any of Slack's error codes, per method, counted,
@@ -42,8 +47,8 @@ from an offset, optionally only for calls carrying blocks.
 
 ## Workspaces
 
-A world is one workspace, `T0WORKSPACE` with bot user `U0AGENTBOT`, that takes any `xoxb-` or `xoxp-` token as its
-bot, unless its seed says otherwise:
+A world is one workspace, `T0WORKSPACE` with bot user `U0AGENTBOT`, that answers any token, or none, as its bot,
+unless its seed says otherwise:
 
 ```json
 {"workspaces": [
@@ -53,9 +58,9 @@ bot, unless its seed says otherwise:
 ]}
 ```
 
-- A workspace that lists `tokens` takes only those and the tokens its own install minted; the token decides which
-  workspace a call is answered in. One that lists none takes any token of Slack's shape. A token no workspace takes is
-  `invalid_auth`.
+- A workspace's `tokens`, and the tokens its own install minted, select it: the token decides which workspace a call
+  is answered in. Any other token, or none, is answered in the first workspace that lists no `tokens`, else in the
+  first workspace. No token is ever refused.
 - Two worlds with different team ids and tokens share nothing: each world's store is its own, and the proxy routes
   each token to the world that claims it.
 - Within one world, each workspace has its own members (`members`, every person when left out), its own user ids for
@@ -73,8 +78,9 @@ cannot be opened a DM with (`user_disabled`). Slack has no way to remove an acco
 unsupported.
 
 An absence the scenario gives a person (`Person.absences`, anchored as the checks anchor it: at the start, or at the
-agent's first message to them) shows while it lasts: `status_text` (its reason, else `Away`), `status_emoji`
-`:palm_tree:`, `status_expiration` at its end; `users.getPresence` `away`; `dnd.info` snoozed until its end.
+agent's first message to them) shows while it lasts: its reason, when it has one, as `status_text` with
+`status_expiration` at its end; `users.getPresence` `away`; `dnd.info` snoozed until its end. Nothing the scenario did
+not give is written into the status.
 
 ## What it does not do
 
@@ -83,11 +89,14 @@ agent's first message to them) shows while it lasts: `status_text` (its reason, 
   simulated.
 - Opening the Home tab writes only a read, so `act` with `opens_agent` is pushed and then answered 409 by the control
   API ("recorded nothing").
-- No user tokens of their own: an `xoxp-` token acts as the bot.
-- Any `xapp-` token is the agent's app-level token, across every workspace; an app-level token is refused
-  `not_allowed_token_type` anywhere but `apps.connections.open`, and a bot token there.
+- No user tokens of their own: any token acts as the bot, a declared Slack sign-in included.
 - Over Socket Mode only `events_api` envelopes: a press or a slash command (`interactive`, `slash_commands`) on a
   socket-mode target is refused, and no envelope carries a response payload. Slack never asks the agent to reconnect
   (`disconnect`), and a connection is not routed to its world in `minutehand serve` (the upgrade carries no
   credential), only under `minutehand run`.
-- No `chat.scheduleMessage`, `conversations.create`, `files.upload`, `users.setPresence`, `dnd.setSnooze`.
+- The app's own `chat.postMessage`, `chat.update` and `chat.delete` push no event back to it.
+- The methods most worth serving next, by how prominently Slack's guides and SDKs feature them:
+  `chat.scheduleMessage`, `conversations.join`, `conversations.create`, `conversations.invite`, `views.push`,
+  `files.getUploadURLExternal` with `files.completeUploadExternal` (`files_upload_v2`), `reactions.remove`,
+  `chat.getPermalink`, `users.conversations`, `conversations.setTopic`, and for agents `assistant.threads.setStatus`
+  and `chat.startStream`/`appendStream`/`stopStream`.
