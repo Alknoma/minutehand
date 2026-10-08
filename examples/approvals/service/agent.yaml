@@ -30,7 +30,6 @@ outbound:
     kind: store
     collections: [{path: /v1/orders, id: {at: id, format: prefixed, prefix: ord_}}]
 
-
 # The team's policy for this channel: a stored request is no ask, so the rules count what the service holds and
 # the messages sent, not waits.
 assess:

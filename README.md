@@ -167,6 +167,7 @@ built.
 | `docs/serve.md` | `minutehand serve`, for a test suite |
 | `docs/external-emulators.md` | Forwarding a host to a fake of your own |
 | `docs/inboxes.md` | Work that waits on a person in the agent's own product |
+| `docs/approvals.md` | An agent that waits for a person's sign-off: every place an approval lives, the approver's script, the rules, forks and samples, and the gaps |
 | `docs/reference-agent.md` | A larger example: two processes, a job queue, email, a model API |
 
 ## Scenarios to start from
