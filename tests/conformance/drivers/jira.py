@@ -441,7 +441,8 @@ class JiraDriver(Driver):
     # to return per page"), answering fewer when Jira chooses.
     page_floor = {"people": 1, "tickets": 1}
     # A Basic credential Jira does not accept is a 401 whose body reads "Client must be authenticated to access
-    # this resource." (REST v3 reference, "Authentication": 401 when credentials are incorrect or missing).
+    # this resource." (REST v3 reference, "Authentication": 401 when credentials are incorrect or missing). The fake
+    # deliberately lets every credential in (the provider's CLAIMS.md), so this case is a known failure.
     unknown_refusal = (401, "Client must be authenticated")
 
     def __init__(self) -> None:

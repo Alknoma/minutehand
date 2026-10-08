@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:43 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 1f3b19c100e9af3444c9ab56425e96b6
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: f8ac3cee5fc142dba7e6bb1f70c9bd0b
+Atl-Request-Id: f8ac3cee-5fc1-42db-a7e6-bb1f70c9bd0b
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=154,atl-edge-internal;dur=18,atl-edge-upstream;dur=136,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 c91b66a122bb5c42998a76745d801642.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: XT4TfOOYlSNeuYoB4lztc7suCIaCxKwGk4y-tfTZy1WAgf1jfAAMkA==
+
+{"errorMessages":["No Issue Create payload supplied"],"errors":{}}

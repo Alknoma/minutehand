@@ -23,7 +23,6 @@ from tests.providers.youtrack.youtrack_instance import (
     entities,
     entity,
     named,
-    refusal,
     state_field,
 )
 
@@ -73,14 +72,14 @@ async def test_an_agent_hands_an_issue_to_a_person_over_a_socket(instance: Insta
             )
         )
         found = entities(await http.get("/issues", params={"query": "for: noor #Unresolved", "fields": "idReadable"}))
-        no_token = await http.get(f"/issues/{made['id']}", headers={"Authorization": ""})
+        no_token = await http.get(f"/issues/{made['id']}", params={"fields": "id"}, headers={"Authorization": ""})
 
     assert projects[0] == {"id": LAUNCH, "shortName": "LAUNCH", "$type": "Project"}
     assignees = named(team, "Assignee")["bundle"]
     assert isinstance(assignees, dict)
     assert {"login": "noor", "email": "noor@example.com", "$type": "User"} in list(assignees["aggregatedUsers"])
     assert [i["idReadable"] for i in found] == [made["idReadable"]]
-    refusal(no_token, 401)
+    assert entity(no_token) == {"id": made["id"], "$type": "Issue"}
     created = next(e for e in instance.store.events() if e.entity.external_id == made["id"])
     assert (created.actor, created.operation) == (Actor.AGENT, Operation.CREATE)
     assert created.after == TicketSnapshot(

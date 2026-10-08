@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Content-Length: 97
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:46 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 1f516ffa6c3f7efc5d9c580f0a080fe1
+Cache-Control: no-store, no-cache
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 21c7f0bcd1314f9ebe0f79b939684c1f
+Atl-Request-Id: 21c7f0bc-d131-4f9e-be0f-79b939684c1f
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=156,atl-edge-internal;dur=18,atl-edge-upstream;dur=138,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 d1de69a5c8d5490b74f667cf8e202398.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P1
+X-Amz-Cf-Id: VkUO1f7BAAI-DxwJ_W1EYNw3rSLHtQXDK37AVpgBuDw6GHnGgeIxjw==
+
+{"errorMessages":["Invalid request payload. Refer to the REST API documentation and try again."]}

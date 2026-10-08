@@ -59,7 +59,7 @@ async def test_project_search_pages_with_is_last(site: Site) -> None:
     first = ok(await site.http.get(f"{API}/project/search", params={"startAt": "0", "maxResults": "1"}))
     second = ok(await site.http.get(f"{API}/project/search", params={"startAt": "1", "maxResults": "1"}))
     assert (first["total"], first["isLast"], second["isLast"]) == (2, False, True)
-    assert [first["values"][0]["key"], second["values"][0]["key"]] == ["LAUNCH", "FIELD"], "VAULT is not visible"
+    assert [first["values"][0]["key"], second["values"][0]["key"]] == ["FIELD", "LAUNCH"], "by key; VAULT unseen"
     assert {"id", "key", "name", "projectTypeKey", "self"} <= set(first["values"][0])
     assert isinstance(first["values"][0]["id"], str)
 
@@ -437,14 +437,13 @@ async def test_createmeta_lists_issue_types_then_each_types_fields(site: Site) -
 
 
 async def test_assignable_search_lists_who_can_take_the_projects_issues(site: Site) -> None:
-    found = ok(await site.http.get(f"{API}/user/assignable/search", params={"project": "LAUNCH", "maxResults": "200"}))
-    assert sorted(u["displayName"] for u in found) == [
-        "Iris Calder",
-        "Lantern Agent",
-        "Noor Halvorsen",
-        "Quiet Person",
-        "Tomas Brandt",
-    ]
+    found = {
+        prefix: [u["displayName"] for u in ok(await site.http.get(
+            f"{API}/user/assignable/search", params={"project": "LAUNCH", "query": prefix}))]
+        for prefix in ("i", "lan", "quiet", "former", "automation")
+    }  # fmt: skip
+    assert found == {"i": ["Iris Calder"], "lan": ["Lantern Agent"], "quiet": ["Quiet Person"], "former": [],
+                     "automation": []}, "a member is assignable; a deactivated account and an app are not"  # fmt: skip
 
 
 async def test_project_roles_and_adding_a_member(site: Site) -> None:

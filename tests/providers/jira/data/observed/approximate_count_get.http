@@ -1,0 +1,24 @@
+HTTP/1.1 405 Method Not Allowed
+Content-Type: application/problem+json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:42 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 362d8a730b00843617f4e3140555dc47
+Cache-Control: no-cache, no-store, no-transform
+Allow: POST
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 4ebc51d7f4c74b988166da25e77e9028
+Atl-Request-Id: 4ebc51d7-f4c7-4b98-8166-da25e77e9028
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=171,atl-edge-internal;dur=22,atl-edge-upstream;dur=149,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 a2c798fbc7649978f260189f7d6aee16.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: _O18kRWJ71qDNriGb1vFaL8KzK_JqRQhO2fYx8ulhAb10NDBaToeGg==
+
+{"type":"about:blank","title":"Method Not Allowed","status":405,"detail":"Method 'GET' is not supported.","instance":"/rest/api/3/search/approximate-count"}

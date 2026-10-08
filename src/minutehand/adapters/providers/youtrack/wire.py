@@ -56,6 +56,7 @@ class Refusal(ServiceRefusal):
         developer_message: str | None = None,
         field: str | None = None,
         retry_after: int | None = None,
+        children: tuple[tuple[str, str, str | None], ...] = (),
     ) -> None:
         super().__init__(description)
         self.status = status
@@ -64,6 +65,8 @@ class Refusal(ServiceRefusal):
         self.developer_message = developer_message
         self.field = field
         self.retry_after = retry_after
+        self.children = children
+        """Each `(error, description, developer message)` of the refusal's `error_children`."""
 
     def render(self, asked: Asked) -> Rendered:
         """`{"error", "error_description", …}`, with `Retry-After` when it says when to retry."""
@@ -71,11 +74,18 @@ class Refusal(ServiceRefusal):
         return Rendered(status=self.status, content_type=ERROR_TYPE, body=error_body(self), headers=headers)
 
 
+class ErrorChildOut(Wire):
+    error: str
+    error_description: str
+    error_developer_message: str | None = None
+
+
 class ErrorOut(Wire):
     error: str
     error_description: str
     error_developer_message: str | None = None
     error_field: str | None = None
+    error_children: list[ErrorChildOut] | None = None
 
 
 def error_body(refusal: Refusal) -> bytes:
@@ -84,6 +94,11 @@ def error_body(refusal: Refusal) -> bytes:
         error_description=refusal.description,
         error_developer_message=refusal.developer_message,
         error_field=refusal.field,
+        error_children=[
+            ErrorChildOut(error=error, error_description=text, error_developer_message=developer)
+            for error, text, developer in refusal.children
+        ]
+        or None,
     )
     return answer.model_dump_json(exclude_none=True).encode()
 
@@ -113,20 +128,50 @@ def value_not_allowed() -> Refusal:
     return Refusal(400, "", "Value is not allowed", developer_message="Value is not allowed", field="value")
 
 
+def field_required(name: str) -> Refusal:
+    """A create leaving empty a field that cannot be empty and has no default, as YouTrack's REST troubleshooting
+    shows it (https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-missing-type.html)."""
+    return Refusal(400, "Field required", f"{name} is required", field=name)
+
+
+def numeric_short_name() -> Refusal:
+    """A project whose `shortName` is digits alone, as YouTrack's REST troubleshooting shows it
+    (https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-numeric-project-id.html)."""
+    text = "Project ID cannot be numeric"
+    return Refusal(400, "invalid_properties", text, children=(("no-type-is-invalid", text, text),))
+
+
 def invalid_query(value: str, field: str) -> Refusal:
-    return Refusal(400, "invalid_query", f'The value "{value}" isn\'t used for the {field} field.')
+    """A search naming a value no issue's field holds, as JetBrains' public instance answers it
+    (`tests/providers/youtrack/data/observed/query_value_not_used.http`, recorded 2026-10-08)."""
+    return Refusal(
+        400,
+        "invalid_query",
+        "Can't parse search query, please check and update query syntax",
+        developer_message="Can't parse search query",
+        field="query",
+        children=((f'The value "{value}" isn\'t used for the {field} field.', "", None),),
+    )
 
 
-def unparsed_query(text: str, why: str) -> Refusal:
-    return Refusal(400, "invalid_query", f"Cannot parse search query {text!r}: {why}")
+def unparsed_query(text: str, why: str) -> NotImplementedError:
+    """A search this fake cannot read. JetBrains' public instance reads parentheses and an attribute it does not
+    know (as text) without complaint (`tests/providers/youtrack/data/observed/query_parentheses.http`,
+    `query_attribute_unknown.http`), so such a query is refused by name, never with an error this fake invents."""
+    return NotImplementedError(f"the search query {text!r}: {why}; this fake does not read it")
 
 
-def unauthorized() -> Refusal:
-    return Refusal(401, "Unauthorized", "Not authorized, try to login first")
-
-
-def forbidden(permission: str) -> Refusal:
-    return Refusal(403, "Forbidden", f"Insufficient permissions: {permission} is required")
+def sort_field_expected() -> Refusal:
+    """A `sort by:` naming no field there is, as JetBrains' public instance answers it
+    (`tests/providers/youtrack/data/observed/query_sort_field_unknown.http`, recorded 2026-10-08)."""
+    return Refusal(
+        400,
+        "invalid_query",
+        "Can't parse search query, please check and update query syntax",
+        developer_message="Can't parse search query",
+        field="query",
+        children=(("Sort field is expected.", "", None),),
+    )
 
 
 # --------------------------------------------------------------------------- stored
@@ -255,10 +300,9 @@ class StoredProject(Wire):
     team: list[str] = Field(description="User ids: who a user field of this project accepts")
     teamGroup: str
     ringId: str = Field(description="Hub's id for the project")
-    teamRingId: str = Field(description="Hub's id for the project's team group")
     createdThroughApi: bool = Field(
         default=False,
-        description="Made by POST /admin/projects: Hub holds no project for it, and nobody holds Update Project on it",
+        description="Made by POST /admin/projects: Hub's permissions cache lists nobody holding Update Project on it",
     )
     fields: list[StoredProjectField]
 
@@ -372,7 +416,6 @@ class StoredFault(Wire):
 class StoredInstance(Wire):
     """What applies to the whole instance."""
 
-    tokensRequired: bool = Field(description="Only seeded or issued tokens are accepted; otherwise any bearer is")
     countUnknown: bool = Field(default=False, description="issuesGetter/count answers -1, as while still counting")
 
 
@@ -548,21 +591,26 @@ Body = TypeVar(
 def read_body(model: type[Body], raw: bytes) -> Body:
     """A request body, held to the properties the entity has."""
     if not raw.strip():
-        raise bad_request("Request body required")
+        raise NotImplementedError("an empty body: what YouTrack answers is not recorded")
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise bad_request("Malformed JSON in the request body") from error
+        raise NotImplementedError("a body that is not JSON: what YouTrack answers is not recorded") from error
     if not isinstance(decoded, dict):
-        raise bad_request("The request body is not an entity")
+        raise NotImplementedError("a body that is not an entity: what YouTrack answers is not recorded")
     try:
         return model.model_validate(decoded)
     except ValidationError as error:
         first = error.errors()[0]
         where = ".".join(str(part) for part in first["loc"])
         if first["type"] == "extra_forbidden":
-            raise bad_request(f"Unsupported property: {where}") from error
-        raise bad_request(f"Invalid value of {where}") from error
+            raise NotImplementedError(
+                f"the body property '{where}': {model.__name__} has not got it, and what YouTrack answers for a "
+                "property its entity lacks is not documented"
+            ) from error
+        raise NotImplementedError(
+            f"the body property {where} of that type: what YouTrack answers is not recorded"
+        ) from error
 
 
 # --------------------------------------------------------------------------- fields= and paging
@@ -577,8 +625,13 @@ def parse_fields(text: str | None) -> Spec | None:
         return None
     spec, rest = _fields(text, 0)
     if rest != len(text):
-        raise bad_request(f"Invalid fields: {text}")
+        raise fields_invalid()
     return spec
+
+
+def fields_invalid() -> Refusal:
+    """A `fields=` that does not parse, as the public instance answers it (`data/observed/fields_syntax_invalid.http`)."""
+    return Refusal(400, "bad_request", "Query string has invalid syntax")
 
 
 def parse_hub_fields(text: str | None) -> Spec | None:
@@ -592,7 +645,7 @@ def parse_hub_fields(text: str | None) -> Spec | None:
         node = tree
         names = [n.strip() for n in path.split("/")]
         if not all(names):
-            raise bad_request(f"Invalid fields: {text}")
+            raise fields_invalid()
         for depth, name in enumerate(names):
             if depth == len(names) - 1:
                 node.setdefault(name, None)
@@ -613,7 +666,7 @@ def _fields(text: str, at: int) -> tuple[Spec, int]:
         if char == "(":
             inner, at = _fields(text, at + 1)
             if at >= len(text) or text[at] != ")" or not name.strip():
-                raise bad_request(f"Invalid fields: {text}")
+                raise fields_invalid()
             _merge(spec, name.strip(), inner)
             name = ""
             at += 1
@@ -645,6 +698,15 @@ def _merge(spec: Spec, name: str, inner: Spec) -> None:
             _merge(was, key, value)
 
 
+UNCOMPUTED: dict[str, dict[str, str]] = {
+    "Issue": {"wikifiedDescription": "YouTrack renders it from the description's markup, which this fake does not"},
+    "IssueComment": {"textPreview": "YouTrack renders it from the comment's markup, which this fake does not"},
+    "ParsedCommand": {"description": "YouTrack words it in its own phrasing, which this fake does not know"},
+}
+"""Attributes YouTrack computes in ways this fake cannot reproduce (the Issue, IssueComment and ParsedCommand
+entity pages): a `fields=` naming one is answered 501 naming it, never a made-up value."""
+
+
 def select(value: JsonValue, spec: Spec | None) -> JsonValue:
     """Narrow an answer to what was asked: an entity asked for by name alone is its `id` and `$type`."""
     if isinstance(value, list):
@@ -653,6 +715,11 @@ def select(value: JsonValue, spec: Spec | None) -> JsonValue:
         return value
     if spec is None:
         return {key: value[key] for key in ("id", "$type") if key in value}
+    kind = value["$type"] if "$type" in value else None
+    if isinstance(kind, str) and kind in UNCOMPUTED:
+        for name in spec:
+            if name in UNCOMPUTED[kind]:
+                raise NotImplementedError(f"{kind}.{name}: {UNCOMPUTED[kind][name]}")
     narrowed: dict[str, JsonValue] = {}
     for name, inner in spec.items():
         if name in value:
@@ -662,16 +729,27 @@ def select(value: JsonValue, spec: Spec | None) -> JsonValue:
     return narrowed
 
 
-def page_bounds(skip: str | None, top: str | None, *, default: int = PAGE_DEFAULT) -> tuple[int, int | None]:
-    """`$skip` and `$top` as an offset and a limit; `$top=-1` is every entity."""
+def page_bounds(
+    skip: str | None, top: str | None, *, default: int = PAGE_DEFAULT, recorded: bool = False
+) -> tuple[int, int]:
+    """`$skip` and `$top` as an offset and a limit. For the issue search (`recorded`), a value that is not a number,
+    a negative `$skip` and a negative `$top` answer as JetBrains' public instance answered them
+    (`tests/providers/youtrack/data/observed/skip_not_a_number.http`, `top_not_a_number.http`, `skip_negative.http`,
+    `top_negative.http`); for any other collection nothing records the answer, so they are refused by name."""
     try:
         start = int(skip) if skip else 0
         limit = int(top) if top else default
     except ValueError as error:
-        raise bad_request("$skip and $top take integers") from error
-    if start < 0:
-        raise bad_request("$skip cannot be negative")
-    return start, None if limit < 0 else limit
+        if recorded:
+            raise Refusal(500, "server_error", "HTTP 404 Not Found") from error
+        raise NotImplementedError(f"$skip={skip} $top={top}: what YouTrack answers is not recorded") from error
+    if start < 0 or limit < 0:
+        if not recorded:
+            raise NotImplementedError(f"$skip={skip} $top={top}: what YouTrack answers is not recorded")
+        if limit < 0:
+            raise Refusal(400, "Bad Request", "This resource does not allow requesting all entities, max limit is 3500")
+        start = 0
+    return start, limit
 
 
 # --------------------------------------------------------------------------- answers
@@ -927,7 +1005,6 @@ class CommentOut(Wire):
     type_: Literal["IssueComment"] = Field(default="IssueComment", serialization_alias="$type")
     id: str
     text: str
-    textPreview: str
     author: UserOut
     created: int
     updated: int | None
@@ -943,7 +1020,6 @@ class IssueOut(Wire):
     numberInProject: int
     summary: str
     description: str | None
-    wikifiedDescription: str
     project: ProjectOut
     reporter: UserOut
     updater: UserOut
@@ -951,7 +1027,6 @@ class IssueOut(Wire):
     updated: int
     resolved: int | None
     customFields: list[IssueFieldOut]
-    fields: list[IssueFieldOut]
     comments: list[CommentOut]
     commentsCount: int
     tags: list[TagOut]
@@ -968,7 +1043,6 @@ class IssueRefOut(Wire):
 
 class ParsedCommandOut(Wire):
     type_: Literal["ParsedCommand"] = Field(default="ParsedCommand", serialization_alias="$type")
-    description: str
     error: bool = False
     delete: bool = False
 
@@ -1072,25 +1146,10 @@ class HubUserOut(Wire):
     guest: bool = False
 
 
-class HubGroupRefOut(Wire):
-    type_: Literal["userGroup"] = Field(default="userGroup", serialization_alias="type")
-    id: str
-    name: str
-
-
 class HubProjectRefOut(Wire):
     type_: Literal["project"] = Field(default="project", serialization_alias="type")
     id: str
     key: str
-
-
-class HubProjectOut(Wire):
-    type_: Literal["project"] = Field(default="project", serialization_alias="type")
-    id: str
-    key: str
-    name: str
-    archived: bool = False
-    team: HubGroupRefOut
 
 
 class HubGroupOut(Wire):
@@ -1112,7 +1171,7 @@ class HubCachedPermissionOut(Wire):
     projects: list[HubProjectRefOut]
 
 
-HubAnswer = HubUserOut | HubProjectOut | HubGroupOut | HubCachedPermissionOut
+HubAnswer = HubUserOut | HubGroupOut | HubCachedPermissionOut
 
 
 def render_hub_page(
@@ -1157,8 +1216,3 @@ class TokenOut(Wire):
 
 def token_body(answer: TokenOut) -> bytes:
     return answer.model_dump_json().encode()
-
-
-def oauth_refusal(status: int, error: str, description: str) -> Refusal:
-    """Hub's OAuth errors are RFC 6749's: `invalid_client`, `unsupported_grant_type`, `invalid_request`."""
-    return Refusal(status, error, description)

@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:45 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 0fabdc4459c36d3373c059d9635f2923
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 908334182f1048cb9a34c18bf7c65613
+Atl-Request-Id: 90833418-2f10-48cb-9a34-c18bf7c65613
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=161,atl-edge-internal;dur=20,atl-edge-upstream;dur=141,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 edc390011f8716d55b88232ec26b5094.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P2
+X-Amz-Cf-Id: 0-a-CsWOOgj7uHws1ufdfd4H1K_mOwS92Fnt9gm-laXYQZ-ScHrCsw==
+
+{"errorMessages":["Missing 'transition' identifier"],"errors":{}}

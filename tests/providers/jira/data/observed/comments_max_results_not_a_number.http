@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:40 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 4c1d8ec422f112f7d87487d7af764785
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 52b28ab3ceb5468b9f53d311febd5302
+Atl-Request-Id: 52b28ab3-ceb5-468b-9f53-d311febd5302
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=161,atl-edge-internal;dur=19,atl-edge-upstream;dur=142,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 eac78bb0b8162cd60da6a85dc6ce032e.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: _M--xwdvKScw1LmEC1cycyGIto8DZiKJC6wdSNtddv5xMQ8YHuj-QQ==
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"Failed to convert 'maxResults' with value: 'x'","instance":"/rest/api/3/issue/PUB-1/comment"}

@@ -21,7 +21,7 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Literal, TypeVar
+from typing import ClassVar, Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
@@ -54,24 +54,51 @@ class Refusal(ServiceRefusal):
         fields: dict[str, str] | None = None,
         *,
         retry_after: int | None = None,
+        bare: bool = False,
     ) -> None:
         super().__init__("; ".join([*messages, *(f"{k}: {v}" for k, v in (fields or {}).items())]))
         self.status = status
         self.messages = list(messages)
         self.fields = dict(fields or {})
         self.retry_after = retry_after
+        self.bare = bare
+        """Jira's body without `errors`: what it answers to a body it cannot read."""
 
     def render(self, asked: Asked) -> Rendered:
-        """`{"errorMessages", "errors"}`, with `Retry-After` when it says when to retry and Basic's challenge on a
-        401."""
+        """`{"errorMessages", "errors"}`, with `Retry-After` when it says when to retry."""
         headers = [("retry-after", str(self.retry_after))] if self.retry_after is not None else []
-        if self.status == 401:
-            headers = [("www-authenticate", 'Basic realm="protected-area"')]
         return Rendered(status=self.status, content_type=ERROR_TYPE, body=error_body(self), headers=headers)
 
 
 def error_body(refusal: Refusal) -> bytes:
+    if refusal.bare:
+        return json.dumps({"errorMessages": refusal.messages}).encode()
     return json.dumps({"errorMessages": refusal.messages, "errors": refusal.fields}).encode()
+
+
+PROBLEM_TYPE = "application/problem+json;charset=UTF-8"
+
+
+class Problem(ServiceRefusal):
+    """Jira's RFC 9457 problem body, which it answers for a path no operation has, a method an operation has not
+    got, and a query parameter it cannot convert (recorded: `tests/providers/jira/data/observed/unknown_path.http`,
+    `approximate_count_get.http`, `comments_max_results_not_a_number.http`)."""
+
+    def __init__(self, status: int, title: str, detail: str, instance: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.title = title
+        self.detail = detail
+        self.instance = instance
+
+    def body(self) -> bytes:
+        return json.dumps(
+            {"type": "about:blank", "title": self.title, "status": self.status, "detail": self.detail,
+             "instance": self.instance}
+        ).encode()  # fmt: skip
+
+    def render(self, asked: Asked) -> Rendered:
+        return Rendered(status=self.status, content_type=PROBLEM_TYPE, body=self.body())
 
 
 def error_answer(status: int, message: str) -> Rendered:
@@ -84,24 +111,19 @@ def error_answer(status: int, message: str) -> Rendered:
     )
 
 
-def unauthenticated() -> Refusal:
-    return Refusal(401, ["You are not signed in: this request carries no credentials the site accepts."])
-
-
 def no_issue() -> Refusal:
-    return Refusal(404, ["This issue does not exist, or you are not allowed to see it."])
+    """Recorded (`data/observed/unknown_issue.http`)."""
+    return Refusal(404, ["Issue does not exist or you do not have permission to see it."])
 
 
 def no_project(reference: str) -> Refusal:
-    return Refusal(404, [f"There is no project '{reference}' you can see."])
+    """Recorded (`data/observed/unknown_project.http`)."""
+    return Refusal(404, [f"No project could be found with key '{reference}'."])
 
 
 def no_user() -> Refusal:
-    return Refusal(404, ["That user does not exist, or you are not allowed to see them."])
-
-
-def forbidden(action: str) -> Refusal:
-    return Refusal(403, [f"You do not have permission to {action} in this project."])
+    """The reference's own words for `GET /user`'s 404."""
+    return Refusal(404, ["Returned if the user is not found."])
 
 
 def bad(message: str) -> Refusal:
@@ -112,8 +134,23 @@ def bad_field(field: str, message: str) -> Refusal:
     return Refusal(400, [], {field: message})
 
 
+INVALID_VALUE = "Returned if the request contains invalid field values."
+"""The create-issue reference's words for a field value it will not take (its 400); no recording gives Jira's own
+sentence for each field, so this is the message for every one."""
+REQUIRED = "Returned if the request is missing required fields."
+"""The create-issue reference's words for a required field left out."""
+INVALID = "Returned if the request is invalid."
+
+
 def not_on_screen(field: str) -> str:
-    return f"Field '{field}' cannot be set: it is not on this screen, or it does not exist."
+    """Recorded (`data/observed/issue_edit_not_on_screen.http`)."""
+    return f"Field '{field}' cannot be set. It is not on the appropriate screen, or unknown."
+
+
+COMMENT_NOT_VALID = "Comment body is not valid!"
+"""Recorded (`data/observed/comment_body_not_a_document.http`)."""
+INVALID_PAYLOAD = "Invalid request payload. Refer to the REST API documentation and try again."
+"""Recorded (`data/observed/issue_create_not_object.http`, `search_body_unknown_property.http`)."""
 
 
 def jql_error(message: str) -> Refusal:
@@ -121,7 +158,8 @@ def jql_error(message: str) -> Refusal:
 
 
 def rate_limited(retry_after: int) -> Refusal:
-    return Refusal(429, ["Too many requests: wait before you try again."], retry_after=retry_after)
+    """A rate limit the scenario declares, in the user-search reference's words for its 429."""
+    return Refusal(429, ["Returned if the rate limit is exceeded."], retry_after=retry_after)
 
 
 # --------------------------------------------------------------------------- time
@@ -309,10 +347,12 @@ class StoredLinkType(Wire):
 
 
 class StoredRole(Wire):
+    """A project role. Holding one in a project lets an account see the project; Minutehand enforces no
+    permission beyond that."""
+
     id: str
     name: str
-    edits: bool = Field(description="Its members create, edit, transition, comment on and delete issues")
-    administers: bool = False
+    description: str = ""
 
 
 class StoredRateLimit(Wire):
@@ -371,7 +411,6 @@ class StoredUser(Wire):
     accountType: AccountType = AccountType.ATLASSIAN
     active: bool = True
     timeZone: str = "UTC"
-    siteAdmin: bool = False
 
 
 class CredentialKind(StrEnum):
@@ -426,6 +465,7 @@ class StoredProject(Wire):
     lead: str
     projectTypeKey: str = "software"
     simplified: bool = False
+    assigneeType: Literal["PROJECT_LEAD", "UNASSIGNED"] = "UNASSIGNED"
     screens: list[StoredScreen]
     statuses: list[str] = Field(description="Status ids, in board order; the first is where an issue starts")
     transitions: list[StoredTransition]
@@ -608,56 +648,97 @@ class Ref(Wire):
     value: str | None = None
 
 
-class IssueIn(Wire):
-    """`POST /issue` and `PUT /issue/{key}`: free-form `fields`, read field by field against the screen."""
+class Request(Wire):
+    """A request body as the reference describes it: the properties this fake acts on are its fields; `UNSERVED`
+    names the properties the reference documents for it that this fake does not act on, refused by name when
+    sent (`read_body`); `CLOSED` when the reference's schema allows no other property (`additionalProperties:
+    false`), so an unknown one is a 400."""
 
     model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    UNSERVED: ClassVar[frozenset[str]] = frozenset()
+    CLOSED: ClassVar[bool] = False
+    NESTED: ClassVar[dict[str, type[Request]]] = {}
+
+
+class IssueIn(Request):
+    """`POST /issue` and `PUT /issue/{key}` (`IssueUpdateDetails`): free-form `fields`, read field by field against
+    the screen."""
+
+    UNSERVED = frozenset({"historyMetadata", "properties", "transition"})
 
     fields: Json = {}
     update: Json = {}
 
 
-class TransitionIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class TransitionIn(Request):
+    """`POST /issue/{key}/transitions` (`IssueUpdateDetails`)."""
+
+    UNSERVED = frozenset({"historyMetadata", "properties"})
 
     transition: Ref | None = None
     fields: Json = {}
     update: Json = {}
 
 
-class CommentIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class CommentIn(Request):
+    """`POST /issue/{key}/comment` (`Comment`); its read-only properties are ignored, as Jira ignores them."""
+
+    UNSERVED = frozenset({"visibility", "properties"})
 
     body: JsonValue = None
 
 
-class AssigneeIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class AssigneeIn(Request):
+    """`PUT /issue/{key}/assignee` (`User`): the account by `accountId`; `name` and `key` are usernames, which
+    Jira Cloud no longer takes."""
+
+    UNSERVED = frozenset({"name", "key"})
 
     accountId: str | None = None
 
 
-class LinkIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class LinkCommentIn(Request):
+    """A link's comment (`Comment`)."""
+
+    UNSERVED = frozenset({"visibility", "properties"})
+
+    body: JsonValue = None
+
+
+class LinkIn(Request):
+    """`POST /issueLink` (`LinkIssueRequestJsonBean`)."""
+
+    CLOSED = True
+    NESTED = {"comment": LinkCommentIn}
 
     type: Ref | None = None
     inwardIssue: Ref | None = None
     outwardIssue: Ref | None = None
-    comment: CommentIn | None = None
+    comment: LinkCommentIn | None = None
 
 
-class SearchIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class SearchIn(Request):
+    """`POST /search/jql` (`SearchAndReconcileRequestBean`). `reconcileIssues` and `includeArchivedProjects`
+    change nothing here: every write is read back at once, and no project is archived."""
+
+    UNSERVED = frozenset({"properties"})
+    CLOSED = True
 
     jql: str = ""
     maxResults: int | None = None
     fields: list[str] | None = None
     expand: str | None = None
     nextPageToken: str | None = None
+    fieldsByKeys: bool = False
+    reconcileIssues: list[int] = []
+    includeArchivedProjects: bool = False
 
 
-class CountIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class CountIn(Request):
+    """`POST /search/approximate-count` (`JQLCountRequestBean`)."""
+
+    CLOSED = True
 
     jql: str = ""
 
@@ -671,31 +752,35 @@ TEMPLATE_TYPES: dict[str, str] = {
         "software",
         "com.pyxis.greenhopper.jira",
         "gh-simplified-agility-kanban gh-simplified-agility-scrum gh-simplified-basic gh-simplified-kanban-classic "
-        "gh-simplified-scrum-classic",
+        "gh-simplified-scrum-classic gh-cross-team-template gh-cross-team-planning-template",
     ),
     **_templates(
         "business",
         "com.atlassian.jira-core-project-templates",
         "jira-core-simplified-content-management jira-core-simplified-document-approval "
         "jira-core-simplified-lead-tracking jira-core-simplified-process-control jira-core-simplified-procurement "
-        "jira-core-simplified-project-management jira-core-simplified-recruitment jira-core-simplified-task-tracking",
+        "jira-core-simplified-project-management jira-core-simplified-recruitment jira-core-simplified-task-tracking "
+        "jira-core-simplified-task-",
     ),
     **_templates(
         "service_desk",
         "com.atlassian.servicedesk",
-        "simplified-it-service-management simplified-external-service-desk simplified-hr-service-desk "
-        "simplified-facilities-service-desk simplified-legal-service-desk simplified-analytics-service-desk "
-        "simplified-marketing-service-desk simplified-design-service-desk simplified-sales-service-desk "
-        "simplified-finance-service-desk company-managed-blank-service-project "
-        "company-managed-general-service-project team-managed-general-service-project next-gen-it-service-desk "
-        "next-gen-hr-service-desk next-gen-legal-service-desk next-gen-marketing-service-desk "
-        "next-gen-facilities-service-desk next-gen-analytics-service-desk next-gen-finance-service-desk "
-        "next-gen-design-service-desk next-gen-sales-service-desk",
+        "simplified-it-service-management simplified-it-service-management-basic "
+        "simplified-it-service-management-operations simplified-internal-service-desk simplified-external-service-desk "
+        "simplified-hr-service-desk simplified-facilities-service-desk simplified-legal-service-desk "
+        "simplified-analytics-service-desk simplified-marketing-service-desk simplified-design-service-desk "
+        "simplified-sales-service-desk simplified-finance-service-desk simplified-halp-service-desk "
+        "company-managed-blank-service-project company-managed-general-service-project "
+        "team-managed-general-service-project next-gen-it-service-desk next-gen-hr-service-desk "
+        "next-gen-legal-service-desk next-gen-marketing-service-desk next-gen-facilities-service-desk "
+        "next-gen-analytics-service-desk next-gen-finance-service-desk next-gen-design-service-desk "
+        "next-gen-sales-service-desk",
     ),
     **_templates("customer_service", "com.atlassian.jcs", "customer-service-management"),
 }
-"""Each project template Jira Cloud's create-project reference lists, and the one project type it builds
-(https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post)."""
+"""Each value of `projectTemplateKey`'s enum in the create-project reference (`CreateProjectDetails`, fetched
+2026-10-08; `jira-core-simplified-task-` is the enum's own spelling, beside the description's `…-task-tracking`),
+and the project type it builds."""
 
 PROJECT_TYPES = frozenset(TEMPLATE_TYPES.values())
 
@@ -706,18 +791,25 @@ _PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9]+")
 
 
 def project_key_problem(key: str) -> str | None:
-    """What is wrong with `key` as a new project's key, in the words of a create's `errors.projectKey`."""
-    if not key:
-        return "A project needs a key."
-    if len(key) > PROJECT_KEY_MOST:
-        return f"A project key is at most {PROJECT_KEY_MOST} characters long."
+    """What is wrong with `key` as a new project's key: the pattern in the words `ErrorCollection`'s example gives
+    for `projectKey`, anything else in the create-project reference's words for its 400."""
+    if not key or len(key) > PROJECT_KEY_MOST:
+        return PROJECT_INVALID
     if not _PROJECT_KEY.fullmatch(key):
-        return "A project key is a capital letter followed by capitals and digits."
+        return "Project keys must start with an uppercase letter, followed by one or more uppercase alphanumeric characters."
     return None
 
 
-class ProjectIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+PROJECT_INVALID = "Returned if the request is not valid and the project could not be created."
+
+
+class ProjectIn(Request):
+    """`POST /project` (`CreateProjectDetails`)."""
+
+    UNSERVED = frozenset({"avatarId", "categoryId", "fieldConfigurationScheme", "fieldScheme", "issueSecurityScheme",
+                          "issueTypeScheme", "issueTypeScreenScheme", "lead", "notificationScheme",
+                          "permissionScheme", "url", "workflowScheme"})  # fmt: skip
+    CLOSED = True
 
     key: str | None = None
     name: str | None = None
@@ -728,23 +820,26 @@ class ProjectIn(Wire):
     assigneeType: str | None = None
 
 
-class RoleActorsIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class RoleActorsIn(Request):
+    """`POST /project/{key}/role/{id}` (`ActorsMap`): accounts by accountId; groups are not served."""
+
+    UNSERVED = frozenset({"group", "groupId"})
+    CLOSED = True
 
     user: list[str] = []
-    groupId: list[str] = []
 
 
-class SprintIssuesIn(Wire):
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+class SprintIssuesIn(Request):
+    """`POST /rest/agile/1.0/sprint/{id}/issue`: the issues; ranking is not served."""
+
+    UNSERVED = frozenset({"rankAfterIssue", "rankBeforeIssue", "rankCustomFieldId"})
+    CLOSED = True
 
     issues: list[str] = []
 
 
-class TokenIn(Wire):
+class TokenIn(Request):
     """Atlassian's token endpoint, read from a JSON body or a form."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
 
     grant_type: str | None = None
     client_id: str | None = None
@@ -761,6 +856,7 @@ Body = TypeVar(
     CommentIn,
     AssigneeIn,
     LinkIn,
+    LinkCommentIn,
     SearchIn,
     CountIn,
     ProjectIn,
@@ -770,22 +866,42 @@ Body = TypeVar(
 )
 
 
-def read_body(model: type[Body], raw: bytes) -> Body:
-    """A request body as the model; Jira's own refusal for a body that is not JSON or not that shape."""
+def read_body(model: type[Body], raw: bytes, *, missing: Refusal | None = None) -> Body:
+    """A request body as the model; Jira's own refusal for a body that is not JSON or not that shape, a 400 naming a
+    property a closed schema has not got, and a property the reference documents that this fake does not act on
+    refused by name (`NotImplementedError`)."""
     if not raw.strip():
-        raise bad("The request has no body; this resource needs one.")
+        if missing is None:
+            raise NotImplementedError(f"an empty {model.__name__} body: what Jira answers is not recorded")
+        raise missing
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise bad("The request body is not valid JSON.") from error
+        raise Refusal(
+            400, ["There was an error parsing JSON. Check that your request body is valid."], bare=True
+        ) from error
     if not isinstance(decoded, dict):
-        raise bad("The request body must be a JSON object.")
+        raise Refusal(400, [INVALID_PAYLOAD], bare=True)
+    _refuse_unserved(model, decoded)
     try:
         return model.model_validate(decoded)
     except ValidationError as error:
-        first = error.errors()[0]
-        where = ".".join(str(part) for part in first["loc"])
-        raise bad(f"The request body cannot be read at '{where}'.") from error
+        raise Refusal(400, [INVALID_PAYLOAD], bare=True) from error
+
+
+def _refuse_unserved(model: type[Request], decoded: dict[str, JsonValue]) -> None:
+    for name, value in decoded.items():
+        if name in model.UNSERVED and value not in (None, False, "", [], {}):
+            raise NotImplementedError(f"the '{name}' property of a {model.__name__} body")
+    if model.CLOSED:
+        known = {f.alias or n for n, f in model.model_fields.items()} | set(model.UNSERVED)
+        for name in decoded:
+            if name not in known:
+                raise Refusal(400, [INVALID_PAYLOAD], bare=True)
+    for name, inner in model.NESTED.items():
+        value = decoded[name] if name in decoded else None
+        if isinstance(value, dict):
+            _refuse_unserved(inner, value)
 
 
 def read_ref(value: JsonValue) -> Ref | None:

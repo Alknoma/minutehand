@@ -1,0 +1,1981 @@
+{
+ "sources": [
+  {
+   "url": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+   "title": "The Jira Cloud platform REST API",
+   "version": "1001.0.0-SNAPSHOT-075425bbde28f069e4778bc256e773dd780217cf"
+  },
+  {
+   "url": "https://developer.atlassian.com/cloud/jira/software/swagger.v3.json",
+   "title": "Jira Software Cloud API",
+   "version": "1001.0.0"
+  }
+ ],
+ "fetched": "2026-10-08",
+ "selection": "Every path of the platform v3 spec whose first segment after /rest/api/3/ is one of the resources the fake claims (attachment, comment, issue, issueLink, issueLinkType, jql, mypermissions, myself, project, search, user, users, worklog), the site objects it serves (field, issuetype, issuetype/{id}, priority, priority/{id}, resolution, resolution/{id}, serverInfo, status, status/{idOrName}, statuscategory, statuscategory/{idOrKey}), and from the Agile spec /board, /board/{boardId}, /board/{boardId}/sprint..., /sprint and /sprint/{sprintId}....",
+ "paths": {
+  "/rest/agile/1.0/board": {
+   "GET": {
+    "operationId": "getAllBoards",
+    "summary": "Get all boards",
+    "query": [
+     "startAt",
+     "maxResults",
+     "type",
+     "name",
+     "projectKeyOrId",
+     "accountIdLocation",
+     "projectLocation",
+     "includePrivate",
+     "negateLocationFiltering",
+     "orderBy",
+     "expand",
+     "projectTypeLocation",
+     "filterId"
+    ]
+   },
+   "POST": {
+    "operationId": "createBoard",
+    "summary": "Create board",
+    "body": [
+     "filterId",
+     "location",
+     "name",
+     "type"
+    ]
+   }
+  },
+  "/rest/agile/1.0/board/{boardId}": {
+   "DELETE": {
+    "operationId": "deleteBoard",
+    "summary": "Delete board"
+   },
+   "GET": {
+    "operationId": "getBoard",
+    "summary": "Get board"
+   }
+  },
+  "/rest/agile/1.0/board/{boardId}/sprint": {
+   "GET": {
+    "operationId": "getAllSprints",
+    "summary": "Get all sprints",
+    "query": [
+     "startAt",
+     "maxResults",
+     "state"
+    ]
+   }
+  },
+  "/rest/agile/1.0/board/{boardId}/sprint/{sprintId}/issue": {
+   "GET": {
+    "operationId": "getBoardIssuesForSprint",
+    "summary": "Get board issues for sprint",
+    "query": [
+     "startAt",
+     "maxResults",
+     "jql",
+     "validateQuery",
+     "fields",
+     "expand"
+    ],
+    "deprecated": true
+   }
+  },
+  "/rest/agile/1.0/sprint": {
+   "POST": {
+    "operationId": "createSprint",
+    "summary": "Create sprint",
+    "body": [
+     "endDate",
+     "goal",
+     "name",
+     "originBoardId",
+     "startDate"
+    ]
+   }
+  },
+  "/rest/agile/1.0/sprint/{sprintId}": {
+   "DELETE": {
+    "operationId": "deleteSprint",
+    "summary": "Delete sprint"
+   },
+   "GET": {
+    "operationId": "getSprint",
+    "summary": "Get sprint"
+   },
+   "POST": {
+    "operationId": "partiallyUpdateSprint",
+    "summary": "Partially update sprint",
+    "body": [
+     "completeDate",
+     "createdDate",
+     "endDate",
+     "goal",
+     "id",
+     "name",
+     "originBoardId",
+     "self",
+     "startDate",
+     "state"
+    ]
+   },
+   "PUT": {
+    "operationId": "updateSprint",
+    "summary": "Update sprint",
+    "body": [
+     "completeDate",
+     "createdDate",
+     "endDate",
+     "goal",
+     "id",
+     "name",
+     "originBoardId",
+     "self",
+     "startDate",
+     "state"
+    ]
+   }
+  },
+  "/rest/agile/1.0/sprint/{sprintId}/issue": {
+   "GET": {
+    "operationId": "getIssuesForSprint",
+    "summary": "Get issues for sprint",
+    "query": [
+     "startAt",
+     "maxResults",
+     "jql",
+     "validateQuery",
+     "fields",
+     "expand"
+    ],
+    "deprecated": true
+   },
+   "POST": {
+    "operationId": "moveIssuesToSprintAndRank",
+    "summary": "Move issues to sprint and rank",
+    "body": [
+     "issues",
+     "rankAfterIssue",
+     "rankBeforeIssue",
+     "rankCustomFieldId"
+    ]
+   }
+  },
+  "/rest/agile/1.0/sprint/{sprintId}/properties": {
+   "GET": {
+    "operationId": "getPropertiesKeys",
+    "summary": "Get properties keys"
+   }
+  },
+  "/rest/agile/1.0/sprint/{sprintId}/properties/{propertyKey}": {
+   "DELETE": {
+    "operationId": "deleteProperty",
+    "summary": "Delete property"
+   },
+   "GET": {
+    "operationId": "getProperty",
+    "summary": "Get property"
+   },
+   "PUT": {
+    "operationId": "setProperty",
+    "summary": "Set property"
+   }
+  },
+  "/rest/agile/1.0/sprint/{sprintId}/swap": {
+   "POST": {
+    "operationId": "swapSprint",
+    "summary": "Swap sprint",
+    "body": [
+     "sprintToSwapWith"
+    ]
+   }
+  },
+  "/rest/api/3/attachment/content/{id}": {
+   "GET": {
+    "operationId": "getAttachmentContent",
+    "summary": "Get attachment content",
+    "query": [
+     "redirect"
+    ]
+   }
+  },
+  "/rest/api/3/attachment/meta": {
+   "GET": {
+    "operationId": "getAttachmentMeta",
+    "summary": "Get Jira attachment settings"
+   }
+  },
+  "/rest/api/3/attachment/thumbnail/{id}": {
+   "GET": {
+    "operationId": "getAttachmentThumbnail",
+    "summary": "Get attachment thumbnail",
+    "query": [
+     "redirect",
+     "fallbackToDefault",
+     "width",
+     "height"
+    ]
+   }
+  },
+  "/rest/api/3/attachment/{id}": {
+   "DELETE": {
+    "operationId": "removeAttachment",
+    "summary": "Delete attachment"
+   },
+   "GET": {
+    "operationId": "getAttachment",
+    "summary": "Get attachment metadata"
+   }
+  },
+  "/rest/api/3/attachment/{id}/expand/human": {
+   "GET": {
+    "operationId": "expandAttachmentForHumans",
+    "summary": "Get all metadata for an expanded attachment"
+   }
+  },
+  "/rest/api/3/attachment/{id}/expand/raw": {
+   "GET": {
+    "operationId": "expandAttachmentForMachines",
+    "summary": "Get contents metadata for an expanded attachment"
+   }
+  },
+  "/rest/api/3/comment/list": {
+   "POST": {
+    "operationId": "getCommentsByIds",
+    "summary": "Get comments by IDs",
+    "query": [
+     "expand"
+    ],
+    "body": [
+     "ids"
+    ]
+   }
+  },
+  "/rest/api/3/comment/{commentId}/properties": {
+   "GET": {
+    "operationId": "getCommentPropertyKeys",
+    "summary": "Get comment property keys"
+   }
+  },
+  "/rest/api/3/comment/{commentId}/properties/{propertyKey}": {
+   "DELETE": {
+    "operationId": "deleteCommentProperty",
+    "summary": "Delete comment property"
+   },
+   "GET": {
+    "operationId": "getCommentProperty",
+    "summary": "Get comment property"
+   },
+   "PUT": {
+    "operationId": "setCommentProperty",
+    "summary": "Set comment property"
+   }
+  },
+  "/rest/api/3/field": {
+   "GET": {
+    "operationId": "getFields",
+    "summary": "Get fields"
+   },
+   "POST": {
+    "operationId": "createCustomField",
+    "summary": "Create custom field",
+    "body": [
+     "description",
+     "name",
+     "searcherKey",
+     "type"
+    ]
+   }
+  },
+  "/rest/api/3/issue": {
+   "POST": {
+    "operationId": "createIssue",
+    "summary": "Create issue",
+    "query": [
+     "updateHistory"
+    ],
+    "body": [
+     "fields",
+     "historyMetadata",
+     "properties",
+     "transition",
+     "update"
+    ]
+   }
+  },
+  "/rest/api/3/issue/archive": {
+   "POST": {
+    "operationId": "archiveIssuesAsync",
+    "summary": "Archive issue(s) by JQL",
+    "body": [
+     "jql"
+    ]
+   },
+   "PUT": {
+    "operationId": "archiveIssues",
+    "summary": "Archive issue(s) by issue ID/key",
+    "body": [
+     "issueIdsOrKeys"
+    ]
+   }
+  },
+  "/rest/api/3/issue/bulk": {
+   "POST": {
+    "operationId": "createIssues",
+    "summary": "Bulk create issue",
+    "body": [
+     "issueUpdates"
+    ]
+   }
+  },
+  "/rest/api/3/issue/bulkfetch": {
+   "POST": {
+    "operationId": "bulkFetchIssues",
+    "summary": "Bulk fetch issues",
+    "body": [
+     "expand",
+     "fields",
+     "fieldsByKeys",
+     "issueIdsOrKeys",
+     "properties"
+    ]
+   }
+  },
+  "/rest/api/3/issue/createmeta": {
+   "GET": {
+    "operationId": "getCreateIssueMeta",
+    "summary": "Get create issue metadata",
+    "query": [
+     "projectIds",
+     "projectKeys",
+     "issuetypeIds",
+     "issuetypeNames",
+     "expand"
+    ],
+    "deprecated": true
+   }
+  },
+  "/rest/api/3/issue/createmeta/{projectIdOrKey}/issuetypes": {
+   "GET": {
+    "operationId": "getCreateIssueMetaIssueTypes",
+    "summary": "Get create metadata issue types for a project",
+    "query": [
+     "startAt",
+     "maxResults"
+    ]
+   }
+  },
+  "/rest/api/3/issue/createmeta/{projectIdOrKey}/issuetypes/{issueTypeId}": {
+   "GET": {
+    "operationId": "getCreateIssueMetaIssueTypeId",
+    "summary": "Get create field metadata for a project and issue type id",
+    "query": [
+     "startAt",
+     "maxResults"
+    ]
+   }
+  },
+  "/rest/api/3/issue/limit/adf/report": {
+   "GET": {
+    "operationId": "getIssueAdfLimitReport",
+    "summary": "Get issue adf limit report",
+    "query": [
+     "isReturningKeys",
+     "fieldType"
+    ]
+   }
+  },
+  "/rest/api/3/issue/limit/report": {
+   "GET": {
+    "operationId": "getIssueLimitReport",
+    "summary": "Get issue limit report",
+    "query": [
+     "isReturningKeys"
+    ]
+   }
+  },
+  "/rest/api/3/issue/picker": {
+   "GET": {
+    "operationId": "getIssuePickerResource",
+    "summary": "Get issue picker suggestions",
+    "query": [
+     "query",
+     "currentJQL",
+     "currentIssueKey",
+     "currentProjectId",
+     "showSubTasks",
+     "showSubTaskParent"
+    ]
+   }
+  },
+  "/rest/api/3/issue/properties": {
+   "POST": {
+    "operationId": "bulkSetIssuesPropertiesList",
+    "summary": "Bulk set issues properties by list",
+    "body": [
+     "entitiesIds",
+     "properties"
+    ]
+   }
+  },
+  "/rest/api/3/issue/properties/multi": {
+   "POST": {
+    "operationId": "bulkSetIssuePropertiesByIssue",
+    "summary": "Bulk set issue properties by issue",
+    "body": [
+     "issues"
+    ]
+   }
+  },
+  "/rest/api/3/issue/properties/{propertyKey}": {
+   "DELETE": {
+    "operationId": "bulkDeleteIssueProperty",
+    "summary": "Bulk delete issue property",
+    "body": [
+     "currentValue",
+     "entityIds"
+    ]
+   },
+   "PUT": {
+    "operationId": "bulkSetIssueProperty",
+    "summary": "Bulk set issue property",
+    "body": [
+     "expression",
+     "filter",
+     "value"
+    ]
+   }
+  },
+  "/rest/api/3/issue/unarchive": {
+   "PUT": {
+    "operationId": "unarchiveIssues",
+    "summary": "Unarchive issue(s) by issue keys/ID",
+    "body": [
+     "issueIdsOrKeys"
+    ]
+   }
+  },
+  "/rest/api/3/issue/watching": {
+   "POST": {
+    "operationId": "getIsWatchingIssueBulk",
+    "summary": "Get is watching issue bulk",
+    "body": [
+     "issueIds"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}": {
+   "DELETE": {
+    "operationId": "deleteIssue",
+    "summary": "Delete issue",
+    "query": [
+     "deleteSubtasks"
+    ]
+   },
+   "GET": {
+    "operationId": "getIssue",
+    "summary": "Get issue",
+    "query": [
+     "fields",
+     "fieldsByKeys",
+     "expand",
+     "properties",
+     "updateHistory",
+     "failFast"
+    ]
+   },
+   "PUT": {
+    "operationId": "editIssue",
+    "summary": "Edit issue",
+    "query": [
+     "notifyUsers",
+     "overrideScreenSecurity",
+     "overrideEditableFlag",
+     "returnIssue",
+     "expand"
+    ],
+    "body": [
+     "fields",
+     "historyMetadata",
+     "properties",
+     "transition",
+     "update"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/assignee": {
+   "PUT": {
+    "operationId": "assignIssue",
+    "summary": "Assign issue",
+    "body": [
+     "accountId",
+     "key",
+     "name"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/attachments": {
+   "POST": {
+    "operationId": "addAttachment",
+    "summary": "Add attachment"
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/changelog": {
+   "GET": {
+    "operationId": "getChangeLogs",
+    "summary": "Get changelogs",
+    "query": [
+     "startAt",
+     "maxResults"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/changelog/list": {
+   "POST": {
+    "operationId": "getChangeLogsByIds",
+    "summary": "Get changelogs by IDs",
+    "body": [
+     "changelogIds"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/comment": {
+   "GET": {
+    "operationId": "getComments",
+    "summary": "Get comments",
+    "query": [
+     "startAt",
+     "maxResults",
+     "orderBy",
+     "expand"
+    ]
+   },
+   "POST": {
+    "operationId": "addComment",
+    "summary": "Add comment",
+    "query": [
+     "expand"
+    ],
+    "body": [
+     "body",
+     "properties",
+     "visibility"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/comment/{id}": {
+   "DELETE": {
+    "operationId": "deleteComment",
+    "summary": "Delete comment"
+   },
+   "GET": {
+    "operationId": "getComment",
+    "summary": "Get comment",
+    "query": [
+     "expand"
+    ]
+   },
+   "PUT": {
+    "operationId": "updateComment",
+    "summary": "Update comment",
+    "query": [
+     "notifyUsers",
+     "overrideEditableFlag",
+     "expand"
+    ],
+    "body": [
+     "body",
+     "properties",
+     "visibility"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/editmeta": {
+   "GET": {
+    "operationId": "getEditIssueMeta",
+    "summary": "Get edit issue metadata",
+    "query": [
+     "overrideScreenSecurity",
+     "overrideEditableFlag"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/notify": {
+   "POST": {
+    "operationId": "notify",
+    "summary": "Send notification for issue",
+    "body": [
+     "htmlBody",
+     "restrict",
+     "subject",
+     "textBody",
+     "to"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/properties": {
+   "GET": {
+    "operationId": "getIssuePropertyKeys",
+    "summary": "Get issue property keys"
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/properties/{propertyKey}": {
+   "DELETE": {
+    "operationId": "deleteIssueProperty",
+    "summary": "Delete issue property"
+   },
+   "GET": {
+    "operationId": "getIssueProperty",
+    "summary": "Get issue property"
+   },
+   "PUT": {
+    "operationId": "setIssueProperty",
+    "summary": "Set issue property"
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/remotelink": {
+   "DELETE": {
+    "operationId": "deleteRemoteIssueLinkByGlobalId",
+    "summary": "Delete remote issue link by global ID",
+    "query": [
+     "globalId"
+    ]
+   },
+   "GET": {
+    "operationId": "getRemoteIssueLinks",
+    "summary": "Get remote issue links",
+    "query": [
+     "globalId"
+    ]
+   },
+   "POST": {
+    "operationId": "createOrUpdateRemoteIssueLink",
+    "summary": "Create or update remote issue link",
+    "body": [
+     "application",
+     "globalId",
+     "object",
+     "relationship"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/remotelink/{linkId}": {
+   "DELETE": {
+    "operationId": "deleteRemoteIssueLinkById",
+    "summary": "Delete remote issue link by ID"
+   },
+   "GET": {
+    "operationId": "getRemoteIssueLinkById",
+    "summary": "Get remote issue link by ID"
+   },
+   "PUT": {
+    "operationId": "updateRemoteIssueLink",
+    "summary": "Update remote issue link by ID",
+    "body": [
+     "application",
+     "globalId",
+     "object",
+     "relationship"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/transitions": {
+   "GET": {
+    "operationId": "getTransitions",
+    "summary": "Get transitions",
+    "query": [
+     "expand",
+     "transitionId",
+     "skipRemoteOnlyCondition",
+     "includeUnavailableTransitions",
+     "sortByOpsBarAndStatus"
+    ]
+   },
+   "POST": {
+    "operationId": "doTransition",
+    "summary": "Transition issue",
+    "body": [
+     "fields",
+     "historyMetadata",
+     "properties",
+     "transition",
+     "update"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/votes": {
+   "DELETE": {
+    "operationId": "removeVote",
+    "summary": "Delete vote"
+   },
+   "GET": {
+    "operationId": "getVotes",
+    "summary": "Get votes"
+   },
+   "POST": {
+    "operationId": "addVote",
+    "summary": "Add vote"
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/watchers": {
+   "DELETE": {
+    "operationId": "removeWatcher",
+    "summary": "Delete watcher",
+    "query": [
+     "username",
+     "accountId"
+    ]
+   },
+   "GET": {
+    "operationId": "getIssueWatchers",
+    "summary": "Get issue watchers"
+   },
+   "POST": {
+    "operationId": "addWatcher",
+    "summary": "Add watcher"
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/worklog": {
+   "DELETE": {
+    "operationId": "bulkDeleteWorklogs",
+    "summary": "Bulk delete worklogs",
+    "query": [
+     "adjustEstimate",
+     "overrideEditableFlag"
+    ],
+    "body": [
+     "ids"
+    ]
+   },
+   "GET": {
+    "operationId": "getIssueWorklog",
+    "summary": "Get issue worklogs",
+    "query": [
+     "startAt",
+     "maxResults",
+     "startedAfter",
+     "startedBefore",
+     "expand"
+    ]
+   },
+   "POST": {
+    "operationId": "addWorklog",
+    "summary": "Add worklog",
+    "query": [
+     "notifyUsers",
+     "adjustEstimate",
+     "newEstimate",
+     "reduceBy",
+     "expand",
+     "overrideEditableFlag"
+    ],
+    "body": [
+     "comment",
+     "properties",
+     "started",
+     "timeSpent",
+     "timeSpentSeconds",
+     "visibility"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/worklog/move": {
+   "POST": {
+    "operationId": "bulkMoveWorklogs",
+    "summary": "Bulk move worklogs",
+    "query": [
+     "adjustEstimate",
+     "overrideEditableFlag"
+    ],
+    "body": [
+     "ids",
+     "issueIdOrKey"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/worklog/{id}": {
+   "DELETE": {
+    "operationId": "deleteWorklog",
+    "summary": "Delete worklog",
+    "query": [
+     "notifyUsers",
+     "adjustEstimate",
+     "newEstimate",
+     "increaseBy",
+     "overrideEditableFlag"
+    ]
+   },
+   "GET": {
+    "operationId": "getWorklog",
+    "summary": "Get worklog",
+    "query": [
+     "expand"
+    ]
+   },
+   "PUT": {
+    "operationId": "updateWorklog",
+    "summary": "Update worklog",
+    "query": [
+     "notifyUsers",
+     "adjustEstimate",
+     "newEstimate",
+     "expand",
+     "overrideEditableFlag"
+    ],
+    "body": [
+     "comment",
+     "properties",
+     "started",
+     "timeSpent",
+     "timeSpentSeconds",
+     "visibility"
+    ]
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/worklog/{worklogId}/properties": {
+   "GET": {
+    "operationId": "getWorklogPropertyKeys",
+    "summary": "Get worklog property keys"
+   }
+  },
+  "/rest/api/3/issue/{issueIdOrKey}/worklog/{worklogId}/properties/{propertyKey}": {
+   "DELETE": {
+    "operationId": "deleteWorklogProperty",
+    "summary": "Delete worklog property"
+   },
+   "GET": {
+    "operationId": "getWorklogProperty",
+    "summary": "Get worklog property"
+   },
+   "PUT": {
+    "operationId": "setWorklogProperty",
+    "summary": "Set worklog property"
+   }
+  },
+  "/rest/api/3/issueLink": {
+   "POST": {
+    "operationId": "linkIssues",
+    "summary": "Create issue link",
+    "body": [
+     "comment",
+     "inwardIssue",
+     "outwardIssue",
+     "type"
+    ]
+   }
+  },
+  "/rest/api/3/issueLink/{linkId}": {
+   "DELETE": {
+    "operationId": "deleteIssueLink",
+    "summary": "Delete issue link"
+   },
+   "GET": {
+    "operationId": "getIssueLink",
+    "summary": "Get issue link"
+   }
+  },
+  "/rest/api/3/issueLinkType": {
+   "GET": {
+    "operationId": "getIssueLinkTypes",
+    "summary": "Get issue link types"
+   },
+   "POST": {
+    "operationId": "createIssueLinkType",
+    "summary": "Create issue link type",
+    "body": [
+     "id",
+     "inward",
+     "name",
+     "outward"
+    ]
+   }
+  },
+  "/rest/api/3/issueLinkType/{issueLinkTypeId}": {
+   "DELETE": {
+    "operationId": "deleteIssueLinkType",
+    "summary": "Delete issue link type"
+   },
+   "GET": {
+    "operationId": "getIssueLinkType",
+    "summary": "Get issue link type"
+   },
+   "PUT": {
+    "operationId": "updateIssueLinkType",
+    "summary": "Update issue link type",
+    "body": [
+     "id",
+     "inward",
+     "name",
+     "outward"
+    ]
+   }
+  },
+  "/rest/api/3/issuetype": {
+   "GET": {
+    "operationId": "getIssueAllTypes",
+    "summary": "Get all issue types for user"
+   },
+   "POST": {
+    "operationId": "createIssueType",
+    "summary": "Create issue type",
+    "body": [
+     "description",
+     "hierarchyLevel",
+     "name",
+     "type"
+    ]
+   }
+  },
+  "/rest/api/3/issuetype/{id}": {
+   "DELETE": {
+    "operationId": "deleteIssueType",
+    "summary": "Delete issue type",
+    "query": [
+     "alternativeIssueTypeId"
+    ]
+   },
+   "GET": {
+    "operationId": "getIssueType",
+    "summary": "Get issue type"
+   },
+   "PUT": {
+    "operationId": "updateIssueType",
+    "summary": "Update issue type",
+    "body": [
+     "avatarId",
+     "description",
+     "name"
+    ]
+   }
+  },
+  "/rest/api/3/jql/autocompletedata": {
+   "GET": {
+    "operationId": "getAutoComplete",
+    "summary": "Get field reference data (GET)"
+   },
+   "POST": {
+    "operationId": "getAutoCompletePost",
+    "summary": "Get field reference data (POST)",
+    "body": [
+     "includeCollapsedFields",
+     "projectIds"
+    ]
+   }
+  },
+  "/rest/api/3/jql/autocompletedata/suggestions": {
+   "GET": {
+    "operationId": "getFieldAutoCompleteForQueryString",
+    "summary": "Get field auto complete suggestions",
+    "query": [
+     "fieldName",
+     "fieldValue",
+     "predicateName",
+     "predicateValue"
+    ]
+   }
+  },
+  "/rest/api/3/jql/function/computation": {
+   "GET": {
+    "operationId": "getPrecomputations",
+    "summary": "Get precomputations (apps)",
+    "query": [
+     "functionKey",
+     "startAt",
+     "maxResults",
+     "orderBy"
+    ]
+   },
+   "POST": {
+    "operationId": "updatePrecomputations",
+    "summary": "Update precomputations (apps)",
+    "query": [
+     "skipNotFoundPrecomputations"
+    ],
+    "body": [
+     "values"
+    ]
+   }
+  },
+  "/rest/api/3/jql/function/computation/search": {
+   "POST": {
+    "operationId": "getPrecomputationsByID",
+    "summary": "Get precomputations by ID (apps)",
+    "query": [
+     "orderBy"
+    ],
+    "body": [
+     "precomputationIDs"
+    ]
+   }
+  },
+  "/rest/api/3/jql/match": {
+   "POST": {
+    "operationId": "matchIssues",
+    "summary": "Check issues against JQL",
+    "body": [
+     "issueIds",
+     "jqls"
+    ]
+   }
+  },
+  "/rest/api/3/jql/parse": {
+   "POST": {
+    "operationId": "parseJqlQueries",
+    "summary": "Parse JQL query",
+    "query": [
+     "validation"
+    ],
+    "body": [
+     "queries"
+    ]
+   }
+  },
+  "/rest/api/3/jql/pdcleaner": {
+   "POST": {
+    "operationId": "migrateQueries",
+    "summary": "Convert user identifiers to account IDs in JQL queries",
+    "body": [
+     "queryStrings"
+    ]
+   }
+  },
+  "/rest/api/3/jql/sanitize": {
+   "POST": {
+    "operationId": "sanitiseJqlQueries",
+    "summary": "Sanitize JQL queries",
+    "body": [
+     "queries"
+    ]
+   }
+  },
+  "/rest/api/3/mypermissions": {
+   "GET": {
+    "operationId": "getMyPermissions",
+    "summary": "Get my permissions",
+    "query": [
+     "projectKey",
+     "projectId",
+     "issueKey",
+     "issueId",
+     "permissions",
+     "projectUuid",
+     "projectConfigurationUuid",
+     "commentId"
+    ]
+   }
+  },
+  "/rest/api/3/myself": {
+   "GET": {
+    "operationId": "getCurrentUser",
+    "summary": "Get current user",
+    "query": [
+     "expand"
+    ]
+   }
+  },
+  "/rest/api/3/priority": {
+   "GET": {
+    "operationId": "getPriorities",
+    "summary": "Get priorities",
+    "deprecated": true
+   },
+   "POST": {
+    "operationId": "createPriority",
+    "summary": "Create priority",
+    "body": [
+     "avatarId",
+     "description",
+     "iconUrl",
+     "name",
+     "statusColor"
+    ]
+   }
+  },
+  "/rest/api/3/priority/{id}": {
+   "DELETE": {
+    "operationId": "deletePriority",
+    "summary": "Delete priority"
+   },
+   "GET": {
+    "operationId": "getPriority",
+    "summary": "Get priority"
+   },
+   "PUT": {
+    "operationId": "updatePriority",
+    "summary": "Update priority",
+    "body": [
+     "avatarId",
+     "description",
+     "iconUrl",
+     "name",
+     "statusColor"
+    ]
+   }
+  },
+  "/rest/api/3/project": {
+   "GET": {
+    "operationId": "getAllProjects",
+    "summary": "Get all projects",
+    "query": [
+     "expand",
+     "recent",
+     "properties"
+    ],
+    "deprecated": true
+   },
+   "POST": {
+    "operationId": "createProject",
+    "summary": "Create project",
+    "body": [
+     "assigneeType",
+     "avatarId",
+     "categoryId",
+     "description",
+     "fieldConfigurationScheme",
+     "fieldScheme",
+     "issueSecurityScheme",
+     "issueTypeScheme",
+     "issueTypeScreenScheme",
+     "key",
+     "lead",
+     "leadAccountId",
+     "name",
+     "notificationScheme",
+     "permissionScheme",
+     "projectTemplateKey",
+     "projectTypeKey",
+     "url",
+     "workflowScheme"
+    ]
+   }
+  },
+  "/rest/api/3/project/recent": {
+   "GET": {
+    "operationId": "getRecent",
+    "summary": "Get recent projects",
+    "query": [
+     "expand",
+     "properties"
+    ]
+   }
+  },
+  "/rest/api/3/project/search": {
+   "GET": {
+    "operationId": "searchProjects",
+    "summary": "Get projects paginated",
+    "query": [
+     "startAt",
+     "maxResults",
+     "orderBy",
+     "id",
+     "keys",
+     "query",
+     "typeKey",
+     "categoryId",
+     "action",
+     "expand",
+     "status",
+     "properties",
+     "propertyQuery"
+    ]
+   }
+  },
+  "/rest/api/3/project/type": {
+   "GET": {
+    "operationId": "getAllProjectTypes",
+    "summary": "Get all project types"
+   }
+  },
+  "/rest/api/3/project/type/accessible": {
+   "GET": {
+    "operationId": "getAllAccessibleProjectTypes",
+    "summary": "Get licensed project types"
+   }
+  },
+  "/rest/api/3/project/type/{projectTypeKey}": {
+   "GET": {
+    "operationId": "getProjectTypeByKey",
+    "summary": "Get project type by key"
+   }
+  },
+  "/rest/api/3/project/type/{projectTypeKey}/accessible": {
+   "GET": {
+    "operationId": "getAccessibleProjectTypeByKey",
+    "summary": "Get accessible project type by key"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}": {
+   "DELETE": {
+    "operationId": "deleteProject",
+    "summary": "Delete project",
+    "query": [
+     "enableUndo"
+    ]
+   },
+   "GET": {
+    "operationId": "getProject",
+    "summary": "Get project",
+    "query": [
+     "expand",
+     "properties"
+    ]
+   },
+   "PUT": {
+    "operationId": "updateProject",
+    "summary": "Update project",
+    "query": [
+     "expand"
+    ],
+    "body": [
+     "assigneeType",
+     "avatarId",
+     "categoryId",
+     "description",
+     "issueSecurityScheme",
+     "key",
+     "lead",
+     "leadAccountId",
+     "name",
+     "notificationScheme",
+     "permissionScheme",
+     "releasedProjectKeys",
+     "url"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/archive": {
+   "POST": {
+    "operationId": "archiveProject",
+    "summary": "Archive project"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/avatar": {
+   "PUT": {
+    "operationId": "updateProjectAvatar",
+    "summary": "Set project avatar",
+    "body": [
+     "id"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/avatar/{id}": {
+   "DELETE": {
+    "operationId": "deleteProjectAvatar",
+    "summary": "Delete project avatar"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/avatar2": {
+   "POST": {
+    "operationId": "createProjectAvatar",
+    "summary": "Load project avatar",
+    "query": [
+     "x",
+     "y",
+     "size"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/avatars": {
+   "GET": {
+    "operationId": "getAllProjectAvatars",
+    "summary": "Get all project avatars"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/classification-config": {
+   "GET": {
+    "operationId": "getProjectClassificationConfig",
+    "summary": "Get the classification configuration for a project"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/classification-level/default": {
+   "DELETE": {
+    "operationId": "removeDefaultProjectClassification",
+    "summary": "Remove the default data classification level from a project"
+   },
+   "GET": {
+    "operationId": "getDefaultProjectClassification",
+    "summary": "Get the default data classification level of a project"
+   },
+   "PUT": {
+    "operationId": "updateDefaultProjectClassification",
+    "summary": "Update the default data classification level of a project",
+    "body": [
+     "id"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/component": {
+   "GET": {
+    "operationId": "getProjectComponentsPaginated",
+    "summary": "Get project components paginated",
+    "query": [
+     "startAt",
+     "maxResults",
+     "orderBy",
+     "componentSource",
+     "query"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/components": {
+   "GET": {
+    "operationId": "getProjectComponents",
+    "summary": "Get project components",
+    "query": [
+     "componentSource"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/delete": {
+   "POST": {
+    "operationId": "deleteProjectAsynchronously",
+    "summary": "Delete project asynchronously"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/features": {
+   "GET": {
+    "operationId": "getFeaturesForProject",
+    "summary": "Get project features"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/features/{featureKey}": {
+   "PUT": {
+    "operationId": "toggleFeatureForProject",
+    "summary": "Set project feature state",
+    "body": [
+     "state"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/properties": {
+   "GET": {
+    "operationId": "getProjectPropertyKeys",
+    "summary": "Get project property keys"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/properties/{propertyKey}": {
+   "DELETE": {
+    "operationId": "deleteProjectProperty",
+    "summary": "Delete project property"
+   },
+   "GET": {
+    "operationId": "getProjectProperty",
+    "summary": "Get project property"
+   },
+   "PUT": {
+    "operationId": "setProjectProperty",
+    "summary": "Set project property"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/restore": {
+   "POST": {
+    "operationId": "restore",
+    "summary": "Restore deleted or archived project"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/role": {
+   "GET": {
+    "operationId": "getProjectRoles",
+    "summary": "Get project roles for project"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/role/{id}": {
+   "DELETE": {
+    "operationId": "deleteActor",
+    "summary": "Delete actors from project role",
+    "query": [
+     "user",
+     "group",
+     "groupId"
+    ]
+   },
+   "GET": {
+    "operationId": "getProjectRole",
+    "summary": "Get project role for project",
+    "query": [
+     "excludeInactiveUsers"
+    ]
+   },
+   "POST": {
+    "operationId": "addActorUsers",
+    "summary": "Add actors to project role",
+    "body": [
+     "group",
+     "groupId",
+     "user"
+    ]
+   },
+   "PUT": {
+    "operationId": "setActors",
+    "summary": "Set actors for project role",
+    "body": [
+     "categorisedActors"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/roledetails": {
+   "GET": {
+    "operationId": "getProjectRoleDetails",
+    "summary": "Get project role details",
+    "query": [
+     "currentMember",
+     "excludeConnectAddons",
+     "excludeOtherServiceRoles"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/statuses": {
+   "GET": {
+    "operationId": "getAllStatuses",
+    "summary": "Get all statuses for project"
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/version": {
+   "GET": {
+    "operationId": "getProjectVersionsPaginated",
+    "summary": "Get project versions paginated",
+    "query": [
+     "startAt",
+     "maxResults",
+     "orderBy",
+     "query",
+     "status",
+     "expand"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectIdOrKey}/versions": {
+   "GET": {
+    "operationId": "getProjectVersions",
+    "summary": "Get project versions",
+    "query": [
+     "expand"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectId}/email": {
+   "GET": {
+    "operationId": "getProjectEmail",
+    "summary": "Get project's sender email"
+   },
+   "PUT": {
+    "operationId": "updateProjectEmail",
+    "summary": "Set project's sender email",
+    "body": [
+     "emailAddress",
+     "emailAddressStatus"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectId}/hierarchy": {
+   "GET": {
+    "operationId": "getHierarchy",
+    "summary": "Get project issue type hierarchy"
+   }
+  },
+  "/rest/api/3/project/{projectKeyOrId}/issuesecuritylevelscheme": {
+   "GET": {
+    "operationId": "getProjectIssueSecurityScheme",
+    "summary": "Get project issue security scheme"
+   }
+  },
+  "/rest/api/3/project/{projectKeyOrId}/notificationscheme": {
+   "GET": {
+    "operationId": "getNotificationSchemeForProject",
+    "summary": "Get project notification scheme",
+    "query": [
+     "expand"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectKeyOrId}/permissionscheme": {
+   "GET": {
+    "operationId": "getAssignedPermissionScheme",
+    "summary": "Get assigned permission scheme",
+    "query": [
+     "expand"
+    ]
+   },
+   "PUT": {
+    "operationId": "assignPermissionScheme",
+    "summary": "Assign permission scheme",
+    "query": [
+     "expand"
+    ],
+    "body": [
+     "id"
+    ]
+   }
+  },
+  "/rest/api/3/project/{projectKeyOrId}/securitylevel": {
+   "GET": {
+    "operationId": "getSecurityLevelsForProject",
+    "summary": "Get project issue security levels"
+   }
+  },
+  "/rest/api/3/resolution": {
+   "GET": {
+    "operationId": "getResolutions",
+    "summary": "Get resolutions",
+    "deprecated": true
+   },
+   "POST": {
+    "operationId": "createResolution",
+    "summary": "Create resolution",
+    "body": [
+     "description",
+     "name"
+    ]
+   }
+  },
+  "/rest/api/3/resolution/{id}": {
+   "DELETE": {
+    "operationId": "deleteResolution",
+    "summary": "Delete resolution",
+    "query": [
+     "replaceWith"
+    ]
+   },
+   "GET": {
+    "operationId": "getResolution",
+    "summary": "Get resolution"
+   },
+   "PUT": {
+    "operationId": "updateResolution",
+    "summary": "Update resolution",
+    "body": [
+     "description",
+     "name"
+    ]
+   }
+  },
+  "/rest/api/3/search": {
+   "GET": {
+    "operationId": "searchForIssuesUsingJql",
+    "summary": "Currently being removed. Search for issues using JQL (GET)",
+    "query": [
+     "jql",
+     "startAt",
+     "maxResults",
+     "validateQuery",
+     "fields",
+     "expand",
+     "properties",
+     "fieldsByKeys",
+     "failFast"
+    ],
+    "deprecated": true
+   },
+   "POST": {
+    "operationId": "searchForIssuesUsingJqlPost",
+    "summary": "Currently being removed. Search for issues using JQL (POST)",
+    "body": [
+     "expand",
+     "fields",
+     "fieldsByKeys",
+     "jql",
+     "maxResults",
+     "properties",
+     "startAt",
+     "validateQuery"
+    ],
+    "deprecated": true
+   }
+  },
+  "/rest/api/3/search/approximate-count": {
+   "POST": {
+    "operationId": "countIssues",
+    "summary": "Count issues using JQL",
+    "body": [
+     "jql"
+    ]
+   }
+  },
+  "/rest/api/3/search/jql": {
+   "GET": {
+    "operationId": "searchAndReconsileIssuesUsingJql",
+    "summary": "Search for issues using JQL enhanced search (GET)",
+    "query": [
+     "jql",
+     "nextPageToken",
+     "maxResults",
+     "fields",
+     "expand",
+     "properties",
+     "fieldsByKeys",
+     "failFast",
+     "reconcileIssues",
+     "includeArchivedProjects"
+    ]
+   },
+   "POST": {
+    "operationId": "searchAndReconsileIssuesUsingJqlPost",
+    "summary": "Search for issues using JQL enhanced search (POST)",
+    "body": [
+     "expand",
+     "fields",
+     "fieldsByKeys",
+     "includeArchivedProjects",
+     "jql",
+     "maxResults",
+     "nextPageToken",
+     "properties",
+     "reconcileIssues"
+    ]
+   }
+  },
+  "/rest/api/3/serverInfo": {
+   "GET": {
+    "operationId": "getServerInfo",
+    "summary": "Get Jira instance info"
+   }
+  },
+  "/rest/api/3/status": {
+   "GET": {
+    "operationId": "getStatuses",
+    "summary": "Get all statuses"
+   }
+  },
+  "/rest/api/3/status/{idOrName}": {
+   "GET": {
+    "operationId": "getStatus",
+    "summary": "Get status"
+   }
+  },
+  "/rest/api/3/statuscategory": {
+   "GET": {
+    "operationId": "getStatusCategories",
+    "summary": "Get all status categories"
+   }
+  },
+  "/rest/api/3/statuscategory/{idOrKey}": {
+   "GET": {
+    "operationId": "getStatusCategory",
+    "summary": "Get status category"
+   }
+  },
+  "/rest/api/3/user": {
+   "DELETE": {
+    "operationId": "removeUser",
+    "summary": "Delete user",
+    "query": [
+     "accountId",
+     "username",
+     "key"
+    ]
+   },
+   "GET": {
+    "operationId": "getUser",
+    "summary": "Get user",
+    "query": [
+     "accountId",
+     "username",
+     "key",
+     "expand"
+    ]
+   },
+   "POST": {
+    "operationId": "createUser",
+    "summary": "Create user",
+    "body": [
+     "applicationKeys",
+     "displayName",
+     "emailAddress",
+     "key",
+     "name",
+     "password",
+     "products"
+    ]
+   }
+  },
+  "/rest/api/3/user/assignable/multiProjectSearch": {
+   "GET": {
+    "operationId": "findBulkAssignableUsers",
+    "summary": "Find users assignable to projects",
+    "query": [
+     "query",
+     "username",
+     "accountId",
+     "projectKeys",
+     "startAt",
+     "maxResults"
+    ]
+   }
+  },
+  "/rest/api/3/user/assignable/search": {
+   "GET": {
+    "operationId": "findAssignableUsers",
+    "summary": "Find users assignable to issues",
+    "query": [
+     "query",
+     "sessionId",
+     "username",
+     "accountId",
+     "project",
+     "issueKey",
+     "issueId",
+     "startAt",
+     "maxResults",
+     "actionDescriptorId",
+     "recommend",
+     "accountType",
+     "appType"
+    ]
+   }
+  },
+  "/rest/api/3/user/bulk": {
+   "GET": {
+    "operationId": "bulkGetUsers",
+    "summary": "Bulk get users",
+    "query": [
+     "startAt",
+     "maxResults",
+     "username",
+     "key",
+     "accountId"
+    ]
+   }
+  },
+  "/rest/api/3/user/bulk/migration": {
+   "GET": {
+    "operationId": "bulkGetUsersMigration",
+    "summary": "Get account IDs for users",
+    "query": [
+     "startAt",
+     "maxResults",
+     "username",
+     "key"
+    ]
+   }
+  },
+  "/rest/api/3/user/columns": {
+   "DELETE": {
+    "operationId": "resetUserColumns",
+    "summary": "Reset user default columns",
+    "query": [
+     "accountId",
+     "username"
+    ]
+   },
+   "GET": {
+    "operationId": "getUserDefaultColumns",
+    "summary": "Get user default columns",
+    "query": [
+     "accountId",
+     "username"
+    ]
+   },
+   "PUT": {
+    "operationId": "setUserColumns",
+    "summary": "Set user default columns",
+    "query": [
+     "accountId"
+    ]
+   }
+  },
+  "/rest/api/3/user/email": {
+   "GET": {
+    "operationId": "getUserEmail",
+    "summary": "Get user email",
+    "query": [
+     "accountId"
+    ]
+   }
+  },
+  "/rest/api/3/user/email/bulk": {
+   "GET": {
+    "operationId": "getUserEmailBulk",
+    "summary": "Get user email bulk",
+    "query": [
+     "accountId"
+    ]
+   }
+  },
+  "/rest/api/3/user/groups": {
+   "GET": {
+    "operationId": "getUserGroups",
+    "summary": "Get user groups",
+    "query": [
+     "accountId",
+     "username",
+     "key"
+    ]
+   }
+  },
+  "/rest/api/3/user/permission/search": {
+   "GET": {
+    "operationId": "findUsersWithAllPermissions",
+    "summary": "Find users with permissions",
+    "query": [
+     "query",
+     "username",
+     "accountId",
+     "permissions",
+     "issueKey",
+     "projectKey",
+     "startAt",
+     "maxResults"
+    ]
+   }
+  },
+  "/rest/api/3/user/picker": {
+   "GET": {
+    "operationId": "findUsersForPicker",
+    "summary": "Find users for picker",
+    "query": [
+     "query",
+     "maxResults",
+     "showAvatar",
+     "exclude",
+     "excludeAccountIds",
+     "avatarSize",
+     "excludeConnectUsers"
+    ]
+   }
+  },
+  "/rest/api/3/user/properties": {
+   "GET": {
+    "operationId": "getUserPropertyKeys",
+    "summary": "Get user property keys",
+    "query": [
+     "accountId",
+     "userKey",
+     "username"
+    ]
+   }
+  },
+  "/rest/api/3/user/properties/{propertyKey}": {
+   "DELETE": {
+    "operationId": "deleteUserProperty",
+    "summary": "Delete user property",
+    "query": [
+     "accountId",
+     "userKey",
+     "username"
+    ]
+   },
+   "GET": {
+    "operationId": "getUserProperty",
+    "summary": "Get user property",
+    "query": [
+     "accountId",
+     "userKey",
+     "username"
+    ]
+   },
+   "PUT": {
+    "operationId": "setUserProperty",
+    "summary": "Set user property",
+    "query": [
+     "accountId",
+     "userKey",
+     "username"
+    ]
+   }
+  },
+  "/rest/api/3/user/search": {
+   "GET": {
+    "operationId": "findUsers",
+    "summary": "Find users",
+    "query": [
+     "query",
+     "username",
+     "accountId",
+     "startAt",
+     "maxResults",
+     "property"
+    ]
+   }
+  },
+  "/rest/api/3/user/search/query": {
+   "GET": {
+    "operationId": "findUsersByQuery",
+    "summary": "Find users by query",
+    "query": [
+     "query",
+     "startAt",
+     "maxResults"
+    ]
+   }
+  },
+  "/rest/api/3/user/search/query/key": {
+   "GET": {
+    "operationId": "findUserKeysByQuery",
+    "summary": "Find user keys by query",
+    "query": [
+     "query",
+     "startAt",
+     "maxResult"
+    ]
+   }
+  },
+  "/rest/api/3/user/viewissue/search": {
+   "GET": {
+    "operationId": "findUsersWithBrowsePermission",
+    "summary": "Find users with browse permission",
+    "query": [
+     "query",
+     "username",
+     "accountId",
+     "issueKey",
+     "projectKey",
+     "startAt",
+     "maxResults"
+    ]
+   }
+  },
+  "/rest/api/3/users": {
+   "GET": {
+    "operationId": "getAllUsersDefault",
+    "summary": "Get all users default",
+    "query": [
+     "startAt",
+     "maxResults",
+     "expand"
+    ]
+   }
+  },
+  "/rest/api/3/users/search": {
+   "GET": {
+    "operationId": "getAllUsers",
+    "summary": "Get all users",
+    "query": [
+     "startAt",
+     "maxResults",
+     "expand"
+    ]
+   }
+  },
+  "/rest/api/3/worklog/deleted": {
+   "GET": {
+    "operationId": "getIdsOfWorklogsDeletedSince",
+    "summary": "Get IDs of deleted worklogs",
+    "query": [
+     "since"
+    ]
+   }
+  },
+  "/rest/api/3/worklog/list": {
+   "POST": {
+    "operationId": "getWorklogsForIds",
+    "summary": "Get worklogs",
+    "query": [
+     "expand"
+    ],
+    "body": [
+     "ids"
+    ]
+   }
+  },
+  "/rest/api/3/worklog/updated": {
+   "GET": {
+    "operationId": "getIdsOfWorklogsModifiedSince",
+    "summary": "Get IDs of updated worklogs",
+    "query": [
+     "since",
+     "expand"
+    ]
+   }
+  }
+ }
+}

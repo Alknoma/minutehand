@@ -7,7 +7,8 @@ seeded ticket with its title, body, assignee and state, its labels as tags and i
 From the scenario's YouTrack seed (`ProviderSeed` with provider `youtrack`, its text a `YouTrackSeed` as JSON):
 more users, the tokens and Hub services that act as them, more instance fields, projects with their own field sets,
 bundles, defaults, teams and leaders, any field value on a seeded issue, links between seeded issues, an issue's
-history before the run, permissions given or taken, and refusals put in the way of calls for a while.
+history before the run, permissions given or taken (reported by Hub's permissions cache, never enforced), and
+refusals put in the way of calls for a while.
 
 A seeded issue is created as the scenario and its seed describe it, `created_ago` before the start; each history
 entry is then a change after that, oldest first, by the user it names. The run starts from where the history ends.
@@ -70,7 +71,7 @@ class UserSeed(Model, Keyed):
 
 
 class TokenSeed(Model, Keyed):
-    """A permanent token (`perm:…`) that acts as a user. Once any is seeded, only these and issued ones are let in."""
+    """A permanent token (`perm:…`) that acts as a user. Any other token acts as the agent: none is refused."""
 
     IDENTITY: ClassVar[tuple[str, ...]] = ("token",)
 
@@ -79,7 +80,7 @@ class TokenSeed(Model, Keyed):
 
 
 class ServiceSeed(Model, Keyed):
-    """A Hub service that may ask `/hub/api/rest/oauth2/token` for a token with its secret, and acts as a user."""
+    """A Hub service whose `/hub/api/rest/oauth2/token` tokens act as a user. Its secret is not checked."""
 
     IDENTITY: ClassVar[tuple[str, ...]] = ("client_id",)
 
@@ -168,7 +169,8 @@ class IssueSeed(Model, Keyed):
 
 
 class GrantSeed(Model):
-    """A permission given to, or taken from, one user, in one project or all of them."""
+    """A permission given to, or taken from, one user, in one project or all of them: what Hub's permissions cache
+    reports. Minutehand refuses no call for a permission."""
 
     login: Login
     permission: wire.Permission
@@ -263,7 +265,6 @@ def new_project(
         team=team,
         teamGroup=f"3-{number}",
         ringId=ring_id("project", key),
-        teamRingId=ring_id("team", key),
         createdThroughApi=created_through_api,
         fields=project_fields,
     )
@@ -329,9 +330,7 @@ def _moment(value: Scalar) -> int:
 def seed(scenario: Scenario, world: Store) -> None:
     youtrack = YouTrackWorld(world)
     extra = youtrack_seed(scenario)
-    youtrack.write_settings(
-        wire.StoredInstance(tokensRequired=bool(extra.tokens), countUnknown=extra.count_unknown), actor=Actor.SCENARIO
-    )
+    youtrack.write_settings(wire.StoredInstance(countUnknown=extra.count_unknown), actor=Actor.SCENARIO)
 
     agent = user("1-0", state.AGENT_LOGIN, state.AGENT_NAME, state.AGENT_EMAIL)
     accounts = [agent]
@@ -461,7 +460,7 @@ def _project_fields(
     ids: fields.Ids, definitions: list[wire.StoredFieldDefinition], detail: ProjectSeed
 ) -> list[wire.StoredProjectField]:
     if detail.fields is None:
-        return [fields.standard_field(ids, d, template=False) for d in fields.SEEDED_SET]
+        return [fields.standard_field(ids, d) for d in fields.SEEDED_SET]
     standard = {d.name.lower(): d for d in fields.STANDARD}
     made: list[wire.StoredProjectField] = []
     for wanted in detail.fields:

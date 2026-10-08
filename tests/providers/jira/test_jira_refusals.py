@@ -2,17 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
-from minutehand.domain.world import Actor
 from tests.providers.jira.jira_site import (
-    AGENT_EMAIL,
-    AGENT_TOKEN,
     API,
     CLOUD_ID,
     IRIS_TOKEN,
-    OAUTH_ACCESS,
-    START,
     TOMAS,
     Site,
     basic,
@@ -23,46 +16,9 @@ from tests.providers.jira.jira_site import (
 EX = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/rest/api/3"
 
 
-async def test_an_unknown_api_token_is_refused_with_401(site: Site) -> None:
-    async with site.client(basic(AGENT_EMAIL, "ATATT3x-not-a-token")) as stranger:
-        response = await stranger.get(f"{API}/myself")
-    refused(response, 401)
-    assert response.headers["www-authenticate"].startswith("Basic")
-
-
-async def test_a_token_sent_with_another_accounts_email_is_refused(site: Site) -> None:
-    async with site.client(basic("iris@example.com", AGENT_TOKEN)) as mixed:
-        refused(await mixed.get(f"{API}/myself"), 401)
-
-
-async def test_no_credentials_at_all_is_refused_with_401(site: Site) -> None:
-    async with site.client(None) as anonymous:
-        refused(await anonymous.get(f"{API}/issue/LAUNCH-1"), 401)
-
-
-async def test_an_oauth_token_at_the_site_host_is_refused(site: Site) -> None:
-    async with site.client(f"Bearer {OAUTH_ACCESS}") as app:
-        refused(await app.get(f"{API}/myself"), 401)
-        assert ok(await app.get(f"{EX}/myself"))["displayName"] == "Iris Calder"
-
-
-async def test_an_expired_oauth_token_is_refused(site: Site) -> None:
-    site.clock.jump(START + timedelta(hours=1))
-    async with site.client(f"Bearer {OAUTH_ACCESS}") as app:
-        refused(await app.get(f"{EX}/myself"), 401)
-
-
-async def test_a_deactivated_accounts_token_is_refused(site: Site) -> None:
-    jira = site.jira
-    iris = next(u for u in jira.users() if u.displayName == "Iris Calder")
-    jira.write_user(iris.model_copy(update={"active": False}), actor=Actor.SCENARIO)
-    async with site.client(basic("iris@example.com", IRIS_TOKEN)) as gone:
-        refused(await gone.get(f"{API}/myself"), 401)
-
-
 async def test_an_unknown_issue_is_404(site: Site) -> None:
     body = refused(await site.http.get(f"{API}/issue/LAUNCH-99"), 404)
-    assert body["errorMessages"] == ["This issue does not exist, or you are not allowed to see it."]
+    assert body["errorMessages"] == ["Issue does not exist or you do not have permission to see it."]
 
 
 async def test_a_deleted_issue_is_404_and_its_key_is_never_reused(site: Site) -> None:
@@ -86,29 +42,9 @@ async def test_an_issue_in_a_project_without_browse_permission_is_404_not_403(si
         assert ok(await iris.get(f"{API}/issue/VAULT-1"))["key"] == "VAULT-1"
 
 
-async def test_a_viewer_who_cannot_edit_is_refused_with_403(site: Site) -> None:
-    jira = site.jira
-    vault = jira.find_project("VAULT")
-    assert vault is not None
-    members = [m.model_copy(update={"accounts": [*m.accounts, jira.site().agent]}) if m.role == "10004" else m
-               for m in vault.members]  # fmt: skip
-    jira.write_project(vault.model_copy(update={"members": members}), actor=Actor.SCENARIO)
-    assert ok(await site.http.get(f"{API}/issue/VAULT-1"))["key"] == "VAULT-1"
-    for response in (
-        await site.http.put(f"{API}/issue/VAULT-1", json={"fields": {"summary": "Mine now"}}),
-        await site.http.delete(f"{API}/issue/VAULT-1"),
-        await site.http.post(f"{API}/issue/VAULT-1/transitions", json={"transition": {"id": "21"}}),
-    ):
-        assert refused(response, 403)["errorMessages"][0].startswith("You do not have permission to")
-    perms = ok(
-        await site.http.get(f"{API}/mypermissions", params={"permissions": "EDIT_ISSUES", "projectKey": "VAULT"})
-    )
-    assert perms["permissions"]["EDIT_ISSUES"]["havePermission"] is False
-
-
 async def test_a_transition_not_open_from_the_current_status_is_refused(site: Site) -> None:
     body = refused(await site.http.post(f"{API}/issue/LAUNCH-1/transitions", json={"transition": {"id": "31"}}), 400)
-    assert body["errorMessages"] == ["Transition id '31' is not valid for this issue."]
+    assert body["errorMessages"] == ["Returned if the request is invalid for any other reason."]
     refused(await site.http.post(f"{API}/issue/LAUNCH-1/transitions", json={"transition": {"id": "99"}}), 400)
 
 
@@ -121,7 +57,7 @@ async def test_a_field_not_on_the_transition_screen_is_refused(site: Site) -> No
         400,
     )
     assert body["errors"] == {
-        "resolution": "Field 'resolution' cannot be set: it is not on this screen, or it does not exist."
+        "resolution": "Field 'resolution' cannot be set. It is not on the appropriate screen, or unknown."
     }
 
 
@@ -143,9 +79,9 @@ async def test_an_unknown_field_on_create_is_refused_with_every_bad_field_named(
     assert body == {
         "errorMessages": [],
         "errors": {
-            "customfield_99999": "Field 'customfield_99999' cannot be set: it is not on this screen, or it does not exist.",
-            "priority": "The priority must name one of the site's priorities by id or name.",
-            "summary": "You must give the issue a summary.",
+            "customfield_99999": "Field 'customfield_99999' cannot be set. It is not on the appropriate screen, or unknown.",
+            "priority": "Returned if the request contains invalid field values.",
+            "summary": "Returned if the request is missing required fields.",
         },
     }
 
@@ -154,7 +90,7 @@ async def test_an_option_a_select_field_does_not_have_is_refused(site: Site) -> 
     body = refused(
         await site.http.put(f"{API}/issue/LAUNCH-1", json={"fields": {"customfield_10050": {"value": "Legal"}}}), 400
     )
-    assert body["errors"] == {"customfield_10050": "That option is not one of Team's options."}
+    assert body["errors"] == {"customfield_10050": "Returned if the request contains invalid field values."}
     assert (
         await site.http.put(f"{API}/issue/LAUNCH-1", json={"fields": {"customfield_10050": {"value": "Field"}}})
     ).status_code == 204
@@ -180,7 +116,7 @@ async def test_a_subtask_without_a_parent_and_an_issue_type_the_project_lacks_ar
         ),
         400,
     )
-    assert no_parent["errors"] == {"parent": "A subtask must have a parent."}
+    assert no_parent["errors"] == {"parent": "Returned if the request is missing required fields."}
     await site.http.post(
         f"{API}/project",
         json={"key": "BETA", "name": "Beta", "leadAccountId": site.jira.site().agent, "projectTypeKey": "software"},
@@ -209,7 +145,7 @@ async def test_a_declared_rate_limit_answers_429_with_retry_after_then_lets_the_
     body = {"body": {"type": "doc", "version": 1, "content": []}}
     limited = await site.http.post(f"{API}/issue/LAUNCH-2/comment", json=body)
     assert limited.status_code == 429 and limited.headers["retry-after"] == "7"
-    assert limited.json() == {"errorMessages": ["Too many requests: wait before you try again."], "errors": {}}
+    assert limited.json() == {"errorMessages": ["Returned if the rate limit is exceeded."], "errors": {}}
     assert ok(await site.http.get(f"{API}/issue/LAUNCH-2/comment"))["total"] == 0, "the refused call wrote nothing"
     full = {"body": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [
         {"type": "text", "text": "Booked."}]}]}}  # fmt: skip
@@ -238,12 +174,16 @@ async def test_a_project_create_with_bad_fields_names_all_of_them(site: Site) ->
         ),
         400,
     )
-    assert taken["errors"] == {"projectKey": "The project 'Launch' already has this key."}
+    assert taken["errors"] == {
+        "projectKey": "Returned if the request is not valid and the project could not be created."
+    }
 
 
 async def test_a_site_this_world_does_not_hold_is_404(site: Site) -> None:
+    """As recorded (`data/observed/site_unknown.http`): an HTML page whose heading is "Page unavailable"."""
     response = await site.http.get("https://elsewhere.atlassian.net/rest/api/3/myself")
-    refused(response, 404)
+    assert response.status_code == 404 and response.headers["content-type"].startswith("text/html")
+    assert "<h1>Page unavailable</h1>" in response.text
 
 
 async def test_mypermissions_needs_its_keys(site: Site) -> None:

@@ -1,0 +1,26 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: 78
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:13:28 GMT
+Vary: Origin,Access-Control-Request-Method,Access-Control-Request-Headers
+Cache-Control: no-cache, no-store, max-age=0, must-revalidate
+Pragma: no-cache
+Expires: 0
+X-Frame-Options: DENY
+Server: AtlassianEdge
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 0da3782c11c74a3a91ad978560491f02
+Atl-Request-Id: 0da3782c-11c7-4a3a-91ad-978560491f02
+Strict-Transport-Security: max-age=63072000; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=127,atl-edge-internal;dur=3,atl-edge-upstream;dur=124,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 4128edb400f1f460bcd8f94c4d349450.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P1
+Alt-Svc: h3=":443"; ma=86400
+X-Amz-Cf-Id: qBhdM5gkiMuIDEhb9Z4-OVNG920lzAVcdbHCQR39NyM05rWx07Dw4A==
+
+{"error":"invalid_request","error_description":"Incorrect request parameters"}
