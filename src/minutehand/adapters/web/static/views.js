@@ -6,7 +6,7 @@ import { VList } from "./vlist.js";
 
 const VERDICT_WORD = { passed: "Passed", failed: "Failed", unfinished: "Not finished", tool_failed: "Not scored", not_judged: "Not judged", environment_failed: "Environment failed" };
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
-const ANSWER_WORD = { provider: "fake", declared: "declared", stored: "stored", real_host: "real host", replayed: "REPLAYED", emulator: "emulator", model: "model", tunnelled: "tunnelled", as_person: "as a person", refused: "refused" };
+const ANSWER_WORD = { provider: "fake", declaration: "declared", recording: "REPLAYED", pass_through: "real host", emulator: "emulator", model: "model", tunnel: "tunnelled", refused: "refused", minutehand: "as a person" };
 
 function headHtml(measure, caption, cls, tools) {
   return '<div class="view-head"><span class="measure ' + (cls || "") + '">' + esc(measure) + '</span><span class="measure-caption">' + caption + "</span>" +
@@ -203,27 +203,33 @@ export const VIEWS = [
   },
   {
     id: "cost", group: "Agent", label: "Model cost",
-    count: (ctx) => { if (!ctx.loaded.traffic || !ctx.loaded.people) { return { n: laneCount(ctx, "agent_model") + laneCount(ctx, "people_model") }; } return { n: count(tokensOf(ctx.loaded.traffic, ctx.loaded.people).total) }; },
+    count: (ctx) => { const u = ctx.loaded.modelUse; if (!u) { return { n: "…" }; } return { n: count(u.calls.reduce((a, c) => a + (c.input_tokens || 0) + (c.output_tokens || 0), 0)) }; },
     async render(host, ctx) {
-      const [traffic, people] = await Promise.all([ctx.cache.read("modelTraffic"), ctx.cache.read("people")]);
-      const t = tokensOf(traffic, people);
-      host.innerHTML = headHtml(count(t.total), "tokens · the agent " + count(t.agentIn) + " in, " + count(t.agentOut) + " out over " + plural(traffic.calls.length, "call") +
-        " · people's words " + count(t.peopleIn) + " in, " + count(t.peopleOut) + " out over " + plural(t.people.length, "call") +
-        (traffic.hosts.length ? " · " + traffic.hosts.map((h) => plural(h.calls, "call") + " to " + h.host + " relayed unopened, its tokens unknown").join(", ") : "") +
-        ' · <span class="muted">counted in tokens: the run records no prices</span>') +
+      const [use, wire] = await Promise.all([ctx.cache.read("modelUse"), ctx.cache.read("callRows")]);
+      const tunnelled = {};
+      wire.calls.filter((c) => c.answered_by === "tunnel").forEach((c) => { tunnelled[c.host] = (tunnelled[c.host] || 0) + 1; });
+      const sum = (list, f) => list.reduce((a, c) => a + (c[f] || 0), 0);
+      const agent = use.calls.filter((c) => c.side === "agent"), people = use.calls.filter((c) => c.side === "person");
+      const total = sum(use.calls, "input_tokens") + sum(use.calls, "output_tokens");
+      const costs = use.calls.filter((c) => c.cost !== null), currency = costs.length ? costs[0].currency : null;
+      const spent = costs.reduce((a, c) => a + c.cost, 0);
+      host.innerHTML = headHtml(use.priced && costs.length ? spent.toFixed(spent < 1 ? 4 : 2) + " " + currency : count(total),
+        (use.priced && costs.length ? count(total) + " tokens · " : "tokens · ") + "the agent " + count(sum(agent, "input_tokens")) + " in, " + count(sum(agent, "output_tokens")) + " out over " + plural(agent.length, "call") +
+        " · people's words " + count(sum(people, "input_tokens")) + " in, " + count(sum(people, "output_tokens")) + " out over " + plural(people.length, "call") +
+        (Object.keys(tunnelled).length ? " · " + Object.keys(tunnelled).map((h) => plural(tunnelled[h], "call") + " to " + h + " relayed unopened, its tokens unknown").join(", ") : "") +
+        ' · <span class="muted">' + (use.priced ? plural(use.calls.length - costs.length, "call") + " no price named" : "no prices given: <code>minutehand view --prices FILE</code> adds a cost") + "</span>") +
         '<div class="chart" data-role="chart"></div><div class="view-body" data-role="t" style="display:flex;flex-direction:column;min-height:200px"></div>';
-      const rows = traffic.calls.map((c) => ({ ref: "mc:" + c.span_id, who: "agent", model: c.model || "not named", at: ctx.simOf("mc:" + c.span_id), tin: c.input_tokens || 0, tout: c.output_tokens || 0, took: (ms(c.ended) - ms(c.started)) / 1000, note: c.wrote.length ? "wrote " + plural(c.wrote.length, "message") : "" }))
-        .concat(t.people.map((x) => ({ ref: "pc:" + x.line.index, who: x.person, model: x.line.call.model, at: ms(x.line.call.sim_time), tin: x.line.call.input_tokens || 0, tout: x.line.call.output_tokens || 0, took: null, note: x.line.call.replayed ? "replayed" : x.line.call.failure ? "failed" : x.line.call.wrote })));
+      const rows = use.calls.map((c) => ({ ref: c.side === "agent" ? "mc:" + c.span_id : "pc:" + c.person_call_id, who: c.side === "agent" ? "agent" : ctx.personKey(c.person), side: c.side, model: c.model || "not named", at: ms(c.at), tin: c.input_tokens || 0, tout: c.output_tokens || 0, took: c.duration_ms === null ? null : c.duration_ms / 1000, cost: c.cost, note: c.replayed ? "replayed" : c.failure ? "failed" : c.wrote || "" }));
       if (!rows.length) { host.querySelector('[data-role="t"]').innerHTML = '<p class="empty">The run holds no model call: the agent sent no telemetry of one, and no person\'s words were written by a model.</p>'; return {}; }
       const chartHost = host.querySelector('[data-role="chart"]');
       const extent = Math.max(...rows.map((r) => r.at)) - Math.min(...rows.map((r) => r.at));
       const unit = extent > 120 * 864e5 ? ["week", d3.utcMonday] : extent > 3 * 864e5 ? ["day", d3.utcDay] : extent > 6 * 36e5 ? ["hour", d3.utcHour] : ["minute", d3.utcMinute];
       plotInto(chartHost, {
         width: Math.max(320, chartHost.clientWidth - 32), height: 150, x: { type: "utc", label: null }, y: { label: rows.length < 40 ? "tokens per call" : "tokens per " + unit[0], grid: true, tickFormat: "s" },
-        color: { domain: ["agent", "people"], range: ["var(--mark)", "var(--mark-soft)"], legend: true },
+        color: { domain: ["agent", "person"], range: ["var(--mark)", "var(--mark-soft)"], legend: true },
         marks: rows.length < 40
-          ? [Plot.dot(rows, { x: (r) => new Date(r.at), y: (r) => r.tin + r.tout, fill: (r) => (r.who === "agent" ? "agent" : "people"), r: 4, title: (r) => r.who + ": " + (r.tin + r.tout) + " tokens" }), Plot.ruleY([0])]
-          : [Plot.rectY(rows, Plot.binX({ y: "sum" }, { x: (r) => new Date(r.at), y: (r) => r.tin + r.tout, fill: (r) => (r.who === "agent" ? "agent" : "people"), interval: unit[1] })), Plot.ruleY([0])]
+          ? [Plot.dot(rows, { x: (r) => new Date(r.at), y: (r) => r.tin + r.tout, fill: "side", r: 4, title: (r) => r.who + ": " + (r.tin + r.tout) + " tokens" }), Plot.ruleY([0])]
+          : [Plot.rectY(rows, Plot.binX({ y: "sum" }, { x: (r) => new Date(r.at), y: (r) => r.tin + r.tout, fill: "side", interval: unit[1] })), Plot.ruleY([0])]
       });
       return table(host.querySelector('[data-role="t"]'), ctx, [
         { label: "When", width: "140px", html: (r) => esc(when(r.at)), sort: (r) => r.at },
@@ -231,6 +237,7 @@ export const VIEWS = [
         { label: "Model", width: "140px", html: (r) => esc(r.model) },
         { label: "In", width: "80px", align: "r", html: (r) => r.tin.toLocaleString("en"), sort: (r) => r.tin },
         { label: "Out", width: "80px", align: "r", html: (r) => r.tout.toLocaleString("en"), sort: (r) => r.tout },
+        { label: "Cost", width: "80px", align: "r", html: (r) => (r.cost === null ? "—" : r.cost.toFixed(4)), sort: (r) => r.cost || 0 },
         { label: "Took", width: "80px", align: "r", html: (r) => esc(r.took === null ? "—" : span(r.took)), sort: (r) => r.took || 0 },
         { label: "", width: "minmax(80px, 1fr)", html: (r) => esc(r.note) }
       ], rows, (r) => r.ref);
@@ -290,8 +297,8 @@ export const VIEWS = [
     count: (ctx) => { const n = laneCount(ctx, "provider") + laneCount(ctx, "host"); return { n: count(n) }; },
     async render(host, ctx) {
       const all = (await ctx.cache.read("callRows")).calls;
-      const failedOf = (c) => c.answered === "refused" || c.status >= 400;
-      const kinds = Array.from(new Set(all.map((c) => c.answered)));
+      const failedOf = (c) => c.answered_by === "refused" || c.status >= 400;
+      const kinds = Array.from(new Set(all.map((c) => c.answered_by)));
       let only = ctx.memo.callsOnly || "all";
       const failed = all.filter(failedOf).length;
       host.innerHTML = headHtml(count(all.length), "HTTP calls · " + failed + " failed or refused · " + Array.from(new Set(all.map((c) => c.host))).length + " hosts",
@@ -299,21 +306,21 @@ export const VIEWS = [
         '<div class="view-body" data-role="t" style="display:flex;flex-direction:column"></div>';
       const list = new VList(host.querySelector('[data-role="t"]'), {
         columns: [
-          { label: "When", width: "130px", html: (c) => esc(when(c.at)), sort: (c) => c.index },
+          { label: "When", width: "130px", html: (c) => esc(when(c.at)), sort: (c) => c.call_id },
           { label: "Wake", width: "54px", align: "r", html: (c) => String(c.wake), sort: (c) => c.wake },
           { label: "Host", width: "150px", html: (c) => esc(c.provider ? c.provider : c.host) },
           { label: "Method", width: "64px", html: (c) => esc(c.method) },
           { label: "Path", width: "minmax(160px, 1fr)", html: (c) => esc(c.path) },
           { label: "Status", width: "60px", align: "r", html: (c) => (failedOf(c) ? '<span class="bad">' + c.status + "</span>" : String(c.status)), sort: (c) => c.status },
-          { label: "Answered", width: "100px", html: (c) => esc(ANSWER_WORD[c.answered] || c.answered) },
-          { label: "Bytes", width: "80px", align: "r", html: (c) => count(c.request_bytes + c.response_bytes), sort: (c) => c.request_bytes + c.response_bytes }
-        ], rowHeight: 28, key: (c) => "call:" + c.index, onPick: (c) => ctx.select("call:" + c.index)
+          { label: "Answered", width: "100px", html: (c) => esc(ANSWER_WORD[c.answered_by] || c.answered_by) },
+          { label: "Bytes", width: "80px", align: "r", html: (c) => count((c.request_size || 0) + (c.response_size || 0)), sort: (c) => (c.request_size || 0) + (c.response_size || 0) }
+        ], rowHeight: 28, key: (c) => "call:" + c.call_id, onPick: (c) => ctx.select("call:" + c.call_id)
       });
       const seg = host.querySelector('[data-role="only"]');
       const show = () => {
         seg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute("data-only") === only)));
         const f = (ctx.filter || "").toLowerCase();
-        list.setRows(all.filter((c) => (only === "all" || (only === "failed" ? failedOf(c) : c.answered === only)) && (!f || (c.host + c.path).toLowerCase().indexOf(f) >= 0)));
+        list.setRows(all.filter((c) => (only === "all" || (only === "failed" ? failedOf(c) : c.answered_by === only)) && (!f || (c.host + c.path).toLowerCase().indexOf(f) >= 0)));
         if (ctx.sel) { list.select(ctx.sel, true); }
       };
       seg.addEventListener("click", (ev) => { const b = ev.target.closest("[data-only]"); if (b) { only = b.getAttribute("data-only"); ctx.memo.callsOnly = only; show(); } });
@@ -327,19 +334,19 @@ export const VIEWS = [
     async render(host, ctx) {
       const d = await ctx.cache.read("dispatch");
       const faulted = (e) => e.fault || e.closed === "delayed" || e.closed === "dropped";
-      const rows = d.entries, faults = rows.filter((r) => faulted(r.entry)).length, drawn = rows.filter((r) => r.entry.drawn).length;
-      host.innerHTML = headHtml(count(rows.length), "entries the run loop's table held · " + faults + " held back, dropped or repeated by a dispatch rule · " + plural(drawn, "reply moment") + " drawn", faults ? "fail" : "") +
+      const rows = d.entries, faults = rows.filter((r) => faulted(r)).length, drawn = rows.filter((r) => r.drawn_from).length;
+      host.innerHTML = headHtml(count(rows.length), "entries the run loop's table held · " + faults + " held back, dropped or repeated by a dispatch rule · " + plural(drawn, "reply moment") + " drawn") +
         '<div class="view-body" data-role="t" style="display:flex;flex-direction:column"></div>';
       if (!rows.length) { host.querySelector('[data-role="t"]').innerHTML = '<p class="empty">This run kept no table of what was due (a standing world is driven from outside).</p>'; return {}; }
       return table(host.querySelector('[data-role="t"]'), ctx, [
-        { label: "Due", width: "140px", html: (r) => esc(when(r.entry.due.at)), sort: (r) => r.entry.due.at },
-        { label: "What", width: "120px", html: (r) => esc(words(r.entry.due.kind)) },
-        { label: "Put in by", width: "100px", html: (r) => esc(words(r.entry.source)) },
-        { label: "Entered", width: "140px", html: (r) => esc(when(r.entry.entered_at)), sort: (r) => r.entry.entered_at },
-        { label: "Left", width: "150px", html: (r) => (r.entry.closed ? (faulted(r.entry) ? '<span class="bad">' + esc(r.entry.closed) + "</span>" : esc(r.entry.closed)) + " " + esc(r.entry.closed_at ? when(r.entry.closed_at, { year: false }) : "") : "pending") },
-        { label: "Fault", width: "80px", html: (r) => (r.entry.fault ? '<span class="bad">' + esc(r.entry.fault) + "</span>" : "") },
-        { label: "Drawn", width: "minmax(140px, 1fr)", html: (r) => (r.entry.drawn ? esc(words(r.entry.drawn.source) + ": " + span(seconds(r.entry.drawn.offset)) + " after the ask") : "") }
-      ], rows, (r) => "due:" + r.index);
+        { label: "Due", width: "140px", html: (r) => esc(when(r.due_at)), sort: (r) => r.due_at },
+        { label: "What", width: "120px", html: (r) => esc(words(r.kind)) },
+        { label: "Put in by", width: "100px", html: (r) => esc(words(r.source)) },
+        { label: "Entered", width: "140px", html: (r) => esc(when(r.entered_at)), sort: (r) => r.entered_at },
+        { label: "Left", width: "150px", html: (r) => (r.closed ? (faulted(r) ? '<span class="bad">' + esc(r.closed) + "</span>" : esc(r.closed)) + " " + esc(r.closed_at ? when(r.closed_at, { year: false }) : "") : "pending") },
+        { label: "Fault", width: "80px", html: (r) => (r.fault ? '<span class="bad">' + esc(r.fault) + "</span>" : "") },
+        { label: "Drawn", width: "minmax(140px, 1fr)", html: (r) => (r.drawn_from ? esc(words(r.drawn_from) + (r.drawn_offset_seconds !== null ? ": " + span(r.drawn_offset_seconds) + " after the ask" : "")) : "") }
+      ], rows, (r) => "due:" + r.due_id);
     }
   },
   {
@@ -377,14 +384,6 @@ export const VIEWS = [
     }
   }
 ];
-
-function tokensOf(traffic, people) {
-  const t = { agentIn: 0, agentOut: 0, peopleIn: 0, peopleOut: 0, people: [] };
-  traffic.calls.forEach((c) => { t.agentIn += c.input_tokens || 0; t.agentOut += c.output_tokens || 0; });
-  people.people.forEach((p) => p.model_calls.forEach((line) => { t.peopleIn += line.call.input_tokens || 0; t.peopleOut += line.call.output_tokens || 0; t.people.push({ person: p.name, line }); }));
-  t.total = t.agentIn + t.agentOut + t.peopleIn + t.peopleOut;
-  return t;
-}
 
 function rootOf(ctx, id) {
   const byId = {}; ctx.runs.forEach((r) => { byId[r.run_id] = r; });

@@ -80,6 +80,12 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
     """Every wait of `kind` the ledger opened, in the order it opened, with what followed it."""
     by_seq = {e.seq: e for e in view.events}
     invisible = unchanged(view.events)
+    # What can touch a wait, gathered once: the agent's visible writes, its messages apart and the rest by entity.
+    acts = [e for e in view.events if e.actor is Actor.AGENT and e.operation in VISIBLE and e.seq not in invisible]
+    said = [e for e in acts if isinstance(e.after, MessageSnapshot)]
+    by_entity: dict[tuple[str, str, str], list[WorldEvent]] = {}
+    for e in acts:
+        by_entity.setdefault((e.entity.provider, e.entity.kind, e.entity.external_id), []).append(e)
     found: list[Ask] = []
     for o in view.obligations:
         if o.kind is not kind:
@@ -96,7 +102,7 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
             Ask(
                 obligation=o,
                 follow_ups=sorted(follow_ups, key=lambda f: f.at),
-                touches=_touches(view, o, invisible),
+                touches=_touches(view, o, _candidates(o, said, by_entity, by_seq, invisible)),
                 answer=_answer(view, o),
                 answer_facts=_answer_facts(view, o),
             )
@@ -104,14 +110,29 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
     return found
 
 
-def _touches(view: RunView, o: Obligation, invisible: frozenset[int]) -> list[Fact]:
+def _candidates(
+    o: Obligation,
+    said: list[WorldEvent],
+    by_entity: dict[tuple[str, str, str], list[WorldEvent]],
+    by_seq: dict[int, WorldEvent],
+    invisible: frozenset[int],
+) -> list[WorldEvent]:
+    """The agent's visible writes that could touch the wait `o`, in log order: its messages, its writes to the
+    wait's entity, and those the ledger counted."""
+    seqs = {e.seq for e in said}
+    if o.entity is not None:
+        seqs.update(e.seq for e in by_entity.get((o.entity.provider, o.entity.kind, o.entity.external_id), []))
+    named = [*o.agent_touches, *([o.first_touch_after_settled] if o.first_touch_after_settled is not None else [])]
+    seqs.update(s for s in named if s in by_seq and by_seq[s].operation in VISIBLE and s not in invisible)
+    return [by_seq[s] for s in sorted(seqs) if by_seq[s].actor is Actor.AGENT]
+
+
+def _touches(view: RunView, o: Obligation, candidates: list[WorldEvent]) -> list[Fact]:
     person = next((p for p in view.scenario.people if p.key == o.person), None)
     emails = {person.email} if person is not None else set()
     touched: list[Fact] = []
-    for event in view.events:
-        if event.actor is not Actor.AGENT or event.seq <= o.opened_by or event.operation not in VISIBLE:
-            continue
-        if event.seq in invisible:
+    for event in candidates:
+        if event.seq <= o.opened_by:
             continue
         after = event.after
         on_it = o.entity is not None and (

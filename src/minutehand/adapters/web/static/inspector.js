@@ -5,10 +5,9 @@
 import { esc, when, clock, span, seconds, words, title, plural, prettyJson, isJson, diffLines, layout, count } from "./util.js";
 
 const ANSWERED = {
-  provider: "answered by the provider's fake", declared: "answered as declared, never sent", stored: "kept and read back as declared, never sent",
-  real_host: "passed through to the real host", replayed: "REPLAYED from a recording", emulator: "answered by an external emulator",
-  model: "answered by a model standing in for the service, never sent", tunnelled: "relayed unopened on a tunnel (a model host)",
-  as_person: "Minutehand's own call, as a person, to the agent's product", refused: "refused: nothing answered it"
+  provider: "answered by the provider's fake", declaration: "answered as declared, never sent", pass_through: "passed through to the real host",
+  recording: "REPLAYED from a recording", emulator: "answered by an external emulator", model: "answered by a model standing in for the service, never sent",
+  tunnel: "relayed unopened on a tunnel (a model host)", minutehand: "Minutehand's own call, as a person, to the agent's product", refused: "refused: nothing answered it"
 };
 const JOINED = { trace: "joined by its trace", content: "joined by content: the model answered this text verbatim", wake: "the nearest model call in the same wake, not proven" };
 const WRITING = { script: "a model, from a step of their script", verbatim: "the script's exact words, no model", conversing: "a model, from their own facts", automatic: "their automatic reply, no model", by_hand: "written by hand by whoever drove the world" };
@@ -131,33 +130,34 @@ const KINDS = {
   },
 
   async call(ctx, rest) {
-    const d = await ctx.cache.read("call", { index: rest });
-    const c = d.call, e = c.exchange, cap = e.captured;
+    const d = await ctx.cache.read("call", { call: rest });
+    const c = d.call, e = c.exchange, cap = e.captured, row = d.row;
+    const events = row.first_seq === null ? [] : Array.from({ length: row.last_seq - row.first_seq + 1 }, (_, i) => row.first_seq + i);
     const timing = cap ? span((Date.parse(cap.ended) - Date.parse(cap.started)) / 1000) : e.tunnelled ? span((Date.parse(e.tunnelled.ended) - Date.parse(e.tunnelled.started)) / 1000) : null;
-    const facts = [["Who answered", esc(ANSWERED[d.answered])], ["Provider", esc(c.provider)], ["Outcome", esc(e.outcome ? words(e.outcome) : null)],
+    const facts = [["Who answered", esc(ANSWERED[row.answered_by])], ["Provider", esc(c.provider)], ["Outcome", esc(e.outcome ? words(e.outcome) : null)],
       ["Captured as", cap ? esc(words(cap.mode) + (cap.declared_as ? " (declared " + cap.declared_as + ")" : "")) : null],
       ["Replayed from", cap ? esc(cap.replayed_from) : null], ["Note", cap ? esc(cap.note) : null], ["Took", timing ? esc(timing) : null],
       ["Recipients", cap && cap.recipients.length ? esc(cap.recipients.map((r) => r.address + (r.person ? "" : " (nobody in the scenario)")).join(", ")) : null],
       ["gRPC", e.grpc ? esc(e.grpc.code + (e.grpc.message ? ": " + e.grpc.message : "")) : null],
       ["Trace", e.traceparent ? '<span class="mono">' + esc(e.traceparent) + "</span>" : null]];
-    const chip = e.status >= 400 || d.answered === "refused" ? ' <span class="chip fail">' + esc(e.status) + "</span>" : ' <span class="chip plain">' + esc(e.status) + "</span>";
+    const chip = e.status >= 400 || row.answered_by === "refused" ? ' <span class="chip fail">' + esc(e.status) + "</span>" : ' <span class="chip plain">' + esc(e.status) + "</span>";
     let body = section("How it was answered", kv(facts));
     if (e.tunnelled) {
       body += section("Tunnel", kv([["Connection", esc(e.tunnelled.connection)], ["Burst", esc(e.tunnelled.burst)], ["Sent", esc(count(e.tunnelled.bytes_sent) + " bytes")], ["Received", esc(count(e.tunnelled.bytes_received) + " bytes")]]) + '<p class="muted">Its bodies were never opened.</p>');
     } else { body += exchangeBlocks(e); }
     if (e.failure) { body += section("Minutehand answered in the fake's place", '<p class="said">' + esc(e.failure.message) + "</p>" + (e.failure.traceback ? '<pre class="json">' + esc(e.failure.traceback) + "</pre>" : "")); }
-    if (d.events.length) { body += section("Events it produced", '<ul class="links">' + d.events.map((s) => '<li><span class="w">seq ' + s + "</span>" + link("ev:" + s, ctx.labelOf("ev:" + s) || "event " + s) + "</li>").join("") + "</ul>"); }
-    return head("HTTP call " + d.index, e.method + " " + e.host + e.path.split("?")[0], simWhen(c.sim_time, c.wake), chip) + body;
+    if (events.length) { body += section("Events it produced", '<ul class="links">' + events.map((s) => '<li><span class="w">seq ' + s + "</span>" + link("ev:" + s, ctx.labelOf("ev:" + s) || "event " + s) + "</li>").join("") + "</ul>"); }
+    return head("HTTP call " + row.call_id, e.method + " " + e.host + e.path.split("?")[0], simWhen(c.sim_time, c.wake), chip) + body;
   },
 
   async due(ctx, rest) {
     const d = await ctx.cache.read("dispatch");
-    const row = d.entries.find((r) => String(r.index) === rest);
-    if (!row) { return head("Dispatch entry", "No entry " + rest); }
-    const en = row.entry, dr = en.drawn;
+    const en = d.entries.find((r) => String(r.due_id) === rest);
+    if (!en) { return head("Dispatch entry", "No entry " + rest); }
+    const dr = en.drawn;
     const chip = en.fault || en.closed === "delayed" || en.closed === "dropped" ? ' <span class="chip fail">' + esc(en.fault || en.closed) + "</span>" : "";
-    let body = section("The entry", kv([["What", esc(words(en.due.kind))], ["For", '<span class="mono">' + esc(en.due.ref) + "</span>"], ["Put in by", esc(words(en.source))],
-      ["Entered", esc(when(en.entered_at)) + " · " + (en.entered_wake ? "wake " + en.entered_wake : "setup")], ["Due", esc(when(en.due.at, { seconds: true }))],
+    let body = section("The entry", kv([["What", esc(words(en.kind))], ["For", '<span class="mono">' + esc(en.ref) + "</span>"], ["Put in by", esc(words(en.source))],
+      ["Entered", esc(when(en.entered_at)) + " · " + (en.entered_wake ? "wake " + en.entered_wake : "setup")], ["Due", esc(when(en.due_at, { seconds: true }))],
       ["Left", en.closed ? esc(en.closed + " " + when(en.closed_at)) + (en.closed_wake ? " · wake " + en.closed_wake : "") : "still in the table"],
       ["Dispatch rule", esc(en.fault)], ["Asked for", en.asked_for ? esc(when(en.asked_for, { seconds: true })) : null]]));
     if (dr) {
@@ -165,8 +165,10 @@ const KINDS = {
         ["Range", dr.delay ? esc(span(seconds(dr.delay.shortest)) + " to " + span(seconds(dr.delay.longest))) : null],
         ["Window", dr.window ? '<span class="mono">' + esc(JSON.stringify(dr.window)) + "</span>" : null],
         ["The draw", esc(span(seconds(dr.offset)) + " after")], ["Lands", esc(when(dr.lands_at, { seconds: true }))]]));
+    } else if (en.drawn_from) {
+      body += section("How its moment was drawn", kv([["From", esc(DRAWN[en.drawn_from] || en.drawn_from)], ["The draw", en.drawn_offset_seconds === null ? null : esc(span(en.drawn_offset_seconds) + " after")]]));
     }
-    return head("Dispatch entry", words(en.due.kind) + " (" + words(en.source) + ")", esc(when(en.due.at, { seconds: true })) + " simulated", chip) + body;
+    return head("Dispatch entry", words(en.kind) + " (" + words(en.source) + ")", esc(when(en.due_at, { seconds: true })) + " simulated", chip) + body;
   },
 
   async mc(ctx, rest) {

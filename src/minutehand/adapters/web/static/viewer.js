@@ -175,7 +175,7 @@ async function load(fresh) {
 
 /** What the headline numbers need beyond the first screen, read once it is drawn. */
 async function prefetch(generation) {
-  const names = [["people", "people"], ["traffic", "modelTraffic"], ["assessments", "assessments"]];
+  const names = [["people", "people"], ["modelUse", "modelUse"], ["assessments", "assessments"]];
   await Promise.all(names.map(async ([key, path]) => {
     try { const v = await S.cache.read(path); if (generation === S.generation) { S.loaded[key] = v; } } catch (e) { /* the view says why when opened */ }
   }));
@@ -206,8 +206,7 @@ function renderHeader() {
   const f = b.findings.findings, fails = f.filter((x) => x.finding.kind === "fail").length, reviews = f.filter((x) => x.finding.kind === "review").length;
   const a = S.loaded.assessments, held = a ? a.rules.filter((x) => x.status === "passed").length : null;
   const replies = S.loaded.people ? S.loaded.people.people.flatMap((p) => p.replies.map((x) => x.reply.drawn ? (Date.parse(x.reply.at) - Date.parse(x.reply.drawn.asked_at)) / 1000 : null)).filter((x) => x !== null) : null;
-  const tokens = S.loaded.traffic && S.loaded.people ? S.loaded.traffic.calls.reduce((s, c) => s + (c.input_tokens || 0) + (c.output_tokens || 0), 0) +
-    S.loaded.people.people.reduce((s, p) => s + p.model_calls.reduce((t, m) => t + (m.call.input_tokens || 0) + (m.call.output_tokens || 0), 0), 0) : null;
+  const tokens = S.loaded.modelUse ? S.loaded.modelUse.calls.reduce((s, c) => s + (c.input_tokens || 0) + (c.output_tokens || 0), 0) : null;
   const numbers = [
     ["findings", r.finished ? String(fails) : "—", fails ? "failed" + (reviews ? ", " + reviews + " to review" : "") : reviews ? reviews + " to review" : "failed", fails ? "fail" : reviews ? "review" : r.finished ? "pass" : ""],
     ["assessments", a ? (a.rules.length && a.rules.some((x) => x.status !== "not_checked") ? held + "/" + a.rules.length : a.rules.length ? "—" : "none") : "…", "rules held", a && a.rules.some((x) => x.status === "failed") ? "fail" : ""],

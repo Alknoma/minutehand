@@ -4,6 +4,7 @@ inspector, and the tables of its views (calls, the dispatch table, memory, store
 
 from __future__ import annotations
 
+import sqlite3
 from bisect import bisect_right
 from collections.abc import Sequence
 from datetime import datetime
@@ -14,7 +15,6 @@ from minutehand.adapters.web.responses import (
     AssessmentsResponse,
     BatchesResponse,
     BatchRow,
-    CallAnswer,
     CallDetail,
     CallRow,
     ConversationLine,
@@ -31,6 +31,8 @@ from minutehand.adapters.web.responses import (
     MemoryResponse,
     MessageChange,
     MessageLine,
+    ModelUse,
+    ModelUseResponse,
     PeopleResponse,
     PersonActivity,
     PersonCallLine,
@@ -53,14 +55,11 @@ from minutehand.domain.assessments import merged
 from minutehand.domain.checks import FindingKind, Obligation, WakeRecord
 from minutehand.domain.clock import DueClosed
 from minutehand.domain.inboxes import item_words
-from minutehand.domain.memory import split_id
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ExpectedOutcome, Scenario
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
     Actor,
-    AnsweredBy,
-    CaptureMode,
     EntityKind,
     EntityRef,
     InboxItemSnapshot,
@@ -74,6 +73,7 @@ from minutehand.domain.world import (
     StoredSnapshot,
     WorldEvent,
 )
+from minutehand.domain.world import AnsweredBy as AnsweredByWire
 from minutehand.ports.store import Store
 
 WRITES = frozenset({Operation.CREATE, Operation.UPDATE, Operation.DELETE})
@@ -106,71 +106,113 @@ def world_events(world: Store) -> list[WorldEvent]:
     return [e for e in world.events() if not _loop_own(e)]
 
 
-def answered(call: RecordedCall) -> CallAnswer:
-    """Who answered a call, in one word."""
-    e = call.exchange
-    if e.tunnelled is not None:
-        return CallAnswer.TUNNELLED
-    if e.inbox_call is not None:
-        return CallAnswer.AS_PERSON
-    if call.provider is not None:
-        return CallAnswer.PROVIDER
-    captured = e.captured
-    if captured is None:
-        return CallAnswer.REFUSED
-    if captured.answered_by is AnsweredBy.REFUSAL:
-        return CallAnswer.REFUSED
-    if captured.answered_by is AnsweredBy.RECORDING:
-        return CallAnswer.REPLAYED
-    if captured.answered_by is AnsweredBy.REAL_HOST:
-        return CallAnswer.REAL_HOST
-    if captured.answered_by is AnsweredBy.EMULATOR:
-        return CallAnswer.EMULATOR
-    if captured.answered_by is AnsweredBy.MODEL:
-        return CallAnswer.MODEL
-    return CallAnswer.STORED if captured.mode is CaptureMode.STORE else CallAnswer.DECLARED
-
-
 def _failed(call: RecordedCall) -> bool:
-    return answered(call) is CallAnswer.REFUSED or call.exchange.status >= 400 or call.exchange.failure is not None
+    """Refused, answered with an error status, or answered by Minutehand in the fake's place."""
+    captured = call.exchange.captured
+    return (
+        call.refused
+        or (captured is not None and captured.answered_by is AnsweredByWire.REFUSAL)
+        or call.exchange.status >= 400
+        or call.exchange.failure is not None
+    )
 
 
-def _body_size(text: str | None, raw: bytes | None) -> int:
-    return len(text.encode("utf-8")) if text is not None else len(raw) if raw is not None else 0
+# -- what the read model holds (`adapters/query`): the tables the viewer shares with `minutehand query` -----------
 
 
-def call_rows(world: Store) -> list[CallRow]:
-    rows: list[CallRow] = []
-    for i, call in enumerate(world.calls()):
-        e = call.exchange
-        rows.append(
-            CallRow(
-                index=i,
-                wake=call.wake,
-                at=call.sim_time,
-                provider=call.provider,
-                method=e.method,
-                host=e.host,
-                path=e.path,
-                status=e.status,
-                answered=answered(call),
-                outcome=e.outcome,
-                request_bytes=_body_size(e.request_body, e.request_bytes),
-                response_bytes=_body_size(e.response_body, e.response_bytes),
-                events=max(0, call.last_seq - call.first_seq + 1),
+def _rows(db: sqlite3.Connection, sql: str, *args: object) -> list[dict[str, object]]:
+    cursor = db.execute(sql, args)
+    names = [d[0] for d in cursor.description]
+    return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+
+_CALL_COLUMNS = (
+    "call_id, at, wake, provider, host, method, path, status, outcome, answered_by, capture_mode, request_size, "
+    "response_size, first_seq, last_seq, duration_ms"
+)
+
+
+def call_rows(db: sqlite3.Connection) -> list[CallRow]:
+    return [CallRow.model_validate(r) for r in _rows(db, f"SELECT {_CALL_COLUMNS} FROM calls ORDER BY call_id")]
+
+
+def call_detail(db: sqlite3.Connection, world: Store, call_id: int) -> CallDetail | None:
+    found = _rows(db, f"SELECT {_CALL_COLUMNS} FROM calls WHERE call_id = ?", call_id)
+    calls = world.calls()
+    if not found or not 1 <= call_id <= len(calls):
+        return None
+    return CallDetail(row=CallRow.model_validate(found[0]), call=calls[call_id - 1])
+
+
+def dispatch(db: sqlite3.Connection, world: Store) -> DispatchResponse:
+    entries = due_entries(world)
+    rows = _rows(db, "SELECT * FROM dispatch ORDER BY due_id")
+    return DispatchResponse(
+        entries=[
+            DueRow.model_validate(
+                {**r, "drawn": entries[int(str(r["due_id"])) - 1].drawn if len(entries) == len(rows) else None}
+            )
+            for r in rows
+        ]
+    )
+
+
+def memory(db: sqlite3.Connection) -> MemoryResponse:
+    changes: list[MemoryChange] = []
+    keys: dict[tuple[str, str], MemoryKey] = {}
+    reads = 0
+    for r in _rows(db, "SELECT seq, at, wake, actor, op, collection, key, value FROM memory ORDER BY seq"):
+        collection, key, op = str(r["collection"]), str(r["key"]), r["op"]
+        had = keys[(collection, key)] if (collection, key) in keys else None
+        if op in ("put", "delete"):
+            value = str(r["value"]) if op == "put" and r["value"] is not None else None
+            changes.append(
+                MemoryChange.model_validate(
+                    {k: v for k, v in r.items() if k != "op"} | {"value": value, "before": had.value if had else None}
+                )
+            )
+            keys[(collection, key)] = MemoryKey(
+                collection=collection,
+                key=key,
+                writes=(had.writes if had is not None else 0) + 1,
+                reads=had.reads if had is not None else 0,
+                value=value,
+            )
+            continue
+        reads += 1
+        if op == "get":
+            keys[(collection, key)] = MemoryKey(
+                collection=collection,
+                key=key,
+                writes=had.writes if had is not None else 0,
+                reads=(had.reads if had is not None else 0) + 1,
+                value=had.value if had is not None else None,
+            )
+    return MemoryResponse(keys=[keys[k] for k in sorted(keys)], changes=changes, reads=reads)
+
+
+def stored(db: sqlite3.Connection) -> StoredResponse:
+    changes: list[StoredChange] = []
+    held: dict[tuple[str, str, str], str | None] = {}
+    for r in _rows(db, "SELECT seq, at, wake, op, host, collection, path, item_id, item FROM stored ORDER BY seq"):
+        item = (str(r["host"]), str(r["collection"]), str(r["item_id"]))
+        changes.append(
+            StoredChange.model_validate(
+                {k: v for k, v in r.items() if k not in ("op", "item_id")}
+                | {"operation": r["op"], "id": r["item_id"], "before": held[item] if item in held else None}
             )
         )
-    return rows
+        held[item] = str(r["item"]) if r["item"] is not None else None
+    return StoredResponse(changes=changes)
 
 
-def call_detail(world: Store, index: int) -> CallDetail | None:
-    calls = world.calls()
-    if not 0 <= index < len(calls):
-        return None
-    call = calls[index]
-    return CallDetail(
-        index=index, call=call, answered=answered(call), events=list(range(call.first_seq, call.last_seq + 1))
+def model_use(db: sqlite3.Connection, priced: bool) -> ModelUseResponse:
+    rows = _rows(
+        db,
+        "SELECT side, span_id, person_call_id, person, wake, at, duration_ms, model, input_tokens, output_tokens, cost,"
+        " currency, wrote, replayed, failure FROM model_calls ORDER BY at, span_id, person_call_id",
     )
+    return ModelUseResponse(calls=[ModelUse.model_validate(r) for r in rows], priced=priced)
 
 
 # -- people and what they said ------------------------------------------------------------------------------------
@@ -185,7 +227,7 @@ def _delivered(events: Sequence[WorldEvent], replies: Sequence[PersonReply]) -> 
         if event.actor is not Actor.PERSON or event.operation not in WRITES:
             continue
         after = event.after
-        for i, reply in enumerate(replies):
+        for i, reply in enumerate(replies, start=1):
             if i in taken or reply.at != event.sim_time:
                 continue
             if (
@@ -318,7 +360,7 @@ def people(world: Store, scenario: Scenario) -> PeopleResponse:
                         reply=None,
                     )
                 )
-        own = [(i, r) for i, r in enumerate(replies) if r.person == person.key]
+        own = [(i, r) for i, r in enumerate(replies, start=1) if r.person == person.key]
         for i, reply in own:
             lines.append(
                 ConversationLine(
@@ -350,88 +392,12 @@ def people(world: Store, scenario: Scenario) -> PeopleResponse:
                     )
                     for i, r in own
                 ],
-                model_calls=[PersonCallLine(index=i, call=c) for i, c in enumerate(calls) if c.person == person.key],
+                model_calls=[
+                    PersonCallLine(index=i, call=c) for i, c in enumerate(calls, start=1) if c.person == person.key
+                ],
             )
         )
     return PeopleResponse(people=found)
-
-
-# -- the agent's own memory, and what hosts declared `store` kept ---------------------------------------------------
-
-
-def memory(world: Store) -> MemoryResponse:
-    changes: list[MemoryChange] = []
-    keys: dict[tuple[str, str], MemoryKey] = {}
-    reads = 0
-    for event in world.events():
-        after = event.after
-        if event.entity.kind is not EntityKind.MEMORY:
-            continue
-        collection, key = split_id(event.entity.external_id)
-        had = keys[(collection, key)] if (collection, key) in keys else None
-        if event.operation in WRITES:
-            value = after.value if isinstance(after, MemorySnapshot) else None
-            changes.append(
-                MemoryChange(
-                    seq=event.seq,
-                    at=event.sim_time,
-                    wake=event.wake,
-                    actor=event.actor,
-                    collection=collection,
-                    key=key,
-                    value=value,
-                    before=had.value if had is not None else None,
-                )
-            )
-            keys[(collection, key)] = MemoryKey(
-                collection=collection,
-                key=key,
-                writes=(had.writes if had is not None else 0) + 1,
-                reads=had.reads if had is not None else 0,
-                value=value,
-            )
-            continue
-        reads += 1
-        if isinstance(after, MemorySnapshot) and not after.listing:
-            keys[(collection, key)] = MemoryKey(
-                collection=collection,
-                key=key,
-                writes=had.writes if had is not None else 0,
-                reads=(had.reads if had is not None else 0) + 1,
-                value=had.value if had is not None else None,
-            )
-    return MemoryResponse(keys=[keys[k] for k in sorted(keys)], changes=changes, reads=reads)
-
-
-def stored(world: Store) -> StoredResponse:
-    changes: list[StoredChange] = []
-    held: dict[EntityRef, str | None] = {}
-    for event in world.events():
-        after = event.after
-        if event.entity.kind is not EntityKind.STORED or not isinstance(after, StoredSnapshot):
-            continue
-        if event.operation not in WRITES:
-            continue
-        changes.append(
-            StoredChange(
-                seq=event.seq,
-                at=event.sim_time,
-                wake=event.wake,
-                operation=event.operation,
-                host=after.host,
-                collection=after.collection,
-                path=after.path,
-                id=after.id,
-                item=after.item,
-                before=held[event.entity] if event.entity in held else None,
-            )
-        )
-        held[event.entity] = after.item
-    return StoredResponse(changes=changes)
-
-
-def dispatch(world: Store) -> DispatchResponse:
-    return DispatchResponse(entries=[DueRow(index=i, entry=e) for i, e in enumerate(due_entries(world))])
 
 
 # -- one event, whole -------------------------------------------------------------------------------------------------
@@ -449,7 +415,7 @@ def event_detail(world: Store, seq: int, scenario: Scenario, result: RunResult |
         if event.entity == found.entity and event.after is not None:
             before = event.after
     calls = world.calls()
-    call = next((i for i, c in enumerate(calls) if c.first_seq <= seq <= c.last_seq), None)
+    call = next((i for i, c in enumerate(calls, start=1) if c.first_seq <= seq <= c.last_seq), None)
     thread: list[MessageLine] = []
     written_by: WrittenBy | None = None
     after = found.after
@@ -665,7 +631,7 @@ def timeline(state: Path, run_id: str, world: Store, result: RunResult | None) -
             event.sim_time,
             real=event.wall_time,
         )
-    for i, reply in enumerate(replies):
+    for i, reply in enumerate(replies, start=1):
         if reply.person not in by_key:
             continue
         b.add(b.index[f"person:{reply.person}"], MarkKind.SAID, f"reply:{i}", reply.text, reply.at)
@@ -686,7 +652,7 @@ def timeline(state: Path, run_id: str, world: Store, result: RunResult | None) -
 
     # the calls, by provider or host
     walls = {e.seq: e.wall_time for e in everything}
-    for i, call in enumerate(calls):
+    for i, call in enumerate(calls, start=1):
         e = call.exchange
         if call.provider is not None:
             lane = b.lane(f"provider:{call.provider}", LaneKind.PROVIDER, call.provider)
@@ -713,7 +679,7 @@ def timeline(state: Path, run_id: str, world: Store, result: RunResult | None) -
         )
 
     # the dispatch table, at the moment each entry was due
-    for i, entry in enumerate(due_entries(world)):
+    for i, entry in enumerate(due_entries(world), start=1):
         lane = b.lane("dispatch", LaneKind.DISPATCH, "Dispatch table")
         faulted = entry.fault is not None or entry.closed in FAILED_DUE
         b.add(
@@ -745,7 +711,7 @@ def timeline(state: Path, run_id: str, world: Store, result: RunResult | None) -
             b.add(
                 lane, MarkKind.SPAN, f"span:{s.span.span_id}", s.span.name, sim, real=s.span.start, real_end=s.span.end
             )
-    for i, pc in enumerate(world.person_calls()):
+    for i, pc in enumerate(world.person_calls(), start=1):
         lane = b.lane("people_model", LaneKind.PEOPLE_MODEL, "People's model calls")
         whom = by_key[pc.person].name if pc.person in by_key else pc.person
         tokens = (pc.input_tokens or 0) + (pc.output_tokens or 0)

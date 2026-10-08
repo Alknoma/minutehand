@@ -12,13 +12,13 @@ from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.assessments import Rule
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Obligation, Pattern, WakeRecord
-from minutehand.domain.clock import DueEntry
+from minutehand.domain.clock import Drawn, DrawnFrom, DueClosed, DueKind, DueSource
 from minutehand.domain.conversation import PersonCall
 from minutehand.domain.people import PersonReply, Writing
 from minutehand.domain.run import RunRecord, StopReason, Verdict, VerdictKind
-from minutehand.domain.scenario import Model, Scenario
+from minutehand.domain.scenario import DispatchFault, Model, Scenario
 from minutehand.domain.telemetry import ForwardFailure, SpanStatus, StoredSpan
-from minutehand.domain.world import Actor, CallOutcome, Operation, RecordedCall, Snapshot, WorldEvent
+from minutehand.domain.world import Actor, CallOutcome, CaptureMode, Operation, RecordedCall, Snapshot, WorldEvent
 from minutehand.session import ForkPoint
 
 
@@ -331,44 +331,46 @@ class TimelineResponse(Model):
 class EventDetail(Model):
     event: WorldEvent
     before: Snapshot | None = Field(description="The entity's version before this change, if it had one")
-    call: int | None = Field(description="Index of the HTTP call that made it, in `/calls`")
+    call: int | None = Field(description="The call_id of the HTTP call that made it")
     thread: list[MessageLine] = Field(description="A message: every message of its conversation, in order")
     written_by: WrittenBy | None = Field(description="The agent's model call that wrote it, if joined")
     reply: int | None = Field(description="A person's message: index of the reply it delivered, in `/people`")
     findings: list[int] = Field(description="Numbers of the findings that cite it")
 
 
-class CallAnswer(StrEnum):
-    """Who answered a call, in one word for a table."""
+class CallAnsweredBy(StrEnum):
+    """Who answered a call, as the read model's `calls.answered_by` says it (`docs/querying.md`)."""
 
     PROVIDER = "provider"  # a provider of this process: a fake
-    DECLARED = "declared"  # an outbound declaration's answer, never sent
-    STORED = "stored"  # a declared `store`, kept and read back
-    REAL_HOST = "real_host"
-    REPLAYED = "replayed"  # REPLAYED from a recording
+    DECLARATION = "declaration"  # an outbound declaration's answer, never sent
+    RECORDING = "recording"  # REPLAYED from a recording
+    PASS_THROUGH = "pass_through"  # the real host
     EMULATOR = "emulator"
     MODEL = "model"  # a model standing in for an undeclared service
-    TUNNELLED = "tunnelled"  # relayed unopened: a model host
-    AS_PERSON = "as_person"  # Minutehand's own call as a person to the agent's product
-    REFUSED = "refused"  # nothing answered it, or a declaration or replay refused
+    TUNNEL = "tunnel"  # relayed unopened: a model host
+    REFUSED = "refused"  # nobody: 502
+    MINUTEHAND = "minutehand"  # Minutehand's own call as a person to the agent's product
 
 
 class CallRow(Model):
-    """One HTTP call without its bodies, for a table of thousands."""
+    """One HTTP call without its bodies, a row of the read model's `calls`, for a table of thousands."""
 
-    index: int = Field(ge=0, description="Its place in `/calls`, and its id in `/calls/{index}`")
-    wake: int
+    call_id: int = Field(ge=1, description="Its place among the calls, from 1: its id in `/calls/{call_id}`")
     at: AwareDatetime = Field(description="Simulated, when it began")
+    wake: int
     provider: str | None
-    method: str
     host: str
+    method: str
     path: str
     status: int
-    answered: CallAnswer
     outcome: CallOutcome | None
-    request_bytes: int = Field(ge=0, description="Of the body as recorded")
-    response_bytes: int = Field(ge=0)
-    events: int = Field(ge=0, description="Events of the world's log it produced")
+    answered_by: CallAnsweredBy
+    capture_mode: CaptureMode | None
+    request_size: int | None = Field(description="Bytes of the request body kept; None: no body")
+    response_size: int | None
+    first_seq: int | None = Field(description="The first event it wrote; None: it wrote none")
+    last_seq: int | None
+    duration_ms: float | None = Field(description="Real time it took, when the proxy kept it")
 
 
 class CallRowsResponse(Model):
@@ -376,15 +378,28 @@ class CallRowsResponse(Model):
 
 
 class CallDetail(Model):
-    index: int
-    call: RecordedCall
-    answered: CallAnswer
-    events: list[int] = Field(description="Seqs of the events it produced")
+    row: CallRow
+    call: RecordedCall = Field(description="The call whole: its bodies, its capture, its tunnel, its failure")
 
 
 class DueRow(Model):
-    index: int = Field(ge=0, description="Its id in a `due:<index>` ref")
-    entry: DueEntry
+    """One entry of the run loop's table, a row of the read model's `dispatch`, with the whole draw of a reply."""
+
+    due_id: int = Field(ge=1, description="Numbered in the order it entered: its id in a `due:<due_id>` ref")
+    kind: DueKind
+    ref: str
+    source: DueSource
+    due_at: AwareDatetime
+    entered_at: AwareDatetime
+    entered_wake: int
+    closed: DueClosed | None
+    closed_at: AwareDatetime | None
+    closed_wake: int | None
+    fault: DispatchFault | None
+    asked_for: AwareDatetime | None
+    drawn_from: DrawnFrom | None
+    drawn_offset_seconds: float | None
+    drawn: Drawn | None = Field(description="A reply's draw whole: the seed, the range or window, where it landed")
 
 
 class DispatchResponse(Model):
@@ -401,7 +416,7 @@ class MemoryChange(Model):
     actor: Actor = Field(description="AGENT, or SCENARIO for the memory a scenario seeds")
     collection: str
     key: str
-    value: str | None = Field(description="Canonical JSON as written; None: deleted")
+    value: str | None = Field(description="JSON as written; None: deleted")
     before: str | None = Field(description="The value it replaced; None: the key was new or had been deleted")
 
 
@@ -410,7 +425,7 @@ class MemoryKey(Model):
     key: str
     writes: int = Field(ge=0)
     reads: int = Field(ge=0, description="Gets of exactly this key")
-    value: str | None = Field(description="As it stood at the run's head; None: deleted")
+    value: str | None = Field(description="As it stood at the run's head; None: deleted, or never written")
 
 
 class MemoryResponse(Model):
@@ -436,6 +451,36 @@ class StoredResponse(Model):
     changes: list[StoredChange]
 
 
+class ModelSide(StrEnum):
+    AGENT = "agent"
+    PERSON = "person"
+
+
+class ModelUse(Model):
+    """One model call, a row of the read model's `model_calls`: the agent's, or one that wrote what a person said."""
+
+    side: ModelSide
+    span_id: str | None
+    person_call_id: int | None = Field(description="Its id in a `pc:<person_call_id>` ref")
+    person: str | None
+    wake: int
+    at: AwareDatetime = Field(description="Simulated")
+    duration_ms: float | None
+    model: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    cost: float | None = Field(description="From the prices `minutehand view --prices` was given; None: none named it")
+    currency: str | None
+    wrote: str | None = Field(description="A person's: reply, decision or summary")
+    replayed: bool | None
+    failure: str | None
+
+
+class ModelUseResponse(Model):
+    calls: list[ModelUse] = Field(description="Every model call, by simulated time")
+    priced: bool = Field(description="Prices were given: a call with no cost is one no price named")
+
+
 class ReplyLine(Model):
     index: int = Field(ge=0, description="Its id in a `reply:<index>` ref")
     reply: PersonReply
@@ -444,7 +489,7 @@ class ReplyLine(Model):
 
 
 class PersonCallLine(Model):
-    index: int = Field(ge=0, description="Its id in a `pc:<index>` ref")
+    index: int = Field(ge=1, description="Its id in a `pc:<index>` ref, as the read model numbers person calls")
     call: PersonCall
 
 

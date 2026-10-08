@@ -26,15 +26,17 @@ A case (standing worlds opened under one case label) is one run here: its worlds
 listed on their own, and a standing world no call reached (a probe) is not listed.
     GET /api/runs/{run_id}/traces/{trace_id}   the agent's spans of one trace, as the run received them
 
-What the page reads to draw a run of any length (`reading.py`):
+What the page reads to draw a run of any length (`reading.py`); the paths marked (read model) are rows of the run's
+read model (`adapters/query`, `docs/querying.md`), so the page and `minutehand query` show the same facts:
     GET /api/runs/{run_id}/timeline         every mark of the run, compact and sorted, in lanes, with the findings
                                             placed where they happened: the page bins them itself
     GET /api/runs/{run_id}/events/{seq}     one event whole: the version before it, its call, its thread, its writer
-    GET /api/runs/{run_id}/call-rows        every HTTP call without its bodies, and who answered it
-    GET /api/runs/{run_id}/calls/{index}    one call whole, with the events it produced
-    GET /api/runs/{run_id}/dispatch         the run loop's table of what was due: windows, draws and faults
-    GET /api/runs/{run_id}/memory           the agent's memory: every write with the value it replaced, each key
-    GET /api/runs/{run_id}/stored           every item kept for a host declared `store`, with the one it replaced
+    GET /api/runs/{run_id}/call-rows        every HTTP call without its bodies, and who answered it   (read model)
+    GET /api/runs/{run_id}/calls/{call_id}  one call whole, its read-model row beside it
+    GET /api/runs/{run_id}/dispatch         the run loop's table of what was due: draws and faults    (read model)
+    GET /api/runs/{run_id}/memory           the agent's memory: every write with the value it replaced (read model)
+    GET /api/runs/{run_id}/stored           every item kept for a host declared `store`               (read model)
+    GET /api/runs/{run_id}/model-use        every model call, the agent's and people's: tokens, cost  (read model)
     GET /api/runs/{run_id}/people           per person: the conversation, their replies (how each was written and
                                             drawn) and the model calls that wrote them, with tokens
     GET /api/runs/{run_id}/assessments      each of the team's rules: passed or failed, how often read, its findings
@@ -47,6 +49,8 @@ read as of its last commit, and the viewer can never change or lock a run.
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +65,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from minutehand import session
+from minutehand.adapters.query.reader import open_model
 from minutehand.adapters.web import reading
 from minutehand.adapters.web.responses import (
     AssessmentsResponse,
@@ -99,6 +104,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.application.steps import STEP
 from minutehand.checks.runner import RunResult, view_of
 from minutehand.domain.checks import FindingKind
+from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot
@@ -116,8 +122,8 @@ def _json(model: Model, status: int = 200) -> Response:
     return Response(model.model_dump_json(), status_code=status, media_type="application/json")
 
 
-def create_app(state: Path) -> Starlette:
-    """The viewer over one state directory."""
+def create_app(state: Path, prices: Prices | None = None) -> Starlette:
+    """The viewer over one state directory; `prices` gives each model call a cost, as `minutehand query --prices`."""
 
     def page(_: Request) -> Response:
         return HTMLResponse(PAGE.read_text(encoding="utf-8"))
@@ -402,33 +408,43 @@ def create_app(state: Path) -> Starlette:
             return _json(Refusal(error=f"run {run_id} holds no event {seq}"), status=404)
         return _json(found)
 
+    building = threading.Lock()
+
+    def model(run_id: str) -> sqlite3.Connection:
+        """The run's read model (`adapters/query`), the tables `minutehand query` reads, built once per state of its
+        files: the page asks for several of its tables at once, and the first builds it while the rest wait."""
+        with building:
+            return open_model(state, run_id, prices)
+
     def call_rows(run_id: str) -> Response:
-        with session.reading(state, run_id) as world:
-            return _json(CallRowsResponse(calls=reading.call_rows(world)))
+        return _json(CallRowsResponse(calls=reading.call_rows(model(run_id))))
 
     def one_call(request: Request) -> Response:
-        run_id, index = request.path_params["run_id"], request.path_params["index"]
-        assert isinstance(run_id, str) and isinstance(index, int)
+        run_id, call_id = request.path_params["run_id"], request.path_params["call_id"]
+        assert isinstance(run_id, str) and isinstance(call_id, int)
         try:
+            db = model(run_id)
             with session.reading(state, run_id) as world:
-                found = reading.call_detail(world, index)
+                found = reading.call_detail(db, world, call_id)
         except RunRefused as e:
             return _json(Refusal(error=str(e)), status=404)
         if found is None:
-            return _json(Refusal(error=f"run {run_id} holds no call {index}"), status=404)
+            return _json(Refusal(error=f"run {run_id} holds no call {call_id}"), status=404)
         return _json(found)
 
     def dispatch(run_id: str) -> Response:
+        db = model(run_id)
         with session.reading(state, run_id) as world:
-            return _json(reading.dispatch(world))
+            return _json(reading.dispatch(db, world))
 
     def memory(run_id: str) -> Response:
-        with session.reading(state, run_id) as world:
-            return _json(reading.memory(world))
+        return _json(reading.memory(model(run_id)))
 
     def stored(run_id: str) -> Response:
-        with session.reading(state, run_id) as world:
-            return _json(reading.stored(world))
+        return _json(reading.stored(model(run_id)))
+
+    def model_use(run_id: str) -> Response:
+        return _json(reading.model_use(model(run_id), priced=prices is not None))
 
     def people(run_id: str) -> Response:
         scenario = session.scenario_of(state, run_id)
@@ -487,7 +503,8 @@ def create_app(state: Path) -> Starlette:
             Route("/api/runs/{run_id}/timeline", one_run(timeline)),
             Route("/api/runs/{run_id}/events/{seq:int}", one_event),
             Route("/api/runs/{run_id}/call-rows", one_run(call_rows)),
-            Route("/api/runs/{run_id}/calls/{index:int}", one_call),
+            Route("/api/runs/{run_id}/calls/{call_id:int}", one_call),
+            Route("/api/runs/{run_id}/model-use", one_run(model_use)),
             Route("/api/runs/{run_id}/dispatch", one_run(dispatch)),
             Route("/api/runs/{run_id}/memory", one_run(memory)),
             Route("/api/runs/{run_id}/stored", one_run(stored)),
@@ -549,6 +566,6 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
     )
 
 
-def serve(state: Path, *, port: int) -> None:
+def serve(state: Path, *, port: int, prices: Prices | None = None) -> None:
     """Serve the viewer on 127.0.0.1 until interrupted."""
-    uvicorn.run(create_app(state), host=HOST, port=port, log_level="warning")
+    uvicorn.run(create_app(state, prices), host=HOST, port=port, log_level="warning")

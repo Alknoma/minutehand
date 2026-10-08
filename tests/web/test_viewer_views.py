@@ -16,6 +16,7 @@ import pytest
 from pydantic import BaseModel
 
 from minutehand import run_all, session
+from minutehand.adapters.query.reader import open_model
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import (
@@ -30,6 +31,8 @@ from minutehand.adapters.web.responses import (
     LaneKind,
     MarkKind,
     MemoryResponse,
+    ModelSide,
+    ModelUseResponse,
     PeopleResponse,
     Refusal,
     RuleStatus,
@@ -40,6 +43,7 @@ from minutehand.adapters.web.responses import (
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import DrawnFrom, DueKind, DueSource
 from minutehand.domain.people import Writing
+from minutehand.domain.prices import Price, Prices
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import ExpectedOutcome
 from minutehand.domain.world import MessageSnapshot, Operation, WorldEvent
@@ -116,10 +120,9 @@ async def test_one_event_is_read_whole_with_its_call_its_conversation_and_the_fi
         rows = await read(c, f"/api/runs/{parent}/call-rows", CallRowsResponse)
 
     assert isinstance(detail.event.after, MessageSnapshot) and detail.event.after.text == QUESTION
-    assert seq in call.events and call.call.exchange.host == "slack.com" and call.index == detail.call
-    assert rows.calls[detail.call].path == call.call.exchange.path and rows.calls[detail.call].events == len(
-        call.events
-    )
+    assert call.row.first_seq is not None and call.row.last_seq is not None
+    assert call.row.first_seq <= seq <= call.row.last_seq and call.call.exchange.host == "slack.com"
+    assert call.row.call_id == detail.call and rows.calls[detail.call - 1] == call.row
     assert [line.seq for line in detail.thread][:1] == [seq]
     cited = [f.number for f in findings.findings if seq in f.finding.evidence]
     assert cited and detail.findings == cited
@@ -158,8 +161,8 @@ async def test_a_reply_says_how_it_was_written_and_drawn_and_its_due_entry_holds
     assert answered.asked is not None and sofia.model_calls == []  # her words are the script's own: no model
     said = [(line.from_agent, line.text) for line in sofia.conversation]
     assert said.index((False, ANSWER)) > said.index((True, QUESTION))
-    [due] = [r for r in table.entries if r.entry.due.kind is DueKind.PERSON_REPLY]
-    assert due.entry.due.at == drawn.lands_at and due.entry.source is DueSource.REPLY
+    [due] = [r for r in table.entries if r.kind is DueKind.PERSON_REPLY]
+    assert due.due_at == drawn.lands_at and due.source is DueSource.REPLY
 
 
 async def test_each_rule_says_whether_it_held_how_often_it_was_read_and_which_findings_are_its(
@@ -226,7 +229,7 @@ async def test_the_dispatch_table_says_which_wake_a_rule_held_back_and_the_timel
         table = await read(c, f"/api/runs/{long_run.RUN_ID}/dispatch", DispatchResponse)
         drawn = await read(c, f"/api/runs/{long_run.RUN_ID}/timeline", TimelineResponse)
 
-    faulted = [r.index for r in table.entries if r.entry.fault is not None]
+    faulted = [r.due_id for r in table.entries if r.fault is not None]
     assert len(faulted) == 1
     marks = {ref: kind for ref, kind in zip(drawn.marks.ref, drawn.marks.kind, strict=True) if ref.startswith("due:")}
     assert marks[f"due:{faulted[0]}"] is MarkKind.DUE_FAULT
@@ -304,3 +307,25 @@ def test_the_long_run_fixture_writes_what_its_docstring_says(days: Path) -> None
     assert len(outcome.record.wakes) == 12 and outcome.result.findings
     raw = json.loads((session.run_dir(days, long_run.RUN_ID) / session.SCENARIO).read_text())
     assert raw["name"] == long_run.scenario(12).name
+
+
+async def test_model_use_is_the_read_models_and_costs_only_what_a_declared_price_names(days: Path) -> None:
+    """The page's model cost reads the read model's `model_calls`, as `minutehand query` does: the people's model
+    is priced here, the agent's is not, so only the people's calls have a cost."""
+    priced = Prices(prices=[Price(model="m-people", input_per_million=2.0, output_per_million=8.0, currency="EUR")])
+    transport = httpx.ASGITransport(app=create_app(days, priced))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+        use = await read(c, f"/api/runs/{long_run.RUN_ID}/model-use", ModelUseResponse)
+        rows = await read(c, f"/api/runs/{long_run.RUN_ID}/call-rows", CallRowsResponse)
+    async with client(days) as c:
+        unpriced = await read(c, f"/api/runs/{long_run.RUN_ID}/model-use", ModelUseResponse)
+
+    db = open_model(days, long_run.RUN_ID, priced)
+    assert [r.call_id for r in rows.calls] == [r[0] for r in db.execute("SELECT call_id FROM calls ORDER BY call_id")]
+    assert use.priced and not unpriced.priced and len(use.calls) == len(unpriced.calls)
+    people = [c for c in use.calls if c.side is ModelSide.PERSON]
+    agent = [c for c in use.calls if c.side is ModelSide.AGENT]
+    assert people and agent and all(c.cost is None for c in agent) and all(c.cost is None for c in unpriced.calls)
+    for c in people:
+        assert c.input_tokens is not None and c.output_tokens is not None and c.currency == "EUR"
+        assert c.cost == pytest.approx((c.input_tokens * 2.0 + c.output_tokens * 8.0) / 1e6)

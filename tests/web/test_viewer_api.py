@@ -22,7 +22,7 @@ from minutehand import session
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.web.app import PAGE, STATIC, create_app
 from minutehand.adapters.web.responses import (
-    CallAnswer,
+    CallAnsweredBy,
     CallRowsResponse,
     CallsResponse,
     EventsResponse,
@@ -245,7 +245,7 @@ async def test_every_api_path_the_page_calls_exists(tmp_path: Path, monkeypatch:
             if "{span}" in path:
                 continue  # a model call or a span: this run's agent sends no telemetry, see the test of that endpoint
             filled = path.replace("{run}", parent).replace("{step}", "1").replace("{seq}", str(seq))
-            response = await c.get(filled.replace("{index}", "0"))
+            response = await c.get(filled.replace("{call}", "1"))
             assert response.status_code == 200, (path, response.text)
 
 
@@ -313,8 +313,8 @@ async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_
         rows = await read(c, f"/api/runs/{outcome.record.run_id}/call-rows", CallRowsResponse)
     [mail] = [c for c in calls.calls if c.exchange.captured is not None]
     [row] = [r for r in rows.calls if r.host == "api.mail.test"]
-    assert (row.answered, row.provider, row.status) == (CallAnswer.DECLARED, None, mail.exchange.status)
-    assert {r.answered for r in rows.calls if r.host == "slack.com"} == {CallAnswer.PROVIDER}
+    assert (row.answered_by, row.provider, row.status) == (CallAnsweredBy.DECLARATION, None, mail.exchange.status)
+    assert {r.answered_by for r in rows.calls if r.host == "slack.com"} == {CallAnsweredBy.PROVIDER}
     assert mail.exchange.captured is not None
     assert (mail.exchange.captured.mode, mail.exchange.captured.answered_by) == (
         CaptureMode.ACKNOWLEDGE,
