@@ -25,7 +25,7 @@ from minutehand.domain.conversation import Provenance
 from minutehand.domain.experiment import Fork
 from minutehand.domain.outbound import Acknowledge, HtmlAt, MessageReading
 from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import Answers, DelayRange, PersonAsked, Scenario
+from minutehand.domain.scenario import Answers, DelayRange, PersonAsked, Scenario, Scripted, ScriptedReply
 from minutehand.domain.world import Actor
 from tests.e2e.support import OWNER, QUESTION, SOFIA, T0, THANKS, agent_under_test, messages, scenario, texts, world
 from tests.model.fake_completions import FakeCompletions, Received, fake_completions
@@ -165,6 +165,21 @@ async def test_a_scenario_with_a_written_person_and_no_model_is_refused_before_i
     message = str(raised.value)
     assert "sofia" in message and all(v in message for v in (MODEL_VARIABLE, API_KEY_VARIABLE, BASE_URL_VARIABLE))
     assert not state.exists()
+
+
+async def test_a_script_that_can_run_out_with_no_model_is_refused_before_it_starts_naming_the_person(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched = agent_under_test(tmp_path, monkeypatch, "diligent")
+    state = tmp_path / "state"
+    goes_on = Scripted(replies=[ScriptedReply(to_ask=1, verbatim="Yes, 40k.")])
+
+    with pytest.raises(RunRefused) as raised:
+        await session.play(scenario(goes_on), launched.agent, state=state, command=launched.command)
+
+    message = str(raised.value)
+    assert "sofia (they go on conversing once their script is used: `then: answers`, the default)" in message
+    assert MODEL_VARIABLE in message and not state.exists()
 
 
 async def test_a_question_emailed_to_a_person_whose_replies_a_model_writes_is_never_put_to_them(

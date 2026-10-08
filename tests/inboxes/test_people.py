@@ -153,7 +153,7 @@ async def _fork(tmp_path: Path, product: Product, change: list[Override]) -> lis
         agent=agent,
         reach=Reach(main=driver),
         services=Services(providers=[]),
-        replier_for=lambda s: PeopleReplier(s, None, [declared]),
+        replier_for=lambda s, pins: PeopleReplier(s, None, [declared], pins=pins),
         state_dir=tmp_path / "state",
         traffic=_Quiet(),
         inboxes=Inboxes(scn, [reach]),

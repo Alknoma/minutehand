@@ -59,7 +59,7 @@ async def fork(
         agent=agent,
         reach=reach_for(agent, env=rig.env()),
         services=rig.services(),
-        replier_for=lambda s: PeopleReplier(s, None),
+        replier_for=lambda s, pins: PeopleReplier(s, None, pins=pins),
         state_dir=rig.tmp / "state",
         mounts=rig.mounts,
         traffic=rig.board,
