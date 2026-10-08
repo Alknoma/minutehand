@@ -189,7 +189,7 @@ def _bot(served: Served, app_id: str) -> Iterator[Bot]:
             return
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     bot.url = f"http://127.0.0.1:{server.server_address[1]}/api/messages"
     try:
