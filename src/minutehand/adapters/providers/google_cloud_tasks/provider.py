@@ -316,8 +316,12 @@ class CloudTasksProvider:
     manifest: Manifest = MANIFEST
     seed_model = CloudTasksSeed
 
-    def __init__(self) -> None:
+    def __init__(self, deadline: Callable[[timedelta], float] = timedelta.total_seconds) -> None:
         self._wakes: Wakes | None = None
+        self._deadline = deadline
+        """The real seconds a delivery waits for the handler's answer, given the task's `dispatchDeadline`: the
+        deadline itself, which is the handler's real time. A test hands in a shorter wait to prove the deadline
+        without waiting 15 seconds or more."""
 
     def bind(self, wakes: Wakes) -> None:
         self._wakes = wakes
@@ -389,11 +393,15 @@ class CloudTasksProvider:
             failed = f"the task's URL is not this machine ({host}): point the agent's task URLs at its local address"
         else:
             body = base64.b64decode(task.body) if task.body is not None else None
-            timeout = task.dispatch_deadline.total_seconds()
+            timeout = self._deadline(task.dispatch_deadline)
             try:
                 async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
                     answer = await client.request(task.method, task.url, headers=headers, content=body)
                 status = answer.status_code
+            except httpx.TimeoutException:
+                # "If the worker does not respond by this deadline then the request is cancelled and the attempt is
+                # marked as a DEADLINE_EXCEEDED failure" (Task.dispatchDeadline).
+                failed = f"DEADLINE_EXCEEDED: no answer within the task's dispatchDeadline of {task.dispatch_deadline}"
             except httpx.HTTPError as e:
                 failed = f"{type(e).__name__}: {e}"
         attempt = Attempt(schedule_time=task.schedule_time, dispatch_time=now, response_status=status, failed=failed)

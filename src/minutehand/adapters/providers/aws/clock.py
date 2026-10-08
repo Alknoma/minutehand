@@ -8,18 +8,18 @@ makes into moto (`on`), which asgiref carries into the thread moto's WSGI app ru
 `CreationDate` and `LastModificationDate` are all the run's time, and a message received at a wake becomes visible
 again once the run's clock passes its visibility timeout, whatever the machine's clock says.
 
-A long poll (`WaitTimeSeconds`) is the one thing in moto that waits for its own clock to move: it polls until
-`unix_time()` passes the end of the wait, waiting on the queue for up to a second each time. The run's clock does
-not move inside a call, so each of those waits counts its timeout towards that call's own reading of `unix_time`
-(and nothing else): the poll still waits on the queue in real time, as long as `WaitTimeSeconds` says, and returns
-the moment a message arrives, as SQS's does, and the run's clock is untouched.
+A long poll (`WaitTimeSeconds`, or the queue's `ReceiveMessageWaitTimeSeconds`) that finds a visible message
+answers at once, as SQS's does ("If a message is available, the call returns sooner than WaitTimeSeconds"). One that
+finds none would have to wait, and the run's clock does not move inside a call: moto's wait raises instead, and the
+provider refuses that poll by name (`provider.LONG_POLL`). Serving it needs the orchestrator to move the run's clock while a
+call is held (see `CLAIMS.md`).
 
 moto read outside any call of the provider's is Minutehand's bug, and raises.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -32,19 +32,16 @@ from moto.sqs.models import Queue
 from minutehand.ports.clock import Clock
 
 _CLOCK: ContextVar[Clock | None] = ContextVar("minutehand_aws_clock", default=None)
-_WAITED: ContextVar[list[float] | None] = ContextVar("minutehand_aws_waited", default=None)
 
 
 @contextmanager
 def on(clock: Clock) -> Iterator[None]:
     """Every reading of the time moto makes inside this block is `clock`'s."""
-    clock_token = _CLOCK.set(clock)
-    waited_token = _WAITED.set([0.0])
+    token = _CLOCK.set(clock)
     try:
         yield
     finally:
-        _WAITED.reset(waited_token)
-        _CLOCK.reset(clock_token)
+        _CLOCK.reset(token)
 
 
 def _now() -> datetime:
@@ -59,11 +56,8 @@ def _seconds() -> float:
 
 
 def _unix_time(dt: datetime | None = None) -> float:
-    """moto's `unix_time`: seconds since the epoch, of `dt` or of the run's now (plus what a long poll waited)."""
-    if dt is not None:
-        return moto_utils.unix_time(dt)
-    waited = _WAITED.get()
-    return _seconds() + (waited[0] if waited is not None else 0.0)
+    """moto's `unix_time`: seconds since the epoch, of `dt` or of the run's now."""
+    return moto_utils.unix_time(dt) if dt is not None else _seconds()
 
 
 def _unix_time_millis(dt: datetime | None = None) -> float:
@@ -75,14 +69,12 @@ def _utcnow() -> datetime:
     return _now().astimezone(UTC).replace(tzinfo=None)
 
 
-_wait_for_messages: Callable[[Queue, int], None] = Queue.wait_for_messages
+class WouldWait(RuntimeError):
+    """moto was about to wait for a message on a clock that cannot move inside a call."""
 
 
-def _waited_for_messages(queue: Queue, timeout: int) -> None:
-    _wait_for_messages(queue, timeout)
-    waited = _WAITED.get()
-    if waited is not None:
-        waited[0] += timeout
+def _waits_for_messages(queue: Queue, timeout: int) -> None:
+    raise WouldWait(f"a long poll on {queue.name} found no message, and the run's clock does not move inside a call")
 
 
 def install() -> None:
@@ -95,4 +87,4 @@ def install() -> None:
     ]
     for module, name, reading in replaced:
         setattr(module, name, reading)
-    Queue.wait_for_messages = _waited_for_messages  # type: ignore[method-assign]
+    Queue.wait_for_messages = _waits_for_messages  # type: ignore[method-assign]

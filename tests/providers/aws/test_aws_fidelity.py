@@ -106,15 +106,29 @@ def test_message_and_schedule_timestamps_are_the_runs_time(run: AwsRun) -> None:
 
 
 @pytest.mark.timeout(30)
-def test_a_long_poll_on_an_empty_queue_returns_after_its_wait_though_the_runs_clock_stands_still(
-    run: AwsRun,
-) -> None:
-    """The reference: "If no messages are available and the wait time expires, the call does not return a message list"
-    (ReceiveMessage, WaitTimeSeconds)."""
+def test_a_long_poll_that_finds_a_message_answers_at_once(run: AwsRun) -> None:
+    """The reference: "If a message is available, the call returns sooner than WaitTimeSeconds" (ReceiveMessage)."""
     url, _ = run.queue()
+    run.sqs.send_message(QueueUrl=url, MessageBody="there")
+    got = run.proxy.client("sqs", read_timeout=10).receive_message(QueueUrl=url, WaitTimeSeconds=20)
+    assert [m["Body"] for m in got["Messages"]] == ["there"]
+
+
+@pytest.mark.timeout(30)
+def test_a_long_poll_that_would_wait_is_refused_by_name_and_never_waits(run: AwsRun) -> None:
+    """Waiting needs the run's clock to move inside a call, which it does not: refused, whether the wait is the
+    call's or the queue's ReceiveMessageWaitTimeSeconds; an explicit WaitTimeSeconds of 0 is a short poll."""
+    sqs = run.proxy.client("sqs", read_timeout=10)
+    url, _ = run.queue()
+    waiting, _ = run.queue("waiting", ReceiveMessageWaitTimeSeconds="20")
     began = time.monotonic()
-    assert "Messages" not in run.sqs.receive_message(QueueUrl=url, WaitTimeSeconds=2)
-    assert time.monotonic() - began < 15
+    for asked in ({"QueueUrl": url, "WaitTimeSeconds": 20}, {"QueueUrl": waiting}):
+        with pytest.raises(ClientError) as refused:
+            sqs.receive_message(**asked)
+        assert _code(refused) == ("NotImplemented", 501)
+        assert "a long poll" in str(refused.value)
+    assert "Messages" not in sqs.receive_message(QueueUrl=waiting, WaitTimeSeconds=0)
+    assert time.monotonic() - began < 5
     assert run.clock.now() == START
 
 
@@ -270,6 +284,15 @@ def test_a_cron_time_that_daylight_saving_skips_is_skipped(run: AwsRun) -> None:
         StartDate=datetime(2027, 3, 13, 12, tzinfo=UTC),
     )
     assert [d.at for d in run.wakes.pending] == [datetime(2027, 3, 15, 9, 30, tzinfo=UTC)]
+
+
+def test_a_cron_schedule_whose_start_date_is_past_is_accepted_as_sent(run: AwsRun) -> None:
+    """CreateSchedule's StartDate is "The date, in UTC, after which the schedule can begin invoking its target"; no
+    page limits how far back it may be, so moto's own 5-minute rule is not applied."""
+    _, queue = run.queue()
+    run.schedule("daily", "cron(0 9 * * ? *)", queue, StartDate=START - timedelta(days=1))
+    assert [d.at for d in run.wakes.pending] == [datetime(2026, 8, 25, 9, 0, tzinfo=UTC)]
+    assert run.scheduler.get_schedule(Name="daily")["StartDate"] == START - timedelta(days=1)
 
 
 def test_md5_digests_are_awss_own(run: AwsRun) -> None:

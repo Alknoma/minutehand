@@ -32,7 +32,8 @@ What the world log holds, and what it does not:
 - **moto reads the run's clock.** `aws/clock.py` points the time moto's SQS and Scheduler
   models read at the clock of the run whose call it answers, so SQS DelaySeconds,
   VisibilityTimeout, SentTimestamp and a schedule's CreationDate are the run's time. A
-  long poll (WaitTimeSeconds) waits in real time while the run's clock stands still.
+  long poll that finds no message would have to wait on that clock, which does not move
+  inside a call, so it is refused by name (`LONG_POLL`); one that finds a message answers.
 - **Only AWS's surface, and only two services.** Every operation of botocore's `scheduler`
   and `sqs` models is served or refused 501 by name (`wire.SERVED`, `wire.REFUSED_BECAUSE`);
   every other AWS host, and moto's own `/moto-api`, is refused. Where moto answers a
@@ -58,7 +59,7 @@ from collections.abc import Awaitable, Callable
 from asgiref.wsgi import WsgiToAsgi
 from moto import settings as moto_settings
 from moto.moto_server.werkzeug_app import DomainDispatcherApplication, create_backend_app
-from moto.scheduler.models import scheduler_backends
+from moto.scheduler.models import Schedule, scheduler_backends
 from moto.sqs.models import Queue, sqs_backends
 
 from minutehand.adapters import answering
@@ -154,6 +155,7 @@ class AwsProvider:
         )
         os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
         aws_clock.install()
+        _no_unsourced_start_date_rule()
         moto: ASGIApp = WsgiToAsgi(DomainDispatcherApplication(create_backend_app))
         account = self._account.encode()
 
@@ -190,11 +192,22 @@ class AwsProvider:
             with aws_clock.on(clock):
                 deliveries = self._deliveries(deleting, world) if deleting is not None else []
                 _no_credential_checks()
-                status, response_headers, response_body = await _call(moto, forwarded, body)
+                waits = False
+                try:
+                    status, response_headers, response_body = await _call(moto, forwarded, body)
+                except aws_clock.WouldWait:
+                    waits, status, response_headers, response_body = True, 501, [], b""
                 if call is not None and 200 <= status < 300:
                     self._record(call, world, clock)
                 if deleting is not None and 200 <= status < 300:
                     self._taken(deleting, deliveries, world)
+            if waits:
+                refused = NotImplementedByProvider(LONG_POLL)
+                answering.unimplemented(refused, refused.message)
+                form = _header(headers, b"content-type").startswith("application/x-www-form-urlencoded")
+                refused_headers, refused_body = refused.answer(query_protocol=form)
+                await _respond(send, refused.status, refused_headers, refused_body)
+                return
             if 200 <= status < 300:
                 if created is not None:
                     self._sent.setdefault((created.region, created.queue), created.attributes)
@@ -376,6 +389,24 @@ class AwsProvider:
         if self._wakes is None:
             raise RuntimeError("the aws provider books wakes, and bind() was not called before the run")
         return self._wakes
+
+
+LONG_POLL = (
+    "SQS ReceiveMessage: a long poll (WaitTimeSeconds, or the queue's ReceiveMessageWaitTimeSeconds) that finds no "
+    "visible message would wait, and the run's clock does not move inside a call; poll without a wait, or again later"
+)
+
+
+def _no_unsourced_start_date_rule() -> None:
+    """moto refuses a cron schedule whose StartDate is more than 5 minutes before now ("The StartDate you specify
+    cannot be earlier than 5 minutes ago."). No AWS page says so: CreateSchedule's StartDate is only "The date, in
+    UTC, after which the schedule can begin invoking its target". moto's check is replaced by one that keeps the
+    date as sent."""
+
+    def as_sent(schedule: Schedule, start_date: str | None) -> str | None:
+        return start_date
+
+    Schedule._validate_start_date = as_sent  # type: ignore[method-assign]
 
 
 _ROUTED_BY = (b"x-moto-account-id", b"authorization")

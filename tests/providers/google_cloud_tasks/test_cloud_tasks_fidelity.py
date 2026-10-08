@@ -3,6 +3,9 @@ through the proxy, deliveries to a handler on this machine."""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -16,8 +19,9 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from minutehand.adapters.providers.google_cloud_tasks import wire
+from minutehand.domain.world import EntityKind, EntityRef
 from tests.orchestrator.world import serving as handler_at
-from tests.providers.google_cloud_tasks.test_cloud_tasks import START, Tasks, opened, refusal, seeded
+from tests.providers.google_cloud_tasks.test_cloud_tasks import GRPC, QUEUE, START, Tasks, opened, refusal, seeded
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -41,7 +45,9 @@ class Answers:
 
 
 async def _create(tasks: Tasks, task: str) -> str:
-    client = await tasks.client(f"say(name=client.create_task(parent=QUEUE, task={task}).name)")
+    client = await tasks.client(
+        f"from google.protobuf import duration_pb2\nsay(name=client.create_task(parent=QUEUE, task={task}).name)"
+    )
     name = str((await client.heard())["name"])
     await client.finished()
     return name
@@ -309,6 +315,54 @@ async def test_a_task_created_without_a_name_is_given_an_id_of_digits_that_does_
     """The reference: "If a name is not specified then the system will generate a random unique task id" (tasks.create)."""
     names = [await _create(tasks, '{"http_request": {"url": "http://127.0.0.1:9/x"}}') for _ in range(3)]
     ids = [n.rsplit("/", 1)[1] for n in names]
-    assert len(set(ids)) == 3 and all(i.isdigit() and len(i) == 20 for i in ids)
+    assert len(set(ids)) == 3, "unique"
+    assert all(re.fullmatch(r"[A-Za-z0-9_-]{1,500}", i) for i in ids), "of TASK_ID's documented characters and length"
+    assert all(i.isdigit() for i in ids)
     gaps = {int(b) - int(a) for a, b in pairwise(ids)}
-    assert all(abs(g) > 1000 for g in gaps), ids
+    assert all(abs(g) > 1000 for g in gaps), f"not sequential, as the reference warns against: {ids}"
+
+
+async def test_a_queue_listing_with_a_filter_over_grpc_is_refused_by_name(tasks: Tasks) -> None:
+    client = await tasks.client(
+        """
+location = QUEUE.rsplit("/queues/", 1)[0]
+say(filtered=refused(lambda: list(client.list_queues(request={"parent": location, "filter": "state: PAUSED"}))),
+    plain=[q.name for q in client.list_queues(parent=location)])
+""",
+        transport=GRPC,
+    )
+    heard = await client.heard()
+    await client.finished()
+    filtered = refusal(heard, "filtered")
+    assert filtered[0] == "MethodNotImplemented" and "ListQueues with a filter" in filtered[1]
+    assert heard["plain"] == [QUEUE]
+
+
+async def test_a_handler_that_does_not_answer_within_the_dispatch_deadline_fails_deadline_exceeded(
+    tasks: Tasks,
+) -> None:
+    """The reference: "If the worker does not respond by this deadline then the request is cancelled and the attempt
+    is marked as a DEADLINE_EXCEEDED failure" (Task.dispatchDeadline). The delivery is handed a wait of a hundredth
+    of the deadline, so 15 s is 0.15 s here; the handler takes 1 s."""
+    from minutehand.adapters.providers.google_cloud_tasks.provider import CloudTasksProvider
+
+    async def slow(request: Request) -> Response:
+        await asyncio.sleep(1)
+        return JSONResponse({})
+
+    hurried = CloudTasksProvider(deadline=lambda d: d.total_seconds() / 100)
+    hurried.bind(tasks.wakes)
+    async with handler_at(Starlette(routes=[Route("/tasks/follow-up", slow, methods=["POST"])])) as base:
+        short = await _create(tasks, _task(base, dispatch_deadline="duration_pb2.Duration(seconds=15)"))
+        long = await _create(tasks, _task(base, dispatch_deadline="duration_pb2.Duration(seconds=300)"))
+        tasks.wakes.pending = []
+        for name in (short, long):
+            await hurried.deliver_booking(name, tasks.store, tasks.clock)
+    attempts: dict[str, dict[str, object]] = {}
+    for name in (short, long):
+        stored = tasks.store.get(EntityRef(provider="google_cloud_tasks", kind=EntityKind.RECORD, external_id=name))
+        assert stored is not None
+        attempts[name] = json.loads(stored.body)["last_attempt"]
+    assert attempts[short]["response_status"] is None
+    assert str(attempts[short]["failed"]).startswith("DEADLINE_EXCEEDED")
+    assert attempts[long]["response_status"] == 200
