@@ -123,12 +123,15 @@ class AwsProxy:
         future: Future[T] = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result(timeout=30)
 
-    def client(self, service: str, region: str = "us-east-1") -> BaseClient:
-        """A stock boto3 client: dummy credentials, the proxy, the CA. No endpoint_url."""
-        session = Session(aws_access_key_id="test", aws_secret_access_key="test", region_name=region)
+    def client(
+        self, service: str, region: str = "us-east-1", *, key: str = "test", secret: str = "test", **config: object
+    ) -> BaseClient:
+        """A stock boto3 client: dummy credentials (or `key` and `secret`), the proxy, the CA. No endpoint_url.
+        `config` is more of botocore's `Config`."""
+        session = Session(aws_access_key_id=key, aws_secret_access_key=secret, region_name=region)
         return session.client(
             service,
-            config=Config(proxies={"https": f"http://127.0.0.1:{self.port}"}, retries={"max_attempts": 1}),
+            config=Config(proxies={"https": f"http://127.0.0.1:{self.port}"}, retries={"max_attempts": 1}, **config),
             verify=str(self.ca),
         )
 
