@@ -313,3 +313,15 @@ async def test_a_bots_mentions_are_kept_and_graph_reads_them(tenant: Tenant, mic
             f"{GRAPH}/teams/{tenant.directory.team_id}/channels/{general}/messages/{sent.json()['id']}", headers=app
         )
         assert [m["mentioned"]["user"]["id"] for m in read.json()["mentions"]] == [sofia.user.id]
+
+
+async def test_a_preference_that_would_change_the_answer_unserved_is_refused_by_name(outlook: Outlook) -> None:
+    """`Prefer: outlook.timezone` other than UTC and `IdType="ImmutableId"` change what Graph answers; answering
+    as though they were not asked would hand back something else, so each is refused by name. UTC is served."""
+    url = f"{GRAPH}/me/events"
+    zoned = await outlook.http.get(url, headers={**outlook.me, "Prefer": 'outlook.timezone="Pacific Standard Time"'})
+    assert zoned.status_code == 501 and "outlook.timezone" in zoned.json()["error"]["message"]
+    immutable = await outlook.http.get(f"{GRAPH}/me/messages", headers={**outlook.me, "Prefer": 'IdType="ImmutableId"'})
+    assert immutable.status_code == 501 and "ImmutableId" in immutable.json()["error"]["message"]
+    utc = await outlook.http.get(url, headers={**outlook.me, "Prefer": 'outlook.timezone="UTC"'})
+    assert utc.status_code == 200

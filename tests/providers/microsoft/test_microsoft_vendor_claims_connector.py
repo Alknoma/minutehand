@@ -118,11 +118,11 @@ async def test_an_activity_well_inside_the_size_limit_is_delivered(caller: Calle
     assert caller.stored(answered.json()["id"]).text == "q" * 20_000
 
 
-async def test_details_of_a_team_that_does_not_exist_are_refused_404(caller: Caller) -> None:
-    """Observed: an unknown team id is a 404. Class (b), asserted by the old emulator; the connector reference
-    documents 404 only as 'resource not found'."""
+async def test_details_of_a_team_that_does_not_exist_are_refused_by_name(caller: Caller) -> None:
+    """Not documented, and no recorded answer of the real connector: refused by name (501), not answered with a
+    guessed 404. The old emulator's 404 had no evidence behind it."""
     answered = await caller.http.get(f"{CONNECTOR}v3/teams/19:no-such-team@thread.tacv2", headers=caller.auth)
-    assert answered.status_code == 404
+    assert answered.status_code == 501 and "not documented" in answered.text
 
 
 # ---------------------------------------------------------------------- sending, replying, updating, deleting
@@ -184,23 +184,21 @@ async def test_an_update_replaces_the_activitys_text(caller: Caller) -> None:
     assert caller.stored(sent).text == "Votes counted: carried"
 
 
-async def test_an_update_carrying_both_text_and_a_card_is_refused_bad_syntax(caller: Caller) -> None:
-    """Observed: an update that would render as two messages (a text bubble and a card) is refused 400 `BadSyntax`
-    'Activity resulted into multiple skype activities', and the activity is left as it was. Class (b), seen in
-    production by the old emulator's authors; not on Microsoft's pages."""
+async def test_an_update_carrying_both_text_and_a_card_is_refused_by_name(caller: Caller) -> None:
+    """Not documented: the old emulator's 400 `BadSyntax` was kept on its authors' word, with no recorded answer of
+    the real connector, so the update is refused by name (501) and the activity is left as it was."""
     sent = (await caller.send(caller.general, {"type": "message", "text": "Working on it"})).json()["id"]
     answered = await caller.http.put(
         f"{caller.activities(caller.general)}/{sent}",
         json={"type": "message", "id": sent, "text": "Here it is", "attachments": [card("Result")]},
         headers=caller.auth,
     )
-    assert refusal(answered, 400) == "BadSyntax"
-    assert "multiple skype activities" in answered.json()["error"]["message"]
+    assert refusal(answered, 501) == "not_implemented"
     assert caller.stored(sent).text == "Working on it"
 
 
 async def test_an_update_carrying_only_a_card_is_accepted(caller: Caller) -> None:
-    """Observed: the same update with the card alone is accepted. Class (b), as above."""
+    """Documented: Update Activity replaces the activity with the one sent, a card alone included. Class (a), REST."""
     sent = (await caller.send(caller.general, {"type": "message", "text": "Working on it"})).json()["id"]
     answered = await caller.http.put(
         f"{caller.activities(caller.general)}/{sent}",
@@ -304,16 +302,16 @@ async def test_a_proactive_create_of_a_group_chat_is_refused_400(caller: Caller)
     assert refusal(answered, 400) == "BadArgument"
 
 
-async def test_a_proactive_create_naming_another_bot_is_refused_400(caller: Caller) -> None:
-    """Observed: `bot.id` naming an app other than the one that signed in is refused 400. Class (b), asserted by the
-    old emulator; Microsoft's pages show `bot.id` but do not say what a foreign one answers."""
+async def test_a_proactive_create_naming_another_bot_is_refused_by_name(caller: Caller) -> None:
+    """Not documented: Microsoft's pages show `bot.id` but not what a foreign one answers, and the old emulator's 400
+    had no recorded evidence, so it is refused by name (501)."""
     user, _ = caller.person("owen")
     answered = await caller.http.post(
         f"{CONNECTOR}v3/conversations",
         json=_create(caller, user.mri, bot={"id": "28:an-app-that-is-not-this-one"}),
         headers=caller.auth,
     )
-    assert refusal(answered, 400) == "BadArgument"
+    assert refusal(answered, 501) == "not_implemented"
 
 
 # ---------------------------------------------------------------------- teams and rosters

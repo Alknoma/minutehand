@@ -16,8 +16,8 @@ What Graph does and this does too:
   `nextExpectedRanges` until the last, then the item.
 - `copy` answers 202 with a monitor URL; the copy is made at once and the monitor reports it completed.
 - `delta` lists every change since its token, with Graph's `deleted` facet for what was removed, paged by
-  `@odata.nextLink` and closed by `@odata.deltaLink`. A token older than `DELTA_TOKEN_LIFETIME` on the run's clock
-  is refused 410 `resyncRequired` (this fake's lifetime; Graph does not publish one).
+  `@odata.nextLink` and closed by `@odata.deltaLink`. A token never expires with age: Graph publishes no lifetime,
+  so none is invented; a scenario that wants `resyncRequired` declares it as a fault (`MicrosoftSeed.faults`).
 - A file a person holds open (a `MicrosoftSeed.holds` fault, `StoredHold`) refuses every write 423 while held.
 - A user's token reaching another user's OneDrive is refused 403 `accessDenied`; an application token reaches all.
 """
@@ -30,7 +30,7 @@ import hashlib
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from urllib.parse import quote
 
 from starlette.requests import Request
@@ -74,7 +74,6 @@ from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 200
 PAGE_MAX = 999
-DELTA_TOKEN_LIFETIME = timedelta(days=30)
 MAX_SIMPLE_UPLOAD = 250 * 1024 * 1024
 DOWNLOAD_LIFETIME = 3600
 DRIVE_ITEM_TYPE = "#Microsoft.Graph.DriveItem"
@@ -661,7 +660,7 @@ class Files:
         if order:
             key, _, direction = order.partition(" ")
             if key not in ("name", "lastModifiedDateTime", "size"):  # enum-lint: exempt Graph's $orderby property name
-                raise bad_request(f"Ordering by '{key}' is not supported.")
+                raise NotImplementedError(f"$orderby={order}")
             by_name = key == "name"  # enum-lint: exempt Graph's $orderby property name
             children.sort(key=lambda i: str(getattr(i, key)).lower() if by_name else getattr(i, key))
             if direction.lower() == "desc":
@@ -743,16 +742,9 @@ class Files:
     def _since(self, token: str) -> int:
         try:
             seq_text, _, stamp_text = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode().partition(".")
-            seq, stamp = int(seq_text), int(stamp_text)
+            seq, _ = int(seq_text), int(stamp_text)
         except (binascii.Error, ValueError) as e:
             raise bad_request("The delta token is not valid.") from e
-        issued = datetime.fromtimestamp(stamp, tz=self._clock.now().tzinfo)
-        if self._clock.now() - issued > DELTA_TOKEN_LIFETIME:
-            raise GraphRefusal(
-                410,
-                "resyncRequired",
-                "The delta token has expired. Start again without a token and replace what you hold with what is listed.",
-            )
         return seq
 
     async def _delta(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:

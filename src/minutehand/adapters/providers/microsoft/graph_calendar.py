@@ -43,6 +43,7 @@ from minutehand.adapters.providers.microsoft.graph_mail import (
     plain,
     preference_applied,
     recipient_of,
+    refuse_unserved_preferences,
     weak_etag,
 )
 from minutehand.adapters.providers.microsoft.state import (
@@ -173,6 +174,7 @@ class Calendar:
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
         claims = graph_caller(request, self._world)
+        refuse_unserved_preferences(request)
         owner, rest = mailbox_owner(self._world, claims, parts)
         method = request.method
         if rest[:1] == ["calendar"] and rest[1:2] in (["events"], ["calendarView"], ["getSchedule"]):

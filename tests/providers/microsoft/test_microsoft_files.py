@@ -202,10 +202,14 @@ async def test_a_held_file_refuses_the_agents_write_through_graph(tmp_path: Path
         assert code(put, 423) == "resourceLocked"
 
 
-async def test_an_old_delta_token_is_refused_410_resync_required(files: Files) -> None:
+async def test_an_old_delta_token_still_lists_what_changed_since(files: Files) -> None:
+    """Graph publishes no delta token lifetime, so none is invented: a token a month old still answers."""
     link = (await files.http.get(files.url("/root/delta"), headers=files.auth)).json()["@odata.deltaLink"]
     files.tenant.clock.jump(files.tenant.clock.now() + timedelta(days=31))
-    assert code(await files.http.get(link, headers=files.auth), 410) == "resyncRequired"
+    await files.http.put(files.url("/root:/later.txt:/content"), content=b"x", headers=files.auth)
+    answered = await files.http.get(link, headers=files.auth)
+    assert answered.status_code == 200
+    assert "later.txt" in [i["name"] for i in answered.json()["value"]]
 
 
 async def test_another_users_onedrive_is_refused_to_a_user(files: Files, microsoft: Intercepted) -> None:

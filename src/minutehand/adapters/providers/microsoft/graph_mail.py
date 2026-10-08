@@ -160,6 +160,23 @@ def _text_preferred(request: Request) -> bool:
     return _TEXT_PREFERRED.search(prefer) is not None
 
 
+_TIME_ZONE_PREFERRED = re.compile(r'outlook\.timezone\s*=\s*"?([^",;]+)"?', re.IGNORECASE)
+_IMMUTABLE_IDS = re.compile(r'IdType\s*=\s*"?ImmutableId"?', re.IGNORECASE)
+
+
+def refuse_unserved_preferences(request: Request) -> None:
+    """Refuse by name a `Prefer` that would change the answer in a way not served: times in a zone other than UTC
+    (`outlook.timezone`, https://learn.microsoft.com/en-us/graph/api/user-list-events) and immutable ids
+    (`IdType="ImmutableId"`, https://learn.microsoft.com/en-us/graph/outlook-immutable-id). Answering as though they
+    were not asked would hand back what the caller did not ask for."""
+    prefer = request.headers["prefer"] if "prefer" in request.headers else ""
+    zone = _TIME_ZONE_PREFERRED.search(prefer)
+    if zone is not None and zone.group(1).strip().lower() not in ("utc", "etc/utc"):
+        raise NotImplementedError(f"Prefer: outlook.timezone={zone.group(1).strip()!r}: answers are in UTC only")
+    if _IMMUTABLE_IDS.search(prefer) is not None:
+        raise NotImplementedError('Prefer: IdType="ImmutableId"')
+
+
 def preference_applied(request: Request) -> dict[str, str] | None:
     """`Preference-Applied` when the caller asked for text bodies (message-get, user-list-calendarview)."""
     return {"Preference-Applied": 'outlook.body-content-type="text"'} if _text_preferred(request) else None
@@ -397,6 +414,7 @@ class Mail:
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
         claims = graph_caller(request, self._world)
+        refuse_unserved_preferences(request)
         owner, rest = mailbox_owner(self._world, claims, parts)
         method = request.method
         if rest == ["sendMail"] and method == "POST":

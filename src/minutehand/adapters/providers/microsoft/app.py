@@ -223,7 +223,7 @@ class SharePointHost:
         if upload is not None:
             guid = (request.query_params["guid"] if "guid" in request.query_params else "").strip("'")
             return await self._files.upload_fragment(request, guid)
-        raise GraphRefusal(404, "itemNotFound", "Nothing is served at this address.")
+        raise NotImplementedError("nothing Graph hands out is at this address")
 
 
 class MicrosoftApp:

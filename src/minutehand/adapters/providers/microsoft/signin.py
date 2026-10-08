@@ -33,6 +33,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route, Router
 
 from minutehand.adapters.providers.microsoft import keys, tokens, wire
+from minutehand.adapters.providers.microsoft.connector import EVERY_METHOD, not_served
 from minutehand.adapters.providers.microsoft.state import (
     MicrosoftWorld,
     TenantRecord,
@@ -369,6 +370,7 @@ def login_router(store: Store, clock: Clock) -> Router:
             Route("/{tenant}/v2.0/.well-known/openid-configuration", sign_in.openid_configuration, methods=["GET"]),
             Route("/{tenant}/discovery/v2.0/keys", sign_in.keys, methods=["GET"]),
             Route("/discovery/v2.0/keys", sign_in.keys, methods=["GET"]),
+            Route("/{rest:path}", not_served, methods=EVERY_METHOD),
         ]
     )
 
@@ -378,5 +380,6 @@ def bot_framework_router() -> Router:
         routes=[
             Route("/v1/.well-known/openidconfiguration", bot_framework_metadata, methods=["GET"]),
             Route("/v1/.well-known/keys", bot_framework_keys, methods=["GET"]),
+            Route("/{rest:path}", not_served, methods=EVERY_METHOD),
         ]
     )

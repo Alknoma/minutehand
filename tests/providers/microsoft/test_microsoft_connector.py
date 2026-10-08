@@ -90,7 +90,7 @@ async def test_update_and_delete_change_only_the_bots_own_activity(connector: Bo
     assert isinstance(last.after, MessageSnapshot) and last.after.recipient_emails == ["sofia@example.com"]
 
 
-async def test_an_update_with_text_and_a_card_together_is_refused(connector: Bot) -> None:
+async def test_an_update_with_text_and_a_card_together_is_refused_by_name(connector: Bot) -> None:
     _, chat = connector.chat("sofia")
     url = f"{CONNECTOR}v3/conversations/{chat.id}/activities"
     sent = (await connector.http.post(url, json={"type": "message", "text": "x"}, headers=connector.auth)).json()
@@ -102,8 +102,8 @@ async def test_an_update_with_text_and_a_card_together_is_refused(connector: Bot
         ],
     }
     assert (
-        error_code(await connector.http.put(f"{url}/{sent['id']}", json=both, headers=connector.auth), 400)
-        == "BadSyntax"
+        error_code(await connector.http.put(f"{url}/{sent['id']}", json=both, headers=connector.auth), 501)
+        == "not_implemented"
     )
 
 
@@ -202,3 +202,19 @@ async def test_an_unknown_conversation_and_an_oversized_activity_are_refused(con
         headers=connector.auth,
     )
     assert error_code(huge, 413) == "MessageSizeTooBig"
+
+
+async def test_connector_operations_not_served_are_refused_by_name(connector: Bot) -> None:
+    """The connector's other operations (Get Conversations, Send Conversation History, Upload Attachment, an
+    activity's members) are refused by name, 501, never a bare 404 or 405."""
+    base = f"{CONNECTOR}v3/conversations"
+    general = connector.general
+    for method, url in (
+        ("GET", base),
+        ("POST", f"{base}/{general}/activities/history"),
+        ("POST", f"{base}/{general}/attachments"),
+        ("GET", f"{base}/{general}/activities/1/members"),
+    ):
+        answered = await connector.http.request(method, url, json={}, headers=connector.auth)
+        assert error_code(answered, 501) == "not_implemented"
+        assert f"{method} /teams/v3/conversations" in answered.json()["error"]["message"]

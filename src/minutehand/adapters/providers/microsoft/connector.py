@@ -230,7 +230,9 @@ class Connector:
         if current.sender.id != bot_mri(app.app_id):
             raise ConnectorRefusal(403, "NotEnoughPermissions", "A bot can update only the activities it sent.")
         if sent.text and sent.attachments:
-            raise ConnectorRefusal(400, "BadSyntax", "Activity resulted into multiple skype activities")
+            raise NotImplementedError(
+                "an update carrying both text and an attachment: the connector's answer to it is not documented"
+            )
         updated = current.model_copy(
             update={
                 "text": sent.text if sent.text is not None else (None if sent.attachments else current.text),
@@ -282,7 +284,9 @@ class Connector:
         if not tenant:
             raise ConnectorRefusal(400, "BadArgument", "Tenant id is required to create a conversation in Teams.")
         if asked.bot is not None and asked.bot.id not in (app.app_id, bot_mri(app.app_id)):
-            raise ConnectorRefusal(400, "BadArgument", "The bot in the request is not the bot that signed in.")
+            raise NotImplementedError(
+                "a conversation created naming another bot than the caller: the connector's answer is not documented"
+            )
         if asked.isGroup or len(asked.members) != 1:
             raise ConnectorRefusal(
                 400, "BadArgument", "Only a 1:1 conversation with exactly one member can be created by a bot."
@@ -364,7 +368,9 @@ class Connector:
         thread = request.path_params["team"]
         team = self._world.team_by_thread(thread) or self._world.team(thread)
         if team is None:
-            raise ConnectorRefusal(404, "NotFound", "The team was not found.")
+            raise NotImplementedError(
+                f"a team the world does not hold ({thread}): the connector's answer is not documented"
+            )
         general = self._conversation(team.general_channel_id, app)
         return team.id, general
 
@@ -410,6 +416,7 @@ def connector_router(store: Store, clock: Clock) -> Router:
         routes=[
             Route(conv, api.create, methods=["POST"]),
             Route(conv + "/{conversation}/activities", api.send, methods=["POST"]),
+            Route(conv + "/{conversation}/activities/history", not_served, methods=["POST"]),
             Route(conv + "/{conversation}/activities/{activity}", api.send, methods=["POST"]),
             Route(conv + "/{conversation}/activities/{activity}", api.update, methods=["PUT"]),
             Route(conv + "/{conversation}/activities/{activity}", api.delete, methods=["DELETE"]),
@@ -418,5 +425,14 @@ def connector_router(store: Store, clock: Clock) -> Router:
             Route(conv + "/{conversation}/members/{member}", api.member, methods=["GET"]),
             Route("/{region}/v3/teams/{team}", api.team, methods=["GET"]),
             Route("/{region}/v3/teams/{team}/conversations", api.team_conversations, methods=["GET"]),
+            Route("/{rest:path}", not_served, methods=EVERY_METHOD),
         ]
     )
+
+
+EVERY_METHOD = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+
+async def not_served(request: Request) -> Response:
+    """Every other call on the host is refused by name (501), never answered with a bare 404 or 405."""
+    raise NotImplementedError("not an operation this provider serves on this host")
