@@ -768,7 +768,8 @@ class NotionApi:
         query = self._query(request)
         raw = self._one(query, "block_id")
         if raw is None:
-            raise wire.failed("query.block_id", "defined")  # https://github.com/brekkylab/backlot/issues/393
+            # Reported: https://github.com/brekkylab/backlot/issues/393
+            raise wire.failed("query.block_id", "defined")
         page = self._page(call, wire.canonical_id(raw, "query.block_id"))
         comments = self._world.comments(page.id)
         comments.sort(key=lambda c: c.created_time)

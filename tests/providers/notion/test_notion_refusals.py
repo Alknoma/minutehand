@@ -144,6 +144,9 @@ async def test_children_nested_three_deep_in_one_request_are_refused_in_notions_
         "body failed validation: body.children[0].toggle.children[0].toggle.children[0].toggle.children should be not "
         'present, instead was `[{"type":"paragraph"'
     )
+    assert message.endswith("...`."), (
+        "a value is cut at 55 characters (https://github.com/niklas-joh/plantScraper/issues/9)"
+    )
 
 
 async def test_a_missing_field_and_a_stray_one_are_refused_in_notions_words(api: httpx.AsyncClient) -> None:
@@ -178,6 +181,14 @@ async def test_changing_a_blocks_type_is_refused_in_notions_words(api: httpx.Asy
     heading = await first_block(api)
     message = refusal(await api.patch(f"/v1/blocks/{heading['id']}", json=paragraph("now")), 400, "validation_error")
     assert message == "Expected block type heading_1 in request body"
+
+
+async def test_a_value_that_is_not_a_boolean_is_refused_by_name(api: httpx.AsyncClient) -> None:
+    """No report gives Notion's words for it."""
+    todo = {"type": "to_do", "to_do": {"rich_text": [], "checked": "yes"}}
+    assert unserved(await append(api, {"children": [todo]})).startswith(
+        "body.children[0].to_do.checked that is not a boolean"
+    )
 
 
 async def test_a_block_type_this_fake_does_not_build_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:

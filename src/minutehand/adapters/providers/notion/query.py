@@ -125,9 +125,8 @@ def parse_filter(
     by_id = {str(s["id"]): n for n, s in schema.items()}
     name = key if key in schema else by_id[key] if key in by_id else None
     if name is None:
-        raise wire.reported(
-            f"Could not find property with name or id: {key}"
-        )  # https://github.com/ikisuke/wagumi-sbt/issues/13
+        # Reported: https://github.com/ikisuke/wagumi-sbt/issues/13
+        raise wire.reported(f"Could not find property with name or id: {key}")
     kind = wire.schema_type(schema[name])
     typed = [k for k in found if k not in ("property", "type")]
     if typed != [kind.value]:

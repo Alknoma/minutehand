@@ -227,9 +227,8 @@ class Editor:
         for key, raw in given.items():
             name = key if key in widened else by_id[key] if key in by_id else None
             if name is None:
-                raise wire.reported(
-                    f"{key} is not a property that exists."
-                )  # https://github.com/bil0u/remarkable2-to-notion/issues/2
+                # Reported: https://github.com/bil0u/remarkable2-to-notion/issues/2
+                raise wire.reported(f"{key} is not a property that exists.")
             values[name], widened[name] = wire.property_value(widened[name], raw, f"body.properties.{key}", self, self)
         return values, widened
 

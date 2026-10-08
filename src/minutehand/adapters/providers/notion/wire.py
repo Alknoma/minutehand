@@ -472,9 +472,8 @@ def rich_text(value: JsonValue, where: str, names: Names) -> list[JsonValue]:
     """A caller's rich text array, checked and normalised to what Notion stores and serves."""
     items = as_list(value, where)
     if len(items) > MAX_RICH_TEXT_ITEMS:
-        raise failed(
-            f"{where}.length", f"≤ `{MAX_RICH_TEXT_ITEMS}`", len(items)
-        )  # https://github.com/Oligarchy-with-DeamoV/OctopusScraper/issues/73
+        # Reported: https://github.com/Oligarchy-with-DeamoV/OctopusScraper/issues/73
+        raise failed(f"{where}.length", f"≤ `{MAX_RICH_TEXT_ITEMS}`", len(items))
     return [_rich_item(item, f"{where}[{i}]", names) for i, item in enumerate(items)]
 
 
@@ -496,9 +495,8 @@ def _rich_item(value: JsonValue, where: str, names: Names) -> JsonValue:
         content = as_text(body["content"], f"{where}.text.content")
         size = len(content.encode("utf-16-le")) // 2
         if size > MAX_TEXT:
-            raise failed(
-                f"{where}.text.content.length", f"≤ `{MAX_TEXT}`", size
-            )  # https://github.com/trustmaster/gkeep2notion/issues/15
+            # Reported: https://github.com/trustmaster/gkeep2notion/issues/15
+            raise failed(f"{where}.text.content.length", f"≤ `{MAX_TEXT}`", size)
         link = body["link"] if "link" in body else None
         href: str | None = None
         if link is not None:
@@ -811,9 +809,8 @@ def new_blocks(value: JsonValue, where: str, names: Names, *, depth: int = 0, se
     a link preview, and more than a request's hundred blocks."""
     items = as_list(value, where)
     if len(items) > MAX_CHILDREN and not seeding:
-        raise failed(
-            f"{where}.length", f"≤ `{MAX_CHILDREN}`", len(items)
-        )  # https://github.com/Suntory-N-Water/kindle-highlight-syncer/issues/2
+        # Reported: https://github.com/Suntory-N-Water/kindle-highlight-syncer/issues/2
+        raise failed(f"{where}.length", f"≤ `{MAX_CHILDREN}`", len(items))
     return [_new_block(item, f"{where}[{i}]", names, depth, seeding) for i, item in enumerate(items)]
 
 
@@ -841,9 +838,8 @@ def _new_block(value: JsonValue, where: str, names: Names, depth: int, seeding: 
             raise failed(f"{where}.table.children", "defined")
         return NewBlock(type=kind, content=content)
     if depth >= MAX_NESTING:
-        raise failed(
-            f"{where}.{kind.value}.children", "not present", children_given
-        )  # https://github.com/tryfabric/martian/issues/15
+        # Reported: https://github.com/tryfabric/martian/issues/15
+        raise failed(f"{where}.{kind.value}.children", "not present", children_given)
     if kind is BlockType.TABLE:
         return NewBlock(type=kind, content=content, children=_table_rows(children_given, content, where, names))
     if not takes_children(kind, content):
@@ -907,9 +903,8 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
             if language is None:
                 raise failed(f"{where}.language", "defined")
             if language not in CODE_LANGUAGES:
-                raise failed(
-                    f"{where}.language", one_of(CODE_LANGUAGE_ORDER), language
-                )  # https://github.com/ALT-F4-LLC/notion.nvim/issues/16
+                # Reported: https://github.com/ALT-F4-LLC/notion.nvim/issues/16
+                raise failed(f"{where}.language", one_of(CODE_LANGUAGE_ORDER), language)
             found["language"] = language
             found["caption"] = rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else []
             return found
@@ -1453,9 +1448,8 @@ def _choose(schema: Json, kind: PropertyType, value: JsonValue, where: str) -> t
     if kind is PropertyType.STATUS:
         raise undocumented(f"{where} naming `{name}`, no option of the status property")
     if "," in name:
-        raise reported(
-            f"Invalid select option, commas not allowed: {name}"
-        )  # https://community.make.com/t/how-to-add-notion-select-value-containing-commas/18286
+        # Reported: https://community.make.com/t/how-to-add-notion-select-value-containing-commas/18286
+        raise reported(f"Invalid select option, commas not allowed: {name}")
     added = option(as_text(schema["id"], "id") + "/" + as_text(schema["name"], "name"), name)
     widened = {**schema, kind.value: {**config, "options": [*options, added]}}
     return added, widened
