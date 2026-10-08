@@ -362,6 +362,43 @@ def test_a_rule_naming_the_deadline_of_a_scenario_without_one_is_unread_and_note
     ]
 
 
+def test_each_rule_is_tallied_by_the_times_it_applied_and_the_times_it_could_not_be_read() -> None:
+    """`CheckReport.rules_read`, which the viewer's assessments say a rule held by: a rule whose `when` held for no
+    ask was read for nothing; one naming a moment the run lacks was unread; one that applied was read."""
+    written = """
+    - id: comes_back
+      each: ask
+      when: {answered: true}
+      count: {touches: {}, since: answer, until: answer+PT1H}
+      at_least: 1
+    - id: chases_the_silent
+      each: ask
+      when: {answered: false}
+      count: {follow_ups: {}}
+      at_least: 1
+    - id: nothing_after_the_deadline
+      count: {writes: {}, since: deadline}
+      at_most: 0
+    """
+    log = Log()
+    asked = log.message([SOFIA], 0)
+    log.message([SOFIA], 5.5, text="Thanks, filing it.")
+    log.message([OWNER], 30, text="status")
+    report = Assessments().run(view(scenario(OWNER, SOFIA), log, [reply(SOFIA, asked, 5)], assess=rules(written)))
+    assert report.findings == []
+    assert [(t.rule, t.read, t.unread) for t in report.rules_read] == [
+        ("comes_back", 1, 0),
+        ("chases_the_silent", 0, 0),
+        ("nothing_after_the_deadline", 0, 1),
+    ]
+    assert (
+        evaluate(
+            view(scenario(OWNER, SOFIA), log, [reply(SOFIA, asked, 5)], assess=rules(written)), stop=None
+        ).rules_read
+        == report.rules_read
+    )
+
+
 def _planned(due_hours: float, *, entered: float = 0, source: DueSource = DueSource.REPORTED) -> DueEntry:
     kind = DueKind.AGENT_WAKE if source is not DueSource.REPLY else DueKind.PERSON_REPLY
     return DueEntry(

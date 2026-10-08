@@ -2,8 +2,8 @@
 test agent and on a run another connection is still writing.
 
 No browser runs here: what the page draws is not asserted, only that it reaches nothing beyond this server (its
-script, styles and the vendored libraries are served from /static/) and that every API path it calls exists and
-answers."""
+modules, styles and the vendored libraries are served from /static/) and that every API path it calls exists and
+answers. `test_viewer_page.py` drives the page in a browser."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from minutehand import session
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.web.app import PAGE, STATIC, create_app
 from minutehand.adapters.web.responses import (
+    CallAnsweredBy,
+    CallRowsResponse,
     CallsResponse,
     EventsResponse,
     FindingsResponse,
@@ -197,8 +199,13 @@ def _page() -> str:
     return PAGE.read_text(encoding="utf-8")
 
 
+def _own() -> list[Path]:
+    """The page's own scripts and styles: everything under static/ but the vendored libraries."""
+    return sorted(p for p in STATIC.iterdir() if p.is_file() and p.suffix in (".js", ".css"))
+
+
 def _script() -> str:
-    return (STATIC / "viewer.js").read_text(encoding="utf-8")
+    return "".join(p.read_text(encoding="utf-8") for p in _own() if p.suffix == ".js")
 
 
 async def test_the_page_is_served_and_refers_to_nothing_beyond_this_machine(tmp_path: Path) -> None:
@@ -213,13 +220,16 @@ async def test_the_page_is_served_and_refers_to_nothing_beyond_this_machine(tmp_
             served = await c.get(ref)
             assert served.status_code == 200 and served.content, ref
             assert "@import" not in served.text and not re.search(r"url\(\s*['\"]?(?:https?:)?//", served.text), ref
-    own = (STATIC / "viewer.js").read_text(encoding="utf-8") + (STATIC / "viewer.css").read_text(encoding="utf-8")
+    own = "".join(p.read_text(encoding="utf-8") for p in _own())
     assert re.findall(r"https?://", own, flags=re.IGNORECASE) == []
+    # the page's modules import one another by relative path, and each is served from this server
+    for module in sorted(set(re.findall(r'from\s+"\./([^"]+)"', own))):
+        assert (STATIC / module).is_file(), module
 
 
 def test_every_vendored_library_has_its_licence_beside_it() -> None:
     libraries = sorted(p for p in (STATIC / "vendor").iterdir() if p.is_dir())
-    assert [p.name for p in libraries] == ["d3-7.9.0", "plot-0.6.17", "vis-timeline-8.5.4"]
+    assert [p.name for p in libraries] == ["d3-7.9.0", "plot-0.6.17"]
     for library in libraries:
         assert any(f.name.startswith("LICENSE") for f in library.iterdir()), library.name
 
@@ -228,12 +238,14 @@ async def test_every_api_path_the_page_calls_exists(tmp_path: Path, monkeypatch:
     state = tmp_path / "state"
     parent, _, _ = await parent_and_fork(state, tmp_path, monkeypatch)
     called = sorted(set(re.findall(r'"(/api/[^"]*)"', _script())))
-    assert "/api/runs" in called and "/api/runs/{run}/obligations" in called and "/api/runs/{run}/steps" in called
+    assert "/api/runs" in called and "/api/runs/{run}/timeline" in called and "/api/runs/{run}/events/{seq}" in called
     async with client(state) as c:
+        seq = (await read(c, f"/api/runs/{parent}/events", EventsResponse)).events[0].seq
         for path in called:
             if "{span}" in path:
-                continue  # a model call: this run's agent sends no telemetry, see the test of that endpoint
-            response = await c.get(path.replace("{run}", parent).replace("{step}", "1"))
+                continue  # a model call or a span: this run's agent sends no telemetry, see the test of that endpoint
+            filled = path.replace("{run}", parent).replace("{step}", "1").replace("{seq}", str(seq))
+            response = await c.get(filled.replace("{call}", "1"))
             assert response.status_code == 200, (path, response.text)
 
 
@@ -298,7 +310,11 @@ async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_
     [outcome] = await session.play(scenario(Silent()), agent, state=state, command=launched.command)
     async with client(state) as c:
         calls = await read(c, f"/api/runs/{outcome.record.run_id}/calls", CallsResponse)
+        rows = await read(c, f"/api/runs/{outcome.record.run_id}/call-rows", CallRowsResponse)
     [mail] = [c for c in calls.calls if c.exchange.captured is not None]
+    [row] = [r for r in rows.calls if r.host == "api.mail.test"]
+    assert (row.answered_by, row.provider, row.status) == (CallAnsweredBy.DECLARATION, None, mail.exchange.status)
+    assert {r.answered_by for r in rows.calls if r.host == "slack.com"} == {CallAnsweredBy.PROVIDER}
     assert mail.exchange.captured is not None
     assert (mail.exchange.captured.mode, mail.exchange.captured.answered_by) == (
         CaptureMode.ACKNOWLEDGE,
@@ -306,4 +322,4 @@ async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_
     )
     assert mail.exchange.request_body is not None and "sg-key-in-body" not in mail.exchange.request_body
     page = _script()
-    assert '"/api/runs/{run}/calls"' in page and "Outbound calls" in page and "REPLAYED from a recording" in page
+    assert '"/api/runs/{run}/call-rows"' in page and "REPLAYED from a recording" in page
