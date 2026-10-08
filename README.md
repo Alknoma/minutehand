@@ -94,6 +94,23 @@ simulated people to decide. Hosts no fake answers are declared in the agent file
 replay, or forward to an emulator of your own. `docs/agent-contract.md` lists every touch point, and
 `schemas/agent-api.openapi.json` describes the endpoints.
 
+## Reading a run
+
+A run's findings say what went wrong; its read model says everything the agent did. Every run (and every fork) can
+be read with plain SQL over documented views, bodies decoded: `actions` (every act of the agent, in order),
+`messages` (to whom, the words, whether it asked, followed up or answered), `calls` (every HTTP call with its
+request and answer), `memory` over time, `model_calls` with tokens, `wakes` and what woke them, `replies`, `findings`.
+
+```bash
+minutehand query <run> "SELECT seq, at, text FROM messages WHERE is_follow_up = 1"
+minutehand trace <run> --person sofia      # the agent's acts in order
+minutehand explain <run> <seq>             # what led to one event, and what followed
+minutehand query --schema                  # every view and column
+```
+
+The same are MCP tools (`query_run`, `schema`, `trace`, `explain`). `docs/querying.md` documents every column, how
+the views stay stable, and a dozen ready-made queries.
+
 ## Status
 
 Built and tested (`docs/design.md`, "What exists", counts the tests for each part):
@@ -144,6 +161,7 @@ built.
 | `docs/design.md` | The design, what exists, and its known limits |
 | `docs/agent-contract.md` | Every way an agent and Minutehand touch |
 | `docs/assessments.md` | The rules a team judges its agent by |
+| `docs/querying.md` | Reading a run with SQL: the views, their columns, the stability guarantee, ready-made queries |
 | `docs/capture.md` | Hosts no fake answers: acknowledge, pass through, replay, `--capture-unknown` |
 | `docs/containers.md` | An agent in a container, and the Docker `NO_PROXY` trap |
 | `docs/serve.md` | `minutehand serve`, for a test suite |
