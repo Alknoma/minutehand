@@ -1,7 +1,8 @@
 """What the end-to-end tests share: the scenario, the agent file, and the agent's own program.
 
 The agent is `agents/slack_agent.py`, started by Minutehand itself as `-- <command>` would start it, on a
-port of its own, keeping its state in a file the test can read afterwards.
+port of its own, keeping what it knows in `minutehand_agent.store`: the run's memory, which the test reads from the
+run's world afterwards. The SQLite file it would use in production is never opened under Minutehand.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.memory import memory_of
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported, StateHooks
+from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import (
     DelayRange,
@@ -32,6 +34,7 @@ from minutehand.domain.scenario import (
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, WorldEvent
 from minutehand.session import RUNS, WORLD
 from tests.ports import free_port
+from tests.support.rules import rules
 
 AGENT = Path(__file__).parent / "agents" / "slack_agent.py"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
@@ -54,6 +57,19 @@ NEVER_EXPECTED_TO_ANSWER = Scripted(replies=[])
 """Someone who answers nothing and from whom no answer is expected: the owner, thanked at the end."""
 
 
+POLICY = """
+- id: follows_up_when_due
+  each: ask
+  where: {person_not: [owner]}
+  when: {open_at: due+PT1H}
+  count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
+  at_least: 1
+  message: "wait on {person.key} expired and the agent had not followed up an hour later"
+  pattern: expiry_on_every_wait
+"""
+"""The team's one rule these runs are judged by beside the expectations: a reminder by the time an answer is due."""
+
+
 def scenario(sofia: ReplyBehaviour, *, owner: ReplyBehaviour = Silent(), name: str = "partner_pricing") -> Scenario:  # noqa: B008 - a frozen model
     return Scenario(
         name=name,
@@ -66,6 +82,7 @@ def scenario(sofia: ReplyBehaviour, *, owner: ReplyBehaviour = Silent(), name: s
             Person(key="sofia", name="Sofia Romano", email=SOFIA, reply=sofia),
         ],
         expect=[PersonAsked(person="sofia"), PersonAsked(person="owner", mentions=["confirmed"])],
+        assess=rules(POLICY),
     )
 
 
@@ -76,9 +93,12 @@ class Launched:
     agent: AgentUnderTest
     command: list[str]
     state_file: Path
+    """Where the agent keeps its memory in production: never opened when Minutehand plays it."""
 
-    def state(self) -> dict[str, object]:
-        loaded = json.loads(self.state_file.read_text())
+    def state(self, state: Path, run_id: str, *, root: str | None = None) -> dict[str, object]:
+        """What the agent remembered by the end of a run: its memory as the run's log holds it."""
+        held = memory_of(world(state, run_id, root=root).events())
+        loaded = json.loads(held[("default", "state")])
         assert isinstance(loaded, dict)
         return loaded
 
@@ -89,7 +109,6 @@ def agent_under_test(
     behaviour: str,
     *,
     by_message: bool = False,
-    hooks: bool = False,
     tracing: bool = False,
 ) -> Launched:
     """The agent under test, its behaviour chosen through the environment its command inherits; with `tracing`, it
@@ -108,13 +127,6 @@ def agent_under_test(
         inbound=[
             InboundTarget(provider="slack", url=f"{base}/slack/events", secret=GeneratedSecret(env=SECRET_VARIABLE))
         ],
-        state=StateHooks(
-            snapshot=[*program, "snapshot", str(state_file)],
-            restore=[*program, "restore", str(state_file)],
-            quiet=timedelta(milliseconds=50),
-        )
-        if hooks
-        else None,
     )
     serve = [*program, "serve", "--port", str(port), "--state", str(state_file), *(["--trace"] if tracing else [])]
     return Launched(agent=agent, command=serve, state_file=state_file)

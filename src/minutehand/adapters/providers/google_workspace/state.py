@@ -11,7 +11,8 @@
 | a file's bytes                    | RECORD       | their SHA-256                | `BLOBS`                 |
 | a credential the run signs in     | RECORD       | its SHA-256                  | `CREDENTIALS`           |
 | an access token issued            | RECORD       | its SHA-256                  | `TOKENS`                |
-| a `changes.watch` channel         | RECORD       | the channel id               | `CHANNELS`              |
+| a push channel (`changes.watch`, `events.watch`) | RECORD | the channel id         | `CHANNELS`              |
+| a notification pushed to a channel | RECORD      | `delivery:<channel id>:<message number>` | `DELIVERIES` |
 | a fault the scenario declared     | RECORD       | its position                 | `FAULTS`                |
 | a resumable upload in progress    | RECORD       | its upload id                | `UPLOADS`               |
 | the file a seeded document became | RECORD       | SHA-256 of its title         | `SEEDED`                |
@@ -59,6 +60,7 @@ BLOBS = "blobs"
 CREDENTIALS = "credentials"
 TOKENS = "tokens"
 CHANNELS = "channels"
+DELIVERIES = "deliveries"
 FAULTS = "faults"
 UPLOADS = "uploads"
 SEEDED = "seeded"
@@ -217,7 +219,6 @@ class DriveWorld:
             wire.SharedDrive,
             wire.Credential,
             wire.AccessToken,
-            wire.Channel,
             wire.StoredFault,
             wire.UploadSession,
             wire.Blob,
@@ -461,14 +462,59 @@ class DriveWorld:
 
     # ------------------------------------------------------------------ channels, faults, uploads
 
-    def channels(self) -> list[wire.Channel]:
-        return [wire.parse(wire.Channel, s.body) for s in self._records(CHANNELS)]
+    def channels(self) -> list[wire.DriveChannel | wire.CalendarChannel]:
+        return [wire.CHANNEL.validate_json(s.body) for s in self._records(CHANNELS)]
 
-    def channel(self, channel: str) -> wire.Channel | None:
-        return self._record(wire.Channel, channel, CHANNELS)
+    def channel(self, channel: str) -> wire.DriveChannel | wire.CalendarChannel | None:
+        stored = self._store.get(record_ref(channel))
+        if stored is None or stored.parent != CHANNELS:
+            return None
+        return wire.CHANNEL.validate_json(stored.body)
 
-    def keep_channel(self, channel: wire.Channel, *, operation: Operation = Operation.UPDATE) -> WorldEvent:
-        return self._keep(channel.id, CHANNELS, channel, operation=operation)
+    def keep_channel(
+        self, channel: wire.DriveChannel | wire.CalendarChannel, *, operation: Operation = Operation.UPDATE
+    ) -> WorldEvent:
+        """The channel as it now stands, with a line a person reads: what it watches, where it tells, until when."""
+        if isinstance(channel, wire.CalendarChannel):
+            watched = f"calendar {channel.calendar}'s events"
+        else:
+            watched = f"Drive changes of {channel.email}" + (f" in drive {channel.driveId}" if channel.driveId else "")
+        text = (
+            f"channel {channel.id}: {watched} to {channel.address} until {channel.expiration}"
+            + (", stopped" if channel.stopped else "")
+            + f", {channel.messages} sent"
+        )
+        return self._store.apply(
+            Change(
+                entity=record_ref(channel.id),
+                operation=operation,
+                actor=Actor.SCENARIO,
+                body=wire.dump(channel),
+                parent=CHANNELS,
+                after=RecordSnapshot(resource="channel", text=text),
+            )
+        )
+
+    def deliveries(self) -> list[wire.Delivery]:
+        return [wire.Delivery.model_validate_json(s.body) for s in self._records(DELIVERIES)]
+
+    def delivered(self, delivery: wire.Delivery) -> WorldEvent:
+        """A notification pushed to a channel's address, and how the address answered."""
+        outcome = f"answered {delivery.status}" if delivery.status is not None else f"not reached ({delivery.failure})"
+        return self._store.apply(
+            Change(
+                entity=record_ref(f"delivery:{delivery.channel}:{delivery.number}"),
+                operation=Operation.CREATE,
+                actor=Actor.SCENARIO,
+                body=wire.dump(delivery),
+                parent=DELIVERIES,
+                after=RecordSnapshot(
+                    resource="notification",
+                    text=f"{delivery.state} {delivery.number} on channel {delivery.channel} to {delivery.address}: "
+                    + outcome,
+                ),
+            )
+        )
 
     def faults(self) -> list[tuple[str, wire.StoredFault]]:
         return [(s.entity.external_id, wire.parse(wire.StoredFault, s.body)) for s in self._records(FAULTS)]

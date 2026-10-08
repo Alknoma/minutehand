@@ -86,7 +86,7 @@ async def test_a_model_written_answer_is_delivered_when_a_scripted_one_would_be_
     assert texts(messages(events, Actor.AGENT, to=SOFIA)) == [QUESTION, THANKS]
     said = messages(events, Actor.PERSON)
     assert texts(said) == [WRITTEN] and [m.sim_time for m in said] == [T0 + timedelta(hours=36)]
-    assert launched.state()["verified"] == [WRITTEN]
+    assert launched.state(state, record.run_id)["verified"] == [WRITTEN]
     [reply] = store.replies()
     assert reply.written_by == Provenance(model="people-1", prompt_version=PERSON_PROMPT_VERSION)
 
@@ -122,7 +122,7 @@ async def test_a_model_written_answer_is_delivered_when_a_scripted_one_would_be_
 async def test_a_fork_replays_an_answer_written_before_it_and_asks_the_model_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     state = tmp_path / "state"
     scn = with_sofia_writing()
 

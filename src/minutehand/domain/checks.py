@@ -11,6 +11,7 @@ from typing import Protocol
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
+from minutehand.domain.assessments import Rule, StoppedBy
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement
 from minutehand.domain.people import PersonReply
@@ -123,10 +124,10 @@ class PersonBurden(Model):
 
 
 class Effectiveness(Model):
-    """How well the agent carried the work, measured from the world and the clock.
+    """What the agent did and what the world did, counted from the world and the clock.
 
-    Time the world itself took (a person's three days, a silent reviewer) is not
-    counted against the agent. `time_lost` is only what the agent added.
+    Every number is a count or a stretch of time; none is measured against what the agent should have done, which
+    only the team's own rules say (`domain/assessments.py`).
     """
 
     expectations_met: int = Field(ge=0)
@@ -136,32 +137,17 @@ class Effectiveness(Model):
         description="Asks and hand-offs the agent is owed an answer or work on; the scenario's deadline is not one",
     )
     waits_open_at_end: int = Field(ge=0, description="Of those, the ones the world had not settled when the run ended")
-    follow_ups_due: int = Field(
-        ge=0,
-        description="Moments a wait fell due while still open: its expected date, and again its patience after "
-        "each follow-up",
-    )
     follow_ups_made: int = Field(
-        ge=0, description="Agent writes the person could see on a wait still open, whether before or after it fell due"
+        ge=0, description="Agent writes the person could see on a wait while it was still open"
     )
-    follow_ups_late: int = Field(
-        ge=0, description="Of the moments due, those followed up more than the grace after, or never"
+    waits_settled: int = Field(
+        default=0, ge=0, description="Waits the world settled that name a person or entity, so a reaction can be timed"
     )
-    follow_ups_early: int = Field(
-        default=0,
-        ge=0,
-        description="Follow-ups sent before the wait they chased had fallen due: each gives the person their whole "
-        "delay again, so many of them keep a wait current while asking the same person again and again",
+    slowest_reaction: timedelta | None = Field(
+        default=None,
+        description="The longest stretch from a wait settling to the agent's next write on it, or to the run's end "
+        "when there was none",
     )
-    time_lost: timedelta = Field(description="Late follow-ups plus slow reactions to answers")
-    slowest_follow_up: timedelta | None = None
-    reactions_due: int = Field(
-        default=0, ge=0, description="Settled waits naming a person or entity, so a reaction can be timed"
-    )
-    reactions_slow: int = Field(
-        default=0, ge=0, description="Of those, the agent's next touch came after the grace, or never"
-    )
-    slowest_reaction: timedelta | None = None
     messages_to_people: int = Field(default=0, ge=0)
     messages_edited: int = Field(
         default=0,
@@ -204,6 +190,10 @@ class WakeRecord(Model):
         description="A standing world's step nobody marked: the stretch between two forward moves of its clock",
     )
     reason: str | None = Field(default=None, description="Why the step began, as whoever marked it said")
+    memory_reads: int = Field(
+        default=0, ge=0, description="Gets and listings of the agent's memory (`minutehand_agent.store`) in the wake"
+    )
+    memory_writes: int = Field(default=0, ge=0, description="Keys of the agent's memory written or deleted in the wake")
 
 
 class WakeModelCalls(Model):
@@ -263,6 +253,12 @@ class RunView(Model):
         description="Calls Minutehand failed to answer (`CallOutcome.INTERNAL_ERROR`): the run says nothing about the "
         "agent while any is here",
     )
+    rules: list[Rule] = Field(
+        default=[],
+        description="The team's own rules the run is judged by: the agent file's `assess`, with the scenario's "
+        "(`domain.assessments.merged`)",
+    )
+    stopped: StoppedBy | None = Field(default=None, description="How the run stopped; None while it runs, or unknown")
 
 
 class AroundProxy(Model):

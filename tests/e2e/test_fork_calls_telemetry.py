@@ -32,7 +32,7 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     state = tmp_path / "state"
     [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     assert parent.record.stop is StopReason.NOTHING_PENDING
@@ -51,8 +51,8 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     assert child.record.stop is StopReason.AGENT_DONE
     assert (child.record.parent_run, child.record.forked_at) == (parent.record.run_id, after_first_wake.seq)
     assert [w.sim_time for w in child.record.wakes] == [T0, T0 + timedelta(hours=36)]
-    assert [f for f in child.result.findings if f.check == "no_follow_up"] == []
-    assert [f.check for f in parent.result.findings if f.kind is FindingKind.FAIL].count("no_follow_up") == 1
+    assert [f for f in child.result.findings if f.check == "follows_up_when_due"] == []
+    assert [f.check for f in parent.result.findings if f.kind is FindingKind.FAIL].count("follows_up_when_due") == 1
     child_events = world(state, child.record.run_id, root=parent.record.run_id).events()
     assert [e for e in child_events if e.seq <= after_first_wake.seq] == [
         e for e in parent_events if e.seq <= after_first_wake.seq
@@ -65,7 +65,7 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     assert world(state, parent.record.run_id).events() == parent_events
     assert world(state, parent.record.run_id).calls() == parent_calls
     assert {p.name: p.read_bytes() for p in session.run_dir(state, parent.record.run_id).glob("*.json")} == parent_files
-    assert launched.state()["verified"] == [ANSWER]
+    assert launched.state(state, child.record.run_id, root=parent.record.run_id)["verified"] == [ANSWER]
 
 
 async def test_a_call_to_a_host_no_provider_claims_is_refused_recorded_and_found(
@@ -135,7 +135,7 @@ async def test_a_scenario_with_no_start_starts_when_the_run_does_and_its_samples
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     state = tmp_path / "state"
     written = WrittenScenario.model_validate(
         {k: v for k, v in scenario(Silent()).model_dump().items() if k != "starts_at"}

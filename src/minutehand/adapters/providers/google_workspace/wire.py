@@ -350,8 +350,10 @@ class AccessToken(Model):
     revoked: bool = False
 
 
-class Channel(Model):
-    """A `changes.watch` subscription: where to tell the agent of changes, and what it has been told."""
+class _Channel(Model):
+    """A push notification channel: where to tell the agent that what it watches changed, until when, and how many
+    messages it has been sent. One machinery serves Drive's `changes.watch` and Calendar's `events.watch`
+    (`channels.py`); what a channel watches is its kind."""
 
     id: str
     resourceId: str
@@ -359,12 +361,43 @@ class Channel(Model):
     address: str
     expiration: str = Field(description="RFC 3339, simulated time")
     token: str | None = None
-    email: str
+    email: str = Field(description="The account that opened it")
+    messages: int = Field(default=1, description="The number of the last message sent on it, the sync message 1")
+    stopped: bool = False
+
+
+class DriveChannel(_Channel):
+    """A `changes.watch` channel: a user's changes feed, one shared drive's or every drive's."""
+
+    kind: Literal["drive_changes"] = "drive_changes"
     driveId: str | None = None
     told_after: int = Field(description="The last event seq the agent has been told of")
-    messages: int = Field(default=1, description="Notifications sent, the sync message first")
-    stopped: bool = False
-    undelivered: int = Field(default=0, description="Notifications the agent's address did not accept")
+
+
+class CalendarChannel(_Channel):
+    """An `events.watch` channel: one calendar's events."""
+
+    kind: Literal["calendar_events"] = "calendar_events"
+    calendar: str = Field(description="The watched calendar's id, its account's address")
+
+
+Channel = Annotated[DriveChannel | CalendarChannel, Field(discriminator="kind")]
+CHANNEL: TypeAdapter[DriveChannel | CalendarChannel] = TypeAdapter(Channel)
+
+
+class Delivery(Model):
+    """One notification pushed to a channel's address, and how the address answered it."""
+
+    channel: str
+    number: int = Field(description="X-Goog-Message-Number")
+    state: str = Field(description="X-Goog-Resource-State: sync, exists (Calendar) or change (Drive)")
+    address: str
+    status: int | None = Field(default=None, description="The address's HTTP status; None when it was not reached")
+    failure: str | None = Field(default=None, description="Why the address was not reached")
+
+    @property
+    def delivered(self) -> bool:
+        return self.status is not None and 200 <= self.status < 300
 
 
 class FaultKind(StrEnum):
@@ -420,7 +453,6 @@ Stored = TypeVar(
     SharedDrive,
     Credential,
     AccessToken,
-    Channel,
     StoredFault,
     UploadSession,
     Blob,

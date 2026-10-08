@@ -383,10 +383,7 @@ def test_metrics_after_a_small_scripted_run(exported: Exported) -> None:
             expectations_total=4,
             waits_opened=12,
             waits_open_at_end=5,
-            follow_ups_due=3,
             follow_ups_made=3,
-            follow_ups_late=1,
-            time_lost=timedelta(days=1, hours=8, minutes=43),
             wakes=3,
             idle_wakes=1,
             failed_checks=5,
@@ -401,9 +398,8 @@ def test_metrics_after_a_small_scripted_run(exported: Exported) -> None:
         frozenset({("check", "near_miss_name"), ("kind", "fail")}): 2,
         frozenset({("check", "repeated_message"), ("kind", "review")}): 1,
     }
-    assert exported.histogram("minutehand.time_lost_seconds").sum == 32 * 3600 + 43 * 60
     assert exported.histogram("minutehand.idle_wakes").sum == 1
-    assert exported.histogram("minutehand.follow_ups_late").sum == 1
+    assert exported.histogram("minutehand.follow_ups_made").sum == 3
     assert exported.histogram("minutehand.run.sim_seconds").sum == 3 * 86400
     assert exported.histogram("minutehand.run.wall_seconds").sum == 42.5
 
@@ -412,7 +408,7 @@ def test_a_run_without_a_scorecard_still_records_its_length(exported: Exported) 
     exported.telemetry.run_started("r1", SCENARIO)
     exported.telemetry.run_ended(record(0), None)
     assert exported.histogram("minutehand.run.wall_seconds").sum == 42.5
-    assert exported._points("minutehand.time_lost_seconds") == []  # pyright: ignore[reportPrivateUsage]
+    assert exported._points("minutehand.follow_ups_made") == []  # pyright: ignore[reportPrivateUsage]
 
 
 class _Collector(BaseHTTPRequestHandler):
@@ -432,7 +428,7 @@ class _Collector(BaseHTTPRequestHandler):
 def collector() -> Iterator[tuple[str, list[str]]]:
     _Collector.paths = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_address[1]}", _Collector.paths
     server.shutdown()

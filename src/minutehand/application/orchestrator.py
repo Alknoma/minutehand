@@ -12,14 +12,11 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Protocol
 
+from minutehand.application import memory
 from minutehand.application.checkpoint import (
-    AgentState,
     Checkpoint,
-    NoHooks,
-    NotRestorable,
     Pending,
     PendingBooking,
     PendingDirection,
@@ -29,8 +26,7 @@ from minutehand.application.checkpoint import (
     PendingReply,
     PendingTimer,
     PendingWake,
-    Replayable,
-    Restorable,
+    Remembered,
     write_checkpoint,
 )
 from minutehand.application.dues import Dues
@@ -38,10 +34,9 @@ from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_unde
 from minutehand.application.machine import record_machine, run_machine
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
-from minutehand.application.restore import RestoreStep, Settled, Traffic, digest_of, run_command, settle
 from minutehand.application.run_clock import RunClock
 from minutehand.application.sandbox import SandboxClock
-from minutehand.application.state_hooks import take_snapshot, wake_dir
+from minutehand.application.traffic import Traffic
 from minutehand.application.watching import Watcher
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import (
@@ -56,22 +51,22 @@ from minutehand.domain.agent import (
 )
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
-from minutehand.domain.database import DatabaseDigest
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.run import RunRecord, StopReason
+from minutehand.domain.run import RunRecord, StopReason, wake_limit
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
 from minutehand.domain.world import (
     Actor,
+    EntityKind,
     EntityRef,
     InboxItemSnapshot,
     MessageSnapshot,
+    NextWakeSnapshot,
     Operation,
     TicketSnapshot,
     WorldEvent,
 )
-from minutehand.ports.agent import AgentDriver, Reports, TakesReplies
+from minutehand.ports.agent import AgentDriver, TakesReplies
 from minutehand.ports.clock import Clock
-from minutehand.ports.database import FrontsDatabase
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
     ActsOnTickets,
@@ -92,6 +87,17 @@ from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 _NOT_CHANGES = frozenset({Operation.READ, Operation.SEARCH})
+_NOT_THE_WORLD = frozenset({EntityKind.MEMORY, EntityKind.NEXT_WAKE})
+"""The agent's own memory and plan: its writes, but not changes to the world a person could see."""
+
+
+class OutsideState(Protocol):
+    """State the agent keeps outside its memory that the run can see (`AgentUnderTest.own_databases`)."""
+
+    def outside(self) -> list[str]:
+        """What is there now, one line each, for a person; empty when nothing is."""
+        ...
+
 
 TAKEN_EVERY = 0.05
 """Seconds between two asks whether the agent has taken a booking's delivery."""
@@ -220,7 +226,6 @@ class Orchestrator:
         telemetry: Telemetry | None = None,
         mounts: Mounts | None = None,
         scorer: Scorer | None = None,
-        state_dir: Path | None = None,
         signing: Mapping[ProviderKey, str] | None = None,
         parent_run: str | None = None,
         forked_at: int | None = None,
@@ -229,19 +234,12 @@ class Orchestrator:
         channels: Mapping[ProviderKey, TakesReplies] | None = None,
         environment: Environment | None = None,
         inboxes: Inboxes | None = None,
-        databases: Sequence[FrontsDatabase] = (),
+        outside: OutsideState | None = None,
     ) -> None:
         if inboxes is not None:
             reaches = list(inboxes.reaches.values())
             refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
             refuse_undecided(scenario, reaches)
-        if agent.state is not None and state_dir is None:
-            raise RunRefused(f"agent {agent.name} has state hooks; the run needs a state_dir to snapshot into")
-        if agent.state is not None and traffic is None:
-            raise RunRefused(
-                f"agent {agent.name} has state hooks, and nothing in the run sees its outbound calls, so no "
-                "checkpoint could be known to be settled"
-            )
         if any(isinstance(w, Booked) for w in agent.wakes) and not services.schedulers:
             raise RunRefused(f"agent {agent.name} declares Booked wakes but no provider in the run books wakes")
         if isinstance(agent.goal, GoalByMessage):
@@ -255,6 +253,7 @@ class Orchestrator:
         _refuse_unlanded_happenings(scenario, agent, services)
         self._scenario = scenario
         self._agent = agent
+        self._limit = wake_limit(scenario, agent)
         self._reach = reach
         self._store = store
         self._clock = clock
@@ -263,7 +262,6 @@ class Orchestrator:
         self._telemetry = telemetry
         self._mounts = mounts
         self._scorer = scorer
-        self._state_dir = state_dir
         self._signing = dict(signing or {})
         self._parent_run = parent_run
         self._forked_at = forked_at
@@ -271,9 +269,8 @@ class Orchestrator:
         self._channels = dict(channels or {})
         self._environment = environment
         self._inboxes = inboxes
-        self._databases = list(databases)
+        self._outside = outside
         self._mounted = False
-        self._agent_state: AgentState = NoHooks()
         self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._dues = Dues(store, clock, scenario.dispatch)
@@ -316,6 +313,8 @@ class Orchestrator:
         self._begin()
         for provider in self._services.providers:
             provider.seed(self._scenario, self._store)
+        if self._scenario.memory:
+            memory.seed(self._store, self._scenario.memory)
         for i, direction in enumerate(self._scenario.directions):
             self._dues.enter(
                 PendingDirection(
@@ -345,18 +344,17 @@ class Orchestrator:
             self._schedule_tick()
         self._watcher.look()
         self._record_new()
-        try:
-            await self._checkpoint()
-        except AgentFailed as e:
-            self._failure = str(e)
-            return await self._end(StopReason.AGENT_FAILED, started)
+        self._checkpoint()
         stop = await self._start()
         if stop is None:
             stop = await self._loop()
         return await self._end(stop, started)
 
-    async def resume(self, checkpoint: Checkpoint) -> RunRecord:
-        """Carry on from a checkpoint in a store that already holds the world up to it (a fork)."""
+    async def resume(self, checkpoint: Checkpoint, *, replan: AgentReport | None = None) -> RunRecord:
+        """Carry on from a checkpoint in a store that already holds the world up to it (a fork). With `replan`, the
+        agent's report asked again after the fork changed its memory: its own planned wakes (reported, its timer,
+        bookings) are replaced by its next wake, recorded as REPLACED; what the scenario owes (replies, happenings,
+        directions, fates, machine commands) and its declared rhythm stay as the checkpoint holds them."""
         started = time.monotonic()
         if self._clock.now() != checkpoint.now or self._clock.wake() != checkpoint.wake:
             raise RunRefused(
@@ -373,9 +371,18 @@ class Orchestrator:
         self._dues.resume(list(checkpoint.pending))
         self._fated = list(checkpoint.fated)
         self._commitments = checkpoint.commitments
-        self._agent_state = checkpoint.agent
-        if isinstance(checkpoint.agent, Restorable | Replayable):
-            self._last_report = checkpoint.agent.report
+        self._last_report = checkpoint.agent.report
+        if replan is not None:
+            new = (
+                PendingWake(
+                    due=Due(at=replan.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE
+                )
+                if replan.next_wake is not None
+                else None
+            )
+            self._dues.replace(_planned_by_agent, new)
+            self._commitments = replan.commitments
+            self._last_report = replan
         self._seen = self._store.head()
         self._watcher.look()
         stop = await self._start() if checkpoint.wake == 0 else None
@@ -428,6 +435,7 @@ class Orchestrator:
             outbound=outbound_uses(self._store.calls()),
             emulators=emulator_uses(self._store.calls()),
             wakes=self._wakes,
+            wake_limit=self._limit,
         )
         result = await self._scorer.score(record, self._store) if self._scorer is not None else None
         if self._telemetry is not None:
@@ -593,7 +601,7 @@ class Orchestrator:
                 fated=self._fated,
                 commitments=self._commitments,
                 pending=self._dues.items,
-                agent=self._agent_state,
+                agent=self._remembered(),
             ),
         )
         self._record_new()
@@ -809,40 +817,36 @@ class Orchestrator:
         except AgentFailed as e:
             failed = True
             self._failure = str(e)
-        settled = None if failed else await self._settled(wake)
-        if isinstance(settled, Settled) and settled.report is not None and isinstance(self._reach.main, Reports):
-            # The wake is over when the agent's background work is: what it reports now replaces what it said when
-            # its driver first answered, and what it wrote meanwhile belongs to this wake.
-            commitments_changed = self._adopt(settled.report) or commitments_changed
-            done = done or settled.report.status is AgentStatus.DONE
         if not failed:
             self._watcher.record(self._store, Actor.AGENT)
             await self._look()
         new = self._record_new()
         if not failed:
+            self._marked(new, wake)
             await self._schedule(new)
+        mine = [e for e in new if e.wake == wake and e.actor is Actor.AGENT]
         self._wakes.append(
             WakeRecord(
                 index=wake,
                 sim_time=self._clock.now(),
                 world_changes=sum(
-                    1 for e in new if e.wake == wake and e.actor is Actor.AGENT and e.operation not in _NOT_CHANGES
+                    1 for e in mine if e.operation not in _NOT_CHANGES and e.entity.kind not in _NOT_THE_WORLD
                 ),
                 commitments_changed=commitments_changed,
+                memory_reads=sum(1 for e in mine if e.entity.kind is EntityKind.MEMORY and e.operation in _NOT_CHANGES),
+                memory_writes=sum(
+                    1 for e in mine if e.entity.kind is EntityKind.MEMORY and e.operation not in _NOT_CHANGES
+                ),
             )
         )
         if self._telemetry is not None:
             self._telemetry.wake_ended(wake)
         if failed:
             return StopReason.AGENT_FAILED
-        try:
-            await self._checkpoint(settled)
-        except AgentFailed as e:
-            self._failure = str(e)
-            return StopReason.AGENT_FAILED
+        self._checkpoint()
         if done:
             return StopReason.AGENT_DONE
-        if len(self._wakes) >= self._scenario.max_wakes:
+        if len(self._wakes) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
 
@@ -861,6 +865,21 @@ class Orchestrator:
         self._commitments = report.commitments
         self._last_report = report
         return changed
+
+    def _marked(self, new: list[WorldEvent], wake: int) -> None:
+        """The last next wake the agent marked in this wake (`minutehand_agent.wake`), taken as its next wake: it
+        replaces the one it marked or reported before, and a mark of none cancels it."""
+        said = [e.after for e in new if e.wake == wake and isinstance(e.after, NextWakeSnapshot)]
+        if not said:
+            return
+        at = said[-1].at
+        if at is None:
+            self._dues.cancel(_reported_wake)
+        else:
+            self._dues.replace(
+                _reported_wake,
+                PendingWake(due=Due(at=at, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE),
+            )
 
     def _schedule_tick(self) -> None:
         assert self._reach.every is not None
@@ -1011,79 +1030,30 @@ class Orchestrator:
             )
         )
 
-    async def _settled(self, wake: int) -> Settled | NotRestorable | None:
-        """Wait for the agent's background work to end, as a checkpoint does: None for an agent with no hooks."""
-        hooks = self._agent.state
-        if hooks is None:
-            return None
-        assert self._state_dir is not None and self._traffic is not None
-        main = self._reach.main
-        return await settle(
-            hooks,
-            self._traffic,
-            main if isinstance(main, Reports) else None,
-            self._last_report,
-            directory=wake_dir(self._state_dir, self._store.run_id, wake),
-        )
-
-    async def _checkpoint(self, settled: Settled | NotRestorable | None = None) -> None:
-        """`settled` is how the wake just played settled, when it has; otherwise the checkpoint settles it."""
-        wake = self._clock.wake()
-        self._agent_state = await self._snapshot(wake, settled)
+    def _checkpoint(self) -> None:
         write_checkpoint(
             self._store,
             Checkpoint(
-                wake=wake,
+                wake=self._clock.wake(),
                 now=self._clock.now(),
                 replies=len(self._replies),
                 withdrawn=self._withdrawn,
                 fated=self._fated,
                 commitments=self._commitments,
                 pending=self._dues.items,
-                agent=self._agent_state,
+                agent=self._remembered(),
             ),
         )
         self._record_new()
 
-    async def _snapshot(self, wake: int, settled: Settled | NotRestorable | None) -> AgentState:
-        """The agent's own state at the end of this wake: snapshotted once it has settled, or recorded as not
-        restorable, with the reason, when it did not settle in time. A snapshot command that fails raises."""
-        hooks = self._agent.state
-        if hooks is None:
-            if not self._agent.databases:
-                return NoHooks()
-            return Replayable(report=self._last_report, digests=await self._digests())
-        assert self._state_dir is not None
-        directory = wake_dir(self._state_dir, self._store.run_id, wake)
-        if settled is None:
-            settled = await self._settled(wake)
-        assert settled is not None
-        if isinstance(settled, NotRestorable):
-            return settled
-        fingerprint: str | None = None
-        if hooks.fingerprint is not None:
-            printed = await run_command(
-                RestoreStep.FINGERPRINT, hooks.fingerprint, directory, hooks.step_limit.total_seconds()
-            )
-            if printed.exit_code != 0:
-                return NotRestorable(
-                    reason=f"the agent's fingerprint command failed, so a restore here could not be verified: "
-                    f"{' '.join(printed.command)} exited {printed.exit_code}: {printed.output.strip()[-500:]}"
-                )
-            fingerprint = digest_of(printed.output)
-        await take_snapshot(hooks, self._store, self._state_dir, wake)
-        return Restorable(
-            snapshot_of=self._store.run_id,
-            wake=wake,
-            report=settled.report,
-            fingerprint=fingerprint,
-            digests=await self._digests(),
-            unconfirmed=settled.unconfirmed,
+    def _remembered(self) -> Remembered:
+        """The agent's state at this moment as the run holds it: its memory, its last report, and what the run can
+        see of state it keeps elsewhere."""
+        return Remembered(
+            report=self._last_report,
+            memory=memory.store_digest(self._store),
+            outside=self._outside.outside() if self._outside is not None else [],
         )
-
-    async def _digests(self) -> list[DatabaseDigest]:
-        """Each fronted database that declares `digest`, as it stands at this checkpoint."""
-        return [await front.digest() for front in self._databases if front.database.digest is not None]
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
 
@@ -1185,6 +1155,12 @@ def _timer(pending: Pending) -> bool:
     return isinstance(pending, PendingTimer)
 
 
+def _planned_by_agent(pending: Pending) -> bool:
+    """A wake the agent planned from what it remembers: its reported or marked next wake, its own timer, a booking. A
+    late or second delivery is the scenario's dispatch, and a polled tick its declared rhythm."""
+    return _reported_wake(pending) or isinstance(pending, PendingTimer | PendingBooking)
+
+
 def _reported_wake(pending: Pending) -> bool:
     """The wake the agent last named in its report, which the next one it names replaces. A late or second delivery
     of one is already on its way, as a real scheduler's is, and a new report does not take it back."""
@@ -1218,17 +1194,17 @@ async def run_scenario(
     telemetry: Telemetry | None = None,
     mounts: Mounts | None = None,
     scorer: Scorer | None = None,
-    state_dir: Path | None = None,
     signing: Mapping[ProviderKey, str] | None = None,
     traffic: Traffic | None = None,
     channels: Mapping[ProviderKey, TakesReplies] | None = None,
     environment: Environment | None = None,
     inboxes: Inboxes | None = None,
-    databases: Sequence[FrontsDatabase] = (),
+    outside: OutsideState | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
-    `traffic` sees the agent's outbound calls, which an agent with `StateHooks` needs to settle a checkpoint;
-    `channels` delivers people's answers to the agent's captured sends."""
+    `traffic` sees the agent's outbound calls, which a sandbox whose clock Minutehand owns needs to fall idle;
+    `channels` delivers people's answers to the agent's captured sends; `outside` says what the agent keeps
+    beside its memory at each checkpoint."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -1242,11 +1218,10 @@ async def run_scenario(
         telemetry=telemetry,
         mounts=mounts,
         scorer=scorer,
-        state_dir=state_dir,
         signing=signing,
         traffic=traffic,
         channels=channels,
         environment=environment,
         inboxes=inboxes,
-        databases=databases,
+        outside=outside,
     ).run()

@@ -1,8 +1,9 @@
 """A small agent under test, run once per wake by the `Command` driver.
 
-Reads a WakeRequest on stdin, acts on the test providers at $MH_BASE, keeps its own state in
-$AGENT_STATE/state.json, and prints an AgentReport. argv[1] picks the behaviour. Standard library only, so it
-is a program of its own and not a piece of the test.
+Reads a WakeRequest on stdin, acts on the test providers at $MH_BASE, keeps what it remembers in
+`minutehand_agent.store` (the run's memory under Minutehand; $AGENT_STATE/state.db otherwise), and prints an
+AgentReport. argv[1] picks the behaviour. The standard library and `minutehand_agent` only, so it is a program of
+its own and not a piece of the test.
 """
 
 from __future__ import annotations
@@ -16,8 +17,10 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from minutehand_agent import store, wake
+
 BASE = os.environ.get("MH_BASE", "")
-STATE = Path(os.environ.get("AGENT_STATE", ".")) / "state.json"
+store.configure(store.SqliteBackend(Path(os.environ.get("AGENT_STATE", ".")) / "state.db"))
 
 
 def call(method: str, path: str, body: object | None = None) -> object:
@@ -32,12 +35,12 @@ def call(method: str, path: str, body: object | None = None) -> object:
 
 
 def load() -> dict[str, object]:
-    return json.loads(STATE.read_text()) if STATE.exists() else {"reasons": []}
+    found = store.get("state")
+    return {str(k): v for k, v in found.items()} if isinstance(found, dict) else {"reasons": []}
 
 
 def save(state: dict[str, object]) -> None:
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps(state))
+    store.put("state", state)
 
 
 def report(status: str, next_wake: datetime | None = None) -> None:
@@ -125,6 +128,16 @@ def ask_chase_and_close(reason: str, now: datetime, state: dict[str, object]) ->
     report("done")
 
 
+def mark_next(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: mark the next wake three hours on with `minutehand_agent.wake`, and report none. DUE: done."""
+    save(state)
+    if reason == "start":
+        wake.at(now + timedelta(hours=3))
+        report("idle")
+        return
+    report("done")
+
+
 def keep_waking(reason: str, now: datetime, state: dict[str, object]) -> None:
     save(state)
     report("idle", now + timedelta(hours=1))
@@ -202,6 +215,26 @@ def ask_and_keep_calling(reason: str, now: datetime, state: dict[str, object]) -
     report("idle")
 
 
+def remember_late(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """START: report idle at once, and leave a process of its own that writes its memory BACKGROUND_SECONDS later."""
+    if reason == "start":
+        subprocess.Popen(
+            [sys.executable, __file__, "--late", os.environ["BACKGROUND_SECONDS"]],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=os.environ.copy(),
+        )
+    save(state)
+    report("idle")
+
+
+def late(seconds: float) -> None:
+    time.sleep(seconds)
+    store.put("late", True)
+
+
 def background(seconds: float) -> None:
     until = time.monotonic() + seconds
     while time.monotonic() < until:
@@ -226,6 +259,8 @@ BEHAVIOURS = {
         ask_silent,
         ask_chase_and_close,
         ask_and_keep_calling,
+        remember_late,
+        mark_next,
         keep_waking,
         keep_writing,
         tidy,
@@ -239,6 +274,9 @@ BEHAVIOURS = {
 def main() -> None:
     if sys.argv[1] == "--background":
         background(float(sys.argv[2]))
+        return
+    if sys.argv[1] == "--late":
+        late(float(sys.argv[2]))
         return
     if sys.argv[1] == "--poll":
         poll(float(sys.argv[2]), float(sys.argv[3]))

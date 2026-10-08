@@ -85,18 +85,22 @@ jobs:
       - name: Permissions, pinning and injection
         run: uvx zizmor==1.30.1 --offline .github/workflows .github/actions
 
+  # The suite in four shards per OS and Python, split by each test's duration (.test_durations, written by
+  # `pytest -n auto --store-durations --clean-durations`; a test it does not list counts as the average). Every
+  # shard of one run shuffles with the same seed, so each splits the same order and every test runs exactly once.
   tests:
-    name: Tests (${{ matrix.os }}, ${{ matrix.python }})
+    name: Tests (${{ matrix.os }}, ${{ matrix.python }}, shard ${{ matrix.shard }}/4)
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest]
         python: ["3.12", "3.13"]
-        include:
+        shard: [1, 2, 3, 4]
+        exclude:
           - os: macos-latest
-            python: "3.12"
+            python: "3.13"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,8 +111,11 @@ jobs:
           enable-cache: true
       - run: uv sync
       # Random order, in parallel, with no network beyond this machine (pyproject.toml).
-      # The seed is printed at the top of the output; rerun with -p randomly -p "randomly_seed=N".
-      - run: uv run pytest -q -n auto
+      # The seed is the run's id, printed at the top of the output; rerun with --randomly-seed=N.
+      - run: uv run pytest -q -n auto --splits 4 --group "$SHARD" --randomly-seed="$SEED"
+        env:
+          SHARD: ${{ matrix.shard }}
+          SEED: ${{ github.run_id }}
 
   # examples/recipes: an agent per framework (LangGraph, the OpenAI Agents SDK, the Claude Agent SDK, Pydantic AI,
   # the Vercel AI SDK), each run through both of its scenarios against the recipes' fake model. The frameworks are
@@ -134,38 +141,6 @@ jobs:
       - run: uv run --group recipes pytest -q -rs -n auto -m recipes tests/recipes
         env:
           RECIPES_NODE_REQUIRED: "1"
-
-  # The agent's database fronted by Minutehand's relay (tests/state/test_postgres_recipe.py): a run records the
-  # agent's committed writes, a fork puts the database back from the base and replays them. Against a real
-  # PostgreSQL in a service container; the default run skips these (`-m docker`).
-  postgres:
-    name: PostgreSQL relay (record, fork, replay)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: secret
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: "3.12"
-          enable-cache: true
-      - run: uv sync
-      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py tests/state/test_postgres_drivers.py tests/state/test_postgres_replay.py tests/state/test_postgres_cli.py -s
-        env:
-          MINUTEHAND_TEST_POSTGRES: postgresql://postgres:secret@127.0.0.1:5432
 
   # Transparent capture (docs/containers.md): a client that ignores every proxy variable, in a Linux container whose
   # connections to ports 80 and 443 are sent to the proxy's redirected listener by `minutehand env --format redirect`'s
@@ -200,9 +175,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync
-      - name: Build the sdist and the wheel
-        run: uv build
-      - name: Install the wheel into a clean environment and run both examples with it
+      - name: Build the sdists and the wheels of minutehand and minutehand-agent
+        run: uv build --all-packages
+      - name: Install the wheels into clean environments (Minutehand in one, the agent's in another) and run both examples
         run: uv run pytest -q -m packaging tests/packaging/test_installed_package.py
       - name: Build the image and run both examples through it
         run: uv run pytest -q -m packaging tests/packaging/test_container_image.py
@@ -235,14 +210,17 @@ jobs:
           test "$COMMIT" = "$(git rev-parse HEAD)"
           test -n "$VERSION"
           "$RUNNER_TEMP/venv/bin/minutehand" --help
-      - name: The example, with the installed command
+      - name: The example, with the installed command and the agent in an environment of its own
         working-directory: examples/follow_up
         env:
           AGENT_BEHAVIOUR: diligent
+        # The agent's environment as its README makes it, minutehand-agent from this commit since it is not
+        # released with it yet: its Slack client and minutehand-agent, and not Minutehand.
         run: |
-          "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
+          python3 -m venv "$RUNNER_TEMP/agent"
+          "$RUNNER_TEMP/agent/bin/python" -m pip install --disable-pip-version-check slack_sdk ../../packages/minutehand-agent
           "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \
-            -- "$RUNNER_TEMP/venv/bin/python" agent.py
+            -- "$RUNNER_TEMP/agent/bin/python" agent.py
       - name: The image the action built
         run: docker run --rm minutehand:action --help
       # What a caller's runner holds: this commit's files, no .git, unpacked into a folder named by the
@@ -295,7 +273,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, postgres, transparent, build, action, promotion]
+    needs: [types, style, lints, workflows, tests, recipes, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

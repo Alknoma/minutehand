@@ -17,14 +17,11 @@ from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import AwareDatetime, Field, TypeAdapter, field_validator, model_validator
 
-
-class Model(BaseModel):
-    """Every model in this package: frozen, and an unknown field is an error."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
+from minutehand.domain.assessments import Rule, refuse_repeated_rules, refuse_unknown_people
+from minutehand.domain.memory import SeededMemory
+from minutehand.domain.model import Model
 
 ProviderKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
 """A provider's registry key ("slack", "asana"). Open, because the set of providers
@@ -803,6 +800,16 @@ class DispatchRule(Model):
         return self
 
 
+class ExpectedOutcome(StrEnum):
+    """The verdict a scenario is written to reach (`domain.run.VerdictKind`): a scenario whose point is that nobody
+    answers may be written to end unfinished, and one that shows a known failure to end failed."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    UNFINISHED = "unfinished"
+    NOT_JUDGED = "not_judged"
+
+
 class _ScenarioBody(Model):
     """Everything a scenario says but when it starts."""
 
@@ -810,7 +817,12 @@ class _ScenarioBody(Model):
     goal: str = Field(description="The text handed to the agent, verbatim")
     owner: str = Field(description="Person.key of whoever gave the goal")
     deadline_after: timedelta | None = None
-    max_wakes: int = Field(default=20, ge=1)
+    max_wakes: int | None = Field(
+        default=None,
+        ge=1,
+        description="The most wakes a run plays before it stops; absent, sized from the deadline and the agent's "
+        "rhythm (`domain.run.wake_limit`)",
+    )
     seed: int = 17
     protected_names: list[str] = Field(default=[], description="Names the agent must spell exactly as given")
     people: list[Person]
@@ -828,6 +840,18 @@ class _ScenarioBody(Model):
         default=[], description="Each provider's own seed beyond people, tickets and documents; one per provider"
     )
     expect: list[Expectation] = Field(default=[], description="What must be true of the world for this run to be right")
+    assess: list[Rule] = Field(
+        default=[],
+        description="The team's rules for how the agent behaves in this scenario, over the facts of the run "
+        "(`docs/assessments.md`); one with the id of an agent file's rule replaces it",
+    )
+    assess_off: list[str] = Field(
+        default=[], description="Ids of the agent file's rules this scenario does not judge by"
+    )
+    expect_outcome: ExpectedOutcome = Field(
+        default=ExpectedOutcome.PASSED,
+        description="The verdict this scenario is written to reach; `minutehand run-all` exits 1 when a run's differs",
+    )
     machine: list[MachineCommand] = Field(
         default=[], description="What happens to the agent's own machine, at moments the scenario sets"
     )
@@ -836,6 +860,19 @@ class _ScenarioBody(Model):
         description="Faults in delivering the agent's own wakes: late, twice or dropped. Without any, each is "
         "delivered at the moment it was asked for",
     )
+    memory: list[SeededMemory] = Field(
+        default=[],
+        description="What the agent's memory (`minutehand_agent.store`) holds when the run starts: each key and its "
+        "value. Nothing else is in it; the agent's own production database is never read",
+    )
+
+    @model_validator(mode="after")
+    def _one_value_per_key(self) -> Self:
+        keys = [(m.collection, m.key) for m in self.memory]
+        twice = sorted({f"{c}/{k}" for c, k in keys if keys.count((c, k)) > 1})
+        if twice:
+            raise ValueError(f"the memory seeds a key twice: {', '.join(twice)}")
+        return self
 
     @model_validator(mode="after")
     def _one_rule_per_wake(self) -> Self:
@@ -892,6 +929,8 @@ class _ScenarioBody(Model):
             raise ValueError(f"more than one provider seed for {', '.join(twice)}")
         for relayed in (e for e in self.expect if isinstance(e, Relayed)):
             self._refuse_tell(relayed)
+        refuse_repeated_rules(self.assess)
+        refuse_unknown_people(self.assess, keys)
         return self
 
     def happening_ticket(self, happening: TicketHappening) -> SeededTicket:

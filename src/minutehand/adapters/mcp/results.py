@@ -21,7 +21,7 @@ _VERDICT = (
 
 _FORK = (
     "For a rerun: the checkpoint it split from (after which wake, at what simulated time), what it changed in words, "
-    "whether its restore was verified and by what (report, fingerprint) or why not, and against its parent from the "
+    "whether its agent was verified and by what (memory, report) or why not, and against its parent from the "
     "split on: both verdicts, each scorecard line that differs, findings gained and lost, and the first thing in "
     "the record at which the two part, with which kind of thing it is (`first_divergence.kind`: a change in the world, "
     "a call the agent made, the agent's report at a wake's end, or a model call) and what about it differs. Null for "

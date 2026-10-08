@@ -24,8 +24,8 @@ from tests.mcp.test_mcp_tools import call, connected
 
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 CUT_OFF = (
-    "Not finished: no check failed, but the agent never reported it was done; the run stopped at the scenario's "
-    "wake limit, with 1 wait still open."
+    "Not finished: no check failed, but the agent never reported it was done; the run stopped at its wake limit, "
+    "with 1 wait still open."
 )
 
 
@@ -63,6 +63,10 @@ async def test_a_run_cut_off_at_its_wake_limit_with_a_wait_open_is_not_finished_
     assert ran.returncode == 3, ran.stdout + ran.stderr
     head = ran.stdout.splitlines()
     assert head[1] == f"  {CUT_OFF}"
+    assert (
+        "  the wake limit was 1: the scenario's max_wakes; set `max_wakes` in the scenario, or declare the agent's "
+        "rhythm (`tick` in the agent file) so the deadline sizes it" in head
+    )
     assert "\nfail (" not in ran.stdout and "\ninformational (1)\n  expectations: sofia asked: met by" in ran.stdout
     found = re.match(r"run ([0-9a-f]+):", head[0])
     assert found is not None

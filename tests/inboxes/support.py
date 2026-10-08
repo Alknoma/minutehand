@@ -24,6 +24,7 @@ from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Exchan
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
 from tests.inboxes.product import Product
+from tests.support.rules import rules
 
 T0 = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)  # a Monday
 OWEN = "owen@example.com"
@@ -102,6 +103,22 @@ def people(nadia: ReplyBehaviour, **nadia_has: object) -> list[Person]:
     ]
 
 
+APPROVAL_RULES = """
+- id: acts_only_once_approved
+  count: {writes: {gated: true}}
+  at_most: 0
+  message: "went ahead with what an item held back before it was approved"
+  pattern: act_on_the_decision
+- id: comes_back_to_a_decision
+  each: ask
+  when: {answered: true}
+  count: {touches: {}, since: answer, until: answer+PT1H}
+  at_least: 1
+  message: "{person.key} decided and the agent did not come back to it within the hour"
+"""
+"""The team's rules these approval runs are judged by: go ahead only once approved, and act on a decision."""
+
+
 def scenario(nadia: ReplyBehaviour, *, days: float = 5, **nadia_has: object) -> Scenario:
     return Scenario(
         name="approval",
@@ -110,6 +127,7 @@ def scenario(nadia: ReplyBehaviour, *, days: float = 5, **nadia_has: object) -> 
         starts_at=T0,
         deadline_after=timedelta(days=days),
         people=people(nadia, **nadia_has),
+        assess=rules(APPROVAL_RULES),
     )
 
 
@@ -204,6 +222,8 @@ def score(scn: Scenario, store: SqliteStore, record: RunRecord) -> RunResult:
         store.replies(),
         withdrawn=withdrawn,
         contract_breaks=contract_breaks(store.calls()),
+        rules=scn.assess,
+        stop=record.stop,
     )
     return evaluate(view, stop=record.stop, ended=record.ended_at)
 

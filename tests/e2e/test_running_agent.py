@@ -89,7 +89,9 @@ async def test_an_agent_already_running_with_its_own_secret_is_reached_through_a
     assert len(messages(events, Actor.AGENT, to=SOFIA)) == 2
     assert texts(messages(events, Actor.PERSON)) == [ANSWER]
     assert [m.sim_time for m in messages(events, Actor.PERSON)] == [T0 + timedelta(hours=36)]
-    assert launched.state()["verified"] == [ANSWER] and launched.state()["rejected"] == 0
+    remembered = launched.state(state, record.run_id)
+    assert remembered["verified"] == [ANSWER] and remembered["rejected"] == 0
+    assert not launched.state_file.exists(), "the agent's own database was opened while Minutehand played it"
 
 
 def test_the_environment_names_the_bundle_in_every_ca_variable_and_the_proxy_in_both_spellings(

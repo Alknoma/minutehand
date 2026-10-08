@@ -30,3 +30,14 @@ expect:
     said_by: rosa
     to: owen
     tell: lakeside hall
+
+# How the agent must behave, as this team sees it (docs/assessments.md): Minutehand judges nothing else.
+assess:
+  - id: comes_back_to_an_answer      # an answer is acted on within the hour
+    each: ask
+    where: {person_not: [owner]}
+    when: {answered: true}
+    count: {touches: {}, since: answer, until: answer+PT1H}
+    at_least: 1
+    message: "{person.key} answered and the agent did not come back to it within the hour"
+    pattern: expiry_on_every_wait

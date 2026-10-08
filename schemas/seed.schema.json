@@ -158,6 +158,37 @@
       "title": "Answers",
       "type": "object"
     },
+    "Asks": {
+      "additionalProperties": false,
+      "description": "The run's asks: each wait for a person's answer, counted at the moment it was made.",
+      "properties": {
+        "of": {
+          "default": [],
+          "description": "Of any of these people; empty: of anyone",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Of",
+          "type": "array"
+        },
+        "open_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Still unanswered at this moment",
+          "title": "Open At"
+        }
+      },
+      "title": "Asks",
+      "type": "object"
+    },
     "Commented": {
       "additionalProperties": false,
       "description": "The person writes a comment on the document, not in it.",
@@ -200,6 +231,175 @@
         "text"
       ],
       "title": "Comments",
+      "type": "object"
+    },
+    "CommitmentState": {
+      "enum": [
+        "open",
+        "met",
+        "dropped"
+      ],
+      "title": "CommitmentState",
+      "type": "string"
+    },
+    "Commitments": {
+      "additionalProperties": false,
+      "description": "What the agent reported it was waiting on, as each wake ended, counted at that wake's end.",
+      "properties": {
+        "status": {
+          "default": [],
+          "description": "In any of these states; empty: any",
+          "items": {
+            "$ref": "#/$defs/CommitmentState"
+          },
+          "title": "Status",
+          "type": "array"
+        },
+        "waiting_on": {
+          "default": [],
+          "description": "Waiting on any of these people; empty: on anyone or nothing",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Waiting On",
+          "type": "array"
+        }
+      },
+      "title": "Commitments",
+      "type": "object"
+    },
+    "Count": {
+      "additionalProperties": false,
+      "description": "Which facts a rule counts, and between which moments.",
+      "properties": {
+        "asks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Asks"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "commitments": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Commitments"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "follow_ups": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FollowUps"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Memory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "messages": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Messages"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "planned_wakes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlannedWakes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "From this moment, inclusive; absent: the start",
+          "title": "Since"
+        },
+        "touches": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Touches"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "To this moment, inclusive; absent: the end",
+          "title": "Until"
+        },
+        "wakes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Wakes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "writes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Writes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Count",
       "type": "object"
     },
     "DelayRange": {
@@ -572,6 +772,17 @@
       "title": "DocumentShared",
       "type": "object"
     },
+    "Each": {
+      "description": "What a rule is read once for.",
+      "enum": [
+        "run",
+        "ask",
+        "handoff",
+        "person"
+      ],
+      "title": "Each",
+      "type": "string"
+    },
     "Edited": {
       "additionalProperties": false,
       "description": "The person adds a paragraph at the end of the document.",
@@ -593,6 +804,17 @@
       ],
       "title": "Edited",
       "type": "object"
+    },
+    "ExpectedOutcome": {
+      "description": "The verdict a scenario is written to reach (`domain.run.VerdictKind`): a scenario whose point is that nobody\nanswers may be written to end unfinished, and one that shows a known failure to end failed.",
+      "enum": [
+        "passed",
+        "failed",
+        "unfinished",
+        "not_judged"
+      ],
+      "title": "ExpectedOutcome",
+      "type": "string"
     },
     "FieldSet": {
       "additionalProperties": false,
@@ -677,6 +899,13 @@
       "title": "FileRemoved",
       "type": "object"
     },
+    "FollowUps": {
+      "additionalProperties": false,
+      "description": "The agent's writes the person could see on the ask while it was open: a message to them or their delegate,\na change to the ask's thread or ticket. Read for `each: ask` or `handoff` only.",
+      "properties": {},
+      "title": "FollowUps",
+      "type": "object"
+    },
     "FormInput": {
       "additionalProperties": false,
       "description": "What a person types into one field of a form the agent opens for them.",
@@ -740,6 +969,16 @@
       "title": "Helpfulness",
       "type": "string"
     },
+    "JsonValue": {},
+    "Judged": {
+      "description": "What a rule's finding asks of whoever reads it.",
+      "enum": [
+        "fail",
+        "review"
+      ],
+      "title": "Judged",
+      "type": "string"
+    },
     "MachineCommand": {
       "additionalProperties": false,
       "description": "Something that happens to the agent's own machine at a moment: a file appears, a cache grows, a repository\ngoes stale. Minutehand runs the command then, in the folder the run was started from, with MINUTEHAND_NOW set\nto the simulated moment (ISO 8601), so it can stamp what it makes; nobody is woken, as on a real machine.",
@@ -778,6 +1017,134 @@
         "said"
       ],
       "title": "MachineCommand",
+      "type": "object"
+    },
+    "Memory": {
+      "additionalProperties": false,
+      "description": "Keys of the agent's memory (`minutehand_agent.store`) as they stood at the count's `until` (the run's end\nwithout one): each key holding a value there is one fact, counted at the moment that value was written, so\n`since` keeps only those written from then on. `key` and `prefix` may hold `{person.key}`.",
+      "properties": {
+        "collection": {
+          "default": "default",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+          "title": "Collection",
+          "type": "string"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exactly this key",
+          "title": "Key"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Every key starting with this",
+          "title": "Prefix"
+        },
+        "values": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default": {},
+          "description": "Each field of the value (a dotted path into it, `venue.city`) equal to this; a value that is not an object, or lacks the field, does not match",
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "title": "Memory",
+      "type": "object"
+    },
+    "Messages": {
+      "additionalProperties": false,
+      "description": "Messages the agent sent.",
+      "properties": {
+        "holding": {
+          "default": [],
+          "description": "Each phrase must be in the text, in any case; `{ask.answer}` is the answer itself, and `{person.key}`, `{person.name}` the person the rule is read for",
+          "items": {
+            "type": "string"
+          },
+          "title": "Holding",
+          "type": "array"
+        },
+        "in_thread": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: threaded under the ask the rule is read for; False: not under it",
+          "title": "In Thread"
+        },
+        "to": {
+          "default": [],
+          "description": "To any of these; empty: to anyone",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "To",
+          "type": "array"
+        },
+        "to_away": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: to someone away at that moment while a delegate covered for them",
+          "title": "To Away"
+        },
+        "to_not": {
+          "default": [],
+          "description": "To none of these",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "To Not",
+          "type": "array"
+        }
+      },
+      "title": "Messages",
       "type": "object"
     },
     "Moved": {
@@ -1480,6 +1847,13 @@
       "title": "PlannedBy",
       "type": "string"
     },
+    "PlannedWakes": {
+      "additionalProperties": false,
+      "description": "Wakes the agent asked for itself (reported, booked, its rhythm, its own timer), counted at the moment each\nwas due, from the run loop's table. Only a run Minutehand played keeps that table.",
+      "properties": {},
+      "title": "PlannedWakes",
+      "type": "object"
+    },
     "ProviderSeed": {
       "additionalProperties": false,
       "description": "What one provider seeds beyond the shared people, tickets and documents, in that provider's own shape.\n\nThe shared model cannot name a provider's types (`domain` imports no adapter), so the shape crosses as\nthe provider's own JSON text, as a stored entity's body does, and only that provider parses it: it\nvalidates `body` against its own seed model when it seeds, and refuses what it cannot read. A scenario\nfile writes the shape as YAML or JSON structure; it is kept as its JSON text.",
@@ -1618,6 +1992,138 @@
         "to"
       ],
       "title": "Renamed",
+      "type": "object"
+    },
+    "Rule": {
+      "additionalProperties": false,
+      "description": "One rule of a team's: for each `each`, where `when` holds, the `count` is within the bounds.",
+      "properties": {
+        "at": {
+          "default": [],
+          "description": "Read the rule once at each of these moments, named `moment` in the rest of it",
+          "items": {
+            "type": "string"
+          },
+          "title": "At",
+          "type": "array"
+        },
+        "at_least": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Least"
+        },
+        "at_most": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Most"
+        },
+        "count": {
+          "$ref": "#/$defs/Count"
+        },
+        "each": {
+          "$ref": "#/$defs/Each",
+          "default": "run"
+        },
+        "exactly": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exactly"
+        },
+        "gap_at_least": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "No two of the counted facts closer together than this",
+          "title": "Gap At Least"
+        },
+        "id": {
+          "description": "How findings name the rule; unique among the run's rules",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}",
+          "title": "Message"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Pattern.key of the design that avoids what this finds",
+          "title": "Pattern"
+        },
+        "severity": {
+          "$ref": "#/$defs/Judged",
+          "default": "fail"
+        },
+        "when": {
+          "$ref": "#/$defs/When",
+          "default": {
+            "answered": null,
+            "open_at": null,
+            "stopped": []
+          }
+        },
+        "where": {
+          "$ref": "#/$defs/Where",
+          "default": {
+            "person": [],
+            "person_not": []
+          }
+        }
+      },
+      "required": [
+        "id",
+        "count"
+      ],
+      "title": "Rule",
       "type": "object"
     },
     "Scripted": {
@@ -2077,6 +2583,33 @@
       "title": "SeededFile",
       "type": "object"
     },
+    "SeededMemory": {
+      "additionalProperties": false,
+      "description": "One key the agent's memory holds when a run starts (`Scenario.memory`).",
+      "properties": {
+        "collection": {
+          "default": "default",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+          "title": "Collection",
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "SeededMemory",
+      "type": "object"
+    },
     "SeededPost": {
       "additionalProperties": false,
       "description": "A message already in a conversation when the run starts, with the thread under it.",
@@ -2311,6 +2844,35 @@
       },
       "title": "Silent",
       "type": "object"
+    },
+    "StoppedBy": {
+      "description": "How the run stopped, as a rule may name it (`domain.run.StopReason`).",
+      "enum": [
+        "agent_done",
+        "wake_limit",
+        "deadline_passed",
+        "nothing_pending",
+        "agent_failed",
+        "closed",
+        "environment_failed"
+      ],
+      "title": "StoppedBy",
+      "type": "string"
+    },
+    "Thing": {
+      "description": "What the agent wrote, as the world records it.",
+      "enum": [
+        "message",
+        "ticket",
+        "comment",
+        "document",
+        "record",
+        "inbox_item",
+        "file",
+        "tool_call"
+      ],
+      "title": "Thing",
+      "type": "string"
     },
     "TicketCreated": {
       "additionalProperties": false,
@@ -2688,6 +3250,13 @@
       "title": "ToolCalled",
       "type": "object"
     },
+    "Touches": {
+      "additionalProperties": false,
+      "description": "Every write of the agent's on the ask's person or its thread or ticket, open or not: after an answer, the\nagent coming back to it. Read for `each: ask` or `handoff` only.",
+      "properties": {},
+      "title": "Touches",
+      "type": "object"
+    },
     "Trashed": {
       "additionalProperties": false,
       "properties": {
@@ -2699,6 +3268,110 @@
         }
       },
       "title": "Trashed",
+      "type": "object"
+    },
+    "Wakes": {
+      "additionalProperties": false,
+      "description": "The agent's wakes.",
+      "properties": {
+        "changed_commitments": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Changed Commitments"
+        },
+        "changed_world": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "False: the wake wrote nothing a person could see",
+          "title": "Changed World"
+        }
+      },
+      "title": "Wakes",
+      "type": "object"
+    },
+    "When": {
+      "additionalProperties": false,
+      "description": "A condition for reading the rule at all.",
+      "properties": {
+        "answered": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "It was answered, or the work finished, by the end",
+          "title": "Answered"
+        },
+        "open_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The ask or hand-off was unanswered at this moment",
+          "title": "Open At"
+        },
+        "stopped": {
+          "default": [],
+          "description": "The run stopped in one of these ways",
+          "items": {
+            "$ref": "#/$defs/StoppedBy"
+          },
+          "title": "Stopped",
+          "type": "array"
+        }
+      },
+      "title": "When",
+      "type": "object"
+    },
+    "Where": {
+      "additionalProperties": false,
+      "description": "Which of the things the rule is read for: by the person asked or handed the work.",
+      "properties": {
+        "person": {
+          "default": [],
+          "description": "Only these; empty: everyone",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Person",
+          "type": "array"
+        },
+        "person_not": {
+          "default": [],
+          "description": "Not these",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Person Not",
+          "type": "array"
+        }
+      },
+      "title": "Where",
       "type": "object"
     },
     "WorkingHours": {
@@ -2730,6 +3403,89 @@
       },
       "title": "WorkingHours",
       "type": "object"
+    },
+    "Write": {
+      "enum": [
+        "create",
+        "update",
+        "delete"
+      ],
+      "title": "Write",
+      "type": "string"
+    },
+    "Writes": {
+      "additionalProperties": false,
+      "description": "Every change the agent made to the world: what it created, updated or deleted.",
+      "properties": {
+        "gated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: a call carrying an operation an item in the agent's own product held back (`gates`), made while that item was pending, turned down, or taken back undecided",
+          "title": "Gated"
+        },
+        "in_repeated_wake": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: written in a wake that was the second delivery of the same wake (`dispatch`)",
+          "title": "In Repeated Wake"
+        },
+        "operations": {
+          "default": [],
+          "description": "These operations; empty: any of the three",
+          "items": {
+            "$ref": "#/$defs/Write"
+          },
+          "title": "Operations",
+          "type": "array"
+        },
+        "repeats_open_ticket": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: a ticket created with the title (case, punctuation and spacing aside) of one still open in the same project",
+          "title": "Repeats Open Ticket"
+        },
+        "things": {
+          "default": [],
+          "description": "Of these kinds; empty: of any",
+          "items": {
+            "$ref": "#/$defs/Thing"
+          },
+          "title": "Things",
+          "type": "array"
+        },
+        "things_not": {
+          "default": [],
+          "description": "Of none of these kinds",
+          "items": {
+            "$ref": "#/$defs/Thing"
+          },
+          "title": "Things Not",
+          "type": "array"
+        }
+      },
+      "title": "Writes",
+      "type": "object"
     }
   },
   "$id": "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/seed.schema.json",
@@ -2737,6 +3493,24 @@
   "additionalProperties": false,
   "description": "What a standing world (`minutehand serve`) starts from: a scenario file's people, tickets, documents,\nfates and directions, with nothing to achieve. The goal and the expectations may be left out, so a scenario\nfile without them loads, and a whole scenario file loads too: its expectations are what the checks hold the\nworld to when they are asked. The owner, when not named, is the first person; a seed names at least one,\nsince every provider writes the world as someone.",
   "properties": {
+    "assess": {
+      "default": [],
+      "description": "The team's rules for how the agent behaves in this scenario, over the facts of the run (`docs/assessments.md`); one with the id of an agent file's rule replaces it",
+      "items": {
+        "$ref": "#/$defs/Rule"
+      },
+      "title": "Assess",
+      "type": "array"
+    },
+    "assess_off": {
+      "default": [],
+      "description": "Ids of the agent file's rules this scenario does not judge by",
+      "items": {
+        "type": "string"
+      },
+      "title": "Assess Off",
+      "type": "array"
+    },
     "channels": {
       "default": [],
       "description": "Conversations that exist when the run starts",
@@ -2835,6 +3609,11 @@
       "title": "Expect",
       "type": "array"
     },
+    "expect_outcome": {
+      "$ref": "#/$defs/ExpectedOutcome",
+      "default": "passed",
+      "description": "The verdict this scenario is written to reach; `minutehand run-all` exits 1 when a run's differs"
+    },
     "goal": {
       "default": "",
       "description": "Handed to nobody: a standing world has no run loop",
@@ -2906,10 +3685,27 @@
       "type": "array"
     },
     "max_wakes": {
-      "default": 20,
-      "minimum": 1,
-      "title": "Max Wakes",
-      "type": "integer"
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The most wakes a run plays before it stops; absent, sized from the deadline and the agent's rhythm (`domain.run.wake_limit`)",
+      "title": "Max Wakes"
+    },
+    "memory": {
+      "default": [],
+      "description": "What the agent's memory (`minutehand_agent.store`) holds when the run starts: each key and its value. Nothing else is in it; the agent's own production database is never read",
+      "items": {
+        "$ref": "#/$defs/SeededMemory"
+      },
+      "title": "Memory",
+      "type": "array"
     },
     "name": {
       "default": "world",

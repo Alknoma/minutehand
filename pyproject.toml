@@ -1,8 +1,10 @@
 [project]
 name = "minutehand"
 # The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
-# installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
-version = "0.0.1"
+# installed package's metadata; a release's tag is `v` and this (docs/releasing.md). `minutehand-agent` is released
+# with it: packages/minutehand-agent/pyproject.toml and the pin below repeat it, and tests/test_version.py and the
+# release workflow refuse any difference.
+version = "0.0.2"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -28,6 +30,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    # What the agent imports (`minutehand_agent`), released with this at the same version; this package reads the
+    # names of the variables it hands the agent from it. From the workspace in development ([tool.uv.sources]).
+    "minutehand-agent==0.0.2",
     "pydantic>=2.9",
     "mitmproxy>=12,<13",
     "asgiref>=3.8",
@@ -90,8 +95,7 @@ dev = [
     "pyjwt[crypto]>=2.10",
     "python-docx==1.2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
-    "psycopg[binary]>=3.2",
-    "asyncpg>=0.32.0",
+    "pytest-split>=0.10",
 ]
 recipes = [
     "anthropic>=1.11.0",
@@ -103,6 +107,12 @@ recipes = [
     "openai<2.45; python_full_version < '3.13'",
     "pydantic-ai-slim[openai]>=1.60.0",
 ]
+
+[tool.uv.workspace]
+members = ["packages/minutehand-agent"]
+
+[tool.uv.sources]
+minutehand-agent = { workspace = true }
 
 [build-system]
 # hatchling 1.27 writes PEP 639 licence metadata (Metadata-Version 2.4 and later); packaging 26 is the first to know
@@ -137,13 +147,13 @@ asyncio_mode = "auto"
 pythonpath = ["src", "."]
 # A test that reaches a real service is a broken test: only this machine is reachable.
 # A test that hangs fails at 60 seconds. Tests run in a random order every time.
-addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not firestore and not benchmark and not docker and not recipes'"
+addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not benchmark and not docker and not recipes'"
 markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
     "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
-    "docker: runs a downloaded open-source emulator, or PostgreSQL, in a container named minutehand-ext-* (or the server MINUTEHAND_TEST_POSTGRES names); needs Docker; run with -m docker",
-    "firestore: rewinds an agent through a real Firestore emulator container; needs Docker and a large image; run with -m firestore",
+    "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
+    "own_ca: the proxy CA this test's proxy makes is its own, never a copy of the worker's (tests/conftest.py); for a test about the CA itself",
     "conformance: one property of docs/conformance.md held against one provider through its vendor API, the control API and the world's record; runs by default",
 ]
 filterwarnings = [
@@ -156,7 +166,7 @@ filterwarnings = [
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-include = ["src", "lints", "tests", "scripts"]
+include = ["src", "packages/minutehand-agent/src", "lints", "tests", "scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 

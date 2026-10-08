@@ -9,7 +9,7 @@ import time
 
 from pydantic import ConfigDict, Field
 
-from minutehand.application.restore import Traffic
+from minutehand.application.traffic import Traffic
 from minutehand.domain.agent import Contained
 from minutehand.domain.scenario import Model
 

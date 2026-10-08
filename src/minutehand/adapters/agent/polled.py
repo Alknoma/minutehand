@@ -1,7 +1,8 @@
-"""`Polled`: the agent takes a `WakeRequest` at `wake_url` on a fixed rhythm and says nothing about itself.
+"""`Polled` and `Marked`: the agent takes a `WakeRequest` at `wake_url` and says nothing about itself.
 
-Its tick is over when the call returns. It never names a next wake and never reports DONE, because it has
-no channel to: the run ends at its deadline or its wake limit.
+Its wake is over when the call returns. It never reports DONE, because it has no channel to: the run ends at its
+deadline or its wake limit. A `Polled` agent is woken on a fixed rhythm; a `Marked` one at the next wake it marked
+with `minutehand_agent.wake`, which the run loop reads from the log.
 """
 
 from __future__ import annotations

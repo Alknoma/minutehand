@@ -1,6 +1,6 @@
 # One open ask per person
 
-**Found by:** `repeated_message`, `duplicate_ticket`, `kept_chasing_after_done`.
+**Found by:** a rule of the team's own (`docs/assessments.md`), such as `count: {writes: {repeats_open_ticket: true}}, at_most: 0`, or `each: person`, `count: {messages: {to: [person]}}`, `gap_at_least: PT5M`.
 
 ## The failure
 
@@ -16,4 +16,4 @@ A reference agent runs every outgoing question past a judge that compares it wit
 
 - Is there one place that knows every open ask per person, or does each part of the agent keep its own?
 - When a reply arrives, what marks the ask as answered?
-- `repeated_message` flags, for review, two messages to the same place minutes apart on the run's clock that share the wording particular to an ask (template wording the agent uses everywhere is discounted). `duplicate_ticket` fails the same title filed twice in one project while the first is open. `kept_chasing_after_done` flags a message threaded under an answered ask, or naming a finished ticket.
+- A rule with `gap_at_least` on messages to one person flags two minutes apart on the run's clock; whether they asked the same thing is in their words, so such a rule is best `severity: review`. `repeats_open_ticket` is a ticket filed with the title of one still open in the project. `messages` with `in_thread: true` since `answer` is a message under an ask already answered.

@@ -1,0 +1,41 @@
+[project]
+name = "minutehand-agent"
+# Released with `minutehand` at the same version: the root pyproject.toml writes it, this repeats it, and
+# tests/test_version.py and the release workflow refuse any difference (docs/releasing.md).
+version = "0.0.2"
+description = "What an agent imports to be played by Minutehand: its memory and its next wake, inert in production."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "FSL-1.1-ALv2"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Alknoma" }]
+keywords = ["agents", "ai-agents", "testing", "simulation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+# The standard library only: an agent installs this in its own environment and nothing else comes with it.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Alknoma/minutehand"
+Issues = "https://github.com/Alknoma/minutehand/issues"
+Documentation = "https://github.com/Alknoma/minutehand/blob/integration-main/docs/agent-contract.md"
+
+[build-system]
+requires = ["hatchling>=1.27", "packaging>=26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/minutehand_agent"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src/minutehand_agent", "README.md", "LICENSE.md"]

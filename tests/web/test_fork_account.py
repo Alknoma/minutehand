@@ -1,4 +1,4 @@
-"""A fork says what it is: where it split from its parent, what it changed, whether its restore was verified, and how
+"""A fork says what it is: where it split from its parent, what it changed, whether its agent was verified, and how
 its outcome differs from its parent's, on every surface that shows it: the viewer's API, `minutehand findings` and
 `runs`, and the MCP run listing.
 
@@ -29,7 +29,7 @@ from tests.web.test_viewer_api import client, read
 
 
 async def two_forks(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str, str, int]:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     point = next(p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1)
     answering = Fork(
@@ -43,7 +43,7 @@ async def two_forks(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     return parent.record.run_id, one.record.run_id, two.record.run_id, point.seq
 
 
-async def test_a_fork_says_where_it_split_what_it_changed_how_it_was_restored_and_how_it_differs(
+async def test_a_fork_says_where_it_split_what_it_changed_how_its_agent_was_verified_and_how_it_differs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     state = tmp_path / "state"
@@ -71,7 +71,7 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_it_was_restored_an
     assert outcome is not None
     assert outcome.parent_verdict.kind is VerdictKind.FAILED and outcome.verdict_changed
     assert any(d.label == "expectations met" for d in outcome.scorecard)
-    assert outcome.findings_lost and not any(f.check == "no_follow_up" for f in outcome.findings_gained)
+    assert outcome.findings_lost and not any(f.check == "follows_up_when_due" for f in outcome.findings_gained)
     split = outcome.first_divergence
     assert split is not None and split.fork is not None
     assert ANSWER in split.fork.words and "Sofia" not in (split.parent.words if split.parent else "")
@@ -85,7 +85,7 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_it_was_restored_an
     said = capsys.readouterr().out
     assert f"forked from {parent} at seq {at_seq}: after wake 1" in said
     assert "Sofia Romano (sofia) answers with 1 scripted reply" in said
-    assert "its restore was verified: the agent's report" in said
+    assert "its agent at the start: verified: its memory and its report" in said
     assert "verdict: failed -> passed" in said
     assert "the records part at the first " in said and ANSWER in said
 
@@ -204,12 +204,20 @@ def test_a_fork_whose_model_answered_differently_parts_at_the_model_call() -> No
 
 
 def test_a_fork_whose_agent_reported_differently_parts_at_its_report() -> None:
-    from minutehand.application.checkpoint import Checkpoint, NoHooks
+    from minutehand.application.checkpoint import Checkpoint, Remembered
     from minutehand.application.forks import first_divergence
+    from minutehand.application.memory import digest
     from minutehand.domain.agent import Commitment, WaitingOn
 
     def checkpoint(commitments: list[Commitment]) -> Checkpoint:
-        return Checkpoint(wake=2, now=T0, replies=0, pending=[], commitments=commitments, agent=NoHooks())
+        return Checkpoint(
+            wake=2,
+            now=T0,
+            replies=0,
+            pending=[],
+            commitments=commitments,
+            agent=Remembered(report=None, memory=digest({})),
+        )
 
     owed = Commitment(key="sofia", description="chase Sofia", waiting_on=WaitingOn.PERSON, opened_at=T0)
     parent = Record([], checkpoints={5: checkpoint([owed])})
@@ -239,7 +247,7 @@ async def test_a_fork_from_the_checkpoint_the_clock_ran_on_to_says_so_and_not_th
     """The forgetful agent asks for no wake after wake 1, so the clock runs on to the deadline and a second
     checkpoint is written that also follows wake 1: a fork from it split days after wake 1 ended."""
     state = tmp_path / "state"
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     end, ran_on = [p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1][:2]
     for point in (end, ran_on):

@@ -1,9 +1,6 @@
-"""The viewer draws a wait as overdue exactly where the scorecard counts one as due, on a finished run scored by the
-real scorer: an agent that reports to a silent owner, and reports again before the first report's expected date.
-
-The second report is a follow-up on the same wait, so the owner's patience starts again from it and the wait is
-not due when the run ends, though its first expected date has long passed. The page once drew it overdue from
-that date while the scorecard said no wait passed the time an answer was due."""
+"""The viewer draws a wait as facts, the same facts the scorecard counts, on a finished run scored by the real
+scorer: an agent that reports to a silent owner, and reports again or not. Whether the wait was overdue is a team's
+rule's to say, in the findings; the page once drew "overdue" from a date of its own, and now draws no judgement."""
 
 from __future__ import annotations
 
@@ -17,7 +14,8 @@ from minutehand import session
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import ObligationsResponse, ScorecardResponse
-from minutehand.application.checkpoint import Checkpoint, NoHooks, write_checkpoint
+from minutehand.application.checkpoint import Checkpoint, Remembered, write_checkpoint
+from minutehand.application.memory import digest
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.checks import ObligationKind, WakeRecord
 from minutehand.domain.run import RunRecord, StopReason
@@ -47,7 +45,7 @@ async def _finished_run(state: Path, *, report_again: bool) -> None:
     (directory / session.SCENARIO).write_text(played.model_dump_json())
     clock = RunClock(T0)
     store = SqliteStore(directory / session.WORLD, RUN, clock)
-    checkpoint = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=NoHooks())
+    checkpoint = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=Remembered(report=None, memory=digest({})))
     write_checkpoint(store, checkpoint)
     wakes: list[WakeRecord] = []
     for hours, change in (
@@ -81,9 +79,9 @@ async def _finished_run(state: Path, *, report_again: bool) -> None:
     store._db.close()  # pyright: ignore[reportPrivateUsage]
 
 
-@pytest.mark.parametrize(("report_again", "due"), [(True, 0), (False, 1)])
-async def test_the_viewer_draws_a_wait_overdue_only_where_the_scorecard_counts_it_due(
-    tmp_path: Path, report_again: bool, due: int
+@pytest.mark.parametrize(("report_again", "made"), [(True, 1), (False, 0)])
+async def test_the_viewer_draws_each_wait_with_the_follow_ups_the_scorecard_counts_and_no_judgement(
+    tmp_path: Path, report_again: bool, made: int
 ) -> None:
     state = tmp_path / "state"
     await _finished_run(state, report_again=report_again)
@@ -91,12 +89,12 @@ async def test_the_viewer_draws_a_wait_overdue_only_where_the_scorecard_counts_i
     transport = httpx.ASGITransport(app=create_app(state))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
         card = ScorecardResponse.model_validate_json((await c.get(f"/api/runs/{RUN}/scorecard")).content).scorecard
-        drawn = ObligationsResponse.model_validate_json((await c.get(f"/api/runs/{RUN}/obligations")).content)
+        raw = (await c.get(f"/api/runs/{RUN}/obligations")).content
+        drawn = ObligationsResponse.model_validate_json(raw)
 
     assert card is not None
     [owner] = [w for w in drawn.obligations if w.obligation.kind is ObligationKind.ANSWER_FROM_PERSON]
     assert owner.obligation.person == "owner" and owner.obligation.settled_at is None
     assert owner.obligation.expected_by is not None and owner.obligation.expected_by < T0 + timedelta(hours=100)
-    assert card.follow_ups_due == due
-    assert sum(len(w.fell_due) for w in drawn.obligations) == card.follow_ups_due
-    assert sum(1 for w in drawn.obligations for d in w.fell_due if d.late) == card.follow_ups_late
+    assert card.follow_ups_made == made == len(owner.obligation.agent_touches)
+    assert b"fell_due" not in raw and b"late" not in raw

@@ -3,20 +3,24 @@
 A small agent, `agent.py`, gets a goal: confirm the venue for the team offsite with Rosa. It asks Rosa in
 Slack, waits two days, follows up once if she has not answered, and emails Owen, who gave it the goal, when
 she does. It is an ordinary program: a web server from the standard library and the stock `slack_sdk`.
-It has no idea Minutehand exists.
+Its one line of Minutehand is what it remembers (its status, its next wake, whether it followed up, Rosa's
+answer), kept in `minutehand_agent.store`: a SQLite file (`AGENT_DB`, default `follow_up.db`) in production, and
+the run's own memory under Minutehand, so every run starts empty and a fork from any checkpoint starts from what
+the agent remembered there, with nothing to snapshot or restore.
 
 Minutehand starts it, plays a fortnight of simulated time in a few seconds against a fake Slack, and
-says how well it carried the job.
+judges the run by the rules the scenarios declare: what must be true at the end (`expect:`), and how the agent
+must behave on the way (`assess:`, `docs/assessments.md`). Those rules are this example's; yours may differ.
 
 | File | What it is |
 |---|---|
 | `agent.py` | The agent. `AGENT_BEHAVIOUR=forgetful` makes it ask once and never follow up. |
 | `agent.yaml` | Where Minutehand reaches it: the wake and report endpoints, where Slack pushes messages, and the two hosts it calls that are not faked (`outbound`). |
 | `scenario.yaml` | Rosa answers 36 hours after she is asked. Owen is told the outcome and owes no answer. |
-| `scenario_silent.yaml` | Rosa never answers. |
+| `scenario_silent.yaml` | Rosa never answers. Its rule `follows_up_when_due` says the agent must follow her up within the hour of when her answer was due. |
 
-The agent needs `slack_sdk` in the Python that runs it (`pip install slack_sdk`). Minutehand needs nothing
-from the agent's environment, and the agent nothing from Minutehand's.
+The agent needs `slack_sdk` and `minutehand-agent` (`minutehand_agent`, which imports only the standard library)
+in the Python that runs it: `pip install slack_sdk minutehand-agent`. Minutehand itself is installed apart.
 
 ## 1. Rosa answers
 
@@ -79,20 +83,13 @@ AGENT_BEHAVIOUR=forgetful minutehand run scenario_silent.yaml --agent agent.yaml
 The forgetful agent asks Rosa once and asks to be woken never again. Rosa says nothing. Nobody comes back
 to her, and the job sits waiting until the scenario's two weeks run out.
 
-```
-run bf46bbfef5fe: offsite_venue_silent
-  Failed: 1 check failed; the run stopped because nothing more was due and the agent asked for no wake.
-  stopped at 2026-09-07 09:00 UTC (simulated) because nothing more was due and the agent asked for no wake
+The command exits 1, with one failed finding from the scenario's rule `follows_up_when_due`: Rosa's answer
+was due and no follow-up came within the hour. The rule names its pattern, so the report also names the design
+that prevents it: give every wait a date by which you expect an answer, and wake on that date.
 
-fail (1)
-  no_follow_up: wait on rosa expired 11 days 6 hours before the run ended and the agent never came back to it
-    pattern expiry_on_every_wait: An expiry on every wait. Every wait carries an expected-by date and the agent wakes on it.
-...
-```
-
-The command exits 1. The finding names what went wrong (a question went unanswered and the agent never
-came back to it) and the design that prevents it: give every wait a date by which you expect an answer,
-and wake on that date.
+That a follow-up is owed, and when, is this scenario's rule, not Minutehand's. Leave `assess:` out of
+`scenario_silent.yaml` and the same run is `Not assessed` (exit 5): it reports what happened, a wait on Rosa still
+open and no follow-up made, and judges none of it.
 
 ## Afterwards
 

@@ -10,8 +10,9 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from minutehand.domain.memory import Collection, Key, SeededMemory
 from minutehand.domain.scenario import DispatchRule, Model, ReplyBehaviour, TicketState
 from minutehand.domain.world import EntityRef
 
@@ -68,8 +69,30 @@ class DispatchChange(Model):
     rules: list[DispatchRule] = Field(description="Every rule from the fork on; empty: every wake delivered as asked")
 
 
+class MemoryKey(Model):
+    collection: Collection = "default"
+    key: Key
+
+
+class MemoryEdit(Model):
+    """The agent's memory changed at the checkpoint: keys written and keys removed, as the scenario, before the agent
+    is asked anything. Its plan made from the old memory may no longer hold, so the fork asks the agent for its report
+    again and its own planned wakes are replaced by what it answers (`application/rewind.py`)."""
+
+    kind: Literal["memory_edit"] = "memory_edit"
+    put: list[SeededMemory] = Field(default=[], description="Each key and the value it holds from the fork on")
+    delete: list[MemoryKey] = Field(default=[], description="Keys the agent's memory no longer holds")
+
+    @model_validator(mode="after")
+    def _changes(self) -> MemoryEdit:
+        if not self.put and not self.delete:
+            raise ValueError("a memory edit puts or deletes at least one key")
+        return self
+
+
 Override = Annotated[
-    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift | DispatchChange, Field(discriminator="kind")
+    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift | DispatchChange | MemoryEdit,
+    Field(discriminator="kind"),
 ]
 
 

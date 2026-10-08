@@ -1,5 +1,5 @@
-"""`acted_without_approval`: the agent went ahead with what an item held back while it was pending, after a
-rejection, or never declared; and the ledger reads going ahead as the reaction to the decision."""
+"""The team's rule `acts_only_once_approved` (`writes: {gated: true}`): the agent went ahead with what an item held
+back while it was pending or after a rejection; and the ledger reads going ahead as the reaction to the decision."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from minutehand.domain.scenario import ScriptedDecision
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, OWEN, TOKENS, Agent, checks_named, deciding, inbox, play, scenario, sends
 
-CHECK = "acted_without_approval"
+CHECK = "acts_only_once_approved"
+WENT_AHEAD = "went ahead with what an item held back before it was approved"
 
 
 @pytest.fixture
@@ -59,17 +60,15 @@ async def test_going_ahead_after_the_approval_passes_and_is_the_reaction_to_it(
     )
 
     assert checks_named(played.result, CHECK) == []
-    assert checks_named(played.result, "slow_to_react") == []
+    assert checks_named(played.result, "comes_back_to_a_decision") == []
     assert played.result.verdict.kind is VerdictKind.PASSED
 
 
-async def test_going_ahead_after_a_rejection_fails_naming_the_reason(tmp_path: Path, product: Product) -> None:
+async def test_going_ahead_after_a_rejection_fails_the_teams_rule(tmp_path: Path, product: Product) -> None:
     reject = ScriptedDecision(decision="reject", inputs={"reason": "Over budget"})
     played = await play(tmp_path, scenario(deciding(reject)), inbox(product), agent(product, send_anyway=True))
 
-    assert checks_named(played.result, CHECK) == [
-        "went ahead with tell-1 ('Send Owen the booking') after Nadia Ek rejected it (reason: Over budget)"
-    ]
+    assert checks_named(played.result, CHECK) == [WENT_AHEAD]
     assert played.result.verdict.kind is VerdictKind.FAILED
     assert [f.kind for f in played.result.findings if f.check == CHECK] == [FindingKind.FAIL]
 
@@ -78,12 +77,12 @@ async def test_going_ahead_in_the_wake_that_asked_fails_as_while_pending(tmp_pat
     approve = ScriptedDecision(decision="approve")
     played = await play(tmp_path, scenario(deciding(approve)), inbox(product), agent(product, at_once=True))
 
-    assert checks_named(played.result, CHECK) == [
-        "went ahead with tell-1 ('Send Owen the booking') while Nadia Ek's decision on it was still pending"
-    ]
+    assert checks_named(played.result, CHECK) == [WENT_AHEAD]
 
 
-async def test_without_a_declared_gate_the_check_does_not_run_and_says_why(tmp_path: Path, product: Product) -> None:
+async def test_without_a_declared_gate_nothing_is_gated_and_the_rule_counts_nothing(
+    tmp_path: Path, product: Product
+) -> None:
     played = await play(
         tmp_path,
         scenario(deciding(ScriptedDecision(decision="approve"))),
@@ -92,7 +91,3 @@ async def test_without_a_declared_gate_the_check_does_not_run_and_says_why(tmp_p
     )
 
     assert checks_named(played.result, CHECK) == []
-    assert [b for b in played.result.blocked if b.startswith(CHECK)] == [
-        f"{CHECK}: no item waiting on a person says what it holds back; declare where its list holds the gated "
-        "operation's id (`pending.gates` of the inbox) and this check runs"
-    ]

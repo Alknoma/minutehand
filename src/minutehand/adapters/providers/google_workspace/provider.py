@@ -3,16 +3,20 @@ the scenario seeds of each.
 
 It pushes no message to the agent the way Slack does, so it is not `PushesEvents`. It is `LandsReplies`: a person's
 reply to the agent's email lands in the agent's mailbox, and a guest's answer to its invitation on the event, at
-their moment, where the agent finds them on its next read. It is `ChangesDocuments`: a person's change to a seeded
-document (a `DocumentHappening`) lands at its moment. It is `NotifiesChanges`: when the agent has asked Drive to be
-told of changes (`changes.watch`), Drive tells it, the way Drive's push notifications do.
+their moment, where the agent finds them on its next read. Gmail pushes nothing (`users.watch`, which delivers
+through Pub/Sub, answers 501), so a reply email is never heard; a guest's answer is heard when a live
+`events.watch` channel watches a calendar the event is on, and landing it tells that channel's address. It is
+`ChangesDocuments`: a person's change to a seeded document (a `DocumentHappening`) lands at its moment. It is
+`NotifiesChanges`: when the agent has asked Drive to be told of changes (`changes.watch`), Drive tells it, the way
+Drive's push notifications do. Both kinds of channel are `channels.py`'s.
 """
 
 from __future__ import annotations
 
 from minutehand.adapters.providers.google_workspace import calendar_wire, wire
 from minutehand.adapters.providers.google_workspace.app import DriveApi, build_app
-from minutehand.adapters.providers.google_workspace.calendars import CalendarApi, CalendarWorld
+from minutehand.adapters.providers.google_workspace.calendars import CalendarApi, CalendarWorld, calendars_of
+from minutehand.adapters.providers.google_workspace.channels import Channels
 from minutehand.adapters.providers.google_workspace.gmail import GmailApi, MailWorld
 from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.adapters.providers.google_workspace.seed import WorkspaceSeed, seed, write_faults
@@ -31,7 +35,8 @@ class GoogleWorkspaceProvider:
     seed_model = WorkspaceSeed
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(DriveApi(world, clock), GmailApi(world, clock), CalendarApi(world, clock))
+        channels = Channels(world, clock)
+        return build_app(DriveApi(world, clock, channels), GmailApi(world, clock), CalendarApi(world, clock, channels))
 
     def error(self, status: int, code: str, message: str) -> Rendered:
         return wire.error_answer(status, code, message)
@@ -45,9 +50,15 @@ class GoogleWorkspaceProvider:
         return True
 
     def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool:
-        """Gmail and Calendar push nothing (`users.watch` and `events.watch` answer 501): the agent polls."""
-        del reply, world, clock
-        return False
+        """Whether a guest's answer lands on a calendar a live `events.watch` channel watches. A reply email is never
+        heard: Gmail's `users.watch` answers 501, and the agent polls its mailbox."""
+        held = world.get(reply.in_reply_to)
+        if held is None:
+            return False
+        event = calendar_wire.KEPT.validate_json(held.body)
+        if not isinstance(event, calendar_wire.StoredEvent):
+            return False
+        return bool(Channels(world, clock).calendars(calendars_of(event)))
 
     async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
         """A reply to an email lands as the person's email in the asking mailbox; an answer to an invitation as the
@@ -56,18 +67,20 @@ class GoogleWorkspaceProvider:
         if held is None:
             return
         if isinstance(calendar_wire.KEPT.validate_json(held.body), calendar_wire.StoredEvent):
-            CalendarWorld(world).land(reply, clock)
+            await Channels(world, clock).tell_calendars(CalendarWorld(world).land(reply, clock))
         else:
             MailWorld(world).land(reply, clock)
 
     def change(self, happening: DocumentHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
-        DriveApi(world, clock).person_change(happening)
+        DriveApi(world, clock, Channels(world, clock)).person_change(happening)
 
     def watched(self, world: Store, clock: Clock) -> bool:
-        return bool(DriveApi(world, clock).watching())
+        """Whether a live Drive channel watches: what a `DocumentHappening` is told to. A Calendar channel is told of
+        a guest's answer as it lands (`heard`, `land`)."""
+        return bool(Channels(world, clock).drive())
 
     async def notify(self, world: Store, clock: Clock) -> None:
-        await DriveApi(world, clock).notify()
+        await DriveApi(world, clock, Channels(world, clock)).notify()
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`WorkspaceSeed.faults`, on a world already open."""

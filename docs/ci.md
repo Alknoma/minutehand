@@ -8,7 +8,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor over workflows and `.github/actions`), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `promotion`, `gate` |
-| `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency), `firestore` (builds `examples/state/firestore_emulator`'s image and runs `pytest -m firestore`: a real rewind through Google's Firestore emulator; not a required check) |
+| `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency) |
 | `release.yml` | a GitHub Release being published, and nothing else | `build` (sdist and wheel, `twine check`, the installed-package tests), `pypi` (Trusted Publishing from the `pypi` environment), `image` (`ghcr.io/alknoma/minutehand`, amd64 and arm64). `docs/releasing.md` |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
@@ -82,6 +82,25 @@ can use an action from it only when this repository's *Settings → Actions → 
 "Accessible from repositories in the organization". Nothing here changes it; whoever administers the repository
 sets it once. Without it the caller's run fails at "Set up job" with the action not found.
 
+**Running a folder of scenarios.** Once Minutehand is installed (from PyPI, `pip install minutehand`, or with the
+action), one step plays every scenario of a folder in parallel and fails the job on any surprise:
+
+```yaml
+      - run: minutehand run-all minutehand/scenarios --agent minutehand/agent.yaml --jobs 4 -- python agent.py --port {run.port}
+```
+
+Each scenario gets a port of its own and a folder of its own (`{run.port}`, `{run.dir}` in the agent file and the
+command; `MINUTEHAND_RUN_PORT`, `MINUTEHAND_RUN_DIR` in the agent's environment). Each says the verdict it is written
+to reach (`expect_outcome: passed | failed | unfinished | not_judged`, default `passed`): a scenario whose point is
+that nobody answers may expect `unfinished`, and one that shows a known bug `failed`. `run-all` prints a line per
+scenario and a timeline per person, and exits 1 when any verdict differs from its scenario's, 2 when any run could
+not be performed, 0 otherwise. `--json` prints the same as data.
+
+**What a single run's exit code says.** `minutehand run` exits with its verdict: 0 passed, 1 a rule, an expectation
+or a check of the agent's own failed, 3 not finished, 4 Minutehand itself failed, 5 not judged. A run whose files
+declare no assessment (no `assess`, `expect`, `protected_names` or own `checks`) is 5, `Not assessed`: Minutehand
+judges nothing by itself, so a job that wants a gate declares the rules it gates on (`docs/assessments.md`).
+
 The `action` job in `ci.yml` uses the action by its local path on a runner with nothing set up but the checkout,
 and runs the installed `minutehand --help`, `examples/follow_up` and the built image.
 
@@ -90,7 +109,7 @@ and runs the installed `minutehand --help`, `examples/follow_up` and the built i
 | Tier | When | Required | State |
 |---|---|---|---|
 | **Gate**: types, lints, workflow lint, the whole test suite on three runners | Every pull request and merge-queue entry | Yes | On |
-| **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help` and both `examples/follow_up` scenarios (exit 0, and exit 1 with `no_follow_up` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
+| **Build**: `uv build --all-packages` makes the sdist and the wheel of `minutehand` and of `minutehand-agent`; the wheels, installed into a fresh environment with none of the dev dependencies, run `minutehand --help` and both `examples/follow_up` scenarios, the agent started from an environment of its own holding only `slack_sdk` and the `minutehand-agent` wheel (exit 0, and exit 1 with the scenario's rule `follows_up_when_due` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
 | **Nightly**: repeat runs, newest dependencies | Nightly | No. A failure is a signal about tomorrow, not about the pull request in front of you. | On |
 | **Conformance**: each provider's answers validated against the service's published API description; recorded real traffic replayed against the fake | Nightly | No | Off. Not built. |
 | **Mutation**: a mutation tester over `domain/`, the store and the checks, reporting what survives | Weekly | No, reported as a trend | Off. Not built. Today "seen to fail" is a claim in the pull request, checked by the reviewer. |

@@ -24,14 +24,13 @@ from __future__ import annotations
 import bisect
 import re
 from collections.abc import Sequence
-from pathlib import Path
 
 from pydantic import Field
 
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario
-from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
+from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.telemetry import ForwardFailure, ReceivedSpan, Signal, SpanSource, StoredSpan
 from minutehand.domain.world import (
     CallBegan,
@@ -145,19 +144,12 @@ class CaseStore:
     def forward_failures(self) -> list[ForwardFailure]:
         return [f for part in self._parts for f in part.store.forward_failures()]
 
-    def snapshot(self, run_id: str, wake: int) -> AgentSnapshot | None:
-        return None  # a case's agent is driven from outside: nothing of its state is ever kept
-
-    def snapshots(self) -> list[AgentSnapshot]:
-        return []
-
     def usage(self) -> RunUsage:
         parts = [part.store.usage() for part in self._parts]
         return RunUsage(
             run_id=self.run_id,
             rows=sum(p.rows for p in parts),
             bodies=sum(p.bodies for p in parts),
-            snapshots=sum(p.snapshots for p in parts),
         )
 
     # -- what a reading cannot do -------------------------------------------------------------------------------
@@ -166,6 +158,9 @@ class CaseStore:
         return RunRefused(f"case {self.run_id} is read as one run from its worlds, never {what} through")
 
     def apply(self, change: Change) -> WorldEvent:
+        raise self._refused("written")
+
+    def apply_all(self, changes: Sequence[Change]) -> list[WorldEvent]:
         raise self._refused("written")
 
     def attach(
@@ -200,18 +195,6 @@ class CaseStore:
     def discard(self) -> None:
         raise self._refused("discarded")
 
-    def keep_snapshot(self, wake: int, directory: Path) -> AgentSnapshot:
-        raise self._refused("snapshotted")
-
-    def materialise(self, run_id: str, wake: int, into: Path) -> None:
-        raise self._refused("restored")
-
-    def pin(self, run_id: str, wake: int, *, pinned: bool) -> AgentSnapshot:
-        raise self._refused("pinned")
-
-    def prune(self, keep: int) -> list[AgentSnapshot]:
-        raise self._refused("pruned")
-
     def sweep(self) -> Freed:
         raise self._refused("swept")
 
@@ -243,11 +226,12 @@ def merged(name: str, scenarios: Sequence[Scenario]) -> Scenario:
             "owner": first.owner,
             "starts_at": starts,
             "deadline_after": deadline - starts if deadline is not None else None,
-            "max_wakes": max(s.max_wakes for s in scenarios),
+            "max_wakes": max((s.max_wakes for s in scenarios if s.max_wakes is not None), default=None),
             "seed": first.seed,
             "protected_names": list(dict.fromkeys(n for s in scenarios for n in s.protected_names)),
             "people": [p.model_dump() for p in people],
             "ticket_fates": [f.model_dump() for s in scenarios for f in s.ticket_fates],
             "expect": [e.model_dump() for s in scenarios for e in s.expect],
+            "assess": [r.model_dump() for r in {r.id: r for s in reversed(scenarios) for r in s.assess}.values()],
         }
     )

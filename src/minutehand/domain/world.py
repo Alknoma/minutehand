@@ -21,7 +21,8 @@ class EntityKind(StrEnum):
     DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
     FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
     TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
-    DATABASE = "database"  # a record of a database of the agent's that Minutehand fronts (`domain.database`)
+    MEMORY = "memory"  # a key of the agent's own memory, written or read through `minutehand_agent.store`
+    NEXT_WAKE = "next_wake"  # the moment the agent asked to be woken next through `minutehand_agent.wake`
 
 
 class Operation(StrEnum):
@@ -455,8 +456,29 @@ class ToolCallSnapshot(Model):
     is_error: bool = Field(default=False, description="The server answered an error, or a result marked isError")
 
 
+class MemorySnapshot(Model):
+    """A key of the agent's memory (`minutehand_agent.store`), as the agent wrote or read it. Written by the run's
+    receiver as actor AGENT: a write carries the value it left (`value`, None for a delete); a read carries none, and
+    a listing names the prefix it listed under in `key` with `listing` set."""
+
+    kind: Literal["memory"] = "memory"
+    collection: str
+    key: str = Field(description="The key; for a listing, the prefix listed")
+    value: str | None = Field(default=None, description="The value written, as canonical JSON text; None otherwise")
+    listing: bool = Field(default=False, description="A listing of every key under `key`, not one key")
+
+
+class NextWakeSnapshot(Model):
+    """The moment the agent asked to be woken next (`minutehand_agent.wake`), or none."""
+
+    kind: Literal["next_wake"] = "next_wake"
+    at: AwareDatetime | None
+
+
 Snapshot = Annotated[
-    ToolCallSnapshot
+    MemorySnapshot
+    | NextWakeSnapshot
+    | ToolCallSnapshot
     | FileSnapshot
     | TicketSnapshot
     | MessageSnapshot

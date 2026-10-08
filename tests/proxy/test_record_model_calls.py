@@ -277,7 +277,8 @@ async def test_a_run_records_model_calls_only_when_its_listen_says_so(
         assert running.proxy.addon.policy("api.anthropic.com") is (
             HostPolicy.RECORD if recording else HostPolicy.TUNNEL
         )
-        assert running.receiver is None and running.telemetry_port is None
+        # The receiver runs to hold the agent's memory; none of the agent's telemetry is taken.
+        assert running.telemetry_port is None and not running.telemetry
 
 
 NOT_TEXT_ASKED = b'{"model": "model-luna", "messages": [{"role": "user", "content": "caf\xe9 \xff"}]}'

@@ -13,7 +13,7 @@ needs installing.
 ```python
 @tool("remember_wait", "Remember that `email` owes an answer, expected by `expected_by` (ISO 8601). ...",
       {"email": str, "expected_by": str})
-async def remember_wait(args):                               # writes the process's Memory
+async def remember_wait(args):                               # writes the Memory recalled for this run
     email, waits = args["email"], memory.waits
     waits[email] = Wait(datetime.fromisoformat(args["expected_by"]), waits[email].asks + 1 if email in waits else 1)
     return said(f"waiting on {email} until {args['expected_by']}")
@@ -48,12 +48,37 @@ def report():                                                # GET /report, afte
   the agent waits on is one more (`message`). Each `query()` starts the bundled command line, which takes about half
   a second.
 - **`next_wake`** is read from `Memory`, which the in-process tools write. The command line keeps its own session,
-  but the agent's state is in this process, where the report can read it without asking the model.
+  but what the agent remembers is in the store, where the report can read it without asking the model.
 - **The Slack tool** runs in this process, not in the command line, so its `slack_sdk.WebClient` call to
   `slack.com` goes through Minutehand's `HTTPS_PROXY` and CA like any other.
 - **The command line's own files** (sessions, settings) go to a directory of the agent's own (`CLAUDE_CONFIG_DIR`,
   `cwd`), and `setting_sources=[]` keeps the user's and project's settings out, so a run depends on nothing in
   `~/.claude`.
+
+## What it remembers
+
+The goal and the waits are kept in `minutehand_agent.store`, the one import that ties the agent to Minutehand:
+`recall()` reads them into `Memory` before every wake, Slack event and report, and `keep()` writes them back, in one
+batch, after every wake and event (the `@remembering` handlers). In production the store passes to the backend
+`store.configure` names (`MemoryBackend()` here; `SqliteBackend(path)` keeps it across restarts). Under Minutehand it
+is the run's own memory: every run starts from the scenario's, and a fork from any checkpoint starts from what the
+agent remembered there, with nothing to snapshot or restore (`../../../docs/agent-contract.md`). What the framework
+keeps in its own objects past a wake is not part of the run, so nothing here is kept there.
+
+```python
+store.configure(store.MemoryBackend())
+waits_kept = store.collection("waits")  # person -> {"expected_by": ISO 8601, "asks": n}
+
+
+def recall() -> None:
+    global memory
+    goal = store.get("goal")
+    waits = {
+        email: Wait(datetime.fromisoformat(str(kept["expected_by"])), int(str(kept["asks"])))
+        for email, kept in waits_kept.list()
+    }
+    memory = Memory(goal=goal if isinstance(goal, str) else None, waits=waits)
+```
 
 ## The model
 
@@ -75,8 +100,8 @@ uv run --group recipes minutehand run scenario_late.yaml --agent agent.yaml -- p
 # exits 0: Rosa answers after the follow-up; the agent tells Owen "... says: The lakeside hall, booked for the 14th."
 
 uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
-# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no no_follow_up finding
+# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no follows_up_when_due finding
 ```
 
-Outside this checkout: `pip install claude-agent-sdk slack_sdk` in the agent's Python, and Minutehand installed on
+Outside this checkout: `pip install claude-agent-sdk slack_sdk minutehand-agent` in the agent's Python, and Minutehand installed on
 its own (`uv tool install .` from a checkout); then `minutehand run …` without `uv run`.

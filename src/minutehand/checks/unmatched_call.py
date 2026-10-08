@@ -12,7 +12,7 @@ through the event it produced, and these produced none.
 
 from __future__ import annotations
 
-from minutehand.checks._waits import blocked
+from minutehand.checks.facts import blocked
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 
 

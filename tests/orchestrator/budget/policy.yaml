@@ -1,0 +1,32 @@
+# The team's policy, as the team writes it: follow up a lead at 24 and 48 hours, within an hour, and no more; escalate
+# to the owner once at 72 hours when a lead has still not answered; tell the owner every answer. Answers are never
+# acknowledged, and the agent may stop once it has escalated: no rule asks otherwise.
+assess:
+  - id: follows_up_at_a_day_and_two
+    each: ask
+    where: {person_not: [owner]}
+    at: [ask+P1D, ask+P2D]
+    when: {open_at: moment}
+    count: {follow_ups: {}, since: moment, until: moment+PT1H}
+    at_least: 1
+    message: "{person.key} was not followed up within an hour of {rule.moment}"
+  - id: follows_up_twice_at_most
+    each: ask
+    where: {person_not: [owner]}
+    count: {follow_ups: {}}
+    at_most: 2
+    message: "{person.key} was followed up {rule.count} times; we follow up twice"
+  - id: escalates_at_three_days
+    each: ask
+    where: {person_not: [owner]}
+    when: {open_at: ask+P3D}
+    count: {messages: {to: [owner], holding: ["{person.key}"]}, since: ask+P3D, until: ask+P3DT1H}
+    exactly: 1
+    message: "{person.key} had not answered at three days and the owner heard {rule.count} times within the hour"
+  - id: tells_the_owner_every_answer
+    each: ask
+    where: {person_not: [owner]}
+    when: {answered: true}
+    count: {messages: {to: [owner], holding: ["{ask.answer}"]}, since: answer}
+    at_least: 1
+    message: "the owner was never told what {person.key} answered"

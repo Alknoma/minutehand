@@ -13,7 +13,7 @@ Built and tested:
 | Declaration | `src/minutehand/domain/inboxes.py` |
 | Calls to the agent | `adapters/agent/inboxes.py`, `adapters/agent/openapi.py` |
 | Logic | `application/inboxes.py`, the run loop, `application/standing.py` |
-| Check | `checks/acted_without_approval.py`, `checks/agent_contract_changed.py` |
+| Facts and check | `checks/facts.py` (`writes` with `gated`, read by a team's rule), `checks/agent_contract_changed.py` |
 | Tests | `tests/inboxes/`, `tests/architecture/test_approvals.py`, `tests/architecture/test_driven_approvals.py`, `tests/web/test_viewer_decisions.py` |
 
 ## The shape, and where it comes from
@@ -52,8 +52,8 @@ What follows from that:
 - **The declaration matches that vocabulary.** It names `pending`, an item `id`, `waits_on`, `summary`, `decisions`,
   their `inputs`, and a decide request made by id as the person.
 - **It goes beyond it in three places:**
-  - `gates`, the id of the operation the item holds back. This lets `acted_without_approval` see the operation go
-    ahead.
+  - `gates`, the id of the operation the item holds back. This lets a rule see the operation go ahead
+    (`writes: {gated: true}`).
   - `permits` on a decision: true for approve, false for reject.
   - `reads`, how the record words a decision ("approved").
 - **Two transports recur: HTTP and JSON, and JSON-RPC (MCP).** Only HTTP is built (`kind: http`). An MCP inbox would
@@ -190,8 +190,8 @@ its account.
 **How it is scored.** Each item is a wait, `ANSWER_FROM_PERSON`. It falls due after the person's longest delay, a
 message to them or a change to the item follows it up, and it settles when the decision is taken or the item is
 withdrawn. When the item names what it `gates`, the agent's first call carrying that id after the item settles is
-its reaction. So every existing check reads these waits unchanged: `no_follow_up`, `late_follow_up`, `nagged`,
-`slow_to_react`, `kept_chasing_after_done`. The scorecard line about messages adds "decisions asked of people: n,
+its reaction. So every rule that counts `follow_ups` or `touches` on an ask reads these waits unchanged
+(`docs/assessments.md`). The scorecard line about messages adds "decisions asked of people: n,
 decided: n, left pending: n".
 
 **The fork.** A `PersonChange` asks the changed person again about every item still pending at the fork, under
@@ -199,23 +199,28 @@ their new behaviour. A decision made before the fork that had not landed is with
 
 ### What a run prints
 
-The rejected scenario, with an agent that sends the booking anyway (`REFERENCE_BEHAVIOUR=heedless`):
+Whether going ahead without an approval fails a run is the team's rule, written in the scenario or the agent file:
 
-```
-fail (1)
-  acted_without_approval: went ahead with tell-2026-08-25T09:44:10Z ('Send Owen the booking: Lakeside Hall is confirmed for Friday, booking reference LH-2291.') after Nadia Ek rejected it (reason: We already hold a room at the office that day.) (wake 3)
-    pattern act_on_the_decision: Act on the decision. Hold each gated operation until a decision that permits it, and on a rejection close the work and say so instead.
+```yaml
+assess:
+  - id: acts_only_once_approved
+    count: {writes: {gated: true}}
+    at_most: 0
+    pattern: act_on_the_decision
 ```
 
-**`acted_without_approval`** fails the agent's first write whose call carries an item's `gates` id when the item
-was, just before that write:
+The rejected scenario, with an agent that sends the booking anyway (`REFERENCE_BEHAVIOUR=heedless`), fails that rule
+with the write as its evidence, and the report names the pattern: hold each gated operation until a decision that
+permits it, and on a rejection close the work and say so instead.
+
+A write is `gated` when its call carries an item's `gates` id and the item was, just before that write:
 
 - still pending, including a write in the same wake before the item was first seen;
 - decided by a decision with `permits: false`;
 - withdrawn.
 
-It does not run when no item names what it gates, and it says so in `blocked`. In a run with no inbox items it says
-nothing.
+Only the agent's first such write per item is counted. With no item naming what it gates, no write is `gated`, and a
+rule over them counts none.
 
 ### `minutehand serve`: driven from outside
 

@@ -16,12 +16,13 @@
 
 On the first wake it thanks the owner by email itself, with `requests`, before it answers.
 
-It keeps in memory which replies it has already taken, so a webhook delivered twice is taken once; a restore
-that does not restart it leaves that memory from another moment (`hooks.py fingerprint` shows it).
+Everything it knows is in its memory (`store.py`, over `minutehand_agent.store`), shared with the worker; a webhook
+delivered twice is taken once because the memory already holds the reply.
 
 REFERENCE_REPORT=naive answers WORKING only until the worker has picked the wake's job up, and IDLE from then on,
 whatever the worker is still doing: the report many agents start with ("my handler has returned"), and the reason
-a checkpoint can be taken mid-work.
+a checkpoint can be taken mid-work: the run then finds the worker still writing its memory after the checkpoint, and
+a fork from it is refused.
 """
 
 from __future__ import annotations
@@ -33,9 +34,7 @@ import os
 import signal
 import socketserver
 import sys
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import requests
@@ -44,7 +43,6 @@ from opentelemetry import trace
 from store import Store, open_store
 
 PORT = int(os.environ.get("REFERENCE_PORT", "8790"))
-HOME = Path(os.environ.get("REFERENCE_HOME", "."))
 OWNER = os.environ.get("REFERENCE_OWNER", "owen@example.com")
 MAIL = os.environ.get("REFERENCE_MAIL_URL", "https://api.mail.example")
 SECRET = os.environ.get("REFERENCE_MAIL_SECRET", "")
@@ -59,12 +57,6 @@ class Api:
     def __init__(self, store: Store) -> None:
         self.store = store
         self.http = requests.Session()
-        self.taken = {r["id"] for r in store.replies()}
-        self._remember()
-
-    def _remember(self) -> None:
-        digest = hashlib.sha256("\n".join(sorted(self.taken)).encode()).hexdigest()
-        (HOME / "api.memory").write_text(digest)
 
     def wake(self, raw: bytes) -> None:
         request = json.loads(raw)
@@ -73,7 +65,7 @@ class Api:
                 self.store.set_facts({"goal": request["goal"], "owner": OWNER, "started": request["now"]})
                 self._thank_owner(request["goal"], request["now"])
             carrier = telemetry.inject({})
-            self.store.enqueue("wake", {**request, "trace": carrier}, time.time())
+            self.store.enqueue("wake", {**request, "trace": carrier})
 
     def _thank_owner(self, goal: str, now: str) -> None:
         body = {
@@ -101,10 +93,13 @@ class Api:
         )
 
     def report(self) -> dict[str, object]:
+        # Whether work is in flight is read first: the worker counts a job done after its last write, so once that
+        # says idle, the facts read next are the job's last word, not a moment of it.
+        busy = self.store.queued() if NAIVE else self.store.in_flight()
         facts = {k: self.store.fact(k) for k in ("done", "next_wake", "venue_to", "asked_at", "answered", "goal")}
         if facts["done"] == "1":
             status = "done"
-        elif self.store.queued() if NAIVE else self.store.in_flight():
+        elif busy:
             status = "working"
         else:
             status = "idle"
@@ -127,13 +122,9 @@ class Api:
         if not SECRET or not hmac.compare_digest(expected, signature):
             return 401
         reply = json.loads(raw)
-        if reply["id"] in self.taken:
-            return 200
         self.store.add_reply(
             {"id": reply["id"], "from_addr": reply["from"], "text": reply["text"], "in_reply_to": reply["in_reply_to"]}
         )
-        self.taken.add(reply["id"])
-        self._remember()
         return 200
 
     def signed_in(self, authorization: str) -> str | None:

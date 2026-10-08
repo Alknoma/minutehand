@@ -6,9 +6,15 @@ them; the obligations come from the real ledger, never written by hand.
 
 from __future__ import annotations
 
+import json
+import textwrap
 from datetime import UTC, datetime, timedelta
 
+import yaml
+from pydantic import TypeAdapter
+
 from minutehand.checks.ledger import build
+from minutehand.domain.assessments import Rule, StoppedBy
 from minutehand.domain.checks import RunView, WakeRecord
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import (
@@ -28,6 +34,7 @@ from minutehand.domain.world import (
     EntityKind,
     EntityRef,
     Exchange,
+    MemorySnapshot,
     MessageSnapshot,
     Operation,
     RecordSnapshot,
@@ -164,6 +171,15 @@ class Log:
     def read(self, entity: EntityRef, hours: float, *, wake: int = 1) -> WorldEvent:
         return self._add(hours, Actor.AGENT, Operation.READ, entity, None, wake)
 
+    def memory(self, key: str, value: object | None, hours: float, *, wake: int = 1) -> WorldEvent:
+        """The agent writes one key of its memory (`minutehand_agent.store`); None deletes it."""
+        ref = EntityRef(provider="memory", kind=EntityKind.MEMORY, external_id=f"default/{key}")
+        operation = Operation.DELETE if value is None else Operation.UPDATE
+        text = None if value is None else json.dumps(value, sort_keys=True, separators=(",", ":"))
+        return self._add(
+            hours, Actor.AGENT, operation, ref, MemorySnapshot(collection="default", key=key, value=text), wake
+        )
+
 
 def reply(who: Person, to: WorldEvent, hours: float) -> PersonReply:
     return PersonReply(person=who.key, in_reply_to=to.entity, text="Here it is.", at=at(hours))
@@ -174,6 +190,14 @@ ONE_WAKE = WakeRecord(index=1, sim_time=START, world_changes=1, commitments_chan
 so no check is blocked for want of one and none reads it as idle."""
 
 
+_RULES: TypeAdapter[list[Rule]] = TypeAdapter(list[Rule])
+
+
+def rules(written: str) -> list[Rule]:
+    """Rules as a team writes them in YAML: the list under `assess:`."""
+    return _RULES.validate_python(yaml.safe_load(textwrap.dedent(written)))
+
+
 def view(
     world: Scenario,
     log: Log,
@@ -181,6 +205,8 @@ def view(
     *,
     wakes: list[WakeRecord] | None = None,
     unmatched: list[Exchange] | None = None,
+    assess: list[Rule] | None = None,
+    stopped: StoppedBy | None = None,
 ) -> RunView:
     return RunView(
         scenario=world,
@@ -189,4 +215,6 @@ def view(
         obligations=build(world, log.events, replies or []),
         replies=replies or [],
         unmatched_calls=unmatched,
+        rules=assess or [],
+        stopped=stopped,
     )

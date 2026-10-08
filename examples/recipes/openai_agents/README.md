@@ -7,7 +7,7 @@ endpoints Minutehand calls. `../README.md` describes the agent and the contract 
 
 ```python
 @dataclass
-class Memory:  # the run context, alive as long as the process
+class Memory:  # the run context, recalled from the store on every wake
     goal: str | None = None
     waits: dict[str, Wait] = field(default_factory=dict)  # person -> Wait(expected_by, asks)
 
@@ -19,6 +19,7 @@ def remember_wait(memory: RunContextWrapper[Memory], email: str, expected_by: st
     return f"waiting on {email} until {expected_by}"
 
 
+@remembering
 def wake(request):  # POST /wake
     now = datetime.fromisoformat(request["now"])
     if request["reason"] == "start":
@@ -34,6 +35,7 @@ def wake(request):  # POST /wake
 
 
 def report():  # GET /report, after every wake
+    recall()
     if memory.goal is None:
         return {"status": "idle", "next_wake": None}
     if not memory.waits:
@@ -47,6 +49,31 @@ def report():  # GET /report, after every wake
   tool whose first parameter asks for it, and never shows it to the model.
 - **The Slack tool** is a plain `function_tool` on `slack_sdk.WebClient`. It calls `slack.com`; Minutehand's
   `HTTPS_PROXY` and CA in the agent's environment take the call to the fake Slack.
+
+## What it remembers
+
+The goal and the waits are kept in `minutehand_agent.store`, the one import that ties the agent to Minutehand:
+`recall()` reads them into `Memory` before every wake, Slack event and report, and `keep()` writes them back, in one
+batch, after every wake and event (the `@remembering` handlers). In production the store passes to the backend
+`store.configure` names (`MemoryBackend()` here; `SqliteBackend(path)` keeps it across restarts). Under Minutehand it
+is the run's own memory: every run starts from the scenario's, and a fork from any checkpoint starts from what the
+agent remembered there, with nothing to snapshot or restore (`../../../docs/agent-contract.md`). What the framework
+keeps in its own objects past a wake is not part of the run, so nothing here is kept there.
+
+```python
+store.configure(store.MemoryBackend())
+waits_kept = store.collection("waits")  # person -> {"expected_by": ISO 8601, "asks": n}
+
+
+def recall() -> None:
+    global memory
+    goal = store.get("goal")
+    waits = {
+        email: Wait(datetime.fromisoformat(str(kept["expected_by"])), int(str(kept["asks"])))
+        for email, kept in waits_kept.list()
+    }
+    memory = Memory(goal=goal if isinstance(goal, str) else None, waits=waits)
+```
 
 ## The model
 
@@ -71,8 +98,8 @@ uv run --group recipes minutehand run scenario_late.yaml --agent agent.yaml -- p
 # exits 0: Rosa answers after the follow-up; the agent tells Owen "... says: The lakeside hall, booked for the 14th."
 
 uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
-# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no no_follow_up finding
+# exits 0: one follow-up two days in, then Owen is told Rosa never answered; no follows_up_when_due finding
 ```
 
-Outside this checkout: `pip install openai-agents slack_sdk` in the agent's Python, and Minutehand installed on its
+Outside this checkout: `pip install openai-agents slack_sdk minutehand-agent` in the agent's Python, and Minutehand installed on its
 own (`uv tool install .` from a checkout); then `minutehand run …` without `uv run`.
