@@ -133,7 +133,9 @@ async def test_chats_their_messages_and_members(graph: Graph) -> None:
     members = (await graph.http.get(f"{GRAPH}/chats/{chat.graph_id}/members", headers=graph.auth)).json()
     assert [m["userId"] for m in members["value"]] == [sofia.user.id]
     every = await graph.http.get(f"{GRAPH}/chats", headers=graph.auth)
-    assert every.status_code == 403
+    assert every.status_code == 501 and "no signed-in user" in every.json()["error"]["message"]
+    sent = await graph.http.post(f"{GRAPH}/chats/{chat.graph_id}/messages", json={}, headers=graph.auth)
+    assert sent.status_code == 501 and sent.json()["error"]["code"] == "not_implemented"
 
 
 async def test_a_team_unknown_is_refused_in_graphs_shape(graph: Graph) -> None:
@@ -141,4 +143,4 @@ async def test_a_team_unknown_is_refused_in_graphs_shape(graph: Graph) -> None:
     assert answered.status_code == 404
     assert set(answered.json()["error"]) == {"code", "message", "innerError"}
     no_token = await graph.http.get(f"{GRAPH}/users")
-    assert no_token.status_code == 401 and no_token.json()["error"]["code"] == "InvalidAuthenticationToken"
+    assert no_token.status_code == 200 and no_token.json()["value"]

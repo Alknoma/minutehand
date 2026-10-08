@@ -136,7 +136,7 @@ class Subscriptions:
         return record
 
     async def create(self, request: Request) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         try:
             asked = wire.read(wire.SubscriptionRequest, await request.body())
         except wire.Unreadable as e:
@@ -209,13 +209,12 @@ class Subscriptions:
         )
 
     async def get(self, request: Request) -> Response:
-        graph_caller(request)
         record = self._found(request.path_params["sub"])
         self._world.saw(subscription_ref(record.subscription.id), Operation.READ)
         return self._answer(record)
 
     async def list(self, request: Request) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         now = self._clock.now()
         found = [
             r.subscription
@@ -226,7 +225,6 @@ class Subscriptions:
         return Response(wire.dump(page), media_type=GRAPH_JSON)
 
     async def renew(self, request: Request) -> Response:
-        graph_caller(request)
         record = self._found(request.path_params["sub"])
         try:
             asked = wire.read(wire.SubscriptionPatch, await request.body())
@@ -244,7 +242,6 @@ class Subscriptions:
         return self._answer(renewed)
 
     async def delete(self, request: Request) -> Response:
-        graph_caller(request)
         record = self._found(request.path_params["sub"])
         self._world.remove(subscription_ref(record.subscription.id), actor=Actor.AGENT, parent=SUBSCRIPTIONS)
         return Response(status_code=204)

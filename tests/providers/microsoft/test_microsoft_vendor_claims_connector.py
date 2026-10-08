@@ -73,16 +73,6 @@ def card(text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------- refusals
 
 
-async def test_a_send_with_no_token_is_refused_401(tenant: Tenant, microsoft: Intercepted) -> None:
-    """Documented: 401 means the bot is not authenticated. Class (a), REST and TEAMS_CODES."""
-    async with microsoft.http() as http:
-        answered = await http.post(
-            f"{CONNECTOR}v3/conversations/{tenant.directory.general_channel_id}/activities",
-            json={"type": "message", "text": "anyone there"},
-        )
-    assert answered.status_code == 401
-
-
 async def test_a_send_to_a_conversation_that_does_not_exist_is_refused_conversation_not_found(
     caller: Caller,
 ) -> None:

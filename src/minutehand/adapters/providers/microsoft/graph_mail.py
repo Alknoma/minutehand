@@ -335,7 +335,7 @@ class Mail:
     # ------------------------------------------------------------------ Graph
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         owner, rest = mailbox_owner(self._world, claims, parts)
         method = request.method
         if rest == ["sendMail"] and method == "POST":
@@ -354,9 +354,13 @@ class Mail:
             rest = rest[2:]
         if rest == ["messages"] and method == "GET":  # enum-lint: exempt Graph's path segment
             return self._list(request, owner, folder)
-        if rest == ["messages", "delta"] and method == "GET":  # enum-lint: exempt Graph's path segment
+        if (
+            rest in (["messages", "delta"], ["messages", "delta()"]) and method == "GET"
+        ):  # enum-lint: exempt Graph's path segment
             if folder is None:
-                raise bad_request("Delta is answered for one folder's messages: mailFolders/{id}/messages/delta.")
+                raise NotImplementedError(
+                    "delta over every folder's messages: only one folder's, mailFolders/{id}/messages/delta"
+                )
             return self._delta(request, owner, folder)
         if len(rest) >= 2 and rest[0] == "messages":
             stored = self._found(owner, rest[1], folder)

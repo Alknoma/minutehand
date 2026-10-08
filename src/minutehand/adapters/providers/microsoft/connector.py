@@ -11,9 +11,9 @@
 | `GET /conversations/{id}/members`, `/pagedmembers`, `/members/{member}` | The conversation's roster |
 | `GET /teams/{team}`, `/teams/{team}/conversations` | A team's details and channels |
 
-Every call must carry a token the identity platform issued to a bot registered in the world for
-`https://api.botframework.com`; anything else is 401, with the connector's own body. A bot not installed in the
-conversation is refused 403, an unknown conversation 404. Activities are stored whole: an Adaptive Card stays
+Minutehand does not enforce credentials: any bearer token, or none, is accepted, and the bot calling is the app
+the token names or else the world's own bot. A bot not installed in the conversation is refused 403, an unknown
+conversation 404. Activities are stored whole: an Adaptive Card stays
 the JSON the bot sent (`cards.cards_of` lists its inputs and actions).
 """
 
@@ -36,7 +36,6 @@ from minutehand.adapters.providers.microsoft.state import (
     graph_time,
     message_ref,
 )
-from minutehand.adapters.providers.microsoft.wire import TokenUse
 from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
@@ -48,7 +47,6 @@ MAX_ACTIVITY_UTF16_BYTES = 100 * 1024
 PAGE_DEFAULT = 200
 PAGE_MIN = 50
 PAGE_MAX = 500
-DENIED = '{"message":"Authorization has been denied for this request."}'
 
 
 class ConnectorRefusal(ServiceRefusal):
@@ -122,16 +120,14 @@ class Connector:
     # ------------------------------------------------------------------ lookups
 
     def _bot(self, request: Request) -> AppRecord:
-        token = bearer(request)
-        if token is None:
-            raise _Denied()
-        try:
-            claims = tokens.decode(token, use=TokenUse.ACCESS)
-        except tokens.TokenRefused as e:
-            raise _Denied() from e
-        app = self._world.app(claims.appid)
-        if claims.aud != tokens.BOT_FRAMEWORK_AUDIENCE or app is None:
-            raise _Denied()
+        """The bot calling: the app its bearer token names. Minutehand does not enforce credentials: a missing,
+        unreadable or foreign token, or one naming an app the world does not hold, is the world's own bot calling."""
+        claims = tokens.presented(bearer(request))
+        app = self._world.app(claims.appid) if claims is not None else None
+        if app is None:
+            app = next(iter(self._world.apps()), None)
+        if app is None:
+            raise NotImplementedError("a connector call in a world with no bot registered")
         return app
 
     def _conversation(self, conversation: str, app: AppRecord) -> ConversationRecord:
@@ -400,17 +396,8 @@ class Connector:
     async def _answer(request: Request, handler) -> Response:
         try:
             return await handler(request)
-        except _Denied:
-            return Response(DENIED, status_code=401, media_type=JSON)
         except ConnectorRefusal as refusal:
             return _refused(refusal)
-
-
-class _Denied(ServiceRefusal):
-    """The call carries no token the connector accepts."""
-
-    def render(self, asked: Asked) -> Rendered:
-        return Rendered(status=401, content_type=JSON, body=DENIED.encode())
 
 
 def connector_router(store: Store, clock: Clock) -> Router:

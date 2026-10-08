@@ -27,7 +27,7 @@ from starlette.routing import Router
 from starlette.types import Message, Receive, Scope, Send
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.microsoft import tokens, wire
+from minutehand.adapters.providers.microsoft import surface, wire
 from minutehand.adapters.providers.microsoft.common import JSON, GraphRefusal, graph_error
 from minutehand.adapters.providers.microsoft.connector import connector_router
 from minutehand.adapters.providers.microsoft.graph_calendar import CALENDAR_SEGMENTS, Calendar
@@ -51,7 +51,6 @@ from minutehand.adapters.providers.microsoft.subscriptions import (
     drive_watch,
     mail_watch,
 )
-from minutehand.adapters.providers.microsoft.wire import TokenUse
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -150,10 +149,10 @@ class GraphApp:
     async def _route(self, request: Request) -> Response:
         path = request.url.path
         if not path.startswith("/v1.0/"):
-            raise GraphRefusal(400, "BadRequest", "Invalid version: only v1.0 is served.")
+            raise NotImplementedError("Graph is served at v1.0 only")
+        if not surface.served(request.method, path.removeprefix("/v1.0")):
+            raise NotImplementedError("not on the Graph v1.0 surface this provider serves (surface.SERVED)")
         parts = [p for p in path.removeprefix("/v1.0/").split("/") if p]
-        if not parts:
-            raise GraphRefusal(400, "BadRequest", "Invalid request")
         head = parts[0]
         if head == "subscriptions":
             return await self._subscription(request, parts)
@@ -193,12 +192,12 @@ class GraphApp:
                 return await self._subscriptions.renew(request)
             if method == "DELETE":  # enum-lint: exempt HTTP's method name
                 return await self._subscriptions.delete(request)
-        raise GraphRefusal(405, "BadRequest", f"{method} is not allowed on subscriptions.")
+        raise NotImplementedError(f"{method} on subscriptions")
 
 
 class SharePointHost:
     """What Graph hands out on the site's own host: a download, an upload session, a copy's monitor. Each URL
-    carries its own credential (`tempauth`), as SharePoint's do."""
+    carries its own credential (`tempauth`), as SharePoint's do; Minutehand does not enforce it."""
 
     def __init__(self, graph: GraphApp, clock: Clock) -> None:
         self._files = graph.files
@@ -212,20 +211,10 @@ class SharePointHost:
             response = graph_error(refusal, self._clock, request)
         await response(scope, receive, send)
 
-    def _authorised(self, request: Request, audience: str) -> None:
-        token = request.query_params["tempauth"] if "tempauth" in request.query_params else ""
-        try:
-            claims = tokens.decode(token, use=TokenUse.ACCESS)
-        except tokens.TokenRefused as e:
-            raise GraphRefusal(401, "unauthenticated", f"The pre-authenticated URL is not valid: {e.reason}.") from e
-        if claims.aud != audience:
-            raise GraphRefusal(401, "unauthenticated", "The pre-authenticated URL was issued for something else.")
-
     async def _route(self, request: Request) -> Response:
         path = request.url.path
         if path == "/_layouts/15/download.aspx":
             item = request.query_params["UniqueId"] if "UniqueId" in request.query_params else ""
-            self._authorised(request, f"download {item}")
             return self._files.download(item)
         monitor = re.fullmatch(r"/_api/v2\.0/monitor/([^/]+)", path)
         if monitor is not None:
@@ -233,7 +222,6 @@ class SharePointHost:
         upload = re.fullmatch(r"/_api/v2\.0/drives/[^/]+/items/[^/]+/uploadSession", path)
         if upload is not None:
             guid = (request.query_params["guid"] if "guid" in request.query_params else "").strip("'")
-            self._authorised(request, f"upload {guid}")
             return await self._files.upload_fragment(request, guid)
         raise GraphRefusal(404, "itemNotFound", "Nothing is served at this address.")
 

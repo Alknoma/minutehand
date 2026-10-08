@@ -240,9 +240,9 @@ async def test_another_users_onedrive_is_refused_to_a_user(files: Files, microso
     assert (await files.http.get(f"{GRAPH}/me/drive/root/children", headers=bearer(owen))).status_code == 200
 
 
-async def test_a_missing_item_and_an_unknown_segment_are_refused(files: Files) -> None:
+async def test_a_missing_item_and_an_unserved_segment_are_refused(files: Files) -> None:
     assert code(await files.http.get(files.url("/items/01NOPE"), headers=files.auth), 404) == "itemNotFound"
-    assert code(await files.http.get(files.url("/items/root/thumbnails"), headers=files.auth), 400) == "invalidRequest"
+    assert code(await files.http.get(files.url("/items/root/thumbnails"), headers=files.auth), 501) == "not_implemented"
 
 
 async def test_declared_faults_answer_in_each_surfaces_shape_then_stop(tmp_path: Path) -> None:

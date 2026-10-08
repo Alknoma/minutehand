@@ -207,13 +207,13 @@ class TeamsGraph:
         raise bad_request(f"Invalid filter clause: '{clause}' is not supported here.")
 
     async def users(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         if parts[0] == "me":
             if claims.oid is None:
                 raise bad_request("/me request is only valid with delegated authentication flow.")
             parts = ["users", claims.oid, *parts[1:]]
         if request.method != "GET":
-            raise GraphRefusal(405, "Request_BadRequest", "Users are read only here.")
+            raise NotImplementedError(f"{request.method} on a user")
         if len(parts) == 1:
             self._refuse_options(request, {"$filter", "$count"})
             clause = query(request, "$filter")
@@ -247,7 +247,7 @@ class TeamsGraph:
                 if c.type is not wire.ConversationType.CHANNEL and user.user.id in c.members
             ]
             return self._page(request, chats, f"{GRAPH}/$metadata#users('{user.user.id}')/chats")
-        raise bad_request(f"Unsupported segment '{'/'.join(parts[2:])}'.")
+        raise NotImplementedError(f"the segment '{'/'.join(parts[2:])}'")
 
     # ------------------------------------------------------------------ presence and automatic replies
 
@@ -285,7 +285,6 @@ class TeamsGraph:
 
     async def communications(self, request: Request, parts: list[str]) -> Response:
         """`GET /communications/presences/{id}` and `POST /communications/getPresencesByUserId`."""
-        graph_caller(request)
         if request.method == "GET" and len(parts) == 3 and parts[1] == "presences":
             user = self._user(parts[2])
             self._world.saw(user_ref(user.user.id), Operation.READ)
@@ -297,7 +296,7 @@ class TeamsGraph:
                 raise bad_request(e.message) from e
             found = [self.presence(self._user(i)) for i in asked.ids]
             return self._page(request, found, f"{GRAPH}/$metadata#Collection(microsoft.graph.presence)")
-        raise bad_request(f"Unsupported segment '{'/'.join(parts)}'.")
+        raise NotImplementedError(f"the segment '{'/'.join(parts)}'")
 
     # ------------------------------------------------------------------ teams and channels
 
@@ -323,9 +322,8 @@ class TeamsGraph:
         )
 
     async def teams(self, request: Request, parts: list[str]) -> Response:
-        graph_caller(request)
         if len(parts) < 2:
-            raise bad_request("Listing teams is not supported; name a team.")
+            raise NotImplementedError("listing teams")
         team = self._team(parts[1])
         rest = parts[2:]
         if not rest and request.method == "GET":
@@ -340,7 +338,7 @@ class TeamsGraph:
         if rest == ["members"]:
             return self._members(request, team.members, team.tenant_id, f"teams('{team.id}')/members")
         if rest[:1] != ["channels"]:
-            raise bad_request(f"Unsupported segment '{'/'.join(rest)}'.")
+            raise NotImplementedError(f"the segment '{'/'.join(rest)}'")
         if len(rest) == 1:
             self._refuse_options(request, {"$filter"})
             channels = self._world.channels_of(team.id)
@@ -375,7 +373,7 @@ class TeamsGraph:
             return await self._messages(
                 request, channel, rest[3:], f"teams('{team.id}')/channels('{channel.graph_id}')/messages"
             )
-        raise bad_request(f"Unsupported segment '{'/'.join(rest[2:])}'.")
+        raise NotImplementedError(f"the segment '{'/'.join(rest[2:])}'")
 
     def _members(self, request: Request, members: list[str], tenant: str, context: str) -> Response:
         found: list[wire.ConversationMember] = []
@@ -409,10 +407,13 @@ class TeamsGraph:
         )
 
     async def chats(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         if len(parts) == 1:
             if claims.oid is None:
-                raise GraphRefusal(403, "Forbidden", "Requested API is not supported in application-only context")
+                raise NotImplementedError(
+                    "GET /chats with no signed-in user: Graph lists a signed-in user's chats, and does not document "
+                    "its answer to an application"
+                )
             mine = [
                 self._chat(c)
                 for c in self._world.conversations()
@@ -430,7 +431,7 @@ class TeamsGraph:
             return self._members(request, chat.members, chat.tenant_id, f"chats('{chat.graph_id}')/members")
         if rest[0] == "messages":
             return await self._messages(request, chat, rest[1:], f"chats('{chat.graph_id}')/messages")
-        raise bad_request(f"Unsupported segment '{'/'.join(rest)}'.")
+        raise NotImplementedError(f"the segment '{'/'.join(rest)}'")
 
     # ------------------------------------------------------------------ messages
 
@@ -444,12 +445,6 @@ class TeamsGraph:
         def replies_of(root: str) -> list[wire.ChatMessage]:
             return [chat_message(self._world, conversation, m) for m in every if m.replyToId == root]
 
-        if request.method == "POST":
-            raise GraphRefusal(
-                403,
-                "Forbidden",
-                "Sending messages through Graph is not supported here; a bot sends through the Bot Framework connector.",
-            )
         if not rest:
             self._refuse_options(request, {"$expand"} if channel else set())
             expand = query(request, "$expand")
@@ -482,7 +477,7 @@ class TeamsGraph:
             return self._page(
                 request, list(reversed(replies_of(root.id))), f"{GRAPH}/$metadata#{context}('{root.id}')/replies"
             )
-        raise bad_request(f"Unsupported segment '{'/'.join(rest[1:])}'.")
+        raise NotImplementedError(f"the segment '{'/'.join(rest[1:])}'")
 
 
 def _mailbox_time(at: datetime) -> str:

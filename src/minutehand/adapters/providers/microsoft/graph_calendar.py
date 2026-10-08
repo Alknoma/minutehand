@@ -167,7 +167,7 @@ class Calendar:
     # ------------------------------------------------------------------ Graph
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         owner, rest = mailbox_owner(self._world, claims, parts)
         method = request.method
         if rest[:1] == ["calendar"] and rest[1:2] in (["events"], ["calendarView"], ["getSchedule"]):

@@ -180,7 +180,7 @@ class Files:
                 raise GraphRefusal(404, "itemNotFound", "The drive could not be found.")
             drive, rest = found, parts[2:]
         else:
-            raise bad_request("Invalid request")
+            raise NotImplementedError("a drive reached this way")
         if caller.is_user and drive.owner_id is not None and drive.owner_id != caller.claims.oid:
             raise GraphRefusal(403, "accessDenied", "Access denied: the drive belongs to another user.")
         return self._below(drive, "/".join(rest))
@@ -191,7 +191,7 @@ class Files:
             return Address(drive, None, None, None, None)
         match = re.fullmatch(r"(root|items/([^/:]+))(?::(/[^:]*):?)?(?:/(.*))?", rest)
         if match is None:
-            raise bad_request(f"Invalid request: '{rest}' names no item.")
+            raise NotImplementedError(f"'{rest}' in a drive")
         named = match.group(2)
         # Graph takes `root` as an item id too: `/items/root` is the drive's root.
         item = drive.root_id if match.group(1) == "root" or named == "root" else named
@@ -205,8 +205,9 @@ class Files:
                 suffix, argument = "search", search.group(1).replace("''", "'")
             else:
                 name, _, after = tail.partition("/")
+                name = "delta" if name == "delta()" else name  # Graph reads a function with or without its ()
                 if name not in _SUFFIXES or (after and name != "permissions"):
-                    raise bad_request(f"Unsupported segment '{tail}'.")
+                    raise NotImplementedError(f"the segment '{tail}'")
                 suffix, argument = name, after or None
         return Address(drive, item, path, suffix, argument)
 
@@ -537,7 +538,7 @@ class Files:
     # ================================================================== the routes
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
-        caller = Caller(graph_caller(request))
+        caller = Caller(graph_caller(request, self._world))
         method = request.method
         if parts[0] == "sites":
             return await self._sites(request, caller, parts)
@@ -545,14 +546,14 @@ class Files:
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
         if address.item is None:
             if method != "GET":
-                raise GraphRefusal(405, "methodNotAllowed", "The method is not allowed on a drive.")
+                raise NotImplementedError(f"{method} on a drive")
             self._world.saw(drive_ref(address.drive.drive.id), Operation.READ)
             body = wire.with_context(wire.dump(address.drive.drive), f"{GRAPH}/$metadata#drives/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
         handlers = self._handlers()
         handler = handlers[(method, address.suffix)] if (method, address.suffix) in handlers else None
         if handler is None:
-            raise GraphRefusal(405, "methodNotAllowed", f"{method} is not allowed here.")
+            raise NotImplementedError(f"{method} here")
         return await handler(request, caller, address, fields)
 
     Handler = Callable[[Request, Caller, Address, list[str] | None], Awaitable[Response]]
@@ -677,7 +678,7 @@ class Files:
     async def _content(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         stored = self._item(address)
         if stored.item.file is None:
-            raise bad_request("A folder has no content to download.")
+            raise NotImplementedError("the content of a folder: Graph documents no answer to it")
         return RedirectResponse(self.download_url(stored, address.drive), status_code=302)
 
     async def _put_content(
@@ -733,7 +734,7 @@ class Files:
 
     async def _delta(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         if address.item != address.drive.root_id or address.path:
-            raise bad_request("Delta is answered for the root of a drive.")
+            raise NotImplementedError("delta on a folder other than the drive's root")
         token = query(request, "token")
         since = self._since(token) if token else 0
         changed: list[tuple[int, wire.DriveItem]] = []
@@ -1068,7 +1069,7 @@ class Files:
         if len(parts) == 1:
             search = query(request, "search")
             if search is None:
-                raise bad_request("Listing sites needs a search: /sites?search=")
+                raise NotImplementedError("listing sites without ?search=")
             wanted = search.lower().strip("*")
             found = [s.site for s in self._world.sites() if not wanted or wanted in s.site.displayName.lower()]
             body = wire.dump(wire.Page[wire.Site](context=f"{GRAPH}/$metadata#sites", value=found))
@@ -1087,12 +1088,12 @@ class Files:
             body = wire.with_context(wire.dump(site.site), f"{GRAPH}/$metadata#sites/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
         if request.method != "GET":
-            raise GraphRefusal(405, "methodNotAllowed", "Sites are read only here.")
+            raise NotImplementedError(f"{request.method} on a site")
         if rest == ["drives"]:
             drives = [d.drive for d in self._world.drives() if d.site_id == site.site.id]
             body = wire.dump(wire.Page[wire.Drive](context=f"{GRAPH}/$metadata#drives", value=drives))
             return Response(wire.select_page(body, fields), media_type=GRAPH_JSON)
-        raise bad_request(f"Unsupported segment '{'/'.join(rest)}'.")
+        raise NotImplementedError(f"the segment '{'/'.join(rest)}'")
 
 
 GRAPH_ROLES = {"read": AccessRole.READER, "write": AccessRole.WRITER, "owner": AccessRole.ORGANIZER}
