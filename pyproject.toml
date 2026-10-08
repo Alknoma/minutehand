@@ -86,7 +86,7 @@ dev = [
     "pytest-xdist>=3.6",
     "aiohttp>=3.10",
     "pysocks>=1.7",
-    "notion-client==2.2.1",
+    "notion-client==3.1.0",
     "pyjwt[crypto]>=2.10",
     "python-docx==1.2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
