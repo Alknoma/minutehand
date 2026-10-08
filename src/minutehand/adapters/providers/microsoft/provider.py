@@ -35,6 +35,7 @@ from minutehand.adapters.providers.microsoft.state import (
     message_ref,
     user_ref,
 )
+from minutehand.application.conversations import PushedConversations
 from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
@@ -111,6 +112,11 @@ class MicrosoftProvider:
         await People(world, clock).press(reply, target)
 
     # ------------------------------------------------------------------ LandsReplies
+
+    def talking(self, target: InboundTarget | None, secret: str | None) -> PushedConversations:
+        """`TalksToAgent`: people's answers to the agent's Teams messages pushed to `target` signed with `secret`,
+        and to its emails and meeting requests landed where it reads them."""
+        return PushedConversations(MANIFEST.key, self, target, secret)
 
     def lands(self, reply: PersonReply, world: Store) -> bool:
         """A reply to a message that was ever in a mailbox lands by mail; a reply to a Teams message is pushed."""

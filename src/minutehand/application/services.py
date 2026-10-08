@@ -998,8 +998,8 @@ class ServiceItems:
         await self._desk.push(self.service, machine, self._desk.item(self.service, held.id, world), world, clock)
         return moved
 
-    def heard_of(self, item: EntityRef, world: Store, clock: Clock) -> bool:
-        del clock
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        del who, clock
         return bool(self._desk.targets(self.service, item.external_id, world))
 
     def within(self, item: EntityRef, world: Store) -> Window | None:

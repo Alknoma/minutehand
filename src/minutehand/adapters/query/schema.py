@@ -15,7 +15,7 @@ from pydantic import Field
 
 from minutehand.domain.scenario import Model
 
-VERSION = 1
+VERSION = 2
 """The read model's version, in `minutehand_schema.version` and `run.read_model_version`."""
 
 
@@ -351,8 +351,8 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="replies",
-        description="What people said and decided, each reply as decided: who, when it lands, how its words were "
-        "written, the facts it carried, the agent's message it answers, and the model call that wrote it.",
+        description="What people said and decided, each reply as it landed: who, when, how its words were written, "
+        "the facts it carried, the agent's message it answers, and the model call that wrote it.",
         order="reply_id",
         columns=[
             _c("reply_id", N, "The reply, numbered from 1 in the order decided"),
@@ -377,8 +377,6 @@ VIEWS: tuple[View, ...] = (
             _c("decision", T, "The decision made, for a decision"),
             _c("answers_seq", N, "The seq of the agent's message or item it answers"),
             _c("in_reply_to", T, "The entity it answers: provider/kind/id"),
-            _c("withdrawn", N, "1 when an edit of the message it answered withdrew it before it landed"),
-            _c("landed", N, "1 when the run reached its moment"),
             _c("seq", N, "The event it landed as, matched by its moment and provider; NULL when none was found"),
             _c("drawn_from", T, "How its moment was drawn: delay, window, reminded, pinned or automatic"),
             _c("person_call_id", N, "The model call that wrote it (model_calls.person_call_id); NULL when none"),

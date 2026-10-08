@@ -13,6 +13,7 @@ from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import Person, Scenario
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, WorldEvent
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import ModelFailed
 from minutehand.ports.store import Store
 from tests.orchestrator.rig import T0, Rig, scenario
 
@@ -105,17 +106,54 @@ class AnswersOnlyThePlaceholder(Overheard):
         return None if asked.after.text == QUESTION else reply
 
 
-async def test_a_reply_withdrawn_by_an_edit_that_gets_no_answer_settles_no_wait(rig: Rig) -> None:
+async def test_an_ask_edited_into_one_that_needs_no_answer_opens_no_wait(rig: Rig) -> None:
     scn = scenario(ticket_fates=[])
     heard = AnswersOnlyThePlaceholder(scn)
 
     record, store, _ = await rig.run(scn, rig.agent("placeholder_later"), replier=heard)
     result = await session._Judge(scn, None, judging=False).score(record, store)  # pyright: ignore[reportPrivateUsage]
 
-    # Her answer to the placeholder was decided, stored, and withdrawn when the placeholder became the question;
-    # nothing ever reached the agent, so the wait on her is still open at the end.
+    # Her answer to the placeholder was written, kept with the engine's record, and written again from the question
+    # when the placeholder became it before her moment: the question she has nothing to say to. Nothing reaches the
+    # agent, nothing is kept as said, and no wait was opened on her.
+    # Mutation: keeping the words written for the placeholder lands a reply and opens a wait.
     assert heard.asked == [("sofia", PLACEHOLDER), ("sofia", QUESTION)]
-    [withdrawn] = store.replies()
-    assert withdrawn.at == T0 + timedelta(hours=36) and _person_messages(store.events()) == []
-    assert record.ended_at > withdrawn.at
-    assert result.effectiveness.waits_opened == 1 and result.effectiveness.waits_open_at_end == 1
+    assert store.replies() == [] and _person_messages(store.events()) == []
+    assert rig.chat.pushed == []
+    assert result.effectiveness.waits_opened == 0
+
+
+class FailsThenFindsNothingToSay(Overheard):
+    """Sofia's model fails as her answer is planned and again on the next look; written again at her moment, it finds
+    nothing to say."""
+
+    def __init__(self, scn: Scenario) -> None:
+        super().__init__(scn)
+        self.writes = 0
+
+    async def write(
+        self,
+        person: Person,
+        asked: WorldEvent,
+        plan: Plan,
+        history: Sequence[WorldEvent],
+        world: Store,
+        clock: Clock,
+    ) -> PersonReply | None:
+        self.writes += 1
+        if self.writes <= 2:
+            raise ModelFailed("503 from the model service")
+        return None
+
+
+async def test_an_answer_that_needs_none_when_written_at_its_moment_wakes_nobody(rig: Rig) -> None:
+    scn = scenario(ticket_fates=[])
+    heard = FailsThenFindsNothingToSay(scn)
+
+    record, store, _ = await rig.run(scn, rig.agent("placeholder"), replier=heard)
+
+    # Written again at her moment, it needs no answer: passed before anyone hears of it. Mutation: keeping it among
+    # what is due wakes the agent for an answer that never comes.
+    assert heard.writes == 3
+    assert record.stop is StopReason.NOTHING_PENDING and [w.sim_time for w in record.wakes] == [T0]
+    assert rig.chat.pushed == [] and store.replies() == []

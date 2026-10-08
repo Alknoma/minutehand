@@ -53,7 +53,9 @@ def test_advancing_the_clock_past_a_scripted_reply_delivers_it_and_not_before(se
             assert [f.what for f in late.fired] == ["sofia's reply (verbatim)"]
             assert receiver.texts() == ["Yes, Thursday works."]
             replies = world.events(actor=Actor.PERSON, operation=Operation.CREATE)
-            assert [e.seq for e in replies] == late.fired[0].events
+            # Her message, the move it is (`transition`), then the engine's record of it, closed.
+            assert [e.seq for e in replies] == late.fired[0].events[:-1]
+            assert [e.entity.kind for e in replies][-1] is EntityKind.TRANSITION
         finally:
             served.client.close_world(world.world_id)
 

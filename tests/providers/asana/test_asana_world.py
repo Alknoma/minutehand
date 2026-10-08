@@ -152,7 +152,7 @@ async def test_a_person_completes_a_task_the_agent_handed_them(workspace: Worksp
     workspace.clock.jump(START + timedelta(hours=5))
     workspace.provider.transition(ticket, TicketState.DONE, workspace.store, workspace.clock)
 
-    last = workspace.store.events()[-1]
+    last = [e for e in workspace.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation, last.entity) == (Actor.PERSON, Operation.UPDATE, ticket)
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.DONE
     read = data(await client.get(f"/tasks/{made['gid']}"))
@@ -166,7 +166,7 @@ async def test_a_person_cancels_a_task(workspace: Workspace, client: httpx.Async
     workspace.provider.transition(
         state.task_ref(str(made["gid"])), TicketState.CANCELLED, workspace.store, workspace.clock
     )
-    last = workspace.store.events()[-1]
+    last = [e for e in workspace.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.CANCELLED
     read = data(await client.get(f"/tasks/{made['gid']}", params={"opt_fields": "completed,memberships.section.name"}))
     assert read["completed"] is True
@@ -180,7 +180,7 @@ async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, clien
         ticket, state=TicketState.OPEN, assignee_email="iris@example.com", world=workspace.store, clock=workspace.clock
     )
 
-    last = workspace.store.events()[-1]
+    last = [e for e in workspace.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation) == (Actor.SCENARIO, Operation.UPDATE)
     assert last.after == TicketSnapshot(
         title="Return the old keys", project="Venue Move", assignee_email="iris@example.com", state=TicketState.OPEN

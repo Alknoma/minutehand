@@ -305,8 +305,12 @@ async def test_a_command_moves_state_and_assignee_and_comments(instance: Instanc
         {"text": "Taking this on", "author": {"login": "agent-bot", "$type": "User"}, "$type": "IssueComment"},
     ]
     writes = [e for e in instance.store.events() if e.operation not in (Operation.READ, Operation.SEARCH)]
-    kinds = [(e.operation, e.entity.kind) for e in writes][-2:]
-    assert kinds == [(Operation.UPDATE, EntityKind.TICKET), (Operation.CREATE, EntityKind.COMMENT)]
+    kinds = [(e.operation, e.entity.kind) for e in writes][-3:]
+    assert kinds == [
+        (Operation.UPDATE, EntityKind.TICKET),
+        (Operation.CREATE, EntityKind.TRANSITION),
+        (Operation.CREATE, EntityKind.COMMENT),
+    ], "the State change is recorded once as a transition beside the issue's version"
 
 
 @pytest.mark.parametrize(
@@ -329,7 +333,7 @@ async def test_each_command_lands_on_the_issue_by_database_id(
     home = instance.youtrack.project(first.project)
     assert moved is not None and home is not None
     assert instance.youtrack.assignee_of(home, moved) == instance.youtrack.user_by_login(login)
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert isinstance(last.after, TicketSnapshot) and last.after.state is outcome
 
 

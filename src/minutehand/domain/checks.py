@@ -231,7 +231,7 @@ class RunView(Model):
     wakes: list[WakeRecord]
     obligations: list[Obligation] = []
     replies: list[PersonReply] = Field(
-        default=[], description="What people said: every reply not withdrawn before it landed, with who and when"
+        default=[], description="What people said: every reply that landed, with who and when"
     )
     commitments: list[Commitment] | None = None
     model_calls: list[WakeModelCalls] | None = Field(

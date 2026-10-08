@@ -421,8 +421,6 @@ def test_replies_say_how_their_words_were_written_and_what_they_answer(run: Fixt
             "decision": None,
             "answers_seq": run.asked,
             "in_reply_to": "slack/message/D0SOFIA/1724493600.000100",
-            "withdrawn": 0,
-            "landed": 1,
             "seq": run.answered,
             "drawn_from": "delay",
             "person_call_id": 1,
@@ -593,6 +591,6 @@ def test_a_fork_sees_its_parents_record_up_to_its_checkpoint_and_its_own_after(r
     ]
     assert column(run, "SELECT key FROM memory WHERE wake > 1", fork=True) == []
     assert column(run, "SELECT span_id FROM model_calls WHERE side = 'agent'", fork=True) == ["a1a1a1a1a1a1a1a1"]
-    assert column(run, "SELECT landed FROM replies", fork=True) == [0]
+    assert column(run, "SELECT reply_id FROM replies", fork=True) == [1]
     assert column(run, "SELECT COUNT(*) FROM calls", fork=True) == [6]
     assert column(run, "SELECT reason FROM wakes", fork=True) == ["start", "due"]

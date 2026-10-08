@@ -327,7 +327,7 @@ Items the agent wrote to outbound hosts its agent file declares `store`, as each
 
 ### `replies`
 
-What people said and decided, each reply as decided: who, when it lands, how its words were written, the facts it carried, the agent's message it answers, and the model call that wrote it. Kept in the order `reply_id`.
+What people said and decided, each reply as it landed: who, when, how its words were written, the facts it carried, the agent's message it answers, and the model call that wrote it. Kept in the order `reply_id`.
 
 | Column | Type | What it holds |
 |---|---|---|
@@ -344,8 +344,6 @@ What people said and decided, each reply as decided: who, when it lands, how its
 | `decision` | TEXT | The decision made, for a decision |
 | `answers_seq` | INTEGER | The seq of the agent's message or item it answers |
 | `in_reply_to` | TEXT | The entity it answers: provider/kind/id |
-| `withdrawn` | INTEGER | 1 when an edit of the message it answered withdrew it before it landed |
-| `landed` | INTEGER | 1 when the run reached its moment |
 | `seq` | INTEGER | The event it landed as, matched by its moment and provider; NULL when none was found |
 | `drawn_from` | TEXT | How its moment was drawn: delay, window, reminded, pinned or automatic |
 | `person_call_id` | INTEGER | The model call that wrote it (model_calls.person_call_id); NULL when none |
@@ -495,7 +493,6 @@ ORDER BY r.person, m.seq;
 SELECT a.seq AS ask, p.person, a.at AS asked_at, p.at AS answered_at,
        ROUND((julianday(p.at) - julianday(a.at)) * 24, 1) AS hours
 FROM replies p JOIN messages a ON a.seq = p.answers_seq
-WHERE p.landed = 1
 ORDER BY a.seq;
 ```
 
@@ -505,7 +502,7 @@ ORDER BY a.seq;
 SELECT m.seq, m.at, m.to_people, m.text
 FROM messages m
 WHERE m.is_ask = 1
-  AND NOT EXISTS (SELECT 1 FROM replies p WHERE p.answers_seq = m.seq AND p.landed = 1)
+  AND NOT EXISTS (SELECT 1 FROM replies p WHERE p.answers_seq = m.seq)
 ORDER BY m.seq;
 ```
 

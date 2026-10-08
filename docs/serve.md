@@ -207,11 +207,12 @@ The clock of a world stands still. Nothing fires on its own.
   their facts, voice and helpfulness; `verbatim` steps and controls need no model; `then: silent` and `Silent` say
   nothing. The moment is drawn as a run draws it, from the seed, the person and the ask, inside their working hours
   and outside their absences; a person away while a delegate covers sends their automatic reply at once. Each ticket
-  handed to a person with a `TicketFate` meets it and the owner's directions are said. Nothing is written or said
-  until the clock passes its moment on `advance` (or `inboxes/due` for a decision): the words are written then,
-  through the same model port and prompt versions as a run, delivered as the provider delivers (for Slack, the
-  signed event to the world's inbound target) and recorded as actor `PERSON`. A message is answered as it read when
-  it was first seen; an edit is not put to the person again.
+  handed to a person with a `TicketFate` meets it and the owner's directions are said. It is all the people
+  engine's, as in a run (`docs/design-transitions.md`): an answer is planned and its words written when the world
+  first sees the ask, through the same model port and prompt versions as a run, and nothing is said until the clock
+  passes its moment on `advance` (or `inboxes/due` for a decision); then it is delivered as the provider delivers
+  (for Slack, the signed event to the world's inbound target), recorded as actor `PERSON` and as the transition it
+  is. An edit that changes what an ask says, before its answer, is put to the person again.
 - **The model** is the server's own, from its environment exactly as `run` reads it (`MINUTEHAND_MODEL`,
   `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`; a person's `model` names another), never from a request.
   A world created with `scripted_people: true` whose people a model speaks for, on a server with no model, is
@@ -219,7 +220,7 @@ The clock of a world stands still. Nothing fires on its own.
 - **Owed, and kept.** `GET /v1/worlds/{id}` lists each answer and decision people owe with its moment and how its
   words are written (`people_owe`), and every call made to the model for them (`person_calls`: the model, the
   prompt version, the tokens, a failure). A call that fails leaves the answer owed, its reason in `people_owe`,
-  and the next `advance` tries again. Each answer is kept with the world the first time it is written; a reset, or
+  and the world's next look, or the answer's moment, tries again. Each answer is kept with the world the first time it is written; a reset, or
   any later ask with exactly the same context, replays it with no model call.
 - **`happen`** lands one happening of any family now, as the clock lands a scheduled one: checked first as a
   scenario's would be (its person, its ticket, document, channel or post, the port its provider has, and the

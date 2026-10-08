@@ -202,9 +202,10 @@ async def test_people_complete_reassign_comment_and_delete_seeded_tasks_as_thems
     people = [e for e in rich.store.events() if e.actor is Actor.PERSON]
     assert [(e.entity.kind, e.operation) for e in people] == [
         (EntityKind.TICKET, Operation.UPDATE),
+        (EntityKind.TRANSITION, Operation.CREATE),
         (EntityKind.TICKET, Operation.UPDATE),
         (EntityKind.COMMENT, Operation.CREATE),
-    ]
+    ], "the move to done is recorded once as a transition beside the task's version; the reassignment moves nothing"
     assert all(e.sim_time == rich.clock.now() for e in people)
     rich.provider.act(happening("bob", incident, {"kind": "deletes"}), SCENARIO, rich.store, rich.clock)
     assert (await agent.get(f"/tasks/{INCIDENT}")).status_code == 404

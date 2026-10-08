@@ -10,13 +10,12 @@ from pathlib import Path
 from minutehand.adapters.providers.jira.provider import build
 from minutehand.adapters.query.reader import open_model, query
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.people import People
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Scenario
 from minutehand.session import RUNS, SCENARIO, WORLD
 from tests.providers.jira.jira_site import SCENARIO as SITE
 from tests.providers.jira.jira_site import START
-from tests.support.people import people_model
+from tests.support.people import people_engine, people_model
 
 
 def _played() -> Scenario:
@@ -39,8 +38,8 @@ async def test_the_views_hold_each_move_and_each_item_held_pending(tmp_path: Pat
     store = SqliteStore(directory / WORLD, "run000000001", clock)
     jira = build()
     jira.seed(played, store)
-    engine = People(played, lambda _: jira, people_model())
-    booked = next(b for b in engine.look(store, clock).booked if b.person == "tomas")
+    engine = people_engine(played, {"jira": jira}, people_model())
+    booked = next(b for b in (await engine.look(store, clock)).booked if b.person == "tomas")
     clock.jump(START + timedelta(hours=2))
     await engine.act(booked.pending, store, clock)
     store.close()

@@ -13,12 +13,20 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.checkpoint import read_checkpoint
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import WakeReason, WakeRequest
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import Absence, AfterScript, ScriptedDecision, Silent, WorkingHours
-from minutehand.domain.world import Actor, InboxItemSnapshot, ItemStatus, Operation, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    InboxItemSnapshot,
+    ItemStatus,
+    Operation,
+    PendingSnapshot,
+    PendingStatus,
+    TransitionSnapshot,
+    WorldEvent,
+)
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, OWEN, T0, TOKENS, Agent, deciding, hours, inbox, play, scenario, sends
 
@@ -179,6 +187,10 @@ async def test_a_decision_the_product_refuses_is_recorded_with_its_answer_and_th
     assert refused is not None and "cannot be decided now" in refused
     assert played.result.effectiveness.waits_open_at_end == 1
     assert played.result.effectiveness.decisions_made == 0
+    # Her move is recorded as a transition that left the item pending. Mutation: reading any decision as taken
+    # records it as decided.
+    [move] = [e.after for e in played.store.events() if isinstance(e.after, TransitionSnapshot)]
+    assert (move.name, move.from_state, move.to_state, move.who) == ("approve", "pending", "pending", "nadia")
 
 
 async def test_an_item_taken_back_undecided_is_withdrawn_and_its_decision_never_made(
@@ -204,8 +216,11 @@ async def test_an_item_taken_back_undecided_is_withdrawn_and_its_decision_never_
     ]
     assert not [s for s in product.sent if s.method == "POST"]
     assert played.result.effectiveness.waits_open_at_end == 0
-    kept = read_checkpoint(played.store)
-    assert kept is not None and kept.withdrawn == [0]  # her decision, on its way, never reached anyone
+    # Her decision, on its way, never reached anyone: nothing is kept as said, and the engine's record of the item
+    # is gone, never acted on. Mutation: an engine that keeps an item gone from its list pending decides it.
+    assert played.store.replies() == []
+    [held] = [e.after for e in played.store.events() if isinstance(e.after, PendingSnapshot)][-1:]
+    assert held.status is PendingStatus.GONE and held.transition is None
 
 
 async def test_a_list_of_everyones_items_keeps_each_for_whom_it_waits_on(tmp_path: Path, product: Product) -> None:

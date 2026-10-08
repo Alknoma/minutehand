@@ -182,11 +182,10 @@ def test_the_examples_wakes_dispatch_and_replies(follow_up: Played) -> None:
         "prompt_version": "person-step/1",
         "text": ROSA_SAYS,
     }
-    assert (json.loads(str(reply["facts"])), reply["answers_seq"], reply["seq"], reply["landed"]) == (
+    assert (json.loads(str(reply["facts"])), reply["answers_seq"], reply["seq"]) == (
         [ROSA_SAYS],
         ask["seq"],
         answer["seq"],
-        1,
     )
     [written] = follow_up.rows(f"SELECT * FROM model_calls WHERE person_call_id = {reply['person_call_id']}")
     assert (written["side"], written["person"], written["wrote"], written["model"]) == (

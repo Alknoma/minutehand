@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "views": {
     "minutehand_schema": [
       "version INTEGER",
@@ -197,8 +197,6 @@
       "decision TEXT",
       "answers_seq INTEGER",
       "in_reply_to TEXT",
-      "withdrawn INTEGER",
-      "landed INTEGER",
       "seq INTEGER",
       "drawn_from TEXT",
       "person_call_id INTEGER"

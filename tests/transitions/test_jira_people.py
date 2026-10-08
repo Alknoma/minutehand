@@ -17,12 +17,13 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.orchestrator import refuse_fates_beside_the_engine
 from minutehand.application.people import TRANSITION_PROMPT_VERSION, People
 from minutehand.application.refusals import RunRefused
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.conversation import Wrote
 from minutehand.domain.scenario import Scenario, Silent
 from minutehand.domain.world import Actor, EntityKind, EntityRef, PendingSnapshot, PendingStatus, TransitionSnapshot
 from tests.providers.jira.jira_site import API, NOOR, SCENARIO, START, TOMAS, Site, ok
-from tests.support.people import people_model
+from tests.support.people import people_engine, people_model
 
 
 def _scenario(**people: dict[str, Any]) -> Scenario:
@@ -35,7 +36,7 @@ def _scenario(**people: dict[str, Any]) -> Scenario:
 
 
 def _engine(site: Site, scenario: Scenario) -> People:
-    return People(scenario, lambda _: site.provider, people_model())
+    return people_engine(scenario, {"jira": site.provider}, people_model())
 
 
 def _ref(site: Site, key: str) -> EntityRef:
@@ -57,9 +58,9 @@ def _pending(site: Site, ref: EntityRef) -> PendingSnapshot:
 SILENT = {"reply": Silent().model_dump(mode="json")}
 
 
-def test_an_issue_assigned_to_a_person_and_not_done_is_pending_on_them(site: Site) -> None:
+async def test_an_issue_assigned_to_a_person_and_not_done_is_pending_on_them(site: Site) -> None:
     engine = _engine(site, _scenario(noor=SILENT))
-    looked = engine.look(site.store, site.clock)
+    looked = await engine.look(site.store, site.clock)
 
     assert sorted((b.person, b.item) for b in looked.booked) == sorted(
         [("tomas", _ref(site, "LAUNCH-1")), ("iris", _ref(site, "VAULT-1"))]
@@ -67,13 +68,13 @@ def test_an_issue_assigned_to_a_person_and_not_done_is_pending_on_them(site: Sit
     held = engine.held("tomas", site.store)
     assert [h.pending.state for h in held] == ["To Do"]
     assert held[0].pending.status is PendingStatus.PENDING and held[0].pending.due_at is not None
-    assert engine.look(site.store, site.clock).booked == [], "an item already held is not booked twice"
+    assert (await engine.look(site.store, site.clock)).booked == [], "an item already held is not booked twice"
 
 
 async def test_a_pinned_take_moves_the_issue_with_its_words_as_the_person(site: Site) -> None:
     takes = [{"provider": "jira", "take": "Start work", "after": "PT2H", "verbatim": "On it from today."}]
     engine = _engine(site, _scenario(tomas={"takes": takes}, iris=SILENT))
-    booked = next(b for b in engine.look(site.store, site.clock).booked if b.person == "tomas")
+    booked = next(b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas")
     assert booked.at == START + timedelta(hours=2)
 
     site.clock.jump(START + timedelta(hours=2))
@@ -99,10 +100,10 @@ async def test_a_pinned_take_moves_the_issue_with_its_words_as_the_person(site: 
 async def test_a_person_acts_once_per_turn_until_someone_else_moves_it(site: Site) -> None:
     takes = [{"provider": "jira", "take": "Start work", "after": "PT1H"}]
     engine = _engine(site, _scenario(tomas={"takes": takes}, iris=SILENT))
-    booked = next(b for b in engine.look(site.store, site.clock).booked if b.person == "tomas")
+    booked = next(b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas")
     site.clock.jump(START + timedelta(hours=1))
     await engine.act(booked.pending, site.store, site.clock)
-    assert not [b for b in engine.look(site.store, site.clock).booked if b.person == "tomas"], (
+    assert not [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas"], (
         "still assigned and not done, but it was their own move: nothing new waits on them"
     )
 
@@ -110,7 +111,7 @@ async def test_a_person_acts_once_per_turn_until_someone_else_moves_it(site: Sit
     agent_move = _moves(site)[-1]
     assert agent_move.actor is Actor.AGENT and agent_move.after.who is None
 
-    again = [b for b in engine.look(site.store, site.clock).booked if b.person == "tomas"]
+    again = [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas"]
     assert [b.item for b in again] == [_ref(site, "LAUNCH-1")], "the agent moved it: it waits on them again"
     assert _pending(site, again[0].pending).turn == agent_move.seq
     assert _pending(site, again[0].pending).state == "In Review"
@@ -119,7 +120,7 @@ async def test_a_person_acts_once_per_turn_until_someone_else_moves_it(site: Sit
 async def test_a_model_picks_the_transition_and_writes_its_comment_from_what_they_know(site: Site) -> None:
     facts = {"facts": ["I will drop this: the export feature was cut from the launch."]}
     engine = _engine(site, _scenario(tomas=facts, iris=SILENT))
-    booked = next(b for b in engine.look(site.store, site.clock).booked if b.person == "tomas")
+    booked = next(b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas")
     assert booked.at is not None
     site.clock.jump(booked.at)
 
@@ -139,10 +140,10 @@ async def test_a_model_picks_the_transition_and_writes_its_comment_from_what_the
 
 async def test_an_issue_reassigned_before_their_moment_is_gone_and_never_moved(site: Site) -> None:
     engine = _engine(site, _scenario(iris=SILENT))
-    booked = next(b for b in engine.look(site.store, site.clock).booked if b.person == "tomas")
+    booked = next(b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas")
 
     ok(await site.http.put(f"{API}/issue/LAUNCH-1/assignee", json={"accountId": NOOR}), 204)
-    looked = engine.look(site.store, site.clock)
+    looked = await engine.look(site.store, site.clock)
 
     assert booked.pending in looked.gone
     assert _pending(site, booked.pending).status is PendingStatus.GONE
@@ -152,9 +153,9 @@ async def test_an_issue_reassigned_before_their_moment_is_gone_and_never_moved(s
     assert [b.person for b in looked.booked if b.item == _ref(site, "LAUNCH-1")] == ["noor"], "now it waits on noor"
 
 
-def test_a_silent_person_holds_the_item_and_never_acts(site: Site) -> None:
+async def test_a_silent_person_holds_the_item_and_never_acts(site: Site) -> None:
     engine = _engine(site, _scenario(iris=SILENT))
-    looked = engine.look(site.store, site.clock)
+    looked = await engine.look(site.store, site.clock)
     iris = next(b for b in looked.booked if b.person == "iris")
     assert iris.at is None and _pending(site, iris.pending).due_at is None
 
@@ -162,7 +163,7 @@ def test_a_silent_person_holds_the_item_and_never_acts(site: Site) -> None:
 async def test_a_pinned_take_the_issue_does_not_offer_is_dropped_saying_so_and_refused(site: Site) -> None:
     takes = [{"provider": "jira", "take": "Approve", "after": "PT1H"}]
     engine = _engine(site, _scenario(tomas={"takes": takes}, iris=SILENT))
-    booked = next(b for b in engine.look(site.store, site.clock).booked if b.person == "tomas")
+    booked = next(b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas")
     site.clock.jump(START + timedelta(hours=1))
 
     assert (await engine.act(booked.pending, site.store, site.clock)).transition is None
@@ -207,7 +208,7 @@ async def test_the_agents_own_create_and_transition_are_recorded_as_the_agents(s
 
 def test_a_person_a_model_moves_with_no_model_configured_is_refused(site: Site) -> None:
     with pytest.raises(RunRefused, match=r"a model writes what .*tomas \(a model picks what they do on jira\)"):
-        People(_scenario(), lambda _: site.provider, None)
+        People(_scenario(), {"jira": site.provider}, PeopleReplier(_scenario(), people_model()), None)
 
 
 def test_a_take_on_a_provider_the_engine_does_not_play_is_refused() -> None:

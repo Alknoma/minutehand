@@ -84,7 +84,7 @@ class DueClosed(StrEnum):
 
     FIRED = "fired"  # the clock reached it and the run loop dispatched it
     REPLACED = "replaced"  # its source named another moment in its place: a new next wake, a booking changed
-    CANCELLED = "cancelled"  # taken out undispatched: a booking deleted, a reply withdrawn, a fork that drops it
+    CANCELLED = "cancelled"  # taken out undispatched: a booking deleted, a reply planned again, a fork that drops it
     DELAYED = "delayed"  # its moment came and a dispatch rule held it back: a late delivery entered in its place
     DROPPED = "dropped"  # its moment came and a dispatch rule dropped it: never delivered
 

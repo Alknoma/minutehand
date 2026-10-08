@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import TypeAdapter, ValidationError
+
 from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
@@ -19,7 +21,8 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
+from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, item_parent
+from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, TransitionSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -112,6 +115,82 @@ class AsanaProvider:
                 )
         del clock
 
+    # -- transitions (`ProvidesTransitions`) ---------------------------------------------------------------------
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        """Every task assigned to the person that is neither done nor cancelled, as they read it in Asana."""
+        asana = AsanaWorld(world)
+        user = asana.user_by_email(person.email)
+        if user is None:
+            return []
+        return [
+            Waiting(item=state.task_ref(t.gid), state=asana.words(t), shown=_shown(asana, t))
+            for t in asana.tasks()
+            if t.assignee == user.gid and asana.state_of(t) is TicketState.OPEN
+        ]
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        """What a person can make the task say as its status source reads it: each place (the completed box, a
+        section, the status field's option) that means another of open, done or cancelled, as a person leaves it
+        when they move it there, each with a comment."""
+        del by, who
+        asana = AsanaWorld(world)
+        task = _task(asana, item)
+        return [
+            Offer(
+                name=words,
+                to_state=words,
+                fields=[OfferField(name=COMMENT, description="A comment added to the task as it moves")],
+            )
+            for words in _reachable(asana, task)
+        ]
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        """The person moves the task as a fate or a happening moves it (`AsanaWorld.moved`), with their comment as
+        a story, as themselves."""
+        asana = AsanaWorld(world)
+        task = _task(asana, item)
+        if who is None:
+            raise ValueError("an asana task is moved by a person: name them")
+        target = next(
+            (t for t in TicketState if t is not asana.state_of(task) and _words_if_moved(asana, task, t) == offer),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"asana task {task.gid} offers no move to {offer!r}")
+        try:
+            given = _CONTENT.validate_json(content)
+        except ValidationError as e:
+            raise ValueError(f"a transition's content is a JSON object of text fields: {content!r}") from e
+        unknown = sorted(set(given) - {COMMENT})
+        if unknown:
+            raise ValueError(f"an asana move takes a comment, not {', '.join(unknown)}")
+        moved = asana.moved(task, target, now=clock.now())
+        asana.put_task(moved, operation=Operation.UPDATE, actor=by, who=who.key, content=content)
+        if COMMENT in given and given[COMMENT].strip():
+            asana.put_story(
+                wire.AsanaStory(
+                    gid=asana.next_gid(),
+                    text=given[COMMENT],
+                    task=task.gid,
+                    created_by=state.user_gid(who.key),
+                    created_at=wire.stamp(clock.now()),
+                ),
+                actor=by,
+            )
+        moves = world.children(MANIFEST.key, EntityKind.TRANSITION, item_parent(item), limit=1000)
+        last = max(moves, key=lambda s: s.seq)
+        event = next(e for e in world.events(since=last.seq - 1) if e.seq == last.seq)
+        assert isinstance(event.after, TransitionSnapshot)
+        return Transition.of(event)
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        """Never: Asana pushes nothing to the agent here; it finds a person's move on its next read."""
+        del item, who, world, clock
+        return False
+
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         """The person does what the happening says to the seeded task, as themself. A task no longer there
         (the agent deleted it) is left alone: there is nothing for them to act on, and nothing is written."""
@@ -128,6 +207,7 @@ class AsanaProvider:
                     asana.moved(task, happening.action.to, now=clock.now()),
                     operation=Operation.UPDATE,
                     actor=Actor.PERSON,
+                    who=happening.person,
                 )
             case Reassigns():
                 to = state.user_gid(happening.action.to) if happening.action.to is not None else None
@@ -149,6 +229,45 @@ class AsanaProvider:
                 )
             case Deletes():
                 asana.delete_task(task, actor=Actor.PERSON)
+
+
+COMMENT = "comment"
+"""What a person's move takes besides where it goes: a comment, kept as a story."""
+
+_CONTENT: TypeAdapter[dict[str, str]] = TypeAdapter(dict[str, str])
+
+
+def _words_if_moved(asana: AsanaWorld, task: wire.AsanaTask, to: TicketState) -> str | None:
+    """What the task would say moved to `to` as a person moves it; None when the status source cannot say `to`."""
+    moved_at = wire.parse_stamp(task.modified_at)
+    assert moved_at is not None
+    try:
+        return asana.words(asana.moved(task, to, now=moved_at))
+    except state.StateUnexpressible:
+        return None
+
+
+def _reachable(asana: AsanaWorld, task: wire.AsanaTask) -> list[str]:
+    """What the task would say moved to each other of open, done and cancelled the status source can express."""
+    found: list[str] = []
+    for to in TicketState:
+        if to is asana.state_of(task):
+            continue
+        words = _words_if_moved(asana, task, to)
+        if words is not None and words not in found and words != asana.words(task):
+            found.append(words)
+    return found
+
+
+def _shown(asana: AsanaWorld, task: wire.AsanaTask) -> str:
+    """The task as its assignee reads it: its name, status, notes and stories, oldest first."""
+    lines = [task.name, f"Status: {asana.words(task)}"]
+    if task.notes:
+        lines += ["", task.notes]
+    for story in asana.stories(task.gid):
+        author = asana.user(story.created_by)
+        lines.append(f"{author.name if author else 'Someone'}: {story.text}")
+    return "\n".join(lines)
 
 
 def _task(asana: AsanaWorld, ticket: EntityRef) -> wire.AsanaTask:

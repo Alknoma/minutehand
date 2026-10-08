@@ -675,7 +675,7 @@ Orchestrator.run():
   RunRecord -> Scorer (the team's rules and checks, the core's checks) -> Telemetry.found, Telemetry.run_ended
 ```
 
-- A person answers a message as it reads when the wake ends. A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. An edit in a later wake that changes the text is put to the person again unless they have already answered that message, and a reply to the old text still on its way is withdrawn. The withdrawn reply stays in the `reply` table and its position is kept in every later `Checkpoint.withdrawn`: the ledger reads it as the replier's decision that the message asked something, and never as an answer, so a wait whose only reply was withdrawn stays open (`test_a_reply_withdrawn_by_an_edit_that_gets_no_answer_settles_no_wait`). Before, the ledger read the latest reply to a message, and an edit that got no answer was settled by the withdrawn one, and then `slow_to_react` failed the agent for never acting on an answer that never arrived.
+- A person answers a message as it reads when the people engine looks at it, at the end of the wake (`application/people.py`). A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. Their answer is planned and its words written then, and kept on the engine's record of the ask (`PendingSnapshot.plan`, `PendingSnapshot.answer`) until its moment, when it lands and is kept as said. An edit in a later wake that changes what the ask says or offers is put to the person again unless they have already answered it: the answer on its way is planned and written afresh from the new text, and an ask that, so read, needs no answer passes (`PendingStatus.PASSED`) and opens no wait (`test_an_ask_edited_into_one_that_needs_no_answer_opens_no_wait`). Only what landed is in the `replies` table; the ledger reads an answer planned and not yet landed from the engine's record.
 - A `Reported` wake is asked for its report after `report_first_after`, then at doubling intervals up to `report_at_most_every`; one still WORKING after `working_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says which limit it hit.
 - When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
 - A wake made only of bookings sends no `WakeRequest`: the scheduler's delivery is the wake. The loop still polls the agent's main driver (if it has one) until it is not `WORKING`, adopts its report and counts what it wrote in that wake. It cannot see whether the agent's own poll of its queue has picked the delivery up yet: an agent that answers `IDLE` before it has is moved on past it.
@@ -1040,7 +1040,7 @@ A met expectation carries no pattern: there is nothing to fix. Only `FAIL` findi
 ```
 
 - **The values are facts, the author's.** Phrases only `said_by`'s answer carries. The scenario is refused when its goal, a direction, a seeded ticket or document, or anyone else's script or facts holds one, when `said_by` is `Silent`, and when none of their script's steps or facts holds it.
-- **The person must say it first.** A reply of `said_by`'s, not withdrawn and not automatic, must carry every value: in its words, or in the facts the script step it was written from carried (`PersonReply.facts`), since a model writes the words and may reword the fact. The relay must come after that reply lands; an agent message (or anything not a person's) that held the values before it means the agent did not hear them from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
+- **The person must say it first.** A reply of `said_by`'s that landed, not automatic, must carry every value: in its words, or in the facts the script step it was written from carried (`PersonReply.facts`), since a model writes the words and may reword the fact. The relay must come after that reply lands; an agent message (or anything not a person's) that held the values before it means the agent did not hear them from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
 - **A match** is an agent message to `to`, after that reply, holding every value, in any case.
 
 What it gets wrong: a value is a substring, so a relay that paraphrases the value itself ("the hall by the lake") is not counted, and one that quotes it inside a sentence that contradicts it is.
@@ -1358,7 +1358,7 @@ class Fork(Model):
 
 | Override | What changes | Where | Tested |
 |---|---|---|---|
-| `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every message to them not answered by the fork is put to them again; a reply decided before the fork that had not landed by it is withdrawn first, since it was never said | `changed_scenario`, `_ask_again` in `application/rewind.py` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
+| `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every ask they had not answered by the fork is planned and worded again under it, and an answer on its way is moved to its new moment, since it was never said | `changed_scenario`, `_replanned` in `application/rewind.py`, `People.replan` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
 | `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | `EditsTickets.edit` | `tests/orchestrator/test_rewind.py` |
 | `DeadlineShift` | The scenario's deadline | `changed_scenario` | `tests/orchestrator/test_rewind.py` |
 | `MemoryEdit` | Keys of the agent's memory set or removed at the fork; the agent's own planned wakes replaced by the report it gives after | `memory.edit`, `start_fork`, `Orchestrator.resume(replan=)` | Through a whole run (`tests/e2e/test_memory_run.py`) |
@@ -1432,7 +1432,7 @@ Built and tested (`application/dues.py`, `tests/orchestrator/test_dues.py`, `tes
 | Rule | Why |
 |---|---|
 | A next wake the agent names again, the same moment, is the entry already there | An agent asked for its report after every wake would otherwise read as rescheduling every wake |
-| A next wake of none cancels the one before; a booking deleted is cancelled; a reply withdrawn is cancelled | Each is the plan changing, and a check can see when |
+| A next wake of none cancels the one before; a booking deleted is cancelled; a reply planned again is cancelled and booked anew | Each is the plan changing, and a check can see when |
 | A fork takes up its checkpoint's table against the log it shares: an entry the checkpoint dropped (a reply a `PersonChange` withdrew) is cancelled at the fork, and one it added is entered | The fork's table and its log agree from its first event |
 | The rows are left out of the viewer's event list, as checkpoints are, and no check counts them as the agent's | They are the run loop's own record, not the world |
 

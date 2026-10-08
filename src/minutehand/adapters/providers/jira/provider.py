@@ -201,9 +201,9 @@ class JiraProvider:
             who=who.key if who is not None else None,
         )
 
-    def heard_of(self, item: EntityRef, world: Store, clock: Clock) -> bool:
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
         """Never: the fake serves no webhooks, so the agent finds a person's move on its next read."""
-        del item, world, clock
+        del item, who, world, clock
         return False
 
     # ------------------------------------------------------------------ a person's acts

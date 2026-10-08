@@ -22,7 +22,6 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import PendingTransition, checkpoint_seqs, checkpoints
 from minutehand.application.dues import due_entries
 from minutehand.application.orchestrator import Services, run_scenario
-from minutehand.application.people import People
 from minutehand.application.replier import PeopleReplier
 from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
@@ -38,7 +37,7 @@ from minutehand.ports.model import Answered, AnswerT, ModelFailed
 from minutehand.ports.store import Store
 from tests.orchestrator.rig import rigged
 from tests.orchestrator.world import RecordingClock
-from tests.support.people import people_model
+from tests.support.people import people_engine, people_model
 
 START = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 AGENTS = Path(__file__).parent / "agents"
@@ -94,13 +93,13 @@ async def test_an_unanswered_invitation_is_pending_and_a_pinned_answer_lands_as_
     store = SqliteStore(tmp_path / "w.db", "w", clock)
     google = build()
     google.seed(scenario, store)
-    engine = People(scenario, lambda _: google, people_model())
+    engine = people_engine(scenario, {"google_workspace": google}, people_model())
 
-    [booked] = engine.look(store, clock).booked
+    [booked] = (await engine.look(store, clock)).booked
     assert booked.person == "dov" and booked.at == START + timedelta(hours=3), "the weekly sync is answered already"
     offers = google.legal(booked.item, Actor.PERSON, scenario.people[1], store)
-    assert [o.name for o in offers] == ["accepted", "tentative", "declined"]
-    assert not google.heard_of(booked.item, store, clock), "no watch: the agent finds the answer on its next read"
+    assert [o.name for o in offers] == ["reply", "accepted", "tentative", "declined"]
+    assert not google.heard_of(booked.item, None, store, clock), "no watch: the agent finds the answer on its next read"
 
     clock.jump(START + timedelta(hours=3))
     acted = await engine.act(booked.pending, store, clock)
@@ -114,7 +113,7 @@ async def test_an_unanswered_invitation_is_pending_and_a_pinned_answer_lands_as_
     assert [(e.actor, t.who, t.from_state, t.to_state) for e, t in moved] == [
         (Actor.PERSON, "dov", "needsAction", "declined")
     ]
-    assert engine.look(store, clock).booked == [], "answered: it no longer waits on them"
+    assert (await engine.look(store, clock)).booked == [], "answered: it no longer waits on them"
     assert engine.pending(booked.pending, store).status is PendingStatus.ACTED
 
 
@@ -155,14 +154,14 @@ async def test_in_a_run_the_engine_answers_the_agents_invitation_and_the_replier
             services=Services(providers=[google]),
             replier=PeopleReplier(scenario, people_model()),
             mounts=rig.mounts,
-            people=People(scenario, lambda _: google, people_model()),
+            model=people_model(),
         )
 
     moved = _moves(store)
     assert [(t.who, t.to_state) for _, t in moved] == [("dov", "declined")]
-    assert json.loads(moved[0][1].content) == {"comment": "I have declined: I am away that week."}
-    assert store.replies() == [], "the invitation is the engine's: no reply was planned for it"
-    entries = [d for d in due_entries(store) if d.source is DueSource.TRANSITION]
+    assert json.loads(moved[0][1].content) == {"text": "I have declined: I am away that week."}
+    assert [r.press.action_id for r in store.replies() if r.press is not None] == ["declined"], "kept as said"
+    entries = [d for d in due_entries(store) if d.source is DueSource.REPLY]
     assert [(d.closed, d.due.at) for d in entries] == [(DueClosed.FIRED, moved[0][0].sim_time)]
     assert moved[0][0].sim_time in clock.jumps
     [wait] = [o for o in ledger(scenario, store.events(), []) if o.kind is ObligationKind.ANSWER_FROM_PERSON]
@@ -218,7 +217,7 @@ async def test_a_move_whose_words_failed_is_owed_still_and_taken_on_the_runs_nex
             services=Services(providers=[google]),
             replier=PeopleReplier(scenario, people_model()),
             mounts=rig.mounts,
-            people=People(scenario, lambda _: google, model),
+            model=model,
         )
 
     calls = [c for c in store.person_calls() if c.wrote is Wrote.TRANSITION]
@@ -245,7 +244,7 @@ async def test_a_fork_keeps_a_move_booked_before_its_checkpoint_whatever_its_see
             services=Services(providers=[google]),
             replier=PeopleReplier(scenario, people_model()),
             mounts=rig.mounts,
-            people=People(scenario, lambda _: google, people_model()),
+            model=people_model(),
         )
         after_start = checkpoint_seqs(parent_store)[1]
         assert any(isinstance(p, PendingTransition) for p in checkpoints(parent_store)[after_start].pending)
@@ -260,7 +259,7 @@ async def test_a_fork_keeps_a_move_booked_before_its_checkpoint_whatever_its_see
             reach=reach_for(agent, env=rig.env()),
             services=Services(providers=[google]),
             replier_for=lambda s, pins: PeopleReplier(s, people_model(), pins=pins),
-            people_for=lambda s: People(s, lambda _: google, people_model()),
+            model=people_model(),
             state_dir=rig.tmp / "state",
             mounts=rig.mounts,
         )

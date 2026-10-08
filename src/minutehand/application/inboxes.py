@@ -19,10 +19,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from minutehand.application.moments import decision_text
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.inboxes import HttpInbox, ListedItem
-from minutehand.domain.people import PersonReply
+from minutehand.domain.people import Decides, PersonReply
 from minutehand.domain.scenario import Account, AfterScript, Answers, Person, Scenario, Scripted, Silent
+from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, content_of, transition_change
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -36,6 +38,11 @@ from minutehand.domain.world import (
 from minutehand.ports.clock import Clock
 from minutehand.ports.inboxes import ReachesInbox
 from minutehand.ports.store import Store
+
+PENDING = "pending"
+"""An item's state while it waits on its person: the product's own word, `ItemStatus.PENDING`."""
+DECIDED = "decided"
+"""An item's state once its person decided it and the product took the decision."""
 
 READABLE = frozenset({Account.MEMBER, Account.GUEST})
 """Accounts that can sign in to the agent's product: a bot or a deactivated account never decides anything."""
@@ -110,10 +117,9 @@ def refuse_clashing(reaches: Sequence[ReachesInbox], taken: Sequence[str]) -> No
 
 @dataclass
 class Looked:
-    """What one look at every inbox wrote: the asks seen first now, and the items gone undecided."""
+    """What one look at every inbox wrote: the asks seen first now, and each inbox it could not read whole."""
 
     asked: list[WorldEvent] = field(default_factory=list)
-    withdrawn: list[EntityRef] = field(default_factory=list)
     unread: list[str] = field(default_factory=list)
 
 
@@ -181,7 +187,6 @@ class Inboxes:
                     )
                 )
                 held[ref] = _snapshot(event)
-                looked.withdrawn.append(ref)
         return looked
 
     def _asked(self, ref: EntityRef, item: ListedItem, person: Person, reach: ReachesInbox) -> Change:
@@ -207,6 +212,80 @@ class Inboxes:
             parent=person.key,
             after=snapshot,
         )
+
+    # -- `ProvidesTransitions`: each item pending on a person is an ask they answer by deciding it --------------
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        """Every item pending on the person in any inbox, as the product words it."""
+        return [
+            Waiting(item=ref, state=PENDING, shown=item.summary, conversation=True)
+            for ref, item in items_in(world.events()).items()
+            if ref.provider in self.reaches and item.person == person.key and item.status is ItemStatus.PENDING
+        ]
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        """The decisions the product offers on the item, each with the inputs it takes."""
+        del by, who
+        held = items_in(world.events())
+        snapshot = held[item] if item in held else None
+        if snapshot is None or snapshot.status is not ItemStatus.PENDING:
+            return []
+        declared = self.declared(item.provider)
+        offers: list[Offer] = []
+        for name in snapshot.decisions:
+            decision = declared.decision(name)
+            if decision is None:
+                continue
+            offers.append(
+                Offer(
+                    name=decision.name,
+                    to_state=DECIDED,
+                    description=decision.description,
+                    fields=[
+                        OfferField(name=i.name, required=i.required, description=i.description) for i in decision.inputs
+                    ],
+                )
+            )
+        return offers
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        """The person makes the decision as the product's own page would send it (`decide`): recorded as theirs,
+        decided when the product took it, still pending with its answer when it did not."""
+        found = next((o for o in self.legal(item, by, who, world) if o.name == offer), None)
+        if found is None or who is None:
+            raise ValueError(f"item {item.external_id} of inbox {item.provider} offers no decision {offer!r}")
+        inputs = content_of(content, found, who.key)
+        reply = PersonReply(
+            person=who.key,
+            in_reply_to=item,
+            text=decision_text(offer, inputs),
+            at=clock.now(),
+            decides=Decides(decision=offer, inputs=inputs),
+        )
+        made = await self.decide(reply, world, clock)
+        decided = (
+            made is not None and isinstance(made.after, InboxItemSnapshot) and made.after.status is ItemStatus.DECIDED
+        )
+        moved = Transition(
+            provider=item.provider,
+            item=item,
+            name=offer,
+            from_state=PENDING,
+            to_state=DECIDED if decided else PENDING,
+            by=by,
+            who=who.key,
+            content=content,
+            at=clock.now(),
+        )
+        recorded = world.apply(transition_change(moved, at_seq=world.head() + 1))
+        return moved.model_copy(update={"seq": recorded.seq})
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        """Always: the decision is a call to the agent's own product."""
+        del item, who, world, clock
+        return True
 
     async def decide(self, reply: PersonReply, world: Store, clock: Clock) -> WorldEvent | None:
         """Make `reply`'s decision as its person, now. None when the item is no longer pending (withdrawn, or decided

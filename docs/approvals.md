@@ -559,8 +559,8 @@ overrides:
 ```
 
 ```bash
-minutehand checkpoints <run>                      # seq 12, after wake 1: the request is up, nobody has decided
-minutehand fork <run> --at 12 --changes flip_to_approve.yaml -- env APPROVAL_VIA=inbox python ../agent.py
+minutehand checkpoints <run>                      # seq 13, after wake 1: the request is up, nobody has decided
+minutehand fork <run> --at 13 --changes flip_to_approve.yaml -- env APPROVAL_VIA=inbox python ../agent.py
 ```
 
 The flipped fork passes with the order placed; the edited one fails `acts_only_once_approved`. Each fork's account
@@ -619,7 +619,7 @@ would pass only on the seeds where Nadia decides within three days. Any sample p
 SELECT r.person, r.decision, a.at, a.kind, a.provider, a.summary
 FROM replies r
 JOIN actions a ON a.seq > r.seq
-WHERE r.kind = 'decision' AND r.decision = 'reject' AND r.landed = 1
+WHERE r.kind = 'decision' AND r.decision = 'reject'
   AND a.kind IN ('write', 'stored', 'message')
 ORDER BY a.position;
 ```

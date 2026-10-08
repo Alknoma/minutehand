@@ -186,7 +186,7 @@ the agent's calls, never an outbound call, and never unmatched.
 | A decision falling due | The declared call, made as the person. It wakes the agent as a reply does (`PERSON_REPLIED`). |
 | The product takes it | `DECIDED`, by actor PERSON, with the decision, its inputs, `permits` and how it reads. |
 | The product refuses it | Still `PENDING`, by actor PERSON, with the product's answer in `refused`. The run goes on, and the wait stays open. |
-| A pending item gone from the list, undecided | Withdrawn by the agent (`WITHDRAWN`). A decision still on its way is withdrawn too and never made. |
+| A pending item gone from the list, undecided | Withdrawn by the agent (`WITHDRAWN`). A decision still on its way is never made: the people engine's record of it is `GONE`. |
 
 A list the product did not answer (refused, unreachable, not JSON) concludes nothing, and nothing is withdrawn on
 its account.
@@ -199,7 +199,7 @@ its reaction. So every rule that counts `follow_ups` or `touches` on an ask read
 decided: n, left pending: n".
 
 **The fork.** A `PersonChange` asks the changed person again about every item still pending at the fork, under
-their new behaviour. A decision made before the fork that had not landed is withdrawn first.
+their new behaviour: a decision planned before the fork that had not landed is planned again.
 
 ### What a run prints
 
