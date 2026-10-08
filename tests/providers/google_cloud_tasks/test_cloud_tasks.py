@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from minutehand.adapters.providers.google_cloud_tasks import wire
 from minutehand.adapters.providers.google_cloud_tasks.manifest import MANIFEST
 from minutehand.adapters.providers.google_cloud_tasks.provider import (
     CloudTasksProvider,
@@ -209,7 +210,8 @@ say(name=made.name, scheduled=got.schedule_time.isoformat(), body=got.http_reque
     assert made[-1].after.text == 'POST http://127.0.0.1:9/tasks/follow-up {"ask": "rosa"}'
 
 
-async def test_a_deleted_task_is_cancelled_and_its_name_stays_taken_for_an_hour_is_refused(tasks: Tasks) -> None:
+async def test_a_deleted_task_is_cancelled_and_its_name_stays_taken_for_a_day_is_refused(tasks: Tasks) -> None:
+    """The reference: "It can take up to 24 hours ... for the task ID to be released and made available again" (tasks.create)."""
     client = await tasks.client(
         """
 name = QUEUE + "/tasks/remind-rosa-1"
@@ -222,16 +224,20 @@ again = refused(lambda: client.create_task(parent=QUEUE, task=task))
 say(twice=twice, gone=gone, again=again)
 wait()
 say(later=refused(lambda: client.create_task(parent=QUEUE, task=task)))
+wait()
+say(later=refused(lambda: client.create_task(parent=QUEUE, task=task)))
 """
     )
     heard = await client.heard()
     twice, gone, again = refusal(heard, "twice"), refusal(heard, "gone"), refusal(heard, "again")
-    assert twice[0] == "Conflict" and twice[1].endswith(": Requested entity already exists")
+    assert twice[0] == "Conflict" and twice[1].endswith(f"remind-rosa-1: {wire.TASK_EXISTS}")
     assert gone[0] == "NotFound"
-    assert again[0] == "Conflict"
-    assert again[1].endswith(": The task cannot be created because a task with this name existed too recently.")
+    assert again[0] == "Conflict" and again[1].endswith(f"remind-rosa-1: {wire.TASK_EXISTS}")
     assert tasks.wakes.pending == []
-    tasks.clock.jump(START + timedelta(hours=1, minutes=1))
+    tasks.clock.jump(START + timedelta(hours=23, minutes=59))
+    await client.go()
+    assert refusal(await client.heard(), "later")[0] == "Conflict", "still taken a minute short of a day"
+    tasks.clock.jump(START + timedelta(hours=24, minutes=1))
     await client.go()
     assert (await client.heard())["later"] is None
     await client.finished()
@@ -245,7 +251,7 @@ say(refused=refused(lambda: client.create_task(parent=other, task={"http_request
 """
     )
     refused = refusal(await client.heard(), "refused")
-    assert refused[0] == "NotFound" and refused[1].endswith(": Queue does not exist.")
+    assert refused[0] == "NotFound" and refused[1].endswith(f"queues/nowhere: {wire.QUEUE_MUST_EXIST}")
     await client.finished()
 
 

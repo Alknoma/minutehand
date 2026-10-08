@@ -29,12 +29,16 @@ What the world log holds, and what it does not:
   it (`application.rewind`); `fire` raises `LookupError` on a schedule targeting
   another account. moto's SQS backend holds a `threading.RLock` and cannot be
   pickled or deep-copied, so there is no per-run snapshot to restore instead.
-- **moto reads the machine clock.** SQS DelaySeconds, VisibilityTimeout,
-  MessageRetentionPeriod, long-poll WaitTimeSeconds and every Sent/Creation
-  timestamp run on real time, not the run's clock (a schedule's CreationDate and
-  LastModificationDate are restamped from the run's clock, `_stamp`); and moto refuses a cron
-  schedule whose StartDate is more than five minutes before the machine's now,
-  which is every StartDate taken from a simulated clock in the past.
+- **moto reads the run's clock.** `aws/clock.py` points the time moto's SQS and Scheduler
+  models read at the clock of the run whose call it answers, so SQS DelaySeconds,
+  VisibilityTimeout, SentTimestamp and a schedule's CreationDate are the run's time. A
+  long poll (WaitTimeSeconds) waits in real time while the run's clock stands still.
+- **Only AWS's surface, and only two services.** Every operation of botocore's `scheduler`
+  and `sqs` models is served or refused 501 by name (`wire.SERVED`, `wire.REFUSED_BECAUSE`);
+  every other AWS host, and moto's own `/moto-api`, is refused. Where moto answers a
+  served operation otherwise than AWS, the answer is corrected here (`CLAIMS.md` lists each).
+- **No credential is checked.** moto's IAM and signature checks are switched off before
+  every call into moto, and moto is routed by the request's host, never its signature.
 
 Isolation: moto's state is global to the process, so each provider instance takes
 a fresh AWS account id when its app is made, and every request is answered in that
@@ -46,29 +50,41 @@ building refuses it.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections.abc import Awaitable, Callable
 
 from asgiref.wsgi import WsgiToAsgi
+from moto import settings as moto_settings
 from moto.moto_server.werkzeug_app import DomainDispatcherApplication, create_backend_app
 from moto.scheduler.models import scheduler_backends
 from moto.sqs.models import Queue, sqs_backends
 
 from minutehand.adapters import answering
+from minutehand.adapters.providers.aws import clock as aws_clock
 from minutehand.adapters.providers.aws.manifest import MANIFEST
 from minutehand.adapters.providers.aws.schedule import ScheduleRecord
 from minutehand.adapters.providers.aws.wire import (
     ActionAfterCompletion,
+    AwsCall,
     CallKind,
     NotImplementedByProvider,
     Refusal,
     ScheduleCall,
+    ScheduleRequest,
+    Service,
     SqsDelete,
+    attributes_asked,
+    aws_call,
+    deliverable,
+    queue_created,
     schedule_arn,
     schedule_call,
     sqs_delete,
     sqs_target,
+    with_attributes_as_sent,
+    without_sender_id,
 )
 from minutehand.adapters.providers.aws.wire import error as aws_error
 from minutehand.domain.clock import Due, DueKind
@@ -105,6 +121,9 @@ class AwsProvider:
     def __init__(self) -> None:
         self._wakes: Wakes | None = None
         self._account: str | None = None
+        self._sent: dict[tuple[str, str], dict[str, str]] = {}
+        """The attributes each queue was created with, as the caller wrote them, by (region, queue): beside moto's
+        own copy of the queue, in this process's memory (the manifest's `state_outside_log`)."""
 
     @property
     def account(self) -> str:
@@ -134,6 +153,7 @@ class AwsProvider:
             AWS_EC2_METADATA_DISABLED="true",
         )
         os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+        aws_clock.install()
         moto: ASGIApp = WsgiToAsgi(DomainDispatcherApplication(create_backend_app))
         account = self._account.encode()
 
@@ -142,38 +162,67 @@ class AwsProvider:
                 raise NotImplementedError(f"the aws provider serves HTTP only, not {scope['type']}")
             body = await _read_body(receive)
             headers = _headers(scope)
+            host, target, method = _header(headers, b"host"), _header(headers, b"x-amz-target"), str(scope["method"])
             try:
-                call = schedule_call(
-                    str(scope["method"]),
-                    _header(headers, b"host"),
-                    str(scope["path"]),
-                    _query(scope),
-                    body,
-                )
+                asked = aws_call(method, host, str(scope["path"]), _query(scope), target, body)
+                call = schedule_call(method, host, str(scope["path"]), _query(scope), body)
+                if call is not None and call.request is not None:
+                    deliverable(call.request, self.account)
+                    repeated = self._repeated(call, world)
+                    if repeated is not None:
+                        await _respond(send, 200, [(b"content-type", b"application/json")], repeated)
+                        return
             except Refusal as refused:
                 if isinstance(refused, NotImplementedByProvider):
                     answering.unimplemented(refused, refused.message)
-                await _respond(
-                    send,
-                    refused.status,
-                    [(b"x-amzn-errortype", refused.error_type.encode()), (b"content-type", b"application/json")],
-                    refused.body(),
-                )
+                form = _header(headers, b"content-type").startswith("application/x-www-form-urlencoded")
+                refused_headers, refused_body = refused.answer(query_protocol=form)
+                await _respond(send, refused.status, refused_headers, refused_body)
                 return
-            deleting = sqs_delete(_header(headers, b"host"), _header(headers, b"x-amz-target"), body)
-            deliveries = self._deliveries(deleting, world) if deleting is not None else []
+            deleting = sqs_delete(host, target, body)
+            created = queue_created(host, target, body) if asked.operation == "CreateQueue" else None
+            reading = attributes_asked(host, target, body) if asked.operation == "GetQueueAttributes" else None
             forwarded = dict(scope)
-            forwarded["headers"] = [(k, v) for k, v in headers if k != b"x-moto-account-id"] + [
-                (b"x-moto-account-id", account)
+            forwarded["headers"] = [(k, v) for k, v in headers if k not in _ROUTED_BY] + [
+                (b"x-moto-account-id", account),
+                (b"authorization", _scope(asked)),
             ]
-            status, response_headers, response_body = await _call(moto, forwarded, body)
-            if call is not None and 200 <= status < 300:
-                self._record(call, world, clock)
-            if deleting is not None and 200 <= status < 300:
-                self._taken(deleting, deliveries, world)
+            with aws_clock.on(clock):
+                deliveries = self._deliveries(deleting, world) if deleting is not None else []
+                _no_credential_checks()
+                status, response_headers, response_body = await _call(moto, forwarded, body)
+                if call is not None and 200 <= status < 300:
+                    self._record(call, world, clock)
+                if deleting is not None and 200 <= status < 300:
+                    self._taken(deleting, deliveries, world)
+            if 200 <= status < 300:
+                if created is not None:
+                    self._sent.setdefault((created.region, created.queue), created.attributes)
+                if reading is not None:
+                    named, names = reading
+                    sent = self._sent.get((named.region, named.queue), {})
+                    response_body = with_attributes_as_sent(response_body, sent, names)
+                if asked.operation == "ReceiveMessage":
+                    response_body = without_sender_id(response_body)
+                response_headers = [(k, v) for k, v in response_headers if k != b"content-length"]
             await _respond(send, status, response_headers, response_body)
 
         return serve
+
+    def _repeated(self, call: ScheduleCall, world: Store) -> bytes | None:
+        """CreateSchedule's answer to a create it already made: the same `ClientToken` ("to ensure the idempotency
+        of the request", CreateSchedule) and the same request. moto keeps no token, and would answer
+        ConflictException."""
+        if call.kind is not CallKind.CREATE or call.request is None or call.request.client_token is None:
+            return None
+        arn = schedule_arn(call.region, self.account, call.group, call.name)
+        stored = world.get(_schedule_entity(arn))
+        if stored is None:
+            return None
+        made = ScheduleRecord.model_validate_json(stored.body)
+        if made.client_token != call.request.client_token or made.request != call.request:
+            return None
+        return json.dumps({"ScheduleArn": arn}).encode()
 
     def _record(self, call: ScheduleCall, world: Store, clock: Clock) -> None:
         wakes = self._bound()
@@ -192,7 +241,7 @@ class AwsProvider:
             account=self.account,
             now=clock.now(),
         )
-        self._stamp(call, clock)
+        self._conform(call, call.request)
         if call.kind is CallKind.UPDATE:
             wakes.cancel(arn)
         if record.next_at is not None:
@@ -200,15 +249,25 @@ class AwsProvider:
         operation = Operation.CREATE if call.kind is CallKind.CREATE else Operation.UPDATE
         world.apply(_schedule_change(record, operation, Actor.AGENT))
 
-    def _stamp(self, call: ScheduleCall, clock: Clock) -> None:
-        """moto stamps a schedule's CreationDate and LastModificationDate from the machine clock; both are
-        restamped in moto's copy from the run's clock as the create or update lands, so every later GetSchedule
-        and ListSchedules answers the world's time."""
+    def _conform(self, call: ScheduleCall, request: ScheduleRequest) -> None:
+        """moto's copy of the schedule, made what the caller sent, where moto adds or keeps something else:
+
+        - moto writes a `RetryPolicy` of its own (86400 s, 185 attempts) into a target sent without one;
+        - moto answers `ScheduleExpressionTimezone` "UTC" for a schedule sent without one;
+        - moto's UpdateSchedule keeps the old `ActionAfterCompletion`, and sets `State` to null when none is sent,
+          where AWS's "uses all values, including empty values, specified in the request" and sets a field left out
+          "to its system-default value" (UpdateSchedule); `State`'s default is ENABLED ("By default, the EventBridge
+          Scheduler enables your schedule", User Guide, Getting started).
+        """
         made = scheduler_backends[self.account][call.region].get_schedule(call.group, call.name)
-        at = clock.now().timestamp()
-        made.last_modified_date = at
-        if call.kind is CallKind.CREATE:
-            made.creation_date = at
+        made.target = request.target.model_dump(by_alias=True, exclude_none=True)
+        as_sent: dict[str, object] = {
+            "schedule_expression_timezone": request.schedule_expression_timezone,
+            "action_after_completion": request.action_after_completion,
+            "state": request.state.value,
+        }
+        for field, value in as_sent.items():
+            setattr(made, field, value)
 
     def _deliveries(self, deleting: SqsDelete, world: Store) -> list[QueueMessageRecord]:
         """The delivered messages still live in the world that these receipt handles name. Read before moto
@@ -268,11 +327,12 @@ class AwsProvider:
             raise LookupError(f"schedule {ref} targets account {queue.account}; this run is account {self.account}")
         if record.target_input is None:
             raise ValueError(f"schedule {ref} has no Target.Input to put on {queue.arn}")
-        message = sqs_backends[self.account][queue.region].send_message(
-            queue.queue,
-            record.target_input,
-            group_id=record.message_group_id,
-        )
+        with aws_clock.on(clock):
+            message = sqs_backends[self.account][queue.region].send_message(
+                queue.queue,
+                record.target_input,
+                group_id=record.message_group_id,
+            )
         delivered = QueueMessageRecord(
             queue_arn=queue.arn,
             message_id=message.id,
@@ -302,7 +362,8 @@ class AwsProvider:
             )
             return
         if record.action_after_completion is ActionAfterCompletion.DELETE:
-            scheduler_backends[self.account][record.region].delete_schedule(record.group, record.name)
+            with aws_clock.on(clock):
+                scheduler_backends[self.account][record.region].delete_schedule(record.group, record.name)
             world.apply(
                 Change(
                     entity=_schedule_entity(ref), operation=Operation.DELETE, actor=Actor.SCENARIO, parent=record.group
@@ -315,6 +376,32 @@ class AwsProvider:
         if self._wakes is None:
             raise RuntimeError("the aws provider books wakes, and bind() was not called before the run")
         return self._wakes
+
+
+_ROUTED_BY = (b"x-moto-account-id", b"authorization")
+
+
+def _scope(asked: AwsCall) -> bytes:
+    """What moto reads to choose a service and region: the credential scope of a SigV4 `Authorization` header, or,
+    for a request with none, guesses from its body that send an unsigned JSON SQS call elsewhere. The service and
+    region are the ones the request's host names (`wire.aws_call`), so whatever the caller signed with, or did not
+    sign with at all, its call reaches the service it addressed. Nothing reads the signature."""
+    signing = {Service.SCHEDULER: "scheduler", Service.SQS: "sqs"}[asked.service]
+    return (
+        f"AWS4-HMAC-SHA256 Credential=minutehand/20000101/{asked.region}/{signing}/aws4_request, "
+        "SignedHeaders=host, Signature=0"
+    ).encode()
+
+
+def _no_credential_checks() -> None:
+    """Minutehand enforces no credentials: any access key, any signature, or none, is answered. moto checks a
+    request's SigV4 signature against its IAM users and the caller's IAM policies once
+    `settings.INITIAL_NO_AUTH_ACTION_COUNT` requests have been answered (`moto.core.authorization`): a number set by
+    the `INITIAL_NO_AUTH_ACTION_COUNT` environment variable when moto is imported, by
+    `set_initial_no_auth_action_count` or `enable_iam_authentication` in this process, or by moto's
+    `/moto-api/reset-auth` (which `wire.aws_call` refuses). It is set back to infinite before every call into moto,
+    whichever set it."""
+    moto_settings.INITIAL_NO_AUTH_ACTION_COUNT = float("inf")
 
 
 def build() -> AwsProvider:
