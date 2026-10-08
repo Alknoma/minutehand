@@ -1,8 +1,8 @@
 # Notion provider
 
-Written from Notion's public API reference and its OpenAPI document. Where the reference
-gives an error message, or a recording of the real service shows one, that message is
-used; every other message is this provider's own. `CLAIMS.md` gives the source of each
+Written from Notion's public API reference and its OpenAPI document. Every error message
+is Notion's, documented or reported of the real service; a case whose answer no source
+gives is refused by name (501) instead of answered in made-up words. `CLAIMS.md` gives the source of each
 behaviour, and `tests/data/notion_api/` the surface it is held to.
 
 **API version:** `2022-06-28`, what `notion-client` 2.2.1 sends. A call carrying any other
@@ -13,7 +13,7 @@ here, so a client on 3.x must pin `notion_version="2022-06-28"`.
 
 **Credentials are not enforced.** Any token, or none, is answered: a token the seed holds
 or `/v1/oauth/token` minted acts as its integration, any other as the agent's (the first
-integration the seed declares, or an `Agent` integration added when it declares none).
+integration the seed declares; a seed that declares no integration is refused).
 No capability refuses a call, and the token endpoint refuses no client, code, redirect
 URI or refresh token.
 
@@ -49,10 +49,12 @@ last_edited_by are read-only.
 lies below them. Everything else is `object_not_found`, and search leaves it out. A
 person's email is answered only to an integration that has `read_users_with_email`.
 
-**Not served, refused by name:** every other operation of Notion's OpenAPI document under
-these resources (data sources, page move and markdown, a single comment's retrieve, update
-and delete, OAuth introspect and revoke) answers 501 `invalid_request` naming it. A path or
-method Notion has no endpoint for is 400 `invalid_request_url` "Invalid request URL.".
+**Not served, refused by name:** every other operation of Notion's OpenAPI document
+(`surface.OPERATIONS`: data sources, page move and markdown, a single comment's retrieve,
+update and delete, OAuth introspect and revoke, file uploads, views, custom emojis, meeting
+notes, agents and the rest) raises the shared not-served refusal, answered 501
+`invalid_request` naming it. Only a path or method Notion does not document is 400
+`invalid_request_url` "Invalid request URL.".
 
 **Faults:** declared in the seed (`NotionSeed.faults`), or on an open standing world through
 `DeclaresFaults` (the same `faults` fragment, an integration named by its seed key):

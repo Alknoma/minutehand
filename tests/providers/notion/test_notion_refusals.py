@@ -180,6 +180,13 @@ async def test_changing_a_blocks_type_is_refused_in_notions_words(api: httpx.Asy
     assert message == "Expected block type heading_1 in request body"
 
 
+async def test_a_block_type_this_fake_does_not_build_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
+    """Notion takes a column list; this fake does not build one, and says so with the shared not-served refusal rather
+    than a 400 that would read as Notion's own."""
+    answered = await append(api, {"children": [{"type": "column_list", "column_list": {"children": []}}]})
+    assert unserved(answered) == "`column_list` blocks (body.children[0])"
+
+
 async def test_a_property_the_database_does_not_have_is_refused_in_notions_words(api: httpx.AsyncClient) -> None:
     """https://github.com/bil0u/remarkable2-to-notion/issues/2"""
     message = refusal(
