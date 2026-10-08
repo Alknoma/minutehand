@@ -22,6 +22,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from urllib.parse import quote
 
 from pydantic import Field, JsonValue
 from starlette.requests import Request
@@ -1013,7 +1014,7 @@ class CalendarApi:
         channel = wire.CalendarChannel(
             id=asked.id,
             resourceId=hashlib.sha256(f"calendar events\x1f{calendar.id.lower()}".encode()).hexdigest()[:27],
-            resourceUri=f"https://www.googleapis.com/calendar/v3/calendars/{spelled}/events?alt=json",
+            resourceUri=f"https://www.googleapis.com/calendar/v3/calendars/{quote(spelled, safe='')}/events?alt=json",
             address=asked.address,
             expiration=wire.rfc3339(expires),
             token=asked.token,

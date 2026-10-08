@@ -4,20 +4,23 @@ stopped by its own API's `channels.stop`. `CLAIMS.md` gives the source of each r
 **Opening.** A watch's body names `id`, `type` (`web_hook`, or `webhook`), `address`, and optionally `token` and
 `expiration` (milliseconds since the epoch). A channel id is taken once in a run, whichever API took it and
 whether or not it was stopped since: Google takes an id once "within your project", and a run is one project.
-Google requires an HTTPS address with a valid certificate; this fake also takes `http://`, so an agent's own
-receiver on this machine can be told.
+The address must be HTTPS: an `http://` one is a 400 "WebHook callback must be HTTPS: <address>". A push verifies
+the address's certificate against what the agent itself trusts (`adapters.reaching`): an agent's receiver serves
+a certificate the run's CA signed.
 
-**Lifetime**, read on the run's clock. A Drive channel lives an hour unless it asks for longer, and a week at most.
-A Calendar channel lives `params.ttl` seconds, 604800 (a week) unless it says, and a week at most. An expiration
-already past on the run's clock (an agent that reads the machine's clock in a run set earlier or later) is taken
-as none asked for, and where a watch asks both an expiration and a `ttl`, the sooner holds. A stopped or expired
-channel is told nothing more.
+**Lifetime**, read on the run's clock. A Drive channel lives an hour unless it asks for longer, and a week at most,
+as Drive documents. A Calendar channel lives `params.ttl` seconds, 604800 (a week) unless it says; a longer one is
+cut to 30 days, as the service was seen to cut it. Where a watch asks both an expiration and a `ttl`, the more
+restrictive holds. An expiration at or before the run's now, and a `ttl` that is not a whole number of seconds,
+are refused 501 by name: Google's answer to either is not recorded. A stopped or expired channel is told nothing
+more.
 
 **Delivery** is a POST with no body whose `X-Goog-*` headers name the channel, the watched resource, its state
 (`sync` first, then `change` for Drive, `exists` for Calendar) and the message's number on the channel: 1 for
 `sync`, one more for each message after. `X-Goog-Channel-Token` is sent only when the watch set one. Each push is
-recorded as a `Delivery` with how the address answered, or why it was not reached; an address that refuses or
-cannot be reached is recorded so, and nothing else happens: no retry, and the run goes on.
+recorded as a `Delivery` with how the address answered, or why it was not reached. Google retries a push answered
+500, 502, 503 or 504 "with exponential backoff" and documents no schedule; this fake does not retry, and records
+the failed push.
 
 **Stopping** takes the channel's `id` and `resourceId`. Each API stops only its own channels: a Drive channel
 named to Calendar's `channels.stop`, or the other way, is not found, as are an unknown channel, a `resourceId`
@@ -31,6 +34,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from minutehand.adapters import reaching
 from minutehand.adapters.providers.google_workspace import wire
 from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.domain.scenario import Model
@@ -50,10 +54,16 @@ class Lifetime(Model):
 
 
 DRIVE_LIFETIME = Lifetime(default=timedelta(hours=1), longest=timedelta(days=7), reads_ttl=False)
-CALENDAR_LIFETIME = Lifetime(default=timedelta(seconds=604800), longest=timedelta(seconds=604800), reads_ttl=True)
-"""Calendar's `params.ttl` defaults to 604800 seconds (the events.watch reference). Google documents no longer limit
-for Calendar, only that the more restrictive of what is asked and its own limits holds; the documented default is
-taken as the limit too."""
+"""Drive's push guide: an hour unless asked, 604800 seconds at most for changes."""
+CALENDAR_LIFETIME = Lifetime(default=timedelta(seconds=604800), longest=timedelta(days=30), reads_ttl=True)
+"""Calendar's `params.ttl` defaults to 604800 seconds (the events.watch reference); a larger one comes back cut to
+30 days (https://stackoverflow.com/q/64986662, https://stackoverflow.com/a/65001852)."""
+
+
+def not_served(what: str) -> wire.Refusal:
+    return wire.not_implemented(
+        f"minutehand's Google push channels do not serve {what}: Google's answer is not recorded"
+    )
 
 
 def lives(channel: wire.DriveChannel | wire.CalendarChannel, now: datetime) -> bool:
@@ -92,20 +102,21 @@ class Channels:
 
     def asked(self, body: bytes, lifetime: Lifetime) -> tuple[wire.ChannelWrite, datetime]:
         """The watch's body, checked, and when the channel it opens expires."""
-        asked = wire.read_body(wire.ChannelWrite, wire.read_object(body))
+        found = wire.read_object(body)
+        if "payload" in found and found["payload"] is not None:
+            raise not_served("payload")
+        asked = wire.read_body(wire.ChannelWrite, found)
         if not asked.id:
             raise wire.required("channel.id", "Required: channel.id")
         if asked.type not in ("web_hook", "webhook"):
             raise wire.drive_refusal(
                 400, "push.channelTypeNotSupported", f"Channel type '{asked.type}' is not supported.", domain="push"
             )
-        if not asked.address.startswith(("https://", "http://")):
-            raise wire.drive_refusal(
-                400,
-                "push.webhookUrlUnauthorized",
-                f"Unauthorized WebHook callback channel: {asked.address}",
-                domain="push",
-            )
+        if not asked.address.lower().startswith("https://"):
+            # The status and message as the service answers them (https://stackoverflow.com/q/43484709,
+            # https://github.com/janeczku/calibre-web/issues/502); no answer seen names a reason, so none is given.
+            message = f"WebHook callback must be HTTPS: {asked.address}"
+            raise wire.Refusal(wire.GoogleError(error=wire.ErrorBody(code=400, message=message)))
         if self._world.channel(asked.id) is not None:
             raise wire.drive_refusal(400, "channelIdNotUnique", f"Channel id {asked.id} not unique", domain="push")
         return asked, self._expires(asked, lifetime)
@@ -114,17 +125,17 @@ class Channels:
         now = self._clock.now()
         wanted: list[datetime] = []
         if asked.expiration is not None:
-            if not asked.expiration.isdigit():
+            if not str(asked.expiration).isdigit():
                 raise wire.invalid("channel.expiration")
             at = datetime.fromtimestamp(int(asked.expiration) / 1000, tz=now.tzinfo)
-            if at > now:
-                wanted.append(at)
+            if at <= now:
+                raise not_served(f"an expiration at or before the run's now ({wire.rfc3339(now)})")
+            wanted.append(at)
         if lifetime.reads_ttl and asked.params is not None and "ttl" in asked.params:
-            ttl = asked.params["ttl"]
-            if not ttl.isdigit():
-                raise wire.invalid("channel.params.ttl")
-            if int(ttl) > 0:
-                wanted.append(now + timedelta(seconds=int(ttl)))
+            ttl = str(asked.params["ttl"])
+            if not ttl.isdigit() or int(ttl) < 1:
+                raise not_served(f"params.ttl {ttl!r}, not a whole number of seconds")
+            wanted.append(now + timedelta(seconds=int(ttl)))
         return min(min(wanted) if wanted else now + lifetime.default, now + lifetime.longest)
 
     def open(self, channel: wire.DriveChannel | wire.CalendarChannel) -> wire.ChannelAnswer:
@@ -207,7 +218,9 @@ class Channels:
             headers["X-Goog-Channel-Token"] = channel.token
         delivery = wire.Delivery(channel=channel.id, number=number, state=state, address=channel.address)
         try:
-            async with httpx.AsyncClient(trust_env=False, timeout=DELIVERY_TIMEOUT_SECONDS) as client:
+            async with httpx.AsyncClient(
+                trust_env=False, timeout=DELIVERY_TIMEOUT_SECONDS, verify=reaching.verify()
+            ) as client:
                 answered = await client.post(channel.address, headers=headers)
         except httpx.HTTPError as error:
             delivery = delivery.model_copy(update={"failure": f"{type(error).__name__}: {error}".rstrip(": ")})

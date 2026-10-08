@@ -850,9 +850,9 @@ class ChannelWrite(Model):
     id: str = ""
     type: str = ""
     address: str = ""
-    expiration: str | None = Field(default=None, description="Milliseconds since the epoch, as a string")
+    expiration: str | int | None = Field(default=None, description="Milliseconds since the epoch, int64 as JSON")
     token: str | None = None
-    params: dict[str, str] | None = None
+    params: dict[str, str | int] | None = None
 
 
 class ChannelAnswer(Model):
