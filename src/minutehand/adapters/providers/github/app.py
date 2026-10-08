@@ -2,8 +2,8 @@
 
 Every call is checked in GitHub's order: an `X-GitHub-Api-Version` it does not serve (400), then the credential,
 then the faults the scenario armed, then the route. Minutehand deliberately does not enforce credentials: every
-`Authorization` is accepted, a token the world holds acting as its user and any other (an unseeded token, a JWT,
-an installation token) as the world's stand-in user. What a user may see is world data: a repository the user
+`Authorization`, or none, is accepted, a token the world holds acting as its user and any other (an unseeded or
+empty token, a JWT, an installation token, no header at all) as the world's stand-in user. What a user may see is world data: a repository the user
 neither owns, collaborates on nor reaches through an organization, and that is private, is a 404, exactly as one
 that does not exist. Lists are paged by `per_page` and `page` and say where the next page is in a `Link` header.
 A GET answered 200 carries an `ETag`; the same GET sent with it in `If-None-Match` is a 304, which an
@@ -139,9 +139,9 @@ class GitHubApi:
             resource = resource_of(request.url.path)
             caller: Caller | None = None
             budget: wire.StoredBudget | None = None
-            # A conditional call made with a credential spends only if it is not answered 304, so it is counted
+            # A conditional call acting as a user spends only if it is not answered 304, so it is counted
             # once its answer is known; every other call is counted before it is answered.
-            deferred = _header(request, "if-none-match") is not None and _header(request, "authorization") is not None
+            conditional = _header(request, "if-none-match") is not None
             owed = False
             try:
                 if version in wire.UNSERVED_API_VERSIONS:
@@ -149,6 +149,7 @@ class GitHubApi:
                 if version is not None and version not in wire.API_VERSIONS:
                     raise wire.unsupported_version(version)
                 caller = self._authenticate(request)
+                deferred = conditional and caller.account is not None
                 budget = self._window(caller, resource)
                 if spends and budget.limit > 0:
                     if budget.remaining == 0:
@@ -212,14 +213,12 @@ class GitHubApi:
         return _json(wire.RateLimitOut(resources=budgets, rate=budgets[wire.Resource.CORE]))
 
     def _authenticate(self, request: Request) -> Caller:
-        """Who the call acts as. No `Authorization` is nobody, as on GitHub. Any `Authorization` at all is accepted:
-        a token the world holds acts as its user, and anything else as the world's stand-in (a world with no user
-        has nobody to stand in, and the call reads as nobody's). Minutehand deliberately does not enforce
-        credentials, so nothing here refuses."""
+        """Who the call acts as. Minutehand does not authenticate: a token the world holds acts as its user, and
+        anything else, an empty token or no `Authorization` at all included, as the world's stand-in
+        (`unknown_credentials_act_as`). Only a world with no user has nobody to stand in, and there the call reads
+        as nobody's. Nothing here refuses."""
         authorization = (_header(request, "authorization") or "").strip()
-        if not authorization:
-            return Caller(account=None, token=None)
-        token = self._world.token(_presented(authorization))
+        token = self._world.token(_presented(authorization)) if authorization else None
         stand_in = self._world.stand_in() if token is None else None
         login = token.login if token is not None else stand_in.login if stand_in is not None else None
         if login is None:

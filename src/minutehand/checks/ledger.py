@@ -259,7 +259,19 @@ def build(
             )
         )
 
-    ledger = [_finish(o, events, by_key, away) for o in opened]
+    # Only these can touch a wait: a message the agent sent, a call it made, or a change to a waited-on entity.
+    waited = {(e.provider, e.kind, e.external_id) for o in opened for e in o.entities}
+    touching = [
+        e
+        for e in events
+        if e.actor is Actor.AGENT
+        and (
+            (e.operation is Operation.CREATE and isinstance(e.after, MessageSnapshot))
+            or e.exchange is not None
+            or (e.entity.provider, e.entity.kind, e.entity.external_id) in waited
+        )
+    ]
+    ledger = [_finish(o, touching, by_key, away) for o in opened]
     if scenario.deadline is not None:
         ledger.append(
             Obligation(
@@ -332,10 +344,12 @@ def _finish(o: _Open, events: list[WorldEvent], by_key: dict[str, Person], away:
     emails.update(by_key[a.delegate].email for a in away if a.person == o.person.key and a.delegate)
     touches: list[int] = []
     after_settled: int | None = None
+    # By their fields: a set of plain tuples, where comparing models event by event made this quadratic in practice.
+    entities = {(e.provider, e.kind, e.external_id) for e in o.entities}
     for event in events:
         if event.actor is not Actor.AGENT or event.seq <= o.opened_by:
             continue
-        on_entity = event.entity in o.entities
+        on_entity = (event.entity.provider, event.entity.kind, event.entity.external_id) in entities
         on_person = (
             event.operation is Operation.CREATE
             and isinstance(event.after, MessageSnapshot)

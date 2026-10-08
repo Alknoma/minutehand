@@ -4,21 +4,43 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Minutehand Runs</title>
-<link rel="stylesheet" href="/static/vendor/vis-timeline-8.5.4/vis-timeline-graph2d.min.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/viewer.css">
 </head>
 <body>
-<header class="bar">
-  <span class="brand">Minutehand</span>
-  <label class="picker"><span class="sr">Run</span><select id="runs" aria-label="Run"><option>Loading…</option></select></label>
-  <span id="live" class="live" hidden><span class="dot run"></span>Running, following it</span>
+<header class="top" id="top">
+  <div class="top-row">
+    <span class="brand">Minutehand</span>
+    <div class="picker">
+      <button type="button" id="picker" class="picker-button" aria-haspopup="listbox" aria-expanded="false"><span id="picker-label">Runs</span><span class="caret" aria-hidden="true">▾</span></button>
+      <div class="picker-panel" id="picker-panel" hidden>
+        <input type="search" id="picker-filter" placeholder="Filter runs" aria-label="Filter runs">
+        <ul id="picker-list" role="listbox" aria-label="Runs"></ul>
+      </div>
+    </div>
+    <div class="identity" id="identity"></div>
+    <span class="spacer"></span>
+    <span class="live" id="live" hidden><span class="dot"></span>Running</span>
+    <button type="button" class="icon-button" id="theme" aria-label="Switch between light and dark">◐</button>
+    <button type="button" class="icon-button" id="help-button" aria-label="Keyboard shortcuts">?</button>
+  </div>
+  <div class="top-row second">
+    <nav class="headline" id="headline" aria-label="Headline numbers"></nav>
+    <div class="problems" id="problems" aria-label="Findings to act on"></div>
+  </div>
 </header>
-<main id="main">
-  <div class="empty" id="welcome">Pick a run to see how the agent did.</div>
+<main class="body" id="body">
+  <nav class="views" id="views" aria-label="Views"></nav>
+  <section class="center">
+    <section class="timeline" id="timeline" aria-label="Timeline"></section>
+    <section class="view" id="view" aria-live="polite"></section>
+  </section>
+  <aside class="inspector" id="inspector" aria-label="Inspector" aria-live="polite"></aside>
 </main>
-<script src="/static/vendor/vis-timeline-8.5.4/vis-timeline-graph2d.min.js"></script>
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<div class="help" id="help" hidden></div>
 <script src="/static/vendor/d3-7.9.0/d3.min.js"></script>
 <script src="/static/vendor/plot-0.6.17/plot.umd.min.js"></script>
-<script src="/static/viewer.js"></script>
+<script type="module" src="/static/viewer.js"></script>
 </body>
 </html>

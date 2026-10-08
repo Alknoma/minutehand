@@ -169,22 +169,9 @@ def not_implemented(message: str) -> Unserved:
     return Unserved(GoogleError(error=ErrorBody(code=501, message=message, errors=[item])))
 
 
-def login_required() -> Refusal:
-    item = ErrorItem(
-        domain="global",
-        reason="required",
-        message="Login Required.",
-        location="Authorization",
-        locationType="header",
-    )
-    return Refusal(
-        GoogleError(error=ErrorBody(code=401, message="Login Required.", errors=[item], status="UNAUTHENTICATED")),
-        headers={"WWW-Authenticate": 'Bearer realm="https://accounts.google.com/"'},
-    )
-
-
 def invalid_credentials() -> Refusal:
-    """A token Google does not accept: unknown, expired or revoked."""
+    """Google's answer to a token it does not accept, played only as a fault the scenario declares
+    (`FaultKind.UNAUTHENTICATED`): Minutehand itself refuses no credential."""
     message = (
         "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other"
         " valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project."
@@ -205,17 +192,6 @@ def invalid_credentials() -> Refusal:
 def docs_refusal(code: int, status: str, message: str) -> Refusal:
     """A Docs v1 error: code, message and status, and no `errors` list."""
     return Refusal(GoogleError(error=ErrorBody(code=code, message=message, status=status)))
-
-
-def docs_login_required() -> Refusal:
-    refusal = docs_refusal(
-        401,
-        "UNAUTHENTICATED",
-        "Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or"
-        " other valid authentication credential.",
-    )
-    refusal.headers["WWW-Authenticate"] = 'Bearer realm="https://accounts.google.com/"'
-    return refusal
 
 
 def error_body(refusal: Refusal) -> bytes:
@@ -772,6 +748,7 @@ class TokenAnswer(Model):
     expires_in: int = TOKEN_LIFETIME
     token_type: Literal["Bearer"] = "Bearer"
     scope: str | None = None
+    refresh_token: str | None = Field(default=None, description="Issued on the authorization-code grant")
 
 
 class Userinfo(Model):

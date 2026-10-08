@@ -203,9 +203,12 @@ class Dues:
                 self._open[key] = (ref, entry)
             else:
                 self._close(ref, entry, DueClosed.CANCELLED)
+        replies = self._store.replies()
         for p in pending:
             if key_of(p.due) in self._open:
                 self._items.append(p)
+            elif isinstance(p, PendingReply) and 0 <= p.reply < len(replies):
+                self.enter(p, drawn=replies[p.reply].drawn)  # a reply the fork decided again: its draw with it
             else:
                 self.enter(p)
 

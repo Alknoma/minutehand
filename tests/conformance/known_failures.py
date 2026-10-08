@@ -86,12 +86,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "github",
         Property.ACCOUNTS,
-        "any_credential_acts_as_the_default_identity",
-        "with no credential, `/user` is GitHub's documented 401 \"Requires authentication\" (github/CLAIMS.md: an anonymous call reads public data only); a credential nobody seeded is accepted, acting as the seed's `unknown_credentials_act_as`",
-    ),
-    Known(
-        "github",
-        Property.ACCOUNTS,
         "no_email",
         "the shared seed model cannot declare a no_email account: 1 validation error for CreateWorld",
     ),
@@ -167,12 +161,6 @@ KNOWN: tuple[Known, ...] = (
         Property.TIME,
         "new_things_carry_the_worlds_clock",
         'VendorRefused: create or update file contents: 501 {"message":"minutehand\'s github fake does not implement PUT /repos/launch-team/notes/contents/…: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "google_workspace",
-        Property.ACCOUNTS,
-        "any_credential_acts_as_the_default_identity",
-        'Google Workspace still checks credentials: #65 could not remove them (a permission block), pending the owner\'s decision. No credential is 401 "Login Required.", one nobody seeded 401 "Request had invalid authentication credentials"',
     ),
     Known(
         "google_workspace",

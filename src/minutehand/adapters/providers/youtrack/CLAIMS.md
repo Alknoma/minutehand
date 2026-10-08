@@ -31,9 +31,9 @@ because the documentation contradicts them, and the rest are recorded from the p
 or refused by name where neither source says what YouTrack answers (rows 6, 8, 9, 10, 11, 12, 20, 28, 38, 39,
 41, 52, 59, each in part where the row says so). No row is left unverified.
 
-## Credentials and permissions: deliberately not enforced
+## Credentials and permissions
 
-Minutehand checks no credential and enforces no permission. A token the seed names, or one Hub issued, acts as its
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Minutehand checks no credential and enforces no permission. A token the seed names, or one Hub issued, acts as its
 user; any other token, a Basic credential, an empty `Authorization` or none at all acts as the agent's account.
 Removed, each pinned by a test that it no longer refuses:
 

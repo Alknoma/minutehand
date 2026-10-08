@@ -25,6 +25,7 @@ from minutehand.domain.world import (
     ItemStatus,
     MessageSnapshot,
     Operation,
+    Snapshot,
     TicketSnapshot,
     WorldEvent,
 )
@@ -78,6 +79,13 @@ def ended_at(view: RunView) -> datetime:
 def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON) -> list[Ask]:
     """Every wait of `kind` the ledger opened, in the order it opened, with what followed it."""
     by_seq = {e.seq: e for e in view.events}
+    invisible = unchanged(view.events)
+    # What can touch a wait, gathered once: the agent's visible writes, its messages apart and the rest by entity.
+    acts = [e for e in view.events if e.actor is Actor.AGENT and e.operation in VISIBLE and e.seq not in invisible]
+    said = [e for e in acts if isinstance(e.after, MessageSnapshot)]
+    by_entity: dict[tuple[str, str, str], list[WorldEvent]] = {}
+    for e in acts:
+        by_entity.setdefault((e.entity.provider, e.entity.kind, e.entity.external_id), []).append(e)
     found: list[Ask] = []
     for o in view.obligations:
         if o.kind is not kind:
@@ -87,14 +95,14 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
             for s in o.agent_touches
             if s in by_seq
             and by_seq[s].operation in VISIBLE
-            and not unchanged(by_seq[s], by_seq)
+            and s not in invisible
             and (o.settled_at is None or by_seq[s].sim_time < o.settled_at)
         ]
         found.append(
             Ask(
                 obligation=o,
                 follow_ups=sorted(follow_ups, key=lambda f: f.at),
-                touches=_touches(view, o, by_seq),
+                touches=_touches(view, o, _candidates(o, said, by_entity, by_seq, invisible)),
                 answer=_answer(view, o),
                 answer_facts=_answer_facts(view, o),
             )
@@ -102,14 +110,29 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
     return found
 
 
-def _touches(view: RunView, o: Obligation, by_seq: dict[int, WorldEvent]) -> list[Fact]:
+def _candidates(
+    o: Obligation,
+    said: list[WorldEvent],
+    by_entity: dict[tuple[str, str, str], list[WorldEvent]],
+    by_seq: dict[int, WorldEvent],
+    invisible: frozenset[int],
+) -> list[WorldEvent]:
+    """The agent's visible writes that could touch the wait `o`, in log order: its messages, its writes to the
+    wait's entity, and those the ledger counted."""
+    seqs = {e.seq for e in said}
+    if o.entity is not None:
+        seqs.update(e.seq for e in by_entity.get((o.entity.provider, o.entity.kind, o.entity.external_id), []))
+    named = [*o.agent_touches, *([o.first_touch_after_settled] if o.first_touch_after_settled is not None else [])]
+    seqs.update(s for s in named if s in by_seq and by_seq[s].operation in VISIBLE and s not in invisible)
+    return [by_seq[s] for s in sorted(seqs) if by_seq[s].actor is Actor.AGENT]
+
+
+def _touches(view: RunView, o: Obligation, candidates: list[WorldEvent]) -> list[Fact]:
     person = next((p for p in view.scenario.people if p.key == o.person), None)
     emails = {person.email} if person is not None else set()
     touched: list[Fact] = []
-    for event in view.events:
-        if event.actor is not Actor.AGENT or event.seq <= o.opened_by or event.operation not in VISIBLE:
-            continue
-        if unchanged(event, by_seq):
+    for event in candidates:
+        if event.seq <= o.opened_by:
             continue
         after = event.after
         on_it = o.entity is not None and (
@@ -139,16 +162,17 @@ def _answer_facts(view: RunView, o: Obligation) -> list[str]:
     return list(said[0].facts) if said else []
 
 
-def unchanged(event: WorldEvent, events: dict[int, WorldEvent]) -> bool:
-    """An update that leaves the entity as it was: an edit nobody can see."""
-    if event.operation is not Operation.UPDATE:
-        return False
-    before = max(
-        (e for e in events.values() if e.seq < event.seq and e.entity == event.entity and e.after is not None),
-        key=lambda e: e.seq,
-        default=None,
-    )
-    return before is not None and before.after == event.after
+def unchanged(events: list[WorldEvent]) -> frozenset[int]:
+    """The seqs of updates that leave their entity as it was: edits nobody can see. One pass over the log."""
+    last: dict[tuple[str, str, str], Snapshot] = {}
+    found: set[int] = set()
+    for event in sorted(events, key=lambda e: e.seq):
+        key = (event.entity.provider, event.entity.kind, event.entity.external_id)
+        if event.operation is Operation.UPDATE and key in last and last[key] == event.after:
+            found.add(event.seq)
+        if event.after is not None:
+            last[key] = event.after
+    return frozenset(found)
 
 
 class Sent(Model):
@@ -210,7 +234,7 @@ def normalised(title: str) -> str:
 
 def writes(view: RunView) -> list[Written]:
     """Every change the agent made that a person could see, in order."""
-    by_seq = {e.seq: e for e in view.events}
+    invisible = unchanged(view.events)
     repeated = repeated_wakes(view)
     duplicates = _duplicates(view.events)
     gated = _gated(view.events)
@@ -225,7 +249,7 @@ def writes(view: RunView) -> list[Written]:
         if e.actor is Actor.AGENT
         and e.operation in VISIBLE
         and e.entity.kind not in _NOT_WRITES
-        and not unchanged(e, by_seq)
+        and e.seq not in invisible
     ]
 
 

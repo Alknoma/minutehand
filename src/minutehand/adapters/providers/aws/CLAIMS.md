@@ -15,7 +15,7 @@ https://docs.aws.amazon.com/scheduler/latest/UserGuide/, SQS API =
 https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/, SQS guide =
 https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/.
 
-**Minutehand deliberately does not enforce credentials.** Any access key, any SigV4 signature, a request signed for
+**Authentication is out of scope (`docs/design.md`, "Authentication is out of scope").** Any access key, any SigV4 signature, a request signed for
 another service, or an unsigned request is answered. moto can check signatures and IAM policies
 (`moto.core.authorization`, switched on by the `INITIAL_NO_AUTH_ACTION_COUNT` environment variable, by
 `set_initial_no_auth_action_count` or `enable_iam_authentication` in the process, or by moto's

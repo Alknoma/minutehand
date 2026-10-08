@@ -1,6 +1,9 @@
-"""What every Google API this provider answers checks first: who the bearer token is, and whether a fault the
+"""What every Google API this provider answers reads first: whom the bearer token acts as, and whether a fault the
 scenario declared is due for the call. Drive, Docs, Slides, Gmail and Calendar share Google's sign-in, so a token
-`/token` issued is good for each of them, as one Google account's token is."""
+`/token` issued acts as one Google account in each of them.
+
+Minutehand is a simulation and enforces no credential: no token is refused, whether unknown, expired, revoked or
+missing. What a caller may see is still world data (whose mailbox, calendar or file it is, and what is shared)."""
 
 from __future__ import annotations
 
@@ -27,18 +30,16 @@ def bearer(request: Request, access_token: str | None) -> str | None:
     return access_token or None
 
 
-def signed_in(drive: DriveWorld, clock: Clock, token: str | None, *, missing: wire.Refusal) -> Caller:
-    """The user an access token was issued to; `missing` when there is none, and Google's 401 when it is unknown,
-    expired or revoked."""
-    if token is None:
-        raise missing
-    issued = drive.token(token)
-    if issued is None or issued.revoked or wire.moment(issued.expires) <= clock.now():
-        raise wire.invalid_credentials()
-    user = drive.user(issued.email)
+def signed_in(drive: DriveWorld, token: str | None) -> Caller:
+    """Whom a call acts as: an access token `/token` issued acts as its user, expired or revoked alike; a credential
+    the world holds (a seeded refresh token or service account) sent as the bearer as whom it signs in as; and any
+    other token, or none, as the world's default identity (`WorkspaceSeed.unknown_credentials_act_as`)."""
+    issued = drive.token(token) if token is not None else None
+    email = issued.email if issued is not None else drive.credential(token).email
+    user = drive.user(email)
     if user is None:
-        raise wire.invalid_credentials()
-    return Caller(email=issued.email, user=user)
+        raise LookupError(f"a credential acts as {email}, who is not a user of this Google Workspace")
+    return Caller(email=email, user=user)
 
 
 def due_fault(drive: DriveWorld, clock: Clock, operation: str) -> wire.FaultKind | None:

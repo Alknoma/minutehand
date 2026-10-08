@@ -343,7 +343,7 @@ class GmailApi:
         async def endpoint(request: Request) -> Response:
             try:
                 access = request.query_params["access_token"] if "access_token" in request.query_params else None
-                caller = signed_in(self._drive, self._clock, bearer(request, access), missing=wire.login_required())
+                caller = signed_in(self._drive, bearer(request, access))
                 kind = due_fault(self._drive, self._clock, operation)
                 if kind is not None:
                     raise mail.fault(kind)

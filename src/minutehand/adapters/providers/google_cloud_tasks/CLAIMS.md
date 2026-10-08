@@ -12,7 +12,7 @@ Tests are in `tests/providers/google_cloud_tasks/`: `test_cloud_tasks.py` (R), `
 `test_cloud_tasks_fidelity.py` (F), `test_cloud_tasks_coverage.py` (C), and the whole runs
 `tests/e2e/test_cloud_tasks_run.py`.
 
-**Minutehand deliberately does not enforce credentials.** No access token, OIDC token or API key is read: any
+**Authentication is out of scope (`docs/design.md`, "Authentication is out of scope").** No access token, OIDC token or API key is read: any
 `Authorization`, or none, is answered (C `test_any_credential_or_none_is_answered`). IAM methods are refused by name.
 
 **Refusal messages.** Google's own wording of these errors is in no reference, so each refusal's message is the

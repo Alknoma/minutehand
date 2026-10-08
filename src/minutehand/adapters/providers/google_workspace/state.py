@@ -66,8 +66,8 @@ UPLOADS = "uploads"
 SEEDED = "seeded"
 PEOPLE = "people"
 ANY_CREDENTIAL = "*"
-"""The credential entity a scenario that names no sign-in has: any refresh token or service account signs in as
-the scenario's owner."""
+"""The credential entity every world has: whom any credential the world does not hold, or none at all, acts as
+(`WorkspaceSeed.unknown_credentials_act_as`, by default the scenario's owner)."""
 
 ROLE_RANK = {"reader": 1, "commenter": 2, "writer": 3, "fileOrganizer": 4, "organizer": 5, "owner": 6}
 
@@ -425,16 +425,19 @@ class DriveWorld:
 
     # ------------------------------------------------------------------ sign-in
 
-    def credential(self, secret: str) -> wire.Credential | None:
-        """Whom a refresh token or a service account signs in as: as declared, or, in a scenario that declares
-        none, the owner."""
-        found = self._record(wire.Credential, secret_digest(secret), CREDENTIALS)
+    def credential(self, secret: str | None) -> wire.Credential:
+        """Whom a credential signs in as: a refresh token or a service account the world holds as declared, and
+        anything else, or none, as the world's default identity. Minutehand enforces no credential."""
+        found = self._record(wire.Credential, secret_digest(secret), CREDENTIALS) if secret is not None else None
         if found is not None:
             return found
-        return self._record(wire.Credential, ANY_CREDENTIAL, CREDENTIALS)
+        default = self._record(wire.Credential, ANY_CREDENTIAL, CREDENTIALS)
+        if default is None:
+            raise LookupError("this Google Workspace was seeded without a default identity")
+        return default
 
     def credential_key(self, secret: str) -> str:
-        """The digest a credential is kept under, or the open entity's when the scenario declares none."""
+        """The digest a credential is kept under, or the default identity's when the world does not hold it."""
         key = secret_digest(secret)
         return key if self._store.get(record_ref(key)) is not None else ANY_CREDENTIAL
 
