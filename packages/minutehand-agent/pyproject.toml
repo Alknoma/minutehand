@@ -2,7 +2,7 @@
 name = "minutehand-agent"
 # Released with `minutehand` at the same version: the root pyproject.toml writes it, this repeats it, and
 # tests/test_version.py and the release workflow refuse any difference (docs/releasing.md).
-version = "0.0.1"
+version = "0.0.2"
 description = "What an agent imports to be played by Minutehand: its memory and its next wake, inert in production."
 readme = "README.md"
 requires-python = ">=3.12"
