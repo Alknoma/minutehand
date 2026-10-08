@@ -862,7 +862,7 @@ class _ScenarioBody(Model):
     )
     memory: list[SeededMemory] = Field(
         default=[],
-        description="What the agent's memory (`minutehand_agent.store`) holds when the run starts: each key and its "
+        description="What the agent's memory (`minutehand.agent.store`) holds when the run starts: each key and its "
         "value. Nothing else is in it; the agent's own production database is never read",
     )
 

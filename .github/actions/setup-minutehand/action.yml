@@ -80,11 +80,10 @@ runs:
           uv|pip) ;;
           *) echo "::error::installer is auto, uv or pip, not '$INSTALLER'"; exit 1 ;;
         esac
-        # minutehand requires exactly its own version of minutehand-agent, built from the same commit beside it.
         if [ "$INSTALLER" = uv ]; then
-          uv pip install --python "$python_path" "$ROOT/packages/minutehand-agent" "$ROOT"
+          uv pip install --python "$python_path" "$ROOT"
         else
-          "$python_path" -m pip install --disable-pip-version-check "$ROOT/packages/minutehand-agent" "$ROOT"
+          "$python_path" -m pip install --disable-pip-version-check "$ROOT"
         fi
         version="$("$python_path" -c 'import importlib.metadata as m; print(m.version("minutehand"))')"
         echo "version=$version" >> "$GITHUB_OUTPUT"

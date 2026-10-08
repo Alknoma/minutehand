@@ -2,7 +2,7 @@
 
 The agent is a `query()` per wake or Slack event, with the situation as its prompt and three tools served in this
 process by `create_sdk_mcp_server`. Claude Code's own tools are switched off (`tools=[]`); only these three are
-allowed. The tools close over `Memory`, recalled from `minutehand_agent.store` on every wake, event and report and
+allowed. The tools close over `Memory`, recalled from `minutehand.agent.store` on every wake, event and report and
 kept back after, and write the waits into it (`remember_wait`, `close_wait`); the report Minutehand asks for after every wake reads it: `next_wake` is the
 earliest moment a wait is expected by.
 
@@ -39,9 +39,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, create_sdk_mcp_server, query, tool
-from minutehand_agent import store
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
+
+from minutehand.agent import store
 
 OWNER = "owen@example.com"  # who gives the agent its goal
 ASK = "rosa@example.com"  # who knows the answer
@@ -68,7 +69,7 @@ class Memory:
     waits: dict[str, Wait] = field(default_factory=dict)
 
 
-# -- what it remembers, in `minutehand_agent.store` ---------------------------------------------------------------
+# -- what it remembers, in `minutehand.agent.store` ---------------------------------------------------------------
 
 # Production keeps the memory in this process (swap in `store.SqliteBackend(path)` to keep it across restarts).
 # Under Minutehand the store is the run's own memory, which a fork starts from as it stood at its checkpoint.

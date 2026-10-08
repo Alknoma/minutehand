@@ -1,6 +1,6 @@
 """When the agent next wants to be woken.
 
-    from minutehand_agent import wake
+    from minutehand.agent import wake
 
     scheduler.schedule(expected_by, follow_up)   # the agent's own scheduler, which does the work in production
     wake.at(expected_by)                         # tells Minutehand; does nothing in production
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from minutehand_agent import _wire
+from minutehand.agent import _wire
 
 
 def at(when: datetime) -> None:

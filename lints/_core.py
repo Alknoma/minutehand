@@ -32,9 +32,6 @@ A finding's `file` is relative to it, so it reads as a module path."""
 
 PACKAGE = "minutehand"
 
-AGENT_SRC = ROOT / "packages" / "minutehand-agent" / "src"
-"""The directory holding `minutehand_agent`, the distribution an agent imports; `python -m lints` scans it too."""
-
 SKIPPED_PARTS = frozenset({"__pycache__", "tests", ".venv"})
 """Path components, relative to the scan root, that put a file outside a scan."""
 

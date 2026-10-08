@@ -5,10 +5,8 @@ command output and errors use these terms. Where a name in the code says otherwi
 at the end and has not been renamed.
 
 **Almost nothing is required.** An agent that takes its goal by message and books its own wakes implements none of
-the endpoints below. An agent that remembers anything across wakes keeps it through one import, `minutehand_agent`
-("The agent's memory and its next wake", below): that is its whole contact with Minutehand in its own code. It is
-the distribution `minutehand-agent`, the standard library only, installed in the agent's own environment (`pip
-install minutehand-agent`); the agent never installs `minutehand`.
+the endpoints below. An agent that remembers anything across wakes keeps it through one import, `minutehand.agent`
+("The agent's memory and its next wake", below): that is its whole contact with Minutehand in its own code.
 
 ## The terms
 
@@ -18,8 +16,8 @@ install minutehand-agent`); the agent never installs `minutehand`.
 | **scenario**, **seed** | The situation a run plays (`Scenario`), or a standing world opens with (`Seed`) | fixture |
 | **wake** | Minutehand telling the agent it is now `now`, and to go | tick (except a `Polled` one), trigger |
 | **report** | The agent's answer: still working, done, when it next needs a wake | status call |
-| **memory** | What the agent remembers across wakes, through `minutehand_agent.store`: the run's own under Minutehand | state, snapshot |
-| **mark** | The agent saying when it next wants to be woken, through `minutehand_agent.wake` | schedule (that is its own scheduler's) |
+| **memory** | What the agent remembers across wakes, through `minutehand.agent.store`: the run's own under Minutehand | state, snapshot |
+| **mark** | The agent saying when it next wants to be woken, through `minutehand.agent.wake` | schedule (that is its own scheduler's) |
 | **deliver** | Minutehand handing the agent what a person did: a reply, a press, a happening | push (that is the provider's word) |
 | **inbox** | Where work waits on a person in the agent's own product | queue, human action |
 | **item** | One thing waiting in an inbox | task, request |
@@ -33,8 +31,8 @@ install minutehand-agent`); the agent never installs `minutehand`.
 |---|---|---|---|---|
 | **wake** | Minutehand → agent, each moment something is due | `WakeRequest` → any 2xx | `wakes[].wake_url` (`reported`, `marked`, `polled`); `command` (stdin) | Only to take the goal or wakes this way |
 | **report** | Minutehand → agent, polled after a wake, and at the start of a fork to prove the agent is the checkpoint's | none → `AgentReport` | `wakes[].report_url` | Only for `reported` |
-| **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand_agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked |
-| **mark** | The agent → Minutehand's receiver, when it knows its next wake | `minutehand_agent.wake` (`POST $MINUTEHAND_AGENT_URL/wake`) | `wakes[]` of kind `marked` takes nothing else | No: a report's `next_wake` does the same |
+| **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked |
+| **mark** | The agent → Minutehand's receiver, when it knows its next wake | `minutehand.agent.wake` (`POST $MINUTEHAND_AGENT_URL/wake`) | `wakes[]` of kind `marked` takes nothing else | No: a report's `next_wake` does the same |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
 | **deliver a reply** (provider) | Minutehand → agent, when a person's reply falls due | The provider's own event (Slack Events API, Bot Framework activity) → 2xx | `inbound[]` | Only for a provider that pushes |
 | **socket** (Slack) | The agent → Slack's `apps.connections.open`, then a WebSocket it holds open; replies arrive on it | `events_api` envelopes → the agent's `{"envelope_id": …}` | `inbound[]` with `delivery: socket_mode` and no `url` | Instead of a request URL |
@@ -53,7 +51,7 @@ install minutehand-agent`); the agent never installs `minutehand`.
 ## The agent's memory and its next wake
 
 ```python
-from minutehand_agent import store, wake
+from minutehand.agent import store, wake
 
 store.configure(store.SqliteBackend("agent.db"))  # once, at start: production's backend, ignored under Minutehand
 
@@ -88,7 +86,7 @@ as the likely cause.
 
 ### Writing an adapter
 
-A production backend is three methods over JSON text (`minutehand_agent.store.Backend`); the value is already
+A production backend is three methods over JSON text (`minutehand.agent.store.Backend`); the value is already
 serialised, so an adapter stores and returns the string unchanged:
 
 ```python
@@ -102,7 +100,7 @@ store.configure(FirestoreBackend(...))
 ```
 
 `write` must apply the whole list or none of it (a transaction, or a batched commit). `SqliteBackend` and
-`MemoryBackend` in `packages/minutehand-agent/src/minutehand_agent/_store.py` are the two shipped and the pattern to copy.
+`MemoryBackend` in `src/minutehand/agent/_store.py` are the two shipped and the pattern to copy.
 
 ### The wire, for an agent not written in Python
 

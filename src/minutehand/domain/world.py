@@ -21,8 +21,8 @@ class EntityKind(StrEnum):
     DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
     FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
     TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
-    MEMORY = "memory"  # a key of the agent's own memory, written or read through `minutehand_agent.store`
-    NEXT_WAKE = "next_wake"  # the moment the agent asked to be woken next through `minutehand_agent.wake`
+    MEMORY = "memory"  # a key of the agent's own memory, written or read through `minutehand.agent.store`
+    NEXT_WAKE = "next_wake"  # the moment the agent asked to be woken next through `minutehand.agent.wake`
 
 
 class Operation(StrEnum):
@@ -457,7 +457,7 @@ class ToolCallSnapshot(Model):
 
 
 class MemorySnapshot(Model):
-    """A key of the agent's memory (`minutehand_agent.store`), as the agent wrote or read it. Written by the run's
+    """A key of the agent's memory (`minutehand.agent.store`), as the agent wrote or read it. Written by the run's
     receiver as actor AGENT: a write carries the value it left (`value`, None for a delete); a read carries none, and
     a listing names the prefix it listed under in `key` with `listing` set."""
 
@@ -469,7 +469,7 @@ class MemorySnapshot(Model):
 
 
 class NextWakeSnapshot(Model):
-    """The moment the agent asked to be woken next (`minutehand_agent.wake`), or none."""
+    """The moment the agent asked to be woken next (`minutehand.agent.wake`), or none."""
 
     kind: Literal["next_wake"] = "next_wake"
     at: AwareDatetime | None

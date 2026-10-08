@@ -5,6 +5,5 @@
 !README.md
 !LICENSE.md
 !src/
-!packages/
 **/__pycache__
 **/*.py[co]

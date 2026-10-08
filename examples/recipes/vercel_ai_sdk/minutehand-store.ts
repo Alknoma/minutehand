@@ -1,4 +1,4 @@
-// What the agent remembers, in TypeScript: the same store as Python's `minutehand_agent.store`, over the same wire.
+// What the agent remembers, in TypeScript: the same store as Python's `minutehand.agent.store`, over the same wire.
 //
 // In production (MINUTEHAND_ON unset) it keeps everything in a Map in this process, which is gone when the process
 // exits: swap `local` for an adapter over your own database to keep it. Under Minutehand (`minutehand run` sets

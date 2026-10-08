@@ -1,4 +1,4 @@
-"""The agent's memory, as the run holds it: what `minutehand_agent.store` writes and reads under Minutehand.
+"""The agent's memory, as the run holds it: what `minutehand.agent.store` writes and reads under Minutehand.
 
 Each write is an entity version in the world's log (`EntityKind.MEMORY`, actor AGENT, the wake and simulated moment
 it was made in), so the memory as of any seq is a query of the log, and a fork, which shares its parent's log up to
@@ -113,6 +113,6 @@ class Written(Model):
 
 
 class WakeMark(Model):
-    """`minutehand_agent.wake`: the moment the agent asks to be woken next, or none."""
+    """`minutehand.agent.wake`: the moment the agent asks to be woken next, or none."""
 
     at: AwareDatetime | None

@@ -1,7 +1,7 @@
 """What the end-to-end tests share: the scenario, the agent file, and the agent's own program.
 
 The agent is `agents/slack_agent.py`, started by Minutehand itself as `-- <command>` would start it, on a
-port of its own, keeping what it knows in `minutehand_agent.store`: the run's memory, which the test reads from the
+port of its own, keeping what it knows in `minutehand.agent.store`: the run's memory, which the test reads from the
 run's world afterwards. The SQLite file it would use in production is never opened under Minutehand.
 """
 

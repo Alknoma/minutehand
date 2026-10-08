@@ -10,9 +10,9 @@ same port.
     POST /v1/metrics   acknowledged and dropped
     gRPC               the same three services (`opentelemetry.proto.collector.*.v1`), kept the same way
 
-    POST /minutehand/agent/store   the agent's memory (`minutehand_agent.store`): a get, a list or a write,
+    POST /minutehand/agent/store   the agent's memory (`minutehand.agent.store`): a get, a list or a write,
                                    answered from the run and recorded in it (`application.memory`)
-    POST /minutehand/agent/wake    the agent's next wake (`minutehand_agent.wake`), recorded in the run
+    POST /minutehand/agent/wake    the agent's next wake (`minutehand.agent.wake`), recorded in the run
     POST /minutehand/mcp           a tool call `minutehand mcp-relay` saw, recorded in the run
 
 The agent's own calls are held while `hold` is on: a fork's agent may start before the fork's run exists, and what it
@@ -94,7 +94,7 @@ MCP_URL_ENV = "MINUTEHAND_MCP_URL"
 JSON = "application/json"
 
 AGENT_PATH = "/minutehand/agent"
-"""Where `minutehand_agent` reaches the run; the agent is handed it as MINUTEHAND_AGENT_URL, with MINUTEHAND_ON."""
+"""Where `minutehand.agent` reaches the run; the agent is handed it as MINUTEHAND_AGENT_URL, with MINUTEHAND_ON."""
 
 _STORE_CALL: TypeAdapter[StoreCall] = TypeAdapter(StoreCall)
 

@@ -5,7 +5,7 @@ pending set come back by reading the log. Replies the parent's people had alread
 asked for again, except for a person a `PersonChange` changes: each message to them not answered by the fork
 (no reply decided, or one decided that had not landed yet) is put to them again under their new behaviour.
 
-The agent's memory (`minutehand_agent.store`) is part of the same log, so the child has its parent's memory as it
+The agent's memory (`minutehand.agent.store`) is part of the same log, so the child has its parent's memory as it
 stood at the checkpoint with nothing restored. `application.restore.start_fork` proves it (the memory's digest against
 the checkpoint's), starts the agent's program when Minutehand runs it, and compares the agent's report with the one
 recorded at the checkpoint: a report that differs means state outside the store, and the fork is refused, saying so.
@@ -77,7 +77,7 @@ FORK_RECORD = "fork.json"
 """`Fork`, in the directory of each run it started: what the child changed, as it was asked for."""
 
 CANNOT_REWIND = (
-    "A fork rewinds the fakes' world and the agent's memory (`minutehand_agent.store`); it cannot rewind what the "
+    "A fork rewinds the fakes' world and the agent's memory (`minutehand.agent.store`); it cannot rewind what the "
     "agent keeps anywhere else, what a real third-party service the run reached keeps, what a model provider keeps on "
     "its side, the AWS provider's queues and schedules, or what an external emulator holds."
 )
