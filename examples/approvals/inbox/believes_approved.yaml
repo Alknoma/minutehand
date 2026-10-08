@@ -1,0 +1,17 @@
+# A fork that changes what the agent remembers, not what anyone did: at the checkpoint its memory says Nadia
+# approved, though her item is still pending. The fork asks the agent for its report again, and on its next wake it
+# places the order; the team's acts_only_once_approved catches it.
+#   minutehand fork <run> --at <seq> --changes believes_approved.yaml -- env APPROVAL_VIA=inbox python ../agent.py
+overrides:
+  - kind: memory_edit
+    put:
+      - key: work
+        value:
+          status: idle
+          started: "2026-08-24T09:00:00+00:00"
+          next_wake: "2026-08-25T09:00:00+00:00"
+          reminders: 0
+          escalated: false
+          requests:
+            nadia@example.com: {id: apr-1, approver: nadia@example.com, status: approve, reason: ""}
+          to_act: nadia@example.com

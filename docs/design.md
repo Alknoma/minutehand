@@ -1153,7 +1153,7 @@ told apart by the reply owed, not by their text.
 
 ### A person acting in the agent's own product
 
-Built and tested; the whole of it is in `docs/inboxes.md`. Some of what a person does never touches a SaaS: approving
+Built and tested; the whole of it is in `docs/inboxes.md`. `docs/approvals.md` sets up an approval in each place one lives (the agent's own product, chat buttons, email, a calendar invitation, a ticket, an approval service no provider fakes), with the rules that judge it and the gaps each place has. Some of what a person does never touches a SaaS: approving
 an operation in the agent's own web app, answering a question on its own page. The agent file declares each such
 place as an inbox (`AgentUnderTest.inboxes`, `domain.inboxes.HttpInbox`): how Minutehand signs in as a person
 (`as_person`, from `Person.credential`), how to list what waits on them (`pending`) and the decisions they can make

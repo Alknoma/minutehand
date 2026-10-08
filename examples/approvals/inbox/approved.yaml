@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# Nadia approves within her working day: the order goes ahead after her decision, and Owen hears of it.
+name: inbox_approved
+goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"      # a Monday
+deadline_after: P5D
+people:
+  - key: owen                          # the requester: told the outcome, decides nothing
+    name: Owen Hart
+    email: owen@example.com
+    reply: {kind: scripted, decisions: [], then: silent}
+  - key: nadia                         # the approver
+    name: Nadia Ek
+    email: nadia@example.com
+    reply_within: {min: PT2H, max: PT6H}   # of her working time after the request
+    working_hours: {timezone: Europe/Stockholm, opens: "09:00", closes: "17:00"}
+    reply:
+      kind: scripted
+      decisions: [{decision: approve}]
+      then: silent
+  - key: marta                         # the backup approver, never needed here
+    name: Marta Holm
+    email: marta@example.com
+    reply: {kind: scripted, decisions: [{decision: approve}], then: silent}
