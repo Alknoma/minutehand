@@ -159,6 +159,18 @@ def _order(operation: tuple[str, str]) -> tuple[int, int, str]:
     return (int(served) + int(served and deleting), -path.count("/") if deleting else 0, path)
 
 
+BODIES: dict[str, object] = {
+    "/sendMail": {
+        "message": {"subject": "Hello", "toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]}
+    },
+    "/events": {
+        "subject": "Sync",
+        "start": {"dateTime": "2026-09-16T10:00:00", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-09-16T11:00:00", "timeZone": "UTC"},
+    },
+}
+"""A served create sent with what its page names required, where an empty body is refused by name."""
+
 ASKED_AS_DOCUMENTED = {
     "/chats": "a signed-in user's token: https://learn.microsoft.com/en-us/graph/api/chat-list",
     "/sites": "?search=: https://learn.microsoft.com/en-us/graph/api/site-search",
@@ -180,7 +192,8 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
     headers = surface.me if template.startswith("/me") or template == "/chats" else surface.app
     content: bytes | None = None
     if method in ("POST", "PATCH", "PUT"):
-        content = b"x" if template.endswith("/content") else b"{}"
+        sent = next((body for end, body in BODIES.items() if method == "POST" and template.endswith(end)), {})
+        content = b"x" if template.endswith("/content") else json.dumps(sent).encode()
         headers = {**headers, "Content-Type": "text/plain" if content == b"x" else "application/json"}
     answered = await surface.http.request(method, f"{GRAPH}{path}", content=content, headers=headers)
     return path, answered

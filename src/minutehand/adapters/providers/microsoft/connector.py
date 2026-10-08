@@ -19,6 +19,7 @@ the JSON the bot sent (`cards.cards_of` lists its inputs and actions).
 
 from __future__ import annotations
 
+from pydantic import JsonValue
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route, Router
@@ -198,6 +199,8 @@ class Connector:
             text=sent.text,
             textFormat=sent.textFormat,
             attachments=sent.attachments,
+            entities=list[wire.Mention | JsonValue](sent.entities) if sent.entities is not None else None,
+            locale=sent.locale,
             replyToId=thread,
         )
         self._world.write(

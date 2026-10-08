@@ -46,9 +46,9 @@ async def test_users_by_id_principal_name_and_filter_with_select(graph: Graph) -
     )
     assert [u["id"] for u in filtered.json()["value"]] == [sofia.user.id]
     unknown = await graph.http.get(f"{GRAPH}/users", params={"$filter": "jobTitle ne 'x'"}, headers=graph.auth)
-    assert unknown.status_code == 400 and unknown.json()["error"]["code"] == "invalidRequest"
+    assert unknown.status_code == 501 and unknown.json()["error"]["code"] == "not_implemented"
     me = await graph.http.get(f"{GRAPH}/me", headers=graph.auth)
-    assert me.status_code == 400
+    assert me.status_code == 501 and "no signed-in user" in me.json()["error"]["message"]
 
 
 async def test_channels_by_name_and_their_messages_paged_with_replies(graph: Graph, bot: Bot) -> None:
@@ -92,7 +92,7 @@ async def test_channels_by_name_and_their_messages_paged_with_replies(graph: Gra
     replies = (await graph.http.get(f"{url}/{root_id}/replies", params={"$top": "50"}, headers=graph.auth)).json()
     assert [r["replyToId"] for r in replies["value"]] == [root_id]
     too_many = await graph.http.get(url, params={"$top": "51"}, headers=graph.auth)
-    assert too_many.status_code == 400
+    assert too_many.status_code == 501, "past the documented most of 50, whose answer Graph does not document"
 
 
 async def test_a_post_in_a_channel_reaches_the_bot_only_when_it_is_mentioned(graph: Graph, bot: Bot) -> None:

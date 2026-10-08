@@ -96,6 +96,13 @@ def seeded_item_id(drive: str, parent: str, name: str) -> str:
     return f"01{0:08d}{digest[:24]}"
 
 
+def refuse_unread(asked: wire.SentItem | wire.CopyRequest | wire.MoveRequest) -> None:
+    """Refuse by name every property of a driveItem body this provider would otherwise drop."""
+    names = sorted(str(n) for n in (asked.model_extra or {}))
+    if names:
+        raise NotImplementedError(f"the driveItem properties {', '.join(names)}: they would not be kept as sent")
+
+
 def mime_of(name: str) -> str:
     lower = name.lower()
     for ending, mime in (
@@ -164,7 +171,7 @@ class Files:
         head = parts[0]
         if head == "me" and len(parts) >= 2 and parts[1] == "drive":
             if not caller.is_user:
-                raise GraphRefusal(400, "BadRequest", "/me request is only valid with delegated authentication flow.")
+                raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
             drive, rest = self._drive_for_user(caller.claims.oid or ""), parts[2:]
         elif head == "users" and len(parts) >= 3 and parts[2] == "drive":
             drive, rest = self._drive_for_user(parts[1]), parts[3:]
@@ -582,12 +589,26 @@ class Files:
         self._world.saw(item_ref(stored.item.id), Operation.READ)
         return self._entity(stored, address.drive, fields)
 
+    @staticmethod
+    def _precondition(request: Request, stored: wire.StoredItem) -> None:
+        """`if-match` naming neither the item's eTag nor its cTag is 412, and nothing changes (driveitem-update,
+        driveitem-delete); its code is OneDrive's for an eTag mismatch, `resourceModified`
+        (https://learn.microsoft.com/en-us/onedrive/developer/rest-api/concepts/errors)."""
+        wanted = header(request, "if-match")
+        if wanted is None or wanted.strip() == "*":
+            return
+        presented = set(re.findall(r'(?:W/)?"[^"]*"', wanted))
+        if not presented & {stored.item.eTag, stored.item.cTag}:
+            raise GraphRefusal(412, "resourceModified", "ETag does not match the current item's value.")
+
     async def _patch(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         stored = self._item(address)
+        self._precondition(request, stored)
         try:
             asked = wire.read(wire.MoveRequest, await request.body())
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
+        refuse_unread(asked)
         parent = asked.parentReference.id if asked.parentReference is not None else None
         updated = self.move(
             address.drive, stored, name=asked.name, parent=parent, by=caller.identity, actor=Actor.AGENT
@@ -597,6 +618,7 @@ class Files:
 
     async def _delete(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         stored = self._item(address)
+        self._precondition(request, stored)
         self.delete(stored, by=caller.identity, actor=Actor.AGENT)
         await self.notify(address.drive, stored)
         return Response(status_code=204)
@@ -659,6 +681,7 @@ class Files:
             asked = wire.read(wire.SentItem, await request.body())
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
+        refuse_unread(asked)
         if not asked.name:
             raise bad_request("The name of the item is required.")
         if asked.folder is None:
@@ -919,6 +942,7 @@ class Files:
             asked = wire.read(wire.CopyRequest, await request.body())
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
+        refuse_unread(asked)
         target_id = (
             asked.parentReference.id
             if asked.parentReference and asked.parentReference.id

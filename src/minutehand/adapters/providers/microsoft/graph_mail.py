@@ -89,6 +89,44 @@ def outlook_id(*parts: str) -> str:
     return "AAMkA" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+def weak_etag(change_key: str) -> str:
+    """An Outlook item's `@odata.etag`: its `changeKey` as a weak entity tag, as every example answer of Graph's
+    message and event pages shows the two (https://learn.microsoft.com/en-us/graph/api/message-get)."""
+    return f'W/"{change_key}"'
+
+
+def versioned(message: wire.MailMessage, now: str, **changed: object) -> wire.MailMessage:
+    """`message` with `changed` written over it: a new `lastModifiedDateTime`, `changeKey` and `@odata.etag`."""
+    change_key = outlook_id(message.id, now, *sorted(f"{k}={v}" for k, v in changed.items()))
+    return message.model_copy(
+        update={**changed, "lastModifiedDateTime": now, "changeKey": change_key, "odata_etag": weak_etag(change_key)}
+    )
+
+
+WELL_KNOWN_FOLDERS = frozenset(
+    {
+        "archive",
+        "clutter",
+        "conflicts",
+        "conversationhistory",
+        "deleteditems",
+        "drafts",
+        "inbox",
+        "junkemail",
+        "localfailures",
+        "msgfolderroot",
+        "outbox",
+        "recoverableitemsdeletions",
+        "scheduled",
+        "searchfolders",
+        "sentitems",
+        "serverfailures",
+        "syncissues",
+    }
+)
+"""Graph's well-known folder names (https://learn.microsoft.com/en-us/graph/api/resources/mailfolder)."""
+
+
 def folder_id(user: str, folder: wire.MailFolderName) -> str:
     return outlook_id(user, "folder", folder.value)
 
@@ -117,6 +155,24 @@ def as_html(body: wire.ItemBody) -> wire.ItemBody:
     return wire.ItemBody(contentType="html", content=f"<html><body>{escaped}</body></html>")
 
 
+def _text_preferred(request: Request) -> bool:
+    prefer = request.headers["prefer"] if "prefer" in request.headers else ""
+    return _TEXT_PREFERRED.search(prefer) is not None
+
+
+def preference_applied(request: Request) -> dict[str, str] | None:
+    """`Preference-Applied` when the caller asked for text bodies (message-get, user-list-calendarview)."""
+    return {"Preference-Applied": 'outlook.body-content-type="text"'} if _text_preferred(request) else None
+
+
+def body_as_asked(request: Request, body: wire.ItemBody) -> wire.ItemBody:
+    """A stored body as the caller reads it: text when `Prefer: outlook.body-content-type="text"` asks, else HTML,
+    as Graph answers either (message-get, user-list-calendarview). The body stays stored as it was sent."""
+    if _text_preferred(request):
+        return wire.ItemBody(contentType="text", content=plain(body))
+    return as_html(body)
+
+
 def re_subject(subject: str) -> str:
     return subject if subject.lower().startswith("re:") else f"RE: {subject}"
 
@@ -135,13 +191,13 @@ def mailbox_owner(world: MicrosoftWorld, claims: wire.Claims, parts: list[str]) 
     user's token reaches only their own; an application's reaches every user's."""
     if parts[0] == "me":
         if claims.oid is None:
-            raise bad_request("/me request is only valid with delegated authentication flow.")
+            raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
         key, rest = claims.oid, parts[1:]
     else:
         key, rest = parts[1], parts[2:]
     user = world.user_by(key)
     if user is None:
-        raise GraphRefusal(404, "ErrorInvalidUser", f"The requested user '{key}' is invalid.")
+        raise NotImplementedError(f"the mailbox of {key!r}, who is no user of the tenant: Graph documents no answer")
     if claims.oid is not None and claims.oid != user.user.id:
         raise GraphRefusal(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.")
     return user, split_segments(rest)
@@ -171,6 +227,7 @@ class Composed(Model):
     cc: list[wire.Recipient] = []
     bcc: list[wire.Recipient] = []
     conversation: str
+    reply_to: list[wire.Recipient] = []
     importance: Literal["low", "normal", "high"] = "normal"
     meeting: wire.MeetingMessageType | None = None
     event: str | None = None
@@ -203,7 +260,10 @@ class Mail:
         made = ("seeded mail", seeded) if seeded is not None else ("mail", str(self._world.next_seq()))
         message_id = outlook_id(owner, *made)
         text = plain(composed.body)
+        change_key = outlook_id(message_id, now)
         return wire.MailMessage(
+            odata_etag=weak_etag(change_key),
+            changeKey=change_key,
             odata_type=(REQUEST_TYPE if composed.meeting is wire.MeetingMessageType.REQUEST else RESPONSE_TYPE)
             if composed.meeting is not None
             else None,
@@ -226,6 +286,7 @@ class Mail:
             toRecipients=composed.to,
             ccRecipients=composed.cc,
             bccRecipients=composed.bcc if owner == composed.sender.user.id else [],
+            replyTo=composed.reply_to,
             meetingMessageType=composed.meeting,
         )
 
@@ -384,20 +445,11 @@ class Mail:
             wire.select(wire.with_context(body, context), fields), media_type=GRAPH_JSON, headers=self._applied(request)
         )
 
-    @staticmethod
-    def _text_preferred(request: Request) -> bool:
-        prefer = request.headers["prefer"] if "prefer" in request.headers else ""
-        return _TEXT_PREFERRED.search(prefer) is not None
-
     def _applied(self, request: Request) -> dict[str, str] | None:
-        return {"Preference-Applied": 'outlook.body-content-type="text"'} if self._text_preferred(request) else None
+        return preference_applied(request)
 
     def _shown(self, request: Request, message: wire.MailMessage) -> wire.MailMessage:
-        if self._text_preferred(request):
-            body = wire.ItemBody(contentType="text", content=plain(message.body))
-        else:
-            body = as_html(message.body)
-        return message.model_copy(update={"body": body})
+        return message.model_copy(update={"body": body_as_asked(request, message.body)})
 
     # ------------------------------------------------------------------ folders
 
@@ -406,7 +458,11 @@ class Mail:
         for name in wire.MailFolderName:
             if wanted == name.value or key == folder_id(owner.user.id, name):
                 return name
-        raise GraphRefusal(404, "ErrorItemNotFound", "The specified object was not found in the store.")
+        if wanted in WELL_KNOWN_FOLDERS:
+            raise NotImplementedError(
+                f"the mail folder {key!r}: only Inbox, Sent Items, Drafts and Deleted Items are held"
+            )
+        raise GraphRefusal(404, "ErrorFolderNotFound", "The specified folder could not be found in the store.")
 
     def _folder_of(self, owner: UserRecord, folder: wire.MailFolderName) -> wire.MailFolder:
         held = [m for m in self._world.mails(owner.user.id) if m.folder is folder]
@@ -497,7 +553,9 @@ class Mail:
         if (top is not None and (not top.isdigit() or not 1 <= int(top) <= PAGE_MAX)) or (
             skip is not None and not skip.isdigit()
         ):
-            raise bad_request(f"Invalid paging: $top must be 1 to {PAGE_MAX} and $skip a whole number.")
+            raise NotImplementedError(
+                f"$top={top} $skip={skip}: the page names $top 1 to {PAGE_MAX}, and no answer to more"
+            )
         size, offset = int(top) if top else PAGE_DEFAULT, int(skip) if skip else 0
         page = [self._shown(request, m) for m in messages[offset : offset + size]]
         where = f"mailFolders('{folder.value}')/messages" if folder is not None else "messages"
@@ -590,9 +648,7 @@ class Mail:
             raise NotImplementedError(f"PATCH of {', '.join(sorted(asked.model_extra))} on a message")
         changed = stored
         if asked.isRead is not None and asked.isRead != stored.message.isRead:
-            message = stored.message.model_copy(
-                update={"isRead": asked.isRead, "lastModifiedDateTime": graph_time(self._clock.now())}
-            )
+            message = versioned(stored.message, graph_time(self._clock.now()), isRead=asked.isRead)
             changed = stored.model_copy(update={"message": message})
             self._rewrite(owner.user.id, changed, actor=Actor.AGENT)
             await self.notify(owner.user.id, changed, "updated")
@@ -605,11 +661,10 @@ class Mail:
                 message_ref(stored.message.id), actor=Actor.AGENT, parent=MAILBOX.format(user=owner.user.id)
             )
             return Response(status_code=204)
-        message = stored.message.model_copy(
-            update={
-                "parentFolderId": folder_id(owner.user.id, wire.MailFolderName.DELETED),
-                "lastModifiedDateTime": graph_time(self._clock.now()),
-            }
+        message = versioned(
+            stored.message,
+            graph_time(self._clock.now()),
+            parentFolderId=folder_id(owner.user.id, wire.MailFolderName.DELETED),
         )
         moved = stored.model_copy(update={"message": message, "folder": wire.MailFolderName.DELETED})
         self._rewrite(owner.user.id, moved, actor=Actor.AGENT)
@@ -635,8 +690,17 @@ class Mail:
             return wire.ItemBody(contentType="text", content="")
         kind = sent.contentType.lower()
         if kind not in ("text", "html"):
-            raise bad_request(f"'{sent.contentType}' is not a body content type: text or html.")
+            raise NotImplementedError(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
         return wire.ItemBody(contentType=kind, content=sent.content)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _unread(sent: wire.SentMessage | None, asked: wire.SendMailRequest | wire.ReplyRequest) -> None:
+        """Refuse by name every property of the request or its message this provider would otherwise drop."""
+        names: list[str] = sorted(
+            {str(n) for n in (asked.model_extra or {})} | {str(n) for n in ((sent.model_extra or {}) if sent else {})}
+        )
+        if names:
+            raise NotImplementedError(f"the message properties {', '.join(names)}: they would not be kept as sent")
 
     async def _send_mail(self, request: Request, owner: UserRecord) -> Response:
         try:
@@ -644,7 +708,8 @@ class Mail:
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
         if asked.message is None:
-            raise GraphRefusal(400, "ErrorInvalidRequest", "The 'message' property is required.")
+            raise NotImplementedError("sendMail without a message: the page names it required and no answer without it")
+        self._unread(asked.message, asked)
         if not asked.saveToSentItems:
             raise NotImplementedError("sendMail with saveToSentItems false: the sent copy is the message a run reads")
         sent = asked.message
@@ -665,6 +730,7 @@ class Mail:
                 to=to,
                 cc=cc,
                 bcc=bcc,
+                reply_to=self._recipients(sent.replyTo, "replyTo"),
                 conversation=outlook_id(owner.user.id, "conversation", str(self._world.next_seq())),
                 importance=sent.importance,
             ),
@@ -673,41 +739,44 @@ class Mail:
         return Response(status_code=202)
 
     async def _reply(self, request: Request, owner: UserRecord, stored: wire.StoredMail, *, everyone: bool) -> Response:
-        """A reply goes to whoever sent the message; to the message's own recipients when its owner sent it, as
-        Outlook replies from Sent Items. A reply to all adds every other recipient, never the mailbox's owner."""
+        """A reply goes to the message's `replyTo` when it names any, else to its sender; a reply to all also to
+        every recipient of the message (message-reply, message-replyall). `message` properties replace the reply's
+        own; specifying both a comment and the message's body is 400."""
         try:
             asked = wire.read(wire.ReplyRequest, await request.body())
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
+        written = asked.message
+        self._unread(written, asked)
+        if asked.comment is not None and written is not None and written.body is not None:
+            raise GraphRefusal(
+                400, "ErrorInvalidRequest", "Specify either a comment or the body of the message, not both."
+            )
         original = stored.message
-        me = address_of(owner).lower()
-        mine = original.from_.emailAddress.address.lower() == me
-        if asked.message is not None and asked.message.toRecipients:
-            to = self._recipients(asked.message.toRecipients, "toRecipients")
-        elif mine:
-            to = list(original.toRecipients)
-        else:
-            to = [original.from_]
+        to = list(original.replyTo) or [original.from_]
         cc: list[wire.Recipient] = []
         if everyone:
-            seen = {r.emailAddress.address.lower() for r in to} | {me}
-            for r in [*original.toRecipients, *original.ccRecipients]:
-                if r.emailAddress.address.lower() not in seen:
-                    seen.add(r.emailAddress.address.lower())
-                    cc.append(r)
-        if asked.message is not None and asked.message.ccRecipients:
-            cc = self._recipients(asked.message.ccRecipients, "ccRecipients")
-        comment = asked.comment or (
-            plain(self._body(asked.message.body)) if asked.message is not None and asked.message.body else ""
-        )
+            to = [*to, *original.toRecipients]
+            cc = list(original.ccRecipients)
+        if written is not None and written.toRecipients:
+            to = self._recipients(written.toRecipients, "toRecipients")
+        if written is not None and written.ccRecipients:
+            cc = self._recipients(written.ccRecipients, "ccRecipients")
+        if written is not None and written.body is not None:
+            body = self._body(written.body)
+        else:
+            body = wire.ItemBody(contentType="text", content=asked.comment or "")
         await self.send(
             Composed(
                 sender=owner,
-                subject=re_subject(original.subject),
-                body=wire.ItemBody(contentType="text", content=comment),
+                subject=written.subject if written is not None and written.subject else re_subject(original.subject),
+                body=body,
                 to=to,
                 cc=cc,
+                bcc=self._recipients(written.bccRecipients, "bccRecipients") if written is not None else [],
+                reply_to=self._recipients(written.replyTo, "replyTo") if written is not None else [],
                 conversation=original.conversationId,
+                importance=written.importance if written is not None else "normal",
             ),
             actor=Actor.AGENT,
         )

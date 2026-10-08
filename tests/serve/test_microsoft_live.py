@@ -356,9 +356,13 @@ def test_a_person_away_shows_out_of_office_while_it_lasts_and_available_after(se
         sofia = http.get(f"{GRAPH}/users/sofia@away_tenant.example.com", headers=graph).json()["id"]
         presence = http.get(f"{GRAPH}/users/{sofia}/presence", headers=graph).json()
         assert (presence["availability"], presence["activity"]) == ("Away", "OutOfOffice")
-        assert "parental leave" in presence["outOfOfficeSettings"]["message"]
+        assert presence["outOfOfficeSettings"]["message"] == "parental leave", "the reason as given, nothing composed"
         replies = http.get(f"{GRAPH}/users/{sofia}/mailboxSettings", headers=graph).json()["automaticRepliesSetting"]
         assert replies["status"] == "scheduled"
+        assert (replies["internalReplyMessage"], replies["externalReplyMessage"]) == (
+            "parental leave",
+            "parental leave",
+        )
         assert replies["scheduledEndDateTime"]["dateTime"].startswith("2026-09-03T09:00:00")
         batch = http.post(f"{GRAPH}/communications/getPresencesByUserId", json={"ids": [sofia]}, headers=graph)
         assert batch.json()["value"][0]["activity"] == "OutOfOffice"

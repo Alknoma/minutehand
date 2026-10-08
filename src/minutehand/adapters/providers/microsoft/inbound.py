@@ -399,7 +399,7 @@ class People:
         self, conversation: ConversationRecord, current: wire.Activity, activity: wire.Activity, target: InboundTarget
     ) -> None:
         """Push an edit or a delete when the original reached the bot: in its chat, or because it named the bot."""
-        named = any(m.mentioned.id == bot_mri(self.app().app_id) for m in current.entities or [])
+        named = any(m.mentioned.id == bot_mri(self.app().app_id) for m in wire.mentions(current))
         if conversation.bot_installed and (conversation.type is wire.ConversationType.PERSONAL or named):
             await push(target, self.app(), activity)
 

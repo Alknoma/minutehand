@@ -80,17 +80,17 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
                 application=wire.Identity(id=m.mentioned.id.removeprefix("28:"), displayName=m.mentioned.name)
                 if world.user_by_mri(m.mentioned.id) is None
                 else None,
-                user=wire.Identity(id=m.mentioned.aadObjectId or m.mentioned.id, displayName=m.mentioned.name)
-                if world.user_by_mri(m.mentioned.id) is not None
+                user=wire.Identity(id=mentioned.user.id, displayName=m.mentioned.name)
+                if (mentioned := world.user_by_mri(m.mentioned.id)) is not None
                 else None,
             ),
         )
-        for n, m in enumerate(activity.entities or [])
+        for n, m in enumerate(wire.mentions(activity))
     ]
     team = world.team(conversation.team_id) if conversation.team_id is not None else None
     channel = conversation.type is wire.ConversationType.CHANNEL
     text = activity.text or ""
-    for n, mention in enumerate(activity.entities or []):
+    for n, mention in enumerate(wire.mentions(activity)):
         text = text.replace(
             mention.text, f'<at id="{n}">{mention.text.removeprefix("<at>").removesuffix("</at>")}</at>'
         )
@@ -129,10 +129,10 @@ class TeamsGraph:
     def _bounds(request: Request, default: int, most: int) -> tuple[int, int]:
         top = query(request, "$top")
         if top is not None and (not top.isdigit() or int(top) < 1):
-            raise bad_request(f"Invalid page size specified: '{top}'.")
+            raise NotImplementedError(f"$top={top}: the page names 1 and up, and no answer to anything else")
         size = min(int(top), most) if top else default
         if top and int(top) > most:
-            raise bad_request(f"Invalid page size specified: '{top}'. Must be between 1 and {most} inclusive.")
+            raise NotImplementedError(f"$top={top}: past the documented most of {most}, whose answer is not documented")
         skip = query(request, "$skiptoken")
         offset = 0
         if skip:
@@ -178,7 +178,7 @@ class TeamsGraph:
     def _refuse_options(request: Request, allowed: set[str]) -> None:
         for option in ("$filter", "$orderby", "$search", "$expand", "$count"):
             if option in request.query_params and option not in allowed:
-                raise bad_request(f"Query option '{option}' is not allowed on this resource.")
+                raise NotImplementedError(f"the query option {option} here")
 
     # ------------------------------------------------------------------ users
 
@@ -204,13 +204,13 @@ class TeamsGraph:
         if starts is not None:
             field, value = starts.group(1), _quoted(starts.group(2)).lower()
             return [u for u in users if (getattr(u.user, field) or "").lower().startswith(value)]
-        raise bad_request(f"Invalid filter clause: '{clause}' is not supported here.")
+        raise NotImplementedError(f"the $filter clause {clause!r}")
 
     async def users(self, request: Request, parts: list[str]) -> Response:
         claims = graph_caller(request, self._world)
         if parts[0] == "me":
             if claims.oid is None:
-                raise bad_request("/me request is only valid with delegated authentication flow.")
+                raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
             parts = ["users", claims.oid, *parts[1:]]
         if request.method != "GET":
             raise NotImplementedError(f"{request.method} on a user")
@@ -346,7 +346,7 @@ class TeamsGraph:
             if clause:
                 equal = re.fullmatch(r"\s*displayName\s+eq\s+'((?:[^']|'')*)'\s*", clause)
                 if equal is None:
-                    raise bad_request(f"Invalid filter clause: '{clause}' is not supported here.")
+                    raise NotImplementedError(f"the $filter clause {clause!r}")
                 channels = [c for c in channels if (c.display_name or "General") == _quoted(equal.group(1))]
             self._world.saw(team_ref(team.id), Operation.SEARCH)
             return self._page(
@@ -449,7 +449,7 @@ class TeamsGraph:
             self._refuse_options(request, {"$expand"} if channel else set())
             expand = query(request, "$expand")
             if expand is not None and expand != "replies":
-                raise bad_request(f"Expanding '{expand}' is not supported.")
+                raise NotImplementedError(f"$expand={expand}")
             found = []
             for m in reversed(roots):
                 message = chat_message(self._world, conversation, m)
@@ -486,6 +486,7 @@ def _mailbox_time(at: datetime) -> str:
 
 
 def _reply_text(user: UserRecord, away: tuple[datetime, datetime, AwayRecord]) -> str:
-    """The automatic reply a person away would have set: that they are out, why if they said, and until when."""
-    why = f" ({away[2].reason})" if away[2].reason else ""
-    return f"{user.user.displayName} is out of office{why} until {away[1].astimezone(UTC):%A %d %B %Y}."
+    """The automatic reply a person away set: the reason the scenario gives, as written, and nothing composed around
+    it (Minutehand keeps data as sent); empty when none is given."""
+    del user
+    return away[2].reason or ""

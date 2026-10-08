@@ -57,7 +57,7 @@ async def test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_
         assert isinstance(request.after, MessageSnapshot)
         assert request.after.recipient_emails == ["sofia@example.com"]
         assert [a.label for a in request.after.actions] == ["Accept", "Tentative", "Decline"]
-        assert "Room Ferris" in request.after.text and "Vendor review" in request.after.text
+        assert request.after.text == "Vendor review\n\nShortlist and prices.", "the request carries the event's body"
         hers = await http.get(f"{GRAPH}/users/sofia@example.com/events/{event['id']}", headers=auth)
         assert hers.status_code == 403, "a user's token reads only their own calendar"
         app = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
@@ -149,11 +149,12 @@ async def test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answe
         assert views["nobody@example.com"]["error"]["responseCode"] == "ErrorMailRecipientNotFound"
 
 
-async def test_a_calendar_view_without_a_window_is_refused(tenant: Tenant, microsoft: Intercepted) -> None:
+async def test_a_calendar_view_without_a_window_is_refused_by_name(tenant: Tenant, microsoft: Intercepted) -> None:
+    """The page names startDateTime and endDateTime required and documents no answer without them: not served."""
     async with microsoft.http() as http:
         auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
         refused = await http.get(f"{GRAPH}/users/{AGENT}/calendarView", headers=auth)
-        assert refused.status_code == 400 and refused.json()["error"]["code"] == "ErrorInvalidParameter"
+        assert refused.status_code == 501 and "startDateTime and endDateTime" in refused.json()["error"]["message"]
 
 
 async def test_an_event_retried_with_its_transaction_id_is_made_once(tenant: Tenant, microsoft: Intercepted) -> None:
