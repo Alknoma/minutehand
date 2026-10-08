@@ -399,16 +399,18 @@ async def test_list_instance_custom_fields_with_their_types(yt: httpx.AsyncClien
     }
 
 
-async def test_attaching_a_field_to_a_created_project_needs_update_project(
+async def test_attaching_a_field_to_a_created_project_is_not_refused_for_update_project(
     yt: httpx.AsyncClient, team: Instance
 ) -> None:
+    """Hub's cache lists nobody holding Update Project on a project made through the API, but Minutehand enforces no
+    permission: the attach is answered."""
     made = entity(
         await yt.post(
             "/api/admin/projects", json={"name": "Partner Summit", "shortName": "SUMMIT", "leader": {"id": AGENT}}
         )
     )
     body = {"field": {"id": "58-5"}, "$type": "SimpleProjectCustomField"}
-    refused = refusal(await yt.post(f"/api/admin/projects/{made['id']}/customFields", json=body), 403)
+    on_made = entity(await yt.post(f"/api/admin/projects/{made['id']}/customFields", json=body))
     attached = entity(
         await yt.post(f"/api/admin/projects/{OPS}/customFields", params={"fields": "id,field(id,name)"}, json=body)
     )
@@ -421,10 +423,7 @@ async def test_attaching_a_field_to_a_created_project_needs_update_project(
         400,
     )
 
-    assert refused == {
-        "error": "Forbidden",
-        "error_description": "Insufficient permissions: Update Project is required",
-    }
+    assert on_made["$type"] == "SimpleProjectCustomField"
     assert attached == {
         "id": attached["id"],
         "field": {"id": "58-5", "name": "Due Date", "$type": "CustomField"},
@@ -440,27 +439,33 @@ async def test_attaching_a_field_to_a_created_project_needs_update_project(
 
 
 async def test_get_user_for_its_hub_id(yt: httpx.AsyncClient) -> None:
+    """`/users/{login}` reads a user as `/users/{id}` does
+    (https://www.jetbrains.com/help/youtrack/devportal/api-users-yt-vs-hub.html)."""
     user = entity(await yt.get(f"/api/users/{NOOR}", params={"fields": "id,login,ringId"}))
 
+    by_login = entity(await yt.get("/api/users/noor", params={"fields": "id,login"}))
+
     assert set(user) == {"id", "login", "ringId", "$type"} and user["login"] == "noor"
-    refusal(await yt.get("/api/users/noor", params={"fields": "id"}), 400)
+    assert by_login == {"id": NOOR, "login": "noor", "$type": "User"}
     refusal(await yt.get("/api/users/1-99", params={"fields": "id"}), 404)
 
 
-async def test_find_users_pages_and_answers_banned(yt: httpx.AsyncClient) -> None:
-    found = entities(await yt.get("/api/users", params={"query": "", "fields": USER_FIELDS, "$top": 2, "$skip": 2}))
-    named_search = entities(
-        await yt.get("/api/users", params={"query": "halvorsen", "fields": USER_FIELDS, "$top": 10, "$skip": 0})
-    )
+async def test_find_users_pages_and_a_query_is_refused_by_name(yt: httpx.AsyncClient) -> None:
+    """YouTrack's description of `GET /users` takes `fields`, `$skip` and `$top` and no `query`: a filter is refused
+    by name rather than guessed."""
+    found = entities(await yt.get("/api/users", params={"fields": USER_FIELDS, "$top": 2, "$skip": 2}))
+    noor = entities(await yt.get("/api/users", params={"fields": USER_FIELDS, "$top": 1, "$skip": 3}))
+    refused = refusal(await yt.get("/api/users", params={"query": "halvorsen", "fields": "id"}), 501)
 
     assert [u["login"] for u in found] == ["tomas", "noor"]
-    assert named_search == [
+    assert "GET /users takes no query parameter" in str(refused["error_description"])
+    assert noor == [
         {
             "id": NOOR,
             "login": "noor",
             "email": "noor@example.com",
             "fullName": "Noor Halvorsen",
-            "avatarUrl": named_search[0]["avatarUrl"],
+            "avatarUrl": noor[0]["avatarUrl"],
             "banned": False,
             "$type": "User",
         }
@@ -575,42 +580,34 @@ async def test_an_issue_carries_an_existing_tag_by_id_and_drops_it(yt: httpx.Asy
 # --------------------------------------------------------------------------- Hub
 
 
-async def test_hub_project_by_key_carries_its_team_group(yt: httpx.AsyncClient, team: Instance) -> None:
+async def test_hub_holds_no_youtrack_project(yt: httpx.AsyncClient) -> None:
+    """Since YouTrack 2026.1 Hub's `/projects` answers Hub's own projects and no YouTrack one
+    (https://www.jetbrains.com/help/youtrack/devportal/hub-rest-api-deprecated-endpoints-2026-1.html); a live
+    instance answered `total: 0` for a project the account had made itself."""
     page = entity(
         await yt.get("/hub/api/rest/projects", params={"query": "key: LAUNCH", "fields": "id,key,name,team(id,name)"})
     )
-    project = team.youtrack.project(LAUNCH)
 
-    assert project is not None
-    assert page == {
-        "skip": 0,
-        "top": 100,
-        "total": 1,
-        "projects": [
-            {
-                "id": project.ringId,
-                "key": "LAUNCH",
-                "name": "Launch",
-                "team": {"id": project.teamRingId, "name": "Launch Team"},
-            }
-        ],
-    }
+    assert page == {"skip": 0, "top": 100, "total": 0, "projects": []}
 
 
-async def test_hub_adds_a_member_by_ring_id_and_the_assignee_bundle_grows(
-    yt: httpx.AsyncClient, team: Instance
-) -> None:
-    page = entity(await yt.get("/hub/api/rest/projects", params={"query": "key: LAUNCH", "fields": "team(id)"}))
-    group = page["projects"][0]["team"]["id"]  # type: ignore[index]
-    ring = entity(await yt.get(f"/api/users/{VENDOR}", params={"fields": "ringId"}))["ringId"]
-    added = entity(
-        await yt.post(f"/hub/api/rest/usergroups/{group}/users", params={"fields": "id,login,name"}, json={"id": ring})
-    )
+async def test_a_user_joins_a_team_through_own_users_and_the_assignee_bundle_grows(yt: httpx.AsyncClient) -> None:
+    """`POST /admin/projects/{id}/team/ownUsers` with the user's database id is how a team grows since YouTrack 2026.1
+    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-admin-projects-projectID-team-ownUsers.html)."""
     assignee = await field_id(yt, "LAUNCH-1", "Assignee")
+    refused = refusal(
+        await yt.post(f"/api/issues/LAUNCH-1/customFields/{assignee}", json={"value": {"id": VENDOR}}), 400
+    )
+    added = entity(
+        await yt.post(f"/api/admin/projects/{LAUNCH}/team/ownUsers", params={"fields": "id,login"}, json={"id": VENDOR})
+    )
     entity(await yt.post(f"/api/issues/LAUNCH-1/customFields/{assignee}", json={"value": {"id": VENDOR}}))
+    users = entities(await yt.get(f"/api/admin/projects/{LAUNCH}/team/users", params={"fields": "login"}))
 
-    assert added == {"id": ring, "login": "vendor", "name": "Visiting Vendor"}
-    refusal(await yt.post(f"/hub/api/rest/usergroups/{group}/users", json={"id": VENDOR}), 404)
+    assert refused["error_description"] == "Value is not allowed"
+    assert added == {"id": VENDOR, "login": "vendor", "$type": "User"}
+    assert [u["login"] for u in users][-1] == "vendor"
+    refusal(await yt.post(f"/api/admin/projects/{LAUNCH}/team/ownUsers", json={"id": "vendor"}), 400)
 
 
 async def test_hub_permissions_cache_lists_where_each_is_held(yt: httpx.AsyncClient, team: Instance) -> None:
@@ -658,8 +655,11 @@ async def test_hub_issues_a_token_to_a_service_that_then_acts_as_its_user(yt: ht
         content=f"grant_type=client_credentials&client_id={CLIENT_ID}&client_secret=nope".encode(),
         headers={"Authorization": "", "Content-Type": "application/x-www-form-urlencoded"},
     )
+    as_wrong = entity(
+        await yt.get("/api/users/me", params={"fields": "login"}, headers=as_user(wrong.json()["access_token"]))
+    )
 
     assert issued.status_code == 200
     assert issued.json() == {"access_token": token, "token_type": "bearer", "expires_in": 3600, "scope": "YouTrack"}
     assert me == {"login": "agent-bot", "$type": "Me"}
-    assert (wrong.status_code, wrong.json()["error"]) == (401, "invalid_client")
+    assert wrong.status_code == 200 and as_wrong["login"] == "agent-bot"

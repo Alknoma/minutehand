@@ -17,16 +17,22 @@ from tests.providers.youtrack.youtrack_instance import (
 )
 
 
-async def test_a_request_with_no_token_is_refused_401(instance: Instance) -> None:
+async def test_a_request_with_no_token_acts_as_the_agent(instance: Instance) -> None:
+    """Minutehand deliberately checks no credential: no Authorization at all reaches the route as the agent."""
     async with client_for(instance.provider, instance.store, instance.clock, token=None) as anonymous:
-        answer = refusal(await anonymous.get("/api/issues/LAUNCH-1"), 401)
+        me = entity(await anonymous.get("/api/users/me", params={"fields": "login"}))
+        issue = entity(await anonymous.get("/api/issues/LAUNCH-1", params={"fields": "idReadable"}))
 
-    assert answer["error"] == "Unauthorized"
+    assert me["login"] == "agent-bot"
+    assert issue["idReadable"] == "LAUNCH-1"
 
 
-async def test_a_basic_credential_is_refused_401(instance: Instance) -> None:
+async def test_a_basic_credential_acts_as_the_agent(instance: Instance) -> None:
     async with client_for(instance.provider, instance.store, instance.clock) as c:
-        refusal(await c.get("/api/users/me", headers={"Authorization": "Basic dXNlcjpwYXNz"}), 401)
+        basic = {"Authorization": "Basic dXNlcjpwYXNz"}
+        me = entity(await c.get("/api/users/me", params={"fields": "login"}, headers=basic))
+
+    assert me["login"] == "agent-bot"
 
 
 async def test_any_bearer_token_is_accepted(instance: Instance) -> None:
@@ -252,6 +258,15 @@ async def test_a_malformed_paging_or_fields_parameter_is_refused_400(
     refusal(await client.get("/api/issues", params=params), 400)
 
 
-async def test_a_route_youtrack_does_not_serve_is_refused_404_in_its_shape(client: httpx.AsyncClient) -> None:
-    refusal(await client.get("/api/agiles"), 404)
+async def test_a_method_youtrack_does_not_list_for_a_path_is_refused_405(client: httpx.AsyncClient) -> None:
+    """YouTrack's API description lists GET, POST and DELETE on an issue, and GET alone on its links: any other
+    method is a 405 (the status a live instance answered for a method it does not serve)."""
     refusal(await client.put("/api/issues/LAUNCH-1", json={}), 405)
+    refusal(await client.post("/api/issues/LAUNCH-1/links", json={}), 405)
+
+
+async def test_a_path_outside_the_api_is_refused_404_in_youtracks_words(client: httpx.AsyncClient) -> None:
+    """https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-incorrect-issue-url.html"""
+    answer = refusal(await client.get("/nothing/here"), 404)
+
+    assert answer == {"error": "Not Found", "error_description": "HTTP 404 Not Found"}

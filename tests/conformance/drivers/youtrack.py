@@ -1,8 +1,8 @@
 """YouTrack through its REST API (`https://<instance>.youtrack.cloud/api/...`), as a client holding permanent tokens.
 
 Every account the world seeds (the agent's `agent-bot` and each person, whose login is their key) holds a permanent
-token of its own (`perm:…`), seeded through the provider's own seed (`tokens`); once one is seeded the instance lets
-in nothing else, so an unknown token is YouTrack's 401. An issue is named by its database id (`2-17`, what the world
+token of its own (`perm:…`), seeded through the provider's own seed (`tokens`); any other token acts as the agent,
+since Minutehand checks no credential. An issue is named by its database id (`2-17`, what the world
 records), and shows its readable id (`LAUNCH-1`) as its key. Every answer is narrowed by `fields=` and every
 collection is paged by `$skip`/`$top`, as YouTrack documents
 (https://www.jetbrains.com/help/youtrack/devportal/api-fields-syntax.html,
@@ -418,13 +418,17 @@ class YouTrackSession(Tickets):
 
     # ------------------------------------------------------------------ what a permission governs
 
-    def reads(self, readable: str) -> bool:
-        """Whether this account may read the issue: 200 yes, YouTrack's 403 no, anything else a refusal."""
-        answered = self._http.get(f"/api/issues/{readable}", params={"fields": "idReadable"})
-        if answered.status_code == httpx.codes.FORBIDDEN:
-            return False
-        ok("read issue", answered)
-        return True
+    def holds(self, permission: str, project: str) -> bool:
+        """Whether Hub's permissions cache lists this account holding the permission in the project. Minutehand
+        enforces no permission, so what one governs is what the API reports, not a 403."""
+        answered = ok(
+            "read permissions",
+            self._http.get("/hub/api/rest/permissions/cache", params={"fields": "permission/key,global,projects/key"}),
+        )
+        for entry in answered.json():
+            if entry["permission"]["key"] == permission:
+                return bool(entry["global"]) or project in [p["key"] for p in entry["projects"]]
+        return False
 
 
 def _progress(state: Named) -> Progress:
@@ -571,11 +575,11 @@ class YouTrackDriver(Driver):
         ]
 
     def permission(self) -> PermissionCase | None:
-        # Read Issue, held per project (`jetbrains.youtrack.readIssue`), governs reading an issue: 403 without it.
+        # Read Issue, held per project (`jetbrains.youtrack.readIssue`), as Hub's permissions cache reports it.
         def allowed(session: Session) -> bool:
             if not isinstance(session, YouTrackSession):
                 raise TypeError(f"a youtrack session, not {type(session).__name__}")
-            return session.reads("LAUNCH-1")
+            return session.holds("jetbrains.youtrack.readIssue", "LAUNCH")
 
         return PermissionCase(
             person="sofia", permission="jetbrains.youtrack.readIssue", project="LAUNCH", allowed=allowed

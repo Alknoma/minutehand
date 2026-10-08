@@ -1,6 +1,7 @@
 """Facts about how YouTrack answers issue, field, search and link calls, each carried over from an older stand-in
 that had learned it, driven through the run's proxy with `httpx`. Each docstring says whether the fact is in
-YouTrack's documentation (with the page) or was observed and is undocumented. `CLAIMS.md` beside the provider lists
+YouTrack's documentation (with the page), was recorded from a live instance, or is the older stand-in's own and
+unverified. `CLAIMS.md` beside the provider lists
 them all."""
 
 from __future__ import annotations
@@ -39,9 +40,9 @@ async def test_a_project_reference_not_shaped_as_an_entity_id_is_refused_400_bef
     yt: httpx.AsyncClient, team: Instance, reference: str
 ) -> None:
     """Documented: an issue is created in a project named by its database id
-    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues.html). Observed, undocumented: anything
-    not shaped `<n>-<n>` is refused 400 "Invalid structure of entity id" whether or not a project goes by that name,
-    and a well-shaped id naming nothing is a 404."""
+    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues.html), and an id of another shape is
+    refused 400 `bad_request` "Invalid structure of entity id: <id>" (https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-ring-id.html). Unverified, the older stand-in's own: a
+    well-shaped id naming nothing is a 404."""
     head = team.store.head()
 
     refused = refusal(
@@ -55,7 +56,7 @@ async def test_a_project_reference_not_shaped_as_an_entity_id_is_refused_400_bef
 
 
 async def test_a_state_at_the_top_level_of_an_update_is_refused_400(yt: httpx.AsyncClient, team: Instance) -> None:
-    """Observed, undocumented: an issue's state is a custom field, so an update naming `state` beside `summary` is
+    """Unverified, the older stand-in's own: an issue's state is a custom field, so an update naming `state` beside `summary` is
     refused rather than ignored."""
     head = team.store.head()
 
@@ -68,7 +69,7 @@ async def test_a_state_at_the_top_level_of_an_update_is_refused_400(yt: httpx.As
 async def test_an_assignee_off_the_team_in_the_create_body_is_refused_value_not_allowed(
     yt: httpx.AsyncClient, team: Instance
 ) -> None:
-    """Observed, undocumented: the create body's `customFields` writes the same Assignee field the field route does,
+    """Unverified, the older stand-in's own: the create body's `customFields` writes the same Assignee field the field route does,
     so a user who exists but is not on the project's team is refused there too, in the same words, and no issue is
     made."""
     head = team.store.head()
@@ -97,7 +98,7 @@ async def test_an_assignee_off_the_team_in_the_create_body_is_refused_value_not_
 
 
 async def test_clearing_the_state_is_refused_and_the_issue_still_reads_its_state(yt: httpx.AsyncClient) -> None:
-    """Observed, undocumented: an issue cannot be in no state, so a clear of State through the field route is refused
+    """Unverified, the older stand-in's own: an issue cannot be in no state, so a clear of State through the field route is refused
     "Value is not allowed" and the issue keeps, and reads back, the state it had."""
     state = await field_id(yt, "LAUNCH-1", "State")
 
@@ -160,7 +161,7 @@ async def test_unresolved_reads_each_projects_own_resolved_values(yt: httpx.Asyn
 
 
 async def test_a_field_search_leaves_out_an_issue_holding_another_value(yt: httpx.AsyncClient) -> None:
-    """Observed, undocumented: a search on Priority or Type finds the issues holding exactly that value, and an issue
+    """Unverified, the older stand-in's own: a search on Priority or Type finds the issues holding exactly that value, and an issue
     created a moment before, holding the project's default, is not among them."""
     made = entity(
         await yt.post("/api/issues", params={"fields": "idReadable"}, json={"project": {"id": LAUNCH}, "summary": "x"})
@@ -177,7 +178,7 @@ async def test_a_field_search_leaves_out_an_issue_holding_another_value(yt: http
 async def test_a_value_the_field_has_not_got_is_refused_invalid_query_not_answered_empty(
     yt: httpx.AsyncClient,
 ) -> None:
-    """Observed, undocumented: Field Ops has no state called Open, and a search for it is refused `invalid_query`
+    """Unverified, the older stand-in's own: Field Ops has no state called Open, and a search for it is refused `invalid_query`
     naming the field, so "nothing matched" and "that is not a value here" never read the same."""
     refused = refusal(await yt.get("/api/issues", params={"query": "project: OPS state: Open", "fields": "id"}), 400)
 
@@ -190,8 +191,8 @@ async def test_a_value_the_field_has_not_got_is_refused_invalid_query_not_answer
 
 async def test_a_readable_key_in_a_link_body_is_refused_with_the_entity_id_wording(yt: httpx.AsyncClient) -> None:
     """Documented: a link is added by posting the other issue's database id to one slot of the issue's links
-    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues-issueID-links.html). Observed: a readable
-    key there is refused by its shape, naming it."""
+    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues-issueID-links.html); a readable key
+    there is refused by its shape in the words https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-ring-id.html shows."""
     refused = refusal(await yt.post("/api/issues/LAUNCH-1/links/106-0t/issues", json={"id": "LAUNCH-2"}), 400)
 
     assert refused["error_description"] == "Invalid structure of entity id: LAUNCH-2"

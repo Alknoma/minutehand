@@ -1,0 +1,1632 @@
+{
+ "source": "https://youtrack.jetbrains.com/api/openapi.json",
+ "fetched": "2026-10-08",
+ "version": "2026.3",
+ "note": "YouTrack publishes its OpenAPI description per instance at /api/openapi.json (see the devportal REST docs); this is JetBrains' own public instance's, the real service. Operations carry no operationId or summary there, so each keeps its parameter names and first response. Hub (/hub/api/rest) publishes no OpenAPI description at that host (the URL answers an HTML page); Hub rows in CLAIMS.md cite the devportal pages instead.",
+ "selection": "Every path of the description under /issues, /issuesGetter, /commands, /activities, /activitiesPage, /admin/projects, /admin/customFieldSettings/customFields, /admin/customFieldSettings/bundles, /admin/customFieldSettings/types, /users, /tags, /issueLinkTypes and /workItems that has at least one method: the resources the fake claims (issues and everything under an issue, counts, commands, activities, projects with their fields and teams, the instance's fields and bundles, users, tags, link types, work items).",
+ "paths": {
+  "/activities": {
+   "GET": {
+    "parameters": [
+     "categories",
+     "reverse",
+     "start",
+     "end",
+     "author",
+     "issueQuery",
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of ActivityItem"
+   }
+  },
+  "/activities/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single ActivityItem"
+   }
+  },
+  "/activitiesPage": {
+   "GET": {
+    "parameters": [
+     "categories",
+     "reverse",
+     "start",
+     "end",
+     "author",
+     "issueQuery",
+     "cursor",
+     "activityId",
+     "fields"
+    ],
+    "response": "200 single ActivityCursorPage"
+   }
+  },
+  "/admin/customFieldSettings/bundles/build": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of BuildBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single BuildBundle"
+   }
+  },
+  "/admin/customFieldSettings/bundles/build/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single BuildBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single BuildBundle"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/build/{id}/values": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of BuildBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single BuildBundleElement"
+   }
+  },
+  "/admin/customFieldSettings/bundles/build/{id}/values/{buildBundleElementId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "buildBundleElementId"
+    ],
+    "response": "200 single BuildBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "buildBundleElementId"
+    ],
+    "response": "200 single BuildBundleElement"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "buildBundleElementId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/enum": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of EnumBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single EnumBundle"
+   }
+  },
+  "/admin/customFieldSettings/bundles/enum/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single EnumBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single EnumBundle"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/enum/{id}/values": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of EnumBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single EnumBundleElement"
+   }
+  },
+  "/admin/customFieldSettings/bundles/enum/{id}/values/{enumBundleElementId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "enumBundleElementId"
+    ],
+    "response": "200 single EnumBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "enumBundleElementId"
+    ],
+    "response": "200 single EnumBundleElement"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "enumBundleElementId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/ownedField": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of OwnedBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single OwnedBundle"
+   }
+  },
+  "/admin/customFieldSettings/bundles/ownedField/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single OwnedBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single OwnedBundle"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/ownedField/{id}/values": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of OwnedBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single OwnedBundleElement"
+   }
+  },
+  "/admin/customFieldSettings/bundles/ownedField/{id}/values/{ownedBundleElementId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "ownedBundleElementId"
+    ],
+    "response": "200 single OwnedBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "ownedBundleElementId"
+    ],
+    "response": "200 single OwnedBundleElement"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "ownedBundleElementId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/state": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of StateBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single StateBundle"
+   }
+  },
+  "/admin/customFieldSettings/bundles/state/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single StateBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single StateBundle"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/state/{id}/values": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of StateBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single StateBundleElement"
+   }
+  },
+  "/admin/customFieldSettings/bundles/state/{id}/values/{stateBundleElementId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "stateBundleElementId"
+    ],
+    "response": "200 single StateBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "stateBundleElementId"
+    ],
+    "response": "200 single StateBundleElement"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "stateBundleElementId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/user": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of UserBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single UserBundle"
+   }
+  },
+  "/admin/customFieldSettings/bundles/user/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single UserBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single UserBundle"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/user/{id}/aggregatedUsers": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of User"
+   }
+  },
+  "/admin/customFieldSettings/bundles/user/{id}/groups": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of UserGroup"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single UserGroup"
+   }
+  },
+  "/admin/customFieldSettings/bundles/user/{id}/groups/{userGroupId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "userGroupId"
+    ],
+    "response": "200 single UserGroup"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "userGroupId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/user/{id}/individuals": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of User"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single User"
+   }
+  },
+  "/admin/customFieldSettings/bundles/user/{id}/individuals/{userId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "userId"
+    ],
+    "response": "200 single User"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "userId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/version": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of VersionBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single VersionBundle"
+   }
+  },
+  "/admin/customFieldSettings/bundles/version/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single VersionBundle"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single VersionBundle"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/bundles/version/{id}/values": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of VersionBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single VersionBundleElement"
+   }
+  },
+  "/admin/customFieldSettings/bundles/version/{id}/values/{versionBundleElementId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "versionBundleElementId"
+    ],
+    "response": "200 single VersionBundleElement"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "versionBundleElementId"
+    ],
+    "response": "200 single VersionBundleElement"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "versionBundleElementId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/customFields": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of CustomField"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single CustomField"
+   }
+  },
+  "/admin/customFieldSettings/customFields/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single CustomField"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single CustomField"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/customFieldSettings/customFields/{id}/fieldDefaults": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single CustomFieldDefaults"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single CustomFieldDefaults"
+   }
+  },
+  "/admin/customFieldSettings/customFields/{id}/instances": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of ProjectCustomField"
+   }
+  },
+  "/admin/customFieldSettings/types": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of FieldType"
+   }
+  },
+  "/admin/projects": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Project"
+   },
+   "POST": {
+    "parameters": [
+     "template",
+     "fields"
+    ],
+    "response": "200 single Project"
+   }
+  },
+  "/admin/projects/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Project"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Project"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/projects/{id}/articles": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Article"
+   }
+  },
+  "/admin/projects/{id}/customFields": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of ProjectCustomField"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single ProjectCustomField"
+   }
+  },
+  "/admin/projects/{id}/customFields/{projectCustomFieldId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "projectCustomFieldId"
+    ],
+    "response": "200 single ProjectCustomField"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "projectCustomFieldId"
+    ],
+    "response": "200 single ProjectCustomField"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "projectCustomFieldId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/projects/{id}/issues": {
+   "GET": {
+    "parameters": [
+     "customFields",
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Issue"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 single Issue"
+   }
+  },
+  "/admin/projects/{id}/issues/{issueId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueId"
+    ],
+    "response": "200 single Issue"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id",
+     "issueId"
+    ],
+    "response": "200 single Issue"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "issueId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/projects/{id}/team": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single ProjectTeam"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single ProjectTeam"
+   }
+  },
+  "/admin/projects/{id}/team/groups": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of UserGroup"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single UserGroup"
+   }
+  },
+  "/admin/projects/{id}/team/groups/{userGroupId}": {
+   "DELETE": {
+    "parameters": [
+     "id",
+     "userGroupId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/projects/{id}/team/ownUsers": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of User"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single User"
+   }
+  },
+  "/admin/projects/{id}/team/ownUsers/{userId}": {
+   "DELETE": {
+    "parameters": [
+     "id",
+     "userId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/admin/projects/{id}/team/users": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of User"
+   }
+  },
+  "/admin/projects/{id}/timeTrackingSettings": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single ProjectTimeTrackingSettings"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single ProjectTimeTrackingSettings"
+   }
+  },
+  "/admin/projects/{id}/timeTrackingSettings/workItemTypes": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of WorkItemType"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single WorkItemType"
+   }
+  },
+  "/admin/projects/{id}/timeTrackingSettings/workItemTypes/{workItemTypeId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "workItemTypeId"
+    ],
+    "response": "200 single WorkItemType"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "workItemTypeId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/commands": {
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields"
+    ],
+    "response": "200 single CommandList"
+   }
+  },
+  "/commands/assist": {
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single CommandList"
+   }
+  },
+  "/issueLinkTypes": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of IssueLinkType"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single IssueLinkType"
+   }
+  },
+  "/issueLinkTypes/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single IssueLinkType"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single IssueLinkType"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues": {
+   "GET": {
+    "parameters": [
+     "query",
+     "customFields",
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Issue"
+   },
+   "POST": {
+    "parameters": [
+     "draftId",
+     "muteUpdateNotifications",
+     "fields"
+    ],
+    "response": "200 single Issue"
+   }
+  },
+  "/issues/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Issue"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 single Issue"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues/{id}/activities": {
+   "GET": {
+    "parameters": [
+     "categories",
+     "reverse",
+     "start",
+     "end",
+     "author",
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of ActivityItem"
+   }
+  },
+  "/issues/{id}/activities/{activityItemId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "activityItemId"
+    ],
+    "response": "200 single ActivityItem"
+   }
+  },
+  "/issues/{id}/activitiesPage": {
+   "GET": {
+    "parameters": [
+     "categories",
+     "reverse",
+     "start",
+     "end",
+     "author",
+     "cursor",
+     "activityId",
+     "fields",
+     "id"
+    ],
+    "response": "200 single ActivityCursorPage"
+   }
+  },
+  "/issues/{id}/attachments": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of IssueAttachment"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 collection of IssueAttachment"
+   }
+  },
+  "/issues/{id}/attachments/{issueAttachmentId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueAttachmentId"
+    ],
+    "response": "200 single IssueAttachment"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueAttachmentId"
+    ],
+    "response": "200 single IssueAttachment"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "issueAttachmentId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues/{id}/comments": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of IssueComment"
+   },
+   "POST": {
+    "parameters": [
+     "draftId",
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 single IssueComment"
+   }
+  },
+  "/issues/{id}/comments/{issueCommentId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueCommentId"
+    ],
+    "response": "200 single IssueComment"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id",
+     "issueCommentId"
+    ],
+    "response": "200 single IssueComment"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "issueCommentId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues/{id}/comments/{issueCommentId}/reactions": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueCommentId",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Reaction"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueCommentId"
+    ],
+    "response": "200 single Reaction"
+   }
+  },
+  "/issues/{id}/comments/{issueCommentId}/reactions/{reactionId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueCommentId",
+     "reactionId"
+    ],
+    "response": "200 single Reaction"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "issueCommentId",
+     "reactionId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues/{id}/customFields": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of IssueCustomField"
+   }
+  },
+  "/issues/{id}/customFields/{issueCustomFieldId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueCustomFieldId"
+    ],
+    "response": "200 single IssueCustomField"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id",
+     "issueCustomFieldId"
+    ],
+    "response": "200 single IssueCustomField"
+   }
+  },
+  "/issues/{id}/links": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of IssueLink"
+   }
+  },
+  "/issues/{id}/links/{issueLinkId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueLinkId"
+    ],
+    "response": "200 single IssueLink"
+   }
+  },
+  "/issues/{id}/links/{issueLinkId}/issues": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueLinkId",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Issue"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id",
+     "issueLinkId"
+    ],
+    "response": "200 single Issue"
+   }
+  },
+  "/issues/{id}/links/{issueLinkId}/issues/{issueId}": {
+   "DELETE": {
+    "parameters": [
+     "id",
+     "issueLinkId",
+     "issueId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues/{id}/project": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Project"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 single Project"
+   }
+  },
+  "/issues/{id}/sprints": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Sprint"
+   }
+  },
+  "/issues/{id}/tags": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Tag"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Tag"
+   }
+  },
+  "/issues/{id}/tags/{tagId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "tagId"
+    ],
+    "response": "200 single Tag"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "tagId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues/{id}/timeTracking": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single IssueTimeTracker"
+   }
+  },
+  "/issues/{id}/timeTracking/workItems": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of IssueWorkItem"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 single IssueWorkItem"
+   }
+  },
+  "/issues/{id}/timeTracking/workItems/{issueWorkItemId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "issueWorkItemId"
+    ],
+    "response": "200 single IssueWorkItem"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id",
+     "issueWorkItemId"
+    ],
+    "response": "200 single IssueWorkItem"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "issueWorkItemId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issues/{id}/vcsChanges": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of VcsChange"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 single VcsChange"
+   }
+  },
+  "/issues/{id}/vcsChanges/{vcsChangeId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "vcsChangeId"
+    ],
+    "response": "200 single VcsChange"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id",
+     "vcsChangeId"
+    ],
+    "response": "200 single VcsChange"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "vcsChangeId"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/issuesGetter/count": {
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single IssueCountResponse"
+   }
+  },
+  "/tags": {
+   "GET": {
+    "parameters": [
+     "query",
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Tag"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single Tag"
+   }
+  },
+  "/tags/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Tag"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Tag"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/tags/{id}/issues": {
+   "GET": {
+    "parameters": [
+     "customFields",
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Issue"
+   }
+  },
+  "/users": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of User"
+   },
+   "POST": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single User"
+   }
+  },
+  "/users/me": {
+   "GET": {
+    "parameters": [
+     "fields"
+    ],
+    "response": "200 single Me"
+   }
+  },
+  "/users/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single User"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single User"
+   }
+  },
+  "/users/{id}/profiles/general": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single GeneralUserProfile"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single GeneralUserProfile"
+   }
+  },
+  "/users/{id}/profiles/notifications": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single NotificationsUserProfile"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single NotificationsUserProfile"
+   }
+  },
+  "/users/{id}/profiles/timetracking": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single TimeTrackingUserProfile"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single TimeTrackingUserProfile"
+   }
+  },
+  "/users/{id}/savedQueries": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of SavedQuery"
+   }
+  },
+  "/users/{id}/tags": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Tag"
+   }
+  },
+  "/workItems": {
+   "GET": {
+    "parameters": [
+     "query",
+     "startDate",
+     "endDate",
+     "start",
+     "end",
+     "createdStart",
+     "createdEnd",
+     "updatedStart",
+     "updatedEnd",
+     "author",
+     "creator",
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of IssueWorkItem"
+   }
+  },
+  "/workItems/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single IssueWorkItem"
+   }
+  }
+ }
+}
