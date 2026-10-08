@@ -1,0 +1,21 @@
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+Content-Length: 135
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:13:36 GMT
+Server: AtlassianEdge
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 26af3b41f602499581f2f6c35f999102
+Atl-Request-Id: 26af3b41-f602-4995-81f2-f6c35f999102
+Strict-Transport-Security: max-age=63072000; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=4,atl-edge-internal;dur=2,atl-edge-upstream;dur=2,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 6c1c3bd6c653988591973200a2cd132a.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: 2fi07FoBIH0FNHYMgmFXZIK7lBPTxsp6K4478cjYxusRBNxxp_B0ow==
+X-Frame-Options: DENY
+
+{"timestamp":"2026-10-08T07:13:36.347024943Z","status":404,"error":"Not Found","message":"No message available","path":"/nothing-here"}

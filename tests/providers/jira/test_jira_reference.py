@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+import pytest
+
 from tests.providers.jira.jira_site import AGENT, AGILE, API, IRIS, START, Site, basic, ok, refused
 
 
@@ -158,8 +160,11 @@ async def test_search_pages_past_100_issues_when_asked_for_more(site: Site) -> N
     assert (len(found["issues"]), found["isLast"]) == (102, True)
 
 
-async def test_search_with_no_room_on_the_page_is_refused_501(site: Site) -> None:
-    refused(await site.http.post(f"{API}/search/jql", json={"jql": "project = LAUNCH", "maxResults": 0}), 501)
+@pytest.mark.parametrize("most", [0, 5001])
+async def test_search_with_a_page_size_outside_1_to_5000_is_refused_400(site: Site, most: int) -> None:
+    """As recorded (`data/observed/search_max_results_zero.http`, `search_max_results_over.http`)."""
+    body = refused(await site.http.post(f"{API}/search/jql", json={"jql": "project = LAUNCH", "maxResults": most}), 400)
+    assert body["errorMessages"] == ["The max results parameter has to be between 1 and 5,000."]
 
 
 async def test_an_expansion_the_fake_does_not_serve_is_refused_501_naming_it(site: Site) -> None:
@@ -312,3 +317,11 @@ async def test_a_link_of_a_type_the_site_has_not_got_is_refused_404(site: Site) 
     — a 404 when the issue link type is not found."""
     body = {"type": {"name": "Haunts"}, "inwardIssue": {"key": "LAUNCH-2"}, "outwardIssue": {"key": "LAUNCH-1"}}
     refused(await site.http.post(f"{API}/issueLink", json=body), 404)
+
+
+async def test_a_role_member_who_is_no_account_is_refused_404(site: Site) -> None:
+    """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-roles/#api-rest-api-3-project-projectidorkey-role-id-post
+    — a 404 "Returned if … the user or group is not found."; the fake gave a 400 of its own."""
+    roles = ok(await site.http.get(f"{API}/project/LAUNCH/role"))
+    body = refused(await site.http.post(roles["Member"], json={"user": ["712020:no-such-account"]}), 404)
+    assert body["errorMessages"] == ["Returned if the user or group is not found."]

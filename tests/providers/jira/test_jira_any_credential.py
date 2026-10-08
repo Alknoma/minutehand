@@ -123,4 +123,8 @@ async def test_any_refresh_token_code_or_client_is_traded_for_tokens_that_act_as
 async def test_a_grant_the_token_endpoint_does_not_have_is_refused(site: Site) -> None:
     async with site.client(None) as anonymous:
         answer = await anonymous.post("https://auth.atlassian.com/oauth/token", json={"grant_type": "password"})
-    assert (answer.status_code, answer.json()["error"]) == (400, "unsupported_grant_type")
+    assert (answer.status_code, answer.json()) == (
+        400,
+        {"error": "invalid_request",
+         "error_description": "grant_type must be one of [authorization_code|refresh_token|client_credentials]"},
+    ), "as recorded: data/observed/token_unsupported_grant.http"  # fmt: skip

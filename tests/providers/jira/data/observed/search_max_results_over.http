@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:38 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 788f302e46397b4580c9f7640639e824
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 29adc273404847ddbe243174cf52b356
+Atl-Request-Id: 29adc273-4048-47dd-be24-3174cf52b356
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=151,atl-edge-internal;dur=15,atl-edge-upstream;dur=136,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 aa01b350a94324e78e2d47b93c089384.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P1
+X-Amz-Cf-Id: EA1B4juTWWKbwwXjrIV3VKYH9mkA4j66HpMHLn4A7RFcT5t_Q9vWCg==
+
+{"errorMessages":["The max results parameter has to be between 1 and 5,000."],"errors":{}}

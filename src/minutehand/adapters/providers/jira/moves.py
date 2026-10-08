@@ -17,8 +17,6 @@ from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
-_NOT_ADF = "The value must be an Atlassian document (a 'doc' node at version 1), not plain text."
-
 
 class Desk:
     def __init__(self, store: Store) -> None:
@@ -63,26 +61,26 @@ class Desk:
         match field.kind:
             case wire.CustomFieldType.NUMBER:
                 if isinstance(raw, bool) or not isinstance(raw, int | float):
-                    raise wire.bad_field(field.id, "The value must be a number.")
+                    raise wire.bad_field(field.id, wire.INVALID_VALUE)
                 return raw
             case wire.CustomFieldType.STRING | wire.CustomFieldType.EPIC_LINK:
                 if not isinstance(raw, str):
-                    raise wire.bad_field(field.id, "The value must be a string.")
+                    raise wire.bad_field(field.id, wire.INVALID_VALUE)
                 return raw
             case wire.CustomFieldType.DATE:
                 if not isinstance(raw, str) or not _is_date(raw):
-                    raise wire.bad_field(field.id, "The value must be a date written as yyyy-MM-dd.")
+                    raise wire.bad_field(field.id, wire.INVALID_VALUE)
                 return raw
             case wire.CustomFieldType.OPTION:
                 return self._option(field, raw)
             case wire.CustomFieldType.OPTIONS:
                 if not isinstance(raw, list):
-                    raise wire.bad_field(field.id, "The value must be a list of options.")
+                    raise wire.bad_field(field.id, wire.INVALID_VALUE)
                 return [self._option(field, item) for item in raw]
             case wire.CustomFieldType.USER:
                 ref = wire.read_ref(raw)
                 if ref is None or ref.accountId is None or self.world.user(ref.accountId) is None:
-                    raise wire.bad_field(field.id, "The value must name a user by accountId.")
+                    raise wire.bad_field(field.id, wire.INVALID_VALUE)
                 return ref.accountId
             case wire.CustomFieldType.SPRINT:
                 ids = raw if isinstance(raw, list) else [raw]
@@ -90,7 +88,7 @@ class Desk:
                 for item in ids:
                     sprint = self.world.sprint(item) if isinstance(item, int) and not isinstance(item, bool) else None
                     if sprint is None:
-                        raise wire.bad_field(field.id, f"There is no sprint with id '{item}'.")
+                        raise wire.bad_field(field.id, wire.INVALID_VALUE)
                     found.append(sprint.id)
                 return found
 
@@ -107,7 +105,7 @@ class Desk:
                 None,
             )
         if option is None:
-            raise wire.bad_field(field.id, f"That option is not one of {field.name}'s options.")
+            raise wire.bad_field(field.id, wire.INVALID_VALUE)
         return option.id
 
     def value_text(self, field: wire.StoredField, value: JsonValue) -> str | None:
@@ -175,13 +173,13 @@ class Desk:
         match name:
             case "summary":
                 if not isinstance(raw, str) or not raw.strip():
-                    raise wire.bad_field(name, "You must give the issue a summary.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 if len(raw) > 255:
-                    raise wire.bad_field(name, "The summary must be shorter than 255 characters.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 return issue.model_copy(update={"summary": raw})
             case "description":
                 if raw is not None and not wire.is_document(raw):
-                    raise wire.bad_field(name, _NOT_ADF)
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 return issue.model_copy(update={"description": raw})
             case "priority":
                 ref = wire.read_ref(raw)
@@ -196,7 +194,7 @@ class Desk:
                         None,
                     )
                 if found is None:
-                    raise wire.bad_field(name, "The priority must name one of the site's priorities by id or name.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 return issue.model_copy(update={"priority": found.id})
             case "assignee":
                 if raw is None:
@@ -204,25 +202,25 @@ class Desk:
                 ref = wire.read_ref(raw)
                 account = ref.accountId if ref is not None else None
                 if account is None or account not in {u.accountId for u in self.assignable(project)}:
-                    raise wire.bad_field(name, f"User '{account}' cannot be assigned issues in {project.key}.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 return issue.model_copy(update={"assignee": account})
             case "reporter":
                 ref = wire.read_ref(raw)
                 if ref is None or ref.accountId is None or self.world.user(ref.accountId) is None:
-                    raise wire.bad_field(name, "The reporter must name a user by accountId.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 return issue.model_copy(update={"reporter": ref.accountId})
             case "labels":
                 if not isinstance(raw, list) or not all(isinstance(label, str) for label in raw):
-                    raise wire.bad_field(name, "Labels must be a list of strings.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 labels = [str(label) for label in raw]
                 if any(not label or any(c.isspace() for c in label) for label in labels):
-                    raise wire.bad_field(name, "A label cannot be empty or hold a space.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 return issue.model_copy(update={"labels": labels})
             case "duedate":
                 if raw is None:
                     return issue.model_copy(update={"duedate": None})
                 if not isinstance(raw, str) or not _is_date(raw):
-                    raise wire.bad_field(name, "The due date must be written as yyyy-MM-dd.")
+                    raise wire.bad_field(name, wire.INVALID_VALUE)
                 return issue.model_copy(update={"duedate": date.fromisoformat(raw)})
             case "parent":
                 return issue.model_copy(update={"parent": self._parent(issue, project, site, raw)})
@@ -241,18 +239,18 @@ class Desk:
     ) -> str | None:
         if raw is None:
             if site.issue_type(issue.issuetype).subtask:
-                raise wire.bad_field("parent", "A subtask must have a parent.")
+                raise wire.bad_field("parent", wire.INVALID_VALUE)
             return None
         ref = wire.read_ref(raw)
         reference = (ref.key or (str(ref.id) if ref.id is not None else None)) if ref is not None else None
         parent = self.world.find_issue(reference) if reference else None
         if parent is None or not self.can_browse_issue(parent, project):
-            raise wire.bad_field("parent", "The parent issue does not exist, or you cannot see it.")
+            raise wire.bad_field("parent", wire.INVALID_VALUE)
         if parent.id == issue.id:
-            raise wire.bad_field("parent", "An issue cannot be its own parent.")
+            raise wire.bad_field("parent", wire.INVALID_VALUE)
         child_level = site.issue_type(issue.issuetype).hierarchyLevel
         if site.issue_type(parent.issuetype).hierarchyLevel != child_level + 1:
-            raise wire.bad_field("parent", "The parent must be exactly one level above this issue's type.")
+            raise wire.bad_field("parent", wire.INVALID_VALUE)
         return parent.id
 
     def can_browse_issue(self, issue: wire.StoredIssue, project: wire.StoredProject) -> bool:
@@ -444,11 +442,6 @@ def _present(issue: wire.StoredIssue, name: str, fields: wire.Json) -> bool:
 
 
 def _required(name: str, site: wire.StoredSite) -> str:
-    match name:
-        case "summary":
-            return "You must give the issue a summary."
-        case "parent":
-            return "A subtask must have a parent."
-        case _:
-            field = site.field(name)
-            return f"{field.name if field is not None else name} is required."
+    """The create-issue reference's words for a required field left out: no recording gives Jira's own."""
+    del name, site
+    return wire.REQUIRED

@@ -29,7 +29,7 @@ import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import parse_qs
 
 from pydantic import JsonValue
@@ -58,7 +58,13 @@ _GRANTS = ("authorization_code", "refresh_token", "client_credentials")
 """The grants Atlassian's token endpoint takes: an app's code and refresh token
 (https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/) and a service account's client credentials
 (https://support.atlassian.com/user-management/docs/create-oauth-2-0-credential-for-service-accounts/). Any other is
-RFC 6749's `unsupported_grant_type`."""
+Atlassian's `invalid_request`, as recorded (`tests/providers/jira/data/observed/token_unsupported_grant.http`)."""
+_UNAVAILABLE = (
+    "<html><head><title>Atlassian Cloud Notifications - Page Unavailable</title></head>"
+    "<body><h1>Page unavailable</h1></body></html>"
+)
+"""What a host under atlassian.net that holds no site answers, cut from the recorded page
+(`tests/providers/jira/data/observed/site_unknown.http`): its title and heading."""
 _TOKENS = uuid.UUID("5e0c5b1a-7a43-4d8e-a1f2-0d9b6f3c2e71")
 _GLOBAL = ["ADMINISTER", "SYSTEM_ADMIN", "CREATE_PROJECT", "BULK_CHANGE", "USER_PICKER", "CREATE_SHARED_OBJECTS"]
 _PROJECT = ["BROWSE_PROJECTS", "ADMINISTER_PROJECTS", "CREATE_ISSUES", "EDIT_ISSUES", "TRANSITION_ISSUES",
@@ -130,20 +136,25 @@ def _param(request: Request, name: str) -> str | None:
     return request.query_params[name] if name in request.query_params else None
 
 
-def _int(text: str | None, default: int, name: str) -> int:
+def _int(request: Request, name: str, default: int) -> int:
+    """A whole-number query parameter; one Jira cannot convert is its problem body, as recorded
+    (`data/observed/comments_max_results_not_a_number.http`)."""
+    text = _param(request, name)
     if text is None or text == "":
         return default
     try:
         return int(text)
     except ValueError as error:
-        raise wire.bad(f"The '{name}' parameter must be a whole number.") from error
+        raise wire.Problem(
+            400, "Bad Request", f"Failed to convert '{name}' with value: '{text}'", request.url.path
+        ) from error
 
 
 def _page(request: Request, default: int, *, most: int | None = None) -> tuple[int, int]:
     """`startAt` and `maxResults` as the reference describes them for this operation: `default` when not given,
     and `most` when the reference names a ceiling (a larger value is taken as the ceiling)."""
-    start = _int(_param(request, "startAt"), 0, "startAt")
-    size = _int(_param(request, "maxResults"), default, "maxResults")
+    start = _int(request, "startAt", 0)
+    size = _int(request, "maxResults", default)
     if start < 0 or size < 0:
         raise NotImplementedError("a negative startAt or maxResults: Jira's reference does not say what it answers")
     return start, size if most is None else min(size, most)
@@ -177,7 +188,7 @@ class JiraApi:
         if not matched:
             root, rest = _split(path)
             if root in _CLAIMED and rest.split("/")[0] in _CLAIMED[root]:
-                raise wire.Refusal(404, [f"There is no resource at {path}."])
+                raise wire.Problem(404, "Not Found", f"No endpoint {method} {path}.", path)
             raise NotImplementedError(f"{method} {path} is outside the resources this fake serves")
         template, shape = max(matched, key=lambda pair: pair[0].literals)
         served = self._served.get((method, template.text))
@@ -187,7 +198,7 @@ class JiraApi:
             raise NotImplementedError(
                 f"{method} {template.text} is in Jira Cloud's reference; this fake does not serve it"
             )
-        raise wire.Refusal(405, [f"{method} is not allowed on {path}."])
+        raise wire.Problem(405, "Method Not Allowed", f"Method '{method}' is not supported.", path)
 
     async def answer(self, request: Request) -> Response:
         host = (request.url.hostname or "").lower()
@@ -201,15 +212,15 @@ class JiraApi:
             if host == API_HOST:
                 shape = _EX.match(path)
                 if shape is None:
-                    return _json(404, {"code": 404, "message": "Not Found"})
+                    return self._gateway_404(path)
                 if shape.group(1) != site.cloudId:
-                    return _json(404, {"code": 404, "message": "No site has that cloud id"})
+                    return self._gateway_404(path)
                 path = shape.group(2)
                 base = f"https://{API_HOST}/ex/jira/{site.cloudId}"
             elif host == site.host:
                 base = f"https://{site.host}"
             else:
-                return _json(404, {"errorMessages": [f"There is no Jira site at {host}."], "errors": {}})
+                return Response(_UNAVAILABLE, status_code=404, media_type="text/html")
             served, params = self.resolve(request.method, path)
             refused = sorted(served.refuses & set(request.query_params))
             if refused:
@@ -223,6 +234,20 @@ class JiraApi:
         except wire.Refusal as refusal:
             headers = {"Retry-After": str(refusal.retry_after)} if refusal.retry_after is not None else None
             return Response(wire.error_body(refusal), status_code=refusal.status, media_type=_JSON, headers=headers)
+        except wire.Problem as problem:
+            return Response(problem.body(), status_code=problem.status, media_type=wire.PROBLEM_TYPE)
+
+    def _gateway_404(self, path: str) -> Response:
+        """api.atlassian.com's own 404, as recorded (`data/observed/gateway_unknown_cloud_id.http`)."""
+        stamp = self._clock.now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        body = {
+            "timestamp": stamp,
+            "status": 404,
+            "error": "Not Found",
+            "message": "No message available",
+            "path": path,
+        }
+        return _json(404, body)
 
     # ------------------------------------------------------------------ who calls
 
@@ -284,9 +309,10 @@ class JiraApi:
             try:
                 body = wire.read_body(wire.TokenIn, raw)
             except wire.Refusal:
-                return _json(400, {"error": "invalid_request", "error_description": "The body cannot be read."})
+                return _json(400, {"error": "invalid_request", "error_description": "Incorrect request parameters"})
         if body.grant_type not in _GRANTS:
-            return _json(400, {"error": "unsupported_grant_type", "error_description": "Use " + ", ".join(_GRANTS)})
+            return _json(400, {"error": "invalid_request",
+                               "error_description": f"grant_type must be one of [{'|'.join(_GRANTS)}]"})  # fmt: skip
         now = self._clock.now()
         cloud = self._world.site().cloudId if self._world.seeded() else "unseeded"
         found = next(
@@ -615,7 +641,7 @@ class JiraApi:
     def user_get(self, call: Call) -> Answer:
         account = _param(call.request, "accountId")
         if not account:
-            raise wire.bad("The 'accountId' query parameter is required.")
+            raise NotImplementedError("GET /rest/api/3/user without accountId: what Jira answers is not recorded")
         found = self._world.user(account)
         if found is None:
             raise wire.no_user()
@@ -627,9 +653,9 @@ class JiraApi:
         query = (_param(call.request, "query") or "").strip().lower()
         account = _param(call.request, "accountId")
         if not query and not account:
-            raise wire.bad("The 'query' or 'accountId' query parameter is required.")
+            raise wire.bad("The username or property query parameter must be provided")
         if query and account:
-            raise wire.bad("Give 'query' or 'accountId', not both.")
+            raise wire.bad("The query parameters 'query' and 'accountId' are mutually exclusive.")
         found = [
             u
             for u in self._world.users()
@@ -654,13 +680,13 @@ class JiraApi:
         project_ref = _param(call.request, "project")
         issue_ref = _param(call.request, "issueKey") or _param(call.request, "issueId")
         if issue_ref is None and project_ref is None:
-            raise wire.bad("Name a project or an issue: 'project', 'issueKey' or 'issueId'.")
+            raise wire.bad("No project, issue key or issue ID was provided")
         query = (_param(call.request, "query") or "").strip().lower()
         account = _param(call.request, "accountId")
         if not query and not account:
-            raise wire.bad("The 'query' or 'accountId' query parameter is required.")
+            raise wire.bad("Returned if `query` or `accountId` is missing.")
         if query and account:
-            raise wire.bad("Give 'query' or 'accountId', not both.")
+            raise wire.bad("Returned if `query` and `accountId` are provided.")
         if issue_ref is not None:
             _, project = self._issue(call, issue_ref)
         else:
@@ -684,14 +710,17 @@ class JiraApi:
         keys = [k.strip() for k in asked.split(",") if k.strip()]
         unknown = [k for k in keys if k not in _PERMISSION_IDS]
         if unknown:
-            raise wire.bad(f"These permission keys are not valid: {', '.join(unknown)}.")
+            raise wire.Refusal(400, [], dict.fromkeys(unknown, "Unrecognized permission"))
         me = self._me(call)
         project_ref = _param(call.request, "projectKey") or _param(call.request, "projectId")
         issue_ref = _param(call.request, "issueKey") or _param(call.request, "issueId")
         if issue_ref:
             projects = [self._issue(call, issue_ref)[1]]
         elif project_ref:
-            projects = [self._project(call, project_ref)]
+            found = self._world.find_project(project_ref)
+            if found is None or not self._desk.can_browse(found, call.account):
+                raise wire.Refusal(404, ["Could not find project with provided key."])
+            projects = [found]
         else:
             projects = self._world.projects()
         sees = any(self._desk.can_browse(p, me.accountId) for p in projects)
@@ -763,8 +792,13 @@ class JiraApi:
                 found.sort(key=lambda p: p.key)
             case "name":
                 found.sort(key=lambda p: p.name.lower())
-            case _:
+            case "owner" | "category" | "issueCount" | "lastIssueUpdatedTime" | "archivedDate" | "deletedDate":
                 raise NotImplementedError(f"orderBy={order} on GET /rest/api/3/project/search")
+            case other:
+                raise wire.bad(
+                    "The field to order by should be one of [name, key, owner, category, issueCount, "
+                    f"lastIssueUpdatedTime, archivedDate, deletedDate]. Instead, it was: {other}."
+                )
         if order.startswith("-"):
             found.reverse()
         start, most = _page(call.request, 50, most=100)
@@ -816,31 +850,27 @@ class JiraApi:
         else:
             holder = next((p for p in projects if p.key == key), None)
             if holder is not None:
-                errors["projectKey"] = f"The project '{holder.name}' already has this key."
-        if not body.name:
-            errors["projectName"] = "A project needs a name."
-        elif any(p.name.lower() == body.name.lower() for p in projects):
-            errors["projectName"] = "Another project already has this name."
+                errors["projectKey"] = wire.PROJECT_INVALID
+        if not body.name or any(p.name.lower() == body.name.lower() for p in projects):
+            errors["projectName"] = wire.PROJECT_INVALID
         # The type may be left out when a template is named: the template builds exactly one type.
         template = body.projectTemplateKey
         project_type = body.projectTypeKey
         if template is not None and template not in wire.TEMPLATE_TYPES:
-            errors["projectTemplateKey"] = "There is no project template with that key on this site."
+            errors["projectTemplateKey"] = wire.PROJECT_INVALID
         elif template is not None:
             builds = wire.TEMPLATE_TYPES[template]
             if not project_type:
                 project_type = builds
             elif project_type != builds:
-                errors["projectTemplateKey"] = f"This template makes a {builds} project, not a {project_type} one."
-        if not project_type:
-            errors["projectTypeKey"] = "A project needs a type, or a template that implies one."
-        elif project_type not in wire.PROJECT_TYPES:
-            errors["projectTypeKey"] = f"'{project_type}' is not a project type."
+                errors["projectTemplateKey"] = wire.PROJECT_INVALID
+        if not project_type or project_type not in wire.PROJECT_TYPES:
+            errors["projectTypeKey"] = wire.PROJECT_INVALID
         lead = self._world.user(body.leadAccountId) if body.leadAccountId else None
         if lead is None:
-            errors["leadAccountId"] = "The project lead must be an existing account, named by accountId."
+            errors["leadAccountId"] = wire.PROJECT_INVALID
         if body.assigneeType not in (None, "PROJECT_LEAD", "UNASSIGNED"):
-            errors["assigneeType"] = "The default assignee is PROJECT_LEAD or UNASSIGNED."
+            errors["assigneeType"] = wire.PROJECT_INVALID
         if errors or lead is None or body.name is None or project_type is None:
             raise wire.Refusal(400, [], errors)
         site = self._world.site()
@@ -875,7 +905,7 @@ class JiraApi:
         project = self._project(call, call.params["projectIdOrKey"])
         role = next((r for r in self._world.site().roles if r.id == call.params["id"]), None)
         if role is None:
-            raise wire.Refusal(404, ["There is no project role with that id."])
+            raise wire.Refusal(404, ["Returned if the project or project role is not found."])
         return project, role
 
     def role_out(self, call: Call, project: wire.StoredProject, role: wire.StoredRole) -> wire.Json:
@@ -909,7 +939,7 @@ class JiraApi:
         body = wire.read_body(wire.RoleActorsIn, call.raw)
         for account in body.user:
             if self._world.user(account) is None:
-                raise wire.Refusal(400, [], {"user": f"There is no user with accountId '{account}'."})
+                raise wire.Refusal(404, ["Returned if the user or group is not found."])
         members = []
         for entry in project.members:
             if entry.role == role.id:
@@ -922,16 +952,26 @@ class JiraApi:
     # ------------------------------------------------------------------ search
 
     def search_removed(self, call: Call) -> Answer:
-        raise wire.Refusal(410, ["This search has been removed: use /rest/api/3/search/jql."])
+        raise wire.Refusal(
+            410,
+            ["The requested API has been removed. Please migrate to the /rest/api/3/search/jql API. A full migration "
+             "guideline is available at https://developer.atlassian.com/changelog/#CHANGE-2046"],
+        )  # fmt: skip
 
     def _query(self, text: str) -> jql.Query:
         query = jql.parse(text)
         if search.unbounded(query):
-            raise wire.jql_error("A query with no restriction cannot be run here: add a condition to the JQL.")
+            raise wire.jql_error(
+                "Unbounded JQL queries are not allowed here. Please add a search restriction to your query."
+            )
         return query
 
     def _found(self, call: Call, text: str) -> list[wire.StoredIssue]:
-        query = self._query(text)
+        try:
+            query = self._query(text)
+        except jql.Unmatched:
+            self._world.saw(state.site_ref(), Operation.SEARCH)
+            return []
         context = search.Context(self._desk, call.account, self._now())
         visible = [
             i
@@ -953,7 +993,7 @@ class JiraApi:
         else:
             body = wire.SearchIn(
                 jql=_param(call.request, "jql") or "",
-                maxResults=_int(_param(call.request, "maxResults"), SEARCH_DEFAULT, "maxResults"),
+                maxResults=_int(call.request, "maxResults", SEARCH_DEFAULT),
                 fields=_listed(call.request, "fields"),
                 expand=_param(call.request, "expand"),
                 nextPageToken=_param(call.request, "nextPageToken"),
@@ -962,9 +1002,8 @@ class JiraApi:
         if body.fieldsByKeys:
             raise NotImplementedError("fieldsByKeys=true: fields are named by id here")
         most = body.maxResults if body.maxResults is not None else SEARCH_DEFAULT
-        if most < 1:
-            raise NotImplementedError("maxResults below 1: Jira's reference does not say what it answers")
-        most = min(most, SEARCH_MOST)
+        if not 1 <= most <= SEARCH_MOST:
+            raise wire.bad("The max results parameter has to be between 1 and 5,000.")
         expand = _expand(body.expand, served={"names", "changelog"}, documented=_ISSUE_EXPANDS | {"operations"})
         found = self._found(call, body.jql)
         start = _page_start(body.nextPageToken, body.jql)
@@ -999,7 +1038,7 @@ class JiraApi:
         return 200, self.issue_out(call, issue, _listed(call.request, "fields"), expand, default="*all")
 
     def issue_create(self, call: Call) -> Answer:
-        body = wire.read_body(wire.IssueIn, call.raw)
+        body = wire.read_body(wire.IssueIn, call.raw, missing=wire.bad("No Issue Create payload supplied"))
         site = self._world.site()
         project_ref = wire.read_ref(body.fields["project"]) if "project" in body.fields else None
         reference = (
@@ -1007,7 +1046,7 @@ class JiraApi:
         )
         project = self._world.find_project(reference) if reference else None
         if project is None or not self._desk.can_browse(project, call.account):
-            raise wire.bad_field("project", "Name a project you can see, by id or key.")
+            raise wire.bad_field("project", "Specify a valid project ID or key")
         type_ref = wire.read_ref(body.fields["issuetype"]) if "issuetype" in body.fields else None
         issue_type = None
         if type_ref is not None:
@@ -1021,7 +1060,7 @@ class JiraApi:
                 None,
             )
         if issue_type is None:
-            raise wire.bad_field("issuetype", f"Name an issue type that {project.key} has, by id or name.")
+            raise wire.bad_field("issuetype", "Specify an issue type" if type_ref is None else wire.INVALID_VALUE)
         now = self._now()
         number = self._world.next_number(project.id)
         skeleton = wire.StoredIssue(
@@ -1046,10 +1085,10 @@ class JiraApi:
         """The `update` block: `labels` take add, remove and set; any other field takes set."""
         for name, operations in update.items():
             if not isinstance(operations, list):
-                raise wire.bad_field(name, "An update is a list of operations.")
+                raise NotImplementedError(f"an update of '{name}' that is not a list of operations")
             for operation in operations:
                 if not isinstance(operation, dict) or len(operation) != 1:
-                    raise wire.bad_field(name, "Each operation is one of set, add or remove.")
+                    raise NotImplementedError(f"an update operation on '{name}' that is not one verb and its value")
                 verb, value = next(iter(operation.items()))
                 labels_op = verb in ("add", "remove") and isinstance(value, str)
                 if name == "labels" and labels_op:  # enum-lint: exempt Jira's own field id
@@ -1066,7 +1105,7 @@ class JiraApi:
 
     def issue_edit(self, call: Call) -> Answer:
         issue, project = self._issue(call)
-        body = wire.read_body(wire.IssueIn, call.raw)
+        body = wire.read_body(wire.IssueIn, call.raw, missing=wire.bad("Returned if the request body is missing."))
         if (_param(call.request, "overrideScreenSecurity") or "false").lower() == "true" or (
             _param(call.request, "overrideEditableFlag") or "false"
         ).lower() == "true":
@@ -1083,7 +1122,7 @@ class JiraApi:
         issue, _ = self._issue(call)
         with_subtasks = (_param(call.request, "deleteSubtasks") or "false").lower() == "true"
         if self._world.subtasks(issue) and not with_subtasks:
-            raise wire.bad("The issue has subtasks: set deleteSubtasks=true to delete them with it.")
+            raise wire.bad("Returned if the issue has subtasks and `deleteSubtasks` is not set to *true*.")
         self._desk.delete(issue, actor=Actor.AGENT)
         return 204, None
 
@@ -1093,7 +1132,7 @@ class JiraApi:
         issue, project = self._issue(call)
         body = wire.read_body(wire.AssigneeIn, call.raw)
         if "accountId" not in body.model_fields_set:
-            raise wire.bad("Name the assignee by 'accountId', or null to unassign.")
+            raise wire.bad("Returned if `name`, `key`, or `accountId` is missing.")
         account = body.accountId
         if account == "-1":
             account = project.lead if project.assigneeType == "PROJECT_LEAD" else None
@@ -1137,10 +1176,10 @@ class JiraApi:
         body = wire.read_body(wire.TransitionIn, call.raw)
         wanted = body.transition.id if body.transition is not None else None
         if wanted is None:
-            raise wire.bad("Name the transition to make by its id.")
+            raise wire.bad("Missing 'transition' identifier")
         transition = next((t for t in self._desk.transitions(issue, project) if t.id == str(wanted)), None)
         if transition is None:
-            raise wire.bad(f"Transition id '{wanted}' is not valid for this issue.")
+            raise wire.bad("Returned if the request is invalid for any other reason.")
         site = self._world.site()
         errors: dict[str, str] = {}
         resolution: str | None = None
@@ -1156,7 +1195,7 @@ class JiraApi:
                         (r for r in site.resolutions if str(ref.id) == r.id or (ref.name or "") == r.name), None
                     )
                 if found is None:
-                    errors[name] = "Name one of the site's resolutions by id or name."
+                    errors[name] = wire.INVALID_VALUE
                 else:
                     resolution = found.id
             else:
@@ -1169,7 +1208,7 @@ class JiraApi:
                     errors |= refusal.fields
         for name in transition.required:
             if name not in body.fields and name not in errors:
-                errors[name] = f"{self.field_name(name)} is required."
+                errors[name] = wire.REQUIRED
         comment_body: JsonValue = None
         for name, operations in body.update.items():
             commenting = name == "comment"  # enum-lint: exempt Jira's own field id in a transition body
@@ -1180,7 +1219,7 @@ class JiraApi:
                 add = operation["add"] if isinstance(operation, dict) and "add" in operation else None
                 text = add["body"] if isinstance(add, dict) and "body" in add else None
                 if not wire.is_document(text):
-                    errors["comment"] = "A comment's body must be an Atlassian document."
+                    errors["comment"] = wire.COMMENT_NOT_VALID
                 else:
                     comment_body = text
         if errors:
@@ -1237,7 +1276,7 @@ class JiraApi:
         project = self._project(call, call.params["projectIdOrKey"])
         screen = project.screen(call.params["issueTypeId"])
         if screen is None:
-            raise wire.Refusal(404, ["That issue type is not in this project."])
+            raise wire.bad(wire.INVALID)
         fields = list(dict.fromkeys(["project", "issuetype", *screen.fields]))
         metas = [self.field_meta(call, project, f, f in screen.required) for f in fields]
         start, most = _page(call.request, 50, most=200)
@@ -1249,9 +1288,9 @@ class JiraApi:
         issue, _ = self._issue(call)
         body = wire.read_body(wire.CommentIn, call.raw)
         if not wire.is_document(body.body):
-            raise wire.bad_field("comment", "A comment's body must be an Atlassian document (a 'doc' at version 1).")
+            raise wire.bad_field("comment", wire.COMMENT_NOT_VALID)
         if not wire.adf_text(body.body).strip():
-            raise wire.bad_field("comment", "A comment cannot be empty.")
+            raise wire.bad(wire.INVALID)
         written = self._desk.comment(issue, body.body, by=call.account, at=self._now(), actor=Actor.AGENT)
         return 201, self.comment(call, written)
 
@@ -1263,7 +1302,7 @@ class JiraApi:
         found = self._world.comments(issue.id)
         order = _param(call.request, "orderBy")
         if order is not None and order.lstrip("+-") != "created":
-            raise wire.bad(f"Comments can be ordered only by 'created', not '{order}'.")
+            raise wire.bad(f"The field to order by should be one of [created]. Instead, it was: {order.lstrip('+-')}.")
         if order is not None and order.startswith("-"):
             found = list(reversed(found))
         start, most = _page(call.request, 100)
@@ -1305,11 +1344,14 @@ class JiraApi:
                 None,
             )
         if link_type is None:
-            raise wire.Refusal(404, ["No issue link type with that id or name exists on this site."])
+            named = body.type.name if body.type is not None and body.type.name else None
+            raise wire.Refusal(404, [f"No issue link type with name '{named}' found."] if named is not None else
+                               [f"No issue link type with id '{body.type.id if body.type else ''}' found or you do "
+                                "not have permission to view it."])  # fmt: skip
         if body.inwardIssue is None or body.outwardIssue is None:
-            raise wire.bad("A link needs both an inward and an outward issue.")
+            raise wire.Refusal(400, [wire.INVALID_PAYLOAD], bare=True)
         if body.comment is not None and not wire.is_document(body.comment.body):
-            raise wire.bad_field("comment", "A comment's body must be an Atlassian document (a 'doc' at version 1).")
+            raise wire.bad_field("comment", wire.COMMENT_NOT_VALID)
         ends: list[wire.StoredIssue] = []
         for ref in (body.outwardIssue, body.inwardIssue):
             reference = ref.key or (str(ref.id) if ref.id is not None else "")
@@ -1327,7 +1369,7 @@ class JiraApi:
     def _link(self, call: Call) -> wire.StoredLink:
         link = self._world.link(call.params["linkId"])
         if link is None:
-            raise wire.Refusal(404, ["There is no issue link with that id."])
+            raise wire.Refusal(404, [f"No issue link with id '{call.params['linkId']}' exists."])
         for end in (link.source, link.destination):
             self._issue(call, end)
         return link
@@ -1358,7 +1400,7 @@ class JiraApi:
         if reference:
             project = self._world.find_project(reference)
             if project is None or not self._desk.can_browse(project, call.account):
-                raise wire.bad(f"No project you can see has the key or id '{reference}'.")
+                raise wire.bad(wire.INVALID)
         kind = _param(call.request, "type")
         name = (_param(call.request, "name") or "").lower()
         found = []
@@ -1402,9 +1444,11 @@ class JiraApi:
         board = self._world.board(int(board_id)) if board_id.isdigit() else None
         home = self._world.project(board.project) if board is not None else None
         if board is None or home is None or not self._desk.can_browse(home, call.account):
-            raise wire.Refusal(404, ["That board does not exist, or you are not allowed to see it."])
+            raise wire.Refusal(
+                404, ["Returned if board does not exist or the user does not have permission to view it."]
+            )
         if board.type == "kanban":
-            raise wire.bad("This board has no sprints: it is a Kanban board.")
+            raise wire.bad(wire.INVALID)
         states = {s.strip() for s in (_param(call.request, "state") or "").split(",") if s.strip()}
         found = [s for s in self._world.sprints() if s.board == board.id and (not states or s.state.value in states)]
         start, most = _page(call.request, 50)
@@ -1420,14 +1464,16 @@ class JiraApi:
         sprint_id = call.params["sprintId"]
         sprint = self._world.sprint(int(sprint_id)) if sprint_id.isdigit() else None
         if sprint is None:
-            raise wire.Refusal(404, ["That sprint does not exist, or you are not allowed to see it."])
+            raise wire.Refusal(
+                404, ["Returned if the sprint does not exist or the user does not have permission to view it."]
+            )
         body = wire.read_body(wire.SprintIssuesIn, call.raw)
         if not body.issues:
-            raise wire.bad("Name at least one issue to move.")
+            raise wire.bad(wire.INVALID)
         if len(body.issues) > 50:
-            raise wire.bad("At most 50 issues can be moved to a sprint at once.")
+            raise wire.bad(wire.INVALID)
         if sprint.state is wire.SprintState.CLOSED:
-            raise wire.bad("Issues cannot be moved into a closed sprint.")
+            raise wire.bad(wire.INVALID)
         site = self._world.site()
         open_ids = {s.id for s in self._world.sprints() if s.state is not wire.SprintState.CLOSED}
         moving = [self._issue(call, reference) for reference in body.issues]
@@ -1515,7 +1561,7 @@ def _page_start(token: str | None, text: str) -> int:
             raise ValueError("another query's token")
         return int(offset)
     except (ValueError, binascii.Error, UnicodeDecodeError) as error:
-        raise wire.bad("The nextPageToken is not valid for this query.") from error
+        raise wire.bad("The provided next page token is invalid or expired.") from error
 
 
 def _json(status: int, tree: object) -> Response:

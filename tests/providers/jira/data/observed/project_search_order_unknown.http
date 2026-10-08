@@ -1,0 +1,24 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:42 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: c2909af1f499dd82ea2cb467746309a8
+Cache-Control: no-store, no-cache
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: a1971a834d7d4e8eabd5f331ff5b542f
+Atl-Request-Id: a1971a83-4d7d-4e8e-abd5-f331ff5b542f
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Vary: Accept-Encoding
+Server-Timing: atl-edge;dur=162,atl-edge-internal;dur=15,atl-edge-upstream;dur=147,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 11833217ddeb3069e4090e98bc00f5ca.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P1
+X-Amz-Cf-Id: h1RMUe1aIN5Ktgf_7ieMBM9mJiZIb8u-Amo9w9utl8Bfhjf0tBzdUA==
+
+{"errorMessages":["The field to order by should be one of [name, key, owner, category, issueCount, lastIssueUpdatedTime, archivedDate, deletedDate]. Instead, it was: zz."],"errors":{}}

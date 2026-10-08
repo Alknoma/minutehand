@@ -109,9 +109,9 @@ class YouTrackApi:
     def answer(self, call: Call, answer: wire.Answer | Sequence[wire.Answer]) -> Answered:
         return 200, wire.render(answer, wire.parse_fields(call.param("fields")))
 
-    def page[T](self, call: Call, items: list[T]) -> list[T]:
-        start, limit = wire.page_bounds(call.param("$skip"), call.param("$top"))
-        return items[start:] if limit is None else items[start : start + limit]
+    def page[T](self, call: Call, items: list[T], *, recorded: bool = False) -> list[T]:
+        start, limit = wire.page_bounds(call.param("$skip"), call.param("$top"), recorded=recorded)
+        return items[start : start + limit]
 
     # ------------------------------------------------------------------ lookups
 
@@ -151,7 +151,7 @@ class YouTrackApi:
     def entity_id(self, reference: wire.EntityIn | None, what: str) -> str:
         """The database id a body's `{"id": …}` names, refused by its shape before anything is looked up."""
         if reference is None or reference.id is None:
-            raise wire.bad_request(f"{what} is required")
+            raise _undocumented(f"a body without {what}")
         if not _ENTITY_ID.fullmatch(reference.id):
             raise wire.invalid_entity_id(reference.id)
         return reference.id
@@ -207,9 +207,9 @@ class YouTrackApi:
         name = body.name or ""
         key = body.shortName or ""
         if not name.strip():
-            raise wire.bad_request("Project name is required")
+            raise _undocumented("a project without a name")
         if not key.strip():
-            raise wire.bad_request("Project shortName is required")
+            raise _undocumented("a project without a shortName")
         if key.isdigit():
             raise wire.numeric_short_name()
         leader = self.world.user(self.entity_id(body.leader, "Project leader"))
@@ -350,15 +350,15 @@ class YouTrackApi:
         body = wire.read_body(wire.FieldDefinitionIn, call.raw)
         name = body.name or ""
         if not name.strip():
-            raise wire.bad_request("Custom field name is required")
+            raise _undocumented("a custom field without a name")
         if body.fieldType is None or body.fieldType.id is None:
-            raise wire.bad_request("fieldType is required")
+            raise _undocumented("a custom field without a fieldType")
         try:
             kind = wire.FieldType(body.fieldType.id)
         except ValueError as error:
             raise wire.not_found(body.fieldType.id) from error
         if self.world.definition_named(name) is not None:
-            raise wire.bad_request(f"Custom field with name {name} already exists")
+            raise _undocumented(f"a custom field named {name}, a name another holds")
         made = wire.StoredFieldDefinition(id=self.world.next_id(58), name=name, fieldType=kind)
         self.world.write_definition(made, actor=Actor.AGENT)
         return self.answer(call, self.presenter().definition(made))
@@ -417,9 +417,9 @@ class YouTrackApi:
         body = wire.read_body(wire.EntityIn, call.raw)
         name = body.name or ""
         if not name.strip():
-            raise wire.bad_request("name is required")
+            raise _undocumented("a body without a name")
         if any(v.name.lower() == name.lower() for v in field.values):
-            raise wire.bad_request(f"Value {name} already exists in the bundle")
+            raise _undocumented(f"a bundle value named {name}, which the bundle already holds")
         ids = fields.Ids(self.world.projects())
         added = wire.StoredBundleValue(id=ids.take("62"), name=name, ordinal=len(field.values))
         for project in self.world.projects():
@@ -438,7 +438,7 @@ class YouTrackApi:
         matched, scope = self._matching(call, call.param("query"))
         present = self.presenter()
         shown = set(call.request.query_params.getlist("customFields"))
-        page: list[wire.Answer] = [_showing(present.issue(i), shown) for i in self.page(call, matched)]
+        page: list[wire.Answer] = [_showing(present.issue(i), shown) for i in self.page(call, matched, recorded=True)]
         if len(scope) == 1:
             self.world.saw(state.project_ref(scope[0].id), Operation.SEARCH)
         else:
@@ -517,7 +517,10 @@ class YouTrackApi:
             if end is not None:
                 found = [a for a in found if a.timestamp <= int(end)]
         except ValueError as error:
-            raise wire.bad_request("start and end take epoch milliseconds") from error
+            bad = start if start is not None and not start.lstrip("-").isdigit() else end
+            raise wire.Refusal(
+                400, "Bad Request", f"Incorrect timestamp {bad}", developer_message=f"Incorrect timestamp {bad}"
+            ) from error  # as recorded: data/observed/issue_activities_bad_start.http
         if (call.param("reverse") or "").lower() == "true":
             found.reverse()
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
@@ -532,7 +535,7 @@ class YouTrackApi:
         if project is None:
             raise _undocumented(f"a create naming project {project_id}, which does not exist")
         if body.summary is None or not body.summary.strip():
-            raise wire.bad_request("summary is required")
+            raise _undocumented("an issue without a summary")
         number = self.world.next_number(project.id)
         issue = wire.StoredIssue(
             id=self.world.next_id(2),
@@ -578,7 +581,7 @@ class YouTrackApi:
         changed = issue
         if "summary" in body.model_fields_set:
             if body.summary is None or not body.summary.strip():
-                raise wire.bad_request("summary is required")
+                raise _undocumented("an issue without a summary")
             changed = changed.model_copy(update={"summary": body.summary})
         if "description" in body.model_fields_set:
             changed = changed.model_copy(update={"description": body.description})
@@ -713,7 +716,7 @@ class YouTrackApi:
         issue = self.issue(call)
         body = wire.read_body(wire.CommentIn, call.raw)
         if body.text is None or not body.text.strip():
-            raise wire.bad_request("text is required")
+            raise _undocumented("a comment without text")
         written = self._comment(issue, body.text, call.caller, call.now)
         return self.answer(call, self.presenter().comment(written, issue))
 
@@ -741,9 +744,9 @@ class YouTrackApi:
         body = wire.read_body(wire.TagIn, call.raw)
         name = body.name or ""
         if not name.strip():
-            raise wire.bad_request("name is required")
+            raise _undocumented("a body without a name")
         if self.world.tag_named(name) is not None:
-            raise wire.bad_request(f"Tag {name} already exists")
+            raise _undocumented(f"a tag named {name}, a name another tag holds")
         tag = wire.StoredTag(id=self.world.next_id(6), name=name, owner=call.caller.id)
         self.world.write_tag(tag, actor=Actor.AGENT)
         return self.answer(call, self.presenter().tag(tag))
@@ -828,7 +831,7 @@ class YouTrackApi:
         if other is None:
             raise wire.not_found(other_id)
         if other.id == issue.id:
-            raise wire.bad_request("An issue cannot be linked to itself")
+            raise _undocumented("linking an issue to itself")
         source, target = (issue, other) if outward else (other, issue)
         held = self.world.links()
         if not any(e.source == source.id and e.target == target.id and e.linkType == link_type.id for e in held):
@@ -868,7 +871,7 @@ class YouTrackApi:
         body = wire.read_body(wire.CommandIn, call.raw)
         if not body.issues:
             parse_command(body.query, [d.name for d in self.world.definitions()])
-            raise wire.bad_request("issues are required")
+            raise _undocumented("a command naming no issues")
         targets: list[wire.StoredIssue] = []
         for named in body.issues:
             reference = named.id or named.idReadable
@@ -899,14 +902,14 @@ class YouTrackApi:
             if command.word is CommandWord.TAG or command.word is CommandWord.UNTAG:
                 tag = self.world.tag_named(command.value)
                 if tag is None:
-                    raise wire.bad_request(f"Unknown tag: {command.value}")
+                    raise _undocumented(f"a command naming the tag {command.value}, which does not exist")
                 kept = [t for t in issue.tags if t != tag.id]
                 issue = issue.model_copy(update={"tags": [*kept, tag.id] if command.word is CommandWord.TAG else kept})
                 continue
             name = state.ASSIGNEE_FIELD if command.word is CommandWord.FOR else command.field or ""
             field = self.world.project_field(project, name)
             if field is None:
-                raise wire.bad_request(f"Unknown command: {name} {command.value}")
+                raise _undocumented(f"the command {name} {command.value}")
             kind = self.definition_of(field).fieldType
             text = command.value
             written: wire.FieldValueIn

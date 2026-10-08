@@ -117,6 +117,24 @@ _OPERATORS = ("!=", ">=", "<=", "!~", "=", "~", ">", "<")
 _WORD_END = set(" \t\r\n(),\"'=!~<>")
 
 
+class Unmatched(Exception):
+    """A query Jira reads but that names something it has not got (a field, a value, a function, an operator a
+    field does not take, a date it cannot read): the public site answers such a query 200 with no issues, never a
+    400 (recorded: `tests/providers/jira/data/observed/jql_*_unknown.http`, `jql_operator_unsupported.http`,
+    `jql_date_invalid.http`, `jql_is_not_empty_value.http`, `jql_text_no_word.http`, `jql_period_invalid.http`)."""
+
+
+SEARCH_INVALID = "Returned if the search request is invalid"
+"""The search reference's words for its 400, for a malformed query whose sentence no recording gives."""
+
+
+def _place(text: str, at: int) -> str:
+    """Where `at` is, as Jira says it: `(line 1, character 11)`, both counted from 1."""
+    line = text.count("\n", 0, at) + 1
+    column = at - (text.rfind("\n", 0, at) + 1) + 1
+    return f"(line {line}, character {column})"
+
+
 def tokens(text: str) -> list[Token]:
     found: list[Token] = []
     at = 0
@@ -143,7 +161,7 @@ def tokens(text: str) -> list[Token]:
             if text[at] == "[":
                 closing = text.find("]", at)
                 if closing < 0:
-                    raise jql_error(f"Error in the JQL query: the '[' at character {at} is never closed.")
+                    raise jql_error(SEARCH_INVALID)
                 at = closing
             at += 1
         found.append(Token(kind=TokenKind.WORD, text=text[start:at], at=start))
@@ -152,6 +170,7 @@ def tokens(text: str) -> list[Token]:
 
 
 def _quoted(text: str, at: int) -> tuple[str, int]:
+    begin = at
     quote = text[at]
     out: list[str] = []
     at += 1
@@ -165,11 +184,14 @@ def _quoted(text: str, at: int) -> tuple[str, int]:
             return "".join(out), at + 1
         out.append(char)
         at += 1
-    raise jql_error(f"Error in the JQL query: a quoted value is never closed ({quote}{''.join(out)}).")
+    raise jql_error(
+        f"Error in the JQL Query: The quoted string '{''.join(out)}' has not been completed. {_place(text, begin)}"
+    )
 
 
 class _Reader:
-    def __init__(self, found: list[Token]) -> None:
+    def __init__(self, text: str, found: list[Token]) -> None:
+        self.text = text
         self._tokens = found
         self._at = 0
 
@@ -194,20 +216,38 @@ class _Reader:
     def expect(self, kind: TokenKind, what: str) -> Token:
         token = self.take()
         if token.kind is not kind:
-            raise _expected(what, token)
+            raise self.expected(what, token)
         return token
 
-
-def _expected(what: str, token: Token) -> Exception:
-    found = "the end of the query" if token.kind is TokenKind.END else f"'{token.text}'"
-    return jql_error(f"Error in the JQL query: expected {what} at character {token.at}, but found {found}.")
+    def expected(self, what: str, token: Token) -> Exception:
+        """Jira's own sentence where one is recorded (`data/observed/jql_expecting_field.http`,
+        `jql_value_missing.http`, `jql_value_unexpected.http`, `jql_and_or_expected.http`,
+        `jql_parenthesis_unclosed.http`); the search reference's words otherwise."""
+        end = token.kind is TokenKind.END
+        where = _place(self.text, token.at)
+        if what == "a field name" and end:
+            return jql_error("Error in the JQL Query: Expecting a field name at the end of the query.")
+        if what == "a value" and end:
+            return jql_error(
+                "Error in JQL Query: Expecting either a value, list or function before the end of the query."
+            )
+        if what == "a value" and token.kind is TokenKind.OP:
+            return jql_error(
+                f"Error in JQL Query: Expecting either a value, list or function but got '{token.text}'. You must "
+                f"surround '{token.text}' in quotation marks to use it as a value. {where}"
+            )
+        if what == "AND, OR or ORDER BY" and not end:
+            return jql_error(f"Error in the JQL Query: Expecting either 'OR' or 'AND' but got '{token.text}'. {where}")
+        if what == "')'" and end:
+            return jql_error("Error in the JQL Query: Expecting ')' before the end of the query.")
+        return jql_error(SEARCH_INVALID)
 
 
 _RESERVED = {"and", "or", "not", "in", "is", "order", "by", "empty", "null"}
 
 
 def parse(text: str) -> Query:
-    reader = _Reader(tokens(text))
+    reader = _Reader(text, tokens(text))
     where: Node | None = None
     if reader.peek().kind is not TokenKind.END and not _at_order(reader):
         where = _or(reader)
@@ -226,7 +266,7 @@ def parse(text: str) -> Query:
             reader.take()
     end = reader.take()
     if end.kind is not TokenKind.END:
-        raise _expected("AND, OR or ORDER BY", end)
+        raise reader.expected("AND, OR or ORDER BY", end)
     return Query(where=where, order=order)
 
 
@@ -265,7 +305,7 @@ def _field(reader: _Reader) -> str:
     if token.kind is TokenKind.STRING:
         return token.text
     if token.kind is not TokenKind.WORD or token.text.lower() in _RESERVED:
-        raise _expected("a field name", token)
+        raise reader.expected("a field name", token)
     return token.text
 
 
@@ -284,7 +324,7 @@ def _clause(reader: _Reader) -> Clause:
         return Clause(field=field, op=op, values=values)
     value = _value(reader)
     if op in (Op.IS, Op.IS_NOT) and value.kind is not ValueKind.EMPTY:
-        raise jql_error(f"Error in the JQL query: '{field} {op.value}' takes only EMPTY or NULL.")
+        raise Unmatched(f"{field} {op.value} takes only EMPTY or NULL")
     return Clause(field=field, op=op, values=[value])
 
 
@@ -303,7 +343,7 @@ def _operator(reader: _Reader) -> Op:
         return Op.IS
     if token.kind is TokenKind.WORD and token.text.lower() in ("was", "changed"):
         raise NotImplementedError(f"the JQL operator {token.text.upper()}: history is not searched here")
-    raise _expected("an operator", token)
+    raise reader.expected("an operator", token)
 
 
 def _value(reader: _Reader) -> Value:
@@ -311,7 +351,7 @@ def _value(reader: _Reader) -> Value:
     if token.kind is TokenKind.STRING:
         return Value(kind=ValueKind.TEXT, text=token.text, quoted=True)
     if token.kind is not TokenKind.WORD or token.text.lower() in _RESERVED - {"empty", "null"}:
-        raise _expected("a value", token)
+        raise reader.expected("a value", token)
     if token.text.lower() in ("empty", "null"):
         return Value(kind=ValueKind.EMPTY)
     if reader.peek().kind is TokenKind.OPEN:
@@ -321,7 +361,7 @@ def _value(reader: _Reader) -> Value:
             while True:
                 arg = reader.take()
                 if arg.kind not in (TokenKind.WORD, TokenKind.STRING):
-                    raise _expected("a function argument", arg)
+                    raise reader.expected("a function argument", arg)
                 args.append(arg.text)
                 if reader.peek().kind is not TokenKind.COMMA:
                     break

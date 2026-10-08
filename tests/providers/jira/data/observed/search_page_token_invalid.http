@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:38 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 837ff492df335360fbe3a5bcbf900f42
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 030f412ae77d43b2aea5a83f3dda3d54
+Atl-Request-Id: 030f412a-e77d-43b2-aea5-a83f3dda3d54
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=167,atl-edge-internal;dur=19,atl-edge-upstream;dur=148,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 10b7a08dc1144cbba228534eaa6654a8.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: S19TIwrjfV8fPU3cSN7QYt8_JxQ7mruWlWcvHCqkLwBT8T-vV9jnNA==
+
+{"errorMessages":["The provided next page token is invalid or expired."],"errors":{}}

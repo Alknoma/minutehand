@@ -11,6 +11,7 @@ from tests.providers.youtrack.youtrack_instance import (
     assignee_field,
     client_for,
     create,
+    entities,
     entity,
     refusal,
     state_field,
@@ -92,21 +93,21 @@ async def test_a_short_name_in_the_project_id_slot_is_refused_400(client: httpx.
 
 
 @pytest.mark.parametrize("summary", [None, "", "   "])
-async def test_an_issue_without_a_summary_is_refused_400(
+async def test_an_issue_without_a_summary_is_refused_501_naming_it(
     instance: Instance, client: httpx.AsyncClient, summary: str | None
 ) -> None:
     head = instance.store.head()
     payload: dict[str, object] = {"project": {"id": LAUNCH}}
     if summary is not None:
         payload["summary"] = summary
-    answer = refusal(await client.post("/api/issues", json=payload), 400)
+    answer = refusal(await client.post("/api/issues", json=payload), 501)
 
-    assert answer["error_description"] == "summary is required"
+    assert "an issue without a summary" in str(answer["error_description"]), "the answer is not recorded"
     assert instance.store.head() == head
 
 
-async def test_an_update_clearing_the_summary_is_refused_400(client: httpx.AsyncClient) -> None:
-    refusal(await client.post("/api/issues/LAUNCH-1", json={"summary": ""}), 400)
+async def test_an_update_clearing_the_summary_is_refused_501(client: httpx.AsyncClient) -> None:
+    refusal(await client.post("/api/issues/LAUNCH-1", json={"summary": ""}), 501)
 
 
 @pytest.mark.parametrize("field", ["title", "assignee", "state", "priority", "labels"])
@@ -219,12 +220,13 @@ async def test_a_query_naming_a_value_nothing_has_is_refused_400_not_answered_em
 
 
 @pytest.mark.parametrize("query", ["", "Severity Critical", "close it", "State"])
-async def test_a_command_that_is_not_one_is_refused_400(client: httpx.AsyncClient, query: str) -> None:
-    refusal(await client.post("/api/commands", json={"query": query, "issues": [{"idReadable": "LAUNCH-1"}]}), 400)
+async def test_a_command_that_is_not_one_is_refused_501(client: httpx.AsyncClient, query: str) -> None:
+    """What YouTrack answers to a command it cannot apply is not recorded: refused by name."""
+    refusal(await client.post("/api/commands", json={"query": query, "issues": [{"idReadable": "LAUNCH-1"}]}), 501)
 
 
-async def test_a_command_with_no_issues_is_refused_400(client: httpx.AsyncClient) -> None:
-    refusal(await client.post("/api/commands", json={"query": "State Fixed", "issues": []}), 400)
+async def test_a_command_with_no_issues_is_refused_501(client: httpx.AsyncClient) -> None:
+    refusal(await client.post("/api/commands", json={"query": "State Fixed", "issues": []}), 501)
 
 
 async def test_a_command_refused_on_one_issue_changes_none_of_them(
@@ -250,20 +252,40 @@ async def test_a_command_refused_on_one_issue_changes_none_of_them(
     assert instance.store.head() == head
 
 
-async def test_an_empty_comment_is_refused_400(client: httpx.AsyncClient) -> None:
-    refusal(await client.post("/api/issues/LAUNCH-1/comments", json={"text": ""}), 400)
+async def test_an_empty_comment_is_refused_501(client: httpx.AsyncClient) -> None:
+    refusal(await client.post("/api/issues/LAUNCH-1/comments", json={"text": ""}), 501)
 
 
 @pytest.mark.parametrize("raw", [b"", b"not json", b"[1, 2]"])
-async def test_a_body_that_is_not_an_entity_is_refused_400(client: httpx.AsyncClient, raw: bytes) -> None:
-    refusal(await client.post("/api/issues", content=raw, headers={"Content-Type": "application/json"}), 400)
+async def test_a_body_that_is_not_an_entity_is_refused_501(client: httpx.AsyncClient, raw: bytes) -> None:
+    """A guest's write is refused 403 before its body is read on the public instance, so nothing records this."""
+    refusal(await client.post("/api/issues", content=raw, headers={"Content-Type": "application/json"}), 501)
 
 
-@pytest.mark.parametrize("params", [{"$top": "ten"}, {"$skip": "-1"}, {"fields": "id,project(name"}])
-async def test_a_malformed_paging_or_fields_parameter_is_refused_400(
-    client: httpx.AsyncClient, params: dict[str, str]
+@pytest.mark.parametrize(
+    ("params", "status", "body"),
+    [
+        ({"$top": "ten"}, 500, {"error": "server_error", "error_description": "HTTP 404 Not Found"}),
+        ({"$top": "-1"}, 400, {"error": "Bad Request",
+                               "error_description": "This resource does not allow requesting all entities, max limit is 3500"}),
+        ({"fields": "id,project(name"}, 400, {"error": "bad_request", "error_description": "Query string has invalid syntax"}),
+    ],
+)  # fmt: skip
+async def test_a_malformed_paging_or_fields_parameter_answers_as_the_public_instance_does(
+    client: httpx.AsyncClient, params: dict[str, str], status: int, body: dict[str, str]
 ) -> None:
-    refusal(await client.get("/api/issues", params=params), 400)
+    """As recorded (`data/observed/top_not_a_number.http`, `top_negative.http`, `fields_syntax_invalid.http`)."""
+    assert refusal(await client.get("/api/issues", params=params), status) == body
+
+
+async def test_a_negative_skip_is_read_as_none_on_the_issue_search(client: httpx.AsyncClient) -> None:
+    """As recorded (`data/observed/skip_negative.http`)."""
+    first = entities(await client.get("/api/issues", params={"$skip": "-1", "$top": "1", "fields": "id"}))
+    assert first == entities(await client.get("/api/issues", params={"$top": "1", "fields": "id"}))
+
+
+async def test_a_negative_top_elsewhere_is_refused_501(client: httpx.AsyncClient) -> None:
+    refusal(await client.get("/api/tags", params={"$top": "-1"}), 501)
 
 
 async def test_a_method_youtrack_does_not_list_for_a_path_is_refused_405(client: httpx.AsyncClient) -> None:

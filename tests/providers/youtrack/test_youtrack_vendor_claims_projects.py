@@ -87,12 +87,13 @@ async def test_a_created_project_lists_takes_an_issue_and_answers_its_leader(yt:
     assert filed["idReadable"] == "SUMMIT-1"
 
 
-async def test_a_project_with_no_leader_is_refused_400_naming_the_leader(yt: httpx.AsyncClient, team: Instance) -> None:
+async def test_a_project_with_no_leader_is_refused_501_naming_the_leader(yt: httpx.AsyncClient, team: Instance) -> None:
     """Documented: `leader` is required on a project create
-    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-admin-projects.html)."""
+    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-admin-projects.html); what the refusal says is
+    not recorded, so it is refused by name and creates nothing."""
     head = team.store.head()
 
-    refused = refusal(await yt.post("/api/admin/projects", json={"name": "Partner Summit", "shortName": "SUMMIT"}), 400)
+    refused = refusal(await yt.post("/api/admin/projects", json={"name": "Partner Summit", "shortName": "SUMMIT"}), 501)
 
     assert "leader" in str(refused["error_description"])
     assert team.store.head() == head

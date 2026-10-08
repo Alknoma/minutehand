@@ -591,13 +591,13 @@ Body = TypeVar(
 def read_body(model: type[Body], raw: bytes) -> Body:
     """A request body, held to the properties the entity has."""
     if not raw.strip():
-        raise bad_request("Request body required")
+        raise NotImplementedError("an empty body: what YouTrack answers is not recorded")
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise bad_request("Malformed JSON in the request body") from error
+        raise NotImplementedError("a body that is not JSON: what YouTrack answers is not recorded") from error
     if not isinstance(decoded, dict):
-        raise bad_request("The request body is not an entity")
+        raise NotImplementedError("a body that is not an entity: what YouTrack answers is not recorded")
     try:
         return model.model_validate(decoded)
     except ValidationError as error:
@@ -608,7 +608,9 @@ def read_body(model: type[Body], raw: bytes) -> Body:
                 f"the body property '{where}': {model.__name__} has not got it, and what YouTrack answers for a "
                 "property its entity lacks is not documented"
             ) from error
-        raise bad_request(f"Invalid value of {where}") from error
+        raise NotImplementedError(
+            f"the body property {where} of that type: what YouTrack answers is not recorded"
+        ) from error
 
 
 # --------------------------------------------------------------------------- fields= and paging
@@ -623,8 +625,13 @@ def parse_fields(text: str | None) -> Spec | None:
         return None
     spec, rest = _fields(text, 0)
     if rest != len(text):
-        raise bad_request(f"Invalid fields: {text}")
+        raise fields_invalid()
     return spec
+
+
+def fields_invalid() -> Refusal:
+    """A `fields=` that does not parse, as the public instance answers it (`data/observed/fields_syntax_invalid.http`)."""
+    return Refusal(400, "bad_request", "Query string has invalid syntax")
 
 
 def parse_hub_fields(text: str | None) -> Spec | None:
@@ -638,7 +645,7 @@ def parse_hub_fields(text: str | None) -> Spec | None:
         node = tree
         names = [n.strip() for n in path.split("/")]
         if not all(names):
-            raise bad_request(f"Invalid fields: {text}")
+            raise fields_invalid()
         for depth, name in enumerate(names):
             if depth == len(names) - 1:
                 node.setdefault(name, None)
@@ -659,7 +666,7 @@ def _fields(text: str, at: int) -> tuple[Spec, int]:
         if char == "(":
             inner, at = _fields(text, at + 1)
             if at >= len(text) or text[at] != ")" or not name.strip():
-                raise bad_request(f"Invalid fields: {text}")
+                raise fields_invalid()
             _merge(spec, name.strip(), inner)
             name = ""
             at += 1
@@ -722,16 +729,27 @@ def select(value: JsonValue, spec: Spec | None) -> JsonValue:
     return narrowed
 
 
-def page_bounds(skip: str | None, top: str | None, *, default: int = PAGE_DEFAULT) -> tuple[int, int | None]:
-    """`$skip` and `$top` as an offset and a limit; `$top=-1` is every entity."""
+def page_bounds(
+    skip: str | None, top: str | None, *, default: int = PAGE_DEFAULT, recorded: bool = False
+) -> tuple[int, int]:
+    """`$skip` and `$top` as an offset and a limit. For the issue search (`recorded`), a value that is not a number,
+    a negative `$skip` and a negative `$top` answer as JetBrains' public instance answered them
+    (`tests/providers/youtrack/data/observed/skip_not_a_number.http`, `top_not_a_number.http`, `skip_negative.http`,
+    `top_negative.http`); for any other collection nothing records the answer, so they are refused by name."""
     try:
         start = int(skip) if skip else 0
         limit = int(top) if top else default
     except ValueError as error:
-        raise bad_request("$skip and $top take integers") from error
-    if start < 0:
-        raise bad_request("$skip cannot be negative")
-    return start, None if limit < 0 else limit
+        if recorded:
+            raise Refusal(500, "server_error", "HTTP 404 Not Found") from error
+        raise NotImplementedError(f"$skip={skip} $top={top}: what YouTrack answers is not recorded") from error
+    if start < 0 or limit < 0:
+        if not recorded:
+            raise NotImplementedError(f"$skip={skip} $top={top}: what YouTrack answers is not recorded")
+        if limit < 0:
+            raise Refusal(400, "Bad Request", "This resource does not allow requesting all entities, max limit is 3500")
+        start = 0
+    return start, limit
 
 
 # --------------------------------------------------------------------------- answers
@@ -1198,8 +1216,3 @@ class TokenOut(Wire):
 
 def token_body(answer: TokenOut) -> bytes:
     return answer.model_dump_json().encode()
-
-
-def oauth_refusal(status: int, error: str, description: str) -> Refusal:
-    """Hub's OAuth errors are RFC 6749's: `invalid_client`, `unsupported_grant_type`, `invalid_request`."""
-    return Refusal(status, error, description)

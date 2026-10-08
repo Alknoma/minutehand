@@ -1,0 +1,24 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:45 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 2871af40379a6b7b37085ae34dfbf0c4
+Cache-Control: no-store, no-cache
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 0fbef66c29274618ad9240617be29505
+Atl-Request-Id: 0fbef66c-2927-4618-ad92-40617be29505
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Vary: Accept-Encoding
+Server-Timing: atl-edge;dur=240,atl-edge-internal;dur=22,atl-edge-upstream;dur=218,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 ccd114984a49b9c615aad5382a3f2352.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: -c6FcX4HPtQcxuCnx8Vrn93VNOydduPyzOwsa1jqTX67He8A7gPBHQ==
+
+{"errorMessages":[],"errors":{"summary":"Field 'summary' cannot be set. It is not on the appropriate screen, or unknown."}}

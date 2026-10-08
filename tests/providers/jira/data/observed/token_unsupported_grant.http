@@ -1,0 +1,26 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: 129
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:13:28 GMT
+Vary: Origin,Access-Control-Request-Method,Access-Control-Request-Headers
+Cache-Control: no-cache, no-store, max-age=0, must-revalidate
+Pragma: no-cache
+Expires: 0
+X-Frame-Options: DENY
+Server: AtlassianEdge
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 1dbeeb4bc42a4b3c945abfdb288be8f1
+Atl-Request-Id: 1dbeeb4b-c42a-4b3c-945a-bfdb288be8f1
+Strict-Transport-Security: max-age=63072000; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=122,atl-edge-internal;dur=4,atl-edge-upstream;dur=118,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 b971fb66f084bd7b4f212f76bba6cfa2.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+Alt-Svc: h3=":443"; ma=86400
+X-Amz-Cf-Id: DuXkGi_oRMpnWx13XtroauIWXwmtAEYcYZJFIp7MsM6G6XAW1HP-Uw==
+
+{"error":"invalid_request","error_description":"grant_type must be one of [authorization_code|refresh_token|client_credentials]"}

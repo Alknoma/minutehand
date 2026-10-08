@@ -115,9 +115,13 @@ async def test_a_documented_body_property_the_fake_does_not_keep_is_refused_501_
     assert ok(await site.http.get(f"{API}/issue/LAUNCH-1/comment"))["total"] == 1, "nothing was written"
 
 
-async def test_a_property_a_closed_body_has_not_got_is_refused_400_naming_it(site: Site) -> None:
-    body = refused(await site.http.post(f"{API}/search/jql", json={"jql": "project = LAUNCH", "colour": "red"}), 400)
-    assert "colour" in body["errorMessages"][0]
+async def test_a_property_a_closed_body_has_not_got_is_refused_400(site: Site) -> None:
+    """As recorded (`data/observed/search_body_unknown_property.http`): Jira's invalid-payload body, no `errors`."""
+    answer = await site.http.post(f"{API}/search/jql", json={"jql": "project = LAUNCH", "colour": "red"})
+    assert (answer.status_code, answer.json()) == (
+        400,
+        {"errorMessages": ["Invalid request payload. Refer to the REST API documentation and try again."]},
+    )
 
 
 @pytest.mark.parametrize(
@@ -129,7 +133,10 @@ async def test_a_path_outside_the_resources_the_fake_claims_is_refused_501_namin
 
 
 async def test_a_path_in_a_claimed_resource_that_the_reference_does_not_name_is_404(site: Site) -> None:
-    refused(await site.http.get(f"{API}/issue/LAUNCH-1/no-such-thing"), 404)
+    """As recorded (`data/observed/unknown_path.http`): Jira's problem body."""
+    answer = await site.http.get(f"{API}/issue/LAUNCH-1/no-such-thing")
+    assert answer.status_code == 404 and answer.headers["content-type"].startswith("application/problem+json")
+    assert answer.json()["detail"] == "No endpoint GET /rest/api/3/issue/LAUNCH-1/no-such-thing."
 
 
 async def test_a_literal_path_wins_over_a_template_that_would_read_it_as_a_key(site: Site) -> None:

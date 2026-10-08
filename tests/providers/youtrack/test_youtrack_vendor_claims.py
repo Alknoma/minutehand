@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -211,7 +212,7 @@ async def test_a_readable_key_in_a_link_body_is_refused_with_the_entity_id_wordi
 OBSERVED = Path(__file__).parent / "data" / "observed"
 
 
-def _recorded(name: str) -> tuple[int, dict[str, object]]:
+def _recorded(name: str) -> tuple[int, Any]:
     head, _, body = (OBSERVED / f"{name}.http").read_bytes().decode("utf-8").partition("\r\n\r\n")
     return int(head.split()[1]), json.loads(body)
 
@@ -234,3 +235,30 @@ async def test_a_value_no_field_holds_answers_as_the_public_instance_does(yt: ht
     assert answer.json()["error_children"] == [
         {"error": 'The value "Zzqqxx" isn\'t used for the State field.', "error_description": ""}
     ], "the public instance names every field the value could be for (`Stage,State`); this instance has State alone"
+
+
+@pytest.mark.parametrize(
+    ("name", "path"),
+    [
+        ("activities_no_categories", "/api/issues/LAUNCH-1/activities?fields=id"),
+        ("activities_unknown_category", "/api/issues/LAUNCH-1/activities?categories=ZzNope&fields=id"),
+        ("issue_activities_bad_start", "/api/issues/LAUNCH-1/activities?categories=CommentsCategory&start=x&fields=id"),
+        ("fields_syntax_invalid", "/api/issues?fields=id,summary(&$top=1"),
+        ("skip_not_a_number", "/api/issues?fields=id&$skip=x&$top=1"),
+        ("top_not_a_number", "/api/issues?fields=id&$top=x"),
+        ("top_negative", "/api/issues?fields=id&$top=-1"),
+    ],
+)
+async def test_a_read_answers_as_the_public_instance_does(yt: httpx.AsyncClient, name: str, path: str) -> None:
+    status, recorded = _recorded(name)
+    answer = await yt.get(path)
+
+    assert (answer.status_code, answer.json()) == (status, recorded)
+
+
+async def test_an_attribute_fields_names_that_the_entity_has_not_got_is_left_out(yt: httpx.AsyncClient) -> None:
+    """As recorded (`data/observed/fields_attribute_unknown.http`): answered, without it."""
+    _, recorded = _recorded("fields_attribute_unknown")
+    answer = entities(await yt.get("/api/issues", params={"fields": "id,zzzattr", "$top": "1"}))
+
+    assert set(answer[0]) == set(recorded[0]) == {"id", "$type"}

@@ -165,10 +165,10 @@ async def test_an_issued_token_keeps_acting_as_its_user_after_its_hour(yt: httpx
             content=b"grant_type=password",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         ),
-        400,
+        501,
     )
     assert issued.json()["expires_in"] == 3600 and later["login"] == "agent-bot"
-    assert unsupported["error"] == "unsupported_grant_type"
+    assert "the grant password" in str(unsupported["error_description"]), "Hub's answer is not recorded"
 
 
 async def test_a_wrong_client_secret_still_gets_a_token(yt: httpx.AsyncClient) -> None:
@@ -300,7 +300,7 @@ async def test_a_fault_refuses_one_route_for_its_while_429_with_retry_after(tmp_
         after = await http.post(f"/api/issues/LAUNCH-1/customFields/{state}", json={"value": {"name": "Fixed"}})
     assert (before.status_code, during.status_code, reads.status_code, after.status_code) == (200, 429, 200, 200)
     assert during.headers["Retry-After"] == "1200"
-    assert during.json() == {"error": "Too Many Requests", "error_description": "Too many requests. Try again later."}
+    assert during.json() == {"error": "Too Many Requests", "error_description": "HTTP 429 Too Many Requests"}
 
 
 async def test_a_count_still_running_answers_minus_one(tmp_path: Path) -> None:

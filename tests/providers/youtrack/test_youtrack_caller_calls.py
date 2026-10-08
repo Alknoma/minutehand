@@ -562,7 +562,7 @@ async def test_tags_list_and_create(yt: httpx.AsyncClient) -> None:
 
     assert [t["name"] for t in listed] == ["docs", "venue", "big room"]
     assert made == {"id": made["id"], "name": "press", "$type": "IssueTag"}
-    refusal(await yt.post("/api/tags", json={"name": "press"}), 400)
+    refusal(await yt.post("/api/tags", json={"name": "press"}), 501)
 
 
 async def test_an_issue_carries_an_existing_tag_by_id_and_drops_it(yt: httpx.AsyncClient) -> None:
@@ -575,7 +575,7 @@ async def test_an_issue_carries_an_existing_tag_by_id_and_drops_it(yt: httpx.Asy
     assert added == press
     assert [t["name"] for t in carried] == ["docs", "press"]
     assert dropped.status_code == 200 and [t["name"] for t in left] == ["docs"]
-    refusal(await yt.post("/api/issues/LAUNCH-1/tags", json={"name": "press"}), 400)
+    refusal(await yt.post("/api/issues/LAUNCH-1/tags", json={"name": "press"}), 501)
     refusal(await yt.post("/api/issues/LAUNCH-1/tags", json={"id": "6-999"}), 501)
 
 

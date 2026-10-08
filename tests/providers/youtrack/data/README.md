@@ -15,3 +15,12 @@ reads are recorded.
 | `query_sort_field_unknown.http` | `GET /api/issues?query=project: YTD sort by: Zzwibble&fields=id&$top=1` |
 | `query_attribute_unknown.http` | `GET /api/issues?query=Zzwibble: High&fields=id&$top=1` |
 | `query_parentheses.http` | `GET /api/issues?query=(State: Open)&fields=id&$top=1` |
+| `activities_no_categories.http` | `GET /api/activities?fields=id` |
+| `activities_unknown_category.http` | `GET /api/activities?categories=ZzNope&fields=id` |
+| `issue_activities_bad_start.http` | `GET /api/issues/{an issue the instance holds}/activities?categories=CommentsCategory&start=x&fields=id` |
+| `fields_syntax_invalid.http` | `GET /api/issues?fields=id,summary(&$top=1` |
+| `fields_attribute_unknown.http` | `GET /api/issues?fields=id,zzzattr&$top=1` |
+| `skip_not_a_number.http` | `GET /api/issues?fields=id&$skip=x&$top=1` |
+| `skip_negative.http` | `GET /api/issues?fields=id&$skip=-1&$top=1` |
+| `top_negative.http` | `GET /api/issues?fields=id&$top=-1` |
+| `top_not_a_number.http` | `GET /api/issues?fields=id&$top=x` |

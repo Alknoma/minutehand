@@ -54,12 +54,15 @@ class Refusal(ServiceRefusal):
         fields: dict[str, str] | None = None,
         *,
         retry_after: int | None = None,
+        bare: bool = False,
     ) -> None:
         super().__init__("; ".join([*messages, *(f"{k}: {v}" for k, v in (fields or {}).items())]))
         self.status = status
         self.messages = list(messages)
         self.fields = dict(fields or {})
         self.retry_after = retry_after
+        self.bare = bare
+        """Jira's body without `errors`: what it answers to a body it cannot read."""
 
     def render(self, asked: Asked) -> Rendered:
         """`{"errorMessages", "errors"}`, with `Retry-After` when it says when to retry."""
@@ -68,7 +71,34 @@ class Refusal(ServiceRefusal):
 
 
 def error_body(refusal: Refusal) -> bytes:
+    if refusal.bare:
+        return json.dumps({"errorMessages": refusal.messages}).encode()
     return json.dumps({"errorMessages": refusal.messages, "errors": refusal.fields}).encode()
+
+
+PROBLEM_TYPE = "application/problem+json;charset=UTF-8"
+
+
+class Problem(ServiceRefusal):
+    """Jira's RFC 9457 problem body, which it answers for a path no operation has, a method an operation has not
+    got, and a query parameter it cannot convert (recorded: `tests/providers/jira/data/observed/unknown_path.http`,
+    `approximate_count_get.http`, `comments_max_results_not_a_number.http`)."""
+
+    def __init__(self, status: int, title: str, detail: str, instance: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.title = title
+        self.detail = detail
+        self.instance = instance
+
+    def body(self) -> bytes:
+        return json.dumps(
+            {"type": "about:blank", "title": self.title, "status": self.status, "detail": self.detail,
+             "instance": self.instance}
+        ).encode()  # fmt: skip
+
+    def render(self, asked: Asked) -> Rendered:
+        return Rendered(status=self.status, content_type=PROBLEM_TYPE, body=self.body())
 
 
 def error_answer(status: int, message: str) -> Rendered:
@@ -82,15 +112,18 @@ def error_answer(status: int, message: str) -> Rendered:
 
 
 def no_issue() -> Refusal:
-    return Refusal(404, ["This issue does not exist, or you are not allowed to see it."])
+    """Recorded (`data/observed/unknown_issue.http`)."""
+    return Refusal(404, ["Issue does not exist or you do not have permission to see it."])
 
 
 def no_project(reference: str) -> Refusal:
-    return Refusal(404, [f"There is no project '{reference}' you can see."])
+    """Recorded (`data/observed/unknown_project.http`)."""
+    return Refusal(404, [f"No project could be found with key '{reference}'."])
 
 
 def no_user() -> Refusal:
-    return Refusal(404, ["That user does not exist, or you are not allowed to see them."])
+    """The reference's own words for `GET /user`'s 404."""
+    return Refusal(404, ["Returned if the user is not found."])
 
 
 def bad(message: str) -> Refusal:
@@ -101,8 +134,23 @@ def bad_field(field: str, message: str) -> Refusal:
     return Refusal(400, [], {field: message})
 
 
+INVALID_VALUE = "Returned if the request contains invalid field values."
+"""The create-issue reference's words for a field value it will not take (its 400); no recording gives Jira's own
+sentence for each field, so this is the message for every one."""
+REQUIRED = "Returned if the request is missing required fields."
+"""The create-issue reference's words for a required field left out."""
+INVALID = "Returned if the request is invalid."
+
+
 def not_on_screen(field: str) -> str:
-    return f"Field '{field}' cannot be set: it is not on this screen, or it does not exist."
+    """Recorded (`data/observed/issue_edit_not_on_screen.http`)."""
+    return f"Field '{field}' cannot be set. It is not on the appropriate screen, or unknown."
+
+
+COMMENT_NOT_VALID = "Comment body is not valid!"
+"""Recorded (`data/observed/comment_body_not_a_document.http`)."""
+INVALID_PAYLOAD = "Invalid request payload. Refer to the REST API documentation and try again."
+"""Recorded (`data/observed/issue_create_not_object.http`, `search_body_unknown_property.http`)."""
 
 
 def jql_error(message: str) -> Refusal:
@@ -110,7 +158,8 @@ def jql_error(message: str) -> Refusal:
 
 
 def rate_limited(retry_after: int) -> Refusal:
-    return Refusal(429, ["Too many requests: wait before you try again."], retry_after=retry_after)
+    """A rate limit the scenario declares, in the user-search reference's words for its 429."""
+    return Refusal(429, ["Returned if the rate limit is exceeded."], retry_after=retry_after)
 
 
 # --------------------------------------------------------------------------- time
@@ -742,14 +791,16 @@ _PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9]+")
 
 
 def project_key_problem(key: str) -> str | None:
-    """What is wrong with `key` as a new project's key, in the words of a create's `errors.projectKey`."""
-    if not key:
-        return "A project needs a key."
-    if len(key) > PROJECT_KEY_MOST:
-        return f"A project key is at most {PROJECT_KEY_MOST} characters long."
+    """What is wrong with `key` as a new project's key: the pattern in the words `ErrorCollection`'s example gives
+    for `projectKey`, anything else in the create-project reference's words for its 400."""
+    if not key or len(key) > PROJECT_KEY_MOST:
+        return PROJECT_INVALID
     if not _PROJECT_KEY.fullmatch(key):
-        return "A project key is a capital letter followed by capitals and digits."
+        return "Project keys must start with an uppercase letter, followed by one or more uppercase alphanumeric characters."
     return None
+
+
+PROJECT_INVALID = "Returned if the request is not valid and the project could not be created."
 
 
 class ProjectIn(Request):
@@ -815,25 +866,27 @@ Body = TypeVar(
 )
 
 
-def read_body(model: type[Body], raw: bytes) -> Body:
+def read_body(model: type[Body], raw: bytes, *, missing: Refusal | None = None) -> Body:
     """A request body as the model; Jira's own refusal for a body that is not JSON or not that shape, a 400 naming a
     property a closed schema has not got, and a property the reference documents that this fake does not act on
     refused by name (`NotImplementedError`)."""
     if not raw.strip():
-        raise bad("The request has no body; this resource needs one.")
+        if missing is None:
+            raise NotImplementedError(f"an empty {model.__name__} body: what Jira answers is not recorded")
+        raise missing
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise bad("The request body is not valid JSON.") from error
+        raise Refusal(
+            400, ["There was an error parsing JSON. Check that your request body is valid."], bare=True
+        ) from error
     if not isinstance(decoded, dict):
-        raise bad("The request body must be a JSON object.")
+        raise Refusal(400, [INVALID_PAYLOAD], bare=True)
     _refuse_unserved(model, decoded)
     try:
         return model.model_validate(decoded)
     except ValidationError as error:
-        first = error.errors()[0]
-        where = ".".join(str(part) for part in first["loc"])
-        raise bad(f"The request body cannot be read at '{where}'.") from error
+        raise Refusal(400, [INVALID_PAYLOAD], bare=True) from error
 
 
 def _refuse_unserved(model: type[Request], decoded: dict[str, JsonValue]) -> None:
@@ -844,7 +897,7 @@ def _refuse_unserved(model: type[Request], decoded: dict[str, JsonValue]) -> Non
         known = {f.alias or n for n, f in model.model_fields.items()} | set(model.UNSERVED)
         for name in decoded:
             if name not in known:
-                raise bad(f"Unrecognized field '{name}': it is not a property of this request.")
+                raise Refusal(400, [INVALID_PAYLOAD], bare=True)
     for name, inner in model.NESTED.items():
         value = decoded[name] if name in decoded else None
         if isinstance(value, dict):

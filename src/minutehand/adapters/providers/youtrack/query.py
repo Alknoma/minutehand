@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 
-from minutehand.adapters.providers.youtrack.wire import bad_request, sort_field_expected, unparsed_query
+from minutehand.adapters.providers.youtrack.wire import sort_field_expected, unparsed_query
 from minutehand.domain.scenario import Model
 
 ME = "me"
@@ -320,7 +320,7 @@ _WORD = re.compile(r"\{[^}]*\}|\S+")
 def parse_command(text: str | None, field_names: list[str]) -> list[Command]:
     """Every command in one query, in order. A query that is not one of them is refused."""
     if text is None or not text.strip():
-        raise bad_request("Command query is required")
+        raise NotImplementedError("an empty command: what YouTrack answers is not recorded")
     names = {_normal(n): n for n in field_names}
     tokens = _WORD.findall(text)
     commands: list[Command] = []
@@ -337,12 +337,12 @@ def parse_command(text: str | None, field_names: list[str]) -> list[Command]:
             at += width
             continue
         if current is None:
-            raise bad_request(f"Unknown command: {text.strip()}")
+            raise NotImplementedError(f"the command {text.strip()!r}: this fake does not read it")
         token = tokens[at]
         value.append(token[1:-1].strip() if token.startswith("{") and token.endswith("}") else token)
         at += 1
     if current is None:
-        raise bad_request(f"Unknown command: {text.strip()}")
+        raise NotImplementedError(f"the command {text.strip()!r}: this fake does not read it")
     commands.append(_finished(text, current, value))
     return commands
 
@@ -363,5 +363,7 @@ def _command_word(tokens: list[str], at: int, names: dict[str, str]) -> tuple[Co
 def _finished(text: str, current: tuple[CommandWord, str | None], value: list[str]) -> Command:
     joined = " ".join(v for v in value if v)
     if not joined:
-        raise bad_request(f"Command {current[1] or current[0].value} needs a value: {text.strip()}")
+        raise NotImplementedError(
+            f"the command {text.strip()!r}: {current[1] or current[0].value} with no value is not read here"
+        )
     return Command(word=current[0], field=current[1], value=joined)

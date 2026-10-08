@@ -42,9 +42,9 @@ class Hub:
 
     def _page(self, call: Call, collection: str, items: Sequence[wire.HubAnswer]) -> Answered:
         start, limit = wire.page_bounds(call.param("$skip"), call.param("$top"), default=wire.HUB_PAGE_DEFAULT)
-        shown = items[start:] if limit is None else items[start : start + limit]
+        shown = items[start : start + limit]
         spec = wire.parse_hub_fields(call.param("fields"))
-        top = len(items) if limit is None else limit
+        top = limit
         return 200, wire.render_hub_page(collection, list(shown), skip=start, top=top, total=len(items), spec=spec)
 
     # ------------------------------------------------------------------ routes
@@ -127,8 +127,8 @@ class Hub:
                 {k: v[0] for k, v in parse_qs(call.raw.decode("utf-8", "replace")).items()}
             )
         except ValidationError as error:
-            raise wire.oauth_refusal(
-                400, "invalid_request", "The token request has a parameter Hub does not take"
+            raise NotImplementedError(
+                "a token request with a parameter this fake does not read: what Hub answers is not recorded"
             ) from error
         client_id = form.client_id
         scheme, _, encoded = (call.header("authorization") or "").partition(" ")
@@ -139,9 +139,9 @@ class Hub:
                 client_id = None
         grant = form.grant_type
         if grant is None:
-            raise wire.oauth_refusal(400, "invalid_request", "grant_type is required")
+            raise NotImplementedError("a token request without grant_type: what Hub answers is not recorded")
         if grant != "client_credentials":
-            raise wire.oauth_refusal(400, "unsupported_grant_type", f"Grant type {grant} is not supported")
+            raise NotImplementedError(f"the grant {grant}: only client_credentials is served")
         service = None if client_id is None else self._world.service(client_id)
         user = self._world.agent().id if service is None else service.user
         issued = f"1.{uuid.uuid5(_TOKENS, f'{client_id}:{self._world.head()}')}"

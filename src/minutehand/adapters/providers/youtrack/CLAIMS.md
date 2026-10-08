@@ -164,3 +164,29 @@ The seed's `grants` stay world data: Hub's permissions cache reports them (rows 
   comes back only when named, and a stated rule outranks a sample.
 - **Defaults on a new issue.** The older stand-in said a created issue holds no Priority or Type. Not adopted: the
   template pages give each field a default value, which a new issue takes.
+
+## The words of a refusal
+
+No refusal is in this fake's own words. Each is one of:
+
+- **recorded** from the public instance (`tests/providers/youtrack/data/observed/`, held by
+  `claims::test_a_read_answers_as_the_public_instance_does` and the tests named in rows 21, 42 and 45): an unknown
+  entity in a path (404 "Entity with id … not found"); a search value no field holds and an unknown sort field
+  (`invalid_query` with `error_children`); a `fields=` that does not parse (`bad_request` "Query string has invalid
+  syntax"; an attribute the entity lacks is left out); on the issue search, `$skip` or `$top` that is not a number
+  (500 `server_error` "HTTP 404 Not Found", as the instance answers), a negative `$skip` (read as 0) and a negative
+  `$top` (400 "This resource does not allow requesting all entities, max limit is 3500"); activities with no
+  `categories` (400 "No requested categories specified as a filter parameter"; an unknown category is passed
+  over) and a `start` that is not a timestamp (400 "Incorrect timestamp …").
+- **documented**: the troubleshooting pages' bodies (a malformed entity id, a required field left empty, a numeric
+  short name, an unknown path's 404); a fault the scenario declares answers in the shape the 404 page shows,
+  `{"error": <reason>, "error_description": "HTTP <status> <reason>"}`.
+- **recorded live in prose**: "Value is not allowed" for an assignee off the team (row 57) and the 405 on a method
+  a path has not got.
+- **refused by name (501)**: everything else, since the public instance refuses a guest's write before reading its
+  body (`POST /api/issues` is a 403 there): a body that is empty, not JSON, not an entity, or of the wrong types;
+  a create or update without a summary, a comment without text; a project without a name, short name or leader; a
+  custom field or bundle value without a name or with one in use; a tag named as one in use or named instead of by
+  id; an issue linked to itself; a command that is empty, unknown, without a value, naming no issues or an unknown
+  tag; `$skip`/`$top` that are not numbers or negative on any collection but the issue search; Hub's token endpoint
+  with an unreadable request, no grant or a grant other than client credentials.

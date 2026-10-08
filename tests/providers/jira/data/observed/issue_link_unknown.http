@@ -1,0 +1,24 @@
+HTTP/1.1 404 Not Found
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:41 GMT
+Server: AtlassianEdge
+Vary: Accept-Encoding
+Timing-Allow-Origin: *
+X-Arequestid: bb14f942cb68f1a77f0dc904cc400316
+Cache-Control: no-store, no-cache
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 48998d5bf5374ee093dbddf1193b4e9f
+Atl-Request-Id: 48998d5b-f537-4ee0-93db-ddf1193b4e9f
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=180,atl-edge-internal;dur=13,atl-edge-upstream;dur=167,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 66cecad00b692b43f331fddbf5d0f1f8.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P1
+X-Amz-Cf-Id: PjwrGdXO-e1gy0UAIX8n4ZP17-3HHISavakba1_vV4y92JKmgyvZng==
+
+{"errorMessages":["No issue link with id '99999999' exists."],"errors":{}}

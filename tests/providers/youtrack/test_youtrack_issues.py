@@ -249,7 +249,7 @@ async def test_top_and_skip_page_without_repeating(client: httpx.AsyncClient) ->
                 params={
                     "query": "project: LAUNCH",
                     "fields": "idReadable",
-                    "$top": "-1",
+                    "$top": "100",
                 },
             )
         )
@@ -263,7 +263,7 @@ async def test_a_collection_with_no_top_stops_at_forty_two(client: httpx.AsyncCl
     for n in range(42):
         await create(client, f"Task {n}", project=FIELD_OPS)
 
-    assert len(entities(await client.get("/api/issues", params={"query": "project: FIELDOPS", "$top": "-1"}))) == 43
+    assert len(entities(await client.get("/api/issues", params={"query": "project: FIELDOPS", "$top": "100"}))) == 43
     assert len(entities(await client.get("/api/issues", params={"query": "project: FIELDOPS"}))) == 42
 
 

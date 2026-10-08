@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Content-Length: 93
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:43 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 6cc0d40fa504674dcb35de605fcaf368
+Cache-Control: no-store, no-cache
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 7ee8a70448e54ca5b2dc0e4e12b7eb17
+Atl-Request-Id: 7ee8a704-48e5-4ca5-b2dc-0e4e12b7eb17
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=150,atl-edge-internal;dur=12,atl-edge-upstream;dur=138,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 f2725810374c2e9d69509930f31f6916.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P1
+X-Amz-Cf-Id: esSXNG0GV6qXygcDaC6AXC0-h9OaLmP45bNPiFyZd3AKY5uLMG_IIQ==
+
+{"errorMessages":["There was an error parsing JSON. Check that your request body is valid."]}

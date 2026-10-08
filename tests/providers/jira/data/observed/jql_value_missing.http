@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:10:31 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: dbff07a29e3d8c38fc854f07733bdf45
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 7593725b0174496ea72c288e6ddf3d11
+Atl-Request-Id: 7593725b-0174-496e-a72c-288e6ddf3d11
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=167,atl-edge-internal;dur=20,atl-edge-upstream;dur=147,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 eac78bb0b8162cd60da6a85dc6ce032e.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: lwLQx88mY1pmK3FkDqLbAwoTxpCPguu5wzJVEo29EqgdKnankqKj6Q==
+
+{"errorMessages":["Error in JQL Query: Expecting either a value, list or function before the end of the query."],"errors":{}}

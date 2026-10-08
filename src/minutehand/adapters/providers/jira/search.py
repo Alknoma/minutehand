@@ -11,9 +11,9 @@ and years by the calendar) from now on the run's clock; a date function's increm
 function's own period (`startOfMonth(-1)` is the start of last month), as Atlassian's JQL functions reference
 says (https://support.atlassian.com/jira-software-cloud/docs/jql-functions/).
 
-As in Jira, `!=` and `NOT IN` never match an issue whose field is empty, a value that names nothing on the
-site (a status, a user, a project) is a 400 naming it, a field or function Jira does not have is a 400, and a
-query with no restriction is refused. A field or function Atlassian's JQL reference documents that this fake does
+As in Jira, `!=` and `NOT IN` never match an issue whose field is empty, and a query naming something the site has
+not got (a field, a value, a function, an operator the field does not take, a date it cannot read) matches no
+issue (`jql.Unmatched`), as a public Jira Cloud site answers one; an unknown `ORDER BY` field is passed over. A field or function Atlassian's JQL reference documents that this fake does
 not serve (`_FIELDS_UNSERVED`, `_FUNCTIONS_UNSERVED`) is refused by name (`NotImplementedError`), never answered
 as if the query were wrong.
 """
@@ -25,7 +25,19 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 
 from minutehand.adapters.providers.jira import wire
-from minutehand.adapters.providers.jira.jql import And, Clause, Node, Not, Op, Or, Query, Sort, Value, ValueKind
+from minutehand.adapters.providers.jira.jql import (
+    And,
+    Clause,
+    Node,
+    Not,
+    Op,
+    Or,
+    Query,
+    Sort,
+    Unmatched,
+    Value,
+    ValueKind,
+)
 from minutehand.adapters.providers.jira.moves import Desk
 
 _RELATIVE = re.compile(r"^([+-]?)(\d+)([yMwdhm])$")
@@ -69,8 +81,8 @@ def _function(value: Value, field: str, allowed: set[str]) -> str:
     if name in _FUNCTIONS_UNSERVED:
         raise NotImplementedError(f"the JQL function {value.text}()")
     if name in _FUNCTIONS_SERVED:
-        raise wire.jql_error(f"The function '{value.text}()' cannot be used with the field '{field}'.")
-    raise wire.jql_error(f"Unable to find JQL function '{value.text}()'.")
+        raise Unmatched(f"The function '{value.text}()' cannot be used with the field '{field}'.")
+    raise Unmatched(f"Unable to find JQL function '{value.text}()'.")
 
 
 class Context:
@@ -95,8 +107,13 @@ def unbounded(query: Query) -> bool:
 
 
 def matching(query: Query, issues: list[wire.StoredIssue], context: Context) -> list[wire.StoredIssue]:
-    test = _compile(query.where, context) if query.where is not None else (lambda _: True)
-    found = [i for i in issues if test(i)]
+    """The issues the query matches, in its order; none for a query naming something the site has not got
+    (`Unmatched`), as Jira answers one."""
+    try:
+        test = _compile(query.where, context) if query.where is not None else (lambda _: True)
+        found = [i for i in issues if test(i)]
+    except Unmatched:
+        return []
     return _ordered(found, query.order, context)
 
 
@@ -116,18 +133,18 @@ def _compile(node: Node, context: Context) -> Test:
     return _clause(node, context)
 
 
-def _unknown_field(name: str) -> wire.Refusal:
+def _unknown_field(name: str) -> Unmatched:
     if name.lower() in _FIELDS_UNSERVED:
         raise NotImplementedError(f"the JQL field '{name}'")
-    return wire.jql_error(f"Field '{name}' does not exist, or you are not allowed to see it.")
+    return Unmatched(f"no field '{name}'")
 
 
-def _no_value(value: str, field: str) -> wire.Refusal:
-    return wire.jql_error(f"The value '{value}' does not exist for the field '{field}'.")
+def _no_value(value: str, field: str) -> Unmatched:
+    return Unmatched(f"no value '{value}' for '{field}'")
 
 
-def _bad_op(op: Op, field: str) -> wire.Refusal:
-    return wire.jql_error(f"The operator '{op.value}' is not supported by the '{field}' field.")
+def _bad_op(op: Op, field: str) -> Unmatched:
+    return Unmatched(f"'{field}' does not take '{op.value}'")
 
 
 def _clause(clause: Clause, context: Context) -> Test:
@@ -288,7 +305,7 @@ def _issues(clause: Clause, context: Context) -> set[str]:
         issue = context.world.find_issue(text)
         if issue is None:
             if clause.op in (Op.EQ, Op.IN):
-                raise wire.jql_error(f"An issue with key '{text}' does not exist for field '{clause.field}'.")
+                raise Unmatched(f"An issue with key '{text}' does not exist for field '{clause.field}'.")
             continue
         ids.add(issue.id)
     return ids
@@ -414,7 +431,7 @@ def moment(value: Value, context: Context, field: str) -> datetime:
         return _shifted(now, text, None)
     shape = _DATE.match(text)
     if shape is None:
-        raise wire.jql_error(
+        raise Unmatched(
             f"Date value '{text}' for field '{field}' is invalid: write 'yyyy/MM/dd HH:mm', 'yyyy-MM-dd HH:mm', "
             "'yyyy/MM/dd', 'yyyy-MM-dd', or a period such as '-5d' or '4w 2d'."
         )
@@ -422,7 +439,7 @@ def moment(value: Value, context: Context, field: str) -> datetime:
     try:
         return datetime(int(year_n), int(month_n), int(day_n), int(hour or 0), int(minute or 0), tzinfo=UTC)
     except ValueError as error:
-        raise wire.jql_error(f"Date value '{text}' for field '{field}' is not a date.") from error
+        raise Unmatched(f"Date value '{text}' for field '{field}' is not a date.") from error
 
 
 _INCREMENT = re.compile(r"^([+-]?)(\d+)([yMwdhm]?)$")
@@ -432,7 +449,7 @@ def _shifted(at: datetime, text: str, natural: str | None) -> datetime:
     """`at` moved by an increment such as `-5d` or `+1M`; one without a unit is in `natural`."""
     shape = _INCREMENT.match(text.strip())
     if shape is None or (not shape.group(3) and natural is None):
-        raise wire.jql_error(f"'{text}' is not a period such as '-5d'.")
+        raise Unmatched(f"'{text}' is not a period such as '-5d'.")
     amount = int(shape.group(2)) * (-1 if shape.group(1) == "-" else 1)
     return _shift(at, amount, shape.group(3) or natural or "d")
 
@@ -493,7 +510,7 @@ def _text_clause(clause: Clause, text: Callable[[wire.StoredIssue], str]) -> Tes
     terms = _words(phrase)
     wildcard = phrase.endswith("*")
     if not terms:
-        raise wire.jql_error(f"The text query '{value.text}' holds no word to search for.")
+        raise Unmatched(f"The text query '{value.text}' holds no word to search for.")
 
     def held(issue: wire.StoredIssue) -> bool:
         words = _words(text(issue))
@@ -545,7 +562,10 @@ def _custom_clause(clause: Clause, context: Context, field: wire.StoredField) ->
 def _ordered(issues: list[wire.StoredIssue], order: list[Sort], context: Context) -> list[wire.StoredIssue]:
     found = sorted(issues, key=lambda i: int(i.id))
     for sort in reversed(order):
-        key = _sort_key(sort.field, context)
+        try:
+            key = _sort_key(sort.field, context)
+        except Unmatched:
+            continue  # Jira orders by the rest (`data/observed/jql_order_field_unknown.http`)
         present = [i for i in found if key(i) is not None]
         absent = [i for i in found if key(i) is None]
         present.sort(key=lambda i: _comparable(key(i)), reverse=not sort.ascending)
@@ -585,7 +605,7 @@ def _sort_key(name: str, context: Context) -> Callable[[wire.StoredIssue], Scala
     if field is None:
         if lowered in _FIELDS_UNSERVED:
             raise NotImplementedError(f"ordering by the JQL field '{name}'")
-        raise wire.jql_error(f"Field '{name}' does not exist, or you cannot order by it.")
+        raise Unmatched(f"Field '{name}' does not exist, or you cannot order by it.")
 
     def custom(issue: wire.StoredIssue) -> Scalar:
         v = issue.value(field.id)

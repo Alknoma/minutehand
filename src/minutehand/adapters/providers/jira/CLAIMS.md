@@ -16,7 +16,9 @@ names its source and the test that holds the fake to it (tests are under `tests/
   https://support.atlassian.com/jira-software-cloud/docs/jql-operators/.
 - **OAuth.** https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/ and
   https://support.atlassian.com/user-management/docs/create-oauth-2-0-credential-for-service-accounts/.
-- **Recorded observations of the real service** are cited where used; there is one (the retired search).
+- **Recorded answers of the real service**: `tests/providers/jira/data/observed/` (see its `README.md`), what a
+  public Jira Cloud site and Atlassian's token endpoint and gateway answered on 2026-10-08 to requests made with no
+  credentials; `test_jira_recorded.py` holds the fake to each, byte for byte after this world's identifiers.
 
 ### What "observed" meant before
 
@@ -102,7 +104,8 @@ the caller sees the project.
 | `project/search` orders by key by default, takes `orderBy=key` or `name` (`-` reverses), `keys`, `id` and `typeKey`, at most 100 a page, links `nextPage`, and lists description, lead, issue types and keys only when expanded; `GET /project/{key}` always includes the first three | `searchProjects`; `getProject` `expand`: "the project description, issue types, and project lead are included in all responses by default" | `test_project_search_lists_without_description_or_lead_until_expanded`, `test_project_search_orders_filters_and_links_the_next_page`, `test_project_search_pages_with_is_last` |
 | A role read takes `excludeInactiveUsers`; a role's description is the world's (empty unless seeded), not a sentence the fake writes; a group added to a role is refused by name | `getProjectRole`, `addActorUsers` | `test_a_role_read_with_exclude_inactive_users_leaves_them_out`, `test_a_role_describes_itself_with_the_worlds_words_not_the_fakes`, `test_a_group_added_to_a_role_is_refused_501_naming_it` |
 | `search/jql`: ids only by default; `-x` alone is the navigable fields less `x`; `fields` may repeat; 50 a page by default, at most 5000; `nextPageToken` on all but the last page; `names` beside the issues | `searchAndReconsileIssuesUsingJql`, `SearchAndReconcileResults` | `test_search_jql_with_no_fields_answers_ids_only_and_pages_by_token`, `test_search_fields_of_exclusions_only_start_from_the_navigable_fields`, `test_search_fields_given_more_than_once_are_all_answered`, `test_search_pages_past_100_issues_when_asked_for_more`, `test_search_names_are_the_results_not_each_issues` |
-| A query with no restriction is a 400; `maxResults` below 1 is refused by name, since the reference does not say what it answers | `jql`: "this parameter requires a bounded query" | `test_a_query_that_cannot_be_read_is_refused_with_400`, `test_search_with_no_room_on_the_page_is_refused_501` |
+| A query with no restriction is a 400; `maxResults` outside 1 to 5000 is a 400 | `jql`: "this parameter requires a bounded query"; both sentences recorded (`jql_unbounded.http`, `search_max_results_zero.http`, `search_max_results_over.http`) | `test_a_query_that_cannot_be_read_is_refused_with_400`, `test_search_with_a_page_size_outside_1_to_5000_is_refused_400` |
+| A query naming a field, value, function, issue or project the site has not got, an operator its field does not take, a date it cannot read, or `IS` with a value, matches no issue (200); an unknown `ORDER BY` field is passed over | recorded (`jql_field_unknown.http`, `jql_value_unknown.http`, `jql_function_unknown.http`, `jql_function_wrong_field.http`, `jql_operator_unsupported.http`, `jql_date_invalid.http`, `jql_key_unknown.http`, `jql_project_unknown.http`, `jql_is_not_empty_value.http`, `jql_text_no_word.http`, `jql_period_invalid.http`, `jql_order_field_unknown.http`), as an anonymous caller; the fake used to refuse each with a 400 in its own words | `test_a_query_naming_what_the_site_has_not_got_matches_nothing`, `test_an_order_by_field_the_site_has_not_got_is_passed_over` |
 | `GET /issue`: every field by default; `-x` alone is every field less `x`; `expand=changelog` is most recent first (`GET /changelog` oldest first); an expansion not served is refused by name | `getIssue`, `getChangeLogs` | `test_an_issue_read_with_only_exclusions_answers_every_other_field`, `test_an_issues_changelog_expansion_is_most_recent_first`, `test_an_expansion_the_fake_does_not_serve_is_refused_501_naming_it` |
 | `PUT /issue?returnIssue=true` answers 200 with the issue; an `update` operation other than `set` (and a label's `add`/`remove`) is refused by name | `editIssue` | `test_an_edit_asked_to_return_the_issue_answers_200_with_it`, `test_an_update_operation_the_fake_does_not_serve_is_refused_501_not_400` |
 | `PUT /assignee`: `"-1"` gives the project's default assignee, `null` unassigns, no `accountId` is a 400 | `assignIssue` | `test_assigning_minus_one_gives_the_default_assignee_and_no_account_id_is_refused_400`, `test_assignee_endpoint_assigns_and_unassigns` |
@@ -111,12 +114,38 @@ the caller sees the project.
 | `statuscategorychangedate` is when the status last changed category | Jira computes the field; the fake used to copy `updated` | `test_status_category_change_date_moves_only_when_the_category_does` |
 | Boards filter by `name`, matching part of it | Agile `getAllBoards` | `test_boards_filter_by_name` |
 | JQL: an increment without a unit is in the function's own period; `M` and `y` are calendar months and years; `endOfWeek()`, `endOfMonth()`, `startOfYear()`, `endOfYear()` and `futureSprints()` are served | JQL functions | `test_jql_month_increments_are_calendar_months_and_a_bare_increment_is_the_functions_own` |
-| JQL: a documented field (`watcher`, `component`…), function (`membersOf()`…) or operator (`WAS`, `CHANGED`) not served is refused by name; an unknown function is a 400 | JQL fields, functions, operators | `test_jql_a_field_jira_documents_and_the_fake_does_not_serve_is_refused_501_naming_it`, `test_jql_a_function_jira_documents_and_the_fake_does_not_serve_is_refused_501_naming_it`, `test_jql_history_operators_are_refused_501_naming_them`, `test_a_query_that_cannot_be_read_is_refused_with_400` |
+| JQL: a documented field (`watcher`, `component`…), function (`membersOf()`…) or operator (`WAS`, `CHANGED`) not served is refused by name (the public site answers `WAS` with no issues for an anonymous caller, `jql_was.http`; the fake does not search history) | JQL fields, functions, operators | `test_jql_a_field_jira_documents_and_the_fake_does_not_serve_is_refused_501_naming_it`, `test_jql_a_function_jira_documents_and_the_fake_does_not_serve_is_refused_501_naming_it`, `test_jql_history_operators_are_refused_501_naming_them`, `test_a_query_that_cannot_be_read_is_refused_with_400` |
+
+## The words of a refusal
+
+No refusal is in this fake's own words. Each is one of:
+
+- **recorded**: Jira's sentence as `data/observed/` holds it: an unknown issue, project, link and link type; the
+  JQL syntax errors (a field name or a value expected at the end, a value expected but an operator found, `AND`
+  or `OR` expected, a `)` or a quote left open, with Jira's `(line 1, character N)`); an unbounded query; a page
+  size outside 1 to 5000; a spent page token; the retired search; `mypermissions` with no keys, an unknown key
+  (`errors: {KEY: "Unrecognized permission"}`) or an unknown project; comments ordered by anything but `created`;
+  user search with neither or both of `query` and `accountId`; an assignable search naming no project or issue;
+  `project/search` ordered by an unknown field; an issue create with no body, no project or no issue type; a body
+  that is not JSON, not an object, of the wrong types or with a property a closed schema lacks (`errorMessages`
+  alone, no `errors`); a field not on the screen; a comment body that is not a document; a transition not named;
+  a query parameter that is not a number, a path no operation has and a method an operation has not got (Jira's
+  `application/problem+json` body); the gateway's 404 for an unknown cloud id or path; the token endpoint's
+  unknown grant and unreadable body; a host under atlassian.net holding no site (Jira's "Page unavailable" page,
+  cut to its title and heading).
+- **the reference's words**: where the reference documents the refusal and nothing records Jira's sentence, the
+  message is the reference's own description of it, verbatim ("Returned if the request contains invalid field
+  values.", "Returned if the request is missing required fields.", "Returned if the issue has subtasks and
+  `deleteSubtasks` is not set to *true*.", "Returned if the user is not found.", "Returned if the request is not
+  valid and the project could not be created." and the like); a malformed project key takes `ErrorCollection`'s
+  example sentence; a declared rate limit takes the user-search reference's 429 sentence. Adding a role member who
+  is no account is the reference's 404 ("Returned if the user or group is not found."), not the 400 the fake gave.
+- **refused by name (501)**: where neither documents the answer: an empty body other than an issue create or
+  edit, `GET /user` without `accountId`, an `update` operation that is not a list of single verbs, a negative
+  `startAt` or `maxResults`.
 
 ## Not carried over
 
-- Refusal sentences word for word: this fake answers in its own words, in Jira's `errorMessages`/`errors` shape,
-  keyed by the fields the reference names.
 - A created project surviving a reload of the older stand-in's cache, its admin reset, and its one fixed principal
   holding every global permission: all three described the stand-in, not Jira.
 

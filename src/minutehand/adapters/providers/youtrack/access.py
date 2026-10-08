@@ -51,19 +51,18 @@ class Access:
 
 
 def fault_for(world: YouTrackWorld, method: str, path: str, now: int) -> wire.Refusal | None:
-    """The refusal the scenario puts in the way of this call at this moment, if any."""
+    """The refusal the scenario puts in the way of this call at this moment, if any, in the shape YouTrack's
+    troubleshooting shows for a status its server answers itself (`{"error": "Not Found", "error_description":
+    "HTTP 404 Not Found"}`, https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-incorrect-issue-url.html)
+    with the status's RFC 9110 reason phrase."""
     for fault in world.faults():
         if fault.method != method.upper() or not _matches(fault.path, path):
             continue
         if now < fault.starts or (fault.ends is not None and now >= fault.ends):
             continue
         retry = None if fault.ends is None else max(1, (fault.ends - now + 999) // 1000)
-        return wire.Refusal(
-            fault.status,
-            _REASONS.get(fault.status, "Error"),
-            _DESCRIPTIONS.get(fault.status, "The request failed"),
-            retry_after=retry,
-        )
+        reason = _REASONS.get(fault.status, "Error")
+        return wire.Refusal(fault.status, reason, f"HTTP {fault.status} {reason}", retry_after=retry)
     return None
 
 
@@ -73,13 +72,6 @@ _REASONS = {
     502: "Bad Gateway",
     503: "Service Unavailable",
     504: "Gateway Timeout",
-}
-_DESCRIPTIONS = {
-    429: "Too many requests. Try again later.",
-    500: "Internal server error",
-    502: "Bad gateway",
-    503: "Service is temporarily unavailable",
-    504: "Gateway timeout",
 }
 
 
