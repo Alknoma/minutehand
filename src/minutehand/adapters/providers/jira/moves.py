@@ -7,15 +7,21 @@ an issue a person moved and one the agent moved read back the same way, with the
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 
 from pydantic import JsonValue
 
 from minutehand.adapters.providers.jira import wire
-from minutehand.adapters.providers.jira.state import JiraWorld, seeded_comment_id
+from minutehand.adapters.providers.jira.manifest import MANIFEST
+from minutehand.adapters.providers.jira.state import JiraWorld, issue_ref, seeded_comment_id
 from minutehand.domain.scenario import TicketState
+from minutehand.domain.transitions import Transition, transition_change
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
+
+CREATE = "Create"
+"""The name of a workflow's initial transition, the one that creates an issue in its first status."""
 
 
 class Desk:
@@ -370,6 +376,112 @@ class Desk:
             if (not t.sources or issue.status in t.sources) and not (not t.sources and t.to == issue.status)
         ]
 
+    def transition(
+        self,
+        issue: wire.StoredIssue,
+        project: wire.StoredProject,
+        transition: wire.StoredTransition,
+        *,
+        fields: wire.Json,
+        update: wire.Json,
+        by: str,
+        at: datetime,
+        actor: Actor,
+        who: str | None,
+    ) -> Transition:
+        """Take `transition` on the issue as Jira's transition API does: every field checked against its screen
+        (every bad one named in one 400), `update.comment` added as a comment, the status moved with its
+        changelog entry, and the move recorded once as a transition of the issue. `who` is the person's key when a
+        person takes it."""
+        site = self.site()
+        errors: dict[str, str] = {}
+        resolution: str | None = None
+        changed = issue
+        for name, raw in fields.items():
+            if name not in transition.screen:
+                errors[name] = wire.not_on_screen(name)
+            elif name == "resolution":
+                ref = wire.read_ref(raw)
+                found = None
+                if ref is not None:
+                    found = next(
+                        (r for r in site.resolutions if str(ref.id) == r.id or (ref.name or "") == r.name), None
+                    )
+                if found is None:
+                    errors[name] = wire.INVALID_VALUE
+                else:
+                    resolution = found.id
+            else:
+                try:
+                    changed = self.apply_fields(
+                        changed, project.model_copy(update={"screens": _with(project, issue, name)}), {name: raw},
+                        creating=False,
+                    )  # fmt: skip
+                except wire.Refusal as refusal:
+                    errors |= refusal.fields
+        for name in transition.required:
+            if name not in fields and name not in errors:
+                errors[name] = wire.REQUIRED
+        comment_body: JsonValue = None
+        for name, operations in update.items():
+            commenting = name == "comment"  # enum-lint: exempt Jira's own field id in a transition body
+            if not commenting or not isinstance(operations, list):
+                errors[name] = wire.not_on_screen(name)
+                continue
+            for operation in operations:
+                add = operation["add"] if isinstance(operation, dict) and "add" in operation else None
+                text = add["body"] if isinstance(add, dict) and "body" in add else None
+                if not wire.is_document(text):
+                    errors["comment"] = wire.COMMENT_NOT_VALID
+                else:
+                    comment_body = text
+        if errors:
+            raise wire.Refusal(400, [], errors)
+        was = site.status(issue.status).name
+        moved = self.moved(changed, site.status(transition.to), resolution=resolution)
+        self.write(issue, moved, by=by, at=at, actor=actor)
+        if comment_body is not None:
+            self.comment(moved, comment_body, by=by, at=at, actor=actor)
+        content: dict[str, JsonValue] = {}
+        if comment_body is not None:
+            content["comment"] = wire.adf_text(comment_body)
+        for name, raw in fields.items():
+            content[name] = raw
+        return self.record(
+            Transition(
+                provider=MANIFEST.key,
+                item=issue_ref(issue.id),
+                name=transition.name,
+                from_state=was,
+                to_state=site.status(transition.to).name,
+                by=actor,
+                who=who,
+                content=json.dumps(content),
+                at=at,
+            )
+        )
+
+    def created(self, issue: wire.StoredIssue, *, at: datetime, actor: Actor, who: str | None) -> Transition:
+        """An issue just created: its workflow's initial transition into its first status."""
+        return self.record(
+            Transition(
+                provider=MANIFEST.key,
+                item=issue_ref(issue.id),
+                name=CREATE,
+                from_state=None,
+                to_state=self.site().status(issue.status).name,
+                by=actor,
+                who=who,
+                at=at,
+            )
+        )
+
+    def record(self, transition: Transition) -> Transition:
+        """Keep `transition` in the log, once, as the event it becomes."""
+        store = self.world.store
+        event = store.apply(transition_change(transition, at_seq=store.head() + 1))
+        return transition.model_copy(update={"seq": event.seq})
+
     def write(
         self, before: wire.StoredIssue, after: wire.StoredIssue, *, by: str | None, at: datetime, actor: Actor
     ) -> wire.StoredIssue:
@@ -419,6 +531,14 @@ class Desk:
                 self.world.delete_link(link, actor=actor)
         for gone in doomed:
             self.world.delete_issue(gone, actor=actor)
+
+
+def _with(project: wire.StoredProject, issue: wire.StoredIssue, field: str) -> list[wire.StoredScreen]:
+    """The project's screens with `field` on the issue's type: a transition screen holds what it holds."""
+    return [
+        s.model_copy(update={"fields": [*s.fields, field]}) if s.issueType == issue.issuetype else s
+        for s in project.screens
+    ]
 
 
 def _is_date(text: str) -> bool:

@@ -22,6 +22,7 @@ from minutehand.application.checkpoint import (
     PendingMachine,
     PendingReply,
     PendingTimer,
+    PendingTransition,
     PendingWake,
 )
 from minutehand.domain.agent import WakeReason
@@ -47,6 +48,8 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.MACHINE
     if isinstance(pending, PendingTimer):
         return DueSource.TIMER
+    if isinstance(pending, PendingTransition):
+        return DueSource.TRANSITION
     assert isinstance(pending, PendingDirection)
     return DueSource.DIRECTION
 

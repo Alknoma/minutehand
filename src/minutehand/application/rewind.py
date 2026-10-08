@@ -42,6 +42,7 @@ from minutehand.application.inboxes import Inboxes, items_in
 from minutehand.application.memory import store_digest
 from minutehand.application.moments import asks_of, pinned
 from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, OutsideState, Reach, Scorer, Services
+from minutehand.application.people import People
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, start_fork
 from minutehand.application.run_clock import RunClock
@@ -145,6 +146,7 @@ async def fork_run(
     reach: Reach,
     services: Services,
     replier_for: Callable[[Scenario, Sequence[ReplyAt]], Replier],
+    people_for: Callable[[Scenario], People | None] = lambda _: None,
     state_dir: Path,
     wire: OnTheWire | None = None,
     telemetry: Telemetry | None = None,
@@ -226,6 +228,7 @@ async def fork_run(
                 environment=environment,
                 inboxes=Inboxes(changed, list(inboxes.reaches.values())) if inboxes is not None else None,
                 outside=outside,
+                people=people_for(changed),
             )
             orchestrator.mount()
             edits = [o for o in fork.overrides if isinstance(o, MemoryEdit)]

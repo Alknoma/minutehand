@@ -47,6 +47,7 @@ class Wrote(StrEnum):
     REPLY = "reply"  # their words back to a message
     DECISION = "decision"  # their decision on an item in the agent's own product, and what they give with it
     SUMMARY = "summary"  # what they saw before the turns they are shown word for word
+    TRANSITION = "transition"  # the transition they take on an item pending on them, and what it carries
 
 
 class PersonCall(Model):
@@ -56,7 +57,9 @@ class PersonCall(Model):
     key: str = Field(description="SHA-256 of everything the model was asked: model, prompt version, system, messages")
     person: str = Field(description="Person.key")
     wrote: Wrote
-    asked: EntityRef | None = Field(default=None, description="The message or item answered; None for a summary")
+    asked: EntityRef | None = Field(
+        default=None, description="The message or item answered, or moved; None for a summary"
+    )
     model: str
     prompt_version: str
     input_tokens: int | None = None

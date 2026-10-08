@@ -77,7 +77,7 @@ from minutehand.domain.world import AnsweredBy as AnsweredByWire
 from minutehand.ports.store import Store
 
 WRITES = frozenset({Operation.CREATE, Operation.UPDATE, Operation.DELETE})
-OWN = frozenset({EntityKind.DUE, EntityKind.NEXT_WAKE})
+OWN = frozenset({EntityKind.DUE, EntityKind.PENDING, EntityKind.NEXT_WAKE})
 """Kinds the run loop writes for itself: drawn from the dispatch table, never as changes in the world."""
 LABEL = 80
 """The most characters of a mark's label: the inspector reads the rest."""

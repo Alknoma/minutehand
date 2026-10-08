@@ -500,7 +500,12 @@ def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> 
     for e in record.events:
         if e.seq <= at_seq or e.operation in (Operation.READ, Operation.SEARCH):
             continue
-        if e.entity == CHECKPOINT or e.entity.kind in (EntityKind.DUE, EntityKind.MEMORY, EntityKind.NEXT_WAKE):
+        if e.entity == CHECKPOINT or e.entity.kind in (
+            EntityKind.DUE,
+            EntityKind.PENDING,
+            EntityKind.MEMORY,
+            EntityKind.NEXT_WAKE,
+        ):
             continue  # the run's own rows: the agent's plan is compared through its report, below
         key = (e.actor, e.operation, e.entity, e.after, e.sim_time)
         found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))

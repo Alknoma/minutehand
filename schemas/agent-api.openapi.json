@@ -266,7 +266,9 @@
           "tool_call",
           "memory",
           "next_wake",
-          "stored"
+          "stored",
+          "transition",
+          "pending"
         ],
         "title": "EntityKind",
         "type": "string"

@@ -97,6 +97,7 @@ from minutehand.adapters.control.wire import (
     FiredView,
     FurtherSeed,
     Happen,
+    HeldItemView,
     InboxesView,
     LobbyKind,
     MarkStep,
@@ -119,6 +120,7 @@ from minutehand.adapters.control.wire import (
     Seeded,
     SpansPage,
     StepView,
+    TransitionsView,
     Unmatched,
     WorldList,
     WorldView,
@@ -563,6 +565,32 @@ def create_app(serving: Serving) -> Starlette:
         ]
         return _json(InboxesView(pending=pending, due=due, unread=looked.unread))
 
+    async def transitions(request: Request) -> Response:
+        live = world_of(request).standing
+        await live.look()
+        held, moves = live.transitions()
+        return _json(
+            TransitionsView(
+                items=[
+                    HeldItemView(
+                        pending=ref,
+                        person=item.person,
+                        item=item.item,
+                        nth=item.nth,
+                        state=item.state,
+                        status=item.status,
+                        since=since,
+                        due_at=item.due_at,
+                        take=item.take,
+                        transition=item.transition,
+                        failure=item.failure,
+                    )
+                    for ref, item, since in held
+                ],
+                transitions=moves,
+            )
+        )
+
     async def perform_due(request: Request) -> Response:
         done = await standing.perform_due(world_of(request).world_id)
         return _json(DecisionsDone(decisions=[_decision(e) for e in done]))
@@ -641,6 +669,7 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/steps", world_steps, ["POST"]),
             route("/worlds/{world_id}/report", report, ["POST"]),
             route("/worlds/{world_id}/inboxes/read", read_inboxes, ["POST"]),
+            route("/worlds/{world_id}/transitions", transitions, ["GET"]),
             route("/worlds/{world_id}/inboxes/due", perform_due, ["POST"]),
             route("/worlds/{world_id}/inboxes/decide", decide, ["POST"]),
             route("/cases", cases, ["GET"]),

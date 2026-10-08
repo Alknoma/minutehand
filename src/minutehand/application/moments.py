@@ -174,27 +174,43 @@ def draw(
 ) -> Drawn:
     """The moment this person answers `asked`: within `within` of their available time when given (a step's, or
     their own `reply_within`), else their `delay` in calendar time pushed to when they are available."""
-    window = within or person.reply_within
     anchor = first_ask(person, history, asked)
+    return draw_for(scenario, person, asked.entity, asked.sim_time, first_asked=anchor, within=within, delay=delay)
+
+
+def draw_for(
+    scenario: Scenario,
+    person: Person,
+    ref: EntityRef,
+    asked_at: datetime,
+    *,
+    first_asked: datetime,
+    within: Window | None,
+    delay: DelayRange,
+) -> Drawn:
+    """The moment this person acts on `ref`, asked of them at `asked_at`: within `within` (or their own
+    `reply_within`) of their available time, else their `delay` in calendar time pushed to when they are available.
+    `first_asked` is where an absence that starts on a first ask starts."""
+    window = within or person.reply_within
     if window is not None:
         offset = window.min + timedelta(
-            seconds=_drawn_seconds(scenario.seed, person, asked.entity, "window", window.max - window.min)
+            seconds=_drawn_seconds(scenario.seed, person, ref, "window", window.max - window.min)
         )
-        lands = after_available(asked.sim_time, offset, person, scenario.starts_at, first_ask=anchor)
+        lands = after_available(asked_at, offset, person, scenario.starts_at, first_ask=first_asked)
         return Drawn(
             source=DrawnFrom.WINDOW,
             seed=scenario.seed,
-            asked_at=asked.sim_time,
+            asked_at=asked_at,
             window=window,
             offset=offset,
             lands_at=lands,
         )
     offset = delay.shortest + timedelta(
-        seconds=_drawn_seconds(scenario.seed, person, asked.entity, "delay", delay.longest - delay.shortest)
+        seconds=_drawn_seconds(scenario.seed, person, ref, "delay", delay.longest - delay.shortest)
     )
-    lands = available_at(asked.sim_time + offset, person, scenario.starts_at, first_ask=anchor)
+    lands = available_at(asked_at + offset, person, scenario.starts_at, first_ask=first_asked)
     return Drawn(
-        source=DrawnFrom.DELAY, seed=scenario.seed, asked_at=asked.sim_time, delay=delay, offset=offset, lands_at=lands
+        source=DrawnFrom.DELAY, seed=scenario.seed, asked_at=asked_at, delay=delay, offset=offset, lands_at=lands
     )
 
 
@@ -226,12 +242,17 @@ def sooner(
 
 def pinned(scenario: Scenario, asked: WorldEvent, after: timedelta) -> Drawn:
     """A moment a fork pins: exactly `after` the ask, nothing drawn."""
+    return pinned_at(scenario, asked.sim_time, after)
+
+
+def pinned_at(scenario: Scenario, asked_at: datetime, after: timedelta) -> Drawn:
+    """A moment pinned exactly `after` `asked_at`, nothing drawn: a fork's `reply_at`, a scenario's `takes`."""
     return Drawn(
         source=DrawnFrom.PINNED,
         seed=scenario.seed,
-        asked_at=asked.sim_time,
+        asked_at=asked_at,
         offset=after,
-        lands_at=(asked.sim_time + after).astimezone(UTC),
+        lands_at=(asked_at + after).astimezone(UTC),
     )
 
 

@@ -385,6 +385,53 @@ VIEWS: tuple[View, ...] = (
         ],
     ),
     View(
+        name="transitions",
+        description="Every transition of an item's state, by anyone: the agent through a provider's API, a person "
+        "through the people engine, a person's own act (docs/design-transitions.md). States and names are the "
+        "provider's own words.",
+        order="seq",
+        columns=[
+            _c("seq", N, "The event it is (events.seq)"),
+            _c("at", T, f"Simulated time; {TIME}"),
+            _c("wake", N, "The wake it happened in"),
+            _c("provider", T, "The provider whose item it moved"),
+            _c("item_kind", T, "The item's kind: ticket, message (an invitation), ..."),
+            _c("item_id", T, "The item's id within its provider and kind"),
+            _c("name", T, "The provider's own name for it: 'Start work', 'accepted'"),
+            _c("from_state", T, "The state it left; NULL when it created the item"),
+            _c("to_state", T, "The state it reached"),
+            _c("actor", T, "agent, person or scenario"),
+            _c("who", T, "people.key of the person who made it; NULL for the agent"),
+            _c("content", T, "What it carried, as a JSON object: a comment, the reasons"),
+            _c("call_id", N, "The HTTP call that made it (calls.call_id); NULL when no call did"),
+        ],
+    ),
+    View(
+        name="items",
+        description="Every item the people engine held pending on a person (docs/design-transitions.md): when it "
+        "began to wait on them, when they act, and how it ended. A person acts once per turn: after their move it "
+        "is pending on them again only once someone else moves it, as a row of its own.",
+        order="pending_id",
+        columns=[
+            _c("pending_id", T, "The engine's record of it (events.entity_id of its pending rows)"),
+            _c("person", T, "people.key it waits on"),
+            _c("nth", N, "Which item pending on them in its provider it is, from 1"),
+            _c("provider", T, "The provider it is in"),
+            _c("item_kind", T, "The item's kind"),
+            _c("item_id", T, "The item's id within its provider and kind (transitions.item_id)"),
+            _c("state", T, "Its state when it began to wait on them"),
+            _c("turn", N, "The seq of the last move anyone else made on it then; 0: none"),
+            _c("since", T, f"When it began to wait on them, simulated; {TIME}"),
+            _c("status", T, "pending, acted (they moved it) or gone (it stopped waiting on them first)"),
+            _c("due_at", T, f"When they act; NULL: never (silent, or nothing pinned); {TIME}"),
+            _c("take", T, "The transition the scenario pinned (`takes`); NULL: a model picks"),
+            _c("drawn_from", T, "How `due_at` was drawn: delay, window or pinned"),
+            _c("transition_seq", N, "The transition they took (transitions.seq); NULL until they act"),
+            _c("closed_at", T, f"When it stopped waiting on them, simulated; NULL while it waits; {TIME}"),
+            _c("failure", T, "Why their last try did not land, or why it was dropped"),
+        ],
+    ),
+    View(
         name="model_calls",
         description="Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, "
         "and the ones Minutehand made to write what people say. Cost only from prices the user declares.",
@@ -407,7 +454,7 @@ VIEWS: tuple[View, ...] = (
             _c("cost", R, "From the prices the user declared for this model (--prices); NULL when none was declared"),
             _c("currency", T, "The declared price's currency"),
             _c("trace_id", T, "The agent's trace"),
-            _c("wrote", T, "For a person's: reply, decision or summary"),
+            _c("wrote", T, "For a person's: reply, decision, transition or summary"),
             _c(
                 "wrote_seqs",
                 T,

@@ -78,6 +78,7 @@ from minutehand.application.forks import (
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
+from minutehand.application.people import People, needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.restore import Progress, Restored
@@ -321,6 +322,7 @@ async def play(
                     environment=emulators,
                     inboxes=inboxes_for(agent, scenario, signing),
                     outside=own_files,
+                    people=people_for(scenario, services, model),
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -425,6 +427,7 @@ async def fork(
                     reach=reach_for(agent, env=env),
                     services=services,
                     replier_for=lambda s, pins: PeopleReplier(s, model, agent.inboxes, pins=pins),
+                    people_for=lambda s: people_for(s, services, model),
                     state_dir=state / RUNS,
                     wire=routing,
                     telemetry=telemetry,
@@ -1032,10 +1035,24 @@ def capturing_for(
         raise RunRefused(f"agent {agent.name}'s outbound hosts: {e}") from e
 
 
+def people_for(scenario: Scenario, services: Services, model: LanguageModel | None) -> People | None:
+    """The people engine over the providers the scenario names in `transitions_on`; None when it names none."""
+    if not scenario.transitions_on:
+        return None
+    by_key = {p.manifest.key: p for p in services.providers}
+
+    def provider(key: ProviderKey) -> Provider:
+        if key not in by_key:
+            raise RunRefused(f"the scenario has people act through transitions on {key}, which is not in the run")
+        return by_key[key]
+
+    return People(scenario, provider, model)
+
+
 def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: LanguageModel | None) -> None:
     """A person whose words a model writes (conversing, a script step's words, a decision's reasons) needs a model;
     without one the run is refused before it starts, naming each and why."""
-    needing = unspoken(scenario, agent.inboxes)
+    needing = [*unspoken(scenario, agent.inboxes), *needs_model(scenario)]
     if needing and model is None:
         raise RunRefused(
             f"a model writes what {'; '.join(needing)} say, and no model is configured: set {MODEL_VARIABLE} and "
@@ -1088,6 +1105,7 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     named: set[ProviderKey] = {t.provider for t in scenario.tickets} | {d.provider for d in scenario.documents}
     named |= {s.provider for s in scenario.spaces} | {s.provider for s in scenario.provider_seeds}
     named |= {c.provider for c in scenario.channels}
+    named |= set(scenario.transitions_on)
     named |= {t.provider for t in agent.inbound}
     if isinstance(agent.goal, GoalByMessage):
         named.add(agent.goal.provider)

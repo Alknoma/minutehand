@@ -34,6 +34,7 @@ from minutehand.adapters.control.wire import (
     Say,
     Seeded,
     StepView,
+    TransitionsView,
     WorldView,
 )
 from minutehand.domain.agent import AgentReport
@@ -292,6 +293,10 @@ class OpenWorld:
         """Back to the seed the world was opened with: the same id and claims, nothing that happened since."""
         self.view = self.client.reset(self.world_id)
         return self.view
+
+    def transitions(self) -> TransitionsView:
+        """What waits on the world's people and every move of any item's state (docs/design-transitions.md)."""
+        return self.client.transitions(self.world_id)
 
     def raw_state(self, provider: str) -> RawState:
         """Everything the world holds of `provider`, every version: for reading by a person, not asserting on."""

@@ -457,26 +457,44 @@ class CalendarWorld:
         """A guest answers an invitation: a press sets their `responseStatus`, written text their response comment.
         An event deleted since, or a guest no longer on it, is left alone. Answers the calendars the event changed
         on, none when it was left alone."""
-        found = self.event(reply.in_reply_to.external_id)
-        person = self._drive.person(reply.person)
-        if found is None or person is None or person.emailAddress is None:
-            return set()
-        event, _ = found
-        address = person.emailAddress.lower()
-        attendees = list(event.attendees or [])
-        place = next((n for n, a in enumerate(attendees) if a.email.lower() == address), None)
-        if place is None:
-            return set()
         if reply.press is not None and reply.press.action_id not in cal.ANSWERS:
             raise ValueError(
                 f"{reply.person} presses {reply.press.label!r} on an invitation, which offers "
                 + ", ".join(cal.ANSWERS.values())
             )
-        attendee = attendees[place]
         if reply.press is not None:
-            attendees[place] = attendee.model_copy(update={"responseStatus": reply.press.action_id})
-        else:
-            attendees[place] = attendee.model_copy(update={"comment": reply.text})
+            return self.respond(reply.in_reply_to.external_id, reply.person, reply.press.action_id, None, clock)
+        return self.respond(reply.in_reply_to.external_id, reply.person, None, reply.text, clock)
+
+    def attendee(self, event: cal.StoredEvent, person: str) -> cal.Attendee | None:
+        """The person's place on the event's guest list, by their account's address; None when they are not on it."""
+        account = self._drive.person(person)
+        if account is None or account.emailAddress is None:
+            return None
+        address = account.emailAddress.lower()
+        return next((a for a in event.attendees or [] if a.email.lower() == address), None)
+
+    def respond(self, event_id: str, person: str, status: str | None, comment: str | None, clock: Clock) -> set[str]:
+        """A guest sets their `responseStatus` (`status`) and/or their response comment, as Calendar's invitation
+        does, recorded as actor PERSON: the event as its organizer holds it, and the guest's response, a control
+        pressed or words written. An event deleted since, or a guest no longer on it, is left alone. Answers the
+        calendars the event changed on, none when it was left alone."""
+        found = self.event(event_id)
+        if found is None:
+            return set()
+        event, _ = found
+        attendee = self.attendee(event, person)
+        if attendee is None:
+            return set()
+        address = attendee.email.lower()
+        attendees = list(event.attendees or [])
+        place = attendees.index(attendee)
+        changed: dict[str, JsonValue] = {}
+        if status is not None:
+            changed["responseStatus"] = status
+        if comment is not None:
+            changed["comment"] = comment
+        attendees[place] = attendee.model_copy(update=changed)
         seq = self._store.head() + 1
         answered = event.model_copy(
             update={"attendees": attendees, "updated": wire.rfc3339(clock.now()), "etag": f'"{seq}"'}
@@ -486,14 +504,14 @@ class CalendarWorld:
         after: InteractionSnapshot | MessageSnapshot = (
             InteractionSnapshot(
                 interaction=InteractionKind.PRESS,
-                person=reply.person,
-                on=reply.in_reply_to,
-                action_id=reply.press.action_id,
-                label=reply.press.label,
+                person=person,
+                on=event_ref(event.id),
+                action_id=status,
+                label=cal.ANSWERS[status],
             )
-            if reply.press is not None
+            if status is not None
             else MessageSnapshot(
-                text=reply.text,
+                text=comment or "",
                 channel=event.id,
                 recipient_emails=[event.organizer.email],
                 thread_of=event.id,

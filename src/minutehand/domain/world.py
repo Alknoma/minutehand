@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 
+from minutehand.domain.clock import Drawn
 from minutehand.domain.scenario import AccessRole, Model, ProviderKey, TicketState
 
 
@@ -24,6 +25,8 @@ class EntityKind(StrEnum):
     MEMORY = "memory"  # a key of the agent's own memory, written or read through `minutehand.agent.store`
     NEXT_WAKE = "next_wake"  # the moment the agent asked to be woken next through `minutehand.agent.wake`
     STORED = "stored"  # an item the agent wrote to an outbound host the agent file declares `store`
+    TRANSITION = "transition"  # one move of an item's state, by anyone (`domain.transitions.Transition`)
+    PENDING = "pending"  # an item pending on a person, as the people engine holds it (`application.people`)
 
 
 class Operation(StrEnum):
@@ -487,6 +490,48 @@ class StoredSnapshot(Model):
     item: str | None = Field(default=None, description="The item as stored, JSON text; None for a delete")
 
 
+class TransitionSnapshot(Model):
+    """One move of an item's state (`domain.transitions.Transition`): the event's actor is who made it, its entity
+    the transition itself, listed under its item."""
+
+    kind: Literal["transition"] = "transition"
+    item: EntityRef = Field(description="The ticket, invitation, conversation or request it moved")
+    name: str = Field(description="The provider's own name for it")
+    from_state: str | None = Field(description="None when it created the item")
+    to_state: str
+    who: str | None = Field(description="A person's key; None for the agent, the scenario or time")
+    content: str = Field(description="What it carried, as a JSON object")
+
+
+class PendingStatus(StrEnum):
+    PENDING = "pending"  # waiting on the person; they act at `due_at`, or never when it is None
+    ACTED = "acted"  # they took a transition on it (`PendingSnapshot.transition`)
+    GONE = "gone"  # it stopped waiting on them before they acted: moved, reassigned, deleted, no move left
+
+
+class PendingSnapshot(Model):
+    """An item pending on a person, as the people engine holds it (`application.people`): written as actor SCENARIO
+    when the engine first sees it waiting on them and as it leaves, so a fork reads what was owed at its checkpoint
+    and no check counts it as anyone's work."""
+
+    kind: Literal["pending"] = "pending"
+    person: str = Field(description="Person.key it waits on")
+    item: EntityRef
+    nth: int = Field(ge=1, description="Which of the items pending on this person in its provider it is, from 1")
+    state: str = Field(description="The item's state when it became pending on them, in the provider's words")
+    turn: int = Field(
+        ge=0,
+        description="The seq of the last transition anyone else made on it when it became pending; 0: none. A "
+        "person acts once per turn: after their move it waits on them again only once someone else moves it",
+    )
+    status: PendingStatus
+    due_at: AwareDatetime | None = Field(description="When they act; None: never (silent, or nothing pinned)")
+    take: str | None = Field(default=None, description="The offer a scenario pinned (`Person.takes`)")
+    drawn: Drawn | None = Field(default=None, description="How `due_at` was drawn")
+    transition: int | None = Field(default=None, description="The seq of the transition they took")
+    failure: str | None = Field(default=None, description="Why their last try to act did not land")
+
+
 class NextWakeSnapshot(Model):
     """The moment the agent asked to be woken next (`minutehand.agent.wake`), or none."""
 
@@ -495,7 +540,9 @@ class NextWakeSnapshot(Model):
 
 
 Snapshot = Annotated[
-    MemorySnapshot
+    TransitionSnapshot
+    | PendingSnapshot
+    | MemorySnapshot
     | StoredSnapshot
     | NextWakeSnapshot
     | ToolCallSnapshot

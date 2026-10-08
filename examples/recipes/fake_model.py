@@ -29,14 +29,17 @@ says it is finished. The tools it calls are the same in every recipe:
     python fake_model.py [--port 8790]
 
 It also writes what Minutehand's people say, when Minutehand itself asks (a request whose structured answer is
-`WrittenStep`, `WrittenReply`, `WrittenDecision` or `WrittenSummary`), so a run with model-written people needs no
-real model either. The rules read the prompt Minutehand sends, never guess:
+`WrittenStep`, `WrittenReply`, `WrittenDecision`, `WrittenTransition` or `WrittenSummary`), so a run with
+model-written people needs no real model either. The rules read the prompt Minutehand sends, never guess:
 
     a script step       its facts ("What this reply says:"), as plain sentences; a step that declines, asks back
                         or defers says so in a fixed sentence
     conversing          an answer only when the last message asks something (holds "?"): what the person knows,
                         as plain sentences, or "I do not know."; else no answer
     a decision          the one the script decided, else the first offered; each input from the reasons given
+    a transition        the one the scenario pinned, else the first offered whose name, then whose state, the
+                        person's facts mention, else the first offered; each required field, and an optional one
+                        when they know something, from their facts
     a summary           how many earlier messages there were
 
 Each answer to the same prompt is the same, so a run with it is repeatable.
@@ -114,7 +117,7 @@ def decide(situation: str) -> list[Call]:
 
 # -- what people say, when Minutehand asks -------------------------------------------------------------------
 
-PEOPLE = ("WrittenStep", "WrittenReply", "WrittenDecision", "WrittenSummary")
+PEOPLE = ("WrittenStep", "WrittenReply", "WrittenDecision", "WrittenTransition", "WrittenSummary")
 
 
 def _bullets(text: str, heading: str) -> list[str]:
@@ -172,6 +175,8 @@ def person_answer(schema: str, system: str, shown: str) -> dict[str, object]:
         if "?" not in _last_message(shown):
             return {"replies": False, "text": None, "press": None, "form": None}
         return {"replies": True, "text": _sentences(known) or "I do not know.", "press": None, "form": None}
+    if schema == "WrittenTransition":
+        return transition_answer(system, shown, known)
     offered = re.findall(r'^- "([a-z][a-z0-9_]*)"', shown, flags=re.MULTILINE)
     decided = re.search(r'You have decided: "([a-z][a-z0-9_]*)"', system)
     decision = decided.group(1) if decided else offered[0]
@@ -182,6 +187,28 @@ def person_answer(schema: str, system: str, shown: str) -> dict[str, object]:
         for name in re.findall(r'input "([a-z][a-z0-9_]*)"', block)
     ]
     return {"decision": decision, "inputs": inputs}
+
+
+def transition_answer(system: str, shown: str, known: list[str]) -> dict[str, object]:
+    """What a person does with an item pending on them, by the rules above."""
+    offers = re.findall(r'^- "([^"]+)": it becomes (.+?)(?: \(.*\))?$', shown, flags=re.MULTILINE)
+    decided = re.search(r'You have decided: "([^"]+)"', system)
+    said = " ".join(known).casefold()
+    if decided is not None:
+        take = decided.group(1)
+        carries = _bullets(system, "what you write with it says:") or known
+    else:
+        named = [name for name, _ in offers if name.casefold() in said]
+        reached = [name for name, state in offers if state.casefold() in said]
+        take = (named or reached or [offers[0][0]])[0]
+        carries = known
+    block = shown.split(f'- "{take}"', 1)[1].split('\n- "', 1)[0] if f'- "{take}"' in shown else ""
+    fields = []
+    for name, needed in re.findall(r'field "([^"]+)" \((required|optional)\)', block):
+        words = _sentences([c for c in carries if not c.startswith(_UNKNOWN)])
+        if needed == "required" or words:
+            fields.append({"name": name, "value": words or "No comment."})
+    return {"take": take, "fields": fields}
 
 
 def people_schema(body: dict[str, object]) -> str | None:

@@ -350,6 +350,49 @@ What people said and decided, each reply as decided: who, when it lands, how its
 | `drawn_from` | TEXT | How its moment was drawn: delay, window, reminded, pinned or automatic |
 | `person_call_id` | INTEGER | The model call that wrote it (model_calls.person_call_id); NULL when none |
 
+### `transitions`
+
+Every transition of an item's state, by anyone: the agent through a provider's API, a person through the people engine, a person's own act (docs/design-transitions.md). States and names are the provider's own words. Kept in the order `seq`.
+
+| Column | Type | What it holds |
+|---|---|---|
+| `seq` | INTEGER | The event it is (events.seq) |
+| `at` | TEXT | Simulated time; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
+| `wake` | INTEGER | The wake it happened in |
+| `provider` | TEXT | The provider whose item it moved |
+| `item_kind` | TEXT | The item's kind: ticket, message (an invitation), ... |
+| `item_id` | TEXT | The item's id within its provider and kind |
+| `name` | TEXT | The provider's own name for it: 'Start work', 'accepted' |
+| `from_state` | TEXT | The state it left; NULL when it created the item |
+| `to_state` | TEXT | The state it reached |
+| `actor` | TEXT | agent, person or scenario |
+| `who` | TEXT | people.key of the person who made it; NULL for the agent |
+| `content` | TEXT | What it carried, as a JSON object: a comment, the reasons |
+| `call_id` | INTEGER | The HTTP call that made it (calls.call_id); NULL when no call did |
+
+### `items`
+
+Every item the people engine held pending on a person (docs/design-transitions.md): when it began to wait on them, when they act, and how it ended. A person acts once per turn: after their move it is pending on them again only once someone else moves it, as a row of its own. Kept in the order `pending_id`.
+
+| Column | Type | What it holds |
+|---|---|---|
+| `pending_id` | TEXT | The engine's record of it (events.entity_id of its pending rows) |
+| `person` | TEXT | people.key it waits on |
+| `nth` | INTEGER | Which item pending on them in its provider it is, from 1 |
+| `provider` | TEXT | The provider it is in |
+| `item_kind` | TEXT | The item's kind |
+| `item_id` | TEXT | The item's id within its provider and kind (transitions.item_id) |
+| `state` | TEXT | Its state when it began to wait on them |
+| `turn` | INTEGER | The seq of the last move anyone else made on it then; 0: none |
+| `since` | TEXT | When it began to wait on them, simulated; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
+| `status` | TEXT | pending, acted (they moved it) or gone (it stopped waiting on them first) |
+| `due_at` | TEXT | When they act; NULL: never (silent, or nothing pinned); UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
+| `take` | TEXT | The transition the scenario pinned (`takes`); NULL: a model picks |
+| `drawn_from` | TEXT | How `due_at` was drawn: delay, window or pinned |
+| `transition_seq` | INTEGER | The transition they took (transitions.seq); NULL until they act |
+| `closed_at` | TEXT | When it stopped waiting on them, simulated; NULL while it waits; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
+| `failure` | TEXT | Why their last try did not land, or why it was dropped |
+
 ### `model_calls`
 
 Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, and the ones Minutehand made to write what people say. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
@@ -373,7 +416,7 @@ Model calls: the agent's, from the telemetry it exported or the wire with --reco
 | `cost` | REAL | From the prices the user declared for this model (--prices); NULL when none was declared |
 | `currency` | TEXT | The declared price's currency |
 | `trace_id` | TEXT | The agent's trace |
-| `wrote` | TEXT | For a person's: reply, decision or summary |
+| `wrote` | TEXT | For a person's: reply, decision, transition or summary |
 | `wrote_seqs` | TEXT | JSON array of the agent messages it is joined to (agent) or of the message it answered (person) |
 | `replayed` | INTEGER | 1 for a person's call answered from the record: no model was called |
 | `failure` | TEXT | Why a person's call failed |

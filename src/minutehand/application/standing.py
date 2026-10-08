@@ -26,6 +26,8 @@ from minutehand.application.further_seed import Scratch, land
 from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_undecided
 from minutehand.application.model_calls import per_wake
 from minutehand.application.moments import automatic_reply, decision_text, follow_up_of, messages_to, sooner
+from minutehand.application.orchestrator import refuse_fates_beside_the_engine
+from minutehand.application.people import People, needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.run_clock import RunClock
@@ -63,6 +65,7 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
+from minutehand.domain.transitions import Transition
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -71,7 +74,9 @@ from minutehand.domain.world import (
     ItemStatus,
     MessageSnapshot,
     Operation,
+    PendingSnapshot,
     TicketSnapshot,
+    TransitionSnapshot,
     WorldEvent,
 )
 from minutehand.ports.model import Model as LanguageModel
@@ -96,6 +101,9 @@ from minutehand.ports.provider import (
     PushesInteractions,
 )
 from minutehand.ports.store import Store
+
+TRANSITION = "transition"
+"""How an owed move of a person's is written, as `OwedByPerson.writing` says it: the people engine's."""
 
 FIRST_WAKE = 1
 """What happens after the seed and before any step is in this wake: the seed is wake 0, as in a run. A step marked
@@ -170,6 +178,8 @@ class _Owed:
     fate: tuple[EntityRef, TicketState | None] | None = None
     direction: str | None = None
     happening: Happening | None = None
+    transition: EntityRef | None = None
+    """The people engine's record of an item pending on a person, who acts on it then (`application.people`)."""
 
 
 @dataclass(frozen=True)
@@ -206,6 +216,7 @@ class StandingWorld:
         model is refused, naming them."""
         if scripted:
             needing = unspoken(scenario, [r.declared for r in inboxes.reaches.values()] if inboxes else [])
+            needing += needs_model(scenario)
             if needing and model is None:
                 raise WorldRefused(f"a model writes what {'; '.join(needing)} say, and no model is configured")
         if inboxes is not None:
@@ -231,6 +242,7 @@ class StandingWorld:
         self.inboxes = inboxes
         self._model = model
         self._replier = self._people_for(scenario) if scripted else None
+        self._engine: People | None = None
         self._owed: list[_Owed] = []
         self._fated: set[EntityRef] = set()
         self._seen = 0
@@ -253,6 +265,14 @@ class StandingWorld:
         step: the first, or, for a world joining a case, the case's step in progress."""
         for key in named:
             self.provider(key)
+        if self.scripted and self.scenario.transitions_on:
+            try:
+                refuse_fates_beside_the_engine(
+                    self.scenario, [self.provider(k).manifest for k in self.scenario.transitions_on]
+                )
+                self._engine = People(self.scenario, self.provider, self._model)
+            except RunRefused as e:
+                raise WorldRefused(str(e)) from e
         for n, happening in enumerate(self.scenario.happenings, start=1):
             self._lands(happening, n)
             at = self.scenario.starts_at + happening.after
@@ -384,6 +404,18 @@ class StandingWorld:
                         failed=None,
                     )
                 )
+            elif o.transition is not None and self._engine is not None:
+                held = self._engine.pending(o.transition, self.store)
+                found.append(
+                    OwedByPerson(
+                        at=o.at,
+                        person=held.person,
+                        answers=held.item,
+                        decision=False,
+                        writing=TRANSITION,
+                        failed=o.failed,
+                    )
+                )
         return found
 
     async def look(self) -> Looked:
@@ -400,6 +432,21 @@ class StandingWorld:
             ]
         await self.observe()
         return looked
+
+    def transitions(self) -> tuple[list[tuple[EntityRef, PendingSnapshot, datetime]], list[Transition]]:
+        """Every item the people engine has held pending on a person (its record as it stands, and when it began to
+        wait), and every transition of any item by anyone, in order."""
+        events = self.store.events()
+        since: dict[EntityRef, datetime] = {}
+        held: dict[EntityRef, PendingSnapshot] = {}
+        moves: list[Transition] = []
+        for e in events:
+            if isinstance(e.after, PendingSnapshot):
+                since.setdefault(e.entity, e.sim_time)
+                held[e.entity] = e.after
+            elif isinstance(e.after, TransitionSnapshot):
+                moves.append(Transition.of(e))
+        return [(ref, item, since[ref]) for ref, item in held.items()], moves
 
     def pending_items(self) -> list[tuple[EntityRef, InboxItemSnapshot, datetime]]:
         """Every item still waiting on a person, with the moment it was first seen, in the order seen."""
@@ -517,6 +564,8 @@ class StandingWorld:
             self._seen = new[-1].seq
         if self._replier is None:
             return
+        self._transitions()
+        engine = self._engine
         history: list[WorldEvent] | None = None
         for event in new:
             if event.actor is not Actor.AGENT or event.operation not in (Operation.CREATE, Operation.UPDATE):
@@ -532,8 +581,29 @@ class StandingWorld:
             if event.operation is Operation.CREATE and isinstance(after, MessageSnapshot):
                 history = history if history is not None else self.store.events()
                 for email in after.recipient_emails:
-                    if email in self._people:
-                        await self._ask(self._people[email], event, [h for h in history if h.seq <= event.seq])
+                    if email not in self._people:
+                        continue
+                    if engine is not None and engine.holds(self._people[email].key, event.entity, self.store):
+                        continue  # the engine's: what waits on them there is pending, not a message to answer
+                    await self._ask(self._people[email], event, [h for h in history if h.seq <= event.seq])
+
+    def _transitions(self) -> None:
+        """What waits on people where the engine plays them: each new item owed at its person's moment, each gone
+        undone dropped."""
+        if self._engine is None:
+            return
+        looked = self._engine.look(self.store, self.clock)
+        self._owed = [o for o in self._owed if o.transition is None or o.transition not in looked.gone]
+        for booked in looked.booked:
+            if booked.at is None:
+                continue
+            self._owed.append(
+                _Owed(
+                    at=max(booked.at, self.clock.now()),
+                    what=f"{booked.person} acts on {booked.item.provider} {booked.item.external_id}",
+                    transition=booked.pending,
+                )
+            )
 
     def _owed_answers(self) -> list[tuple[EntityRef, datetime]]:
         """Every answer people gave or owe, by the message it answers: what tells a follow-up from a new ask."""
@@ -604,6 +674,11 @@ class StandingWorld:
 
     async def _fire(self, owed: _Owed) -> bool:
         """Carry out one thing owed; False when a person's words could not be written, and they still owe them."""
+        if owed.transition is not None:
+            assert self._engine is not None
+            acted = await self._engine.act(owed.transition, self.store, self.clock)
+            owed.failed = acted.failure
+            return acted.failure is None
         if owed.plan is not None:
             written = await self._words(owed)
             if written is None:
