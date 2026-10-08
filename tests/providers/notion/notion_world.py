@@ -85,7 +85,7 @@ NOTION: dict[str, object] = {
                     "client_secret": CLIENT_SECRET,
                     "redirect_uris": [REDIRECT],
                     "installed_by": "dov",
-                    "authorizations": [{"code": CODE, "redirect_uri": REDIRECT}],
+                    "authorizations": [{"code": CODE}],
                     "shared": ["handbook"],
                 },
             ],

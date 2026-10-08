@@ -41,14 +41,21 @@ async def first_block(api: httpx.AsyncClient, index: int = 0) -> dict[str, Any]:
 # --------------------------------------------------------------------------- sign-in and version
 
 
-async def test_a_call_without_a_token_is_refused_unauthorized(world: World) -> None:
-    async with direct(world, token=None) as bare:
-        refusal(await bare.get("/v1/users/me"), 401, "unauthorized")
+async def test_a_call_with_no_token_or_an_unknown_one_is_made_as_the_agents_integration(world: World) -> None:
+    """Minutehand does not enforce credentials: Notion answers both 401 `unauthorized`
+    (`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`); this fake answers as the first integration
+    the seed declares."""
+    async with direct(world) as agent:
+        mine = answer(await agent.get("/v1/users/me"))["id"]
+    for token in (None, "ntn_nobody_seeded_this", ""):
+        async with direct(world, token=token) as stranger:
+            assert answer(await stranger.get("/v1/users/me"))["id"] == mine
+            assert answer(await stranger.post("/v1/search", json={}))["object"] == "list"
 
 
-async def test_an_unknown_token_is_refused_unauthorized(world: World) -> None:
-    async with direct(world, token="ntn_nobody_seeded_this") as stranger:
-        refusal(await stranger.post("/v1/search", json={}), 401, "unauthorized")
+async def test_a_seeded_token_still_names_its_own_integration(world: World) -> None:
+    async with direct(world) as agent, direct(world, token=READER_TOKEN) as reader:
+        assert answer(await reader.get("/v1/users/me"))["id"] != answer(await agent.get("/v1/users/me"))["id"]
 
 
 async def test_a_call_without_a_version_is_refused_missing_version(world: World) -> None:
@@ -60,18 +67,27 @@ async def test_a_call_without_a_version_is_refused_missing_version(world: World)
         refusal(await unversioned.get("/v1/users/me"), 400, "missing_version")
 
 
-async def test_a_version_this_fake_does_not_serve_is_refused_saying_so(api: httpx.AsyncClient) -> None:
-    message = refusal(await api.get("/v1/users/me", headers={"Notion-Version": "2025-09-03"}), 400, "validation_error")
-    assert "2022-06-28" in message
+async def test_a_version_this_fake_does_not_serve_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
+    for version in ("2025-09-03", "2026-03-11", "2021-08-16"):
+        message = refusal(await api.get("/v1/users/me", headers={"Notion-Version": version}), 501, "invalid_request")
+        assert (
+            message
+            == f"Unsupported request: Notion-Version {version} (this simulation answers 2022-06-28). Not served by this simulation."
+        )
 
 
-async def test_an_unknown_path_and_a_wrong_method_are_refused(api: httpx.AsyncClient) -> None:
-    refusal(await api.get("/v1/nothing-here"), 400, "invalid_request_url")
-    refusal(await api.put(f"/v1/pages/{ids('handbook')}"), 400, "invalid_request")
+async def test_an_unknown_path_and_a_wrong_method_are_refused_invalid_request_url(api: httpx.AsyncClient) -> None:
+    """OBSERVED: Notion answers both 400 `invalid_request_url` "Invalid request URL."
+    (`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`)."""
+    assert refusal(await api.get("/v1/nothing-here"), 400, "invalid_request_url") == "Invalid request URL."
+    assert refusal(await api.put(f"/v1/pages/{ids('handbook')}"), 400, "invalid_request_url") == "Invalid request URL."
 
 
 async def test_a_body_that_is_not_json_is_refused_invalid_json(api: httpx.AsyncClient) -> None:
-    refusal(await api.post("/v1/search", content=b"{not json"), 400, "invalid_json")
+    """OBSERVED and DOCUMENTED (https://developers.notion.com/reference/status-codes): "Error parsing JSON body."."""
+    assert (
+        refusal(await api.post("/v1/search", content=b"{not json"), 400, "invalid_json") == "Error parsing JSON body."
+    )
 
 
 async def test_an_id_that_is_not_a_uuid_is_refused(api: httpx.AsyncClient) -> None:
@@ -86,16 +102,14 @@ async def test_an_id_without_dashes_is_the_same_object(api: httpx.AsyncClient) -
 # --------------------------------------------------------------------------- capabilities
 
 
-async def test_an_integration_without_a_capability_is_refused_restricted_resource(world: World) -> None:
+async def test_an_integration_missing_a_capability_is_not_refused(world: World) -> None:
+    """Capabilities are the integration's scope, and Minutehand does not enforce credentials or scopes: the reader,
+    seeded with `read_content` alone, appends, lists users and reads comments."""
     async with direct(world, token=READER_TOKEN) as reader:
-        assert answer(await reader.get(f"/v1/pages/{ids('handbook')}"))["id"] == ids("handbook")
-        refusal(
-            await reader.patch(f"/v1/blocks/{ids('handbook')}/children", json={"children": [paragraph("x")]}),
-            403,
-            "restricted_resource",
-        )
-        refusal(await reader.get("/v1/users"), 403, "restricted_resource")
-        refusal(await reader.get("/v1/comments", params={"block_id": ids("handbook")}), 403, "restricted_resource")
+        appended = await reader.patch(f"/v1/blocks/{ids('handbook')}/children", json={"children": [paragraph("x")]})
+        assert answer(appended)["object"] == "list"
+        assert answer(await reader.get("/v1/users"))["object"] == "list"
+        assert answer(await reader.get("/v1/comments", params={"block_id": ids("handbook")}))["object"] == "list"
 
 
 # --------------------------------------------------------------------------- validation
@@ -144,16 +158,18 @@ async def test_changing_a_blocks_type_is_refused(api: httpx.AsyncClient) -> None
     refusal(await api.patch(f"/v1/blocks/{heading['id']}", json=paragraph("now a paragraph")), 400, "validation_error")
 
 
-async def test_a_block_type_this_fake_does_not_build_is_refused_saying_so(api: httpx.AsyncClient) -> None:
+async def test_a_block_type_this_fake_does_not_build_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
+    """Notion takes a column list; this fake does not build one, and says so with 501 rather than a 400 that would
+    read as Notion's own refusal."""
     message = refusal(
         await api.patch(
             f"/v1/blocks/{ids('handbook')}/children",
             json={"children": [{"type": "column_list", "column_list": {"children": []}}]},
         ),
-        400,
-        "validation_error",
+        501,
+        "invalid_request",
     )
-    assert "does not build" in message
+    assert message == "Unsupported request: `column_list` blocks (body.children[0]). Not served by this simulation."
 
 
 async def test_a_property_the_database_does_not_have_is_refused(api: httpx.AsyncClient) -> None:
@@ -317,47 +333,41 @@ def basic(client_id: str = CLIENT_ID, secret: str = CLIENT_SECRET) -> dict[str, 
     return {"Authorization": "Basic " + base64.b64encode(f"{client_id}:{secret}".encode()).decode()}
 
 
-async def test_a_code_is_exchanged_once_a_second_exchange_is_refused_and_its_token_signs_in_as_the_public_bot(
-    world: World,
-) -> None:
+async def test_a_code_is_exchanged_and_its_token_signs_in_as_the_public_bot(world: World) -> None:
     async with direct(world, token=None) as bare:
         body = {"grant_type": "authorization_code", "code": CODE, "redirect_uri": REDIRECT}
         granted = answer(await bare.post("/v1/oauth/token", json=body, headers=basic()))
         assert granted["token_type"] == "bearer" and granted["workspace_name"] == "Acme"
         assert granted["owner"]["type"] == "user" and granted["owner"]["user"]["person"]["email"] == "dov@example.com"
-        again = await bare.post("/v1/oauth/token", json=body, headers=basic())
-        assert answer(again, 400)["error"] == "invalid_grant"
     async with direct(world, token=granted["access_token"]) as connector:
         me = answer(await connector.get("/v1/users/me"))
         assert me["id"] == granted["bot_id"] and me["name"] == "Connector"
         assert me["bot"]["owner"]["user"]["name"] == "Dov Aranha"
 
 
-async def test_a_refresh_token_mints_a_new_access_token_once_and_a_reuse_is_refused(world: World) -> None:
+async def test_no_code_client_secret_redirect_or_refresh_token_is_refused(world: World) -> None:
+    """Minutehand does not enforce credentials: a code used twice, a wrong client secret, another redirect URI, a
+    refresh token used twice or nobody's each buys tokens for the public integration the client id names."""
     async with direct(world, token=None) as bare:
         code = {"grant_type": "authorization_code", "code": CODE, "redirect_uri": REDIRECT}
-        granted = answer(await bare.post("/v1/oauth/token", json=code, headers=basic()))
-        refresh = {"grant_type": "refresh_token", "refresh_token": granted["refresh_token"]}
-        renewed = answer(await bare.post("/v1/oauth/token", json=refresh, headers=basic()))
-        assert renewed["access_token"] != granted["access_token"]
-        assert (
-            answer(await bare.post("/v1/oauth/token", json=refresh, headers=basic()), 400)["error"] == "invalid_grant"
-        )
-    async with direct(world, token=granted["refresh_token"]) as wrong:
-        refusal(await wrong.get("/v1/users/me"), 401, "unauthorized")
+        first = answer(await bare.post("/v1/oauth/token", json=code, headers=basic()))
+        tries = [
+            (code, basic()),
+            (code, basic(secret="guess")),
+            ({**code, "redirect_uri": "https://elsewhere.example.com/cb"}, basic()),
+            ({"grant_type": "refresh_token", "refresh_token": first["refresh_token"]}, basic()),
+            ({"grant_type": "refresh_token", "refresh_token": first["refresh_token"]}, basic()),
+            ({"grant_type": "refresh_token", "refresh_token": "nrt_nobody_minted_this"}, basic()),
+        ]
+        for body, headers in tries:
+            granted = answer(await bare.post("/v1/oauth/token", json=body, headers=headers))
+            assert granted["bot_id"] == first["bot_id"], body
 
 
-async def test_a_token_request_with_the_wrong_client_secret_is_refused(world: World) -> None:
+async def test_a_grant_type_notion_does_not_take_is_refused_unsupported_grant_type(world: World) -> None:
     async with direct(world, token=None) as bare:
-        body = {"grant_type": "authorization_code", "code": CODE, "redirect_uri": REDIRECT}
-        refused = await bare.post("/v1/oauth/token", json=body, headers=basic(secret="guess"))
-        assert answer(refused, 401)["error"] == "invalid_client"
-
-
-async def test_a_code_with_another_redirect_uri_is_refused(world: World) -> None:
-    async with direct(world, token=None) as bare:
-        body = {"grant_type": "authorization_code", "code": CODE, "redirect_uri": "https://elsewhere.example.com/cb"}
-        assert answer(await bare.post("/v1/oauth/token", json=body, headers=basic()), 400)["error"] == "invalid_grant"
+        refused = await bare.post("/v1/oauth/token", json={"grant_type": "password"}, headers=basic())
+        assert answer(refused, 400)["error"] == "unsupported_grant_type"
 
 
 async def test_a_workspace_top_page_from_an_internal_integration_is_refused(api: httpx.AsyncClient) -> None:

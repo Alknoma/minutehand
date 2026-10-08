@@ -48,14 +48,15 @@ async def _page(sdk: Sdk, title: str, children: list[dict[str, Any]]) -> str:
     return str(made["id"])
 
 
-async def test_a_call_with_no_bearer_token_is_refused_unauthorized(async_sdk: Sdk) -> None:
-    """Documented: https://developers.notion.com/reference/status-codes lists 401 `unauthorized` for a request
-    without a valid bearer token."""
+async def test_a_call_with_no_bearer_token_is_answered_as_the_agents_integration(async_sdk: Sdk) -> None:
+    """Minutehand does not enforce credentials (CLAIMS.md): Notion answers a call with no bearer token 401
+    `unauthorized` (`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`); this fake answers it as the
+    first integration the seed declares."""
     async with _bare(async_sdk, VERSION) as anonymous:
         response = await anonymous.post("/v1/search", json={})
 
-    assert response.status_code == 401
-    assert response.json()["code"] == "unauthorized"
+    assert response.status_code == 200, response.text
+    assert response.json()["object"] == "list"
 
 
 async def test_a_call_with_no_notion_version_header_is_refused_missing_version(async_sdk: Sdk) -> None:

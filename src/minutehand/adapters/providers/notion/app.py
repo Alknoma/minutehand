@@ -1,11 +1,11 @@
 """Notion's public API, version 2022-06-28, as one ASGI app over the run's store and clock.
 
-**Sign-in.** Every `/v1` call carries `Authorization: Bearer <secret>`: a seeded internal
-integration's token or an access token minted by `/v1/oauth/token`. An unknown, missing or
-revoked secret is 401 `unauthorized`. The token names the integration, its bot user and
-its workspace; every call acts as that bot. `/v1/oauth/token` takes `Authorization: Basic`
-with a public integration's client id and secret, and a JSON body: an authorization code
-the seed holds (single use) or a refresh token it minted.
+**Who calls.** A `/v1` call's bearer token names an integration when the seed holds it or
+`/v1/oauth/token` minted it: that integration, its bot user and its workspace. Any other
+token, or none, is the agent's integration (`NotionWorld.agent`). Minutehand does not enforce
+credentials: no call is ever refused for its token, and no integration's capabilities refuse
+one. `/v1/oauth/token` mints tokens for the integration its client id or its code names, or
+the agent's.
 
 **Version.** `Notion-Version` must be present (400 `missing_version`) and must be
 `2022-06-28`: a later version changes shapes this fake does not serve, and is refused with
@@ -46,6 +46,26 @@ from minutehand.ports.store import Store
 
 JSON = "application/json; charset=utf-8"
 EDITS_BLOCKS = ("PATCH", "DELETE")
+
+UNSERVED: tuple[tuple[str, str, str], ...] = (
+    ("DELETE", "/v1/comments/{comment_id}", "delete-a-comment"),
+    ("GET", "/v1/comments/{comment_id}", "retrieve-comment"),
+    ("PATCH", "/v1/comments/{comment_id}", "update-a-comment"),
+    ("POST", "/v1/data_sources", "create-a-database"),
+    ("GET", "/v1/data_sources/{data_source_id}", "retrieve-a-data-source"),
+    ("PATCH", "/v1/data_sources/{data_source_id}", "update-a-data-source"),
+    ("POST", "/v1/data_sources/{data_source_id}/query", "post-database-query"),
+    ("GET", "/v1/data_sources/{data_source_id}/templates", "list-data-source-templates"),
+    ("POST", "/v1/oauth/introspect", "introspect-token"),
+    ("POST", "/v1/oauth/revoke", "revoke-token"),
+    ("GET", "/v1/pages/{page_id}/markdown", "retrieve-page-markdown"),
+    ("PATCH", "/v1/pages/{page_id}/markdown", "update-page-markdown"),
+    ("POST", "/v1/pages/{page_id}/move", "move-page"),
+)
+"""Every operation of Notion's OpenAPI document (https://developers.notion.com/openapi.json) under a resource this
+provider serves that it does not serve itself: method, path and operationId. Each is answered 501 `invalid_request`,
+naming it, never `invalid_request_url` as if Notion had no such endpoint (`tests/data/notion_api/` holds the
+document's subset, and `test_notion_surface.py` holds every operation in it to served or named here)."""
 
 
 @dataclass
@@ -90,21 +110,11 @@ class NotionApi:
             headers=refusal.headers,
         )
 
-    def guarded(self, handler: Handler, need: wire.Capability | None) -> Callable[[Request], Awaitable[Response]]:
+    def guarded(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
             try:
-                call = self._signed_in(request)
-                if "notion-version" not in request.headers:
-                    raise wire.Refusal(
-                        wire.ErrorCode.MISSING_VERSION, "The Notion-Version header is required and was not sent."
-                    )
-                version = request.headers["notion-version"]
-                if version != wire.API_VERSION:
-                    raise wire.invalid(
-                        f"Notion-Version {version} is not served by this simulation; it answers {wire.API_VERSION}."
-                    )
-                if need is not None and need not in call.integration.capabilities:
-                    raise wire.restricted(need.value)
+                call = self._caller(request)
+                wire.served_version(request.headers["notion-version"] if "notion-version" in request.headers else None)
                 self._faults(request, call)
                 return await handler(request, call)
             except wire.Refusal as refusal:
@@ -112,18 +122,13 @@ class NotionApi:
 
         return endpoint
 
-    def _signed_in(self, request: Request) -> Call:
+    def _caller(self, request: Request) -> Call:
+        """The integration the bearer token names, or the agent's for any other token or none."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
-        scheme, _, secret = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not secret.strip():
-            raise wire.unauthorized()
-        token = self._world.token(secret.strip())
-        if token is None or token.used or token.type in (wire.TokenKind.CODE, wire.TokenKind.REFRESH):
-            raise wire.unauthorized()
-        integration = self._world.integration(token.integration)
-        if integration is None:
-            raise wire.unauthorized()
-        return Call(integration=integration, secret=secret.strip())
+        _, _, secret = authorization.partition(" ")
+        token = self._world.token(secret.strip()) if secret.strip() else None
+        integration = self._world.integration(token.integration) if token is not None else None
+        return Call(integration=integration or self._world.agent(), secret=secret.strip())
 
     def _faults(self, request: Request, call: Call) -> None:
         path = request.url.path
@@ -678,13 +683,7 @@ class NotionApi:
 
     # ------------------------------------------------------------------ users
 
-    def _users_allowed(self, call: Call) -> None:
-        held = call.integration.capabilities
-        if wire.Capability.READ_USERS_WITH_EMAIL not in held and wire.Capability.READ_USERS_WITHOUT_EMAIL not in held:
-            raise wire.restricted(wire.Capability.READ_USERS_WITHOUT_EMAIL.value)
-
     async def users_list(self, request: Request, call: Call) -> Response:
-        self._users_allowed(call)
         query = self._query(request)
         users = self._world.users(call.workspace)
         return self._listed(
@@ -699,11 +698,10 @@ class NotionApi:
     async def users_me(self, request: Request, call: Call) -> Response:
         me = self._world.user(call.bot)
         if me is None:
-            raise wire.unauthorized()
+            raise LookupError(f"notion integration {call.bot} has no bot user in the world")
         return _answer(self._user(call, me))
 
     async def user_get(self, request: Request, call: Call) -> Response:
-        self._users_allowed(call)
         user_id = self._id(request, "user_id")
         user = self._world.user(user_id)
         if user is None or user.workspace != call.workspace or user.removed:
@@ -770,25 +768,28 @@ class NotionApi:
                 return self._page(call, page.id)
         raise wire.not_found(wire.Missing.COMMENT, discussion)
 
+    def unserved(self, method: str, path: str, operation: str) -> Handler:
+        """An operation Notion has and this provider does not serve, refused by name."""
+
+        async def refuse(request: Request, call: Call) -> Response:
+            raise wire.unserved(f"{method} {path} ({operation})")
+
+        return refuse
+
     # ------------------------------------------------------------------ OAuth
 
     async def token(self, request: Request) -> Response:
-        """The token endpoint of a public integration: an authorization code, or a refresh token, for tokens."""
+        """The token endpoint: an authorization code or a refresh token buys an access token and a refresh token for
+        the integration its client id names, else the one the code or refresh token was issued to, else the agent's.
+        Minutehand does not enforce credentials: no client, code or refresh token is refused."""
         try:
-            integration = self._client(request)
-            if integration is None:
-                return Response(
-                    wire.oauth_error("invalid_client", "The client id and secret do not name a public integration."),
-                    status_code=401,
-                    media_type=JSON,
-                )
             asked = wire.read_token_request(await self._body(request))
         except wire.Refusal as refusal:
             return self.refused(request, refusal)
         if asked.grant_type == wire.GrantType.AUTHORIZATION_CODE:
-            presented, kind = asked.code, wire.TokenKind.CODE
+            presented = asked.code
         elif asked.grant_type == wire.GrantType.REFRESH_TOKEN:
-            presented, kind = asked.refresh_token, wire.TokenKind.REFRESH
+            presented = asked.refresh_token
         else:
             return Response(
                 wire.oauth_error("unsupported_grant_type", f"grant_type {asked.grant_type} is not taken here."),
@@ -796,30 +797,11 @@ class NotionApi:
                 media_type=JSON,
             )
         held = self._world.token(presented) if presented else None
-        if (
-            presented is None
-            or held is None
-            or held.type is not kind
-            or held.used
-            or held.integration != integration.id
-        ):
-            return Response(
-                wire.oauth_error("invalid_grant", "The code or refresh token is unknown, used, or another client's."),
-                status_code=400,
-                media_type=JSON,
-            )
-        if kind is wire.TokenKind.CODE and held.redirect_uri is not None and asked.redirect_uri != held.redirect_uri:
-            return Response(
-                wire.oauth_error("invalid_grant", "redirect_uri does not match the one the code was issued for."),
-                status_code=400,
-                media_type=JSON,
-            )
+        issued = self._world.integration(held.integration) if held is not None else None
+        integration = self._client(request) or issued or self._world.agent()
         seq = str(self._world.next_seq())
         access = "ntn_" + wire.digest(f"access\x1f{presented}\x1f{seq}")[:46]
         refresh = "nrt_" + wire.digest(f"refresh\x1f{presented}\x1f{seq}")[:46]
-        self._world.write_token(
-            presented, held.model_copy(update={"used": True}), operation=Operation.UPDATE, actor=Actor.AGENT
-        )
         for secret, made in ((access, wire.TokenKind.ACCESS), (refresh, wire.TokenKind.REFRESH)):
             self._world.write_token(
                 secret,
@@ -850,17 +832,18 @@ class NotionApi:
         )
 
     def _client(self, request: Request) -> wire.StoredIntegration | None:
+        """The public integration whose client id `Authorization: Basic` names; its secret is not checked."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
         scheme, _, encoded = authorization.partition(" ")
         if scheme.lower() != "basic":
             return None
         try:
-            client_id, _, secret = base64.b64decode(encoded.strip()).decode("utf-8").partition(":")
+            client_id = base64.b64decode(encoded.strip()).decode("utf-8").partition(":")[0]
         except (binascii.Error, UnicodeDecodeError):
             return None
         for workspace in self._world.workspaces():
             for integration in self._world.integrations(workspace.id):
-                if integration.client_id == client_id and integration.client_secret_digest == wire.digest(secret):
+                if integration.client_id is not None and integration.client_id == client_id:
                     return integration
         return None
 
@@ -883,6 +866,10 @@ class NotionApp:
         async with self._one_at_a_time:
             await webhooks.deliver(self._world, self._clock)
 
+    @property
+    def routes(self) -> list[Route]:
+        return list(self._routes)
+
     def delivering(self) -> int:
         """`DeliversInBackground`: webhook deliveries started and not yet answered."""
         return len(self._sending)
@@ -897,11 +884,7 @@ class NotionApp:
             matched = [r.matches(scope)[0] for r in self._routes]
             if Match.FULL not in matched:
                 request = Request(scope, receive)
-                refusal = (
-                    wire.Refusal(wire.ErrorCode.INVALID_REQUEST, f"{request.method} is not taken at this path.")
-                    if Match.PARTIAL in matched
-                    else wire.Refusal(wire.ErrorCode.INVALID_REQUEST_URL, "There is no endpoint at this path.")
-                )
+                refusal = wire.Refusal(wire.ErrorCode.INVALID_REQUEST_URL, wire.INVALID_REQUEST_URL)
                 await self._api.refused(request, refusal)(scope, receive, send)
                 return
         await self._router(scope, receive, send)
@@ -913,31 +896,31 @@ class NotionApp:
 
 def build_app(store: Store, clock: Clock) -> NotionApp:
     api = NotionApi(store, clock)
-    read, update, insert = wire.Capability.READ_CONTENT, wire.Capability.UPDATE_CONTENT, wire.Capability.INSERT_CONTENT
 
-    def route(path: str, method: str, handler: Handler, need: wire.Capability | None) -> Route:
-        return Route(path, api.guarded(handler, need), methods=[method])
+    def route(path: str, method: str, handler: Handler) -> Route:
+        return Route(path, api.guarded(handler), methods=[method])
 
     routes = [
-        route("/v1/search", "POST", api.search, read),
-        route("/v1/pages", "POST", api.page_create, insert),
-        route("/v1/pages/{page_id}", "GET", api.page_get, read),
-        route("/v1/pages/{page_id}", "PATCH", api.page_update, update),
-        route("/v1/pages/{page_id}/properties/{property_id}", "GET", api.page_property, read),
-        route("/v1/blocks/{block_id}", "GET", api.block_get, read),
-        route("/v1/blocks/{block_id}", "PATCH", api.block_update, update),
-        route("/v1/blocks/{block_id}", "DELETE", api.block_delete, update),
-        route("/v1/blocks/{block_id}/children", "GET", api.children_list, read),
-        route("/v1/blocks/{block_id}/children", "PATCH", api.children_append, insert),
-        route("/v1/databases", "POST", api.database_create, insert),
-        route("/v1/databases/{database_id}", "GET", api.database_get, read),
-        route("/v1/databases/{database_id}", "PATCH", api.database_update, update),
-        route("/v1/databases/{database_id}/query", "POST", api.database_query, read),
-        route("/v1/users", "GET", api.users_list, None),
-        route("/v1/users/me", "GET", api.users_me, None),
-        route("/v1/users/{user_id}", "GET", api.user_get, None),
-        route("/v1/comments", "GET", api.comments_list, wire.Capability.READ_COMMENTS),
-        route("/v1/comments", "POST", api.comments_create, wire.Capability.INSERT_COMMENTS),
+        route("/v1/search", "POST", api.search),
+        route("/v1/pages", "POST", api.page_create),
+        route("/v1/pages/{page_id}", "GET", api.page_get),
+        route("/v1/pages/{page_id}", "PATCH", api.page_update),
+        route("/v1/pages/{page_id}/properties/{property_id}", "GET", api.page_property),
+        route("/v1/blocks/{block_id}", "GET", api.block_get),
+        route("/v1/blocks/{block_id}", "PATCH", api.block_update),
+        route("/v1/blocks/{block_id}", "DELETE", api.block_delete),
+        route("/v1/blocks/{block_id}/children", "GET", api.children_list),
+        route("/v1/blocks/{block_id}/children", "PATCH", api.children_append),
+        route("/v1/databases", "POST", api.database_create),
+        route("/v1/databases/{database_id}", "GET", api.database_get),
+        route("/v1/databases/{database_id}", "PATCH", api.database_update),
+        route("/v1/databases/{database_id}/query", "POST", api.database_query),
+        route("/v1/users", "GET", api.users_list),
+        route("/v1/users/me", "GET", api.users_me),
+        route("/v1/users/{user_id}", "GET", api.user_get),
+        route("/v1/comments", "GET", api.comments_list),
+        route("/v1/comments", "POST", api.comments_create),
         Route("/v1/oauth/token", api.token, methods=["POST"]),
+        *(route(path, method, api.unserved(method, path, operation)) for method, path, operation in UNSERVED),
     ]
     return NotionApp(api, routes, NotionWorld(store), clock)

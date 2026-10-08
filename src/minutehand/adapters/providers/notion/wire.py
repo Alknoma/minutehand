@@ -48,8 +48,6 @@ _OBJECT: TypeAdapter[Json] = TypeAdapter(Json)
 
 
 class ErrorCode(StrEnum):
-    UNAUTHORIZED = "unauthorized"
-    RESTRICTED_RESOURCE = "restricted_resource"
     OBJECT_NOT_FOUND = "object_not_found"
     RATE_LIMITED = "rate_limited"
     INVALID_JSON = "invalid_json"
@@ -62,8 +60,6 @@ class ErrorCode(StrEnum):
 
 
 _STATUS = {
-    ErrorCode.UNAUTHORIZED: 401,
-    ErrorCode.RESTRICTED_RESOURCE: 403,
     ErrorCode.OBJECT_NOT_FOUND: 404,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.INVALID_JSON: 400,
@@ -82,15 +78,18 @@ ERROR_TYPE = "application/json; charset=utf-8"
 class Refusal(ServiceRefusal):
     """Notion answered with an error object."""
 
-    def __init__(self, code: ErrorCode, message: str, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, code: ErrorCode, message: str, headers: dict[str, str] | None = None, *, status: int | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.headers = headers or {}
+        self._status = status
 
     @property
     def status(self) -> int:
-        return _STATUS[self.code]
+        return self._status if self._status is not None else _STATUS[self.code]
 
     def body(self, request_id: str) -> str:
         return json.dumps(
@@ -128,6 +127,30 @@ def invalid(message: str) -> Refusal:
     return Refusal(ErrorCode.VALIDATION_ERROR, message)
 
 
+def unserved(name: str) -> Refusal:
+    """Something Notion has that this provider does not serve: 501, with the code and the message Notion gives a
+    request it does not support (`invalid_request`, "Unsupported request: <request name>.",
+    https://developers.notion.com/reference/status-codes), naming it. Never answered as if Notion refused it."""
+    return Refusal(
+        ErrorCode.INVALID_REQUEST, f"Unsupported request: {name}. Not served by this simulation.", status=501
+    )
+
+
+MISSING_VERSION = (
+    "Notion-Version header failed validation: Notion-Version header should be defined, instead was undefined."
+)
+"""Notion's own example message for `missing_version` (https://developers.notion.com/reference/status-codes)."""
+
+
+def served_version(version: str | None) -> None:
+    """`Notion-Version` must be sent (https://developers.notion.com/reference/versioning); any but the one this
+    provider answers is refused by name, never answered in another version's shapes."""
+    if version is None:
+        raise Refusal(ErrorCode.MISSING_VERSION, MISSING_VERSION)
+    if version != API_VERSION:
+        raise unserved(f"Notion-Version {version} (this simulation answers {API_VERSION})")
+
+
 class Missing:
     """What an `object_not_found` names, in its message: words in a sentence, not a vocabulary anyone matches."""
 
@@ -143,17 +166,6 @@ def not_found(what: str, object_id: str) -> Refusal:
         ErrorCode.OBJECT_NOT_FOUND,
         f"No {what} with ID {object_id} can be reached by this integration. Only pages and databases "
         "shared with the integration, and what is inside them, can be reached.",
-    )
-
-
-def unauthorized() -> Refusal:
-    return Refusal(ErrorCode.UNAUTHORIZED, "The API token presented is not valid.")
-
-
-def restricted(capability: str) -> Refusal:
-    return Refusal(
-        ErrorCode.RESTRICTED_RESOURCE,
-        f"This integration lacks the capability this endpoint needs ({capability}).",
     )
 
 
@@ -216,6 +228,14 @@ def page_url(page_id: str, title: str) -> str:
 # --------------------------------------------------------------------------- reading a body
 
 
+INVALID_REQUEST_URL = "Invalid request URL."
+"""What Notion answers a path it has no endpoint for, and a method a path does not take, before it reads any
+credential (`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`)."""
+INVALID_JSON = "Error parsing JSON body."
+"""What Notion answers a body that is not JSON (https://developers.notion.com/reference/status-codes, and
+`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`)."""
+
+
 def read_object(raw: bytes) -> Json:
     """A request body: a JSON object, or an empty one when none was sent."""
     if not raw.strip():
@@ -223,7 +243,7 @@ def read_object(raw: bytes) -> Json:
     try:
         found: object = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise Refusal(ErrorCode.INVALID_JSON, "The request body is not valid JSON.") from error
+        raise Refusal(ErrorCode.INVALID_JSON, INVALID_JSON) from error
     if not isinstance(found, dict):
         raise invalid("The request body should be a JSON object.")
     return _OBJECT.validate_python(found)
@@ -291,7 +311,8 @@ class RichTextType:
 
 
 class MentionType:
-    """The mentions this simulation builds."""
+    """The mentions this simulation builds. Notion takes `template_mention` and `custom_emoji` as well (its OpenAPI
+    document's `mentionRichTextItemRequest`); those are refused by name."""
 
     USER = "user"
     PAGE = "page"
@@ -301,6 +322,7 @@ class MentionType:
 
 RICH_TEXT_TYPES = (RichTextType.TEXT, RichTextType.MENTION, RichTextType.EQUATION)
 MENTION_TYPES = (MentionType.USER, MentionType.PAGE, MentionType.DATABASE, MentionType.DATE)
+MENTIONS_NOT_BUILT = ("template_mention", "custom_emoji")
 
 COLORS = frozenset(
     ["default"]
@@ -437,14 +459,20 @@ def _inferred(item: Json, where: str) -> str:
 
 def _mention(body: Json, annotations: Json, where: str, names: Names) -> JsonValue:
     spelled = as_text(body["type"], f"{where}.mention.type") if "type" in body else _inferred_mention(body, where)
+    if spelled in MENTIONS_NOT_BUILT:
+        raise unserved(f"a `{spelled}` mention ({where})")
     if spelled not in MENTION_TYPES:
-        raise invalid(f"{where}.mention.type is not one this simulation builds: `{spelled}`.")
+        raise invalid(f"{where}.mention.type should be one of user, date, page, database; got `{spelled}`.")
     kind = spelled
     if kind not in body:
         raise invalid(f"{where}.mention.{kind} should be defined.")
     if kind == MentionType.DATE:
         when = _date(body["date"], f"{where}.mention.date")
-        plain = str(when["start"]) + (f" → {when['end']}" if when["end"] else "")
+        if when["end"] is not None or len(str(when["start"])) != len("2022-12-16"):
+            raise unserved(
+                f"a date mention with a time or an end ({where}): Notion documents the plain_text only of a date alone"
+            )
+        plain = str(when["start"])
         return {
             "type": "mention",
             "mention": {"type": kind, "date": when},
@@ -578,36 +606,107 @@ NOT_BUILT = frozenset(
         "breadcrumb",
         "table_of_contents",
         "link_to_page",
+        "heading_4",
+        "tab",
     }
 )
-"""Real block types this simulation does not build; a request naming one is refused, saying so."""
+"""Block types Notion takes on a write (its OpenAPI document's `blockObjectRequest`) that this simulation does not
+build; a request naming one is refused by name."""
 CODE_LANGUAGES = frozenset(
     {
-        "plain text",
+        "abap",
+        "abc",
+        "agda",
+        "arduino",
+        "ascii art",
+        "assembly",
         "bash",
+        "basic",
+        "bnf",
         "c",
-        "c++",
         "c#",
+        "c++",
+        "clojure",
+        "coffeescript",
+        "coq",
         "css",
+        "dart",
+        "dhall",
         "diff",
+        "docker",
+        "ebnf",
+        "elixir",
+        "elm",
+        "erlang",
+        "f#",
+        "flow",
+        "fortran",
+        "gherkin",
+        "glsl",
         "go",
+        "graphql",
+        "groovy",
+        "haskell",
+        "hcl",
         "html",
+        "idris",
         "java",
         "javascript",
         "json",
+        "julia",
         "kotlin",
+        "latex",
+        "less",
+        "lisp",
+        "livescript",
+        "llvm ir",
+        "lua",
+        "makefile",
         "markdown",
+        "markup",
+        "matlab",
+        "mathematica",
         "mermaid",
+        "nix",
+        "notion formula",
+        "objective-c",
+        "ocaml",
+        "pascal",
+        "perl",
+        "php",
+        "plain text",
+        "powershell",
+        "prolog",
+        "protobuf",
+        "purescript",
         "python",
+        "r",
+        "racket",
+        "reason",
         "ruby",
         "rust",
+        "sass",
+        "scala",
+        "scheme",
+        "scss",
         "shell",
+        "smalltalk",
+        "solidity",
         "sql",
         "swift",
+        "toml",
         "typescript",
+        "vb.net",
+        "verilog",
+        "vhdl",
+        "visual basic",
+        "webassembly",
+        "xml",
         "yaml",
+        "java/c/c++/c#",
     }
 )
+"""Every language a code block takes: the enum of `languageRequest` in Notion's OpenAPI document."""
 
 
 class NewBlock(Model):
@@ -620,7 +719,7 @@ class NewBlock(Model):
 
 def block_type(spelled: str, where: str) -> BlockType:
     if spelled in NOT_BUILT:
-        raise invalid(f"{where}: this simulation does not build `{spelled}` blocks.")
+        raise unserved(f"`{spelled}` blocks ({where})")
     try:
         return BlockType(spelled)
     except ValueError as error:
@@ -724,7 +823,7 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
             if language is None:
                 raise invalid(f"{where}.language should be defined.")
             if language not in CODE_LANGUAGES:
-                raise invalid(f"{where}.language is not one this simulation knows: `{language}`.")
+                raise invalid(f"{where}.language should be one of Notion's code languages; got `{language}`.")
             found["language"] = language
             found["caption"] = rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else []
             return found
@@ -766,7 +865,7 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
     if kind is BlockType.IMAGE:
         only_keys(body, ["type", "external", "caption"], where)
         if "external" not in body:
-            raise invalid(f"{where}: this simulation takes an image only as `external`, with a url.")
+            raise unserved(f"an image that is not `external` ({where})")
         external = as_object(body["external"], f"{where}.external")
         if "url" not in external:
             raise invalid(f"{where}.external.url should be defined.")
@@ -949,13 +1048,18 @@ class TokenKind(StrEnum):
 
 
 class StoredToken(Model):
-    """A secret the integration presents, kept under its digest; an authorization code is one until used."""
+    """A secret that names an integration, kept under its digest. Nothing about it is checked."""
 
     kind: Literal["token"] = "token"
     type: TokenKind
     integration: str
-    redirect_uri: str | None = None
-    used: bool = False
+
+
+class StoredAgent(Model):
+    """Minutehand's own: the integration a call is made as when its token names none."""
+
+    kind: Literal["agent"] = "agent"
+    integration: str = Field(description="The integration's bot user id")
 
 
 class StoredWorkspace(Model):
@@ -1050,6 +1154,7 @@ Stored = Annotated[
     | StoredUser
     | StoredIntegration
     | StoredToken
+    | StoredAgent
     | StoredWorkspace
     | StoredComment
     | StoredSchedule
@@ -1095,7 +1200,11 @@ class PropertyType(StrEnum):
 READ_ONLY = frozenset(
     {PropertyType.CREATED_TIME, PropertyType.LAST_EDITED_TIME, PropertyType.CREATED_BY, PropertyType.LAST_EDITED_BY}
 )
-PROPERTIES_NOT_BUILT = frozenset({"formula", "rollup", "files", "unique_id", "verification", "button"})
+PROPERTIES_NOT_BUILT = frozenset(
+    {"formula", "rollup", "files", "unique_id", "verification", "button", "location", "place", "last_visited_time"}
+)
+"""Property types Notion's OpenAPI document takes (`propertyConfigurationRequest`) that this simulation does not
+build; refused by name."""
 
 
 def property_id(database_id: str, name: str, kind: PropertyType) -> str:
@@ -1160,7 +1269,7 @@ def schema_from_request(
         raise invalid(f"{where} should name exactly one property type.")
     spelled = kinds[0]
     if spelled in PROPERTIES_NOT_BUILT:
-        raise invalid(f"{where}: this simulation does not build `{spelled}` properties.")
+        raise unserved(f"`{spelled}` properties ({where})")
     try:
         kind = PropertyType(spelled)
     except ValueError as error:

@@ -11,6 +11,7 @@
 | user (person or bot)    | RECORD       | its id                | `users:<workspace id>`           |
 | integration             | RECORD       | minted from its bot's | `integrations:<workspace id>`    |
 | token, code             | RECORD       | sha256 of the secret  | `TOKENS`                         |
+| the agent's integration | RECORD       | `AGENT`               | None                             |
 | the seed's faults       | RECORD       | `SCHEDULE`            | None                             |
 | a fault's firings       | RECORD       | `fault-<n>`           | `SCHEDULE`                       |
 | webhook subscription    | RECORD       | its id                | `WEBHOOKS`                       |
@@ -53,6 +54,7 @@ from minutehand.ports.store import Store
 WORKSPACES = "workspaces"
 TOKENS = "tokens"
 SCHEDULE = "schedule"
+AGENT = "agent"
 DECLARED = "schedule-declared"
 """The faults declared on an open world (`provider-faults`), kept apart from the seed's own, so a later seed fragment
 that adds to the seed's schedule never rewrites what was declared, and each keeps its own count of firings."""
@@ -193,6 +195,16 @@ class NotionWorld:
     def token(self, secret: str) -> wire.StoredToken | None:
         found = self._read(record_ref(wire.digest(secret)))
         return found if isinstance(found, wire.StoredToken) else None
+
+    def agent(self) -> wire.StoredIntegration:
+        """The integration a call is made as when its token names none: the first the seed made."""
+        found = self._read(record_ref(AGENT))
+        if not isinstance(found, wire.StoredAgent):
+            raise LookupError("this Notion world names no integration for the agent")
+        integration = self.integration(found.integration)
+        if integration is None:
+            raise LookupError(f"the agent's Notion integration {found.integration} is not in the world")
+        return integration
 
     def schedule(self) -> wire.StoredSchedule:
         found = self._read(record_ref(SCHEDULE))
@@ -405,6 +417,9 @@ class NotionWorld:
                 parent=TOKENS,
             )
         )
+
+    def write_agent(self, agent: wire.StoredAgent) -> WorldEvent:
+        return self._setup(AGENT, agent, None, Operation.CREATE)
 
     def write_schedule(self, schedule: wire.StoredSchedule, *, declared: bool = False) -> WorldEvent:
         name = DECLARED if declared else SCHEDULE
