@@ -119,6 +119,7 @@ include = [
     "/src/minutehand/**/*.html",
     "/src/minutehand/**/*.css",
     "/src/minutehand/**/*.js",
+    "/src/minutehand/**/*.svg",
     "/src/minutehand/**/*.md",
     "/src/minutehand/**/*.txt",
     # PEP 561: a suite type-checking its use of `minutehand.testing` reads our annotations.

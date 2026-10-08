@@ -205,11 +205,12 @@ function renderHeader() {
 
   const f = b.findings.findings, fails = f.filter((x) => x.finding.kind === "fail").length, reviews = f.filter((x) => x.finding.kind === "review").length;
   const a = S.loaded.assessments, held = a ? a.rules.filter((x) => x.status === "passed").length : null;
+  const judged = a ? a.rules.filter((x) => ["passed", "failed", "review"].indexOf(x.status) >= 0) : [];
   const replies = S.loaded.people ? S.loaded.people.people.flatMap((p) => p.replies.map((x) => x.reply.drawn ? (Date.parse(x.reply.at) - Date.parse(x.reply.drawn.asked_at)) / 1000 : null)).filter((x) => x !== null) : null;
   const tokens = S.loaded.modelUse ? S.loaded.modelUse.calls.reduce((s, c) => s + (c.input_tokens || 0) + (c.output_tokens || 0), 0) : null;
   const numbers = [
     ["findings", r.finished ? String(fails) : "—", fails ? "failed" + (reviews ? ", " + reviews + " to review" : "") : reviews ? reviews + " to review" : "failed", fails ? "fail" : reviews ? "review" : r.finished ? "pass" : ""],
-    ["assessments", a ? (a.rules.length && a.rules.some((x) => x.status !== "not_checked") ? held + "/" + a.rules.length : a.rules.length ? "—" : "none") : "…", "rules held", a && a.rules.some((x) => x.status === "failed") ? "fail" : ""],
+    ["assessments", a ? (judged.length ? held + "/" + judged.length : a.rules.length ? "—" : "none") : "…", judged.length < (a ? a.rules.length : 0) ? "rules held, of those read" : "rules held", a && a.rules.some((x) => x.status === "failed") ? "fail" : ""],
     ["followups", card ? String(card.follow_ups_made) : "—", "follow-ups", ""],
     ["replies", replies ? (replies.length ? span(median(replies)) : "—") : "…", "median reply", ""],
     ["response", card && card.slowest_reaction ? span(seconds(card.slowest_reaction)) : "—", "slowest comeback", ""],

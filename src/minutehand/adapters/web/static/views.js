@@ -361,6 +361,7 @@ export const VIEWS = [
         (r.parent_run ? '<span class="split">split after ' + (r.forked_after_wake !== null ? "wake " + r.forked_after_wake : "seq " + r.forked_at) + (r.forked_ran_on ? ", the clock had run on" : "") + "</span>" : "") +
         (r.children.length ? "<ul>" + r.children.map((c) => (byId[c] ? node(byId[c]) : "")).join("") + "</ul>" : "") + "</li>";
       host.querySelector('[data-role="tree"]').innerHTML = byId[root] ? node(byId[root]) : "";
+      if (ctx.base.run.fork) { host.querySelector(".view-body").insertAdjacentHTML("beforeend", forkAccount(ctx.base.run.fork, byId)); }
       return {};
     }
   },
@@ -384,6 +385,30 @@ export const VIEWS = [
     }
   }
 ];
+
+/** A fork's account of itself: where it split, what it changed, whether its agent was verified, and how it came out
+    against its parent from the split on (`application/forks.ForkAccount`). */
+function forkAccount(f, byId) {
+  const parent = byId[f.parent_run], name = parent ? words(parent.scenario) + " " + f.parent_run : f.parent_run;
+  const at = f.after_wake === 0 ? "at setup, before the first wake" : f.ran_on ? "after wake " + f.after_wake + ", once the clock had run on with nothing due" : "at the end of wake " + f.after_wake;
+  let html = '<table class="grid"><tbody>' +
+    "<tr><th>Split from</th><td>" + '<button type="button" class="link" data-open="' + esc(f.parent_run) + '">' + esc(name) + "</button> " + esc(at + ", " + when(f.at) + " simulated") + "</td></tr>" +
+    "<tr><th>What it changed</th><td>" + (f.changes.length ? f.changes.map((c) => esc(c)).join("<br>") : "Nothing: a rerun from the same moment, to see how much the agent varies.") + "</td></tr>" +
+    "<tr><th>Agent restored</th><td>" + (f.restore ? chip(f.restore.verified ? "passed" : "review", f.restore.verified ? "verified" : "not verified") + " " + esc(f.restore.words.replace(/^(not )?verified: /, "")) : "No restore was recorded with this fork.") + "</td></tr>";
+  const o = f.outcome;
+  if (!o) { return html + '<tr><th>Against its parent</th><td class="muted">Compared once both runs have finished.</td></tr></tbody></table>'; }
+  html += "<tr><th>Verdict</th><td>" + chip(o.parent_verdict.kind === "passed" ? "passed" : "fail", VERDICT_WORD[o.parent_verdict.kind]) + (o.verdict_changed ? " → " + chip(o.fork_verdict.kind === "passed" ? "passed" : "fail", VERDICT_WORD[o.fork_verdict.kind]) : " in both") + "</td></tr>";
+  html += "<tr><th>Scorecard</th><td>" + (o.scorecard.length ? o.scorecard.map((d) => esc(d.label + ": " + d.parent + " → " + d.fork)).join("<br>") : "every line the same") + "</td></tr>";
+  const found = [].concat(o.findings_gained.map((x) => "gained " + words(x.check) + ": " + x.message), o.findings_lost.map((x) => "gone " + words(x.check) + ": " + x.message),
+    o.findings_changed.map((x) => "changed " + words(x.fork.check) + ": " + x.parent.message + " → " + x.fork.message));
+  html += "<tr><th>Findings</th><td>" + (found.length ? found.map(esc).join("<br>") : "the same in both") + "</td></tr>";
+  const split = o.first_divergence, kinds = { change: "change in the world", call: "call", report: "report of the agent's", model_call: "model call" };
+  html += "<tr><th>First difference</th><td>" + (split
+    ? esc((split.shared ? "a " + kinds[split.kind] + ", after " + plural(split.shared, "thing") + " both did alike" : "the very first " + kinds[split.kind] + " after the split") + ": " + split.differs) +
+      '<div class="muted">the parent: ' + esc(split.parent ? split.parent.words : "had nothing more of it") + "</div><div class=\"muted\">this fork: " + esc(split.fork ? split.fork.words : "had nothing more of it") + "</div>"
+    : "none: from the split on both made the same changes and calls at the same moments") + "</td></tr>";
+  return html + "</tbody></table>";
+}
 
 function rootOf(ctx, id) {
   const byId = {}; ctx.runs.forEach((r) => { byId[r.run_id] = r; });
