@@ -1,5 +1,5 @@
 """What GitHub refuses, refused the same way: visibility, refs, an empty repository, versions. Credentials are
-never refused: Minutehand deliberately does not enforce them (README, "Credentials")."""
+never refused: Minutehand does not authenticate (docs/design.md, "Authentication is out of scope")."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ APP_JWT = "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjM0NSJ9.c2lnbmF0dXJl"
 
 @pytest.mark.parametrize(
     "authorization",
-    [f"Bearer {UNSEEDED}", f"token {UNSEEDED}", f"Bearer {APP_JWT}", "Bearer", "Bearer ghs_installation0000"],
-    ids=["unseeded-bearer", "unseeded-token", "app-jwt", "bearer-alone", "installation-token"],
+    [f"Bearer {UNSEEDED}", f"token {UNSEEDED}", f"Bearer {APP_JWT}", "Bearer", "Bearer ghs_installation0000", ""],
+    ids=["unseeded-bearer", "unseeded-token", "app-jwt", "bearer-alone", "installation-token", "empty"],
 )
 async def test_any_credential_the_world_does_not_hold_acts_as_its_first_user(hub: Hub, authorization: str) -> None:
     async with hub.client(None, Authorization=authorization) as http:
@@ -26,6 +26,18 @@ async def test_any_credential_the_world_does_not_hold_acts_as_its_first_user(hub
     assert body(me)["login"] == "iris-calder"
     assert body(ledger)["full_name"] == "lanternworks/ledger"
     assert "X-OAuth-Scopes" not in me.headers
+
+
+async def test_a_call_with_no_authorization_acts_as_the_first_user_on_rest_graphql_and_search(hub: Hub) -> None:
+    async with hub.client(None) as http:
+        me = await http.get("/user")
+        ledger = await http.get("/repos/lanternworks/ledger")
+        viewer = await http.post("/graphql", json={"query": "query { viewer { login } }"})
+        found = await http.get("/search/code", params={"q": "retry repo:lanternworks/ledger"})
+    assert body(me)["login"] == "iris-calder" and me.headers["X-RateLimit-Limit"] == "5000"
+    assert body(ledger)["full_name"] == "lanternworks/ledger"
+    assert viewer.json() == {"data": {"viewer": {"login": "iris-calder"}}}
+    assert body(found)["total_count"] > 0  # type: ignore[operator]
 
 
 @pytest.mark.parametrize("seeded", [github_seed(unknown_credentials_act_as="outsider")])
@@ -49,13 +61,6 @@ async def test_basic_authentication_is_accepted(hub: Hub, credentials: bytes, lo
 async def test_the_token_scheme_is_accepted_beside_bearer(hub: Hub) -> None:
     async with hub.client(None, Authorization="token ghp_iris0000000000000000000000000000000000") as http:
         assert body(await http.get("/user"))["login"] == "iris-calder"
-
-
-async def test_without_a_token_a_public_repository_reads_and_the_user_is_refused(hub: Hub) -> None:
-    async with hub.client(None) as http:
-        assert body(await http.get("/repos/iris-calder/notes"))["permissions"] is None
-        refusal(await http.get("/repos/lanternworks/ledger"), 404, "Not Found")
-        refusal(await http.get("/user"), 401, "Requires authentication")
 
 
 @pytest.mark.parametrize(

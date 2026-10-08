@@ -121,16 +121,6 @@ async def test_a_refused_call_writes_nothing_but_a_spent_call_records_its_budget
     assert hub.store.head() == between
 
 
-async def test_without_a_credential_the_addresss_budget_is_spent_and_refused_403(hub: Hub) -> None:
-    """Documented: calls with no credential share the address's 60 an hour, and are refused the same way when it
-    is spent. https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api"""
-    async with hub.client(None) as http:
-        refused = await http.get("/repos/iris-calder/notes")
-    assert refused.status_code == 403
-    assert refused.headers["X-RateLimit-Limit"] == "60" and refused.headers["X-RateLimit-Remaining"] == "0"
-    assert body(refused, 403)["message"].startswith("API rate limit exceeded for")  # type: ignore[union-attr]
-
-
 async def test_a_spent_graphql_budget_answers_200_with_rate_limited_errors(hub: Hub) -> None:
     """Documented: GraphQL reports its spent budget in `errors` with type RATE_LIMITED.
     https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api"""
