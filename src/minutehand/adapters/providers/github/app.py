@@ -401,14 +401,18 @@ class GitHubApi:
     def _commit_out(self, repository: wire.StoredRepository, commit: wire.StoredCommit) -> wire.CommitOut:
         full = repository.full_name
         person = wire.PersonOut(name=commit.author_name, email=commit.author_email, date=commit.date)
+        # The committer's date is the author's: GitHub's create-a-commit reference defaults the committer to the
+        # author's information, and a seed declares one moment per commit.
+        committed = wire.PersonOut(name=commit.committer_name, email=commit.committer_email, date=commit.date)
         author = self._account_out(commit.author_login) if commit.author_login is not None else None
+        committer = self._account_out(commit.committer_login) if commit.committer_login is not None else None
         tree = content.tree_sha(repository, "")
         return wire.CommitOut(
             sha=commit.sha,
             node_id=wire.node_id("C", int(commit.sha[:8], 16)),
             commit=wire.CommitDetailOut(
                 author=person,
-                committer=person,
+                committer=committed,
                 message=commit.message,
                 tree=wire.ShaRefOut(sha=tree, url=f"{wire.API}/repos/{full}/git/trees/{tree}"),
                 url=f"{wire.API}/repos/{full}/git/commits/{commit.sha}",
@@ -417,7 +421,7 @@ class GitHubApi:
             html_url=f"{wire.WEB}/{full}/commit/{commit.sha}",
             comments_url=f"{wire.API}/repos/{full}/commits/{commit.sha}/comments",
             author=author,
-            committer=author,
+            committer=committer,
             parents=[]
             if commit.parent is None
             else [
@@ -431,8 +435,12 @@ class GitHubApi:
 
     # ------------------------------------------------------------------ paging
 
-    def _page(self, request: Request, total: int, *, ceiling: int | None = None) -> tuple[int, int, dict[str, str]]:
-        """The window `per_page` and `page` ask for, and the `Link` header pointing at the others."""
+    def _page(
+        self, request: Request, total: int, *, ceiling: int | None = None, path: str | None = None
+    ) -> tuple[int, int, dict[str, str]]:
+        """The window `per_page` and `page` ask for, and the `Link` header pointing at the others, at `path` (the
+        call's own path when None)."""
+        at_path = request.url.path if path is None else path
         per_page = _number(_param(request, "per_page"), PAGE_DEFAULT)
         per_page = min(max(per_page, 1), PAGE_MAX)
         page = max(_number(_param(request, "page"), 1), 1)
@@ -443,7 +451,7 @@ class GitHubApi:
         def at(number: int, rel: str) -> str:
             query = {k: v for k, v in request.query_params.items() if k != "page"}
             query["page"] = str(number)
-            return f'<{wire.API}{request.url.path}?{urlencode(query)}>; rel="{rel}"'
+            return f'<{wire.API}{at_path}?{urlencode(query)}>; rel="{rel}"'
 
         if page > 1:
             links.append(at(min(page - 1, last), "prev"))
@@ -516,7 +524,7 @@ class GitHubApi:
             return _json([])
         head = repository.commits[0].sha
         names = sorted({repository.default_branch, *repository.branches})
-        start, end, links = self._page(request, len(names))
+        start, end, links = self._page(request, len(names), path=_by_id(request, repository))
         out: list[wire.Wire] = [
             wire.BranchOut(
                 name=branch,
@@ -642,7 +650,7 @@ class GitHubApi:
         path = (_param(request, "path") or "").strip("/")
         if path:
             history = [c for c in history if any(p == path or p.startswith(path + "/") for p in c.paths)]
-        first, end, links = self._page(request, len(history))
+        first, end, links = self._page(request, len(history), path=_by_id(request, repository))
         self._world.saw(state.repository_ref(owner, name), Operation.READ)
         return _json([self._commit_out(repository, c) for c in history[first:end]], headers=links)
 
@@ -737,8 +745,22 @@ class GitHubApi:
                 private=repository.private,
                 description=repository.description,
             ),
-            score=1.0,
         )
+
+    def by_id(self, handler: Handler) -> Handler:
+        """A repository route reached as `/repositories/{repository_id}/…`, the address GitHub's own `Link` headers
+        give (recorded 2026-10-08, `tests/providers/github/observed/`): the same read, of the repository with that
+        id."""
+
+        async def answer(request: Request, caller: Caller) -> Answered:
+            wanted = request.path_params["repository_id"]
+            found = next((r for r in self._world.repositories() if r.id == wanted), None)
+            if found is None:
+                raise wire.not_found()
+            request.scope["path_params"] = {**request.path_params, "owner": found.owner, "repo": found.name}
+            return await handler(request, caller)
+
+        return answer
 
     async def installation_token(self, request: Request, caller: Caller) -> Answered:
         """`POST /app/installations/{installation_id}/access_tokens`: always issued, whatever authenticates it and
@@ -784,6 +806,15 @@ class GitHubApi:
         for repository in answer.seen:
             self._world.saw(state.repository_ref(repository.owner, repository.name), Operation.READ)
         return Answered(200, answer.body)
+
+
+def _by_id(request: Request, repository: wire.StoredRepository) -> str:
+    """The call's path as GitHub's `Link` headers write it: under `/repositories/{id}`, not `/repos/{owner}/{repo}`."""
+    path = request.url.path
+    if path.startswith("/repositories/"):
+        return path
+    parts = path.split("/", 4)
+    return f"/repositories/{repository.id}" + ("/" + parts[4] if len(parts) > 4 else "")
 
 
 def _presented(authorization: str) -> str:
@@ -844,7 +875,12 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/app/installations/{installation_id:int}/access_tokens", "POST", api.installation_token),
         ("/graphql", "POST", api.graph),
     ]
-    routes = [Route(path, api.endpoint(handler), methods=[method]) for path, method, handler in table]
+    aliases = [
+        ("/repositories/{repository_id:int}" + path.removeprefix(REPOSITORY), method, api.by_id(handler))
+        for path, method, handler in table
+        if path.startswith(REPOSITORY)
+    ]
+    routes = [Route(path, api.endpoint(handler), methods=[method]) for path, method, handler in [*table, *aliases]]
     routes.append(Route("/rate_limit", api.endpoint(api.rate_limit, spends=False), methods=["GET"]))
 
     async def unserved(request: Request) -> Response:
@@ -856,4 +892,5 @@ def build_app(store: Store, clock: Clock) -> Starlette:
     return Starlette(routes=routes)
 
 
+REPOSITORY = "/repos/{owner}/{repo}"
 EVERY_METHOD = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")

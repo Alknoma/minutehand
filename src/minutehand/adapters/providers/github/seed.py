@@ -7,8 +7,8 @@ and branches, the faults armed against the agent, and primary rate-limit budgets
 GitHub, in which every token is unknown.
 
 Every commit's date is an offset before the scenario's start, so the same file replays on any day. A repository
-with files and no commits is given one, "Initial commit", by its owner at the start; one with neither is empty,
-as a repository just created is.
+with files declares the commits that made them: GitHub holds no file outside a commit, and nothing here makes one
+up. One with neither is empty, as a repository just created is.
 
 Everything is written as actor SCENARIO.
 """
@@ -102,6 +102,11 @@ class SeedFile(wire.Wire, Keyed):
 class SeedCommit(wire.Wire):
     message: str = Field(min_length=1)
     author: str = Field(description="Login of a seeded user")
+    committer: str | None = Field(
+        default=None,
+        description="Login of a seeded user who committed it; None is the author, as GitHub's create-a-commit "
+        "reference defaults it (https://docs.github.com/en/rest/git/commits#create-a-commit)",
+    )
     before: timedelta = Field(description="How long before the scenario's start it was made")
     paths: list[str] = Field(default=[], description="The paths it changed; what `commits?path=` filters on")
 
@@ -149,6 +154,11 @@ class SeedRepository(wire.Wire, Keyed):
         clash = sorted(p for p in paths if p in as_dirs or any(d.startswith(p + "/") for d in as_dirs))
         if clash:
             raise ValueError(f"{self.owner}/{self.name}: {clash[0]} is both a file and a directory")
+        if self.files and not self.commits:
+            raise ValueError(
+                f"{self.owner}/{self.name}: a repository with files has the commits that made them; declare at least "
+                "one (message, author, before)"
+            )
         befores = [c.before for c in self.commits]
         if any(later >= earlier for earlier, later in pairwise(befores)):
             raise ValueError(f"{self.owner}/{self.name}: commits are oldest first, each made after the one before")
@@ -208,6 +218,7 @@ class GitHubSeed(wire.Wire):
         named_users += [t.login for t in self.tokens]
         named_users += [c.login for r in self.repositories for c in r.collaborators]
         named_users += [c.author for r in self.repositories for c in r.commits]
+        named_users += [c.committer for r in self.repositories for c in r.commits if c.committer is not None]
         named_users += [b.login for b in self.budgets if b.login is not None]
         named_users += [self.unknown_credentials_act_as] if self.unknown_credentials_act_as is not None else []
         missing = sorted({n for n in named_users if n.lower() not in users})
@@ -255,30 +266,42 @@ def _user(user: SeedUser, people: dict[str, Person], created: str) -> wire.Store
     )
 
 
+def _login(account: wire.StoredAccount) -> str | None:
+    return account.login if account.type is wire.AccountType.USER else None
+
+
+def _name(account: wire.StoredAccount) -> str:
+    return account.name or account.login
+
+
+def _email(account: wire.StoredAccount) -> str:
+    """The account's email, else GitHub's no-reply address for an account that keeps its email private:
+    https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/setting-your-commit-email-address"""
+    return account.email or f"{account.id}+{account.login}@users.noreply.github.com"
+
+
 def _commits(
     repository: SeedRepository, accounts: dict[str, wire.StoredAccount], start: datetime
 ) -> list[wire.StoredCommit]:
     full_name = f"{repository.owner}/{repository.name}"
     written = list(repository.commits)
-    if not written and repository.files:
-        owner = accounts[repository.owner.lower()]
-        initial = SeedCommit(message="Initial commit", author=owner.login, before=timedelta(0))
-        written = [initial.model_copy(update={"paths": [f.path for f in repository.files]})]
     made: list[wire.StoredCommit] = []
     parent: str | None = None
     for position, commit in enumerate(written):
         author = accounts[commit.author.lower()]
+        committer = author if commit.committer is None else accounts[commit.committer.lower()]
         date = wire.timestamp(start - commit.before)
         sha = _commit_sha(full_name, position, commit.message, date)
         made.append(
             wire.StoredCommit(
                 sha=sha,
                 message=commit.message,
-                author_login=author.login if author.type is wire.AccountType.USER else None,
-                author_name=author.name or author.login,
-                # GitHub's no-reply address for an account that keeps its email private:
-                # https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/setting-your-commit-email-address
-                author_email=author.email or f"{author.id}+{author.login}@users.noreply.github.com",
+                author_login=_login(author),
+                author_name=_name(author),
+                author_email=_email(author),
+                committer_login=_login(committer),
+                committer_name=_name(committer),
+                committer_email=_email(committer),
                 date=date,
                 paths=commit.paths,
                 parent=parent,

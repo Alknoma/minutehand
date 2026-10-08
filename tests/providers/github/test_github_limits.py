@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
-from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, SeedRepository
+from minutehand.adapters.providers.github.seed import GitHubSeed, SeedCommit, SeedFile, SeedRepository
 from tests.providers.github.github_world import Hub, body, github_seed, ledger, listing
 
 
@@ -14,6 +16,7 @@ def seeded() -> GitHubSeed:
         owner="iris-calder",
         name="wide",
         files=[SeedFile(path=f"generated/file_{n:05d}.py", text=f"# {n}\n") for n in range(1200)],
+        commits=[SeedCommit(message="Generate the files", author="iris-calder", before=timedelta(days=1))],
     )
     return github_seed(repositories=[ledger(tree_entry_limit=3), wide])
 

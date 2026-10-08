@@ -319,6 +319,9 @@ class StoredCommit(Wire):
     author_login: str | None
     author_name: str
     author_email: str
+    committer_login: str | None
+    committer_name: str
+    committer_email: str
     date: str
     paths: list[str]
     parent: str | None
@@ -730,7 +733,9 @@ class CodeItemOut(Wire):
     git_url: str
     html_url: str
     repository: MinimalRepositoryOut
-    score: float
+    # No `score`: the reference's description requires one (a number) and documents nothing of how GitHub computes
+    # it, and recording it needs a credential (code search refuses a call without one). It is left out rather than
+    # made up (CLAIMS.md, "Pending a recording").
 
 
 class TermMatchOut(Wire):

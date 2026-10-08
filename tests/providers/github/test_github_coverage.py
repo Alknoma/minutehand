@@ -38,6 +38,13 @@ SERVED: dict[tuple[str, str], str] = {
 }
 """Each operation the provider serves, and a call of it against the seeded world."""
 
+PENDING: dict[str, str] = {
+    "$.items[].score": "code search's `score`: required by the description, its computation undocumented, and recording it "
+    'needs a credential; left out rather than made up (CLAIMS.md, "Pending a recording")',
+}
+"""Required fields deliberately not answered, each with its reason, by their place in the answer."""
+INDEX = re.compile(r"\[[0-9]+\]")
+
 PLACEHOLDER = re.compile(r"\{([^}]+)\}")
 WORLD_VALUES = {"owner": "lanternworks", "repo": "ledger", "username": "iris-calder", "org": "lanternworks"}
 
@@ -89,7 +96,11 @@ def _missing(schema: dict[str, object], value: object, where: str) -> list[str]:
     required = schema["required"] if "required" in schema else []
     properties = schema["properties"] if "properties" in schema else {}
     assert isinstance(required, list) and isinstance(properties, dict)
-    gaps = [f"{where}.{name}" for name in required if name not in value]
+    gaps = [
+        f"{where}.{name}"
+        for name in required
+        if name not in value and INDEX.sub("[]", f"{where}.{name}") not in PENDING
+    ]
     for name, held in value.items():
         if name in properties:
             gaps += _missing(properties[name], held, f"{where}.{name}")

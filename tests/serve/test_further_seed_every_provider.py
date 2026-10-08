@@ -60,7 +60,16 @@ def _github_seed() -> str:
         {
             "users": [{"login": "octo", "person": "owen"}, {"login": "sofi", "person": "sofia"}],
             "tokens": [{"token": "ghp_stable1", "kind": "classic", "login": "octo"}],
-            "repositories": [{"owner": "octo", "name": "notes", "files": [{"path": "README.md", "text": "hi"}]}],
+            "repositories": [
+                {
+                    "owner": "octo",
+                    "name": "notes",
+                    "files": [{"path": "README.md", "text": "hi"}],
+                    "commits": [
+                        {"message": "Add the notes", "author": "octo", "before": "P1D", "paths": ["README.md"]}
+                    ],
+                }
+            ],
         }
     )
 

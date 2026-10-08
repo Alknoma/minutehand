@@ -142,6 +142,7 @@ def github_seed(**changes: object) -> GitHubSeed:
                 name="notes",
                 description="Public notes",
                 files=[SeedFile(path="README.md", text="# Notes\n\nNothing about billing here.\n")],
+                commits=[SeedCommit(message="Start the notes", author="iris-calder", before=timedelta(0))],
             ),
             SeedRepository(
                 owner="lanternworks",
@@ -149,6 +150,7 @@ def github_seed(**changes: object) -> GitHubSeed:
                 private=True,
                 collaborators=[wire.Collaborator(login="tomas-b", permission=wire.Permission.PULL)],
                 files=[SeedFile(path="plan.md", text="# Plans\n\nretry the launch later\n")],
+                commits=[SeedCommit(message="Plan the launch", author="iris-calder", before=timedelta(0))],
             ),
             SeedRepository(owner="iris-calder", name="empty"),
         ],

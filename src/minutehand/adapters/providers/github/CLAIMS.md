@@ -33,6 +33,9 @@ under "Deliberately not enforced" below, with the tests that hold the provider t
 | A repository's URL templates, `git_url`, `ssh_url`, `clone_url`, `svn_url`, `mirror_url: null` | recorded | C (same test) | `observed/api.github.com.2026-10-08.json` |
 | A new repository's features: `has_issues`, `has_projects`, `has_wiki` on, `has_discussions` off | documented | C (same test) | https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user |
 | `has_pages` false, `has_downloads` true | documented (`has_downloads` was observed false on an old repository) | C (same test) | (same page) |
+| A commit's committer defaults to its author; a seed may declare another | documented | R `test_a_commit_s_committer_is_the_one_the_seed_declares_else_its_author` | https://docs.github.com/en/rest/git/commits#create-a-commit |
+| A repository listing's `Link` points at `/repositories/{id}/…`, which answers as `/repos/{owner}/{repo}/…` | recorded | R `test_a_link_header_points_under_repositories_by_id_and_that_address_answers` | `observed/api.github.com.2026-10-08.json` |
+| No file outside a commit: a seed repository with files and no commit is refused, naming it | documented (git's object model) | `test_github_world.py` `test_a_repository_with_files_and_no_commit_is_rejected_naming_it` | https://git-scm.com/book/en/v2/Git-Internals-Git-Objects |
 | A node id names one object: two licenses have two | documented | R `test_two_licenses_have_two_node_ids` | https://docs.github.com/en/graphql/guides/using-global-node-ids |
 | Every answer carries `X-RateLimit-Limit/Remaining/Used/Reset/Resource`; core is 5,000 | documented | R `test_every_answer_carries_the_rate_limit_headers_for_its_budget` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | Without a credential the budget is 60 an hour | documented | R `test_an_unauthenticated_answer_carries_the_sixty_an_hour_budget` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
@@ -95,6 +98,19 @@ and never mentions `HEAD`, so a client that relies on `HEAD` there relies on som
 | `GET /repos/{owner}/{repo}/git/trees/{tree_sha}` | "The SHA1 value or ref (branch or tag) name of the tree." Not stated by the documentation; kept as accepted | The default branch's root tree | H `test_get_a_tree_named_head_is_the_root_tree_of_the_default_branch` | https://docs.github.com/en/rest/git/trees#get-a-tree |
 | GraphQL `Repository.object(expression:)` | Documented: "A Git revision expression suitable for rev-parse", which reads `HEAD` | `HEAD` and `HEAD:path` resolve at the head commit | H `test_graphql_object_expression_head_names_the_head_commit` | https://docs.github.com/en/graphql/reference/repos#repository |
 | `GET /repos/{owner}/{repo}/commits/{ref}`, compare (`BASE...HEAD`) | "a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME)"; compare's `HEAD` is the head BRANCH's name, not the ref `HEAD` | Not served: 501, refused by name | R `test_an_unserved_path_is_refused_by_name_not_answered_as_github_s_404` | https://docs.github.com/en/rest/commits/commits#get-a-commit |
+
+## Pending a recording
+
+Each needs a credential to record (code search and GraphQL refuse a call without one), so none is proven:
+
+- Code search's `score`: the description requires it (a number) and the reference says nothing of how it is
+  computed. It is **not answered**, rather than made up (S `test_a_hit_carries_no_score_made_up_by_the_provider`;
+  the coverage test names it as its one pending field).
+- Code search's order: the reference says results are by "best match" unless `sort` says otherwise, without saying
+  what that is; hits come in repository and path order here.
+- The five "observed, not recorded" claims above: whole-token matching, every bare term must match, an empty `q`
+  is 422 `missing`, a GraphQL repository that does not resolve is `null` with NOT_FOUND, and the missing-query
+  message.
 
 ## Deliberately not enforced
 

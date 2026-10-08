@@ -5,11 +5,12 @@ here so the fake keeps it. Every docstring says whether the claim is documented 
 from __future__ import annotations
 
 import base64
+from datetime import timedelta
 
 import pytest
 
 from minutehand.adapters.providers.github import wire
-from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, SeedRepository
+from minutehand.adapters.providers.github.seed import GitHubSeed, SeedCommit, SeedFile, SeedRepository
 from minutehand.domain.world import Actor
 from tests.providers.github.github_world import (
     APP,
@@ -29,6 +30,7 @@ WIDE = SeedRepository(
     owner="iris-calder",
     name="sprawl",
     files=[SeedFile(path=f"fixtures/case_{n:04d}.txt", text=f"case {n}\n") for n in range(1040)],
+    commits=[SeedCommit(message="Add the cases", author="iris-calder", before=timedelta(days=1))],
 )
 
 
@@ -368,3 +370,57 @@ async def test_two_licenses_have_two_node_ids(hub: Hub, seeded: GitHubSeed) -> N
         isc = body(await http.get("/repos/lanternworks/other"))["license"]
     assert isinstance(mit, dict) and isinstance(isc, dict)
     assert mit["node_id"] != isc["node_id"]
+
+
+# ---------------------------------------------------------------- what a commit holds
+
+
+@pytest.mark.parametrize(
+    "seeded",
+    [
+        github_seed(
+            repositories=[
+                ledger(
+                    commits=[
+                        SeedCommit(
+                            message="Start", author="iris-calder", before=timedelta(days=2), paths=["README.md"]
+                        ),
+                        SeedCommit(
+                            message="Applied from a patch",
+                            author="tomas-b",
+                            committer="iris-calder",
+                            before=timedelta(days=1),
+                            paths=["web/app.ts"],
+                        ),
+                    ]
+                )
+            ]
+        )
+    ],
+)
+async def test_a_commit_s_committer_is_the_one_the_seed_declares_else_its_author(hub: Hub, seeded: GitHubSeed) -> None:
+    """Documented: "By default, `committer` will use the information set in `author`."
+    https://docs.github.com/en/rest/git/commits#create-a-commit"""
+    async with hub.client() as http:
+        patched, started = listing(await http.get("/repos/lanternworks/ledger/commits"))
+    assert (patched["author"]["login"], patched["committer"]["login"]) == ("tomas-b", "iris-calder")  # type: ignore[index]
+    assert patched["commit"]["committer"]["email"] == "iris@example.com"  # type: ignore[index]
+    assert started["committer"] == started["author"] and started["commit"]["committer"] == started["commit"]["author"]  # type: ignore[index]
+
+
+# ---------------------------------------------------------------- paging addresses
+
+
+async def test_a_link_header_points_under_repositories_by_id_and_that_address_answers(hub: Hub) -> None:
+    """Recorded (`observed/api.github.com.2026-10-08.json`): a repository listing's `Link` points at
+    `/repositories/{id}/…`, and following it reads the same list."""
+    async with hub.client() as http:
+        first = await http.get("/repos/lanternworks/ledger/commits", params={"per_page": 1})
+        repository_id = body(await http.get("/repos/lanternworks/ledger"))["id"]
+        following = first.headers["Link"].split(">", 1)[0].removeprefix("<")
+        second = await http.get(following)
+        branches = await http.get(f"/repositories/{repository_id}/branches", params={"per_page": 1})
+        refusal(await http.get("/repositories/1/commits"), 404, "Not Found")
+    assert following == f"https://api.github.com/repositories/{repository_id}/commits?per_page=1&page=2"
+    assert listing(second)[0]["sha"] != listing(first)[0]["sha"]
+    assert f"/repositories/{repository_id}/branches?per_page=1&page=2" in branches.headers["Link"]

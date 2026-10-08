@@ -105,12 +105,16 @@ a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with
 - `ETag` and `If-None-Match` are answered (a 304 to a call with an `Authorization` spends nothing); `Last-Modified`
   and `If-Modified-Since` are not, nor `Accept: application/vnd.github.raw`. A text match's fragment is the first
   line holding a term, not GitHub's wider snippet.
-- A `Link` header points at `/repos/{owner}/{repo}/…`; GitHub's (observed) points at `/repositories/{id}/…`, which
-  this provider does not serve. Both page by `per_page` and `page`, in GitHub's order (`prev`, `next`, `last`,
-  `first`).
+- A repository listing's `Link` header points at `/repositories/{id}/…`, as GitHub's does (recorded), and every
+  repository route answers there too. Lists page by `per_page` and `page`, in GitHub's order (`prev`, `next`,
+  `last`, `first`).
+- A seed repository with files declares the commits that made them (each with its author, and a committer when it
+  is not the author); one with files and no commit is refused, naming it.
 - `GET /user` answers GitHub's public view of the user (`user_view_type: "public"`): disk usage, two-factor and
   private gist counts are nothing the world holds.
-- Code search scores every hit 1.0 and orders by repository and path.
+- Code search answers no `score`: the description requires one and documents nothing of how it is computed, and
+  recording it needs a credential, so it is left out rather than made up (`CLAIMS.md`, "Pending a recording").
+  Hits are ordered by repository and path, not GitHub's undocumented "best match".
 - `HEAD` is accepted as a ref everywhere a ref is. GraphQL documents it; the REST reference does not mention it,
   so it is kept as accepted there (`CLAIMS.md`, "`HEAD` as a ref"). Getting one commit by ref and compare are
   not served.

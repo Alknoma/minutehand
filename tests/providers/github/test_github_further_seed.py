@@ -89,7 +89,16 @@ FRAGMENTS: dict[str, object] = {
     "user": {"users": [{"login": "ivy-ng", "name": "Ivy Ng"}]},
     "organization": {"organizations": [{"login": "ops", "members": ["sofi"]}]},
     "token": {"tokens": [{"token": "ghp_added1", "kind": "classic", "login": "sofi"}]},
-    "repository": {"repositories": [{"owner": "sofi", "name": "plans", "files": [{"path": "a.md", "text": "a"}]}]},
+    "repository": {
+        "repositories": [
+            {
+                "owner": "sofi",
+                "name": "plans",
+                "files": [{"path": "a.md", "text": "a"}],
+                "commits": [{"message": "Add the notes", "author": "sofi", "before": "P1D", "paths": ["a.md"]}],
+            }
+        ]
+    },
     "fault": {"faults": [{"kind": "rate_limited", "resource": "core"}]},
     "limits": {"limits": [{"repository": "acme/notes", "tree_entry_limit": 1}]},
     "budget": {"budgets": [{"login": "octo", "resource": "search", "remaining": 3}]},

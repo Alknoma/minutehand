@@ -295,6 +295,14 @@ class GitHubDriver(Driver):
                     "owner": ORGANIZATION,
                     "name": REPOSITORY,
                     "files": [{"path": "README.md", "text": "Launch notes\n"}],
+                    "commits": [
+                        {
+                            "message": "Start the launch notes",
+                            "author": AGENT_LOGIN,
+                            "before": "P1D",
+                            "paths": ["README.md"],
+                        }
+                    ],
                     "collaborators": [
                         {"login": AGENT_LOGIN, "permission": "admin"},
                         *({"login": login[k], "permission": "push"} for k in keys),
