@@ -61,7 +61,9 @@ manifest, and because the tenant, its bot and its users are one directory every 
   default), `$skip`, `$select`, `$filter` on `isRead`, the date properties, `from`/`sender` address,
   `conversationId`, `subject`, `id`, `importance`, joined by `and`, and `$orderby` on the
   dates and `subject`; with both, an `$orderby` that does not open the `$filter` is 400 `InefficientFilter`. A list
-  without `$orderby` that would hold more than one message (or event) is 501: Graph documents no default order.
+  without `$orderby` that would hold more than one message (or event) is 501: no Microsoft page or public
+  recording states a default order (only `$search` results are documented sorted), so **send `$orderby`**, e.g.
+  `receivedDateTime desc` for messages, `start/dateTime` for events and `calendarView`.
   `internetMessageId` is left out (Exchange assigns it from its own hosts).
   `Prefer: outlook.body-content-type="text"` answers bodies as text; otherwise a body is HTML; a body is stored as
   sent either way. A message and an event carry `changeKey` and `@odata.etag` W/"changeKey". A folder's
