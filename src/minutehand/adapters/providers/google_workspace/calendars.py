@@ -593,7 +593,7 @@ class CalendarApi:
         async def endpoint(request: Request) -> Response:
             try:
                 token = _param(request, "access_token") or _param(request, "oauth_token")
-                caller = signed_in(self._drive, self._clock, bearer(request, token), missing=wire.login_required())
+                caller = signed_in(self._drive, bearer(request, token))
                 _parameters(request, method)
                 kind = due_fault(self._drive, self._clock, method.name)
                 if kind is not None:

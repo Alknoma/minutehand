@@ -26,7 +26,6 @@ from minutehand.domain.scenario import (
     SeededDocument,
     Shared,
     SharedSpace,
-    SignIn,
 )
 from minutehand.domain.world import Actor, Operation
 from tests.providers.google_workspace.drive_world import (
@@ -104,38 +103,6 @@ async def test_a_writer_may_not_trash_or_delete_a_file_in_someone_elses_my_drive
     assert reason_of(trash, 403) == "insufficientFilePermissions"
     assert reason_of(delete, 403) == "insufficientFilePermissions"
     assert rename.status_code == 200
-
-
-async def test_an_unknown_expired_or_revoked_token_is_refused_401(
-    drive: Drive, api: httpx.AsyncClient, oauth: httpx.AsyncClient
-) -> None:
-    unknown = await api.get("/drive/v3/files", headers={"Authorization": "Bearer ya29.never-issued"})
-    issue(drive.store, "ya29.short", "mara@example.com", lasts=timedelta(hours=1))
-    fresh = await api.get("/drive/v3/files", headers={"Authorization": "Bearer ya29.short"})
-    drive.clock.jump(START + timedelta(hours=1))
-    expired = await api.get("/drive/v3/files", headers={"Authorization": "Bearer ya29.short"})
-    revoked = await oauth.post("/revoke", params={"token": "ya29.a token the run issued to the owner"})
-    after = await api.get("/drive/v3/files", headers=AUTH)
-    again = await oauth.post("/revoke", params={"token": "ya29.a token the run issued to the owner"})
-
-    assert reason_of(unknown, 401) == "authError" and fresh.status_code == 200
-    assert reason_of(expired, 401) == "authError"
-    assert revoked.status_code == 200 and reason_of(after, 401) == "authError"
-    assert answer(again, 400) == {"error": "invalid_token", "error_description": "Token expired or revoked"}
-
-
-async def test_a_credential_the_scenario_does_not_name_is_refused_invalid_grant(tmp_path: Path) -> None:
-    named = SCENARIO.model_copy(
-        update={"sign_ins": [SignIn(provider="google_workspace", credential="1//known", person="mara")]}
-    )
-    clock = RunClock(START)
-    store = SqliteStore(tmp_path / "w.db", "root", clock)
-    build().seed(named, store)
-    async with client_for(build(), store, clock, "oauth2.googleapis.com") as oauth:
-        known = await oauth.post("/token", data={"grant_type": "refresh_token", "refresh_token": "1//known"})
-        stranger = await oauth.post("/token", data={"grant_type": "refresh_token", "refresh_token": "1//stranger"})
-    assert known.status_code == 200
-    assert answer(stranger, 400) == {"error": "invalid_grant", "error_description": "Bad Request"}
 
 
 def test_a_fault_naming_a_call_this_fake_does_not_answer_is_refused_at_seeding(tmp_path: Path) -> None:

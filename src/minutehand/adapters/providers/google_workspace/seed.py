@@ -10,7 +10,9 @@ scenario declared.
   Google Doc whose text is read as Markdown; a SPREADSHEET a Google Sheet of its rows; a PRESENTATION a Google
   Slides deck; a FILE an uploaded file of its `mime_type`. It was last changed `modified_before_start`
   before the scenario starts, by `modified_by`.
-- With no `SignIn` for this provider, any credential signs in as the scenario's owner.
+- A `SignIn` for this provider signs in as its person (or, naming none, as a service account of that name). No
+  credential is enforced: any other credential, or none, acts as the seed's `unknown_credentials_act_as`, by
+  default the scenario's owner.
 - Every person has a mailbox at their address and a primary calendar in their working hours' time zone (UTC
   without).
 - Its own seed (`WorkspaceSeed`, the scenario's `ProviderSeed` for `google_workspace`) declares the emails already
@@ -107,6 +109,12 @@ class WorkspaceSeed(Model):
     faults: list[FaultSeed] = []
     emails: list[SeededEmail] = []
     events: list[SeededEvent] = []
+    unknown_credentials_act_as: str | None = Field(
+        default=None,
+        description="Key of the person every credential the world does not hold, or none at all, acts as (an "
+        "unseeded or expired refresh token, a service account nobody declared, an authorization code); None is the "
+        "scenario's owner",
+    )
 
 
 def workspace_seed(scenario: Scenario) -> WorkspaceSeed:
@@ -204,9 +212,8 @@ def seed(scenario: Scenario, world: Store) -> None:
         )
         drive.write_file(root, operation=Operation.CREATE, actor=Actor.SCENARIO)
 
-    if not sign_ins:
-        owner = people[scenario.owner]
-        drive.keep_credential(state.ANY_CREDENTIAL, wire.Credential(email=owner.email), operation=Operation.CREATE)
+    default = people[own.unknown_credentials_act_as or scenario.owner]
+    drive.keep_credential(state.ANY_CREDENTIAL, wire.Credential(email=default.email), operation=Operation.CREATE)
     for sign_in in sign_ins:
         email = people[sign_in.person].email if sign_in.person is not None else sign_in.credential
         credential = wire.Credential(email=email, service_account="@" in sign_in.credential)
@@ -260,6 +267,11 @@ def _check(own: WorkspaceSeed, scenario: Scenario) -> None:
     """Every name the seed gives must name something, and nothing the shared seed puts here may be dropped, checked
     before anything is written."""
     people = {p.key: p for p in scenario.people}
+    if own.unknown_credentials_act_as is not None and own.unknown_credentials_act_as not in people:
+        raise ValueError(
+            f"unknown_credentials_act_as names {own.unknown_credentials_act_as!r}, who is not a person in the "
+            f"scenario; they are {', '.join(people)}"
+        )
     for channel in scenario.channels:
         if channel.provider == MANIFEST.key:
             what = f"the seeded channel {channel.name!r}" if channel.name is not None else "a seeded direct chat"
