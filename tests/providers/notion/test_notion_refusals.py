@@ -26,7 +26,9 @@ from tests.providers.notion.notion_world import (
     refusal,
     scenario,
     seeded,
+    served,
     through_proxy,
+    unserved,
 )
 
 
@@ -60,7 +62,7 @@ async def test_a_seeded_token_still_names_its_own_integration(world: World) -> N
 
 async def test_a_call_without_a_version_is_refused_missing_version(world: World) -> None:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=world.provider.app(world.store, world.clock)),
+        transport=httpx.ASGITransport(app=served(world)),
         base_url=API,
         headers={"Authorization": f"Bearer {AGENT_TOKEN}"},
     ) as unversioned:
@@ -69,11 +71,8 @@ async def test_a_call_without_a_version_is_refused_missing_version(world: World)
 
 async def test_a_version_this_fake_does_not_serve_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
     for version in ("2025-09-03", "2026-03-11", "2021-08-16"):
-        message = refusal(await api.get("/v1/users/me", headers={"Notion-Version": version}), 501, "invalid_request")
-        assert (
-            message
-            == f"Unsupported request: Notion-Version {version} (this simulation answers 2022-06-28). Not served by this simulation."
-        )
+        answered = await api.get("/v1/users/me", headers={"Notion-Version": version})
+        assert unserved(answered) == f"Notion-Version {version} (this simulation answers 2022-06-28)"
 
 
 async def test_an_unknown_path_and_a_wrong_method_are_refused_invalid_request_url(api: httpx.AsyncClient) -> None:
@@ -159,17 +158,13 @@ async def test_changing_a_blocks_type_is_refused(api: httpx.AsyncClient) -> None
 
 
 async def test_a_block_type_this_fake_does_not_build_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
-    """Notion takes a column list; this fake does not build one, and says so with 501 rather than a 400 that would
-    read as Notion's own refusal."""
-    message = refusal(
-        await api.patch(
-            f"/v1/blocks/{ids('handbook')}/children",
-            json={"children": [{"type": "column_list", "column_list": {"children": []}}]},
-        ),
-        501,
-        "invalid_request",
+    """Notion takes a column list; this fake does not build one, and says so with the shared not-served refusal rather
+    than a 400 that would read as Notion's own."""
+    answered = await api.patch(
+        f"/v1/blocks/{ids('handbook')}/children",
+        json={"children": [{"type": "column_list", "column_list": {"children": []}}]},
     )
-    assert message == "Unsupported request: `column_list` blocks (body.children[0]). Not served by this simulation."
+    assert unserved(answered) == "`column_list` blocks (body.children[0])"
 
 
 async def test_a_property_the_database_does_not_have_is_refused(api: httpx.AsyncClient) -> None:

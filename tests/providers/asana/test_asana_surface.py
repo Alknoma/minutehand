@@ -18,7 +18,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from minutehand.adapters.providers.asana.app import UNSERVED
-from tests.providers.asana.asana_workspace import Workspace, error
+from tests.providers.asana.asana_workspace import Workspace, unserved
 
 SUBSET = Path(__file__).resolve().parents[2] / "data" / "asana_rest_1_0" / "openapi-subset-2026-10-08.json"
 METHODS = ("get", "post", "put", "delete", "patch")
@@ -77,5 +77,5 @@ async def test_an_operation_not_served_is_refused_501_naming_it_and_writes_nothi
     before = workspace.store.head()
     concrete = re.sub(r"\{[^}]+\}", "1201234567890123", path)
     answered = await client.request(method, concrete, json={"data": {}} if method in ("POST", "PUT") else None)
-    assert error(answered, 501) == f"{method} {path} ({operation}): Not supported by this simulation of Asana"
+    assert unserved(answered) == f"{method} {path} ({operation})"
     assert workspace.store.head() == before

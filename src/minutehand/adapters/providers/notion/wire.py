@@ -78,18 +78,15 @@ ERROR_TYPE = "application/json; charset=utf-8"
 class Refusal(ServiceRefusal):
     """Notion answered with an error object."""
 
-    def __init__(
-        self, code: ErrorCode, message: str, headers: dict[str, str] | None = None, *, status: int | None = None
-    ) -> None:
+    def __init__(self, code: ErrorCode, message: str, headers: dict[str, str] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.headers = headers or {}
-        self._status = status
 
     @property
     def status(self) -> int:
-        return self._status if self._status is not None else _STATUS[self.code]
+        return _STATUS[self.code]
 
     def body(self, request_id: str) -> str:
         return json.dumps(
@@ -127,13 +124,11 @@ def invalid(message: str) -> Refusal:
     return Refusal(ErrorCode.VALIDATION_ERROR, message)
 
 
-def unserved(name: str) -> Refusal:
-    """Something Notion has that this provider does not serve: 501, with the code and the message Notion gives a
-    request it does not support (`invalid_request`, "Unsupported request: <request name>.",
-    https://developers.notion.com/reference/status-codes), naming it. Never answered as if Notion refused it."""
-    return Refusal(
-        ErrorCode.INVALID_REQUEST, f"Unsupported request: {name}. Not served by this simulation.", status=501
-    )
+def unserved(name: str) -> NotImplementedError:
+    """Something Notion has, or a case whose answer Notion does not document, that this provider does not serve: the
+    shared not-served refusal (`domain.errors`), answered 501 `invalid_request` naming the call and `name`
+    (`error_answer`), and recorded as not implemented. Never answered as if Notion refused it."""
+    return NotImplementedError(name)
 
 
 MISSING_VERSION = (

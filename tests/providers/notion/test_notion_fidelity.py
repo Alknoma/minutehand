@@ -9,7 +9,19 @@ from typing import Any
 
 import httpx
 
-from tests.providers.notion.notion_world import API, NOTION, World, answer, direct, ids, refusal, scenario, seeded
+from tests.providers.notion.notion_world import (
+    API,
+    NOTION,
+    World,
+    answer,
+    direct,
+    ids,
+    refusal,
+    scenario,
+    seeded,
+    served,
+    unserved,
+)
 
 
 def _children(api: httpx.AsyncClient, page: str) -> Any:
@@ -89,8 +101,9 @@ async def test_a_date_mention_with_an_end_or_a_time_is_refused_501_naming_it(api
     for date in ({"start": "2022-12-16", "end": "2022-12-18"}, {"start": "2022-12-16T10:00:00.000Z"}):
         mention = {"type": "mention", "mention": {"type": "date", "date": date}}
         body = {"children": [{"type": "paragraph", "paragraph": {"rich_text": [mention]}}]}
-        message = refusal(await api.patch(f"/v1/blocks/{ids('handbook')}/children", json=body), 501, "invalid_request")
-        assert message.startswith("Unsupported request: a date mention with a time or an end")
+        assert unserved(await api.patch(f"/v1/blocks/{ids('handbook')}/children", json=body)).startswith(
+            "a date mention with a time or an end"
+        )
 
 
 async def test_a_mention_notion_takes_and_this_fake_does_not_build_is_refused_501_naming_it(
@@ -98,16 +111,15 @@ async def test_a_mention_notion_takes_and_this_fake_does_not_build_is_refused_50
 ) -> None:
     mention = {"type": "mention", "mention": {"type": "template_mention", "template_mention": {}}}
     body = {"children": [{"type": "paragraph", "paragraph": {"rich_text": [mention]}}]}
-    message = refusal(await api.patch(f"/v1/blocks/{ids('handbook')}/children", json=body), 501, "invalid_request")
-    assert message.startswith("Unsupported request: a `template_mention` mention")
+    assert unserved(await api.patch(f"/v1/blocks/{ids('handbook')}/children", json=body)).startswith(
+        "a `template_mention` mention"
+    )
 
 
 async def test_an_image_that_is_not_external_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
     image = {"type": "image", "image": {"type": "file_upload", "file_upload": {"id": ids("handbook")}}}
-    message = refusal(
-        await api.patch(f"/v1/blocks/{ids('handbook')}/children", json={"children": [image]}), 501, "invalid_request"
-    )
-    assert message.startswith("Unsupported request: an image that is not `external`")
+    answered = await api.patch(f"/v1/blocks/{ids('handbook')}/children", json={"children": [image]})
+    assert unserved(answered).startswith("an image that is not `external`")
 
 
 async def test_a_property_type_notion_takes_and_this_fake_does_not_build_is_refused_501_naming_it(
@@ -118,14 +130,11 @@ async def test_a_property_type_notion_takes_and_this_fake_does_not_build_is_refu
         "title": [{"type": "text", "text": {"content": "Sums"}}],
         "properties": {"Name": {"title": {}}, "Total": {"formula": {"expression": "1"}}},
     }
-    message = refusal(await api.post("/v1/databases", json=body), 501, "invalid_request")
-    assert message.startswith("Unsupported request: `formula` properties")
+    assert unserved(await api.post("/v1/databases", json=body)).startswith("`formula` properties")
 
 
 async def test_a_missing_version_carries_notions_documented_message(world: World) -> None:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=world.provider.app(world.store, world.clock)), base_url=API
-    ) as unversioned:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=served(world)), base_url=API) as unversioned:
         message = refusal(await unversioned.get("/v1/users/me"), 400, "missing_version")
     assert message == (
         "Notion-Version header failed validation: Notion-Version header should be defined, instead was undefined."

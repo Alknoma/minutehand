@@ -16,6 +16,7 @@ import httpx
 import pytest
 from notion_client import AsyncClient, Client
 
+from minutehand.adapters.answering import Guarded
 from minutehand.adapters.providers.notion.manifest import MANIFEST
 from minutehand.adapters.providers.notion.provider import NotionProvider, build
 from minutehand.adapters.providers.notion.seed import object_id
@@ -25,6 +26,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, ProviderSeed, Scenario, SeededDocument
+from minutehand.ports.provider import ASGIApp
 
 START = datetime(2026, 9, 14, 8, 30, 0, tzinfo=UTC)
 AGENT_TOKEN = "ntn_agent_secret_for_tests_0001"
@@ -214,12 +216,17 @@ def world(tmp_path: Path) -> Iterator[World]:
         found.store.close()
 
 
-def direct(world: World, token: str | None = AGENT_TOKEN) -> httpx.AsyncClient:
-    """The app over ASGI, with the SDK's headers."""
-    headers = {**VERSION, **({"Authorization": f"Bearer {token}"} if token else {})}
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=world.provider.app(world.store, world.clock)), base_url=API, headers=headers
+def served(world: World) -> ASGIApp:
+    """The app as the proxy serves it: what it does not serve (`NotImplementedError`) answered 501 in Notion's shape."""
+    return Guarded(
+        world.provider.app(world.store, world.clock), world.provider, provider=MANIFEST.key, clock=world.clock
     )
+
+
+def direct(world: World, token: str | None = AGENT_TOKEN) -> httpx.AsyncClient:
+    """The app over ASGI, as the proxy serves it, with the SDK's headers."""
+    headers = {**VERSION, **({"Authorization": f"Bearer {token}"} if token else {})}
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=served(world)), base_url=API, headers=headers)
 
 
 @pytest.fixture
@@ -244,6 +251,14 @@ def refusal(response: httpx.Response, status: int, code: str) -> str:
     assert body["object"] == "error" and body["status"] == status and body["code"] == code, body
     assert isinstance(body["request_id"], str) and isinstance(body["message"], str)
     return body["message"]
+
+
+def unserved(response: httpx.Response) -> str:
+    """What a 501 says is not served, after checking it is the shared not-served refusal in Notion's error object."""
+    message = refusal(response, 501, "invalid_request")
+    prefix = "minutehand's notion fake does not implement "
+    assert message.startswith(prefix), message
+    return message[len(prefix) :].split(": ", 1)[1]
 
 
 # --------------------------------------------------------------------------- through the proxy

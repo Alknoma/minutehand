@@ -21,7 +21,7 @@ from minutehand.adapters.providers.asana.seed import AsanaSeed
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, ProviderSeed, Scenario, SeededTicket, TicketState
-from tests.providers.asana.asana_workspace import START, Workspace
+from tests.providers.asana.asana_workspace import START, Workspace, served
 
 AGENT_TOKEN = "pat-agent"
 ALICE_TOKEN = "pat-alice"
@@ -145,7 +145,7 @@ def rich(tmp_path: Path) -> Workspace:
 
 def client_as(rich: Workspace, token: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=rich.provider.app(rich.store, rich.clock)),
+        transport=httpx.ASGITransport(app=served(rich.provider, rich.store, rich.clock)),
         base_url="https://app.asana.com",
         headers={"Authorization": f"Bearer {token}"},
     )

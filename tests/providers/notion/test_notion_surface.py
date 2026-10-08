@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from minutehand.adapters.providers.notion.app import UNSERVED, NotionApp
-from tests.providers.notion.notion_world import World, refusal
+from tests.providers.notion.notion_world import World, unserved
 
 DATA = Path(__file__).resolve().parents[2] / "data" / "notion_api"
 METHODS = ("get", "post", "put", "delete", "patch")
@@ -71,6 +71,5 @@ async def test_an_operation_not_served_is_refused_501_naming_it_and_writes_nothi
     before = world.store.head()
     concrete = re.sub(r"\{[^}]+\}", "668d797c-76fa-4934-9b05-ad288df2d136", path)
     answered = await api.request(method, concrete, json={} if method in ("POST", "PATCH") else None)
-    message = refusal(answered, 501, "invalid_request")
-    assert message == f"Unsupported request: {method} {path} ({operation}). Not served by this simulation."
+    assert unserved(answered) == f"{method} {path} ({operation})"
     assert world.store.head() == before

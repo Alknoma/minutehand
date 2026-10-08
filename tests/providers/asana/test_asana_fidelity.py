@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from minutehand.adapters.providers.asana import state
-from tests.providers.asana.asana_workspace import Workspace, error
+from tests.providers.asana.asana_workspace import Workspace, unserved
 from tests.providers.asana.rich_workspace import BACKEND, INCIDENT, POINTS, agent, got, option, rich
 
 __all__ = ["agent", "rich"]
@@ -75,7 +75,7 @@ async def test_a_field_this_fake_never_answers_is_refused_501_naming_it(
     """A field Asana has that is not served here (`followers`), one Asana's document does not give a task
     (`subtasks`), or a path into a string: answering without it would say it is absent or empty."""
     answered = await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": f"name,{field}"})
-    assert error(answered, 501) == f"opt_fields={named}: Not supported by this simulation of Asana"
+    assert unserved(answered) == f"opt_fields={named}"
 
 
 async def test_a_full_task_leaves_out_what_is_opt_in_until_it_is_asked_for(agent: httpx.AsyncClient) -> None:
@@ -110,7 +110,7 @@ async def test_a_project_membership_answers_neither_an_invented_access_level_nor
     asked = got(await agent.get(f"/projects/{BACKEND}/project_memberships", params={"opt_fields": "parent.name"}))
     assert asked[0]["parent"] == {"gid": BACKEND, "name": "Backend Services"}
     refused = await agent.get(f"/projects/{BACKEND}/project_memberships", params={"opt_fields": "access_level"})
-    assert error(refused, 501) == "opt_fields=access_level: Not supported by this simulation of Asana"
+    assert unserved(refused) == "opt_fields=access_level"
 
 
 async def test_an_enum_value_is_named_by_its_option(agent: httpx.AsyncClient) -> None:

@@ -17,7 +17,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import ProviderSeed
 from tests.providers.asana.asana_workspace import SCENARIO as PLAIN
-from tests.providers.asana.asana_workspace import Workspace, error
+from tests.providers.asana.asana_workspace import Workspace, error, served, unserved
 from tests.providers.asana.rich_workspace import (
     ALICE_TOKEN,
     BACKEND,
@@ -61,7 +61,8 @@ async def test_a_refresh_mints_a_token_for_the_seeded_person_and_any_other_refre
     rich: Workspace,
 ) -> None:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=rich.provider.app(rich.store, rich.clock)), base_url="https://app.asana.com"
+        transport=httpx.ASGITransport(app=served(rich.provider, rich.store, rich.clock)),
+        base_url="https://app.asana.com",
     ) as oauth:
         refreshed = await oauth.post(
             "/-/oauth_token",
@@ -90,7 +91,8 @@ async def test_a_refresh_mints_a_token_for_the_seeded_person_and_any_other_refre
 
 async def test_the_code_grant_is_refused_by_name(rich: Workspace) -> None:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=rich.provider.app(rich.store, rich.clock)), base_url="https://app.asana.com"
+        transport=httpx.ASGITransport(app=served(rich.provider, rich.store, rich.clock)),
+        base_url="https://app.asana.com",
     ) as oauth:
         code = await oauth.post("/-/oauth_token", data={"grant_type": "authorization_code", "code": "x"})
     assert (code.status_code, code.json()["error"]) == (400, "unsupported_grant_type")
@@ -240,7 +242,7 @@ async def test_webhooks_are_said_to_be_unserved(agent: httpx.AsyncClient) -> Non
     refused = await agent.post(
         "/webhooks", json={"data": {"resource": INCIDENT, "target": "https://agent.example/hook"}}
     )
-    assert error(refused, 501) == "POST /webhooks (createWebhook): Not supported by this simulation of Asana"
+    assert unserved(refused) == "POST /webhooks (createWebhook)"
 
 
 @pytest.fixture

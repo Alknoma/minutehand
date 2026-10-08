@@ -97,9 +97,11 @@ SEARCH_IS_PREMIUM = "Search is only available to premium Asana workspaces."
 FIELDS_ARE_PREMIUM = "Custom fields are only available to premium Asana workspaces."
 
 
-def unsupported(name: str) -> Refusal:
-    """Something real Asana has and this provider does not. Never ignored in silence."""
-    return Refusal(501, f"{name}: Not supported by this simulation of Asana")
+def unsupported(name: str) -> NotImplementedError:
+    """Something real Asana has, or a case whose answer Asana does not document, that this provider does not serve:
+    the shared not-served refusal (`domain.errors`), answered 501 in Asana's envelope naming the call and `name`, and
+    recorded as not implemented. Never ignored in silence."""
+    return NotImplementedError(name)
 
 
 def is_gid(value: str) -> bool:

@@ -8,7 +8,7 @@ import httpx
 from minutehand.adapters.providers.asana import state
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, Operation
-from tests.providers.asana.asana_workspace import Workspace, error
+from tests.providers.asana.asana_workspace import Workspace, error, unserved
 from tests.providers.asana.rich_workspace import (
     ALICE_TOKEN,
     BACKEND,
@@ -420,9 +420,9 @@ async def test_html_notes_are_refused_by_name_written_or_read(rich: Workspace, a
     before = rich.store.head()
     sent = {"name": "x", "projects": [BACKEND], "html_notes": "<body>Call <b>Bob</b> &amp; Alice</body>"}
     created = await agent.post("/tasks", json={"data": sent})
-    assert error(created, 501) == "html_notes: Not supported by this simulation of Asana"
+    assert unserved(created) == "html_notes"
     updated = await agent.put(f"/tasks/{INCIDENT}", json={"data": {"html_notes": "<body>x</body>"}})
-    assert error(updated, 501) == "html_notes: Not supported by this simulation of Asana"
+    assert unserved(updated) == "html_notes"
     assert rich.store.head() == before
     read = await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "name,html_notes"})
-    assert error(read, 501) == "opt_fields=html_notes: Not supported by this simulation of Asana"
+    assert unserved(read) == "opt_fields=html_notes"
