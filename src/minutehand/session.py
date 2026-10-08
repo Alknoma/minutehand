@@ -81,7 +81,14 @@ from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.restore import Progress, Restored
-from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run, not_restorable
+from minutehand.application.rewind import (
+    FORK_RECORD,
+    RESTORE_RECORD,
+    changed_scenario,
+    fork_run,
+    memory_writes,
+    refused_by,
+)
 from minutehand.application.run_clock import RunClock
 from minutehand.application.steps import steps
 from minutehand.application.traffic import SeenCall
@@ -537,8 +544,9 @@ def points_in(world: Store) -> list[ForkPoint]:
     """The checkpoints a world's log holds, each a point a fork may be taken from, and whether it can be: one the
     agent went on writing its memory after, in the same wake, cannot (`rewind.not_restorable`)."""
     points: list[ForkPoint] = []
+    writes = memory_writes(world.events())
     for seq, checkpoint in checkpoints(world).items():
-        refused = not_restorable(world, seq, checkpoint)
+        refused = refused_by(writes, seq, checkpoint)
         points.append(ForkPoint(wake=checkpoint.wake, seq=seq, agent=refused or checkpoint.agent))
     return points
 
@@ -781,6 +789,19 @@ def scenario_of(state: Path, run_id: str) -> Scenario:
             return Scenario.model_validate_json(path.read_text(encoding="utf-8"))
         if entry.parent_run is None:
             raise RunRefused(f"run {run_id} has written no scenario yet")
+        entry = find(state, entry.parent_run)
+
+
+def agent_of(state: Path, run_id: str) -> AgentUnderTest | None:
+    """The agent file as this run played it, or its parent's for a fork still running; None for a run no agent file
+    was written for (a standing world, a case)."""
+    entry = find(state, run_id)
+    while True:
+        path = run_dir(state, entry.run_id) / AGENT
+        if path.is_file():
+            return AgentUnderTest.model_validate_json(path.read_text(encoding="utf-8"))
+        if entry.parent_run is None:
+            return None
         entry = find(state, entry.parent_run)
 
 

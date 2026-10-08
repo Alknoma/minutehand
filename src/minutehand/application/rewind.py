@@ -71,6 +71,7 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     RecordedCall,
+    WorldEvent,
 )
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
@@ -274,14 +275,26 @@ def not_restorable(store: Store, at_seq: int, checkpoint: Checkpoint) -> NotRest
     """Why a fork cannot start at the checkpoint at `at_seq`, or None when it can. The agent's memory there is its
     log up to `at_seq`; one the agent went on writing in the same wake, after it said it was no longer working, was
     caught half written, and a fork from it would start from memory the agent never finished."""
-    late = [
-        e
-        for e in store.events(since=at_seq)
-        if e.wake == checkpoint.wake
-        and e.actor is Actor.AGENT
-        and e.entity.kind is EntityKind.MEMORY
-        and e.operation not in (Operation.READ, Operation.SEARCH)
-    ]
+    return refused_by(memory_writes(store.events(since=at_seq)), at_seq, checkpoint)
+
+
+def memory_writes(events: Sequence[WorldEvent]) -> dict[int, list[WorldEvent]]:
+    """The agent's writes to its memory, by the wake they were made in, in order: what `refused_by` reads, gathered
+    once for every checkpoint of a log."""
+    found: dict[int, list[WorldEvent]] = {}
+    for e in events:
+        if (
+            e.actor is Actor.AGENT
+            and e.entity.kind is EntityKind.MEMORY
+            and e.operation not in (Operation.READ, Operation.SEARCH)
+        ):
+            found.setdefault(e.wake, []).append(e)
+    return found
+
+
+def refused_by(writes: dict[int, list[WorldEvent]], at_seq: int, checkpoint: Checkpoint) -> NotRestorable | None:
+    """`not_restorable`, over the memory writes of the log (`memory_writes`)."""
+    late = [e for e in (writes[checkpoint.wake] if checkpoint.wake in writes else []) if e.seq > at_seq]
     if not late:
         return None
     first = late[0].after
