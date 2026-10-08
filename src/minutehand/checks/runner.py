@@ -47,6 +47,7 @@ from minutehand.domain.checks import (
     FindingKind,
     Needs,
     ObligationKind,
+    RuleRead,
     RunView,
     Stability,
     WakeModelCalls,
@@ -75,6 +76,9 @@ class RunResult(Model):
         default=[],
         description="What judged the run, all of it the team's own: each rule of `assess` by its id, `expectations` "
         "and `near_miss_name` when the scenario declares them, and each of the agent's own checks; empty: nothing did",
+    )
+    rules_read: list[RuleRead] = Field(
+        default=[], description="Each rule of `assess`, with how often it was read and how often it could not be"
     )
 
     @property
@@ -179,6 +183,7 @@ class _Tally:
         self.findings: list[Finding] = []
         self.blocked: list[str] = []
         self.notes: list[str] = []
+        self.rules_read: list[RuleRead] = []
         self.met = len(view.scenario.expect)
         self.unjudged = sum(1 for e in view.scenario.expect if isinstance(e, PersonAsked) and e.about is not None)
 
@@ -186,6 +191,7 @@ class _Tally:
         self.findings += report.findings
         self.blocked += report.blocked
         self.notes += [f"{check_id}: {n}" for n in report.notes]
+        self.rules_read += report.rules_read
 
     def result(self, view: RunView, ended: datetime | None, stop: StopReason | None) -> RunResult:
         met = self.met - self.unjudged
@@ -197,6 +203,7 @@ class _Tally:
             effectiveness=card,
             verdict=verdict(view, card, stop, self.findings, ended or ended_at(view), assessed=bool(self.assessed_by)),
             assessed_by=self.assessed_by,
+            rules_read=self.rules_read,
         )
 
 

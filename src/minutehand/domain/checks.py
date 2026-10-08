@@ -65,10 +65,26 @@ class Pattern(Model):
     reference: str | None = Field(default=None, description="Where a working implementation can be read")
 
 
+class RuleRead(Model):
+    """How often one of the team's rules was read over a run, and how often it could not be (`checks.assessments`):
+    with its findings, whether it held for everything it was read for."""
+
+    rule: str = Field(description="Rule.id")
+    read: int = Field(
+        ge=0,
+        description="Times it applied and was read: once for each thing it is for where its `when` held, at each of "
+        "its moments",
+    )
+    unread: int = Field(
+        ge=0, description="Times it could not be read: a moment the run never reached, or one the thing lacked"
+    )
+
+
 class CheckReport(Model):
     findings: list[Finding] = []
     blocked: list[str] = []
     notes: list[str] = []
+    rules_read: list[RuleRead] = Field(default=[], description="The team's rules, each with how often it was read")
 
 
 class ObligationKind(StrEnum):

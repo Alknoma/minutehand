@@ -27,7 +27,16 @@ from minutehand.domain.assessments import (
     Thing,
     Write,
 )
-from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, ObligationKind, RunView, Severity
+from minutehand.domain.checks import (
+    CheckReport,
+    Finding,
+    FindingKind,
+    Needs,
+    ObligationKind,
+    RuleRead,
+    RunView,
+    Severity,
+)
 from minutehand.domain.scenario import Person
 from minutehand.domain.templates import fill
 from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, StoredSnapshot, WorldEvent
@@ -90,15 +99,17 @@ class Assessments:
         reader = _Reader(view)
         findings: list[Finding] = []
         notes: list[str] = []
+        tallies: list[RuleRead] = []
         for rule in view.rules:
-            found, unread = reader.read(rule)
+            found, read, unread = reader.read(rule)
             findings += found
+            tallies.append(RuleRead(rule=rule.id, read=read, unread=unread))
             if unread:
                 notes.append(
                     f"rule {rule.id} was not read {unread} time{'s' if unread != 1 else ''}: it names a moment the run "
                     "never reached, or one that was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, what an item holds back)"
                 )
-        return CheckReport(findings=findings, notes=notes)
+        return CheckReport(findings=findings, notes=notes, rules_read=tallies)
 
 
 class _Reader:
@@ -117,19 +128,21 @@ class _Reader:
             max(t for t in answered if t is not None) if answered and all(t is not None for t in answered) else None
         )
 
-    def read(self, rule: Rule) -> tuple[list[Finding], int]:
+    def read(self, rule: Rule) -> tuple[list[Finding], int, int]:
+        """The rule's findings, the times it applied and was read, and the times it could not be read."""
         findings: list[Finding] = []
-        unread = 0
+        read = unread = 0
         for subject in self._subjects(rule):
             for at in rule.at or [None]:
                 try:
-                    finding = self._one(rule, subject, at)
+                    applied, finding = self._one(rule, subject, at)
                 except _Unread:
                     unread += 1
                     continue
+                read += applied
                 if finding is not None:
                     findings.append(finding)
-        return findings, unread
+        return findings, read, unread
 
     def _subjects(self, rule: Rule) -> list[_Subject]:
         if rule.each is Each.RUN:
@@ -189,10 +202,11 @@ class _Reader:
             raise _Unread
         return found
 
-    def _one(self, rule: Rule, subject: _Subject, at: str | None) -> Finding | None:
+    def _one(self, rule: Rule, subject: _Subject, at: str | None) -> tuple[bool, Finding | None]:
+        """Whether the rule applied (its `when` held), and its finding when its count broke a bound."""
         moment = self._when(at, subject, None) if at is not None else None
         if not self._holds(rule, subject, at):
-            return None
+            return False, None
         since = self._when(rule.count.since, subject, at) if rule.count.since is not None else None
         until = self._when(rule.count.until, subject, at, past_end=True) if rule.count.until is not None else None
         counted = [
@@ -205,7 +219,7 @@ class _Reader:
             # The window runs past the end: only what more facts could not undo is said; the rest is unread.
             raise _Unread
         if broke is None:
-            return None
+            return True, None
         evidence = sorted(
             {s for f in counted for s in f.seqs} | ({subject.ask.obligation.opened_by} if subject.ask else set())
         )
@@ -220,7 +234,7 @@ class _Reader:
         }
         said = fill(rule.message, values) if rule.message is not None else None
         window = _window(rule, since, until)
-        return Finding(
+        return True, Finding(
             check=rule.id,
             severity=_SEVERITY[rule.severity],
             kind=_KIND[rule.severity],

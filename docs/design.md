@@ -50,7 +50,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | The agent contract: `agent_api.py`, `schemas/`, `minutehand schema`, `minutehand validate` | One page of every touch point (`docs/agent-contract.md`), JSON Schemas of the files, an OpenAPI document of what an agent may implement, a file validated without a run | Built and tested | 5 functions, 7 cases (`tests/test_schemas.py`) | The older placeholders and dotted paths are listed as debt, not changed. |
 | MCP tools: `adapters/mcp/`, `minutehand mcp` | Eleven tools over stdio (`list_scenarios`, `run_scenario`, `list_findings`, `show_evidence`, `rerun_from`, `list_outbound_calls`, `list_runs`, and over the read model `schema`, `query_run`, `trace`, `explain`) reading and writing the state directory through `session`, as the command line does; see "What a coding agent calls" | Built and tested | 14 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | One run at a time per process: a second `run_scenario` or `rerun_from` while one plays is refused, not queued. |
 | Read model: `adapters/query/`, `minutehand query`, `trace`, `explain` | A run's (or a fork's) record as documented, versioned views over one SQLite database built on demand from the store's own readers, every body decoded: `actions`, `messages` with what the ledger knows of each, `recipients` in their working hours, `calls` with their bodies, `wakes` with their reasons, `dispatch`, `memory` over time, `stored`, `replies`, `model_calls` with tokens and declared prices, `findings`, `evidence`, `spans`; read-only SQL, a trace of the agent's acts and an explanation of one event, on the command line and over MCP; see `docs/querying.md` | Built and tested | 49 functions, 74 cases (`tests/query/`), on a run written by hand and its fork; 12 functions, 43 cases on real runs of the follow-up example and the reference agent through the installed command (`tests/architecture/test_read_model_on_real_runs.py`) | Built per process on first read and kept while the run's files are unchanged; a run with very many events is built in full before the first row. A message's sender among people is known only when a reply of theirs landed as it. |
-| Run viewer: `adapters/web/`, `minutehand view` | A read-only JSON API over a state directory (runs and the fork tree, wakes, events, calls, obligations, findings, scorecard, messages, model calls and traffic, steps and spans) and the one page that draws it, its libraries vendored under `static/` | Built and tested | 20 (`tests/web/`) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. |
+| Run viewer: `adapters/web/`, `minutehand view` | One page for inspecting a run of any length: the verdict and headline numbers, a canvas swimlane timeline that bins dense lanes by calendar unit, one view per measure, an inspector for whatever is selected; a typed read-only JSON API over a state directory, its tables read from the run's read model (`adapters/query`); plain ES modules with d3 and Observable Plot vendored under `static/`, no build. See "The viewer" | Built and tested | 36 (`tests/web/`), of which 3 drive the page in Chromium (`-m browser`, the `browser` CI job) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. The timeline does not draw the parent's record after a fork's split; the forks view gives the fork's account instead. |
 | Container image, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
 No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
@@ -888,8 +888,9 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   window). `docs/serve.md`, "Scoring a run you drive yourself"; `tests/e2e/test_driven_case.py`.
 - **Messages.** Every message event carries its `MessageSnapshot`, a delete what the message said when it went
   (Slack and Teams); the scorecard counts rewrites in place and deletes (`messages_edited`, `messages_deleted`);
-  the viewer lists every message under the timeline ("rewrote the message to Dani from '…' to '…'"), the model
-  calls by step with the message each wrote, and one line per model host relayed on tunnels.
+  the viewer marks every message in its person's lane (a rewrite or a delete as one of its own) and opens each
+  with its conversation and the model call that wrote it, and its model cost view counts the calls relayed on
+  tunnels to each model host.
 
 When to use which: `run` measures an agent over simulated days and gives a verdict; `serve` stands in for a set
 of emulators under an ordinary service-level suite, where the test drives and asserts.
@@ -1377,8 +1378,8 @@ in words, from what to what (the `Fork` is kept as `fork.json` beside `restore.j
 verified and by what (`Restored.verified_by`: its memory, its report) or why not; and, once both runs have
 finished, the two verdicts, each scorecard line that differs, findings gained, lost and changed, and the first
 change in the world after the split at which the two records part (`tests/web/test_fork_account.py`). The viewer
-shades the parent's shared record left of the split, fades its marks, and draws what the parent did after the
-split in a lane of its own. `scripts/screenshot.py` screenshots a viewer page with headless Edge or Chrome
+marks the split on the timeline and gives this account in its forks view, under the tree of the run and its forks.
+`scripts/screenshot.py` screenshots a viewer page with headless Edge or Chrome
 (`?open` opens every collapsed section) and ends the browser itself: on a profile of its own, headless Edge
 writes the file and never exits, on any page.
 
@@ -1583,7 +1584,7 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 - **Passing it on.** When the environment Minutehand was started from already names an OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or a signal's own `…_TRACES_ENDPOINT`), every payload the receiver takes, traces, logs and metrics, read or not, is sent on to it unchanged with `OTEL_EXPORTER_OTLP_HEADERS`, in the background (`forward.py`). A failure is recorded in the run (`Store.forward_failed`, the `forward_failure` table) and never fails it. A destination that is the receiver itself is dropped rather than looped.
 - **The wire as the fallback trace.** For an agent with no tracing, `--record-model-calls` puts model hosts under `HostPolicy.RECORD`: each call is decrypted, sent on unchanged, and kept as a span of `SpanSource.WIRE` in the same stored shape, with GenAI-convention attributes (`gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`). The three request shapes `edit.py` knows are read, answered as JSON or as server-sent events. A stream reaches the agent as a stream: the addon sets mitmproxy's `response.stream` to a function that passes each chunk on as it arrives and keeps a copy, and reads the copy when the stream ends (`test_a_streamed_answer_reaches_the_agent_as_a_stream_and_is_kept_whole` holds the model API's second chunk back until the client has the first). A call that carried a `traceparent` is put in that trace under that span. Nothing from the request's headers or query string is stored; a test searches the store file's bytes for the key. Off by default: without the flag a model host stays `TUNNEL`.
 - **The join.** `application/model_calls.trace_of(event, world)`: from the `traceparent` the intercepted call carried, the agent's calling span, its ancestors to the root, every span of that trace with a `gen_ai.*` attribute, and the model call that led to the event: of the spans whose `gen_ai.operation.name` is `chat`, `text_completion` or `generate_content` (or that name no operation and carry a model), the last to END before the calling span started. With no `traceparent`, or no model call in the trace, a message is joined BY CONTENT when it can be (`JoinedBy.CONTENT`, `by_content`): its text, trimmed of whitespace at both ends and at least `CONTENT_LEAST` (20) characters, appears verbatim in what a model call placed in the same wake answered (`gen_ai.output.messages`, or any string inside it read as JSON, however deep), the call having ended before the event was written, real time; of several, the last to end. Nothing else is normalised and no likeness is scored. Otherwise it takes the last model call of the same wake that ended before the event, a wire-recorded one only if it was kept before the event's seq, and says so (`JoinedBy.WAKE`: the nearest call, not a proven cause). Every surface says which (`tests/test_model_call_join.py`).
-- **Where it shows.** `show_evidence` gives each cited event its `model_call` (model, the messages the span carries, token counts), `joined_by` and the agent's span names, and says in `telemetry` when the run received nothing. The viewer serves `GET /api/runs/{run_id}/model-calls` (each event a finding cites, joined) and `GET /api/runs/{run_id}/traces/{trace_id}`; its page shows "What the model was asked and answered" under a finding, or that no telemetry was received.
+- **Where it shows.** `show_evidence` gives each cited event its `model_call` (model, the messages the span carries, token counts), `joined_by` and the agent's span names, and says in `telemetry` when the run received nothing. The viewer serves `GET /api/runs/{run_id}/model-calls` (each event a finding cites, joined), `GET /api/runs/{run_id}/model-calls/{span_id}` and `GET /api/runs/{run_id}/traces/{trace_id}`; its inspector shows a message's writer and, for a model call, what it was asked and answered.
 - **Privacy.** Received spans often hold whole prompts. They are kept in the run's `world.db` on the machine running Minutehand and go nowhere else except to the endpoint the agent's own environment already named.
 
 #### How telemetry serves the two pillars
@@ -1592,6 +1593,64 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 |---|---|---|
 | Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is placed in the wake its start fell in, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. `RunView.model_calls` holds each wake's model calls, for a check of the team's own. No scorecard number counts tokens. |
 | Comparing a fork with its parent | A fork sees its parent's spans of the wakes up to the fork, and keeps its own after it; the same event in parent and child can be read with the model call behind each, so a `PromptPatch` can be judged by what the model was then asked and answered, not only by what the world did. | The fork's view of spans. No side-by-side of a parent's and a child's model calls. |
+
+### The viewer
+
+`minutehand view [--state DIR] [--port N] [--prices FILE]` serves one page on 127.0.0.1, for a person inspecting a
+run: what was asked, how it came out, and every act of the agent and the world behind that, over a run of minutes or
+of years.
+
+- **Layout.** A top bar with the run (name, id, picker of every run with its verdict, forks under their parents),
+  its verdict in colour, seed, simulated and real span, deadline and how it stopped; the headline numbers (failed
+  findings, rules held, follow-ups, median reply, slowest comeback, model tokens, messages), each a link to its view;
+  and the failed and review findings in order of severity, each a link to its moment and evidence. Below, the
+  timeline across the middle, the views under it, reached from a rail on the left, and an inspector on the right.
+  Colour is kept for the verdict, severity and the selection; everything else is greys. Light and dark follow the
+  system, with a toggle kept per viewer.
+- **The timeline** (`static/timeline.js`) is drawn on a canvas from `GET /api/runs/{run_id}/timeline`: every mark of
+  the run, compact and sorted (simulated and real time, lane, kind, ref, a few words), in lanes for the wakes, each
+  person (messages both ways, replies, waits as bands), each provider and host (its calls, a failed one red), the
+  dispatch table (a faulted entry red), the agent's model calls, the people's model calls, memory, stored items and
+  spans, with a row of findings on top. A lane holding more marks in the window than it has room for is binned by
+  the calendar unit that fits (year, month, week, day, six hours, hour, ten minutes, minute, ten seconds, second): a
+  heat strip with each bin's count and a red stripe for its failures; the findings likewise. Zoomed in, each mark is
+  drawn, a range as a bar. Range presets (all, year, month, week, day, hour), a minimap of the whole run with the
+  window to drag, drag to pan, wheel or pinch to zoom, the simulated or the real clock, a filter, a hidden lane per
+  click on its name. Hover says what a mark or bin holds; a click selects a mark, or zooms into a bin.
+- **Views** (`static/views.js`), one measure each with what it is made of: findings; assessments (each of the team's
+  rules: held, failed, review, unread or not applied, how often read, its findings; from `RunResult.rules_read`);
+  conversations (per person, chat-style, who wrote each line: the agent, a script worded by a model, the script's own
+  words); replies (the median time people took, each reply's draw); response times (the agent's comeback after each
+  answer); follow-ups; model cost (tokens, and a cost when `--prices` names the model, as `minutehand query`
+  prices it); memory (keys, each write with the value it replaced); stored items; calls (filterable by who answered);
+  the dispatch table (windows, draws, faults); forks (the tree, and a fork's account of itself); samples (a
+  `run-all --samples` batch, kept as `run-all/<batch>/batch.json`: pass rate per scenario, every seed openable).
+  Long lists are virtualised (`static/vlist.js`): a table of a hundred thousand rows holds only those in view.
+- **The inspector** (`static/inspector.js`) reads one thing whole: a message with its conversation and writer, an
+  HTTP call with its request and answer (JSON laid out) and who answered it, a model call with what it was asked and
+  answered and its tokens, a memory write or stored item as a diff of before and after, a dispatch entry with its
+  draw, a reply with how it was written and drawn, a wait, a wake with its span waterfall, a finding with its
+  evidence.
+- **Keys.** `j`/`k` the next or previous mark, `←`/`→` pan, `+`/`−` zoom, `0` the whole run, `c` the clock, `/` the
+  filter, `f` the next finding, `[`/`]` the views, `Esc`, `?`.
+- **The API** (`adapters/web/app.py`, typed by `responses.py`, read by `reading.py`). The tables of calls, the
+  dispatch table, memory, stored items and model calls are rows of the run's read model (`adapters/query`,
+  `docs/querying.md`), so the page and `minutehand query` say the same; the timeline, one event or call whole,
+  people, assessments and batches are read from the run as the read model is. Every path the page calls is listed
+  in `static/api.js` and `tests/web/test_viewer_api.py` requests each.
+- **Stack.** Plain ES modules served from the package, d3 (scales, calendar intervals) and Observable Plot (the
+  views' charts) vendored with their licences: nothing is fetched from elsewhere and nothing is built, so
+  `pip install minutehand` serves the page with no network and no JavaScript toolchain anywhere. A framework would
+  bring a build into CI and the wheel for a page whose weight is a canvas and a few tables.
+- **Size.** Measured (`tests/web/test_viewer_page.py`, headless Chromium, this machine): a synthetic run of 400
+  simulated days and about 34,000 marks loads in about 2 s, most of it the server building the timeline once (a
+  finished run's timeline is kept for the next read); each frame of the timeline from the whole year to an hour
+  draws in under 3 ms; its 4,600 calls tabulate in 0.1 s.
+- **Listeners are bound once.** The page before this one hung: every draw bound another click listener to its main
+  element, so each click that redrew (switching the clock, the refresh of a running run) doubled the work of the
+  next; fourteen clock switches took four seconds. Every listener on the window, the document and the page's shell
+  is now bound once, at load, and `test_redrawing_never_adds_a_listener_to_what_outlives_the_draw` counts them
+  across redraws.
 
 ### What a coding agent calls
 

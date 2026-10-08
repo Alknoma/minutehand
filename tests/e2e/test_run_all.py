@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 
 from minutehand.domain.run import VerdictKind
-from minutehand.run_all import Batch, free_port
+from minutehand.run_all import Batch, batches, free_port
 from minutehand.session import Played, reading
 from tests.support.people import people_environment
 
@@ -148,7 +148,9 @@ def test_run_all_samples_each_scenario_under_seeds_from_a_base_and_counts_each_v
     )
 
     assert ran.returncode == 1, ran.stdout + ran.stderr
-    by_name = {p.scenario: p for p in Batch.model_validate_json(ran.stdout).played}
+    printed = Batch.model_validate_json(ran.stdout)
+    assert printed.samples == 3 and batches(tmp_path / "state") == [printed], "kept beside its runs for the viewer"
+    by_name = {p.scenario: p for p in printed.played}
     answers = by_name["offsite_venue"]
     assert [s.seed for s in answers.samples] == [100, 101, 102]
     assert answers.counts["passed"] == 3 and answers.failing_seeds == [] and answers.matched

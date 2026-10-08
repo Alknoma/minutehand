@@ -25,7 +25,7 @@
                                                  which HTTP clients in the agent's interpreter would go around the
                                                  proxy, and which declared hosts NO_PROXY would send directly
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
-    minutehand view [--state DIR] [--port N]     the runs in a browser, on 127.0.0.1 only
+    minutehand view [--state DIR] [--port N] [--prices FILE]   the runs in a browser, on 127.0.0.1 only
     minutehand scenarios                         the scenario library: each scenario's name and situation
     minutehand scenarios show <name>             what one is for, its checks and patterns, the values it takes
     minutehand scenarios new <name>...|--all --goal TEXT --owner 'Name <email>' --ask 'Name <email>'
@@ -131,6 +131,7 @@ from minutehand.domain.assessments import merged, refuse_unknown_people
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind
 from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
+from minutehand.domain.prices import Prices
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
 from minutehand.domain.scenario import PlannedBy, WrittenScenario
 from minutehand.ports.model import ModelFailed
@@ -458,6 +459,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
+    priced(view)
     state(view)
     _library_parser(commands.add_parser("scenarios", help="the scenario library: list it, or write scenarios out"))
     return parser
@@ -590,7 +592,7 @@ def _main(args_in: list[str]) -> int:
         if args.command == "mcp":
             return _mcp(state)
         if args.command == "view":
-            return _view(state, args.port)
+            return _view(state, args.port, load_prices(args.prices) if args.prices is not None else None)
         if args.command == "serve":
             return _serve(args, state)
         if args.command == "checkpoints":
@@ -1140,11 +1142,11 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
     return 0
 
 
-def _view(state: Path, port: int) -> int:
+def _view(state: Path, port: int, prices: Prices | None) -> int:
     from minutehand.adapters.web import app as viewer  # loaded only for this command
 
     print(f"minutehand: the viewer is at http://127.0.0.1:{port}/ (state {state})", file=sys.stderr)
-    viewer.serve(state, port=port)
+    viewer.serve(state, port=port, prices=prices)
     return 0
 
 
