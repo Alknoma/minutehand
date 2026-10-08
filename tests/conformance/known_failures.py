@@ -71,12 +71,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "asana",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "app.asana.com"}\'; the vendor\'s documented refusal is 401 holding \'Not Authorized\'',
-    ),
-    Known(
-        "asana",
         Property.SEEDED,
         "person_deactivated",
         "'Dee Activated' was seeded deactivated; the vendor lists email=dee@example.com active=True bot=False guest=False title=None",
@@ -88,13 +82,13 @@ KNOWN: tuple[Known, ...] = (
         "'Gus Guest' was seeded as a guest; the vendor lists email=gus@example.com active=True bot=False guest=False title=None",
     ),
     Known("asana", Property.SEEDED, "sign_in", "NotImplementedError: AsanaDriver has no sign-in"),
-    Known(
-        "aws",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        "answered 200 '{\"Schedules\": [], \"NextToken\": null}'; the vendor's documented refusal is 403 holding 'The security token included in the request is invalid'",
-    ),
     Known("aws", Property.SEEDED, "sign_in", "NotImplementedError: AwsDriver has no sign-in"),
+    Known(
+        "github",
+        Property.ACCOUNTS,
+        "any_credential_acts_as_the_default_identity",
+        "with no credential, `/user` is GitHub's documented 401 \"Requires authentication\" (github/CLAIMS.md: an anonymous call reads public data only); a credential nobody seeded is accepted, acting as the seed's `unknown_credentials_act_as`",
+    ),
     Known(
         "github",
         Property.ACCOUNTS,
@@ -124,12 +118,6 @@ KNOWN: tuple[Known, ...] = (
         Property.RECORD,
         "every_call_kept_once_in_order_verbatim",
         'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "api.github.com"}\'; the vendor\'s documented refusal is 401 holding \'Bad credentials',
     ),
     Known(
         "github",
@@ -181,10 +169,10 @@ KNOWN: tuple[Known, ...] = (
         'VendorRefused: create or update file contents: 501 {"message":"minutehand\'s github fake does not implement PUT /repos/launch-team/notes/contents/…: it is not among the calls this provider serves (its README\'s table)"',
     ),
     Known(
-        "google_cloud_tasks",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "cloudtasks.googleapis.com"}\'; the vendor\'s documented refusal is 401 holding \'Request had invalid authentication credentials\'',
+        "google_workspace",
+        Property.ACCOUNTS,
+        "any_credential_acts_as_the_default_identity",
+        'Google Workspace still checks credentials: #65 could not remove them (a permission block), pending the owner\'s decision. No credential is 401 "Login Required.", one nobody seeded 401 "Request had invalid authentication credentials"',
     ),
     Known(
         "google_workspace",
@@ -204,12 +192,6 @@ KNOWN: tuple[Known, ...] = (
         Property.RECORD,
         "every_call_kept_once_in_order_verbatim",
         "call 1 (POST oauth2.googleapis.com/token): the answer kept differs from what was answered (130 bytes)",
-    ),
-    Known(
-        "google_workspace",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "www.googleapis.com"}\'; the vendor\'s documented refusal is 401 holding \'Invalid Cre',
     ),
     Known(
         "google_workspace",
@@ -243,12 +225,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "jira",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        "answered 200 as the agent: Minutehand deliberately lets any credential in (jira/CLAIMS.md), so Jira's 401 is never given",
-    ),
-    Known(
-        "jira",
         Property.SEEDED,
         "person_bot",
         "'Robo Helper' was seeded as a bot; the vendor lists email=robo@example.com active=True bot=False guest=False title=None",
@@ -271,6 +247,12 @@ KNOWN: tuple[Known, ...] = (
         Property.SEEDED,
         "ticket_title_body_project",
         "the neutral view holds body 'First line, ünïcode.\\nSecond line with <angle brackets> & ampersand.', project 'LAUNCH'; seeded in project 'Launch'",
+    ),
+    Known(
+        "microsoft",
+        Property.ACCOUNTS,
+        "any_credential_acts_as_the_default_identity",
+        "the world's own app credential cannot say who it is: GET /servicePrincipals(appId='<uuid>') is 501, off the Graph v1.0 surface the provider serves; both calls without a known credential are accepted",
     ),
     Known(
         "microsoft",
@@ -335,12 +317,6 @@ KNOWN: tuple[Known, ...] = (
         Property.RECORD,
         "every_call_kept_once_in_order_verbatim",
         'VendorRefused: GET /servicePrincipals(appId=\'<uuid>\'): 400 {"error":{"code":"BadRequest","message":"Resource not found for the segment \'servicePrincipals(appId=\'<uuid>\')\'.","innerE',
-    ),
-    Known(
-        "microsoft",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "graph.microsoft.com"}\'; the vendor\'s documented refusal is 401 holding \'InvalidAut',
     ),
     Known(
         "microsoft",
@@ -449,12 +425,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "notion",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "api.notion.com"}\'; the vendor\'s documented refusal is 401 holding \'unauthorized\'',
-    ),
-    Known(
-        "notion",
         Property.SEEDED,
         "document_folder",
         "seeded in Fact/Nested, the neutral view's parent is 'Fact/Nested'",
@@ -506,12 +476,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "slack",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        'answered 502 \'{"error": "no world claims this call: none holds its credentials or host", "host": "slack.com"}\'; the vendor\'s documented refusal is 200 holding \'invalid_auth\'',
-    ),
-    Known(
-        "slack",
         Property.SEEDED,
         "person_without_email",
         "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for Seed / people.3.email / Field required [type=missing, input_value={",
@@ -540,12 +504,6 @@ KNOWN: tuple[Known, ...] = (
         Property.IDS,
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, person mila@example.com: 1-3 -> 1-4",
-    ),
-    Known(
-        "youtrack",
-        Property.RECORD,
-        "unknown_credential_refused_and_unclaimed",
-        "the call is not in the unclaimed list: []",
     ),
     Known(
         "youtrack",

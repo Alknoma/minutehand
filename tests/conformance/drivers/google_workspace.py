@@ -58,6 +58,7 @@ from tests.conformance.contract import (
     PersonSeen,
     Session,
     ok,
+    uncredentialed,
 )
 
 PROVIDER = "google_workspace"
@@ -300,10 +301,11 @@ class WorkspaceSession(Documents, Messaging):
     def people_pages(self, page_size: int) -> list[list[str]]:
         raise NotImplementedError(ABSENT_PEOPLE)
 
-    def unknown_credential(self) -> httpx.Response:
-        return self._http.get(
-            DRIVE + "about", params={"fields": "user(emailAddress)"}, headers={"Authorization": f"Bearer {UNSEEDED}"}
-        )
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        query = {"fields": "user(emailAddress)"}
+        if credentialed:
+            return self._http.get(DRIVE + "about", params=query, headers={"Authorization": f"Bearer {UNSEEDED}"})
+        return uncredentialed(self._http, "GET", DRIVE + "about", params=query)
 
     def observe(self) -> str:
         """About and every file through Drive, the mailbox's messages through Gmail, and the primary calendar's
@@ -840,9 +842,6 @@ class WorkspaceDriver(Driver):
         # 500" (https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list).
         "history": 1,
     }
-    unknown_refusal: ClassVar[tuple[int, str]] = (401, "Invalid Credentials")
-    """Drive's answer to an access token it does not accept: 401, reason `authError`, message "Invalid Credentials"
-    (https://developers.google.com/workspace/drive/api/guides/handle-errors#resolve_a_401_error_invalid_credentials)."""
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:

@@ -19,7 +19,7 @@ import httpx
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, WorldView
 from minutehand.domain.scenario import Seed
-from tests.conformance.contract import Api, Driver, IdKind, PersonSeen, Session, ok
+from tests.conformance.contract import Api, Driver, IdKind, PersonSeen, Session, ok, uncredentialed
 
 PROVIDER = "google_cloud_tasks"
 API = "https://cloudtasks.googleapis.com/v2/"
@@ -87,8 +87,10 @@ class TasksSession(Session):
     def people_pages(self, page_size: int) -> list[list[str]]:
         raise NotImplementedError(NO_PEOPLE)
 
-    def unknown_credential(self) -> httpx.Response:
-        return self._http.get(API + f"{LOCATION}/queues", headers={"Authorization": f"Bearer {UNSEEDED}"})
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        if credentialed:
+            return self._http.get(API + f"{LOCATION}/queues", headers={"Authorization": f"Bearer {UNSEEDED}"})
+        return uncredentialed(self._http, "GET", API + f"{LOCATION}/queues")
 
     # ------------------------------------------------------------------ queues and tasks
 
@@ -147,10 +149,6 @@ class TasksDriver(Driver):
     # No id kind of the accounts family applies: the provider lists no person (`accounts.people` is absent).
     id_formats: ClassVar[Mapping[IdKind, re.Pattern[str]]] = {}
     page_floor: ClassVar[Mapping[str, int]] = {}
-    unknown_refusal: ClassVar[tuple[int, str]] = (401, "Request had invalid authentication credentials")
-    """Google's answer to an access token it does not accept: 401 UNAUTHENTICATED, "Request had invalid
-    authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication
-    credential." (https://cloud.google.com/apis/design/errors#handling_errors)."""
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:

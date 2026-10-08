@@ -183,11 +183,11 @@ class JiraSession(Tickets):
             pages.append([_person(u).id for u in page])
             start += len(page)
 
-    def unknown_credential(self) -> httpx.Response:
-        with self._api.http(
-            {"Authorization": _basic(self.email, "nobody-seeded-this-token"), "Accept": "application/json"},
-            base_url=f"https://{self.site}.atlassian.net",
-        ) as stranger:
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        headers = {"Accept": "application/json"}
+        if credentialed:
+            headers["Authorization"] = _basic(self.email, "nobody-seeded-this-token")
+        with self._api.http(headers, base_url=f"https://{self.site}.atlassian.net") as stranger:
             return stranger.get(f"{V3}/myself")
 
     # -------------------------------------------------------------- projects and search
@@ -443,7 +443,6 @@ class JiraDriver(Driver):
     # A Basic credential Jira does not accept is a 401 whose body reads "Client must be authenticated to access
     # this resource." (REST v3 reference, "Authentication": 401 when credentials are incorrect or missing). The fake
     # deliberately lets every credential in (the provider's CLAIMS.md), so this case is a known failure.
-    unknown_refusal = (401, "Client must be authenticated")
 
     def __init__(self) -> None:
         self._emails: dict[str, dict[str, str]] = {}

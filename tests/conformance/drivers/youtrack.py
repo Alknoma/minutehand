@@ -270,9 +270,9 @@ class YouTrackSession(Tickets):
         pages = self._pages("list users", "/api/users", page_size, fields="id")
         return [[u.id for u in listed(User, page)] for page in pages]
 
-    def unknown_credential(self) -> httpx.Response:
-        stranger = token(self._tag, "nobody")
-        with self._api.http({"Authorization": f"Bearer {stranger}"}, base_url=host(self._tag)) as http:
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        headers = {"Authorization": f"Bearer {token(self._tag, 'nobody')}"} if credentialed else {}
+        with self._api.http(headers, base_url=host(self._tag)) as http:
             return http.get("/api/users/me", params={"fields": "login"})
 
     def observe(self) -> str:
@@ -511,7 +511,6 @@ class YouTrackDriver(Driver):
         "tickets": 1,
     }
     # CLAIMS.md #1: a call YouTrack cannot authenticate is a 401 `Unauthorized`.
-    unknown_refusal: ClassVar[tuple[int, str]] = (401, "Unauthorized")
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:

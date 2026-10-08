@@ -38,6 +38,7 @@ from tests.conformance.contract import (
     Tickets,
     TicketSeen,
     ok,
+    uncredentialed,
 )
 
 PROVIDER = "asana"
@@ -254,8 +255,12 @@ class AsanaSession(Tickets):
             for page in self._pages("list users", "/users", {"workspace": self.workspace()}, page_size)
         ]
 
-    def unknown_credential(self) -> httpx.Response:
-        return self.http.get("/users/me", headers={"Authorization": "Bearer 2/0000000000000000/0000000000000000:00"})
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        query = {"opt_fields": "name,email"}
+        if credentialed:
+            unseeded = {"Authorization": "Bearer 2/0000000000000000/0000000000000000:00"}
+            return self.http.get("/users/me", params=query, headers=unseeded)
+        return uncredentialed(self.http, "GET", "/users/me", params=query)
 
     def observe(self) -> str:
         launch = self.project("Launch")
@@ -442,8 +447,6 @@ class AsanaDriver(Driver):
         "people": 1,
         "tickets": 1,
     }
-    unknown_refusal: ClassVar[tuple[int, str]] = (401, "Not Authorized")
-    """https://developers.asana.com/docs/errors: 401 Unauthorized, "Not Authorized" (also CLAIMS.md)."""
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:

@@ -233,6 +233,15 @@ class VendorRefused(Exception):
         self.status = response.status_code
 
 
+def uncredentialed(
+    client: httpx.Client, method: str, url: str, *, params: Mapping[str, str] | None = None
+) -> httpx.Response:
+    """`method url` through `client` with no `Authorization`, whatever credential the client sends by default."""
+    request = client.build_request(method, url, params=params)
+    request.headers.pop("authorization", None)
+    return client.send(request)
+
+
 def ok(what: str, response: httpx.Response) -> httpx.Response:
     """The response, or `VendorRefused` naming the operation when it is no success."""
     if not response.is_success:
@@ -283,9 +292,10 @@ class Session(ABC):
         return found[0]
 
     @abstractmethod
-    def unknown_credential(self) -> httpx.Response:
-        """One request the vendor would answer, sent with a credential nobody seeded and nothing else naming a world
-        (no claimed host, site or tenant key), so no world claims it."""
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        """The read `whoami` makes (or, where the vendor has no "who is this credential", one read it would
+        answer), sent with a credential nobody seeded when `credentialed`, else with none, and nothing else naming a
+        world beyond what the vendor's own URL names (a site, a tenant): it reaches the server's default world."""
 
     @abstractmethod
     def observe(self) -> str:
@@ -587,9 +597,6 @@ class Driver(ABC):
     logins cannot hold one of these overrides it with one that holds the others."""
     time_resolution: ClassVar[timedelta] = timedelta(seconds=1)
     """The finest a time the vendor answers can be, as its documentation says (a minute where it rounds to one)."""
-    unknown_refusal: ClassVar[tuple[int, str]]
-    """The vendor's documented answer to a request with a credential it does not know: status, and a phrase of
-    its body."""
 
     @abstractmethod
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:

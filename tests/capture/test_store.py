@@ -228,19 +228,22 @@ async def test_a_method_slack_does_not_serve_falls_through_to_the_declared_store
 ) -> None:
     clock.begin_wake()
     async with _proxy(with_slack, store, clock, tmp_path, authority, REMINDERS) as proxy:
-        added, listed, served = await by_environment(
+        added, listed, served, unknown = await by_environment(
             proxy,
             [
                 Call("POST", "https://slack.com/api/reminders.add", '{"text": "call Sofia"}', JSON_SENT),
                 Call("GET", "https://slack.com/api/reminders.add"),
                 Call("POST", "https://slack.com/api/auth.test", "", {"authorization": "Bearer xoxb-unknown"}),
+                Call("POST", "https://slack.com/api/foo.bar"),
             ],
         )
     reminder = json.loads(added.body)
     assert added.status == 201 and set(reminder) == {"text", "id"} and reminder["text"] == "call Sofia"
     assert json.loads(listed.body) == [reminder]
-    assert served.status == 200 and json.loads(served.body) == {"ok": False, "error": "invalid_auth"}
-    kept, read, answered = store.calls()
+    assert served.status == 200 and json.loads(served.body)["ok"] is True  # no credential is ever refused
+    # A name Slack lists nowhere is Slack's own `unknown_method`, never handed to the declaration.
+    assert json.loads(unknown.body) == {"ok": False, "error": "unknown_method", "req_method": "foo.bar"}
+    kept, read, answered, refused = store.calls()
     for call in (kept, read):
         captured = call.exchange.captured
         assert call.provider is None and captured is not None
@@ -250,6 +253,7 @@ async def test_a_method_slack_does_not_serve_falls_through_to_the_declared_store
             "slack",
         )
     assert (answered.provider, answered.exchange.captured) == ("slack", None)  # Slack served it
+    assert (refused.provider, refused.exchange.captured) == ("slack", None)
     [item] = [e for e in store.events() if e.entity.kind is EntityKind.STORED]
     assert item.entity.provider == "slack_extra" and isinstance(item.after, StoredSnapshot)
     [use] = outbound_uses(store.calls())
@@ -276,3 +280,41 @@ async def test_a_method_slack_does_not_serve_without_a_declaration_is_refused_by
         CallOutcome.NOT_IMPLEMENTED,
         None,
     )
+
+
+COLORS = DeclaredStore(
+    host="www.googleapis.com", name="calendar_extra", collections=[Collection(path="/calendar/v3/colors")]
+)
+
+
+async def test_a_method_google_workspace_refuses_in_its_own_envelope_still_falls_through_to_the_declaration(
+    with_slack: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    """Google Workspace renders its own 501 for a Calendar method it does not serve (`colors.get`); that refusal
+    is `NotServed` too, so a declaration for the host answers it instead, and without one Google's envelope stands."""
+    clock.begin_wake()
+    colors = Call("GET", "https://www.googleapis.com/calendar/v3/colors", "", JSON_SENT)
+    async with _proxy(with_slack, store, clock, tmp_path, authority, COLORS) as proxy:
+        [declared] = await by_environment(proxy, [colors])
+    assert declared.status == 200 and json.loads(declared.body) == []
+    [call] = store.calls()
+    captured = call.exchange.captured
+    assert captured is not None and (captured.answered_by, captured.not_served_by) == (
+        AnsweredBy.DECLARATION,
+        "google_workspace",
+    )
+
+
+async def test_a_method_google_workspace_does_not_serve_without_a_declaration_is_refused_in_googles_envelope(
+    with_slack: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    clock.begin_wake()
+    async with _proxy(with_slack, store, clock, tmp_path, authority) as proxy:
+        [refused] = await by_environment(
+            proxy, [Call("GET", "https://www.googleapis.com/calendar/v3/colors", "", JSON_SENT)]
+        )
+    assert refused.status == 501
+    error = json.loads(refused.body)["error"]
+    assert (error["status"], error["errors"][0]["reason"]) == ("UNIMPLEMENTED", "notImplemented")
+    [call] = store.calls()
+    assert (call.provider, call.exchange.outcome) == ("google_workspace", CallOutcome.NOT_IMPLEMENTED)

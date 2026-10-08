@@ -111,8 +111,10 @@ class AwsSession(Session):
     def people_pages(self, page_size: int) -> list[list[str]]:
         raise NotImplementedError(NO_PEOPLE)
 
-    def unknown_credential(self) -> httpx.Response:
-        """ListSchedules signed with an access key no world was given."""
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        """ListSchedules signed with an access key no world was given, or not signed at all."""
+        if not credentialed:
+            return self._http.get(f"https://{SCHEDULER}/schedules")
         stranger = Credentials("AKIAUNKNOWNCALLER000", "unknownunknownunknownunknownunknownunkno")
         return self._scheduler("GET", "/schedules", credentials=stranger)
 
@@ -202,7 +204,6 @@ class AwsDriver(Driver):
     page_floor: ClassVar[Mapping[str, int]] = {}
     # A request signed with an access key AWS does not know: 403 UnrecognizedClientException, "The security token
     # included in the request is invalid." (EventBridge Scheduler API reference, Common Errors).
-    unknown_refusal = (403, "The security token included in the request is invalid")
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:
