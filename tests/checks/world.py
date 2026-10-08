@@ -6,6 +6,7 @@ them; the obligations come from the real ledger, never written by hand.
 
 from __future__ import annotations
 
+import json
 import textwrap
 from datetime import UTC, datetime, timedelta
 
@@ -33,6 +34,7 @@ from minutehand.domain.world import (
     EntityKind,
     EntityRef,
     Exchange,
+    MemorySnapshot,
     MessageSnapshot,
     Operation,
     RecordSnapshot,
@@ -168,6 +170,15 @@ class Log:
 
     def read(self, entity: EntityRef, hours: float, *, wake: int = 1) -> WorldEvent:
         return self._add(hours, Actor.AGENT, Operation.READ, entity, None, wake)
+
+    def memory(self, key: str, value: object | None, hours: float, *, wake: int = 1) -> WorldEvent:
+        """The agent writes one key of its memory (`minutehand_agent.store`); None deletes it."""
+        ref = EntityRef(provider="memory", kind=EntityKind.MEMORY, external_id=f"default/{key}")
+        operation = Operation.DELETE if value is None else Operation.UPDATE
+        text = None if value is None else json.dumps(value, sort_keys=True, separators=(",", ":"))
+        return self._add(
+            hours, Actor.AGENT, operation, ref, MemorySnapshot(collection="default", key=key, value=text), wake
+        )
 
 
 def reply(who: Person, to: WorldEvent, hours: float) -> PersonReply:

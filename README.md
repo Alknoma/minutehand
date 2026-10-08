@@ -8,8 +8,10 @@ and to whom. Minutehand holds no opinion of its own about how an agent should be
 what happened and says nothing was assessed. A failure can name the design that fixes it. A finished run can be forked
 from a checkpoint with the prompt, the model, a person or the world changed, and played forward again.
 
-The agent's code does not change. Minutehand starts the agent's own command, or reaches one already running,
-and points it at the fakes through its environment: `HTTPS_PROXY`, `NO_PROXY` and a CA bundle.
+Minutehand starts the agent's own command, or reaches one already running, and points it at the fakes through its
+environment: `HTTPS_PROXY`, `NO_PROXY` and a CA bundle. Minutehand owns the agent's time and its memory, so the one
+change to the agent's code is one import, inert in production: what the agent remembers goes through
+`minutehand_agent.store`, and that is what a fork rewinds.
 
 ## Install
 
@@ -33,7 +35,7 @@ The example agent is in the repository, so clone it for the example files:
 ```bash
 git clone --depth 1 -b main https://github.com/Alknoma/minutehand
 cd minutehand/examples/follow_up
-python3 -m venv .venv && .venv/bin/pip install slack_sdk    # the agent's one library, in the agent's own Python
+python3 -m venv .venv && .venv/bin/pip install slack_sdk minutehand-agent   # its Slack client and `minutehand_agent`
 
 minutehand run scenario.yaml --agent agent.yaml -- .venv/bin/python agent.py
 # exits 0: Rosa answers after a day and a half, and the agent tells Owen and finishes
@@ -55,7 +57,34 @@ client in the agent that would go around the proxy.
 
 ## How the agent touches Minutehand
 
-Almost nothing is required. An agent that takes its goal by message and books its own wakes implements no
+In its code, through one import, `minutehand_agent`, which does nothing unless `MINUTEHAND_ON` is set. It is a
+distribution of its own, the standard library only, installed in the agent's environment (`pip install
+minutehand-agent`), never `minutehand` itself:
+
+```python
+from minutehand_agent import store, wake
+
+store.configure(store.SqliteBackend("agent.db"))  # production: your database, through a three-method adapter
+
+store.put("asks/sam", {"status": "asked", "expected_by": expected_by.isoformat()})  # what it remembers
+for key, ask in store.query("asks/", where={"status": "asked"}):
+    ...
+wake.at(expected_by)  # when it next wants to wake
+```
+
+In production the store is a pass-through to your own database (SQLite and in-memory adapters ship; any other is
+three methods) and nothing is recorded. Under Minutehand the store is the run's: every write is recorded in the run,
+every read answered from it, your database is never opened, each run and fork has a memory of its own seeded from
+the scenario's `memory:`, and a fork starts from the memory as it stood at its checkpoint with nothing restored.
+
+**Only state written through the store is part of a run.** What the agent keeps anywhere else (its own database,
+files, a cache, a process that outlives a wake) is not simulated, not kept apart between runs, and not rewound by a
+fork, so its later calls can depend on state from another moment or another run. Minutehand reports what it can see
+of that: the store's reads and writes in every wake, a fresh empty SQLite file per run for each database the agent
+file names (`own_databases`), noted as outside forks, and a fork refused when the agent's report after it is not the
+one recorded at the checkpoint.
+
+Beside that, nothing is required. An agent that takes its goal by message and books its own wakes implements no
 endpoint. An agent can also take a wake (a `POST` carrying the simulated `now`), answer a report (still working,
 done, when to wake next), take pushed events in each provider's own format, and list its own inboxes for the
 simulated people to decide. Hosts no fake answers are declared in the agent file: acknowledge, pass through,
@@ -66,12 +95,13 @@ replay, or forward to an emulator of your own. `docs/agent-contract.md` lists ev
 
 Built and tested (`docs/design.md`, "What exists", counts the tests for each part):
 
-- The proxy, the run loop, the store (SQLite, one file per run and its forks), forks from a checkpoint with the
-  agent's own state restored and verified, and `minutehand serve` for test suites that open many worlds at once.
+- The proxy, the run loop, the store (SQLite, one file per run and its forks), the agent's memory
+  (`minutehand_agent.store`) held by the run, forks from a checkpoint that start from that memory and verify the
+  agent's report, and `minutehand serve` for test suites that open many worlds at once.
 - Providers: Slack, Microsoft Teams and Graph, Asana, Jira, YouTrack, Notion, GitHub, Google Drive with Docs and Slides,
   AWS EventBridge Scheduler and SQS (through moto), and Google Cloud Tasks over its REST transport.
 - Assessments: the team's own rules, in YAML in the agent file and the scenario (`assess:`), counting the facts of
-  a run (follow-ups, messages, writes, wakes, the wakes the agent planned, what it reported) between moments
+  a run (follow-ups, messages, writes, wakes, the wakes the agent planned, what it reported, the keys of its memory) between moments
   (`ask+P1D`, `answer`, `due`, `deadline`) against bounds. `docs/assessments.md` writes a real agent's policy whole,
   and the fourteen behaviours Minutehand once judged by itself as rules a team may copy.
 - What the scenario says must be true at the end (`expect:`), protected names, and the run's integrity (calls that

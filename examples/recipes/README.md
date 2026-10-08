@@ -35,9 +35,28 @@ GET  /report        {"status": "idle" | "done", "next_wake": ISO 8601 or null}  
 POST /slack/events  Slack's Events API, signed: a person wrote to the agent
 ```
 
-and keeps the same shape of state, in whatever place its framework keeps state: for each person who owes an
-answer, the moment it is expected by. `next_wake` is the earliest of those moments; `done` is a goal taken and no
-wait left. The agent never reads the machine's clock: its time is the wake's `now`, or a Slack event's timestamp.
+and keeps the same shape of state: the goal, and for each person who owes an answer, the moment it is expected by.
+`next_wake` is the earliest of those moments; `done` is a goal taken and no wait left.
+
+## What they remember, and where
+
+Each keeps that state in `minutehand_agent.store` (the Node recipe in `minutehand-store.ts`, its twin over the same
+wire), never in the framework's own objects past a wake: the goal under `goal`, each wait under its person's email in
+the collection `waits`. Each reads it back before every wake, Slack event and report, and writes it back in one batch
+after every wake and event.
+
+| Recipe | In production | Under Minutehand |
+|---|---|---|
+| `langgraph/` | `store.MemoryBackend()`; the graph runs with no checkpointer, from the store | the run's memory |
+| `openai_agents/` | `store.MemoryBackend()`, recalled into the run context | the run's memory |
+| `claude_agent_sdk/` | `store.MemoryBackend()`, recalled into the `Memory` the tools close over | the run's memory |
+| `pydantic_ai/` | `store.MemoryBackend()`, recalled into the deps | the run's memory |
+| `vercel_ai_sdk/` | a `Map` in the process | the run's memory, over `POST {MINUTEHAND_AGENT_URL}/store` |
+
+`MemoryBackend()` keeps production as it was, in the process; `store.SqliteBackend(path)` keeps it across restarts.
+Under Minutehand every run starts from the scenario's memory, and a fork from any checkpoint starts from what the
+agent remembered there, with nothing to snapshot or restore: `tests/recipes` forks each Python recipe after its
+first wake and checks its report there is the one it gave its parent. The agent never reads the machine's clock: its time is the wake's `now`, or a Slack event's timestamp.
 
 Slack calls go to `slack.com` as in production. Minutehand starts the agent with `HTTPS_PROXY` and its CA in the
 environment, and the Python Slack client follows them to the fake Slack. The Node client calls Node's own `fetch`,

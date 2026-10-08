@@ -11,11 +11,9 @@ directory under the state directory, written by the models, so a later process c
     <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
     <state>/runs/<run_id>/agent.json     `AgentUnderTest`
     <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
-    <state>/runs/<run_id>/world.pool/    the agent's snapshots, each file once, for a root run and its forks
-                                         (`adapters.store.sqlite`); `wake-<n>/` is where the snapshot command
-                                         writes until the store has kept it, `restoring/` where a restore reads
-    <state>/runs/<run_id>/restore.json   for a fork, or a sample after the first: every step of the restore that
-                                         started it, with each command's output, and whether it was verified
+    <state>/runs/<run_id>/own/           a fresh empty SQLite file per variable the agent file names under
+                                         `own_databases`: the agent's state beside its memory, outside forks
+    <state>/runs/<run_id>/restore.json   for a fork: how its agent was found at its start (its memory, its report)
 
 One proxy per process: mitmproxy keeps its master in a module global, so `play` and `fork` each start one
 and move it from sample to sample with `Proxy.mount`, and never two at once.
@@ -34,21 +32,21 @@ import secrets
 import shutil
 import signal
 import sqlite3
-from collections.abc import AsyncIterator, Coroutine, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from minutehand_agent._wire import ON as AGENT_ON
+from minutehand_agent._wire import URL as AGENT_URL
 from pydantic import Field
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
-from minutehand.adapters.database.postgres.relay import PostgresFront, bases_on_server, drop_base
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
 from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
@@ -61,21 +59,10 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
-from minutehand.adapters.telemetry.receiver import MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
+from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
 from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.application.cases import CASE, CaseKept, CaseStore
-from minutehand.application.checkpoint import (
-    CHECKPOINT,
-    AgentState,
-    NoHooks,
-    NotRestorable,
-    Replayable,
-    Restorable,
-    checkpoints,
-    read_checkpoint,
-)
-from minutehand.application.databases import Recorder, nondeterministic, start_again, take_bases
-from minutehand.application.databases import records as database_records
+from minutehand.application.checkpoint import CHECKPOINT, AgentState, checkpoints, read_checkpoint
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
@@ -93,11 +80,11 @@ from minutehand.application.model_calls import is_model_call, model_call, per_wa
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier_model import PeopleReplier
-from minutehand.application.restore import Progress, Restored, SeenCall, restore_agent
-from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run
+from minutehand.application.restore import Progress, Restored
+from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run, not_restorable
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import SNAPSHOT_PRUNED, materialised, restore_dir
 from minutehand.application.steps import steps
+from minutehand.application.traffic import SeenCall
 from minutehand.checks.patterns import PATTERNS
 from minutehand.checks.runner import (
     ChecksRefused,
@@ -110,10 +97,18 @@ from minutehand.checks.runner import (
     load_checks,
     view_of,
 )
-from minutehand.domain.agent import AgentUnderTest, Booked, Contained, GoalByMessage, Polled, Reported
+from minutehand.domain.agent import (
+    AgentUnderTest,
+    Booked,
+    Contained,
+    GoalByMessage,
+    Marked,
+    OwnDatabaseForm,
+    Polled,
+    Reported,
+)
 from minutehand.domain.assessments import Rule, merged, refuse_unknown_people
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, Stability, WakeRecord
-from minutehand.domain.database import BaseTaken, CommandBase, Database
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge, UnknownHosts
@@ -130,9 +125,9 @@ from minutehand.domain.scenario import (
     SigningSecret,
     WrittenScenario,
 )
-from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
+from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.world import Actor, Operation, TicketSnapshot
-from minutehand.ports.agent import Reports, TakesReplies
+from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
@@ -237,9 +232,9 @@ async def play(
     CA and the run's signing secrets added to this process's environment, waited for until it accepts
     connections, and stopped when the run ends.
 
-    Each sample after the first starts from the agent's own state as the first found it, restored and
-    verified through its `StateHooks` as a fork's is (`progress` hears each step). Without hooks the agent
-    carries what it remembers from one sample into the next, and the samples are not independent.
+    Each sample is a run of its own, so its memory (`minutehand_agent.store`) starts from the scenario's and
+    nothing else, and so does every own database the agent file names. What the agent keeps anywhere else, in a
+    process Minutehand did not start, is carried from one sample into the next.
 
     A scenario with no `starts_at` starts now: the instant is taken once, here, and every sample plays and
     records it, so a fork of any of them starts from the same moment.
@@ -268,17 +263,11 @@ async def play(
     async with (
         intercepting(routing, first[0], first[1], state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
-        fronting(agent, proxy.recorder) as fronts,
     ):
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0:
                 opened.append(store)
-            proxy.recorder.mount(store)
-            if sample == 0:
-                await take_bases(fronts, proxy.recorder, store.run_id)
-            else:
-                await start_again(fronts, first[0], proxy.recorder)
             directory = run_dir(state, store.run_id)
             _write_inputs(directory, scenario, agent)
             scorer = _Judge(
@@ -291,17 +280,22 @@ async def play(
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
+            own_files = OwnDatabases(agent, directory)
+            scorer.own_files = own_files
             env = (
                 agent_environment(
-                    listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+                    listen,
+                    proxy.port,
+                    proxy.ca_bundle,
+                    signing.for_agent,
+                    telemetry_port=proxy.telemetry_port,
+                    agent_url=proxy.agent_url(listen),
                 )
                 | base_url_environment(agent, listen.proxy_url(proxy.port))
-                | database_environment(fronts)
+                | own_files.environment()
             )
             reach = reach_for(agent, env=env)
-            async with _agent_process(command, env, agent, directory / AGENT_LOG) as own:
-                if sample > 0 and agent.state is not None:
-                    await _restore_start(state, first[0], agent, reach.main, own, directory, progress)
+            async with _agent_process(command, env, agent, directory / AGENT_LOG):
                 record = await run_scenario(
                     scenario=scenario,
                     agent=agent,
@@ -313,61 +307,18 @@ async def play(
                     telemetry=telemetry,
                     mounts=proxy,
                     scorer=scorer,
-                    state_dir=state / RUNS,
                     signing=signing.by_provider,
                     traffic=proxy,
                     channels=replies_for(agent, scenario, signing),
                     environment=emulators,
                     inboxes=inboxes_for(agent, scenario, signing),
-                    databases=fronts,
+                    outside=own_files,
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
     for store in opened:
         store.close()  # the run is over: its write-ahead log is cut to nothing
     return outcomes
-
-
-async def _restore_start(
-    state: Path,
-    first: Store,
-    agent: AgentUnderTest,
-    main: object,
-    own: _Program | None,
-    directory: Path,
-    progress: Progress | None,
-) -> None:
-    """Before a sample after the first: the agent put back as the first sample found it, through the same
-    verified restore a fork uses. Refused when the first sample's start was not restorable."""
-    assert agent.state is not None
-    start = next(iter(checkpoints(first).items()), None)
-    if start is None:
-        raise RunRefused(f"run {first.run_id} has no checkpoint at its start to restore the next sample from")
-    seq, checkpoint = start
-    restorable = checkpoint.agent
-    if isinstance(restorable, NotRestorable | NoHooks | Replayable):
-        why = restorable.reason if isinstance(restorable, NotRestorable) else "no snapshot of the agent was kept"
-        raise RunRefused(
-            f"the next sample cannot start where run {first.run_id} started: its start is not restorable: {why}"
-        )
-    kept = first.snapshot(restorable.snapshot_of, restorable.wake)
-    if kept is None or kept.pruned:
-        why = SNAPSHOT_PRUNED if kept is not None else "its snapshot was never kept"
-        raise RunRefused(f"the next sample cannot start where run {first.run_id} started: {why}")
-    with materialised(
-        first, restorable.snapshot_of, restorable.wake, restore_dir(state / RUNS, directory.name)
-    ) as snapshot:
-        restored = await restore_agent(
-            agent.state,
-            snapshot,
-            checkpoint_seq=seq,
-            recorded=restorable.report,
-            reports=main if isinstance(main, Reports) else None,
-            own=own,
-            progress=progress,
-            fingerprint=restorable.fingerprint,
-        )
-    (directory / RESTORE_RECORD).write_text(restored.model_dump_json(indent=2), encoding="utf-8")
 
 
 async def fork(
@@ -385,8 +336,9 @@ async def fork(
     """Rerun a finished run from one of its checkpoints with `changes` applied, once per `Fork.samples`.
 
     The people, tickets and deadline change in the world; a `PromptPatch` or `ModelSwap` is applied on the
-    wire, to the agent's own calls to its model, through the proxy's EDIT policy. The agent's own state is
-    restored and verified first (`application.restore`); `progress` hears each step as it is taken.
+    wire, to the agent's own calls to its model, through the proxy's EDIT policy. The agent's memory is its
+    parent's at the checkpoint, with nothing restored; its program, when `command` is given, is started once the
+    fork exists, and its report compared with the checkpoint's (`application.restore`); `progress` hears each step.
 
     A fork that is refused leaves no run behind: no row in the world file and no directory.
     """
@@ -434,21 +386,27 @@ async def fork(
     async with (
         intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing, model=model) as proxy,
         emulating(agent, proxy, listen, run_dir(state, child_id), telemetry, routes) as emulators,
-        fronting(agent, proxy.recorder) as fronts,
     ):
         scorer.receiver = proxy.receiver
-        proxy.recorder.hold()  # until the child is mounted, the agent writes to a database its restore makes again
+        proxy.hold()  # until the child is mounted, the agent's memory is not the parent's at its end
+        own_files = OwnDatabases(agent, run_dir(state, child_id))
+        scorer.own_files = own_files
         env = (
             agent_environment(
-                listen, proxy.port, proxy.ca_bundle, signing.for_agent, telemetry_port=proxy.telemetry_port
+                listen,
+                proxy.port,
+                proxy.ca_bundle,
+                signing.for_agent,
+                telemetry_port=proxy.telemetry_port,
+                agent_url=proxy.agent_url(listen),
             )
             | base_url_environment(agent, listen.proxy_url(proxy.port))
-            | database_environment(fronts)
+            | own_files.environment()
         )
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
-            async with _agent_process(command, env, agent, log) as own:
+            async with _agent_process(command, env, agent, log, started=False) as own:
                 records = await fork_run(
                     fork=changes,
                     parent=parent.record,
@@ -472,7 +430,7 @@ async def fork(
                     manifests=registry.manifests,
                     environment=emulators,
                     inboxes=inboxes_for(agent, changed, signing),
-                    databases=fronts,
+                    outside=own_files,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -575,22 +533,17 @@ def fork_points(state: Path, run_id: str) -> list[ForkPoint]:
 
 
 def points_in(world: Store) -> list[ForkPoint]:
-    """The checkpoints a world's log holds, each a point a fork may be taken from, and whether the agent's own
-    state there can be put back: a checkpoint recorded as restorable whose snapshot has since been pruned is not."""
+    """The checkpoints a world's log holds, each a point a fork may be taken from, and whether it can be: one the
+    agent went on writing its memory after, in the same wake, cannot (`rewind.not_restorable`)."""
     points: list[ForkPoint] = []
     for seq, checkpoint in checkpoints(world).items():
-        agent = checkpoint.agent
-        if isinstance(agent, Restorable):
-            kept = world.snapshot(agent.snapshot_of, agent.wake)
-            if kept is not None and kept.pruned:
-                agent = NotRestorable(reason=SNAPSHOT_PRUNED)
-        points.append(ForkPoint(wake=checkpoint.wake, seq=seq, agent=agent))
+        refused = not_restorable(world, seq, checkpoint)
+        points.append(ForkPoint(wake=checkpoint.wake, seq=seq, agent=refused or checkpoint.agent))
     return points
 
 
 def restore_of(state: Path, run_id: str) -> Restored | None:
-    """How the agent was restored to start this run: a fork, or a sample after the first. None for a run that
-    started from the beginning."""
+    """How a fork's agent was found at its start. None for a run that started from the beginning."""
     path = run_dir(state, run_id) / RESTORE_RECORD
     return Restored.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
 
@@ -602,7 +555,7 @@ def fork_of(state: Path, run_id: str) -> Fork | None:
 
 
 def fork_account(state: Path, run_id: str) -> ForkAccount | None:
-    """A fork, told (`application.forks`): where it split, what it changed, whether its restore was proven, and,
+    """A fork, told (`application.forks`): where it split, what it changed, whether its agent was proven, and,
     once both have finished, how its outcome differs from its parent's. None for a run that was not forked."""
     entry = find(state, run_id)
     if entry.parent_run is None or entry.forked_at is None:
@@ -669,48 +622,13 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
     )
 
 
-class Checkpointed(Model):
-    """One checkpoint of a run with what keeping the agent's state there costs."""
-
-    point: ForkPoint
-    snapshot: AgentSnapshot | None = Field(description="None when the agent's state there was never snapshotted")
-
-
-def checkpoints_of(state: Path, run_id: str) -> list[Checkpointed]:
-    """Every checkpoint of a run, whether a fork can be taken from it, and its snapshot's size."""
-    with reading(state, run_id) as world:
-        found: list[Checkpointed] = []
-        for point in points_in(world):
-            restorable = checkpoints(world)[point.seq].agent
-            snapshot = (
-                world.snapshot(restorable.snapshot_of, restorable.wake) if isinstance(restorable, Restorable) else None
-            )
-            found.append(Checkpointed(point=point, snapshot=snapshot))
-        return found
-
-
-def pin(state: Path, run_id: str, seq: int, *, pinned: bool) -> AgentSnapshot:
-    """Pin, or unpin, the snapshot of a run's checkpoint at `seq`, so its agent's `StateHooks.keep` never prunes
-    it. Refused for a checkpoint with no snapshot, or one already pruned."""
-    entry = find(state, run_id)
-    with reading(state, run_id) as world:
-        found = checkpoints(world)
-    if seq not in found:
-        raise RunRefused(f"run {run_id} has no checkpoint at seq {seq}; its checkpoints are at {list(found)}")
-    restorable = found[seq].agent
-    if not isinstance(restorable, Restorable):
-        raise RunRefused(f"the checkpoint at seq {seq} of run {run_id} has no snapshot of the agent to pin")
-    store = SqliteStore(run_dir(state, entry.root) / WORLD, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
-    try:
-        return store.pin(restorable.snapshot_of, restorable.wake, pinned=pinned)
-    except (LookupError, ValueError) as e:
-        raise RunRefused(f"the checkpoint at seq {seq} of run {run_id}: {e}") from e
-    finally:
-        store.close()
+def checkpoints_of(state: Path, run_id: str) -> list[ForkPoint]:
+    """Every checkpoint of a run, and whether a fork can be taken from it."""
+    return fork_points(state, run_id)
 
 
 def usage_of(state: Path, run_id: str) -> RunUsage:
-    """What one run costs on disk: its rows, the bodies and the snapshot files it alone holds."""
+    """What one run costs on disk: its rows and the bodies it alone holds."""
     with reading(state, run_id) as world:
         return world.usage()
 
@@ -718,33 +636,23 @@ def usage_of(state: Path, run_id: str) -> RunUsage:
 class Collected(Model):
     """What one housekeeping pass removed."""
 
-    freed: Freed = Field(description="Stored bodies and snapshot files nothing referred to, across every world file")
+    freed: Freed = Field(description="Stored bodies nothing referred to, across every world file")
     removed: list[str] = Field(default=[], description="Run directories removed whole, as asked")
     removed_bytes: int = Field(default=0, ge=0)
     swept: int = Field(default=0, ge=0, description="World files swept")
     skipped: list[str] = Field(default=[], description="World files that could not be swept, and why")
-    bases: list[str] = Field(
-        default=[],
-        description="Each base of a fronted database that no run left under the state directory needs, and what "
-        "became of it: dropped, kept, or why it could not be dropped",
-    )
 
 
 def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
     """Remove the run directories named in `remove`, then sweep every world file left under `state` of the stored
-    bodies and snapshot files nothing refers to. `minutehand gc`, `minutehand rm`, and a standing server's
-    retention of closed worlds, are this.
-
-    A base of a fronted database (`AgentUnderTest.databases`) is taken once per run and shared by its forks and
-    its later samples, each of which records it; once the last world file recording it is removed, it is dropped
-    (`relay.drop_base`)."""
-    held = {base.base: (database, base) for run_id in remove for database, base in _bases_of(run_dir(state, run_id))}
+    bodies nothing refers to. `minutehand gc`, `minutehand rm`, and a standing server's retention of closed worlds,
+    are this."""
     removed_bytes = 0
     for run_id in remove:
         directory = run_dir(state, run_id)
         removed_bytes += sum(p.stat().st_size for p in directory.rglob("*") if p.is_file())
         shutil.rmtree(directory, ignore_errors=True)
-    totals = Freed(bodies=0, body_bytes=0, files=0, file_bytes=0)
+    totals = Freed(bodies=0, body_bytes=0)
     swept = 0
     skipped: list[str] = []
     base = state / RUNS
@@ -763,36 +671,13 @@ def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
         finally:
             store.close()
         swept += 1
-        totals = Freed(
-            bodies=totals.bodies + freed.bodies,
-            body_bytes=totals.body_bytes + freed.body_bytes,
-            files=totals.files + freed.files,
-            file_bytes=totals.file_bytes + freed.file_bytes,
-        )
-    bases: list[str] = []
-    if held:
-        needed, unread = _needed_bases(state)
-        if unread:
-            bases = [
-                f"base {name} of database {database.name} kept: {unread[0]} could not be read, and may need it"
-                for name, (database, _) in held.items()
-            ]
-        else:
-            bases = _on_own_loop(_drop_bases([pair for name, pair in held.items() if name not in needed]))
-    return Collected(
-        freed=totals,
-        removed=list(remove),
-        removed_bytes=removed_bytes,
-        swept=swept,
-        skipped=skipped,
-        bases=bases,
-    )
+        totals = Freed(bodies=totals.bodies + freed.bodies, body_bytes=totals.body_bytes + freed.body_bytes)
+    return Collected(freed=totals, removed=list(remove), removed_bytes=removed_bytes, swept=swept, skipped=skipped)
 
 
 def remove(state: Path, run_ids: Sequence[str]) -> Collected:
-    """`minutehand rm`: each run named, with every fork of it, since they share its world file; then `collect`,
-    which drops the bases of fronted databases nothing left needs. A fork alone is refused: its record is part of
-    its root's world file, which is removed with the root."""
+    """`minutehand rm`: each run named, with every fork of it, since they share its world file; then `collect`.
+    A fork alone is refused: its record is part of its root's world file, which is removed with the root."""
     whole: list[str] = []
     for run_id in run_ids:
         entry = find(state, run_id)
@@ -803,98 +688,6 @@ def remove(state: Path, run_ids: Sequence[str]) -> Collected:
             )
         whole += [r for r, _, _ in _ReadOnlyStore.runs_in(run_dir(state, run_id) / WORLD) if r not in whole]
     return collect(state, remove=whole)
-
-
-def drop_orphans(state: Path, agent: AgentUnderTest) -> list[str]:
-    """`minutehand gc --agent`: every base of the agent's fronted databases left on its server (`<database>_mh_...`,
-    made by `TEMPLATE`) that no world file under `state` records, dropped: what a run directory removed by hand, or
-    a run that stopped before it was kept, left behind. A command base is not named on the server, so it is said
-    to be left to its own tooling."""
-    needed, unread = _needed_bases(state)
-    if unread:
-        return [f"no base dropped: {unread[0]} could not be read, and may record any of them"]
-
-    async def sweep() -> list[str]:
-        said: list[str] = []
-        for database in agent.databases:
-            if isinstance(database.base, CommandBase):
-                said.append(f"database {database.name}: its base is made by a command, which Minutehand cannot list")
-                continue
-            try:
-                found = await bases_on_server(database)
-            except RunRefused as e:
-                said.append(str(e))
-                continue
-            orphans = [n for n in found if n not in needed]
-            said += await _drop_bases(
-                [(database, BaseTaken(database=database.name, base=n, how="template", seconds=0)) for n in orphans]
-            )
-            if not orphans:
-                said.append(f"database {database.name}: no base left on its server that no run needs")
-        return said
-
-    return _on_own_loop(sweep())
-
-
-def _bases_of(directory: Path) -> list[tuple[Database, BaseTaken]]:
-    """The bases a run directory's world file records, each with the database its agent file declares; none when
-    either cannot be read."""
-    world, written = directory / WORLD, directory / AGENT
-    if not world.is_file() or not written.is_file():
-        return []
-    try:
-        declared = {
-            d.name: d for d in AgentUnderTest.model_validate_json(written.read_text(encoding="utf-8")).databases
-        }
-        return [(declared[b.database], b) for b in _bases_in(world) if b.database in declared]
-    except (RunRefused, sqlite3.Error, ValueError):
-        return []
-
-
-def _needed_bases(state: Path) -> tuple[set[str], list[str]]:
-    """The name of every base some world file under `state` still records, and the world files that could not be
-    read, which may record any."""
-    base = state / RUNS
-    needed: set[str] = set()
-    unread: list[str] = []
-    for directory in sorted(base.iterdir()) if base.is_dir() else []:
-        try:
-            needed |= {b.base for b in _bases_in(directory / WORLD)}
-        except (RunRefused, sqlite3.Error, ValueError) as e:
-            unread.append(f"{directory / WORLD} ({e})")
-    return needed, unread
-
-
-def _bases_in(world: Path) -> list[BaseTaken]:
-    if not world.is_file():
-        return []
-    found: list[BaseTaken] = []
-    for run_id, parent, _ in _ReadOnlyStore.runs_in(world):
-        if parent is not None:
-            continue  # a fork records no base of its own: it replays onto its root's
-        store = _ReadOnlyStore(world, run_id, RunClock(datetime.fromtimestamp(0, UTC)))
-        try:
-            found += [r for r in database_records(store) if isinstance(r, BaseTaken)]
-        finally:
-            store.close()
-    return found
-
-
-async def _drop_bases(pairs: Sequence[tuple[Database, BaseTaken]]) -> list[str]:
-    said: list[str] = []
-    for database, base in pairs:
-        try:
-            said.append(await drop_base(database, base))
-        except RunRefused as e:
-            said.append(f"base {base.base} of database {database.name} could not be dropped, so it is left: {e}")
-    return said
-
-
-def _on_own_loop[T](work: Coroutine[object, object, T]) -> T:
-    """Run `work` to its end on an event loop of its own, in a thread of its own: housekeeping is called both from
-    the command line and from inside a standing server's loop."""
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, work).result()
 
 
 class Logged(Model):
@@ -1140,6 +933,8 @@ class _Judge:
         self.results: dict[str, RunResult] = {}
         self.receiver: Receiver | None = None
         """Whose notices about telemetry it could not receive end the run's findings."""
+        self.own_files: OwnDatabases | None = None
+        """The agent's own databases for the run being judged, which its notes name as outside forks."""
 
     async def score(self, record: RunRecord, world: Store) -> RunResult:
         last = read_checkpoint(world)
@@ -1172,7 +967,10 @@ class _Judge:
             else evaluate(view, stop=record.stop, own=self._own)
         )
         result = result.model_copy(
-            update={"findings": [*result.findings, *emulator_findings(world), *nondeterministic(world)]}
+            update={
+                "findings": [*result.findings, *emulator_findings(world)],
+                "notes": [*result.notes, *(self.own_files.notes() if self.own_files is not None else [])],
+            }
         )
         heard = self.receiver.notices if self.receiver is not None else []
         if heard:
@@ -1442,7 +1240,7 @@ class Listen(Model):
         named only for an agent `elsewhere`: on this machine the proxy forwards it (`ProxyAddon.forwarded`), and
         named it would send every `*.localhost` host direct under requests, urllib, aiohttp and curl."""
         hosts = [*DIRECT, *self.no_proxy]
-        if self.receive_telemetry and not loopback(self.reached_at()):
+        if not loopback(self.reached_at()):
             hosts.append(self.reached_at())
         if self.elsewhere():
             hosts.append(LOOPBACK_NAME)
@@ -1457,14 +1255,21 @@ directly")."""
 
 
 def agent_environment(
-    listen: Listen, port: int, ca_bundle: str | Path, secrets: Mapping[str, str], *, telemetry_port: int | None
+    listen: Listen,
+    port: int,
+    ca_bundle: str | Path,
+    secrets: Mapping[str, str],
+    *,
+    telemetry_port: int | None,
+    agent_url: str | None = None,
 ) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
     spellings libraries read, the hosts it reaches directly (also as `no_grpc_proxy`: gRPC applies `http_proxy`
     even to an insecure channel to an in-stack emulator), Node's switch that makes its built-in `fetch` read them
     (`NODE_PROXY`), the one CA file in each library's variable
-    (`ca_bundle`, as the agent sees the path), the signing secrets it is handed, and, unless `telemetry_port`
-    is None (receiving is off), its OTLP exporter pointed at the receiver."""
+    (`ca_bundle`, as the agent sees the path), the signing secrets it is handed, unless `telemetry_port`
+    is None (receiving is off) its OTLP exporter pointed at the receiver, and, when `agent_url` is given,
+    MINUTEHAND_ON and the URL `minutehand_agent` reaches the run at (`AGENT_URL`)."""
     proxy = listen.proxy_url(port)
     direct = ",".join(listen.direct())
     exporter = exporter_environment(listen.telemetry_url(telemetry_port)) if telemetry_port is not None else {}
@@ -1481,6 +1286,7 @@ def agent_environment(
         NODE_PROXY: "1",
         **{name: str(ca_bundle) for name in CA_VARIABLES},
         **exporter,
+        **({AGENT_ON: "1", AGENT_URL: agent_url} if agent_url is not None else {}),
         **secrets,
     }
 
@@ -1524,8 +1330,17 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
     bundle = write_bundle(state / "ca")
     telemetry_port = listen.telemetry_port if listen.receive_telemetry else None
     handed = agent_environment(
-        listen, listen.port, ca_bundle or str(bundle.resolve()), {}, telemetry_port=telemetry_port
+        listen,
+        listen.port,
+        ca_bundle or str(bundle.resolve()),
+        {},
+        telemetry_port=telemetry_port,
+        agent_url=listen.telemetry_url(listen.telemetry_port) + AGENT_PATH if listen.telemetry_port else None,
     )
+    if listen.telemetry_port == 0:
+        # No receiver port to name: the agent is still told it is played, so its store refuses rather than writing
+        # to its own database (`minutehand_agent._wire`), and says which port to give.
+        handed[AGENT_ON] = "1"
     return handed | base_url_environment(agent, listen.proxy_url(listen.port))
 
 
@@ -1541,9 +1356,10 @@ class Intercepting:
     each moved to the next run together."""
 
     proxy: Proxy
-    receiver: Receiver | None
-    recorder: Recorder = field(default_factory=Recorder)
-    """Where the relays of the agent's fronted databases write: moved to the next run with the proxy."""
+    receiver: Receiver
+    telemetry: bool = True
+    """Whether the agent's telemetry is received: its exporter pointed at the receiver. The receiver runs either way,
+    since it holds the agent's memory."""
 
     @property
     def port(self) -> int:
@@ -1555,15 +1371,23 @@ class Intercepting:
 
     @property
     def telemetry_port(self) -> int | None:
-        """The receiver's port; None when receiving is off."""
-        return self.receiver.port if self.receiver is not None else None
+        """The receiver's port for the agent's telemetry; None when receiving it is off."""
+        return self.receiver.port if self.telemetry else None
+
+    def agent_url(self, listen: Listen) -> str:
+        """Where `minutehand_agent` reaches the run, as the agent reaches this machine."""
+        return listen.telemetry_url(self.receiver.port) + AGENT_PATH
+
+    def hold(self) -> None:
+        """Hold the agent's calls to its memory until the next run is mounted (`Receiver.hold`)."""
+        self.receiver.hold()
 
     def last_call(self) -> SeenCall | None:
-        """`application.restore.Traffic`: the latest call the proxy saw from the agent."""
+        """`application.traffic.Traffic`: the latest call the proxy saw from the agent."""
         return self.proxy.last_call()
 
     def waiting(self) -> list[str]:
-        """`application.restore.Traffic`: what the agent sent and the proxy has not seen answered."""
+        """`application.traffic.Traffic`: what the agent sent and the proxy has not seen answered."""
         return self.proxy.waiting()
 
     def flush(self) -> None:
@@ -1571,9 +1395,7 @@ class Intercepting:
 
     def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
         self.proxy.mount(world, clock, apps, scenario=scenario)
-        if self.receiver is not None:
-            self.receiver.mount(world, clock)
-        self.recorder.mount(world)
+        self.receiver.mount(world, clock)
 
 
 @asynccontextmanager
@@ -1587,8 +1409,9 @@ async def intercepting(
     capturing: Capturing | None = None,
     model: LanguageModel | None = None,
 ) -> AsyncIterator[Intercepting]:
-    """The proxy and, unless `listen` turns it off, the receiver, on the same host. The receiver passes what it
-    takes on to wherever this process's own environment sent OTLP before (`Forwarding.from_environment`).
+    """The proxy and the receiver, on the same host. The receiver holds the agent's memory and, unless `listen`
+    turns it off, takes its telemetry, passing it on to wherever this process's own environment sent OTLP before
+    (`Forwarding.from_environment`).
     """
     async with Proxy(
         routing,
@@ -1604,9 +1427,6 @@ async def intercepting(
         model=model,
         redirect_port=listen.transparent_port,
     ) as proxy:
-        if not listen.receive_telemetry:
-            yield Intercepting(proxy, None)
-            return
         receiver = Receiver(
             store,
             clock,
@@ -1616,7 +1436,7 @@ async def intercepting(
             agent_host=listen.agent_host,
         )
         async with receiver:
-            yield Intercepting(proxy, receiver)
+            yield Intercepting(proxy, receiver, telemetry=listen.receive_telemetry)
 
 
 @asynccontextmanager
@@ -1648,31 +1468,10 @@ async def emulating(
         await emulators.stop()
 
 
-@asynccontextmanager
-async def fronting(agent: AgentUnderTest, recorder: Recorder) -> AsyncIterator[list[PostgresFront]]:
-    """A relay for each database the agent file fronts (`AgentUnderTest.databases`), listening before the agent
-    starts and recording into whatever run `recorder` is mounted on, and stopped when the run ends."""
-    fronts = [PostgresFront(database, recorder) for database in agent.databases]
-    started: list[PostgresFront] = []
-    try:
-        for front in fronts:
-            await front.start()
-            started.append(front)
-        yield fronts
-    finally:
-        for front in started:
-            await front.stop()
-
-
-def database_environment(fronts: Sequence[PostgresFront]) -> dict[str, str]:
-    """Each fronted database's URL, pointed at its relay, in the variable its declaration names."""
-    return {front.database.env: front.agent_url() for front in fronts if front.database.env is not None}
-
-
 def _listens_on(agent: AgentUnderTest) -> str | None:
     """The URL whose port tells that the agent is up: its wake endpoint, or else where it takes events."""
     for source in agent.wakes:
-        if isinstance(source, Reported | Polled):
+        if isinstance(source, Reported | Marked | Polled):
             return source.wake_url
     return next((t.url for t in agent.inbound if t.url is not None), None)
 
@@ -1682,9 +1481,53 @@ def _tail(log: Path) -> str:
     return text.strip()[-1500:] or "(it printed nothing)"
 
 
+OWN = "own"
+"""The folder of a run's directory that holds the agent's own databases (`AgentUnderTest.own_databases`)."""
+
+
+class OwnDatabases:
+    """The databases the agent keeps state in beside its memory (`AgentUnderTest.own_databases`): a fresh empty SQLite
+    file per variable for each run, handed to the agent in that variable. `application.orchestrator.OutsideState`:
+    at each checkpoint it says which of them the agent has written to, since a fork does not get it back."""
+
+    def __init__(self, agent: AgentUnderTest, directory: Path) -> None:
+        self._declared = list(agent.own_databases)
+        self._directory = directory / OWN
+        self._files = {d.env: self._directory / f"{d.env}.sqlite" for d in self._declared}
+        if self._declared:
+            shutil.rmtree(self._directory, ignore_errors=True)  # fresh and empty, whatever a run before left here
+            self._directory.mkdir(parents=True)
+
+    def environment(self) -> dict[str, str]:
+        return {
+            d.env: (
+                str(self._files[d.env])
+                if d.form is OwnDatabaseForm.FILE
+                else f"sqlite:///{self._files[d.env].resolve()}"
+            )
+            for d in self._declared
+        }
+
+    def outside(self) -> list[str]:
+        held: list[str] = []
+        for env, path in self._files.items():
+            size = sum(f.stat().st_size for f in (path, path.with_name(path.name + "-wal")) if f.is_file())
+            if size:
+                held.append(f"the agent's own database in {env} held {size:,} bytes")
+        return held
+
+    def notes(self) -> list[str]:
+        return [
+            f"{env} was handed a fresh empty SQLite file for this run ({path}): what the agent keeps there is "
+            "outside its memory, so it is not part of the run's record, and a fork starts with it empty, not as it "
+            "stood at the checkpoint"
+            for env, path in self._files.items()
+        ]
+
+
 class _Program:
-    """The agent's own program, started by Minutehand: `application.restore.OwnProgram`, so a restore can stop it
-    and start it again with the same environment, and nothing it held in memory survives the restore."""
+    """The agent's own program, started by Minutehand: `application.restore.OwnProgram`, so a fork can start it once
+    its run exists, with the same environment."""
 
     def __init__(self, command: Sequence[str], env: Mapping[str, str], agent: AgentUnderTest, log: Path) -> None:
         self._command = list(command)
@@ -1721,7 +1564,7 @@ class _Program:
     async def stop(self) -> None:
         """Stop the command and every process it started. A child the command was still waiting on when the
         timeout ran out would otherwise outlive it, still listening on the agent's port, and answer for the agent
-        a restore starts next with the state of another moment."""
+        the next run starts."""
         process, self._process = self._process, None
         if process is None:
             return
@@ -1743,13 +1586,18 @@ async def _agent_process(
     env: Mapping[str, str],
     agent: AgentUnderTest,
     log: Path,
+    *,
+    started: bool = True,
 ) -> AsyncIterator[_Program | None]:
+    """The agent's program, started before the block unless `started` is False (a fork starts it itself, once its
+    run exists), and stopped after it."""
     if not command:
         yield None
         return
     program = _Program(command, env, agent, log)
     try:
-        await program.start()
+        if started:
+            await program.start()
         yield program
         code = program.exited()
         if code is not None:

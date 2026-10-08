@@ -306,6 +306,17 @@
           ],
           "default": null
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Memory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "messages": {
           "anyOf": [
             {
@@ -958,6 +969,7 @@
       "title": "Helpfulness",
       "type": "string"
     },
+    "JsonValue": {},
     "Judged": {
       "description": "What a rule's finding asks of whoever reads it.",
       "enum": [
@@ -1005,6 +1017,71 @@
         "said"
       ],
       "title": "MachineCommand",
+      "type": "object"
+    },
+    "Memory": {
+      "additionalProperties": false,
+      "description": "Keys of the agent's memory (`minutehand_agent.store`) as they stood at the count's `until` (the run's end\nwithout one): each key holding a value there is one fact, counted at the moment that value was written, so\n`since` keeps only those written from then on. `key` and `prefix` may hold `{person.key}`.",
+      "properties": {
+        "collection": {
+          "default": "default",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+          "title": "Collection",
+          "type": "string"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exactly this key",
+          "title": "Key"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Every key starting with this",
+          "title": "Prefix"
+        },
+        "values": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default": {},
+          "description": "Each field of the value (a dotted path into it, `venue.city`) equal to this; a value that is not an object, or lacks the field, does not match",
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "title": "Memory",
       "type": "object"
     },
     "Messages": {
@@ -2506,6 +2583,33 @@
       "title": "SeededFile",
       "type": "object"
     },
+    "SeededMemory": {
+      "additionalProperties": false,
+      "description": "One key the agent's memory holds when a run starts (`Scenario.memory`).",
+      "properties": {
+        "collection": {
+          "default": "default",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+          "title": "Collection",
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "title": "SeededMemory",
+      "type": "object"
+    },
     "SeededPost": {
       "additionalProperties": false,
       "description": "A message already in a conversation when the run starts, with the thread under it.",
@@ -3592,6 +3696,15 @@
       "default": null,
       "description": "The most wakes a run plays before it stops; absent, sized from the deadline and the agent's rhythm (`domain.run.wake_limit`)",
       "title": "Max Wakes"
+    },
+    "memory": {
+      "default": [],
+      "description": "What the agent's memory (`minutehand_agent.store`) holds when the run starts: each key and its value. Nothing else is in it; the agent's own production database is never read",
+      "items": {
+        "$ref": "#/$defs/SeededMemory"
+      },
+      "title": "Memory",
+      "type": "array"
     },
     "name": {
       "pattern": "^[a-z][a-z0-9_]*$",

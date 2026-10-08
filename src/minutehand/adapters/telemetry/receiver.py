@@ -10,6 +10,14 @@ same port.
     POST /v1/metrics   acknowledged and dropped
     gRPC               the same three services (`opentelemetry.proto.collector.*.v1`), kept the same way
 
+    POST /minutehand/agent/store   the agent's memory (`minutehand_agent.store`): a get, a list or a write,
+                                   answered from the run and recorded in it (`application.memory`)
+    POST /minutehand/agent/wake    the agent's next wake (`minutehand_agent.wake`), recorded in the run
+    POST /minutehand/mcp           a tool call `minutehand mcp-relay` saw, recorded in the run
+
+The agent's own calls are held while `hold` is on: a fork's agent may start before the fork's run exists, and what it
+reads then must be the fork's memory, not the parent's at its end.
+
 Each HTTP route takes `application/x-protobuf` or `application/json`, gzip or deflate or neither, and answers in
 the format it was sent. A body that is not an OTLP request is answered 400 and nothing is kept; the run goes on.
 
@@ -43,6 +51,7 @@ from google.protobuf.message import Message
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
+from pydantic import TypeAdapter, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
@@ -51,6 +60,8 @@ from starlette.routing import Route
 from minutehand.adapters.proxy import mcp
 from minutehand.adapters.telemetry import otlp
 from minutehand.adapters.telemetry.forward import ENDPOINT, Forwarding, forward, signal_variable
+from minutehand.application import memory
+from minutehand.domain.memory import MemoryGet, MemoryList, StoreCall, WakeMark
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import ReceivedSpan, Signal, SpanSource
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
@@ -81,6 +92,11 @@ MCP_PATH = "/minutehand/mcp"
 """Where `minutehand mcp-relay` reports each tool call; the agent is handed it as MINUTEHAND_MCP_URL."""
 MCP_URL_ENV = "MINUTEHAND_MCP_URL"
 JSON = "application/json"
+
+AGENT_PATH = "/minutehand/agent"
+"""Where `minutehand_agent` reaches the run; the agent is handed it as MINUTEHAND_AGENT_URL, with MINUTEHAND_ON."""
+
+_STORE_CALL: TypeAdapter[StoreCall] = TypeAdapter(StoreCall)
 
 
 class RelayedCall(Model):
@@ -123,6 +139,8 @@ class Receiver:
         self._grpc_port: int | None = None
         self._grpc_server: GrpcServer | None = None
         self._grpc_starting = asyncio.Lock()
+        self._mounted = asyncio.Event()
+        self._mounted.set()
 
     @property
     def notices(self) -> list[str]:
@@ -130,9 +148,14 @@ class Receiver:
         return list(self._notices)
 
     def mount(self, world: Store, clock: Clock) -> None:
-        """From now on spans are kept in `world`, stamped from `clock`."""
+        """From now on spans are kept in `world`, stamped from `clock`, and the agent's calls answered from it."""
         self.store = world
         self.clock = clock
+        self._mounted.set()
+
+    def hold(self) -> None:
+        """Hold the agent's calls until the next `mount`: a fork's agent starts before the fork's run exists."""
+        self._mounted.clear()
 
     def route(self, by_span: Callable[[ReceivedSpan], Store | None]) -> None:
         """`minutehand serve`: a span is kept where `by_span` says (the world whose calls carried its trace, or the
@@ -153,7 +176,47 @@ class Receiver:
         async def relayed(request: Request) -> Response:
             return self._relayed(await request.body())
 
-        return Starlette(routes=[*(route(signal) for signal in Signal), Route(MCP_PATH, relayed, methods=["POST"])])
+        async def remembered(request: Request) -> Response:
+            body = await request.body()
+            await self._mounted.wait()
+            return self._remembered(body)
+
+        async def marked(request: Request) -> Response:
+            body = await request.body()
+            await self._mounted.wait()
+            return self._marked(body)
+
+        return Starlette(
+            routes=[
+                *(route(signal) for signal in Signal),
+                Route(MCP_PATH, relayed, methods=["POST"]),
+                Route(f"{AGENT_PATH}/store", remembered, methods=["POST"]),
+                Route(f"{AGENT_PATH}/wake", marked, methods=["POST"]),
+            ]
+        )
+
+    def _remembered(self, body: bytes) -> Response:
+        """One call of the agent's store, answered from the run being played and recorded in it. Nothing awaits
+        between reading the memory and writing it, so no other call of the agent's comes between."""
+        try:
+            call = _STORE_CALL.validate_json(body)
+        except ValidationError as e:
+            return PlainTextResponse(f"not a call of the agent's store: {e}", status_code=400)
+        if isinstance(call, MemoryGet):
+            answer: Model = memory.recall(self.store, call)
+        elif isinstance(call, MemoryList):
+            answer = memory.listing(self.store, call)
+        else:
+            answer = memory.remember(self.store, call)
+        return Response(answer.model_dump_json(), media_type=JSON)
+
+    def _marked(self, body: bytes) -> Response:
+        try:
+            said = WakeMark.model_validate_json(body)
+        except ValidationError as e:
+            return PlainTextResponse(f"not a next wake: {e}", status_code=400)
+        memory.mark(self.store, said)
+        return Response(status_code=204)
 
     def _relayed(self, body: bytes) -> Response:
         """A tool call `minutehand mcp-relay` saw pass between the agent and an MCP server on its standard input and

@@ -2,9 +2,11 @@
 
 The graph is the usual model-and-tools loop: a chat model with tools bound, a `ToolNode`, and `tools_condition`
 between them. What makes it proactive is one more key in the graph's state, `waits`: each person who owes an
-answer and the moment it is expected by. The tools write it (`remember_wait`, `close_wait`), the checkpointer
-keeps it between wakes under one thread, and the report Minutehand asks for after every wake reads it:
-`next_wake` is the earliest moment in `waits`.
+answer and the moment it is expected by. The tools write it (`remember_wait`, `close_wait`). Between wakes the
+goal and `waits` are kept in `minutehand_agent.store`: each wake or Slack event runs the graph once, from the goal and
+waits the store holds, and writes the waits it ends with back; the report Minutehand asks for after every wake reads
+the store: `next_wake` is the earliest moment in `waits`. A wake's conversation is not kept past it: the situation the
+agent writes for each run carries what the model needs.
 
     POST /wake          {"now": ..., "reason": "start" | "due" | ..., "goal": ...}: run the graph on what is due
     GET  /report        {"status": "idle" | "done", "next_wake": the earliest expected-by date, or null}
@@ -32,14 +34,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
 from langgraph.types import Command
+from minutehand_agent import store
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 
@@ -125,17 +126,41 @@ graph = (
     .add_edge(START, "model")
     .add_conditional_edges("model", tools_condition)
     .add_edge("tools", "model")
-    .compile(checkpointer=InMemorySaver())
+    .compile()
 )
-THREAD: RunnableConfig = {"configurable": {"thread_id": "the-goal"}}
+
+# What it remembers between wakes, in `minutehand_agent.store`: the goal, and each wait under its email. Production
+# keeps it in this process (swap in `store.SqliteBackend(path)` to keep it across restarts); under Minutehand it is
+# the run's own memory, which a fork starts from as it stood at its checkpoint.
+store.configure(store.MemoryBackend())
+waits_kept = store.collection("waits")
 
 
 def situation(now: datetime, goal: str, happened: str) -> str:
     return f"It is now {now.isoformat()}.\nGoal: {goal}\nOwner: {OWNER}. Ask: {ASK}.\n{happened}"
 
 
-def state() -> State:
-    return graph.get_state(THREAD).values  # type: ignore[return-value]
+def recalled() -> tuple[str | None, dict[str, Wait | None]]:
+    """The goal and the waits, as the store holds them now: read on every wake, event and report."""
+    goal = store.get("goal")
+    waits: dict[str, Wait | None] = {}
+    for email, kept in waits_kept.list():
+        assert isinstance(kept, dict)
+        waits[email] = Wait(expected_by=str(kept["expected_by"]), asks=int(str(kept["asks"])))
+    return (goal if isinstance(goal, str) else None), waits
+
+
+def run(goal: str, waits: dict[str, Wait | None], text: str) -> None:
+    """One run of the graph from what the store holds, and the waits it ends with written back, all at once."""
+    ended: State = graph.invoke({"messages": [HumanMessage(text)], "goal": goal, "waits": waits})  # type: ignore[assignment]
+    held = {email for email, wait in ended["waits"].items() if wait is not None}
+    with store.batch() as kept:
+        kept.put("goal", goal)
+        for email in {e for e, _ in waits_kept.list()} - held:
+            kept.delete(email, collection="waits")
+        for email, wait in ended["waits"].items():
+            if wait is not None:
+                kept.put(email, dict(wait), collection="waits")
 
 
 # -- the Minutehand side: three endpoints ----------------------------------------------------------------------
@@ -144,22 +169,25 @@ def state() -> State:
 def wake(request: dict[str, str]) -> None:
     now = datetime.fromisoformat(request["now"])
     if request["reason"] == "start":
-        first = situation(now, request["goal"], "Nobody has been asked yet.")
-        graph.invoke({"messages": [HumanMessage(first)], "goal": request["goal"], "waits": {}}, THREAD)
+        run(request["goal"], {}, situation(now, request["goal"], "Nobody has been asked yet."))
         return
-    for email, wait in state()["waits"].items():
+    goal, waits = recalled()
+    if goal is None:
+        return
+    for email, wait in waits.items():
         assert wait is not None
         if datetime.fromisoformat(wait["expected_by"]) <= now:
             overdue = (
                 f"No answer yet from {email}, expected by {wait['expected_by']}. Follow-ups sent: {wait['asks'] - 1}."
             )
-            graph.invoke({"messages": [HumanMessage(situation(now, state()["goal"], overdue))]}, THREAD)
+            run(goal, recalled()[1], situation(now, goal, overdue))
 
 
 def report() -> dict[str, object]:
-    if not graph.get_state(THREAD).values:
+    goal, waits = recalled()
+    if goal is None:
         return {"status": "idle", "next_wake": None}
-    dates = [datetime.fromisoformat(w["expected_by"]) for w in state()["waits"].values() if w is not None]
+    dates = [datetime.fromisoformat(w["expected_by"]) for w in waits.values() if w is not None]
     if not dates:
         return {"status": "done", "next_wake": None}
     return {"status": "idle", "next_wake": min(dates).isoformat()}
@@ -167,14 +195,14 @@ def report() -> dict[str, object]:
 
 def message(event: dict[str, str]) -> None:
     """Someone wrote to the agent: an answer from a person it waits on goes through the graph."""
-    if not graph.get_state(THREAD).values:
+    goal, waits = recalled()
+    if goal is None:
         return
     email = slack.users_info(user=event["user"])["user"]["profile"]["email"]
-    if email not in state()["waits"]:
+    if email not in waits:
         return
     now = datetime.fromtimestamp(float(event["ts"]), UTC)
-    answered = f"{email} answered: {event['text']}"
-    graph.invoke({"messages": [HumanMessage(situation(now, state()["goal"], answered))]}, THREAD)
+    run(goal, waits, situation(now, goal, f"{email} answered: {event['text']}"))
 
 
 verifier = SignatureVerifier(os.environ["AGENT_SLACK_SIGNING_SECRET"])

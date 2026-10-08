@@ -37,7 +37,7 @@ HOST = "api.tracker.test"
 async def test_an_emulator_killed_mid_run_fails_the_environment_not_the_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     emulator = ExternalEmulator(
         name="tracker",
         upstream=Upstream(url="http://127.0.0.1:{port}"),

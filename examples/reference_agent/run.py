@@ -4,11 +4,6 @@
 
 Stopped with SIGTERM, it stops both and waits for them (each flushes its telemetry as it goes). If either exits
 on its own, the other is stopped and this exits with an error.
-
-REFERENCE_WORKER=detached starts the worker in a session of its own, records its pid in worker.pid, and leaves it
-running when this is stopped; a later start finds it alive and does not start another. That is a deployment in
-which the worker is a separate service that a restart of the API does not touch, and the reason a restore that
-does not restart every process is caught only by a fingerprint that covers what each process holds.
 """
 
 from __future__ import annotations
@@ -22,34 +17,17 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get("REFERENCE_HOME", ".")).resolve()
-DETACHED = os.environ.get("REFERENCE_WORKER") == "detached"
-PIDFILE = HOME / "worker.pid"
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def _start(name: str, *, detached: bool = False) -> subprocess.Popen[bytes]:
+def _start(name: str) -> subprocess.Popen[bytes]:
     env = {**os.environ, "REFERENCE_HOME": str(HOME)}
     if "REFERENCE_DB" in env:
         env["REFERENCE_DB"] = str(Path(env["REFERENCE_DB"]).resolve())
-    return subprocess.Popen([sys.executable, str(HERE / f"{name}.py")], cwd=HERE, env=env, start_new_session=detached)
+    return subprocess.Popen([sys.executable, str(HERE / f"{name}.py")], cwd=HERE, env=env)
 
 
 def main() -> int:
-    api = _start("api")
-    worker: subprocess.Popen[bytes] | None = None
-    if DETACHED:
-        if not (PIDFILE.is_file() and _alive(int(PIDFILE.read_text()))):
-            PIDFILE.write_text(str(_start("worker", detached=True).pid))
-    else:
-        worker = _start("worker")
-    children = [p for p in (api, worker) if p is not None]
+    children = [_start("api"), _start("worker")]
     stopping = False
 
     def stop(*_: object) -> None:

@@ -16,9 +16,9 @@ from pathlib import Path
 import pytest
 
 from minutehand import session
-from minutehand.application.checkpoint import Restorable
+from minutehand.application.checkpoint import Remembered
 from minutehand.application.refusals import RunRefused
-from minutehand.domain.agent import AgentUnderTest, Booked, Reported, StateHooks
+from minutehand.domain.agent import AgentUnderTest, Booked, Reported
 from minutehand.domain.experiment import Fork
 from minutehand.domain.scenario import Person, Scenario, Silent
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
@@ -42,7 +42,7 @@ class SqsAgent:
     state_file: Path
 
 
-def sqs_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hooks: bool = False) -> SqsAgent:
+def sqs_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SqsAgent:
     for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
         monkeypatch.setenv(name, "agent")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
@@ -50,16 +50,9 @@ def sqs_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hooks: bool = 
     base = f"http://127.0.0.1:{port}"
     state_file = tmp_path / "agent" / "state.json"
     program = [sys.executable, str(AGENT)]
-    state = StateHooks(
-        snapshot=[*program, "snapshot", str(state_file)],
-        restore=[*program, "restore", str(state_file)],
-        quiet=timedelta(milliseconds=300),
-        settle_limit=timedelta(seconds=3),  # the poller is never quiet before its delivery: those are not restorable
-    )
     agent = AgentUnderTest(
         name="sqs_agent",
         wakes=[Reported(wake_url=f"{base}/wake", report_url=f"{base}/report"), Booked()],
-        state=state if hooks else None,
     )
     command = [*program, "--port", str(port), "--state", str(state_file), "--act", "1.5"]
     return SqsAgent(agent=agent, command=command, state_file=state_file)
@@ -90,11 +83,11 @@ async def test_a_fork_after_the_agent_used_aws_is_refused_naming_what_it_cannot_
     """The checkpoint after the delivery was taken has nothing pending, so the pending-booking refusal let it
     through: the child's AWS was a fresh account without the agent's queue, which the restored agent still named,
     and the fork ran as if nothing were missing."""
-    launched = sqs_agent(tmp_path, monkeypatch, hooks=True)
+    launched = sqs_agent(tmp_path, monkeypatch)
     state = tmp_path / "state"
     [outcome] = await session.play(SCENARIO, launched.agent, state=state, command=launched.command)
     run_id = outcome.record.run_id
-    last = [p for p in session.fork_points(state, run_id) if isinstance(p.agent, Restorable)][-1]
+    last = [p for p in session.fork_points(state, run_id) if isinstance(p.agent, Remembered)][-1]
     assert last.wake >= 2, "the fork is taken after the booking's wake, with nothing pending"
 
     refusal = (

@@ -1,4 +1,4 @@
-"""The reference agent's worker process: polls the job queue in the agent's database on its own timer and does
+"""The reference agent's worker process: polls the job queue in the agent's memory on its own timer and does
 every outbound call in the background, after the wake that queued the job has been answered.
 
 One job is one wake. Taking "now" only from the wake request, it:
@@ -11,8 +11,8 @@ One job is one wake. Taking "now" only from the wake request, it:
    be woken (`next_wake`).
 
 Its HTTP client is `httpx`, one pooled client for the whole process, so its connection to the model API stays
-open from one wake to the next. It keeps in memory which emails it has sent; a restore that does not restart
-it leaves that memory from another moment.
+open from one wake to the next. Which emails it has sent it reads from its memory (`store.py`), so a fork starts it
+knowing exactly what it had sent at the checkpoint.
 
 REFERENCE_BEHAVIOUR is how it carries the work:
 
@@ -36,7 +36,6 @@ deliberate real-clock dependency. REFERENCE_STREAM=1 asks the model for a stream
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import signal
@@ -44,14 +43,12 @@ import ssl
 import sys
 import time
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import httpx
 import telemetry
 from opentelemetry import context, propagate, trace
 from store import Job, Store, open_store
 
-HOME = Path(os.environ.get("REFERENCE_HOME", "."))
 MAIL = os.environ.get("REFERENCE_MAIL_URL", "https://api.mail.example")
 MODEL_URL = os.environ.get("REFERENCE_MODEL_URL", "https://api.openai.com")
 SEARCH = os.environ.get("REFERENCE_SEARCH_URL", "https://search.example")
@@ -93,12 +90,6 @@ class Worker:
             raise SystemExit(f"REFERENCE_BEHAVIOUR is one of {', '.join(BEHAVIOURS)}, not {BEHAVIOUR!r}")
         self.store = store
         self.http = httpx.Client(verify=_trust(), timeout=60)
-        self.sent = {row["id"] for row in store.sent()}
-        self._remember()
-
-    def _remember(self) -> None:
-        digest = hashlib.sha256("\n".join(sorted(self.sent)).encode()).hexdigest()
-        (HOME / "worker.memory").write_text(digest)
 
     # -- the model, the search, the email API ----------------------------------------------------------------------
 
@@ -152,7 +143,7 @@ class Worker:
         operation: str | None = None,
     ) -> str:
         row_id = f"{kind}-{now}"
-        if row_id in self.sent:
+        if any(row["id"] == row_id for row in self.store.sent()):
             return row_id
         body: dict[str, object] = {
             "personalizations": [{"to": [{"email": address} for address in to]}],
@@ -180,15 +171,11 @@ class Worker:
                 "message_id": message_id,
             }
         )
-        self.sent.add(row_id)
-        self._remember()
         return message_id
 
     # -- one wake ------------------------------------------------------------------------------------------------
 
     def run(self, job: Job) -> None:
-        self.sent |= {row["id"] for row in self.store.sent()}  # the API sends too: what it sent is known from here on
-        self._remember()
         payload = job.payload
         carrier = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
         token = context.attach(propagate.extract(carrier))  # the wake's span, in the API, is this job's parent
@@ -333,7 +320,7 @@ def main() -> None:
             except Exception as e:  # a failed job is retried, then reported in the log; it never stops the queue
                 print(f"job {job.id} failed (attempt {attempt} of {ATTEMPTS}): {e!r}", file=sys.stderr, flush=True)
                 time.sleep(0.2)
-        worker.store.finish(job, time.time())
+        worker.store.finish(job)
     telemetry.shutdown()
 
 

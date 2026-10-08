@@ -1,4 +1,4 @@
-"""A fork, told: where it split from its parent, what it changed, whether its restore was proven, and how its
+"""A fork, told: where it split from its parent, what it changed, whether its agent was proven the checkpoint's, and how its
 outcome differs from its parent's from that point on.
 
 Every surface that shows a fork (`minutehand findings` and `runs`, the viewer, the MCP run summary) states it from
@@ -15,7 +15,7 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Replayable, Restorable
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint
 from minutehand.application.model_calls import is_model_call, model_call
 from minutehand.application.restore import Restored, Verification
 from minutehand.checks.runner import RunResult
@@ -25,6 +25,7 @@ from minutehand.domain.experiment import (
     DeadlineShift,
     DispatchChange,
     Fork,
+    MemoryEdit,
     ModelSwap,
     Override,
     PersonChange,
@@ -32,6 +33,7 @@ from minutehand.domain.experiment import (
     TicketEdit,
 )
 from minutehand.domain.inboxes import item_words
+from minutehand.domain.memory import canonical
 from minutehand.domain.run import Verdict
 from minutehand.domain.scenario import (
     Answers,
@@ -146,7 +148,7 @@ class Outcomes(Model):
 
 class RestoreAccount(Model):
     verified: bool
-    by: list[Verification] = Field(description="What the restore was compared by; empty when not verified")
+    by: list[Verification] = Field(description="What the fork's agent was compared with the checkpoint by")
     unverified: str | None = Field(description="Why it could not be verified")
     words: str
 
@@ -276,6 +278,11 @@ def change_words(
             was = (by_email[holder].name if holder in by_email else holder) if holder else "nobody"
             said.append(f"assignee {was} to {_person(people, override.assignee)}")
         return f"edits ticket {name} at the fork: " + (", ".join(said) or "nothing")
+    if isinstance(override, MemoryEdit):
+        put = [f"{m.collection}/{m.key} to {_quoted(canonical(m.value), 60)}" for m in override.put]
+        gone = [f"{k.collection}/{k.key}" for k in override.delete]
+        changed = "; ".join([*(f"sets {p}" for p in put), *(f"removes {g}" for g in gone)])
+        return f"changes the agent's memory at the fork: {changed}; its planned wakes are asked again"
     if isinstance(override, DispatchChange):
         before = "; ".join(rule_words(r) for r in scenario.dispatch) or "every wake delivered as asked"
         after = "; ".join(rule_words(r) for r in override.rules) or "every wake delivered as asked"
@@ -316,6 +323,8 @@ def short_words(override: Override, scenario: Scenario) -> str:
         to = [override.state.value] if override.state is not None else []
         to += [f"to {override.assignee}"] if override.assignee is not None else []
         return f"ticket {override.entity.external_id} {' '.join(to)}".rstrip()
+    if isinstance(override, MemoryEdit):
+        return f"memory: {len(override.put)} set, {len(override.delete)} removed"
     if isinstance(override, DispatchChange):
         return "dispatch: " + ("; ".join(rule_words(r) for r in override.rules) or "as asked")
     assert isinstance(override, DeadlineShift)
@@ -333,17 +342,14 @@ def summary(fork: Fork, scenario: Scenario) -> str:
 
 
 def restore_account(restored: Restored) -> RestoreAccount:
+    """How the fork's agent was found at its start, in words: its memory is always the checkpoint's; its report is
+    compared when it can be asked for one."""
     if restored.verified:
-        by = " and ".join(
-            {
-                Verification.REPORT: "the agent's report (status, next wake, commitments)",
-                Verification.FINGERPRINT: "the fingerprint of its state",
-            }[v]
-            for v in restored.verified_by
-        )
-        words = f"verified: {by} equal{'s' if len(restored.verified_by) == 1 else ''} the checkpoint's"
+        words = "verified: its memory and its report (status, next wake, commitments) equal the checkpoint's"
     else:
-        words = f"not verified: {restored.unverified}"
+        words = f"its memory equals the checkpoint's; its report was not verified: {restored.unverified}"
+    if restored.outside:
+        words += f"; outside its memory, which the fork did not get: {'; '.join(restored.outside)}"
     return RestoreAccount(
         verified=restored.verified, by=restored.verified_by, unverified=restored.unverified, words=words
     )
@@ -483,12 +489,12 @@ def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> 
     for e in record.events:
         if e.seq <= at_seq or e.operation in (Operation.READ, Operation.SEARCH):
             continue
-        if e.entity == CHECKPOINT or e.entity.kind in (EntityKind.DUE, EntityKind.DATABASE):
+        if e.entity == CHECKPOINT or e.entity.kind in (EntityKind.DUE, EntityKind.MEMORY, EntityKind.NEXT_WAKE):
             continue  # the run's own rows: the agent's plan is compared through its report, below
         key = (e.actor, e.operation, e.entity, e.after, e.sim_time)
         found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))
     for seq, checkpoint in ((q, c) for q, c in record.checkpoints.items() if q > at_seq):
-        report = checkpoint.agent.report if isinstance(checkpoint.agent, Restorable | Replayable) else None
+        report = checkpoint.agent.report
         key = (checkpoint.wake, json.dumps([c.model_dump(mode="json") for c in checkpoint.commitments or []]),
                report.model_dump_json() if report is not None else None)  # fmt: skip
         status = f"{report.status.value}" if report is not None else "nothing of its status"
@@ -648,7 +654,7 @@ def described(account: ForkAccount) -> list[str]:
     else:
         lines.append("what it changed: nothing; a rerun from the same moment")
     if account.restore is not None:
-        lines.append(f"its restore was {account.restore.words}")
+        lines.append(f"its agent at the start: {account.restore.words}")
     outcome = account.outcome
     if outcome is None:
         lines.append("against its parent: not compared until both have finished")

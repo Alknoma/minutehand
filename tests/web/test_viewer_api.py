@@ -36,7 +36,8 @@ from minutehand.adapters.web.responses import (
     StepsResponse,
     WakesResponse,
 )
-from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, NoHooks, write_checkpoint
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Remembered, write_checkpoint
+from minutehand.application.memory import digest
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.patterns import pattern
 from minutehand.domain.checks import FindingKind, ObligationKind
@@ -75,7 +76,7 @@ async def read[M: BaseModel](c: httpx.AsyncClient, path: str, model: type[M]) ->
 
 async def parent_and_fork(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str, int]:
     """A forgetful agent whose question Sofia never answers, and a rerun after its first wake where she does."""
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     point = next(p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1)
     changes = Fork(
@@ -150,7 +151,7 @@ async def test_a_run_still_being_written_is_read_as_of_its_last_commit(tmp_path:
     (directory / session.SCENARIO).write_text(scenario(Silent()).model_dump_json())
     clock = RunClock(T0)
     writer = SqliteStore(directory / session.WORLD, "running", clock)
-    empty = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=NoHooks())
+    empty = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=Remembered(report=None, memory=digest({})))
     write_checkpoint(writer, empty)
     clock.begin_wake()
     question = Change(

@@ -24,6 +24,7 @@ from types import ModuleType
 import yaml
 
 from minutehand import session
+from minutehand.application.memory import memory_of
 from minutehand.ports.store import Store
 from tests.ports import free_port
 
@@ -32,7 +33,6 @@ AGENT_DIR = ROOT / "examples" / "reference_agent"
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 PY = sys.executable
 RUN = [PY, str(AGENT_DIR / "run.py")]
-HOOKS = str(AGENT_DIR / "hooks.py")
 
 
 def outside_module() -> ModuleType:
@@ -123,24 +123,15 @@ def agent_file(
     path: Path,
     port: int,
     *,
-    state: Mapping[str, object] | None = None,
     answered: bool = True,
     secret: Mapping[str, object] = GENERATED,
     wakes: Mapping[str, object] | None = None,
     inbox: bool = False,
     policy: bool = True,
 ) -> Path:
-    """The reference agent's file, on `port`, its hooks run by this interpreter; with `policy`, judged by its team's
-    rules as examples/reference_agent/agent.yaml writes them; with `answered`, people can answer its email."""
-    hooks: dict[str, object] = {
-        "snapshot": [PY, HOOKS, "snapshot"],
-        "restore": [PY, HOOKS, "restore"],
-        "quiet": "PT0.5S",
-        "settle_limit": "PT2M",  # a shared runner can be slow: the limits are generous, never measured against
-        "answer_limit": "PT2M",
-        "step_limit": "PT5M",
-    }
-    hooks.update(state or {})
+    """The reference agent's file, on `port`; with `policy`, judged by its team's rules as
+    examples/reference_agent/agent.yaml writes them; with `answered`, people can answer its email. No hooks: its
+    memory is the run's (`minutehand_agent.store`)."""
     mail = {**MAIL, "replies": replies(port, secret)} if answered else dict(MAIL)
     doc = {
         "name": "venue_booker",
@@ -155,7 +146,6 @@ def agent_file(
             }
         ],
         "outbound": [mail, SEARCH],
-        "state": hooks,
         "assess": yaml.safe_load((AGENT_DIR / "agent.yaml").read_text())["assess"] if policy else [],
     }
     if inbox:
@@ -218,6 +208,12 @@ class Rig:
     def world(self, run_id: str) -> AbstractContextManager[Store]:
         """The run's world, read as `minutehand findings` reads it."""
         return session.reading(self.state, run_id)
+
+    def memory(self, run_id: str, collection: str, *, until: int | None = None) -> dict[str, dict[str, object]]:
+        """One collection of the agent's memory in a run, as its log holds it (as of seq `until`), by key."""
+        with self.world(run_id) as world:
+            held = memory_of(world.events(), until=until)
+        return {k: json.loads(v) for (c, k), v in sorted(held.items()) if c == collection}
 
 
 @dataclass(frozen=True)

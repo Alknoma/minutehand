@@ -178,7 +178,7 @@ async def test_a_booking_dropped_reaches_no_queue_and_its_occurrence_is_still_fi
 
 async def test_a_fork_that_changes_the_dispatch_rules_plays_the_same_run_with_its_wake_dropped(rig: Rig) -> None:
     scn = scenario(max_wakes=4, ticket_fates=[])
-    agent = rig.agent("keep_waking", hooks=True)
+    agent = rig.agent("keep_waking")
     parent, parent_store, _ = await rig.run(scn, agent)
     assert [w.sim_time for w in parent.wakes] == [T0 + timedelta(hours=h) for h in range(4)]
     after_start = checkpoint_seqs(parent_store)[1]

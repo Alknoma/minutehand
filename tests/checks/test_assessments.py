@@ -818,3 +818,70 @@ def test_a_gated_rule_is_unread_when_no_item_says_what_it_holds_back() -> None:
     report = Assessments().run(view(scenario(SOFIA), log, assess=rules(written)))
     assert report.findings == []
     assert len(report.notes) == 1 and report.notes[0].startswith("rule acts_only_once_approved was not read 1 time")
+
+
+# -- the agent's memory ----------------------------------------------------------------------------------------------
+
+REMEMBERS_THE_ANSWER = """
+- id: remembers_the_answer
+  each: ask
+  when: {answered: true}
+  count: {memory: {key: "asks/{person.key}", values: {status: confirmed}}, until: answer+PT1H}
+  exactly: 1
+  message: "{person.key} answered and an hour later the agent's memory did not say so"
+"""
+
+
+def _remembering(confirmed_at: float) -> RunView:
+    log = Log()
+    asked = log.message([SOFIA], 0)
+    log.memory("asks/sofia", {"status": "asked"}, 0)
+    log.memory("asks/sofia", {"status": "confirmed", "by": "sofia"}, confirmed_at, wake=2)
+    return view(scenario(OWNER, SOFIA), log, [reply(SOFIA, asked, 1)])
+
+
+def test_a_rule_reads_a_key_of_the_agents_memory_as_it_stood_at_a_moment() -> None:
+    assert found(_remembering(1.5), REMEMBERS_THE_ANSWER) == []
+    changed_later = _remembering(1.5)
+    log = Log()
+    log.events = list(changed_later.events)
+    log.memory("asks/sofia", {"status": "asked"}, 10, wake=3)  # asked again much later: not what stood at answer+PT1H
+    assert found(changed_later.model_copy(update={"events": log.events}), REMEMBERS_THE_ANSWER) == []
+    [late] = found(_remembering(3), REMEMBERS_THE_ANSWER)
+    assert late.message == "sofia answered and an hour later the agent's memory did not say so"
+    assert late.evidence == [1], "a key that did not match is no evidence, only the ask is"
+
+
+def test_memory_counts_keys_under_a_prefix_matching_a_dotted_field_and_forgets_a_deleted_one() -> None:
+    log = Log()
+    log.memory("asks/sofia", {"status": "asked", "venue": {"city": "Lyon"}}, 0)
+    log.memory("asks/marcus", {"status": "asked", "venue": {"city": "Turin"}}, 1)
+    log.memory("notes/x", {"status": "asked"}, 1)
+    log.memory("asks/marcus", None, 5)
+    world = view(scenario(OWNER, SOFIA, MARCUS), log)
+    at_two = (
+        "- id: lyon\n  count: {memory: {prefix: asks/, values: {venue.city: Lyon}}, until: start+PT2H}\n  at_most: 0\n"
+    )
+    assert [f.evidence for f in found(world, at_two)] == [[1]]
+    still_asked = "- id: asked\n  count: {memory: {prefix: asks/, values: {status: asked}}}\n  at_most: 1\n"
+    assert found(world, still_asked) == [], "marcus's key was deleted by the end"
+    before = "- id: b\n  count: {memory: {prefix: asks/}, until: start+PT2H}\n  at_most: 1\n"
+    assert [f.evidence for f in found(world, before)] == [[1, 2]]
+    since = "- id: s\n  count: {memory: {prefix: asks/}, since: start+PT30M, until: start+PT2H}\n  at_most: 0\n"
+    assert [f.evidence for f in found(world, since)] == [[2]], "since keeps keys whose value was written from then"
+
+
+def test_memory_writes_are_not_writes_to_the_world() -> None:
+    log = Log()
+    log.memory("asks/sofia", {"status": "asked"}, 0)
+    world = view(scenario(OWNER, SOFIA), log)
+    assert found(world, "- id: w\n  count: {writes: {}}\n  at_most: 0\n") == []
+
+
+def test_a_memory_count_naming_both_a_key_and_a_prefix_or_a_person_it_is_not_read_for_is_refused() -> None:
+    with pytest.raises(ValidationError, match="a `key` or a `prefix`, not both"):
+        rules("- id: m\n  count: {memory: {key: a, prefix: b}}\n  at_most: 0\n")
+    with pytest.raises(ValidationError, match="is the person the rule is read for"):
+        rules("- id: m\n  count: {memory: {key: 'asks/{person.key}'}}\n  at_most: 0\n")
+    with pytest.raises(ValidationError, match=r"ask\.answer"):
+        rules("- id: m\n  each: ask\n  count: {memory: {key: '{ask.answer}'}}\n  at_most: 0\n")

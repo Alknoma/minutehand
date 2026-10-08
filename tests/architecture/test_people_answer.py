@@ -8,8 +8,6 @@ nobody could answer a captured send: the run failed `relayed`, and the question 
 
 from __future__ import annotations
 
-import sqlite3
-
 from tests.architecture.support import Rig
 
 
@@ -20,9 +18,11 @@ def test_a_person_asked_by_email_answers_through_the_declared_webhook_and_the_wa
     assert "Passed: no check failed, and the agent reported it was done." in done.out
     assert "waits opened: 1, still open at the end: 0" in done.out
     assert "owen told what rosa said ('LH-2291'): met by the message to Owen Hart" in done.out
-    replies = sqlite3.connect(rig.home / "agent.db").execute("SELECT from_addr, in_reply_to FROM replies").fetchall()
+    replies = [(r["from_addr"], r["in_reply_to"]) for r in rig.memory(done.run_id, "replies").values()]
     # the thread is the id the email API answered the ask with, read back from the acknowledged answer
-    assert replies == [("rosa@lakeside.example", "mail-3")]
+    asked = [str(r["message_id"]) for r in rig.memory(done.run_id, "sent").values() if r["kind"] == "ask"]
+    assert len(asked) == 1 and asked[0].startswith("mail-")
+    assert replies == [("rosa@lakeside.example", asked[0])]
     with rig.world(done.run_id) as world:
         answer = [e for e in world.events() if e.actor.value == "person" and e.entity.provider == "mail"]
     assert len(answer) == 1 and answer[0].after is not None

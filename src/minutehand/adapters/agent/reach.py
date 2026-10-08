@@ -10,12 +10,12 @@ from minutehand.adapters.agent.reported import ReportedDriver
 from minutehand.application.orchestrator import Reach
 from minutehand.application.refusals import RunRefused
 from minutehand.application.sandbox import SandboxClock
-from minutehand.domain.agent import AgentUnderTest, Booked, Command, Contained, GoalByMessage, Polled, Reported
+from minutehand.domain.agent import AgentUnderTest, Booked, Command, Contained, GoalByMessage, Marked, Polled, Reported
 from minutehand.ports.agent import AgentDriver
 
 
 def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) -> Reach:
-    """`Reported` or `Command` answers every wake; `Polled` takes the ticks; `Booked` needs no driver.
+    """`Reported`, `Marked` or `Command` answers every wake; `Polled` takes the ticks; `Booked` needs no driver.
 
     `env` is added to a `Command`'s environment. An agent with two of the first kind, or two `Polled`, is
     refused: which of them a wake goes to would be a guess. An agent that takes its goal by message may have
@@ -31,6 +31,8 @@ def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) ->
             continue
         if isinstance(source, Reported):
             main.append(ReportedDriver(source))
+        elif isinstance(source, Marked):
+            main.append(PolledDriver(source.wake_url, timeout=source.wake_timeout.total_seconds()))
         elif isinstance(source, Command):
             main.append(CommandDriver(source.argv, env=env))
         elif isinstance(source, Polled):
@@ -38,13 +40,15 @@ def reach_for(agent: AgentUnderTest, *, env: Mapping[str, str] | None = None) ->
         else:
             assert isinstance(source, Booked)
     if len(main) > 1:
-        raise RunRefused(f"agent {agent.name} declares {len(main)} Reported/Command wake sources; it may have one")
+        raise RunRefused(
+            f"agent {agent.name} declares {len(main)} Reported, Marked or Command wake sources; it may have one"
+        )
     if len(polled) > 1:
         raise RunRefused(f"agent {agent.name} declares {len(polled)} Polled wake sources; it may have one")
     if not main and not polled and not isinstance(agent.goal, GoalByMessage):
         raise RunRefused(
             f"agent {agent.name} declares only Booked wakes, so nothing can hand it the START wake and its goal; "
-            "add a Reported, Command or Polled source, or take the goal by message"
+            "add a Reported, Marked, Command or Polled source, or take the goal by message"
         )
     tick = polled[0] if polled else None
     return Reach(

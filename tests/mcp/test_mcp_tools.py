@@ -184,7 +184,7 @@ async def test_reading_a_run_that_does_not_exist_is_refused(tmp_path: Path) -> N
 
 
 async def test_run_scenario_with_samples_reports_stability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     scenario_file, agent_file = files(tmp_path, launched)
     async with connected(tmp_path / "state") as client:
         played = await call(
@@ -250,7 +250,7 @@ async def test_rerun_from_a_seq_that_is_not_a_checkpoint_is_refused_with_the_che
 async def test_rerun_from_a_checkpoint_where_the_silent_person_answers_passes_and_is_a_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     scenario_file, agent_file = files(tmp_path, launched)
     async with connected(tmp_path / "state") as client:
         played = await call(

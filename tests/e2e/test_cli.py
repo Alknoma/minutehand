@@ -235,6 +235,8 @@ def test_env_without_a_telemetry_port_is_refused_and_without_receiving_names_no_
     assert refused.returncode == 2 and "--telemetry-port" in refused.stderr
     assert off.returncode == 0, off.stderr
     assert "OTEL_EXPORTER_OTLP" not in off.stdout
+    # Still played: the agent's store refuses to run without a receiver rather than use the agent's own database.
+    assert "MINUTEHAND_ON=1" in off.stdout and "MINUTEHAND_AGENT_URL" not in off.stdout
 
 
 def test_env_for_an_agent_whose_secret_is_generated_per_run_is_refused_with_exit_2(tmp_path: Path) -> None:

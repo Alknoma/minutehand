@@ -264,7 +264,8 @@
           "due",
           "file",
           "tool_call",
-          "database"
+          "memory",
+          "next_wake"
         ],
         "title": "EntityKind",
         "type": "string"
