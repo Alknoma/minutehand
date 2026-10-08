@@ -1,11 +1,21 @@
 # Notion provider
 
-Written from Notion's public API reference, by reading it. No vendor code, payload or
-error text is copied; every response body and message here is this provider's own.
+Written from Notion's public API reference and its OpenAPI document. Where the reference
+gives an error message, or a recording of the real service shows one, that message is
+used; every other message is this provider's own. `CLAIMS.md` gives the source of each
+behaviour, and `tests/data/notion_api/` the surface it is held to.
 
 **API version:** `2022-06-28`, what `notion-client` 2.2.1 sends. A call carrying any other
-`Notion-Version` is refused with a `validation_error` that says so. A call with no version
-is refused with `missing_version`.
+`Notion-Version` is refused 501 `invalid_request`, naming it. A call with no version is
+refused with `missing_version`. `notion-client` 3.x sends `2025-09-03` by default and calls
+`/v1/data_sources/...` instead of `/v1/databases/{id}/query`: both are refused by name
+here, so a client on 3.x must pin `notion_version="2022-06-28"`.
+
+**Credentials are not enforced.** Any token, or none, is answered: a token the seed holds
+or `/v1/oauth/token` minted acts as its integration, any other as the agent's (the first
+integration the seed declares, or an `Agent` integration added when it declares none).
+No capability refuses a call, and the token endpoint refuses no client, code, redirect
+URI or refresh token.
 
 **Host:** `api.notion.com`. Nothing is served from Notion-hosted file URLs, because no
 file is stored.
@@ -20,7 +30,7 @@ file is stored.
 | Databases | `GET`/`PATCH /v1/databases/{id}`, `POST /v1/databases`, `POST /v1/databases/{id}/query` (filters and sorts, see `query.py`) |
 | Users | `GET /v1/users`, `/v1/users/me` (the bot, its owner and workspace name), `/v1/users/{id}` |
 | Comments | `GET`/`POST /v1/comments` (on a page, or in a discussion) |
-| OAuth | `POST /v1/oauth/token`: Basic client auth, JSON body, `authorization_code` (single use, redirect URI checked) and `refresh_token` |
+| OAuth | `POST /v1/oauth/token`: JSON body, `authorization_code` and `refresh_token`, for the integration the Basic client id names |
 
 **Blocks:** paragraph, heading 1–3 (toggleable), bulleted and numbered list items, to-do,
 toggle, code, quote, callout, divider, table and table rows, bookmark, external image,
@@ -37,7 +47,12 @@ last_edited_by are read-only.
 
 **Sharing:** an integration reaches only the pages and databases shared with it, and what
 lies below them. Everything else is `object_not_found`, and search leaves it out. A
-missing capability is `restricted_resource`.
+person's email is answered only to an integration that has `read_users_with_email`.
+
+**Not served, refused by name:** every other operation of Notion's OpenAPI document under
+these resources (data sources, page move and markdown, a single comment's retrieve, update
+and delete, OAuth introspect and revoke) answers 501 `invalid_request` naming it. A path or
+method Notion has no endpoint for is 400 `invalid_request_url` "Invalid request URL.".
 
 **Faults:** declared in the seed (`NotionSeed.faults`), or on an open standing world through
 `DeclaresFaults` (the same `faults` fragment, an integration named by its seed key):
@@ -45,6 +60,9 @@ missing capability is `restricted_resource`.
 - `conflict`: 409 `conflict_error` on block edits.
 
 A bad property is refused with `validation_error` without any fault being declared.
+
+**Links:** a page's `url` is `https://app.notion.com/p/<Title>-<id>`, a database's and a
+mention's `https://app.notion.com/p/<id>`, as Notion's own links read since June 2026.
 
 **Ids:** UUIDs, accepted with or without dashes. A seed derives each id from its workspace
 and key. A created object's id is derived from the event that made it.
@@ -121,8 +139,12 @@ Reads and searches are recorded as `READ` and `SEARCH` events.
 - OAuth introspect and revoke.
 
 **Blocks and properties**
-- Blocks: column lists, synced blocks, embeds, equation blocks, `link_to_page`, breadcrumb and table of contents are refused, saying so.
-- Properties: formula, rollup, files and unique_id.
+- Blocks: column lists, synced blocks, embeds, equation blocks, `link_to_page`, breadcrumb, table of contents,
+  templates, `heading_4`, tabs, and file, pdf, video, audio and uploaded images are refused 501 by name.
+- Mentions: `template_mention` and `custom_emoji`, and a date mention with a time or an end (Notion documents
+  the `plain_text` of a date alone), are refused 501 by name.
+- Properties: formula, rollup, files, unique_id, verification, button, location, place and last_visited_time
+  are refused 501 by name.
 
 **Search and limits**
 - Search relevance ranking: results come newest first.
