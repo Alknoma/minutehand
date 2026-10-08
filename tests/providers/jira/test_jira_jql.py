@@ -160,8 +160,8 @@ async def test_key_in_a_list(site: Site) -> None:
             "project = LAUNCH AND",
             "Error in the JQL query: expected a field name at character 20, but found the end of the query.",
         ),
-        ("status was Done", "Error in the JQL query: the 'WAS' operator is not supported here."),
-        ("assignee = membersOf(x)", "The function 'membersOf()' cannot be used with the field 'assignee'."),
+        ("assignee = noSuchFunction()", "Unable to find JQL function 'noSuchFunction()'."),
+        ("status = currentUser()", "The function 'currentUser()' cannot be used with the field 'status'."),
         ("updated >= yesterday", "Date value 'yesterday' for field 'updated' is invalid: write 'yyyy/MM/dd HH:mm', "
          "'yyyy-MM-dd HH:mm', 'yyyy/MM/dd', 'yyyy-MM-dd', or a period such as '-5d' or '4w 2d'."),
         ('text = "export"', "The operator '=' is not supported by the 'text' field."),

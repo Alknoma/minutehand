@@ -263,7 +263,7 @@ KNOWN: tuple[Known, ...] = (
         "jira",
         Property.RECORD,
         "unknown_credential_refused_and_unclaimed",
-        'answered 401 \'{"errorMessages": ["You are not signed in: this request carries no credentials the site accepts."], "errors": {}}\'; the vendor\'s documented refusal is 401 holding \'Cl',
+        "answered 200 as the agent: Minutehand deliberately lets any credential in (jira/CLAIMS.md), so Jira's 401 is never given",
     ),
     Known(
         "jira",

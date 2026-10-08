@@ -2,17 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
-from minutehand.domain.world import Actor
 from tests.providers.jira.jira_site import (
-    AGENT_EMAIL,
-    AGENT_TOKEN,
     API,
     CLOUD_ID,
     IRIS_TOKEN,
-    OAUTH_ACCESS,
-    START,
     TOMAS,
     Site,
     basic,
@@ -21,43 +14,6 @@ from tests.providers.jira.jira_site import (
 )
 
 EX = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/rest/api/3"
-
-
-async def test_an_unknown_api_token_is_refused_with_401(site: Site) -> None:
-    async with site.client(basic(AGENT_EMAIL, "ATATT3x-not-a-token")) as stranger:
-        response = await stranger.get(f"{API}/myself")
-    refused(response, 401)
-    assert response.headers["www-authenticate"].startswith("Basic")
-
-
-async def test_a_token_sent_with_another_accounts_email_is_refused(site: Site) -> None:
-    async with site.client(basic("iris@example.com", AGENT_TOKEN)) as mixed:
-        refused(await mixed.get(f"{API}/myself"), 401)
-
-
-async def test_no_credentials_at_all_is_refused_with_401(site: Site) -> None:
-    async with site.client(None) as anonymous:
-        refused(await anonymous.get(f"{API}/issue/LAUNCH-1"), 401)
-
-
-async def test_an_oauth_token_at_the_site_host_is_refused(site: Site) -> None:
-    async with site.client(f"Bearer {OAUTH_ACCESS}") as app:
-        refused(await app.get(f"{API}/myself"), 401)
-        assert ok(await app.get(f"{EX}/myself"))["displayName"] == "Iris Calder"
-
-
-async def test_an_expired_oauth_token_is_refused(site: Site) -> None:
-    site.clock.jump(START + timedelta(hours=1))
-    async with site.client(f"Bearer {OAUTH_ACCESS}") as app:
-        refused(await app.get(f"{EX}/myself"), 401)
-
-
-async def test_a_deactivated_accounts_token_is_refused(site: Site) -> None:
-    jira = site.jira
-    iris = next(u for u in jira.users() if u.displayName == "Iris Calder")
-    jira.write_user(iris.model_copy(update={"active": False}), actor=Actor.SCENARIO)
-    async with site.client(basic("iris@example.com", IRIS_TOKEN)) as gone:
-        refused(await gone.get(f"{API}/myself"), 401)
 
 
 async def test_an_unknown_issue_is_404(site: Site) -> None:
@@ -84,26 +40,6 @@ async def test_an_issue_in_a_project_without_browse_permission_is_404_not_403(si
     refused(await site.http.get(f"{API}/project/VAULT"), 404)
     async with site.client(basic("iris@example.com", IRIS_TOKEN)) as iris:
         assert ok(await iris.get(f"{API}/issue/VAULT-1"))["key"] == "VAULT-1"
-
-
-async def test_a_viewer_who_cannot_edit_is_refused_with_403(site: Site) -> None:
-    jira = site.jira
-    vault = jira.find_project("VAULT")
-    assert vault is not None
-    members = [m.model_copy(update={"accounts": [*m.accounts, jira.site().agent]}) if m.role == "10004" else m
-               for m in vault.members]  # fmt: skip
-    jira.write_project(vault.model_copy(update={"members": members}), actor=Actor.SCENARIO)
-    assert ok(await site.http.get(f"{API}/issue/VAULT-1"))["key"] == "VAULT-1"
-    for response in (
-        await site.http.put(f"{API}/issue/VAULT-1", json={"fields": {"summary": "Mine now"}}),
-        await site.http.delete(f"{API}/issue/VAULT-1"),
-        await site.http.post(f"{API}/issue/VAULT-1/transitions", json={"transition": {"id": "21"}}),
-    ):
-        assert refused(response, 403)["errorMessages"][0].startswith("You do not have permission to")
-    perms = ok(
-        await site.http.get(f"{API}/mypermissions", params={"permissions": "EDIT_ISSUES", "projectKey": "VAULT"})
-    )
-    assert perms["permissions"]["EDIT_ISSUES"]["havePermission"] is False
 
 
 async def test_a_transition_not_open_from_the_current_status_is_refused(site: Site) -> None:

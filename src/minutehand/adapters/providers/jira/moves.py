@@ -33,24 +33,18 @@ class Desk:
         return [r for r in self.site().roles if account in project.accounts(r.id)]
 
     def can_browse(self, project: wire.StoredProject, account: str) -> bool:
-        """Seeing a project takes a role in it; administering the site does not let anyone read its issues."""
+        """Seeing a project takes a role in it: who belongs to a project is the world's data. Minutehand enforces
+        no other permission, so whoever sees a project may do anything in it."""
         return bool(self.roles_of(project, account))
 
-    def can_edit(self, project: wire.StoredProject, account: str) -> bool:
-        return any(r.edits for r in self.roles_of(project, account))
-
-    def can_administer(self, project: wire.StoredProject, account: str) -> bool:
-        user = self.world.user(account)
-        return (user is not None and user.siteAdmin) or any(r.administers for r in self.roles_of(project, account))
-
     def assignable(self, project: wire.StoredProject) -> list[wire.StoredUser]:
-        """Who the project's issues can be given to: active Atlassian accounts in a role that edits."""
+        """Who the project's issues can be given to: active Atlassian accounts that belong to it."""
         site = self.site()
-        editing = {a for r in site.roles if r.edits for a in project.accounts(r.id)}
+        members = {a for r in site.roles for a in project.accounts(r.id)}
         return [
             u
             for u in self.world.users()
-            if u.accountId in editing and u.active and u.accountType is wire.AccountType.ATLASSIAN
+            if u.accountId in members and u.active and u.accountType is wire.AccountType.ATLASSIAN
         ]
 
     # ------------------------------------------------------------------ values
@@ -352,6 +346,23 @@ class Desk:
                 }
             )
         return issue.model_copy(update={"status": to.id, "resolution": None, "resolutiondate": None})
+
+    def category_changed(self, issue: wire.StoredIssue) -> datetime:
+        """When the issue's status last moved to another category (`statuscategorychangedate`, which Jira
+        computes): the latest changelog entry whose status change crossed categories, else its creation."""
+        site = self.site()
+
+        def category(status: str | None) -> wire.Category | None:
+            found = next((s for s in site.statuses if s.id == status), None)
+            return found.category if found is not None else None
+
+        for entry in reversed(issue.history):
+            for item in entry.items:
+                if item.fieldId == "status" and category(item.from_) is not category(
+                    item.to
+                ):  # enum-lint: exempt Jira's field id
+                    return entry.created
+        return issue.created
 
     def transitions(self, issue: wire.StoredIssue, project: wire.StoredProject) -> list[wire.StoredTransition]:
         """The transitions open from the issue's status, in workflow order, leaving out a move to where it is."""
