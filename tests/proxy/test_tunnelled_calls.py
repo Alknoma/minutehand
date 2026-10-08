@@ -50,6 +50,10 @@ async def test_a_tunnelled_model_call_is_recorded_with_its_bytes_and_wake(
     ):
         answered = await http.post(URL.format(port=upstream.port), content=b'{"model": "m"}')
         await asyncio.sleep(QUIET)
+        # the burst is written once its quiet has passed; under load that can be later than QUIET
+        deadline = asyncio.get_running_loop().time() + 10
+        while not _tunnelled(store) and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
         [(call, tunnel)] = _tunnelled(store)
 
     assert answered.status_code == 200 and len(upstream.received) == 1
