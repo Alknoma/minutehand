@@ -1541,7 +1541,3 @@ def read_token_request(found: Json) -> TokenRequest:
         return TokenRequest.model_validate(found)
     except ValidationError as error:
         raise undocumented("a token request Notion does not take") from error
-
-
-def oauth_error(error: str, description: str) -> str:
-    return json.dumps({"error": error, "error_description": description})

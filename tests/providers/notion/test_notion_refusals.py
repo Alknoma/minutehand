@@ -422,10 +422,10 @@ async def test_no_code_client_secret_redirect_or_refresh_token_is_refused(world:
             assert granted["bot_id"] == first["bot_id"], body
 
 
-async def test_a_grant_type_notion_does_not_take_is_refused_unsupported_grant_type(world: World) -> None:
+async def test_a_grant_type_notion_does_not_document_is_refused_by_name(world: World) -> None:
     async with direct(world, token=None) as bare:
         refused = await bare.post("/v1/oauth/token", json={"grant_type": "password"}, headers=basic())
-        assert answer(refused, 400)["error"] == "unsupported_grant_type"
+        assert unserved(refused).startswith("the `password` grant at /v1/oauth/token")
 
 
 async def test_a_rate_limit_is_refused_to_the_sdk_without_a_retry_and_keeps_retry_after(tmp_path: Path) -> None:

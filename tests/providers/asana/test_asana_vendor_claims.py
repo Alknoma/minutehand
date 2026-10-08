@@ -221,12 +221,12 @@ async def test_completing_a_task_leaves_its_section_and_its_status_field_where_t
 @pytest.mark.parametrize("sent", ["true", 1, None])
 async def test_an_update_whose_completed_is_not_a_json_boolean_is_refused(asana: Proxied, sent: object) -> None:
     """DOCUMENTED: `completed` is a boolean (https://developers.asana.com/reference/updatetask); the string
-    "true" is not one, and nothing is written."""
+    "true" is not one, and nothing is written. Asana's words for it are not reported, so it is refused by name."""
     before = asana.store.head()
 
-    message = refused(await asana.http.put(f"/tasks/{CHANNEL}", json={"data": {"completed": sent}}), 400)
+    message = refused(await asana.http.put(f"/tasks/{CHANNEL}", json={"data": {"completed": sent}}), 501)
 
-    assert message == "completed: Not a boolean"
+    assert "completed that is not a JSON boolean" in message
     assert asana.store.head() == before
 
 
@@ -340,7 +340,7 @@ async def test_a_custom_field_setting_naming_a_field_by_its_name_is_refused_not_
     sent = {"data": {"custom_field": "Depth"}}
 
     assert refused(await asana.http.post(f"/projects/{TIDES}/addCustomFieldSetting", json=sent), 400) == (
-        "custom_field: Not a Recognized ID"
+        "custom_field: Not a recognized ID: Depth"
     )
 
 

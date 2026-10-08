@@ -95,22 +95,23 @@ async def test_the_code_grant_is_refused_by_name(rich: Workspace) -> None:
         base_url="https://app.asana.com",
     ) as oauth:
         code = await oauth.post("/-/oauth_token", data={"grant_type": "authorization_code", "code": "x"})
-    assert (code.status_code, code.json()["error"]) == (400, "unsupported_grant_type")
-    assert "authorization_code" in code.json()["error_description"]
+    assert unserved(code) == "the `authorization_code` grant at /-/oauth_token"
 
 
 async def test_a_private_project_is_refused_403_and_hidden_from_listings(
     rich: Workspace, agent: httpx.AsyncClient
 ) -> None:
     before = rich.store.head()
-    for path in (
-        f"/projects/{ROADMAP}",
-        f"/projects/{ROADMAP}/tasks",
-        f"/projects/{ROADMAP}/project_memberships",
-        f"/projects/{ROADMAP}/custom_field_settings",
-        f"/tasks/{PRICING}",
+    # Reported: "You do not have access to this project." (https://forum.asana.com/t/67666), "... this task"
+    # (https://forum.asana.com/t/95502).
+    for path, resource in (
+        (f"/projects/{ROADMAP}", "project"),
+        (f"/projects/{ROADMAP}/tasks", "project"),
+        (f"/projects/{ROADMAP}/project_memberships", "project"),
+        (f"/projects/{ROADMAP}/custom_field_settings", "project"),
+        (f"/tasks/{PRICING}", "task"),
     ):
-        assert error(await agent.get(path), 403) == "Forbidden", path
+        assert error(await agent.get(path), 403) == f"You do not have access to this {resource}.", path
     assert rich.store.head() == before
     assert ROADMAP not in [p["gid"] for p in got(await agent.get("/projects", params={"workspace": WS}))]
     search = got(await agent.get(f"/workspaces/{WS}/tasks/search", params={"text": "pricing"}))
@@ -122,14 +123,12 @@ async def test_a_private_project_is_refused_403_and_hidden_from_listings(
 
 async def test_a_project_in_a_team_the_caller_is_not_in_is_refused_403(agent: httpx.AsyncClient) -> None:
     refused = await agent.post("/projects", json={"data": {"name": "Brand", "workspace": WS, "team": DESIGN}})
-    assert error(refused, 403) == "Forbidden"
+    assert error(refused, 403) == "You do not have access to this team."  # https://forum.asana.com/t/289156
 
 
 async def test_an_organization_refuses_a_project_with_no_team(agent: httpx.AsyncClient) -> None:
     refused = await agent.post("/projects", json={"data": {"name": "Loose", "workspace": WS}})
-    assert error(refused, 400) == (
-        "If the workspace for your project is an organization, you must also supply a team to share the project with."
-    )
+    assert error(refused, 400) == "Missing required team field"  # https://forum.asana.com/t/31198
     assert error(await agent.post("/projects", json={"data": {"workspace": WS, "team": ENGINEERING}}), 400) == (
         "name: Missing input"
     )
@@ -148,25 +147,20 @@ async def test_an_unknown_custom_field_or_option_is_refused_400(rich: Workspace,
     unknown = "1999999999999999"
     cases = [
         ({unknown: "1"}, f"custom_fields: Unknown object: {unknown}"),
-        ({PRIORITY: unknown}, f"custom_fields.{PRIORITY}: Not a recognized enum option: {unknown}"),
-        (
-            {PRIORITY: option("Status", "Done")},
-            f"custom_fields.{PRIORITY}: Not a recognized enum option: {option('Status', 'Done')}",
-        ),
-        ({UNUSED: "x"}, f"custom_fields: Custom field {UNUSED} is not on given task"),
-        ({state.field_gid("Story Points"): "five"}, f"custom_fields.{state.field_gid('Story Points')}: Not a number"),
-        (
-            {state.field_gid("Reviewers"): ["nobody@company.com"]},
-            f"custom_fields.{state.field_gid('Reviewers')}: Unknown object: nobody@company.com",
-        ),
-        (
-            {state.field_gid("Launch"): {"date": "30/09/2026"}},
-            f"custom_fields.{state.field_gid('Launch')}.date: Invalid date",
-        ),
-        ({"Priority": "High"}, "custom_fields: Not a Recognized ID"),
+        # Reported: https://forum.asana.com/t/618448
+        ({UNUSED: "x"}, f"Custom field with ID {UNUSED} is not on given object"),
+        ({"Priority": "High"}, "custom_fields: Not a recognized ID: Priority"),
     ]
     for sent, message in cases:
         assert error(await agent.put(f"/tasks/{INCIDENT}", json={"data": {"custom_fields": sent}}), 400) == message
+    for sent in (
+        {PRIORITY: unknown},
+        {PRIORITY: option("Status", "Done")},
+        {state.field_gid("Story Points"): "five"},
+        {state.field_gid("Reviewers"): ["nobody@company.com"]},
+        {state.field_gid("Launch"): {"date": "30/09/2026"}},
+    ):
+        assert unserved(await agent.put(f"/tasks/{INCIDENT}", json={"data": {"custom_fields": sent}}))
     created = await agent.post(
         "/tasks", json={"data": {"name": "x", "projects": [BACKEND], "custom_fields": {unknown: "1"}}}
     )
@@ -191,7 +185,7 @@ async def test_a_tag_or_parent_that_names_nothing_is_refused(agent: httpx.AsyncC
     unknown = "1999999999999999"
     assert (
         error(await agent.post(f"/tasks/{INCIDENT}/addTag", json={"data": {"tag": "urgent"}}), 400)
-        == "tag: Not a Recognized ID"
+        == "tag: Not a recognized ID: urgent"
     )
     assert (
         error(await agent.post(f"/tasks/{INCIDENT}/addTag", json={"data": {"tag": unknown}}), 400)
@@ -204,8 +198,8 @@ async def test_a_tag_or_parent_that_names_nothing_is_refused(agent: httpx.AsyncC
     sub = state.task_gid(1)
     under = await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {"parent": sub}})
     assert unserved(under).startswith("a parent that is the task itself or one of its subtasks")
-    assert error(await agent.put(f"/tasks/{INCIDENT}", json={"data": {"parent": sub}}), 400) == (
-        "parent: Cannot write this property"
+    assert unserved(await agent.put(f"/tasks/{INCIDENT}", json={"data": {"parent": sub}})).startswith(
+        "parent written on a task update"
     )
 
 
@@ -264,9 +258,10 @@ def free(tmp_path: Path) -> Workspace:
 async def test_a_free_workspace_answers_402_to_search_and_custom_fields(free: Workspace) -> None:
     async with client_as(free, "any-token-at-all") as c:
         search = await c.get(f"/workspaces/{WS}/tasks/search", params={"text": "x"})
-        assert error(search, 402) == "Search is only available to premium Asana workspaces."
+        assert error(search, 402) == "Search is only available to premium users."  # https://forum.asana.com/t/106546
         venue = state.project_gid("Venue Move")
         setting = await c.post(
             f"/projects/{venue}/addCustomFieldSetting", json={"data": {"custom_field": state.field_gid("Priority")}}
         )
-        assert error(setting, 402) == "Custom fields are only available to premium Asana workspaces."
+        # Reported: https://forum.asana.com/t/100330
+        assert error(setting, 402) == "Custom Field Settings are not available for free users."

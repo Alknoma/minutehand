@@ -831,11 +831,7 @@ class NotionApi:
         elif asked.grant_type == wire.GrantType.REFRESH_TOKEN:
             presented = asked.refresh_token
         else:
-            return Response(
-                wire.oauth_error("unsupported_grant_type", f"grant_type {asked.grant_type} is not taken here."),
-                status_code=400,
-                media_type=JSON,
-            )
+            raise wire.undocumented(f"the `{asked.grant_type}` grant at /v1/oauth/token")
         held = self._world.token(presented) if presented else None
         issued = self._world.integration(held.integration) if held is not None else None
         integration = self._client(request) or issued or self._world.agent()

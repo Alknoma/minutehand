@@ -138,3 +138,18 @@ async def test_a_created_object_answers_where_it_can_be_retrieved(agent: httpx.A
     story = await agent.post(f"/tasks/{INCIDENT}/stories", json={"data": {"text": "Seen."}})
     assert made.headers["location"] == f"https://app.asana.com/api/1.0/tasks/{made.json()['data']['gid']}"
     assert story.headers["location"] == f"https://app.asana.com/api/1.0/stories/{story.json()['data']['gid']}"
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [{"completed": "yes"}, {"due_at": "soon"}, {"name": 7}, {"projects": "not a list"}],
+    ids=["completed", "due_at", "name", "projects"],
+)
+async def test_a_value_asana_gives_no_words_for_is_refused_by_name(
+    rich: Workspace, agent: httpx.AsyncClient, sent: dict[str, object]
+) -> None:
+    """No page, recording or report gives Asana's message for these, so none is made up."""
+    head = rich.store.head()
+    answered = await agent.post("/tasks", json={"data": {"name": "x", "workspace": state.WORKSPACE_GID, **sent}})
+    assert "(Asana's answer to it is not documented)" in unserved(answered)
+    assert rich.store.head() == head

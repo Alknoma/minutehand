@@ -34,22 +34,6 @@ from minutehand.ports.store import Store
 
 Handler = Callable[[Request, wire.AsanaUser], Awaitable[Response]]
 
-_SEARCH = (
-    "text",
-    "completed",
-    "assignee.any",
-    "assignee.not",
-    "projects.any",
-    "projects.not",
-    "sections.any",
-    "tags.any",
-    "is_subtask",
-    "sort_by",
-    "sort_ascending",
-    "limit",
-    "opt_fields",
-    "opt_pretty",
-)
 _SEARCH_UNSUPPORTED = (
     "projects.all",
     "sections.not",
@@ -98,9 +82,8 @@ _CUSTOM_FIELD_SEARCH = "custom_fields."
 _SORTS = ("modified_at", "created_at")
 _TYPEAHEAD = ("task", "user", "project", "tag")
 _NEEDS_FILTER = "Must specify exactly one of project, tag, section, user task list, or assignee + workspace"
-_NEEDS_TEAM = (  # the OpenAPI document's createProject description, word for word
-    "If the workspace for your project is an organization, you must also supply a team to share the project with."
-)
+_NEEDS_TEAM = "Missing required team field"
+"""Reported of the real service: https://forum.asana.com/t/31198."""
 
 
 SERVED: tuple[tuple[str, str, str], ...] = (
@@ -219,7 +202,7 @@ class View:
         if found is None:
             raise wire.unknown(field, gid, status=status)
         if not self.visible(found):
-            raise wire.forbidden()
+            raise wire.forbidden("project")
         return found
 
     def sees(self, task: wire.AsanaTask) -> bool:
@@ -237,19 +220,25 @@ class View:
         if found is None:
             raise wire.unknown(field, gid, status=status)
         if not self.sees(found):
-            raise wire.forbidden()
+            raise wire.forbidden("task")
         return found
 
     def user(self, identifier: str, *, field: str, status: int) -> wire.AsanaUser:
-        if not wire.is_user_identifier(identifier):
-            raise wire.bad(f"{field}: Not a Recognized ID")
-        found = self.world.resolve_user(identifier, me=self.caller.gid)
-        if found is None or found.removed:
-            if field == "assignee" and self.world.home().is_organization:
-                # As reported from the real service: https://forum.asana.com/t/60069
+        """The user a gid, an email or `me` names. An assignee naming nobody is refused as reported of the real
+        service: "assignee: Not a user in Organization: <as sent>" (https://forum.asana.com/t/60069, also for a value
+        that is no identifier at all), and in a plain workspace "assignee: Not a user in Workspace: <its gid>"
+        (https://forum.asana.com/t/852848)."""
+        found = self.world.resolve_user(identifier, me=self.caller.gid) if wire.is_user_identifier(identifier) else None
+        if found is not None and not found.removed:
+            return found
+        if field == "assignee":
+            home = self.world.home()
+            if home.is_organization:
                 raise wire.bad(f"assignee: Not a user in Organization: {identifier}")
-            raise wire.unknown(field, identifier, status=status)
-        return found
+            raise wire.bad(f"assignee: Not a user in Workspace: {home.gid}")
+        if not wire.is_user_identifier(identifier):
+            raise wire.not_an_id(field, identifier)
+        raise wire.unknown(field, identifier, status=status)
 
     def team(self, gid: str, *, field: str = "team", status: int = 404) -> wire.AsanaTeam:
         found = self.world.team(wire.gid_in_path(field, gid))
@@ -601,14 +590,9 @@ class AsanaApi:
         """A refresh: a refresh token the scenario seeded buys a new access token for its user, and any other buys
         one for the agent (Minutehand does not enforce credentials). The code grant needs a browser and is not
         served."""
-        try:
-            grant = wire.token_grant(await request.body())
-            if grant.grant_type != "refresh_token":
-                raise wire.OAuthRefusal(
-                    "unsupported_grant_type", f"The grant type {grant.grant_type} is not served by this simulation."
-                )
-        except wire.OAuthRefusal as refusal:
-            return _answer(wire.oauth_failed(refusal), 400)
+        grant = wire.token_grant(await request.body())
+        if grant.grant_type != "refresh_token":
+            raise wire.unsupported(f"the `{grant.grant_type}` grant at /-/oauth_token")
         refresh = self._world.credential(grant.refresh_token or "")
         whose = refresh.user if refresh is not None and refresh.kind is wire.CredentialKind.REFRESH else AGENT_GID
         user = _held(self._world.user(whose), whose)
@@ -744,7 +728,7 @@ class AsanaApi:
         if home.is_organization and chosen_team is None:
             raise wire.bad(_NEEDS_TEAM)
         if chosen_team is not None and caller.gid not in chosen_team.members:
-            raise wire.forbidden()
+            raise wire.forbidden("team")
         now = self._now()
         project = wire.AsanaProject(
             gid=self._world.next_gid(),
@@ -846,7 +830,7 @@ class AsanaApi:
         project = view.project(request.path_params["gid"])
         gid = wire.one_gid(wire.envelope(await request.body()), "custom_field")
         if not self._world.home().premium:
-            raise wire.premium(wire.FIELDS_ARE_PREMIUM)
+            raise wire.premium(wire.SETTINGS_ARE_PREMIUM)
         field = view.custom_field(gid, status=400)
         if field.gid in project.custom_fields:
             raise wire.undocumented("a custom field setting for a field already on the project")
@@ -1033,7 +1017,8 @@ class AsanaApi:
         for gid, value in sent.items():
             field = view.custom_field(gid, field="custom_fields", status=400)
             if field.gid not in carried:
-                raise wire.bad(f"custom_fields: Custom field {field.gid} is not on given task")
+                # Reported: https://forum.asana.com/t/618448
+                raise wire.bad(f"Custom field with ID {field.gid} is not on given object")
             written[field.gid] = wire.custom_field_value(field, value, users)
         return list(written.values())
 
@@ -1041,13 +1026,14 @@ class AsanaApi:
         """Where a new task lands: each named project's named section, or its first."""
         named = [wire.MembershipIn(project=p) for p in dict.fromkeys(sent.projects)] or sent.memberships
         placed: list[wire.AsanaMembership] = []
-        for membership in named:
-            field = "projects" if sent.projects else "memberships.project"
+        for n, membership in enumerate(named):
+            # Reported: "projects: [0]: Unknown object: ..." (https://stackoverflow.com/questions/37837171)
+            field = f"projects: [{n}]" if sent.projects else f"memberships: [{n}]: project"
             project = view.project(membership.project, field=field, status=400)
             if membership.section is not None:
-                section = view.section(membership.section, field="memberships.section", status=400)
+                section = view.section(membership.section, field=f"memberships: [{n}]: section", status=400)
                 if section.project != project.gid:
-                    raise wire.bad("memberships.section: Must be a section of the membership's project")
+                    raise wire.undocumented("a membership whose section is not of its project")
                 placed.append(wire.AsanaMembership(project=project.gid, section=section.gid))
                 continue
             sections = self._world.sections(project.gid)
@@ -1065,14 +1051,15 @@ class AsanaApi:
         if sent.workspace is not None:
             workspace = view.workspace(sent.workspace, status=400).gid
             if any(p.workspace != workspace for p in projects):
-                raise wire.bad("projects: Must be in the same workspace as the task")
+                raise wire.undocumented("a task's projects in another workspace than the task")
         elif projects:
             workspace = projects[0].workspace
         else:
             assert under is not None
             workspace = under.workspace
         assignee = view.user(sent.assignee, field="assignee", status=400) if sent.assignee is not None else None
-        tags = [view.tag(t, field="tags", status=400).gid for t in dict.fromkeys(sent.tags)]
+        # Reported: "tags: [1]: Unknown object: ..." (https://stackoverflow.com/a/42913309)
+        tags = [view.tag(t, field=f"tags: [{n}]", status=400).gid for n, t in enumerate(dict.fromkeys(sent.tags))]
         now = self._now()
         task = wire.AsanaTask(
             gid=self._world.next_gid(),
@@ -1193,8 +1180,7 @@ class AsanaApi:
         for name in query.names():
             if name in _SEARCH_UNSUPPORTED or name.startswith(_CUSTOM_FIELD_SEARCH):
                 raise wire.unsupported(name)
-            if name not in _SEARCH:
-                raise wire.bad(f"{name}: Unrecognized parameter")
+            # An unknown parameter is "silently ignored" (an Asana engineer: https://stackoverflow.com/a/28948207).
         limit = query.count("limit") or wire.SEARCH_DEFAULT
         sort_by = query.text("sort_by") or "modified_at"
         if sort_by not in _SORTS:
