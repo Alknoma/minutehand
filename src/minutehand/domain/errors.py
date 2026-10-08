@@ -3,8 +3,10 @@ and moto's: one converter at the proxy (`adapters.answering`) tells them apart a
 
 - `ServiceRefusal`: the real service would refuse this request. Each provider's own refusal classes subclass it and
   render the answer the real service gives (`render`), in that service's wire shape.
-- `NotImplementedError`: the real service has this operation and the fake does not. Answered 501 in the vendor's
-  error shape, naming the method and path.
+- `NotServed`: the real service has this operation and the fake does not serve it. Answered 501 in the vendor's
+  error shape, naming the method and path; when the run declares the host outbound (`domain.outbound`), the call
+  falls through to that declaration instead. A bare `NotImplementedError` is answered the same 501 and never falls
+  through: it may be Python's own, not the provider saying what it does not serve.
 - `GrpcRefusal`: the real service would refuse this gRPC call, with the status it names. Only a provider's gRPC
   methods (`ports.provider.ServesGrpc`) raise it; their other exceptions are read as above.
 - anything else: Minutehand's own bug. Answered 500 in the vendor's error shape, its message beginning
@@ -53,6 +55,11 @@ class ServiceRefusal(Exception, ABC):
     @abstractmethod
     def render(self, asked: Asked) -> Rendered:
         """The answer the real service gives to `asked`."""
+
+
+class NotServed(NotImplementedError):
+    """The real service has this operation and the fake does not serve it: what a provider raises, by name, for a
+    method, a path or an option it leaves out."""
 
 
 class GrpcRefusal(Exception):

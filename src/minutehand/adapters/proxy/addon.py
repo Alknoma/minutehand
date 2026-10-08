@@ -1,7 +1,8 @@
 """The mitmproxy addon: route each intercepted call by its host, answer or refuse it, and record it.
 
 A claimed host is answered by its provider's ASGI app and the call is recorded as an
-`Exchange` tied to the events the provider wrote while answering. An unclaimed host
+`Exchange` tied to the events the provider wrote while answering; a call the provider says it does not serve
+(`NotServed`) on a host the world also declares outbound is answered by that declaration instead. An unclaimed host
 is refused with 502 and recorded the same way. A model API is tunnelled without being
 decrypted, unless the run edits its requests or records model calls. An edited call is
 decrypted, edited and sent on. A recorded call (`record_model_calls`) is decrypted and sent
@@ -17,8 +18,8 @@ socket server the same way; the upgrade is recorded, and so is every message on 
 way (`Exchange.frame`). A gRPC call to a provider that serves no gRPC is answered UNIMPLEMENTED, saying so.
 
 A host no provider claims that the call's world declares outbound (`domain.outbound`) is captured
-(`adapters.proxy.capture`): acknowledged with the declared answer, passed through to the real host, or answered
-from a recording, and kept as an `Exchange` carrying `Captured`. With `capture_unknown`, an undeclared one is
+(`adapters.proxy.capture`): acknowledged with the declared answer, kept and read back by a `store`'s collections
+(`adapters.proxy.stored`), passed through to the real host, or answered from a recording, and kept as an `Exchange` carrying `Captured`. With `capture_unknown`, an undeclared one is
 passed through and kept the same way rather than refused. A pass-through answer reaches the agent chunk by chunk
 as it arrives, by the same tee a recorded model call's stream uses.
 """
@@ -43,7 +44,7 @@ from mitmproxy.proxy.layers import modes
 
 from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, grpc_outcome, kind_of
 from minutehand.adapters.emulator import answers
-from minutehand.adapters.proxy import capture, connect, credentials, mcp, modeled, redact
+from minutehand.adapters.proxy import capture, connect, credentials, mcp, modeled, redact, stored
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.hosts import loopback_name
@@ -60,6 +61,7 @@ from minutehand.domain.outbound import (
     BODY_LIMIT,
     READ_METHODS,
     Acknowledge,
+    DeclaredStore,
     Forward,
     HostHeader,
     OnMiss,
@@ -290,6 +292,8 @@ class ProxyAddon:
         self._grpc: dict[str, _GrpcCall] = {}
         self._sockets: dict[str, _Socket] = {}
         self._closing: set[asyncio.Task[None]] = set()
+        # The provider that said it does not serve a call, by flow id, while the call's declaration answers it.
+        self._not_served: dict[str, ProviderKey] = {}
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
@@ -585,7 +589,10 @@ class ProxyAddon:
             if is_grpc(request):
                 await self._send_grpc(flow, host, manifest, world)
             elif not is_upgrade(request) or not await self._send_upgrade(flow, host, manifest, world):
-                await self._answer(flow, host, manifest, world)
+                declared = world.capturing.find(host)
+                if not await self._answer(flow, host, manifest, world, falls_to=declared):
+                    self._not_served[flow.id] = manifest.key
+                    await self._capture(flow, host, world, declared)
             return
         held = world or self.worlds.lobby
         declaration = held.capturing.find(host) if manifest is None else None
@@ -829,9 +836,13 @@ class ProxyAddon:
         kept_in = self.worlds.keeping(exchanged.host, span.trace_id if span.parent_span_id is not None else None)
         kept_in.store.receive([span], source=SpanSource.WIRE)
 
-    async def _answer(self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted) -> None:
+    async def _answer(
+        self, flow: http.HTTPFlow, host: str, manifest: Manifest, world: Mounted, *, falls_to: Declaration | None
+    ) -> bool:
         """Answer from the provider's app, guarded (`adapters.answering`): whatever building the app or answering
-        lets out becomes the agent's answer, and how the call was answered is recorded on it."""
+        lets out becomes the agent's answer, and how the call was answered is recorded on it. A call the provider
+        says it does not serve (`NotServed`) on a host the world also declares (`falls_to`) is not answered here:
+        False, and the declaration answers it."""
         async with world.lock:
             first = world.store.head() + 1
             original = flow.request.path
@@ -853,6 +864,9 @@ class ProxyAddon:
             finally:
                 OUTCOME.reset(token)
                 flow.request.path = original
+            if outcome.not_served and falls_to is not None:
+                flow.response = None
+                return False
             exchange = self._record(world, flow, host, original, first, manifest.key, answered_by=outcome)
         response = flow.response
         minted = (
@@ -864,6 +878,7 @@ class ProxyAddon:
             else []
         )
         self.worlds.answered(world, exchange, minted)
+        return True
 
     def _renders(self, manifest: Manifest) -> RendersErrors:
         """The provider's error shape; the plain one when it has none, or cannot be built (which the guard then
@@ -937,6 +952,9 @@ class ProxyAddon:
             return
         if isinstance(declaration, Acknowledge):
             await self._acknowledge(flow, host, world, declaration)
+            return
+        if isinstance(declaration, DeclaredStore):
+            await self._store(flow, host, world, declaration)
             return
         if isinstance(declaration, Forward):
             await self._forward(flow, host, world, declaration)
@@ -1086,6 +1104,48 @@ class ProxyAddon:
                 AnsweredBy.DECLARATION,
                 note=f"not read as a message: {read.unread}" if read.unread is not None else None,
                 recipients=read.recipients,
+                first=first,
+                locked=True,
+            )
+
+    async def _store(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: DeclaredStore) -> None:
+        """Answer from the world as the declaration's collections say, writing what the call changes: a route that
+        matches first, then the collection the path is under, else the host's own answer. No credential is read."""
+        request = flow.request
+        async with world.lock:
+            first = world.store.head() + 1
+            found = stored.find(declaration, request.path)
+            kept = None
+            if found is not None and capture.routed(declaration, request.method, request.path) is None:
+                body = request.get_content(strict=False) or b""
+                kept = stored.answer(
+                    declaration,
+                    found,
+                    request.method,
+                    request.path,
+                    body.decode("utf-8", errors="replace") if body else None,
+                    store=world.store,
+                    clock=world.clock,
+                    seq=first,
+                )
+            answer = (
+                kept.answer
+                if kept is not None
+                else capture.canned(
+                    declaration, request.method, request.path, message_id=message_id(declaration, first)
+                )
+            )
+            flow.response = http.Response.make(answer.status, answer.body, answer.headers)
+            if kept is not None and kept.change is not None:
+                world.store.apply(kept.change)
+            await self._keep(
+                flow,
+                host,
+                world,
+                declaration,
+                CaptureMode.STORE,
+                AnsweredBy.DECLARATION,
+                note=kept.refused if kept is not None else None,
                 first=first,
                 locked=True,
             )
@@ -1367,6 +1427,7 @@ class ProxyAddon:
                 emulator=emulator.name if emulator is not None else emulator_name,
                 operation=operation,
                 forwarded_traceparent=forwarded_traceparent,
+                not_served_by=self._not_served.pop(flow.id, None),
             ),
         )
         self._seen(f"{request.method} {host}{exchange.path}")
@@ -1430,7 +1491,7 @@ def _unavailable(status: int, emulator: str, why: str, host: str) -> http.Respon
     )
 
 
-def message_id(declaration: Acknowledge, seq: int) -> str:
+def message_id(declaration: Acknowledge | DeclaredStore, seq: int) -> str:
     """The id an acknowledged send is answered with: its declaration's name and the seq its message takes."""
     return f"{declaration.key}-{seq}"
 

@@ -23,6 +23,7 @@ class EntityKind(StrEnum):
     TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
     MEMORY = "memory"  # a key of the agent's own memory, written or read through `minutehand.agent.store`
     NEXT_WAKE = "next_wake"  # the moment the agent asked to be woken next through `minutehand.agent.wake`
+    STORED = "stored"  # an item the agent wrote to an outbound host the agent file declares `store`
 
 
 class Operation(StrEnum):
@@ -54,6 +55,7 @@ class CaptureMode(StrEnum):
     DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
     FORWARD = "forward"  # sent to an external emulator the agent file or world declares (`domain.emulator`)
     MODELED = "modeled"  # declared by nobody; answered by a model standing in for the service (`UnknownHosts.MODEL`)
+    STORE = "store"  # kept and read back as sent, by the declaration's collections (`domain.outbound.DeclaredStore`)
 
 
 class AnsweredBy(StrEnum):
@@ -127,6 +129,11 @@ class Captured(Model):
         default=None,
         description="The `traceparent` the forwarded copy carried: the agent's trace (or one begun for it) with "
         "Minutehand's span of this call as the parent, under which the emulator's own spans sit",
+    )
+    not_served_by: ProviderKey | None = Field(
+        default=None,
+        description="The provider that claims the host and said it does not serve this call (`NotServed`), so it "
+        "fell through to the declaration; None when no provider claims the host",
     )
 
 
@@ -468,6 +475,18 @@ class MemorySnapshot(Model):
     listing: bool = Field(default=False, description="A listing of every key under `key`, not one key")
 
 
+class StoredSnapshot(Model):
+    """An item of a collection an outbound host declared `store` keeps (`domain.outbound.DeclaredStore`), as the
+    agent wrote it: its JSON exactly as stored, None for a delete."""
+
+    kind: Literal["stored"] = "stored"
+    host: str = Field(description="The declaration's host pattern")
+    collection: str = Field(description="The collection's name in the declaration")
+    path: str = Field(description="The collection's path the item is under, as called: `/v1/companies/7/contacts`")
+    id: str = Field(description="The item's id, as text")
+    item: str | None = Field(default=None, description="The item as stored, JSON text; None for a delete")
+
+
 class NextWakeSnapshot(Model):
     """The moment the agent asked to be woken next (`minutehand.agent.wake`), or none."""
 
@@ -477,6 +496,7 @@ class NextWakeSnapshot(Model):
 
 Snapshot = Annotated[
     MemorySnapshot
+    | StoredSnapshot
     | NextWakeSnapshot
     | ToolCallSnapshot
     | FileSnapshot

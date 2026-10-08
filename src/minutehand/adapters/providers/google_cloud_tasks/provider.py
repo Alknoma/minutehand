@@ -40,7 +40,7 @@ from starlette.routing import Route, Router
 from minutehand.adapters.providers.google_cloud_tasks import wire
 from minutehand.adapters.providers.google_cloud_tasks.manifest import MANIFEST
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.errors import GrpcRefusal, Rendered
+from minutehand.domain.errors import GrpcRefusal, NotServed, Rendered
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, RecordSnapshot
@@ -447,7 +447,7 @@ class CloudTasksProvider:
             return _json({})
 
         async def unserved(request: Request) -> Response:
-            raise NotImplementedError(f"Cloud Tasks {request.method} {request.url.path} is not served")
+            raise NotServed(f"Cloud Tasks {request.method} {request.url.path} is not served")
 
         return Router(
             routes=[
@@ -565,7 +565,7 @@ def _task_named(name: str) -> str:
 
 class _Api:
     """Cloud Tasks' operations over the world, whatever transport asked: the REST routes and the gRPC methods both
-    answer from here. Each raises `wire.TasksRefusal` where Cloud Tasks refuses and `NotImplementedError` for what
+    answer from here. Each raises `wire.TasksRefusal` where Cloud Tasks refuses and `NotServed` for what
     is not served."""
 
     def __init__(self, tasks: Tasks, world: Store, clock: Clock, wakes: Callable[[], Wakes]) -> None:
@@ -620,12 +620,12 @@ class _Api:
         queue = self.existing_queue(queue_name)
         given = asked.task
         if given.appEngineHttpRequest is not None:
-            raise NotImplementedError("App Engine tasks are not served: only HTTP tasks are")
+            raise NotServed("App Engine tasks are not served: only HTTP tasks are")
         http = given.httpRequest
         if http is None:
             raise wire.TasksRefusal(400, "Task.http_request or Task.app_engine_http_request must be set")
         if http.oidcToken is not None or http.oauthToken is not None:
-            raise NotImplementedError(
+            raise NotServed(
                 "a task that asks Cloud Tasks to sign an OIDC or OAuth token is not served: nothing here holds "
                 "Google's signing keys, so the agent could not verify the token it would be sent"
             )

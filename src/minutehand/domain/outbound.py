@@ -17,9 +17,14 @@ and every call to it is captured with the run:
       - host: api.tracker.example
         kind: forward                           # sent to an external emulator (`domain.emulator`)
         emulator: tracker
+      - host: api.crm.example
+        kind: store                             # what the agent writes is kept as sent and read back unchanged
+        collections:
+          - {path: /v1/contacts, id: {at: id, format: uuid}, list: {items_at: results}}
 
-A host a provider claims, or a model API, cannot also be declared. A host nobody declares or claims is still
-refused, unless the run captures unknown hosts (`--capture-unknown`).
+A model API cannot also be declared. A host a provider claims can: the provider answers every call it serves, and
+a call it says it does not serve (`domain.errors.NotServed`) falls through to the declaration. A host nobody
+declares or claims is still refused, unless the run captures unknown hosts (`--capture-unknown`).
 
 A path names a value in a request body read as JSON (or a form, whose fields are its top level): dotted keys,
 `[n]` for one item of a list and `[*]` for every item, e.g. `personalizations[*].to[*].email`.
@@ -249,6 +254,147 @@ class Acknowledge(_Declared):
         return self
 
 
+KeyPath = Annotated[str, Field(min_length=1, pattern=r"^[A-Za-z0-9_\-$@]+(\.[A-Za-z0-9_\-$@]+)*$")]
+"""A field of a JSON object by dotted keys, `paging.next.after`: where Minutehand writes something it assigns."""
+
+COLLECTION_PATH = re.compile(r"^(/([A-Za-z0-9._~\-:@$!]+|\{[a-z_][a-z0-9_]*\}))+$")
+"""A collection's path: literal segments and `{name}` segments, each matching one segment of a called path."""
+
+
+class IdFormat(StrEnum):
+    """How a stored item's id is made when it is created."""
+
+    UUID = "uuid"  # a UUID, made from the host, the collection's path and the event that creates the item
+    INTEGER = "integer"  # a JSON number: the sequence number of the event that creates the item
+    PREFIXED = "prefixed"  # `prefix` and that sequence number, as a string: `ct_42`
+    SENT = "sent"  # the id the agent sent at `at`: nothing is made; a create without one is refused 400
+
+
+class ItemId(Model):
+    """Where an item's id is in its JSON, and how it is made: the one field of an item the API assigns besides
+    `stamps`. The item is read and written at `<collection path>/<id>`."""
+
+    at: KeyPath = "id"
+    format: IdFormat = IdFormat.UUID
+    prefix: str = Field(default="", description="Before the sequence number, with `format: prefixed`")
+
+    @model_validator(mode="after")
+    def _prefix_is_text(self) -> Self:
+        if self.prefix and self.format is not IdFormat.PREFIXED:
+            raise ValueError("an id's `prefix` goes with `format: prefixed`")
+        return self
+
+
+class StampOn(StrEnum):
+    CREATE = "create"  # written when the item is created, then kept as it was
+    WRITE = "write"  # written when the item is created, replaced or patched
+
+
+class StampFormat(StrEnum):
+    ISO8601 = "iso8601"  # `2026-08-24T10:00:00Z`
+    EPOCH_SECONDS = "epoch_seconds"  # whole seconds since 1970, a JSON number
+    EPOCH_MILLISECONDS = "epoch_milliseconds"  # milliseconds since 1970, a JSON number
+
+
+class Stamp(Model):
+    """A moment the API writes into an item, from the run's clock: a created or updated time."""
+
+    at: KeyPath
+    on: StampOn = StampOn.CREATE
+    format: StampFormat = StampFormat.ISO8601
+
+
+class Listing(Model):
+    """How a GET of the collection answers: the stored items in the order they were created, in an envelope.
+
+    With `items_at` None the answer is the bare JSON list. With `limit_param`, a page holds at most that many
+    items (`default_limit` when the call names none); with `cursor_param`, the call names the id of the last item
+    it has, and `next_at` is where the answer puts the id to send for the next page, absent on the last."""
+
+    items_at: KeyPath | None = None
+    envelope: dict[str, JsonValue] = Field(default={}, description="Fields answered beside the items, as given")
+    limit_param: str | None = None
+    default_limit: int = Field(default=100, ge=1)
+    cursor_param: str | None = None
+    next_at: KeyPath | None = None
+
+    @model_validator(mode="after")
+    def _paging_fits(self) -> Self:
+        if self.items_at is None and (self.envelope or self.next_at is not None):
+            raise ValueError("a listing answered as a bare list has no envelope and no `next_at`: name `items_at`")
+        if self.next_at is not None and self.cursor_param is None:
+            raise ValueError("a listing with `next_at` reads the next page by `cursor_param`: name it")
+        if self.items_at is not None and self.items_at in self.envelope:
+            raise ValueError(f"the envelope's field {self.items_at!r} is where the items go")
+        return self
+
+
+class Collection(Model):
+    """One REST collection a `store` host keeps: `path` lists and creates (GET, POST), and `<path>/<id>` reads,
+    replaces, patches and deletes one item (GET, PUT, PATCH, DELETE). A `{name}` segment of `path` matches any one
+    segment, and each value of it is a collection of its own: `/v1/companies/{company}/contacts`."""
+
+    path: str = Field(description="`/v1/contacts`; a `{name}` segment matches any one segment")
+    name: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_.-]{1,64}$",
+        description="What an assessment counts it by (`stored: {collection: ...}`); the last literal segment of "
+        "`path` when None",
+    )
+    id: ItemId = ItemId()
+    stamps: list[Stamp] = []
+    listing: Listing = Listing()
+    created_status: int = Field(default=201, ge=200, le=299)
+    deleted_status: int = Field(default=204, ge=200, le=299)
+
+    @model_validator(mode="after")
+    def _paths_fit(self) -> Self:
+        if not COLLECTION_PATH.match(self.path):
+            raise ValueError(f"collection path {self.path!r} is not `/segment/...` with `{{name}}` segments")
+        if not self.key:
+            raise ValueError(f"collection path {self.path!r} has no literal segment to name it by: give it a `name`")
+        named = PLACEHOLDER.findall(self.path)
+        if "id" in named or len(set(named)) != len(named):
+            raise ValueError(f"collection path {self.path!r} names a segment twice, or `{{id}}`, which is the item's")
+        assigned = [self.id.at, *(s.at for s in self.stamps)]
+        twice = sorted({a for a in assigned if assigned.count(a) > 1})
+        if twice:
+            raise ValueError(f"collection {self.key}: {', '.join(twice)} is assigned twice")
+        return self
+
+    @property
+    def key(self) -> str:
+        """Its name, or the last literal segment of its path."""
+        if self.name is not None:
+            return self.name
+        literal = [p for p in self.path.split("/") if p and not p.startswith("{")]
+        return literal[-1] if literal else ""
+
+
+class DeclaredStore(_Declared):
+    """What the agent writes is kept exactly as sent, in the run's world, and read back unchanged: for an API the
+    agent writes to and reads its writes back from, which no provider fakes. Minutehand adds to an item only what
+    its collection says the API assigns (`id`, `stamps`); credentials are never checked.
+
+    A call is answered by the first route that matches it (`routes`, as `acknowledge`), else by the collection
+    whose path it is under, else with `answer`."""
+
+    kind: Literal["store"] = "store"
+    collections: list[Collection] = Field(min_length=1)
+    routes: list[Route] = []
+    answer: Answer = Answer()
+
+    @model_validator(mode="after")
+    def _collections_named_once(self) -> Self:
+        keys = [c.key for c in self.collections]
+        paths = [c.path for c in self.collections]
+        for label, values in (("name", keys), ("path", paths)):
+            twice = sorted({v for v in values if values.count(v) > 1})
+            if twice:
+                raise ValueError(f"host {self.host}: collection {label} declared twice: {', '.join(twice)}")
+        return self
+
+
 class InForks(StrEnum):
     """What a pass-through host does in a fork of a run."""
 
@@ -322,10 +468,10 @@ class Forward(_Declared):
     host_header: HostHeader = HostHeader.PRESERVE
 
 
-OutboundHost = Annotated[Acknowledge | PassThrough | Replay | Forward, Field(discriminator="kind")]
+OutboundHost = Annotated[Acknowledge | PassThrough | Replay | Forward | DeclaredStore, Field(discriminator="kind")]
 
 
-def refuse_repeats(declared: list[Acknowledge | PassThrough | Replay | Forward]) -> None:
+def refuse_repeats(declared: list[Acknowledge | PassThrough | Replay | Forward | DeclaredStore]) -> None:
     """Two declarations of one host, or one name, would leave a call's mode to their order."""
     hosts = [d.host for d in declared]
     keys = [d.key for d in declared]

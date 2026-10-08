@@ -53,6 +53,7 @@ from minutehand.adapters.providers.microsoft.state import (
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.subscriptions import mail_watch, notify
+from minutehand.domain.errors import NotServed
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Actor, MessageAction, MessageSnapshot, Operation, Snapshot
@@ -371,7 +372,7 @@ class Mail:
                 return self._delete(owner, stored)
             if len(rest) == 3 and rest[2] in ("reply", "replyAll") and method == "POST":
                 return await self._reply(request, owner, stored, everyone=rest[2] == "replyAll")
-        raise NotImplementedError(f"{method} /{'/'.join(parts)}")
+        raise NotServed(f"{method} /{'/'.join(parts)}")
 
     def _one(self, request: Request, entity: wire.Aliased, context: str) -> Response:
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
@@ -432,7 +433,7 @@ class Mail:
     @staticmethod
     def _clauses(text: str) -> list[_Clause]:
         if re.search(r"\s+or\s+|\bnot\b", text, flags=re.IGNORECASE):
-            raise NotImplementedError(f"$filter with 'or' or 'not' on messages: {text}")
+            raise NotServed(f"$filter with 'or' or 'not' on messages: {text}")
         found: list[_Clause] = []
         for part in re.split(r"\s+and\s+(?=(?:[^']*'[^']*')*[^']*$)", text.strip(), flags=re.IGNORECASE):
             flag = re.fullmatch(r"\s*(isRead|hasAttachments|isDraft)\s+(eq|ne)\s+(true|false)\s*", part)
@@ -443,7 +444,7 @@ class Mail:
             )
             match = flag or date or address or text_eq
             if match is None:
-                raise NotImplementedError(f"$filter clause on messages: {part.strip()}")
+                raise NotServed(f"$filter clause on messages: {part.strip()}")
             found.append(_Clause(prop=match.group(1), op=match.group(2), value=match.group(3).replace("''", "'")))
         return found
 
@@ -467,14 +468,14 @@ class Mail:
         for part in text.split(","):
             prop, _, direction = part.strip().partition(" ")
             if prop not in (*_DATES, "subject") or direction.strip().lower() not in ("", "asc", "desc"):
-                raise NotImplementedError(f"$orderby on messages: {part.strip()}")
+                raise NotServed(f"$orderby on messages: {part.strip()}")
             found.append((prop, direction.strip().lower() == "desc"))
         return found
 
     def _list(self, request: Request, owner: UserRecord, folder: wire.MailFolderName | None) -> Response:
         for option in ("$search", "$expand", "$count", "$skiptoken"):
             if option in request.query_params:
-                raise NotImplementedError(f"{option} on messages")
+                raise NotServed(f"{option} on messages")
         clauses = self._clauses(query(request, "$filter") or "") if query(request, "$filter") else []
         order = self._order(query(request, "$orderby"))
         if clauses and order and [c.prop for c in clauses[: len(order)]] != [p for p, _ in order]:
@@ -532,7 +533,7 @@ class Mail:
     def _delta(self, request: Request, owner: UserRecord, folder: wire.MailFolderName) -> Response:
         for option in ("$filter", "$orderby", "$top", "$search", "$expand"):
             if option in request.query_params:
-                raise NotImplementedError(f"{option} on a message delta")
+                raise NotServed(f"{option} on a message delta")
         skip, delta = query(request, "$skiptoken"), query(request, "$deltatoken")
         since, offset = self._numbers(skip, 2) if skip else ([self._numbers(delta, 1)[0], 0] if delta else [0, 0])
         changed: list[tuple[int, str]] = []
@@ -583,7 +584,7 @@ class Mail:
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
         if asked.model_extra:
-            raise NotImplementedError(f"PATCH of {', '.join(sorted(asked.model_extra))} on a message")
+            raise NotServed(f"PATCH of {', '.join(sorted(asked.model_extra))} on a message")
         changed = stored
         if asked.isRead is not None and asked.isRead != stored.message.isRead:
             message = stored.message.model_copy(
@@ -642,7 +643,7 @@ class Mail:
         if asked.message is None:
             raise GraphRefusal(400, "ErrorInvalidRequest", "The 'message' property is required.")
         if not asked.saveToSentItems:
-            raise NotImplementedError("sendMail with saveToSentItems false: the sent copy is the message a run reads")
+            raise NotServed("sendMail with saveToSentItems false: the sent copy is the message a run reads")
         sent = asked.message
         to, cc, bcc = (
             self._recipients(sent.toRecipients, "toRecipients"),

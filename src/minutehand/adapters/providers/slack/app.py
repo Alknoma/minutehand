@@ -25,6 +25,7 @@ from starlette.routing import Route
 from minutehand.adapters import answering
 from minutehand.adapters.providers.slack import socket_mode, state, wire
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import (
     Actor,
     ControlKind,
@@ -95,7 +96,7 @@ class SlackApi:
         method = request.path_params["method"]
         try:
             if method not in self._methods:
-                raise wire.Refusal("unknown_method")
+                raise NotServed(f"the Web API method {method}")
             presented = wire.read_call(
                 request.url.query,
                 _header(request, "content-type") or "",

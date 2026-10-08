@@ -141,6 +141,7 @@ class Thing(StrEnum):
     INBOX_ITEM = "inbox_item"
     FILE = "file"
     TOOL_CALL = "tool_call"
+    STORED = "stored"
 
 
 class FollowUps(Model):
@@ -248,6 +249,20 @@ class Memory(Model):
         return self
 
 
+class StoredItems(Model):
+    """Items an outbound host declared `store` keeps (`domain.outbound.DeclaredStore`), as they stood at the count's
+    `until` (the run's end without one): each item held there is one fact, counted at the moment its version there
+    was written, so `since` keeps only those written from then on."""
+
+    host: str | None = Field(default=None, description="Of the declaration of this host pattern; None: of any")
+    collection: str | None = Field(default=None, description="In the collection of this name; None: in any")
+    values: dict[str, Scalar] = Field(
+        default={},
+        description="Each field of the item (a dotted path into it, `address.city`) equal to this; an item that "
+        "lacks the field does not match",
+    )
+
+
 class Count(Model):
     """Which facts a rule counts, and between which moments."""
 
@@ -260,6 +275,7 @@ class Count(Model):
     commitments: Commitments | None = None
     asks: Asks | None = None
     memory: Memory | None = None
+    stored: StoredItems | None = None
     since: MomentText | None = Field(default=None, description="From this moment, inclusive; absent: the start")
     until: MomentText | None = Field(default=None, description="To this moment, inclusive; absent: the end")
 
@@ -281,6 +297,7 @@ class Count(Model):
             ("commitments", self.commitments),
             ("asks", self.asks),
             ("memory", self.memory),
+            ("stored", self.stored),
         ]
 
     @property
@@ -289,7 +306,18 @@ class Count(Model):
         return next(k for k, v in self._kinds() if v is not None)
 
 
-_COUNTED = ("follow_ups", "touches", "messages", "writes", "wakes", "planned_wakes", "commitments", "asks", "memory")
+_COUNTED = (
+    "follow_ups",
+    "touches",
+    "messages",
+    "writes",
+    "wakes",
+    "planned_wakes",
+    "commitments",
+    "asks",
+    "memory",
+    "stored",
+)
 _ON_AN_ASK = ("follow_ups", "touches")
 
 

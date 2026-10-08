@@ -63,6 +63,15 @@ def outbound_uses(calls: Sequence[RecordedCall]) -> list[OutboundUse]:
                 "methods": list(dict.fromkeys([*found.methods, exchange.method.upper()])),
                 "paths": list(dict.fromkeys([*found.paths, path]))[:PATHS_SHOWN],
                 "unknown_recipients": list(dict.fromkeys([*found.unknown_recipients, *unknown])),
+                "not_served": found.not_served + (1 if captured is not None and captured.not_served_by else 0),
+                "not_served_by": list(
+                    dict.fromkeys(
+                        [
+                            *found.not_served_by,
+                            *([captured.not_served_by] if captured and captured.not_served_by else []),
+                        ]
+                    )
+                ),
             }
         )
     return list(uses.values())
@@ -84,10 +93,13 @@ def described(use: OutboundUse) -> str:
         CaptureMode.DISCOVERED: "passed through, undeclared (--capture-unknown)",
         CaptureMode.FORWARD: "forwarded to its external emulator",
         CaptureMode.MODELED: "answered by a model standing in for it (--capture-unknown model), never sent",
+        CaptureMode.STORE: "kept and read back as declared, never sent",
     }[use.mode]
     parts = [f"{use.host}: {use.calls} call{'s' if use.calls != 1 else ''}, {how}"]
     if use.mode is CaptureMode.REPLAY:
         parts.append(f"{use.replayed} answered from the recording")
+    if use.not_served:
+        parts.append(f"{use.not_served} not served by {', '.join(use.not_served_by)}, answered as declared")
     if use.refused and use.mode is not None:
         parts.append(f"{use.refused} refused")
     if use.unknown_recipients:
