@@ -106,8 +106,3 @@ async def test_paging_past_the_first_thousand_results_is_refused(hub: Hub) -> No
             422,
             "Validation Failed",
         )
-
-
-async def test_code_search_without_a_token_is_refused(hub: Hub) -> None:
-    async with hub.client(None) as http:
-        refusal(await http.get("/search/code", params={"q": f"billing {LEDGER}"}), 401, "Requires authentication")

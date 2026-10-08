@@ -151,15 +151,6 @@ async def test_parents_in_an_update_body_is_refused_403_field_not_writable(api: 
     assert reason_of(response, 403) == "fieldNotWritable"
 
 
-async def test_a_call_without_a_token_is_refused_401(api: httpx.AsyncClient, docs: httpx.AsyncClient) -> None:
-    drive_answer = await api.get("/drive/v3/files")
-    docs_answer = await docs.get(f"/v1/documents/{MISSING}")
-
-    assert reason_of(drive_answer, 401) == "required"
-    assert drive_answer.headers["www-authenticate"].startswith("Bearer")
-    assert answer(docs_answer, 401)["error"]["status"] == "UNAUTHENTICATED"  # type: ignore[index]
-
-
 async def test_comments_and_about_without_fields_are_refused_400_required(api: httpx.AsyncClient) -> None:
     made = await create_doc(api, "Minutes", "text")
     for response in [

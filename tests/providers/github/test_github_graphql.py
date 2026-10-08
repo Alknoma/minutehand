@@ -140,10 +140,3 @@ async def test_a_connection_without_first_or_last_is_refused_and_nulled(hub: Hub
 async def test_a_query_that_does_not_parse_is_refused_with_its_location(hub: Hub) -> None:
     found = await _ask(hub, "query { repository(owner: ")
     assert "data" not in found and found["errors"][0]["message"].startswith("Parse error on")
-
-
-async def test_graphql_without_a_token_is_refused(hub: Hub) -> None:
-    async with hub.client(None) as http:
-        answered = await http.post("/graphql", json={"query": OVERVIEW, "variables": LEDGER})
-    assert answered.status_code == 401
-    assert answered.json()["message"] == "This endpoint requires you to be authenticated."

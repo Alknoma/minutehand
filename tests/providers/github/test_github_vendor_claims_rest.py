@@ -52,17 +52,6 @@ def seeded() -> GitHubSeed:
 # ---------------------------------------------------------------- credentials
 
 
-async def test_without_any_credential_the_user_is_refused_requires_authentication(hub: Hub) -> None:
-    """Documented. A call with no `Authorization` is not a bad credential: GitHub serves public data to it and
-    refuses only what needs a user, `/user` among them, with 401 "Requires authentication".
-    https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api
-    https://docs.github.com/en/rest/users/users#get-the-authenticated-user"""
-    async with hub.client(None) as http:
-        refused = refusal(await http.get("/user"), 401, "Requires authentication")
-        assert body(await http.get("/repos/iris-calder/notes"))["full_name"] == "iris-calder/notes"
-    assert refused["documentation_url"] == "https://docs.github.com/rest"  # observed 2026-10-08
-
-
 async def test_a_bearer_token_is_served_as_its_user(hub: Hub) -> None:
     """Documented: `Authorization: Bearer <token>` authenticates.
     https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api"""
@@ -85,15 +74,6 @@ async def test_every_answer_carries_the_rate_limit_headers_for_its_budget(hub: H
         assert int(headers["X-RateLimit-Remaining"]) <= 5000
         assert int(headers["X-RateLimit-Used"]) >= 0
         assert int(headers["X-RateLimit-Reset"]) > int(START.timestamp())
-
-
-async def test_an_unauthenticated_answer_carries_the_sixty_an_hour_budget(hub: Hub) -> None:
-    """Documented: without a credential the primary limit is 60 an hour.
-    https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api"""
-    async with hub.client(None) as http:
-        answered = await http.get("/repos/iris-calder/notes")
-    assert answered.headers["X-RateLimit-Limit"] == "60"
-    assert answered.headers["X-RateLimit-Resource"] == "core"
 
 
 async def test_code_search_reports_its_own_ten_a_minute_budget(hub: Hub) -> None:
@@ -313,16 +293,6 @@ async def test_a_get_carries_an_etag_and_sent_back_in_if_none_match_is_a_304_tha
     assert (unchanged.status_code, unchanged.content, unchanged.headers["ETag"]) == (304, b"", tag)
     assert unchanged.headers["X-RateLimit-Used"] == first.headers["X-RateLimit-Used"] == "1"
     assert other.status_code == 200 and other.headers["X-RateLimit-Used"] == "2"
-
-
-async def test_a_304_without_a_credential_still_spends_the_addresss_budget(hub: Hub) -> None:
-    """Documented: only a correctly authorized conditional request is free.
-    https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate"""
-    async with hub.client(None) as http:
-        first = await http.get("/repos/iris-calder/notes")
-        again = await http.get("/repos/iris-calder/notes", headers={"If-None-Match": first.headers["ETag"]})
-    assert again.status_code == 304
-    assert again.headers["X-RateLimit-Used"] == "2"
 
 
 # ---------------------------------------------------------------- installation tokens

@@ -38,9 +38,9 @@ operation, every query parameter and body property the reference documents is ei
 in a 501 (`Served.refuses`, `Request.UNSERVED`); a property a closed schema (`additionalProperties: false`) has not
 got is a 400. `test_jira_surface.py` holds all of this to the subset.
 
-## Credentials and permissions are not enforced
+## Credentials and permissions
 
-Minutehand deliberately does not enforce credentials or permissions. Any credential, or none, is let in, and a
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Any credential, or none, is let in, and a
 credential only says who calls: a seeded API token or access token is its account's, a Basic username that is an
 account's email is that account's, anything else is the agent's (`test_jira_any_credential.py`). What a caller can
 see is the world's data and stays: an issue or project in which the caller holds no role is a 404, as the

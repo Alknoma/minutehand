@@ -6,12 +6,15 @@ endpoints, as one ASGI app over the run's store and clock.
 provider directly, without the proxy) is answered by every route, which is safe because the hosts' paths do
 not overlap.
 
-**Sign-in.** `POST /token` answers the refresh-token grant and the service account's JWT-bearer grant for the
-credentials the scenario names (`SignIn`), or, when it names none, for any credential, signing in as the
-scenario's owner. A refresh token is matched as given; a service account by the `iss` (and, impersonating,
-`sub`) of its assertion, whose signature is not checked: the run holds no Google key. The access token
-issued identifies its user for an hour of simulated time, so a token used after a clock jump gets Google's
-401 and the client's refresh path runs. `POST /revoke` revokes a token and the grant it came from.
+**Sign-in.** Minutehand is a simulation and enforces no credential; only the shapes of requests and answers are
+Google's. `POST /token` answers the refresh-token, authorization-code and JWT-bearer grants for any credential: a
+refresh token or service account the scenario names (`SignIn`) signs in as its person, and anything else as the
+seed's `unknown_credentials_act_as` (by default the scenario's owner). A refresh token is matched as given; a
+service account by the `iss` (and, impersonating a user the world holds, `sub`) of its assertion, whose signature
+is not checked. An authorization code is answered with a refresh token as well. Only a request missing the grant's
+required parameter, or naming a grant type Google does not have, is refused. The access token issued acts as its
+user from then on, expired or revoked alike, and any other bearer, or none, acts as the default identity
+(`access.signed_in`). `POST /revoke` revokes a token and the grant it came from, and answers 200 for any token.
 
 **Errors** are Google's: Drive's classic envelope (`code`, `message`, one `errors` entry with `domain` and
 `reason`), and Docs' and Slides' (`code`, `message`, `status`). A real behaviour this fake does not
@@ -207,19 +210,14 @@ class DriveApi:
         api: Api,
         operation: str,
     ) -> Handler:
-        """Read the query, know the caller by their token, play any fault due, and answer refusals in Google's
-        shape for `api`."""
+        """Read the query, know whom the call acts as, play any fault due, and answer refusals in Google's shape
+        for `api`."""
 
         async def endpoint(request: Request) -> Response:
             try:
                 try:
                     call = wire.read_query(request.url.query)
-                    caller = signed_in(
-                        self._drive,
-                        self._clock,
-                        bearer(request, call.access_token),
-                        missing=wire.login_required() if api is Api.DRIVE else wire.docs_login_required(),
-                    )
+                    caller = signed_in(self._drive, bearer(request, call.access_token))
                     self._fault(operation, api, request)
                     return await handler(request, call, caller)
                 except docs.Refused as refused:
@@ -1362,62 +1360,52 @@ class DriveApi:
             if not asked.assertion:
                 return _oauth_failed("invalid_request", "Missing required parameter: assertion")
             claims = wire.jwt_claims(asked.assertion)
-            if claims is None:
-                return _oauth_failed(
-                    "invalid_grant", "Invalid JWT: Token must be a short-lived token and in a reasonable timeframe"
-                )
-            secret, acting, scope = claims.iss, claims.sub, None
+            secret = claims.iss if claims is not None else asked.assertion
+            acting = claims.sub if claims is not None else None
+            scope = None
         elif asked.grant_type == wire.REFRESH_TOKEN:
             if not asked.refresh_token:
                 return _oauth_failed("invalid_request", "Missing required parameter: refresh_token")
             secret, acting, scope = asked.refresh_token, None, asked.scope
         elif asked.grant_type == wire.AUTHORIZATION_CODE:
-            return _oauth_failed("invalid_grant", "Malformed auth code.")
+            if not asked.code:
+                return _oauth_failed("invalid_request", "Missing required parameter: code")
+            secret, acting, scope = asked.code, None, asked.scope
         else:
             return _oauth_failed("unsupported_grant_type", f"Invalid grant_type: {asked.grant_type}")
         credential = self._drive.credential(secret)
-        if credential is None:
-            if asked.grant_type == wire.JWT_BEARER:
-                return _oauth_failed("invalid_grant", "Invalid grant: account not found")
-            return _oauth_failed("invalid_grant", "Bad Request")
-        if credential.revoked:
-            return _oauth_failed("invalid_grant", "Token has been expired or revoked.")
-        email = credential.email
-        if acting is not None and acting != email:
-            if self._drive.user(acting) is None:
-                return _oauth_failed("invalid_grant", "Invalid email or User ID")
-            email = acting
-        key = self._drive.credential_key(secret)
-        if key == state.ANY_CREDENTIAL:
-            key = state.secret_digest(secret)
-            self._drive.keep_credential(key, credential, operation=Operation.CREATE)
+        email = acting if acting is not None and self._drive.user(acting) is not None else credential.email
         seq = self._drive.next_seq()
+        refresh: str | None = None
+        if asked.grant_type == wire.AUTHORIZATION_CODE:
+            refresh = "1//0" + hashlib.sha256(f"refresh\x1f{secret}\x1f{seq}".encode()).hexdigest()
+            key = state.secret_digest(refresh)
+            self._drive.keep_credential(key, wire.Credential(email=credential.email), operation=Operation.CREATE)
+        else:
+            key = self._drive.credential_key(secret)
+            if key == state.ANY_CREDENTIAL:
+                key = state.secret_digest(secret)
+                self._drive.keep_credential(key, credential, operation=Operation.CREATE)
         access = "ya29.a0" + hashlib.sha256(f"access\x1f{secret}\x1f{seq}".encode()).hexdigest()
         expires = self._clock.now() + timedelta(seconds=wire.TOKEN_LIFETIME)
         self._drive.keep_token(
             access,
             wire.AccessToken(email=email, expires=wire.rfc3339(expires), credential=key),
         )
-        return _json(wire.TokenAnswer(access_token=access, scope=scope))
+        return _json(wire.TokenAnswer(access_token=access, scope=scope, refresh_token=refresh))
 
     async def revoke(self, request: Request) -> Response:
         """Revoke an access token or a refresh token, and with either the whole grant: the credential and every
-        access token issued for it. A service account's credential is not revoked, only its tokens."""
+        access token issued for it. A service account's credential is not revoked, only its tokens. Any token is
+        answered 200, one the world does not hold or already revoked among them: Minutehand enforces no
+        credential, and what was revoked goes on acting as its user."""
         form = wire.read_form(await request.body())
         query = wire.read_query(request.url.query)
         spelled = query.token or (form["token"] if "token" in form else None)
         if not spelled:
             return _oauth_failed("invalid_request", "Missing required parameter: token")
         issued = self._drive.token(spelled)
-        if issued is not None:
-            if issued.revoked:
-                return _oauth_failed("invalid_token", "Token expired or revoked")
-            key = issued.credential
-        else:
-            key = state.secret_digest(spelled)
-            known = self._drive.credential_by_key(key)
-            if known is None or known.revoked or known.service_account:
-                return _oauth_failed("invalid_token", "Token expired or revoked")
+        key = issued.credential if issued is not None else state.secret_digest(spelled)
         credential = self._drive.credential_by_key(key)
         if credential is not None and not credential.service_account and key != state.ANY_CREDENTIAL:
             self._drive.keep_credential(key, credential.model_copy(update={"revoked": True}))

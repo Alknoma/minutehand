@@ -19,14 +19,14 @@ lists is `unknown_method`, as Slack answers it.
 | A name Slack has no method by is HTTP 200 `{"ok":false,"error":"unknown_method","req_method":…}` | observed | `test_slack_method_coverage.py::test_a_name_slack_has_no_method_by_is_refused_unknown_method_as_slack_answers_it` | `data/observed/unknown_method.http` |
 | An argument Slack documents for a served method and the fake does not model (`app.UNSERVED_ARGUMENTS`: `username`, `icon_*`, `link_names`, `parse`, `mrkdwn: false`, `metadata`, `markdown_text`, `as_user: true`, `unfurl_links: true`, `include_locale`, `prevent_creation`, `interactivity_pointer`, a refresh-token grant, …) is refused 501 naming it; at its default it is served | documented | `test_slack_fidelity.py::test_an_argument_the_fake_does_not_model_is_refused_naming_it`, `::test_an_unmodelled_argument_at_its_default_is_served` | each method's page under https://docs.slack.dev/reference/methods/ |
 
-## Credentials: deliberately not enforced
+## Credentials
 
-Minutehand never refuses a call for its credential: any token, or none, is answered, and the token only picks which
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Minutehand never refuses a call for its credential: any token, or none, is answered, and the token only picks which
 of the world's workspaces answers (one that declares or minted it, else the first that declares none, else the
 first). What a caller sees still follows world data: a channel the app is not in stays `not_in_channel` or
 `channel_not_found` whatever the token
 (`test_slack_fidelity.py::test_a_channel_the_app_is_not_in_is_refused_not_in_channel_whatever_the_token`). Each
-check Slack makes and the fake does not:
+check Slack makes and this stack does not test:
 
 | Slack refuses | Slack's answer | Test that it passes here |
 |---|---|---|
