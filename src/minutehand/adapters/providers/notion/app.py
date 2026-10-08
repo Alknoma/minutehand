@@ -189,19 +189,19 @@ class NotionApi:
     def _page(self, call: Call, page_id: str) -> wire.StoredPage:
         page = self._world.page(page_id)
         if page is None or not self.reaches(call, page_id):
-            raise wire.not_found(wire.Missing.PAGE, page_id)
+            raise wire.not_found(wire.Missing.PAGE, page_id, call.integration.name)
         return page
 
     def _database(self, call: Call, database_id: str) -> wire.StoredDatabase:
         database = self._world.database(database_id)
         if database is None or not self.reaches(call, database_id):
-            raise wire.not_found(wire.Missing.DATABASE, database_id)
+            raise wire.not_found(wire.Missing.DATABASE, database_id, call.integration.name)
         return database
 
     def _holding(self, call: Call, block_id: str) -> wire.StoredPage:
         holder = self._world.holding(call.workspace, block_id)
         if holder is None or not self.reaches(call, holder.id):
-            raise wire.not_found(wire.Missing.BLOCK, block_id)
+            raise wire.not_found(wire.Missing.BLOCK, block_id, call.integration.name)
         return holder
 
     # ------------------------------------------------------------------ rendering
@@ -286,7 +286,7 @@ class NotionApi:
             "is_inline": database.is_inline,
             "properties": {name: dict(prop) for name, prop in database.schema_.items()},
             "parent": database.parent.render(),
-            "url": f"https://www.notion.so/{database.id.replace('-', '')}",
+            "url": wire.record_url(database.id),
             "public_url": None,
             "archived": database.archived,
             "in_trash": database.archived,
@@ -705,7 +705,7 @@ class NotionApi:
         user_id = self._id(request, "user_id")
         user = self._world.user(user_id)
         if user is None or user.workspace != call.workspace or user.removed:
-            raise wire.not_found(wire.Missing.USER, user_id)
+            raise wire.not_found(wire.Missing.USER, user_id, call.integration.name)
         return _answer(self._user(call, user))
 
     # ------------------------------------------------------------------ comments

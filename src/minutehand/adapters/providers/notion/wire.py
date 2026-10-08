@@ -161,24 +161,27 @@ class Missing:
     COMMENT = "comment"
 
 
-def not_found(what: str, object_id: str) -> Refusal:
+def not_found(what: str, object_id: str, connection: str | None = None) -> Refusal:
+    """Notion's documented message (https://developers.notion.com/reference/status-codes), naming the connection
+    when it is known."""
+    named = f' "{connection}"' if connection is not None else ""
     return Refusal(
         ErrorCode.OBJECT_NOT_FOUND,
-        f"No {what} with ID {object_id} can be reached by this integration. Only pages and databases "
-        "shared with the integration, and what is inside them, can be reached.",
+        f"Could not find {what} with ID: {object_id}. Make sure the relevant pages and databases are shared with "
+        f"your connection{named}.",
     )
 
 
 def rate_limited(retry_after: int) -> Refusal:
     return Refusal(
         ErrorCode.RATE_LIMITED,
-        "This integration has sent too many requests. Wait before trying again.",
+        "You have been rate limited. Please try again later.",
         headers={"Retry-After": str(retry_after)},
     )
 
 
 def conflict() -> Refusal:
-    return Refusal(ErrorCode.CONFLICT_ERROR, "Another change to the same content was saved first. Try again.")
+    return Refusal(ErrorCode.CONFLICT_ERROR, "Conflict occurred while saving. Please try again.")
 
 
 def archived(what: str) -> Refusal:
@@ -219,10 +222,20 @@ def request_id(seed: str) -> str:
     return minted_id("request", seed)
 
 
+NOTION_LINKS = "https://app.notion.com/p/"
+"""Where Notion's own links to its records point since June 2026, on every version
+(https://developers.notion.com/reference/versioning): a page's `url` is `.../p/<Title>-<id>`, a database's and a
+mention's `href` `.../p/<id>` (https://developers.notion.com/reference/page, /database, /rich-text)."""
+
+
 def page_url(page_id: str, title: str) -> str:
     slug = "-".join("".join(c if c.isalnum() else " " for c in title).split())
     hexed = page_id.replace("-", "")
-    return f"https://www.notion.so/{slug}-{hexed}" if slug else f"https://www.notion.so/{hexed}"
+    return f"{NOTION_LINKS}{slug}-{hexed}" if slug else f"{NOTION_LINKS}{hexed}"
+
+
+def record_url(object_id: str) -> str:
+    return NOTION_LINKS + object_id.replace("-", "")
 
 
 # --------------------------------------------------------------------------- reading a body
@@ -497,7 +510,7 @@ def _mention(body: Json, annotations: Json, where: str, names: Names) -> JsonVal
             raise not_found(Missing.PAGE if kind == MentionType.PAGE else Missing.DATABASE, target_id)
         plain = title or "Untitled"
         mentioned = {"id": target_id}
-        href = f"https://www.notion.so/{target_id.replace('-', '')}"
+        href = record_url(target_id)
     return {
         "type": "mention",
         "mention": {"type": kind, kind: mentioned},
@@ -863,9 +876,9 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
             found["caption"] = rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else []
         return found
     if kind is BlockType.IMAGE:
-        only_keys(body, ["type", "external", "caption"], where)
         if "external" not in body:
             raise unserved(f"an image that is not `external` ({where})")
+        only_keys(body, ["type", "external", "caption"], where)
         external = as_object(body["external"], f"{where}.external")
         if "url" not in external:
             raise invalid(f"{where}.external.url should be defined.")
