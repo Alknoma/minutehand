@@ -129,3 +129,12 @@ async def test_an_enum_value_is_named_by_its_option(agent: httpx.AsyncClient) ->
     read = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "custom_fields.enum_value.name"}))
     chosen = [f["enum_value"] for f in read["custom_fields"] if "enum_value" in f and f["enum_value"] is not None]
     assert {"gid": option("Priority", "Critical"), "name": "Critical"} in chosen
+
+
+async def test_a_created_object_answers_where_it_can_be_retrieved(agent: httpx.AsyncClient) -> None:
+    """https://developers.asana.com/docs/errors: 201 Created, "The API URL where the object can be retrieved is also
+    returned in the `Location` header of the response"."""
+    made = await agent.post("/tasks", json={"data": {"name": "x", "projects": [BACKEND]}})
+    story = await agent.post(f"/tasks/{INCIDENT}/stories", json={"data": {"text": "Seen."}})
+    assert made.headers["location"] == f"https://app.asana.com/api/1.0/tasks/{made.json()['data']['gid']}"
+    assert story.headers["location"] == f"https://app.asana.com/api/1.0/stories/{story.json()['data']['gid']}"

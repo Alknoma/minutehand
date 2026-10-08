@@ -520,6 +520,13 @@ def _one(request: Request, item: wire.Representation, status: int = 200) -> Resp
     return _answer(wire.one(item, wire.field_tree(_query(request))), status)
 
 
+def _created(request: Request, item: wire.Representation, collection: str) -> Response:
+    """201 with the record, and "the API URL where the object can be retrieved ... in the `Location` header"
+    (https://developers.asana.com/docs/errors)."""
+    location = f"{wire.API_BASE}/{collection}/{item.gid}"
+    return _answer(wire.one(item, wire.field_tree(_query(request))), 201, {"Location": location})
+
+
 def _completed_since(query: wire.Query, tasks: list[wire.AsanaTask]) -> list[wire.AsanaTask]:
     """`completed_since=now` keeps open tasks; a moment keeps open tasks and those completed since."""
     value = query.text("completed_since")
@@ -756,7 +763,7 @@ class AsanaApi:
             parent=project.gid,
             actor=Actor.AGENT,
         )
-        return _one(request, view.project_out(project), 201)
+        return _created(request, view.project_out(project), "projects")
 
     async def create_project(self, request: Request, caller: wire.AsanaUser) -> Response:
         return await self._create_project(request, caller, workspace=None, team=None)
@@ -789,7 +796,7 @@ class AsanaApi:
             gid=self._world.next_gid(), name=sent.name, project=project.gid, created_at=self._now()
         )
         self._world.put_record(section, parent=project.gid, actor=Actor.AGENT)
-        return _one(request, view.section_out(section), 201)
+        return _created(request, view.section_out(section), "sections")
 
     async def project_tasks(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -930,7 +937,7 @@ class AsanaApi:
             created_at=self._now(),
         )
         self._world.put_record(tag, parent=state.TAGS, actor=Actor.AGENT)
-        return _one(request, view.tag_out(tag), 201)
+        return _created(request, view.tag_out(tag), "tags")
 
     async def create_tag(self, request: Request, caller: wire.AsanaUser) -> Response:
         return await self._create_tag(request, caller, workspace=None)
@@ -1086,7 +1093,7 @@ class AsanaApi:
         )
         task = task.model_copy(update={"custom_fields": self._values(view, task, sent.custom_fields)})
         self._world.put_task(task, operation=Operation.CREATE, actor=Actor.AGENT)
-        return _one(request, self._view(caller).task_out(task), 201)
+        return _created(request, self._view(caller).task_out(task), "tasks")
 
     async def create_task(self, request: Request, caller: wire.AsanaUser) -> Response:
         return await self._create_task(request, caller, parent=None)
@@ -1166,7 +1173,7 @@ class AsanaApi:
             gid=self._world.next_gid(), text=sent.text, task=task.gid, created_by=caller.gid, created_at=self._now()
         )
         self._world.put_story(story, actor=Actor.AGENT)
-        return _one(request, view.story_out(story), 201)
+        return _created(request, view.story_out(story), "stories")
 
     async def stories(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
