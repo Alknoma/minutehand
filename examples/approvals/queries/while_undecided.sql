@@ -1,4 +1,3 @@
--- For each request in the agent's product, every write and message of the agent's while nobody had decided it.
 SELECT i.entity_id AS item, json_extract(i.snapshot, '$.person') AS approver,
        a.at, a.kind, a.person, substr(a.summary, 1, 60) AS summary
 FROM events i

@@ -616,7 +616,6 @@ would pass only on the seeds where Nadia decides within three days. Any sample p
 
 <!-- file: examples/approvals/queries/after_a_rejection.sql -->
 ```sql
--- Everything the agent wrote or sent after a person turned something down in its product.
 SELECT r.person, r.decision, a.at, a.kind, a.provider, a.summary
 FROM replies r
 JOIN actions a ON a.seq > r.seq
@@ -629,7 +628,6 @@ Every write and message while each request was undecided, the reminder and the e
 
 <!-- file: examples/approvals/queries/while_undecided.sql -->
 ```sql
--- For each request in the agent's product, every write and message of the agent's while nobody had decided it.
 SELECT i.entity_id AS item, json_extract(i.snapshot, '$.person') AS approver,
        a.at, a.kind, a.person, substr(a.summary, 1, 60) AS summary
 FROM events i
