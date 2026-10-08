@@ -536,6 +536,17 @@
           ],
           "default": null
         },
+        "transitions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Transitions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "until": {
           "anyOf": [
             {
@@ -781,7 +792,8 @@
         "run",
         "ask",
         "handoff",
-        "person"
+        "person",
+        "transition"
       ],
       "title": "Each",
       "type": "string"
@@ -1573,6 +1585,15 @@
       "title": "Messages",
       "type": "object"
     },
+    "Mover": {
+      "description": "Who made a transition, as a rule names it (`domain.world.Actor`).",
+      "enum": [
+        "agent",
+        "person"
+      ],
+      "title": "Mover",
+      "type": "string"
+    },
     "OnMiss": {
       "enum": [
         "pass_through",
@@ -2356,7 +2377,7 @@
             }
           ],
           "default": null,
-          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}",
+          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}, and for `each: transition` {transition.provider}, {transition.item}, {transition.name}, {transition.from}, {transition.to}, {transition.by}, {transition.who}",
           "title": "Message"
         },
         "pattern": {
@@ -2387,8 +2408,12 @@
         "where": {
           "$ref": "#/$defs/Where",
           "default": {
+            "by": [],
+            "name": [],
             "person": [],
-            "person_not": []
+            "person_not": [],
+            "provider": [],
+            "to": []
           }
         }
       },
@@ -2648,6 +2673,100 @@
       "title": "Touches",
       "type": "object"
     },
+    "Transitions": {
+      "additionalProperties": false,
+      "description": "Transitions of items' states, by anyone (docs/design-transitions.md): each counted at the moment it was\nmade. States and names are the provider's own words, in any case.",
+      "properties": {
+        "by": {
+          "default": [],
+          "description": "Made by any of these; empty: by anyone",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "from": {
+          "default": [],
+          "description": "Out of any of these states; empty: out of any",
+          "items": {
+            "type": "string"
+          },
+          "title": "From",
+          "type": "array"
+        },
+        "name": {
+          "default": [],
+          "description": "Named any of these by the provider; empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
+        "not_reached": {
+          "default": [],
+          "description": "Its item had been in none of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Reached",
+          "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "In any of these providers; empty: in any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "reached": {
+          "default": [],
+          "description": "Its item had been in one of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Reached",
+          "type": "array"
+        },
+        "same_item": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: of the item of the transition the rule is read for (`each: transition`)",
+          "title": "Same Item"
+        },
+        "to": {
+          "default": [],
+          "description": "Into any of these states; empty: into any",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
+          "type": "array"
+        },
+        "who": {
+          "default": [],
+          "description": "Made by any of these people; empty: by anyone or anything",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Who",
+          "type": "array"
+        }
+      },
+      "title": "Transitions",
+      "type": "object"
+    },
     "Upstream": {
       "additionalProperties": false,
       "description": "Where the emulator listens: `http://host:port`, `https://host:port` (verified against `ca` when given, else\nthe system's roots), or `unix:///path/to.sock`. A path on an http(s) URL is put before every forwarded path.",
@@ -2755,8 +2874,26 @@
     },
     "Where": {
       "additionalProperties": false,
-      "description": "Which of the things the rule is read for: by the person asked or handed the work.",
+      "description": "Which of the things the rule is read for: by the person asked or handed the work, or who made the\ntransition; and, for `each: transition`, by its provider, name, states and who made it.",
       "properties": {
+        "by": {
+          "default": [],
+          "description": "For `each: transition`: made by these only",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "name": {
+          "default": [],
+          "description": "For `each: transition`: named these by the provider only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
         "person": {
           "default": [],
           "description": "Only these; empty: everyone",
@@ -2775,6 +2912,24 @@
             "type": "string"
           },
           "title": "Person Not",
+          "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "For `each: transition`: in these providers only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "to": {
+          "default": [],
+          "description": "For `each: transition`: into these states only",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
           "type": "array"
         }
       },

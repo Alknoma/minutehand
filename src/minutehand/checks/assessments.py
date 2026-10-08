@@ -13,7 +13,19 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import pairwise
 
-from minutehand.checks.facts import Ask, Fact, asks, ended_at, gates_declared, messages, planned_wakes, reported, writes
+from minutehand.checks.facts import (
+    Ask,
+    Fact,
+    Moved,
+    asks,
+    ended_at,
+    gates_declared,
+    messages,
+    planned_wakes,
+    reported,
+    transitions,
+    writes,
+)
 from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.assessments import (
     OWNER,
@@ -23,6 +35,7 @@ from minutehand.domain.assessments import (
     Each,
     Judged,
     Moment,
+    Mover,
     Rule,
     Thing,
     Write,
@@ -39,7 +52,7 @@ from minutehand.domain.checks import (
 )
 from minutehand.domain.scenario import Person
 from minutehand.domain.templates import fill
-from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, StoredSnapshot, WorldEvent
+from minutehand.domain.world import Actor, EntityKind, MemorySnapshot, Operation, StoredSnapshot, WorldEvent
 
 _KIND = {Judged.FAIL: FindingKind.FAIL, Judged.REVIEW: FindingKind.REVIEW}
 _SEVERITY = {Judged.FAIL: Severity.ERROR, Judged.REVIEW: Severity.WARNING}
@@ -55,6 +68,7 @@ _THING = {
     EntityKind.STORED: Thing.STORED,
 }
 
+_MOVER = {Actor.AGENT: Mover.AGENT, Actor.PERSON: Mover.PERSON}
 _OPERATION = {Write.CREATE: Operation.CREATE, Write.UPDATE: Operation.UPDATE, Write.DELETE: Operation.DELETE}
 _STATUS = {
     CommitmentState.OPEN: CommitmentStatus.OPEN,
@@ -73,8 +87,12 @@ class _Subject:
 
     person: Person | None = None
     ask: Ask | None = None
+    moved: Moved | None = None
 
     def label(self) -> str:
+        if self.moved is not None:
+            t = self.moved.transition
+            return f"the transition {t.name!r} of {t.provider} {t.item.external_id} at {t.at:%Y-%m-%d %H:%M} UTC"
         if self.ask is not None:
             whom = self.ask.person or "someone"
             return f"the ask of {whom} at {self.ask.at:%Y-%m-%d %H:%M} UTC"
@@ -123,6 +141,7 @@ class _Reader:
         self.written = writes(view)
         self.planned = planned_wakes(view, self.end)
         self.said = reported(view)
+        self.moves = transitions(view)
         answered = [a.answered_at for a in self.asks]
         self.all_answered = (
             max(t for t in answered if t is not None) if answered and all(t is not None for t in answered) else None
@@ -149,6 +168,20 @@ class _Reader:
             return [_Subject()]
         if rule.each is Each.PERSON:
             return [_Subject(person=p) for p in self.view.scenario.people if self._picked(rule, p.key)]
+        if rule.each is Each.TRANSITION:
+            w = rule.where
+            return [
+                _Subject(person=self.people[m.transition.who] if m.transition.who in self.people else None, moved=m)
+                for m in self.moves
+                if _among(m.transition.provider, w.provider)
+                and _among(m.transition.name, w.name)
+                and _among(m.transition.to_state, w.to)
+                and (not w.by or _mover(m) in w.by)
+                and (
+                    not (w.person or w.person_not)
+                    or (m.transition.who is not None and self._picked(rule, m.transition.who))
+                )
+            ]
         found = self.asks if rule.each is Each.ASK else self.handoffs
         return [
             _Subject(person=self.people[a.person] if a.person in self.people else None, ask=a)
@@ -184,6 +217,9 @@ class _Reader:
             base = self._when(at, subject, None)
         elif moment.anchor is Anchor.ALL_ANSWERED:
             base = self.all_answered
+        elif moment.anchor is Anchor.TRANSITION:
+            assert subject.moved is not None
+            base = subject.moved.at
         else:
             ask = subject.ask
             assert ask is not None
@@ -221,8 +257,11 @@ class _Reader:
         if broke is None:
             return True, None
         evidence = sorted(
-            {s for f in counted for s in f.seqs} | ({subject.ask.obligation.opened_by} if subject.ask else set())
+            {s for f in counted for s in f.seqs}
+            | ({subject.ask.obligation.opened_by} if subject.ask else set())
+            | ({subject.moved.event.seq} if subject.moved else set())
         )
+        moved = subject.moved.transition if subject.moved is not None else None
         values = {
             "person.key": subject.person.key if subject.person is not None else "",
             "person.name": subject.person.name if subject.person is not None else "",
@@ -231,6 +270,13 @@ class _Reader:
             "rule.id": rule.id,
             "rule.count": str(len(counted)),
             "rule.moment": f"{at} ({moment:%Y-%m-%d %H:%M} UTC)" if at is not None and moment is not None else "",
+            "transition.provider": moved.provider if moved is not None else "",
+            "transition.item": moved.item.external_id if moved is not None else "",
+            "transition.name": moved.name if moved is not None else "",
+            "transition.from": (moved.from_state or "") if moved is not None else "",
+            "transition.to": moved.to_state if moved is not None else "",
+            "transition.by": moved.by.value if moved is not None else "",
+            "transition.who": (moved.who or "") if moved is not None else "",
         }
         said = fill(rule.message, values) if rule.message is not None else None
         window = _window(rule, since, until)
@@ -341,6 +387,23 @@ class _Reader:
             return self._memory(rule, subject, at)
         if count.stored is not None:
             return self._stored(rule, subject, at)
+        if count.transitions is not None:
+            t = count.transitions
+            who = {self._key(w, subject) for w in t.who}
+            item = subject.moved.transition.item if subject.moved is not None else None
+            return [
+                Fact(at=m.at, seqs=[m.event.seq])
+                for m in self.moves
+                if _among(m.transition.provider, t.provider)
+                and _among(m.transition.name, t.name)
+                and _among(m.transition.to_state, t.to)
+                and (not t.from_ or (m.transition.from_state is not None and _among(m.transition.from_state, t.from_)))
+                and (not t.by or _mover(m) in t.by)
+                and (not who or m.transition.who in who)
+                and (not t.reached or any(_among(r, t.reached) for r in m.reached))
+                and not any(_among(r, t.not_reached) for r in m.reached if t.not_reached)
+                and (t.same_item is None or (m.transition.item == item) == t.same_item)
+            ]
         if count.replies is not None:
             r = count.replies
             by = {self._key(w, subject) for w in r.by}
@@ -416,6 +479,16 @@ class _Reader:
         return [
             Fact(at=event.sim_time, seqs=[event.seq]) for _, event in sorted(held.items()) if _matches(event, s.values)
         ]
+
+
+def _among(said: str, wanted: list[str]) -> bool:
+    """Whether `said` is one of `wanted`, in any case; any is when none is wanted."""
+    return not wanted or said.casefold() in {w.casefold() for w in wanted}
+
+
+def _mover(moved: Moved) -> Mover | None:
+    by = moved.transition.by
+    return _MOVER[by] if by in _MOVER else None
 
 
 def _matches(event: WorldEvent, wanted: dict[str, str | int | float | bool | None]) -> bool:

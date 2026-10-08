@@ -178,7 +178,8 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
                         e
                         for e in world.events()
                         if e.entity not in (CHECKPOINT, STEP)
-                        and e.entity.kind not in (EntityKind.DUE, EntityKind.MEMORY, EntityKind.NEXT_WAKE)
+                        and e.entity.kind
+                        not in (EntityKind.DUE, EntityKind.PENDING, EntityKind.MEMORY, EntityKind.NEXT_WAKE)
                     ]
                 )
             )

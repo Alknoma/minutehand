@@ -308,6 +308,35 @@ class WorkingHours(Model):
     weekdays_only: bool = True
 
 
+class Take(Model):
+    """A transition a person is pinned to take on an item pending on them in a provider the people engine plays
+    (`Scenario.transitions_on`, docs/design-transitions.md), instead of the one a model picks; and, with `after`,
+    when. The words it carries are a model's from `facts`, or exactly `verbatim`."""
+
+    provider: ProviderKey
+    nth: int | None = Field(
+        default=None, ge=1, description="The nth item pending on them in that provider, from 1; None: every one"
+    )
+    take: str = Field(
+        min_length=1, description="The offer, by its name or the state it reaches, in any case: 'Done', 'declined'"
+    )
+    after: timedelta | None = Field(
+        default=None,
+        ge=timedelta(0),
+        description="Exactly this long after the item became pending on them; None: drawn as their answers are",
+    )
+    verbatim: str | None = Field(
+        default=None, min_length=1, description="Exact words for the offer's text (its comment); no model is called"
+    )
+    facts: list[str] = Field(default=[], description="What its words carry, which a model writes them from")
+
+    @model_validator(mode="after")
+    def _one_source_of_words(self) -> Take:
+        if self.verbatim is not None and self.facts:
+            raise ValueError(f"a take of {self.take!r} gives `verbatim` words or `facts` to write them from, not both")
+        return self
+
+
 class Account(StrEnum):
     """What kind of account a person holds in the services the run fakes."""
 
@@ -351,6 +380,11 @@ class Person(Model):
         description="How Minutehand signs in to the agent's own product as this person, to read what waits on them "
         "and decide it (`AgentUnderTest.inboxes`, `{credential}` in `as_person`): generated per run and handed to the "
         "agent's command in its variable, or read from Minutehand's own environment. Never stored",
+    )
+    takes: list[Take] = Field(
+        default=[],
+        description="Transitions this person is pinned to take on items pending on them in a provider the people "
+        "engine plays (`Scenario.transitions_on`); without one, a model picks among the legal ones",
     )
 
     def knows_at(self, at: datetime, starts_at: datetime) -> tuple[list[str], list[str]]:
@@ -1048,6 +1082,11 @@ class _ScenarioBody(Model):
     spaces: list[SharedSpace] = []
     sign_ins: list[SignIn] = []
     ticket_fates: list[TicketFate] = []
+    transitions_on: list[ProviderKey] = Field(
+        default=[],
+        description="Providers whose people the people engine plays (docs/design-transitions.md): what waits on a "
+        "person there is pending on them, and at their moment they take one of its legal transitions",
+    )
     directions: list[Direction] = []
     channels: list[SeededChannel] = Field(default=[], description="Conversations that exist when the run starts")
     happenings: list[Happening] = Field(
@@ -1149,7 +1188,25 @@ class _ScenarioBody(Model):
             self._refuse_tell(relayed)
         refuse_repeated_rules(self.assess)
         refuse_unknown_people(self.assess, keys)
+        self._takes_resolve()
         return self
+
+    def _takes_resolve(self) -> None:
+        """A pinned transition is on a provider the engine plays, and names one item, or every one, once."""
+        if len(self.transitions_on) != len(set(self.transitions_on)):
+            raise ValueError("transitions_on names a provider twice")
+        for person in self.people:
+            said: list[tuple[str, int | None]] = []
+            for take in person.takes:
+                if take.provider not in self.transitions_on:
+                    raise ValueError(
+                        f"{person.key} takes {take.take!r} on {take.provider}, which the people engine does not play: "
+                        f"add it to `transitions_on`"
+                    )
+                said.append((take.provider, take.nth))
+            twice = sorted({f"{p} {n or 'every'}" for p, n in said if said.count((p, n)) > 1})
+            if twice:
+                raise ValueError(f"{person.key} pins two takes on the same item: {', '.join(twice)}")
 
     def happening_ticket(self, happening: TicketHappening) -> SeededTicket:
         """The one seeded ticket a happening acts on, found by its title."""

@@ -44,6 +44,14 @@ class PendingHappening(Model):
     happening: int = Field(ge=0, description="Position in the scenario's `happenings`")
 
 
+class PendingTransition(Model):
+    """A person's move on an item pending on them, at the moment it was booked (`application.people`)."""
+
+    kind: Literal["transition"] = "transition"
+    due: Due
+    pending: EntityRef = Field(description="The people engine's record of the item (`EntityKind.PENDING`)")
+
+
 class PendingWake(Model):
     """A wake the agent asked for (`DUE`, from `AgentReport.next_wake`) or a `Polled` tick (`TICK`)."""
 
@@ -100,7 +108,8 @@ Pending = Annotated[
     | PendingDirection
     | PendingBooking
     | PendingMachine
-    | PendingTimer,
+    | PendingTimer
+    | PendingTransition,
     Field(discriminator="kind"),
 ]
 
@@ -152,6 +161,10 @@ class Checkpoint(Model):
     fated: list[EntityRef] = Field(default=[], description="Tickets whose fate is already scheduled or landed")
     unwritten: list[Unwritten] = Field(
         default=[], description="Answers owed whose words the model failed to write, tried again on the next turn"
+    )
+    untaken: list[EntityRef] = Field(
+        default=[],
+        description="Items pending on people whose move did not land (a model failed), tried again on the next turn",
     )
     commitments: list[Commitment] | None = None
     pending: list[Pending]

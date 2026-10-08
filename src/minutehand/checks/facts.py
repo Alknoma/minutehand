@@ -17,6 +17,7 @@ from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
 from minutehand.domain.scenario import DispatchFault, Model, TicketState
+from minutehand.domain.transitions import Transition
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -27,6 +28,7 @@ from minutehand.domain.world import (
     Operation,
     Snapshot,
     TicketSnapshot,
+    TransitionSnapshot,
     WorldEvent,
 )
 
@@ -223,7 +225,11 @@ class Written(Model):
     )
 
 
-_NOT_WRITES = frozenset({EntityKind.DUE, EntityKind.CHANNEL, EntityKind.MEMORY, EntityKind.NEXT_WAKE})
+_NOT_WRITES = frozenset(
+    {EntityKind.DUE, EntityKind.CHANNEL, EntityKind.MEMORY, EntityKind.NEXT_WAKE, EntityKind.TRANSITION}
+)
+"""Not counted as writes: the run loop's own table, the agent's own memory and plan, and a transition, which is
+recorded beside the write that made it (the ticket moved, the answer set) and counted as `transitions`."""
 _WORD = re.compile(r"\w+")
 
 
@@ -351,6 +357,40 @@ def planned_wakes(view: RunView, ended: datetime) -> list[Fact]:
         ),
         key=lambda f: f.at,
     )
+
+
+class Moved(Model):
+    """One transition of an item's state (`domain.transitions.Transition`), with the states its item had been in
+    before it."""
+
+    event: WorldEvent
+    transition: Transition
+    reached: list[str] = Field(
+        description="Every state the item was in before this transition: earlier transitions' states, and its own "
+        "`from_state`"
+    )
+
+    @property
+    def at(self) -> datetime:
+        return self.event.sim_time
+
+
+def transitions(view: RunView) -> list[Moved]:
+    """Every transition the run recorded, by anyone, in order."""
+    been: dict[tuple[str, str, str], list[str]] = {}
+    found: list[Moved] = []
+    for event in view.events:
+        if not isinstance(event.after, TransitionSnapshot):
+            continue
+        moved = Transition.of(event)
+        key = (moved.item.provider, moved.item.kind.value, moved.item.external_id)
+        states = been.setdefault(key, [])
+        if moved.from_state is not None and moved.from_state not in states:
+            states.append(moved.from_state)
+        found.append(Moved(event=event, transition=moved, reached=list(states)))
+        if moved.to_state not in states:
+            states.append(moved.to_state)
+    return found
 
 
 class Reported(Model):

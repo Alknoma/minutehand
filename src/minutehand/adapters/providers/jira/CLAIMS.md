@@ -116,6 +116,13 @@ the caller sees the project.
 | JQL: an increment without a unit is in the function's own period; `M` and `y` are calendar months and years; `endOfWeek()`, `endOfMonth()`, `startOfYear()`, `endOfYear()` and `futureSprints()` are served | JQL functions | `test_jql_month_increments_are_calendar_months_and_a_bare_increment_is_the_functions_own` |
 | JQL: a documented field (`watcher`, `component`…), function (`membersOf()`…) or operator (`WAS`, `CHANGED`) not served is refused by name (the public site answers `WAS` with no issues for an anonymous caller, `jql_was.http`; the fake does not search history) | JQL fields, functions, operators | `test_jql_a_field_jira_documents_and_the_fake_does_not_serve_is_refused_501_naming_it`, `test_jql_a_function_jira_documents_and_the_fake_does_not_serve_is_refused_501_naming_it`, `test_jql_history_operators_are_refused_501_naming_them`, `test_a_query_that_cannot_be_read_is_refused_with_400` |
 
+## People's transitions (`docs/design-transitions.md`)
+
+| Claim | Class | Source | Test |
+|---|---|---|---|
+| A person's move offers the transitions open from the issue's status and is taken through the same path as the agent's transition, its comment as `update.comment`; a transition not open from the status is refused | documented | `getTransitions`, `doTransition`: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-issueidorkey-transitions-get | `test_an_offer_no_longer_legal_is_refused_as_jira_refuses_it`, `test_a_pinned_take_moves_the_issue_with_its_words_as_the_person` |
+| A workflow begins with its initial transition, named Create, into its first status | documented | https://support.atlassian.com/jira-cloud-administration/docs/work-with-issue-workflows/ | `test_the_agents_own_create_and_transition_are_recorded_as_the_agents` |
+
 ## The words of a refusal
 
 No refusal is in this fake's own words. Each is one of:

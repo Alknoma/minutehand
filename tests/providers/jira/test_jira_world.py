@@ -28,7 +28,7 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot
+from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot, TransitionSnapshot
 from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
 from tests.providers.jira.jira_site import API, IRIS, NOOR, SCENARIO, START, TOMAS, Site, ok
 
@@ -102,9 +102,13 @@ async def test_transition_walks_the_workflow_as_the_assignee(
     site.clock.jump(START + timedelta(days=2))
     site.provider.transition(_ref(site, "LAUNCH-1"), to, site.store, site.clock)
 
-    last = site.store.events()[-1]
+    events = site.store.events()
+    last = [e for e in events if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation) == (Actor.PERSON, Operation.UPDATE)
     assert isinstance(last.after, TicketSnapshot) and last.after.state is to
+    moved = events[-1].after
+    assert isinstance(moved, TransitionSnapshot) and events[-1].actor is Actor.PERSON, "each step is a transition"
+    assert (moved.item, moved.to_state) == (_ref(site, "LAUNCH-1"), status)
     read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "status,resolution,resolutiondate"}))
     assert read["fields"]["status"]["name"] == status and read["fields"]["resolution"]["name"] == resolution
     assert read["fields"]["resolutiondate"] == "2026-08-26T10:50:03.000+0000"

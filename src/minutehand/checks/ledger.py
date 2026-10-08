@@ -16,6 +16,9 @@ the message asked something, and settles nothing: it never reached anyone. A mes
 a person would not answer (a thank-you, a report) asked them nothing, whether or
 not they are away when it arrives.
 
+Where the people engine plays a provider (`Scenario.transitions_on`), an item it held pending on a person (an
+invitation they were sent) asked them, whoever they are, and the person's first transition on it is their answer.
+
 An item waiting on a person in the agent's own product (`InboxItemSnapshot`, seen by reading their inbox) is an
 ask of its own whoever the person is: a pending decision always waits on them. It settles when they decide it and
 the product takes the decision, or when the agent takes it back; a decision the product refused settles nothing.
@@ -49,7 +52,9 @@ from minutehand.domain.world import (
     ItemStatus,
     MessageSnapshot,
     Operation,
+    PendingSnapshot,
     TicketSnapshot,
+    TransitionSnapshot,
     WorldEvent,
 )
 
@@ -165,6 +170,15 @@ def build(
     decided = {(_ref(r.in_reply_to), r.person): r for _, r in answers}
     opened: list[_Open] = []
     holder: dict[tuple[str, EntityKind, str], str | None] = {}
+    pending = {
+        (_ref(e.after.item), e.after.person)
+        for e in events
+        if isinstance(e.after, PendingSnapshot) and e.operation is Operation.CREATE
+    }
+    moved: dict[tuple[tuple[str, EntityKind, str], str], list[WorldEvent]] = {}
+    for e in events:
+        if isinstance(e.after, TransitionSnapshot) and e.actor is Actor.PERSON and e.after.who is not None:
+            moved.setdefault((_ref(e.after.item), e.after.who), []).append(e)
 
     for event in events:
         after = event.after
@@ -174,6 +188,10 @@ def build(
             for person in recipients(event, scenario):
                 reply = answered.get((_ref(event.entity), person.key))
                 settled = reply.at if reply is not None and reply.at <= head else None
+                engine = (_ref(event.entity), person.key) in pending
+                if engine and settled is None:
+                    took = [m for m in moved.get((_ref(event.entity), person.key), []) if m.seq > event.seq]
+                    settled = took[0].sim_time if took and took[0].sim_time <= head else None
                 earlier = next(
                     (
                         o
@@ -190,7 +208,11 @@ def build(
                     continue
                 if not after.answerable:
                     continue  # told, not asked: nobody can answer where it went
-                if (_ref(event.entity), person.key) not in asked and not isinstance(person.reply, Silent):
+                if (
+                    (_ref(event.entity), person.key) not in asked
+                    and not engine
+                    and not isinstance(person.reply, Silent)
+                ):
                     continue
                 opened.append(
                     _Open(
@@ -245,6 +267,11 @@ def build(
         if not handed or person is None or after.state in FINISHED:
             continue
         fate = next((f for f in scenario.ticket_fates if f.assignee == person.key), None)
+        take = next(
+            (t for t in person.takes if t.provider == event.entity.provider and t.nth is None and t.after is not None),
+            None,
+        )
+        due = fate.after if fate is not None else take.after if take is not None else None
         opened.append(
             _Open(
                 key=f"work:{event.entity.provider}:{event.entity.external_id}:{person.key}:{event.seq}",
@@ -253,7 +280,7 @@ def build(
                 entities=[event.entity],
                 opened_at=event.sim_time,
                 opened_by=event.seq,
-                expected_by=event.sim_time + fate.after if fate is not None else None,
+                expected_by=event.sim_time + due if due is not None else None,
                 settled_at=_finished(event.entity, event.seq, events),
                 primary=event.entity,
             )

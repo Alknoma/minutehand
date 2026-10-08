@@ -412,6 +412,17 @@
           ],
           "default": null
         },
+        "transitions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Transitions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "until": {
           "anyOf": [
             {
@@ -827,7 +838,8 @@
         "run",
         "ask",
         "handoff",
-        "person"
+        "person",
+        "transition"
       ],
       "title": "Each",
       "type": "string"
@@ -1270,6 +1282,15 @@
       "title": "Moved",
       "type": "object"
     },
+    "Mover": {
+      "description": "Who made a transition, as a rule names it (`domain.world.Actor`).",
+      "enum": [
+        "agent",
+        "person"
+      ],
+      "title": "Mover",
+      "type": "string"
+    },
     "Moves": {
       "additionalProperties": false,
       "description": "The person moves the ticket to a state: ticks it done, cancels it, or reopens it.",
@@ -1487,6 +1508,15 @@
             "type": "string"
           },
           "title": "Stale Facts",
+          "type": "array"
+        },
+        "takes": {
+          "default": [],
+          "description": "Transitions this person is pinned to take on items pending on them in a provider the people engine plays (`Scenario.transitions_on`); without one, a model picks among the legal ones",
+          "items": {
+            "$ref": "#/$defs/Take"
+          },
+          "title": "Takes",
           "type": "array"
         },
         "title": {
@@ -2336,7 +2366,7 @@
             }
           ],
           "default": null,
-          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}",
+          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}, and for `each: transition` {transition.provider}, {transition.item}, {transition.name}, {transition.from}, {transition.to}, {transition.by}, {transition.who}",
           "title": "Message"
         },
         "pattern": {
@@ -2367,8 +2397,12 @@
         "where": {
           "$ref": "#/$defs/Where",
           "default": {
+            "by": [],
+            "name": [],
             "person": [],
-            "person_not": []
+            "person_not": [],
+            "provider": [],
+            "to": []
           }
         }
       },
@@ -3272,6 +3306,80 @@
       "title": "StoredItems",
       "type": "object"
     },
+    "Take": {
+      "additionalProperties": false,
+      "description": "A transition a person is pinned to take on an item pending on them in a provider the people engine plays\n(`Scenario.transitions_on`, docs/design-transitions.md), instead of the one a model picks; and, with `after`,\nwhen. The words it carries are a model's from `facts`, or exactly `verbatim`.",
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exactly this long after the item became pending on them; None: drawn as their answers are",
+          "title": "After"
+        },
+        "facts": {
+          "default": [],
+          "description": "What its words carry, which a model writes them from",
+          "items": {
+            "type": "string"
+          },
+          "title": "Facts",
+          "type": "array"
+        },
+        "nth": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The nth item pending on them in that provider, from 1; None: every one",
+          "title": "Nth"
+        },
+        "provider": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "take": {
+          "description": "The offer, by its name or the state it reaches, in any case: 'Done', 'declined'",
+          "minLength": 1,
+          "title": "Take",
+          "type": "string"
+        },
+        "verbatim": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact words for the offer's text (its comment); no model is called",
+          "title": "Verbatim"
+        }
+      },
+      "required": [
+        "provider",
+        "take"
+      ],
+      "title": "Take",
+      "type": "object"
+    },
     "Thing": {
       "description": "What the agent wrote, as the world records it.",
       "enum": [
@@ -3671,6 +3779,100 @@
       "title": "Touches",
       "type": "object"
     },
+    "Transitions": {
+      "additionalProperties": false,
+      "description": "Transitions of items' states, by anyone (docs/design-transitions.md): each counted at the moment it was\nmade. States and names are the provider's own words, in any case.",
+      "properties": {
+        "by": {
+          "default": [],
+          "description": "Made by any of these; empty: by anyone",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "from": {
+          "default": [],
+          "description": "Out of any of these states; empty: out of any",
+          "items": {
+            "type": "string"
+          },
+          "title": "From",
+          "type": "array"
+        },
+        "name": {
+          "default": [],
+          "description": "Named any of these by the provider; empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
+        "not_reached": {
+          "default": [],
+          "description": "Its item had been in none of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Reached",
+          "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "In any of these providers; empty: in any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "reached": {
+          "default": [],
+          "description": "Its item had been in one of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Reached",
+          "type": "array"
+        },
+        "same_item": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: of the item of the transition the rule is read for (`each: transition`)",
+          "title": "Same Item"
+        },
+        "to": {
+          "default": [],
+          "description": "Into any of these states; empty: into any",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
+          "type": "array"
+        },
+        "who": {
+          "default": [],
+          "description": "Made by any of these people; empty: by anyone or anything",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Who",
+          "type": "array"
+        }
+      },
+      "title": "Transitions",
+      "type": "object"
+    },
     "Trashed": {
       "additionalProperties": false,
       "properties": {
@@ -3762,8 +3964,26 @@
     },
     "Where": {
       "additionalProperties": false,
-      "description": "Which of the things the rule is read for: by the person asked or handed the work.",
+      "description": "Which of the things the rule is read for: by the person asked or handed the work, or who made the\ntransition; and, for `each: transition`, by its provider, name, states and who made it.",
       "properties": {
+        "by": {
+          "default": [],
+          "description": "For `each: transition`: made by these only",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "name": {
+          "default": [],
+          "description": "For `each: transition`: named these by the provider only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
         "person": {
           "default": [],
           "description": "Only these; empty: everyone",
@@ -3782,6 +4002,24 @@
             "type": "string"
           },
           "title": "Person Not",
+          "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "For `each: transition`: in these providers only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "to": {
+          "default": [],
+          "description": "For `each: transition`: into these states only",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
           "type": "array"
         }
       },
@@ -4257,6 +4495,16 @@
         "$ref": "#/$defs/SeededTicket"
       },
       "title": "Tickets",
+      "type": "array"
+    },
+    "transitions_on": {
+      "default": [],
+      "description": "Providers whose people the people engine plays (docs/design-transitions.md): what waits on a person there is pending on them, and at their moment they take one of its legal transitions",
+      "items": {
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "type": "string"
+      },
+      "title": "Transitions On",
       "type": "array"
     }
   },

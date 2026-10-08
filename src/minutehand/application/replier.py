@@ -480,11 +480,11 @@ class PeopleReplier:
         if plan.step is not None and plan.step.verbatim is not None:
             return PersonReply(text=plan.step.verbatim, **common)
         world = _kept_in(world, person)
-        context = await self._context(person, behaviour, asked, history, world, clock)
+        context = await self.context(person, behaviour, asked, history, world, clock)
         if plan.step is not None:
             step = plan.step
             system = step_prompt(person, behaviour, step, asked.sim_time, self._scenario.starts_at)
-            written = await self._ask(
+            written = await self.ask_model(
                 person, Wrote.REPLY, asked.entity, system, context, WrittenStep, STEP_PROMPT_VERSION, world, clock
             )
             return PersonReply(
@@ -494,7 +494,7 @@ class PeopleReplier:
                 **common,
             )
         system = person_prompt(person, behaviour, asked.sim_time, self._scenario.starts_at)
-        written = await self._ask(
+        written = await self.ask_model(
             person, Wrote.REPLY, asked.entity, system, context, WrittenReply, PERSON_PROMPT_VERSION, world, clock
         )
         said = written.answer
@@ -551,14 +551,14 @@ class PeopleReplier:
             raise RunRefused(f"{person.key} was asked to decide in inbox {item.inbox}, which the run does not declare")
         declared = self._inboxes[item.inbox]
         world = _kept_in(world, person)
-        context = await self._context(person, behaviour, asked, history, world, clock)
+        context = await self.context(person, behaviour, asked, history, world, clock)
         system = decision_prompt(person, behaviour, scripted, asked.sim_time, self._scenario.starts_at)
         shown = [
             ModelMessage(
                 speaker=Speaker.ASKER, text=asked_to_decide(item, declared, scripted) + "\n\n" + context[0].text
             )
         ]
-        written = await self._ask(
+        written = await self.ask_model(
             person, Wrote.DECISION, asked.entity, system, shown, WrittenDecision, DECISION_PROMPT_VERSION, world, clock
         )
         said = written.answer
@@ -587,7 +587,7 @@ class PeopleReplier:
 
     # -- what the person sees --------------------------------------------------------------------------------------
 
-    async def _context(
+    async def context(
         self,
         person: Person,
         behaviour: Answers | Scripted,
@@ -595,10 +595,15 @@ class PeopleReplier:
         history: Sequence[WorldEvent],
         world: Store,
         clock: Clock,
+        *,
+        answers: bool = True,
     ) -> list[ModelMessage]:
         """Everything the person can see, up to `asked`, as one message to the model: the conversation they answer
-        in order, the others they are in most recent first, and the oldest beyond their budget as a summary."""
+        in order, the others they are in most recent first, and the oldest beyond their budget as a summary. With
+        `answers` False they answer no message: every conversation is one they are in."""
         turns, answering = seen_by(self._scenario, person, asked, history, world.replies())
+        if not answers:
+            answering = None
         kept = turns[-behaviour.history_turns :]
         older = turns[: -behaviour.history_turns] if len(turns) > behaviour.history_turns else []
         parts: list[str] = []
@@ -619,7 +624,7 @@ class PeopleReplier:
                 lines.append(f"## {provider} {channel}")
                 lines += [_line(t) for t in said]
             parts.append("\n".join(lines))
-        if isinstance(asked.after, MessageSnapshot):
+        if isinstance(asked.after, MessageSnapshot) and answers:
             last = here[-1] if here else None
             earlier = here[:-1] if here else []
             lines = ["The conversation you are answering, oldest first:"]
@@ -637,8 +642,8 @@ class PeopleReplier:
         self, person: Person, behaviour: Answers | Scripted, older: list[_Turn], world: Store, clock: Clock
     ) -> str:
         said = "\n".join(_line(t) for t in older)
-        system = SUMMARY_PROMPT.format(who=_who(person))
-        written = await self._ask(
+        system = SUMMARY_PROMPT.format(who=who_is(person))
+        written = await self.ask_model(
             person,
             Wrote.SUMMARY,
             None,
@@ -654,7 +659,7 @@ class PeopleReplier:
 
     # -- the model, through the world's record -------------------------------------------------------------------
 
-    async def _ask(
+    async def ask_model(
         self,
         person: Person,
         wrote: Wrote,
@@ -739,35 +744,35 @@ def context_key(
 # -- prompts ------------------------------------------------------------------------------------------------------
 
 
-def _bullets(lines: Sequence[str]) -> str:
+def bulleted(lines: Sequence[str]) -> str:
     return "\n".join(f"- {line}" for line in lines) if lines else _NOTHING
 
 
-def _who(person: Person) -> str:
+def who_is(person: Person) -> str:
     return f"{person.name}, {person.title}" if person.title else person.name
 
 
-def _believed(behaviour: Speaks, stale: list[str]) -> str:
+def believed_part(behaviour: Speaks, stale: list[str]) -> str:
     if behaviour.helpfulness is Helpfulness.MISTAKEN and stale:
-        return f"\nWhat you believe, and hold to be true:\n{_bullets(stale)}\n"
+        return f"\nWhat you believe, and hold to be true:\n{bulleted(stale)}\n"
     return ""
 
 
-def _voice(behaviour: Speaks) -> str:
+def voice_rule(behaviour: Speaks) -> str:
     return f"You write like this: {behaviour.voice}." if behaviour.voice else "You write plainly and briefly."
 
 
 def person_prompt(person: Person, behaviour: Speaks, today: datetime, starts_at: datetime) -> str:
     """The system text for a person conversing. `stale_facts` reach the model only for a MISTAKEN person."""
     facts, stale = person.knows_at(today, starts_at)
-    believed = _believed(behaviour, stale)
+    believed = believed_part(behaviour, stale)
     return PERSON_PROMPT.format(
-        who=_who(person),
-        known=_bullets(facts),
+        who=who_is(person),
+        known=bulleted(facts),
         believed=believed,
         helpfulness=HELPFULNESS[behaviour.helpfulness],
         or_believe=" or in what you believe" if believed else "",
-        voice=_voice(behaviour),
+        voice=voice_rule(behaviour),
         today=today.strftime("%A %d %B %Y"),
     )
 
@@ -775,17 +780,17 @@ def person_prompt(person: Person, behaviour: Speaks, today: datetime, starts_at:
 def step_prompt(person: Person, behaviour: Speaks, step: ScriptedReply, today: datetime, starts_at: datetime) -> str:
     """The system text for one step of a person's script."""
     facts, stale = person.knows_at(today, starts_at)
-    believed = _believed(behaviour, stale)
-    carries = _bullets(step.facts) if step.facts else "- what you know, as it bears on their last message"
+    believed = believed_part(behaviour, stale)
+    carries = bulleted(step.facts) if step.facts else "- what you know, as it bears on their last message"
     return STEP_PROMPT.format(
-        who=_who(person),
-        known=_bullets(facts),
+        who=who_is(person),
+        known=bulleted(facts),
         believed=believed,
         carries=carries,
         intent=INTENT[step.intent],
         helpfulness=HELPFULNESS[behaviour.helpfulness],
         or_believe=" or in what you believe" if believed else "",
-        voice=_voice(behaviour),
+        voice=voice_rule(behaviour),
         today=today.strftime("%A %d %B %Y"),
     )
 
@@ -794,14 +799,14 @@ def decision_prompt(
     person: Person, behaviour: Speaks, scripted: ScriptedDecision | None, today: datetime, starts_at: datetime
 ) -> str:
     facts, stale = person.knows_at(today, starts_at)
-    believed = _believed(behaviour, stale)
+    believed = believed_part(behaviour, stale)
     decided = ""
     if scripted is not None:
-        why = _bullets(scripted.facts) if scripted.facts else "- what you know"
+        why = bulleted(scripted.facts) if scripted.facts else "- what you know"
         decided = f'\nYou have decided: "{scripted.decision}", because:\n{why}\nPick that decision.\n'
     return DECISION_PROMPT.format(
-        who=_who(person),
-        known=_bullets(facts),
+        who=who_is(person),
+        known=bulleted(facts),
         believed=believed,
         decided=decided,
         or_believe=" or in what you believe" if believed else "",

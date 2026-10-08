@@ -124,6 +124,7 @@ the client raises `ServerFailed`, not `Refused`. Each status comes from one conv
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now; for a world of a case, the case's |
 | `POST /v1/worlds/{id}/steps` | `MarkStep` → `StepView` | A step begins (`edge: began`, `at`, `reason`) or ends (`edge: ended`); a world of a case steps its case |
 | `POST /v1/worlds/{id}/report` | `AgentReport` → `Checked` | The agent's own report of its work, relayed by whoever drives it: `status` (`done` is how the run stopped) and the `commitments` it still holds open, which keep the run from passing. The latest stands; a world of a case reports for its case |
+| `GET /v1/worlds/{id}/transitions` | → `TransitionsView` | What waits on the world's people where its people engine plays them (each item with when they act, `docs/design-transitions.md`), and every move of any item's state, by anyone, in order |
 | `POST /v1/worlds/{id}/inboxes/read` | → `InboxesView` | Read the world's inboxes as each person now: what waits on people, and the decisions owed with when each falls due |
 | `POST /v1/worlds/{id}/inboxes/due` | → `DecisionsDone` | Make every decision due by the world's clock, its case's, or its latest step's moment, as its person |
 | `POST /v1/worlds/{id}/inboxes/decide` | `DecideNow` → `DecisionView` | A person decides an item now, with a decision and its inputs |
@@ -226,6 +227,13 @@ The clock of a world stands still. Nothing fires on its own.
   a control on a message (a button, a person picked, a form filled from `press.form`), pushed to the world's
   inbound target as an interactivity payload. `MinutehandClient.act`, and `OpenWorld.happen` / `.press` on the
   plugin's `minutehand_world`, send them.
+- **The people engine.** A seed that names providers in `transitions_on` (`docs/design-transitions.md`) has its
+  people act there through the engine, with `scripted_people: true`: what waits on a person (a Jira issue assigned
+  to them, an invitation they have not answered) is pending on them, at a moment pinned (`takes` with `after`) or
+  drawn as their answers are, and when `advance` passes it they take the pinned transition or the one a model picks
+  among those the provider offers. `GET /v1/worlds/{id}/transitions` (`OpenWorld.transitions()`) lists each item
+  with its moment and every move of any item's state; a harness that keeps its own clock jumps to the earliest
+  `due_at` still pending.
 - **Booked wakes** (a scheduler provider such as AWS) are recorded in the log and never fired: a booking
   becomes a wake only in the run loop.
 

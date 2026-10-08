@@ -56,8 +56,11 @@ from minutehand.domain.world import (
     MessageSnapshot,
     NextWakeSnapshot,
     Operation,
+    PendingSnapshot,
+    PendingStatus,
     RecordedCall,
     StoredSnapshot,
+    TransitionSnapshot,
     WorldEvent,
 )
 
@@ -301,6 +304,29 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
             for number, d in enumerate(dues, start=1)
         ],
     )
+    tables.put(
+        "transitions",
+        [
+            {
+                "seq": e.seq,
+                "at": at(e.sim_time),
+                "wake": e.wake,
+                "provider": e.entity.provider,
+                "item_kind": e.after.item.kind.value,
+                "item_id": e.after.item.external_id,
+                "name": e.after.name,
+                "from_state": e.after.from_state,
+                "to_state": e.after.to_state,
+                "actor": e.actor.value,
+                "who": e.after.who,
+                "content": e.after.content,
+                "call_id": call_of[e.seq] if e.seq in call_of else None,
+            }
+            for e in events
+            if isinstance(e.after, TransitionSnapshot)
+        ],
+    )
+    tables.put("items", _items(events))
     first_seq: dict[EntityRef, int] = {}
     for e in events:
         if e.entity not in first_seq:
@@ -437,6 +463,42 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
     tables.put("wakes", _wakes(wakes, kept, dues, actions, agent_calls))
     tables.db.commit()
     return tables.db
+
+
+def _items(events: list[WorldEvent]) -> list[Row]:
+    """Each item the people engine held pending, as its record last stood, with when it began and ended."""
+    began: dict[str, WorldEvent] = {}
+    last: dict[str, WorldEvent] = {}
+    for e in events:
+        if isinstance(e.after, PendingSnapshot):
+            began.setdefault(e.entity.external_id, e)
+            last[e.entity.external_id] = e
+    rows: list[Row] = []
+    for pending_id in sorted(began):
+        first, latest = began[pending_id], last[pending_id]
+        held = latest.after
+        assert isinstance(held, PendingSnapshot)
+        rows.append(
+            {
+                "pending_id": pending_id,
+                "person": held.person,
+                "nth": held.nth,
+                "provider": held.item.provider,
+                "item_kind": held.item.kind.value,
+                "item_id": held.item.external_id,
+                "state": held.state,
+                "turn": held.turn,
+                "since": at(first.sim_time),
+                "status": held.status.value,
+                "due_at": at(held.due_at),
+                "take": held.take,
+                "drawn_from": held.drawn.source.value if held.drawn is not None else None,
+                "transition_seq": held.transition,
+                "closed_at": at(latest.sim_time) if held.status is not PendingStatus.PENDING else None,
+                "failure": held.failure,
+            }
+        )
+    return rows
 
 
 def _people(scenario: Scenario) -> list[Row]:

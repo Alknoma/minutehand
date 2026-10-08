@@ -44,12 +44,16 @@ assess:
 | `ask` | every wait for a person's answer: a message they can answer, or an item in the agent's own product | and `ask`, `answer`, `closed`, `due` |
 | `handoff` | every ticket the agent handed to a person | and `ask` (the hand-off), `answer` (the work finished), `closed`, `due` |
 | `person` | every person in the scenario | as `run` |
+| `transition` | every transition of an item's state, by anyone (`docs/design-transitions.md`) | and `transition` |
 
 What is an ask is the ledger's, read from the world alone (`checks/ledger.py`): a message the person has a reply to,
 or any message to a `Silent` person. A message to the same person in the same conversation while an ask is open is a
 follow-up on it, not an ask of its own.
 
-`where: {person: [...], person_not: [...]}` picks among asks, hand-offs or people by who they are of.
+`where: {person: [...], person_not: [...]}` picks among asks, hand-offs or people by who they are of. For
+`each: transition`, `person` picks by who made it, and `provider`, `name`, `to` and `by` (`agent`, `person`) pick by
+where it was, what the provider calls it, the state it reached and who made it; states and names are the provider's
+own words, matched in any case.
 
 ### Moments
 
@@ -66,6 +70,7 @@ A moment is an anchor and an optional ISO 8601 offset: `ask+P1D`, `deadline-PT2H
 | `due` | when the scenario says the person would have answered by: the longest delay of their `reply`, or a ticket's fate |
 | `moment` | each of the rule's own `at` |
 | `all_answered` | when the last of the run's asks was answered |
+| `transition` | when the transition the rule is read for was made |
 
 A rule is not read for a thing when a moment it names is not there (an answer never given, a scenario without a
 deadline, `all_answered` while an ask is open) or comes after the run's end, and when it counts what the run did not
@@ -97,7 +102,31 @@ rule went unread, so a rule never passes by being skipped unseen.
 | `asks` | an ask of the run, at the moment it was made | `of` (people), `open_at` (a moment) |
 | `stored` | an item a host declared `store` holds at `until` (the run's end without it), counted at the moment its version there was written (`docs/capture.md`) | `host` (the declaration's host pattern), `collection` (its name), `values` (each field of the item, a dotted path, equal to the one given) |
 | `replies` | a person's reply or decision that landed, at the moment it landed | `by` (people), `written` (`script`: a model, from a step of their script; `verbatim`: the step's exact words or a control; `conversing`: a model, from their own facts, with no script or once it was used; `automatic`: their automatic reply while away; `by_hand`: a harness speaking for them) |
+| `transitions` | a move of an item's state, by anyone, at the moment it was made (`docs/design-transitions.md`) | `provider`, `name`, `to`, `from` (states and names in the provider's own words, any case), `by` (`agent`, `person`), `who` (people), `reached` / `not_reached` (states its item had, or had not, been in before it: earlier moves' states and its own `from`), `same_item` (of the item of the transition the rule is read for: `each: transition` only) |
 | `memory` | a key of the agent's memory (`minutehand.agent.store`) holding a value at `until` (the run's end without it), counted at the moment that value was written; so `since` keeps only keys written from then on | `key` (exactly this key) or `prefix` (keys starting with it), either may hold `{person.key}`; `collection` (default `default`); `values` (each field of the value, a dotted path, equal to the one given: `{status: confirmed}`) |
+
+A transition is one move of one item's state (a Jira workflow transition, an attendee's answer to an invitation), by
+whoever made it: the agent through the provider's API, a person through the people engine, a person's own act. It is
+recorded beside the write that made it, which `writes` counts as it always did; `transitions` counts the moves:
+
+```yaml
+- id: never_ships_unapproved                 # the agent moved an order on before anyone approved it
+  count: {transitions: {provider: [orders], to: [shipping_requested], not_reached: [approved]}}
+  at_most: 0
+- id: acts_on_a_declined_invitation          # a guest said no: the owner hears of it within a day
+  each: transition
+  where: {to: [declined]}
+  count: {messages: {to: [owner]}, since: transition, until: transition+P1D}
+  at_least: 1
+- id: no_work_on_a_ticket_moved_back         # someone reopened it: the agent does not close it again at once
+  each: transition
+  where: {provider: [jira], to: [To Do], by: [person]}
+  count: {transitions: {same_item: true, by: [agent], to: [Done]}, since: transition, until: transition+P1D}
+  at_most: 0
+```
+
+A rule read for each transition may say `{transition.provider}`, `{transition.item}`, `{transition.name}`,
+`{transition.from}`, `{transition.to}`, `{transition.by}` and `{transition.who}` in its `message`.
 
 A `writes` count never includes the agent's memory: a key it writes is its own, not a change a person could see.
 `memory` reads what the agent remembers as a state at a moment, not as events:

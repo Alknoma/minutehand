@@ -9,14 +9,14 @@ Everything a person, the agent, a system or time does to the world is a **transi
 
 ```python
 class Transition(Model):
-    provider: ProviderKey          # jira, google_workspace, slack, a declared service ...
-    item: EntityRef                # the ticket, invitation, conversation, request, comment
-    name: str                      # the provider's own name for it: "Start Progress", "accepted", "reply", "approve"
-    from_state: str | None         # None when the transition creates the item
+    provider: ProviderKey  # jira, google_workspace, slack, a declared service ...
+    item: EntityRef  # the ticket, invitation, conversation, request, comment
+    name: str  # the provider's own name for it: "Start Progress", "accepted", "reply", "approve"
+    from_state: str | None  # None when the transition creates the item
     to_state: str
-    by: Actor                      # AGENT | PERSON | SYSTEM | TIMER (SCENARIO stays for seeding)
-    who: str | None                # a person's key, the system actor's name ("warehouse"), None for the agent or time
-    content: str                   # JSON: the comment, the reply's words, the reasons, the chosen option
+    by: Actor  # AGENT | PERSON | SYSTEM | TIMER (SCENARIO stays for seeding)
+    who: str | None  # a person's key, the system actor's name ("warehouse"), None for the agent or time
+    content: str  # JSON: the comment, the reply's words, the reasons, the chosen option
     at: AwareDatetime
 ```
 
@@ -37,8 +37,9 @@ class ProvidesTransitions(Protocol):
         and screens, an attendee's response states, a conversation's reply, a declared machine. Each offer says
         what content it takes (its fields, required or not)."""
 
-    async def apply(self, item: EntityRef, offer: str, by: Actor, who: str | None, content: str,
-                    world: Store, clock: Clock) -> Transition:
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: str | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
         """Take it through the provider's OWN code path: the same validation, history, side effects (events
         pushed, webhooks, subscriptions notified, mail landed) as when the service does it. Refuses an offer no
         longer legal, as the service refuses it."""
@@ -113,8 +114,8 @@ reads a rule once per transition (`each: transition`, anchor `transition`). The 
   at_least: 1
 - id: no_work_on_a_ticket_moved_back            # Jira: someone reopened it
   each: transition
-  where: {provider: [jira], to: [open], by: [person]}
-  count: {transitions: {same_item: true, by: [agent], to: [done]}, since: transition, until: transition+P1D}
+  where: {provider: [jira], to: [To Do], by: [person]}
+  count: {transitions: {same_item: true, by: [agent], to: [Done]}, since: transition, until: transition+P1D}
   at_most: 0
 ```
 
@@ -163,3 +164,27 @@ The owner approved this design with these answers:
 6. **Removal of `ticket_fates` and button `press`/form scripting** happens in phase 4; `minutehand migrate <file>`
    rewrites old YAML to the new form.
 7. **Standing worlds.** `minutehand serve` gets a transitions route: the pending items and transitions of a world.
+
+## 8. What is built
+
+**Phase 1.** `domain/transitions.py` (`Transition`, `Offer`, `Waiting`, `transition_change`), `ports/transitions.py`
+(`ProvidesTransitions`: `items_for`, `legal`, `apply`, and `heard_of`, whether the service tells the agent of a
+person's move), `application/people.py` (the engine), running beside the old paths: a scenario opts a provider in
+with `transitions_on`, and pins a person's move with `Person.takes` (`take`, `nth`, `after`, `verbatim` or `facts`).
+
+- **Jira**: an issue assigned to a person and not done is pending on them; the offers are the workflow transitions
+  from its status whose screen requires nothing, each with a comment; the move goes through `Desk.transition`, the
+  path `POST /issue/{key}/transitions` takes. The agent's transitions and creates are recorded too.
+- **Google Calendar**: an unanswered invitation is pending on its guest (the item is the event; `who` says which
+  guest); the offers are `accepted`, `tentative` and `declined` with a comment; the answer is written as an answer
+  always was, and tells a live `events.watch` channel, which is a wake.
+- **The engine's own record** is `EntityKind.PENDING` (`PendingSnapshot`, actor SCENARIO), so a fork reads what was
+  owed at its checkpoint; a booked move is a `PendingTransition` in the run loop's table (`DueKind.TRANSITION`). A
+  person acts once per turn: after their own move an item waits on them again only once someone else moves it. A
+  move whose words a model failed to write stays owed (`Checkpoint.untaken`) and is tried again on the next turn.
+- **Facts**: `checks/facts.transitions`; the assessment language's `transitions` count and `each: transition`
+  (`docs/assessments.md`); the ledger opens a wait on a guest for an invitation the engine holds, settled by their
+  move. The read model's `transitions` and `items` views (`docs/querying.md`). `minutehand serve`:
+  `GET /v1/worlds/{id}/transitions` (`docs/serve.md`).
+- **Old paths**: a scenario without `transitions_on` plays as before. With it, the replier is not asked about an
+  item the engine holds, and ticket fates beside an engine-played ticket provider are refused.

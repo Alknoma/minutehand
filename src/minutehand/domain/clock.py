@@ -17,6 +17,7 @@ class DueKind(StrEnum):
     TICKET_FATE = "ticket_fate"
     HAPPENING = "happening"
     MACHINE = "machine"
+    TRANSITION = "transition"
 
 
 class Due(Model):
@@ -31,7 +32,7 @@ class DrawnFrom(StrEnum):
     DELAY = "delay"  # their reply's delay range, in calendar time, then pushed to when they are available
     WINDOW = "window"  # their `reply_within`, or a step's `within`, in their available time
     REMINDED = "reminded"  # their `reminded.sooner_within`, drawn again on a follow-up, in their available time
-    PINNED = "pinned"  # a fork's `reply_at`: no draw
+    PINNED = "pinned"  # a fork's `reply_at`, or a scenario's `takes` with `after`: no draw
     AUTOMATIC = "automatic"  # their automatic reply while away with a delegate: at once
 
 
@@ -62,6 +63,7 @@ class DueSource(StrEnum):
     DIRECTION = "direction"  # something the scenario's owner says to the agent
     MACHINE = "machine"  # something the scenario does to the agent's own machine
     TIMER = "timer"  # the agent's own in-process timer, read from the sandbox its clock is owned in (`Contained`)
+    TRANSITION = "transition"  # a person's move on an item pending on them (`application.people`)
 
 
 PLANNED_BY = {

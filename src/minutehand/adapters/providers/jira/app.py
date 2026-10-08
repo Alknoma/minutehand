@@ -1078,6 +1078,7 @@ class JiraApi:
         issue = self._desk.apply_fields(skeleton, project, body.fields, creating=True)
         issue = self._update_ops(issue, project, body.update)
         self._world.create_issue(issue, actor=Actor.AGENT)
+        self._desk.created(issue, at=now, actor=Actor.AGENT, who=None)
         return 201, {"id": issue.id, "key": issue.key, "self": f"{call.base}/rest/api/3/issue/{issue.id}"}
 
     def _update_ops(self, issue: wire.StoredIssue, project: wire.StoredProject, update: wire.Json) -> wire.StoredIssue:
@@ -1179,55 +1180,17 @@ class JiraApi:
         transition = next((t for t in self._desk.transitions(issue, project) if t.id == str(wanted)), None)
         if transition is None:
             raise wire.bad("Returned if the request is invalid for any other reason.")
-        site = self._world.site()
-        errors: dict[str, str] = {}
-        resolution: str | None = None
-        changed = issue
-        for name, raw in body.fields.items():
-            if name not in transition.screen:
-                errors[name] = wire.not_on_screen(name)
-            elif name == "resolution":
-                ref = wire.read_ref(raw)
-                found = None
-                if ref is not None:
-                    found = next(
-                        (r for r in site.resolutions if str(ref.id) == r.id or (ref.name or "") == r.name), None
-                    )
-                if found is None:
-                    errors[name] = wire.INVALID_VALUE
-                else:
-                    resolution = found.id
-            else:
-                try:
-                    changed = self._desk.apply_fields(
-                        changed, project.model_copy(update={"screens": _with(project, issue, name)}), {name: raw},
-                        creating=False,
-                    )  # fmt: skip
-                except wire.Refusal as refusal:
-                    errors |= refusal.fields
-        for name in transition.required:
-            if name not in body.fields and name not in errors:
-                errors[name] = wire.REQUIRED
-        comment_body: JsonValue = None
-        for name, operations in body.update.items():
-            commenting = name == "comment"  # enum-lint: exempt Jira's own field id in a transition body
-            if not commenting or not isinstance(operations, list):
-                errors[name] = wire.not_on_screen(name)
-                continue
-            for operation in operations:
-                add = operation["add"] if isinstance(operation, dict) and "add" in operation else None
-                text = add["body"] if isinstance(add, dict) and "body" in add else None
-                if not wire.is_document(text):
-                    errors["comment"] = wire.COMMENT_NOT_VALID
-                else:
-                    comment_body = text
-        if errors:
-            raise wire.Refusal(400, [], errors)
-        now = self._now()
-        moved = self._desk.moved(changed, site.status(transition.to), resolution=resolution)
-        self._desk.write(issue, moved, by=call.account, at=now, actor=Actor.AGENT)
-        if comment_body is not None:
-            self._desk.comment(moved, comment_body, by=call.account, at=now, actor=Actor.AGENT)
+        self._desk.transition(
+            issue,
+            project,
+            transition,
+            fields=body.fields,
+            update=body.update,
+            by=call.account,
+            at=self._now(),
+            actor=Actor.AGENT,
+            who=None,
+        )
         return 204, None
 
     def field_meta(self, call: Call, project: wire.StoredProject, field_id: str, required: bool) -> wire.Json:
@@ -1486,14 +1449,6 @@ class JiraApi:
             self._desk.write(issue, issue.model_copy(update={"custom": custom}), by=call.account, at=now,
                              actor=Actor.AGENT)  # fmt: skip
         return 204, None
-
-
-def _with(project: wire.StoredProject, issue: wire.StoredIssue, field: str) -> list[wire.StoredScreen]:
-    """The project's screens with `field` on the issue's type: a transition screen holds what it holds."""
-    return [
-        s.model_copy(update={"fields": [*s.fields, field]}) if s.issueType == issue.issuetype else s
-        for s in project.screens
-    ]
 
 
 def _user_matches(user: wire.StoredUser, query: str) -> bool:

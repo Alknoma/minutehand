@@ -65,6 +65,15 @@ A person's acts are `TicketHappening`s through `ActsOnTickets.act`: `Moves` (the
 required screen), `Reassigns` (to someone or nobody), `Comments`, `Deletes`, each by the happening's person at the
 run clock's time, recorded as actor PERSON with that person as the changelog's or comment's author.
 
+Where the scenario has the people engine play Jira (`transitions_on: [jira]`, `docs/design-transitions.md`), it is
+`ProvidesTransitions`: an issue assigned to a person whose status is not in the Done category is pending on them;
+the transitions offered are those `GET /issue/{key}/transitions` lists from its status, each taking a comment; and
+the person's move goes through the same path as `POST /issue/{key}/transitions` (`Desk.transition`), its comment as
+`update.comment`, authored by them. A transition whose screen requires a field is not offered to a person: the
+engine writes free text only. The agent's own transitions and creates (the workflow's initial `Create`) and every
+move a person makes are recorded as transitions beside the issue's versions. No webhook is served, so a person's
+move never wakes the agent: it finds it on its next read.
+
 ## While a world is open (`minutehand serve`)
 
 - A person deletes an issue (`OpenWorld.delete_ticket`, or a `TicketFate` with `deleted: true`): the issue, its

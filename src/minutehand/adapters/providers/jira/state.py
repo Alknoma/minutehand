@@ -155,6 +155,10 @@ class JiraWorld:
     def __init__(self, store: Store) -> None:
         self._store = store
 
+    @property
+    def store(self) -> Store:
+        return self._store
+
     # ------------------------------------------------------------------ reads
 
     def _all(self, kind: EntityKind, parent: str) -> Iterator[Stored]:
