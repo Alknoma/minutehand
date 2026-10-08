@@ -107,8 +107,15 @@ class SeedCommit(wire.Wire):
         description="Login of a seeded user who committed it; None is the author, as GitHub's create-a-commit "
         "reference defaults it (https://docs.github.com/en/rest/git/commits#create-a-commit)",
     )
+    committed_before: timedelta | None = Field(
+        default=None,
+        description="How long before the scenario's start it was committed; None is when it was authored, since "
+        'the reference\'s committer "will use the information set in `author`" by default',
+    )
     before: timedelta = Field(description="How long before the scenario's start it was made")
-    paths: list[str] = Field(default=[], description="The paths it changed; what `commits?path=` filters on")
+    paths: list[str] = Field(
+        default=[], description="The file paths it changed; what `commits?path=` filters on. Every file is named here"
+    )
 
 
 class SeedRepository(wire.Wire, Keyed):
@@ -158,6 +165,12 @@ class SeedRepository(wire.Wire, Keyed):
             raise ValueError(
                 f"{self.owner}/{self.name}: a repository with files has the commits that made them; declare at least "
                 "one (message, author, before)"
+            )
+        made = {p for c in self.commits for p in c.paths}
+        orphans = sorted(p for p in paths if p not in made)
+        if orphans:
+            raise ValueError(
+                f"{self.owner}/{self.name}: {orphans[0]} is in no commit's paths; declare the commit that added it"
             )
         befores = [c.before for c in self.commits]
         if any(later >= earlier for earlier, later in pairwise(befores)):
@@ -270,8 +283,12 @@ def _login(account: wire.StoredAccount) -> str | None:
     return account.login if account.type is wire.AccountType.USER else None
 
 
-def _name(account: wire.StoredAccount) -> str:
-    return account.name or account.login
+def _name(account: wire.StoredAccount, where: str) -> str:
+    """A commit's author or committer name: the account's declared name (its own, or its person's). A login is not
+    a name, and nothing else is made up: an account with none is refused, naming the commit."""
+    if account.name is None:
+        raise ValueError(f"{where}: {account.login} has no name; declare the account's name or its person")
+    return account.name
 
 
 def _email(account: wire.StoredAccount) -> str:
@@ -291,17 +308,20 @@ def _commits(
         author = accounts[commit.author.lower()]
         committer = author if commit.committer is None else accounts[commit.committer.lower()]
         date = wire.timestamp(start - commit.before)
+        committed = date if commit.committed_before is None else wire.timestamp(start - commit.committed_before)
+        where = f"{full_name}: the commit {commit.message.splitlines()[0]!r}"
         sha = _commit_sha(full_name, position, commit.message, date)
         made.append(
             wire.StoredCommit(
                 sha=sha,
                 message=commit.message,
                 author_login=_login(author),
-                author_name=_name(author),
+                author_name=_name(author, where),
                 author_email=_email(author),
                 committer_login=_login(committer),
-                committer_name=_name(committer),
+                committer_name=_name(committer, where),
                 committer_email=_email(committer),
+                committer_date=committed,
                 date=date,
                 paths=commit.paths,
                 parent=parent,

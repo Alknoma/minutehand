@@ -401,9 +401,7 @@ class GitHubApi:
     def _commit_out(self, repository: wire.StoredRepository, commit: wire.StoredCommit) -> wire.CommitOut:
         full = repository.full_name
         person = wire.PersonOut(name=commit.author_name, email=commit.author_email, date=commit.date)
-        # The committer's date is the author's: GitHub's create-a-commit reference defaults the committer to the
-        # author's information, and a seed declares one moment per commit.
-        committed = wire.PersonOut(name=commit.committer_name, email=commit.committer_email, date=commit.date)
+        committed = wire.PersonOut(name=commit.committer_name, email=commit.committer_email, date=commit.committer_date)
         author = self._account_out(commit.author_login) if commit.author_login is not None else None
         committer = self._account_out(commit.committer_login) if commit.committer_login is not None else None
         tree = content.tree_sha(repository, "")

@@ -322,6 +322,7 @@ class StoredCommit(Wire):
     committer_login: str | None
     committer_name: str
     committer_email: str
+    committer_date: str
     date: str
     paths: list[str]
     parent: str | None

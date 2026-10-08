@@ -144,3 +144,24 @@ def test_a_repository_named_again_with_a_file_of_other_content_is_refused(tmp_pa
         )  # fmt: skip
         with pytest.raises(WorldRefused, match=r"files\[path='README.md'\]\.text is 'hi'"):
             world.extend(provider_seeds=[again], directory=tmp_path, scratch=_scratch)
+
+
+def test_a_fragment_adding_a_file_to_a_held_repository_without_a_commit_is_refused_naming_it(tmp_path: Path) -> None:
+    """GitHub holds no file outside a commit: a file added to a repository the world holds comes with the commit
+    that added it, or the addition is refused naming the repository and the file."""
+    with _open(tmp_path) as world:
+        bare = ProviderSeed(
+            provider="github",
+            body=json.dumps({"repositories": [{"owner": "acme", "name": "notes",
+                                               "files": [{"path": "later.md", "text": "later"}]}]}),
+        )  # fmt: skip
+        with pytest.raises(WorldRefused, match=r"acme/notes: later\.md is in no commit's paths"):
+            world.extend(provider_seeds=[bare], directory=tmp_path, scratch=_scratch)
+        committed = ProviderSeed(
+            provider="github",
+            body=json.dumps({"repositories": [{"owner": "acme", "name": "notes",
+                                               "files": [{"path": "later.md", "text": "later"}],
+                                               "commits": [{"message": "Add later", "author": "octo",
+                                                            "before": "PT1H", "paths": ["later.md"]}]}]}),
+        )  # fmt: skip
+        assert world.extend(provider_seeds=[committed], directory=tmp_path, scratch=_scratch)["github"] > 0

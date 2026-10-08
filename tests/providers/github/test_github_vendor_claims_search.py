@@ -27,7 +27,14 @@ def seeded() -> GitHubSeed:
             SeedFile(path="fixtures/large.py", text=LARGE_BUT_INLINE),
             SeedFile(path="fixtures/small.py", text="ZEPHYRMARK_SMALL = 2\n"),
         ],
-        commits=[SeedCommit(message="Add the fixtures", author="iris-calder", before=timedelta(days=1))],
+        commits=[
+            SeedCommit(
+                message="Add the fixtures",
+                author="iris-calder",
+                before=timedelta(days=1),
+                paths=["fixtures/large.py", "fixtures/small.py"],
+            )
+        ],
     )
     base = github_seed()
     return base.model_copy(update={"repositories": [*base.repositories, bulky]})

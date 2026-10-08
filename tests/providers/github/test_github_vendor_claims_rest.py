@@ -10,13 +10,14 @@ from datetime import timedelta
 import pytest
 
 from minutehand.adapters.providers.github import wire
-from minutehand.adapters.providers.github.seed import GitHubSeed, SeedCommit, SeedFile, SeedRepository
+from minutehand.adapters.providers.github.seed import GitHubSeed, SeedCommit, SeedFile, SeedRepository, SeedUser
 from minutehand.domain.world import Actor
 from tests.providers.github.github_world import (
     APP,
     CONFIG,
     HUGE,
     RETRY,
+    SCENARIO,
     START,
     Hub,
     body,
@@ -30,7 +31,14 @@ WIDE = SeedRepository(
     owner="iris-calder",
     name="sprawl",
     files=[SeedFile(path=f"fixtures/case_{n:04d}.txt", text=f"case {n}\n") for n in range(1040)],
-    commits=[SeedCommit(message="Add the cases", author="iris-calder", before=timedelta(days=1))],
+    commits=[
+        SeedCommit(
+            message="Add the cases",
+            author="iris-calder",
+            before=timedelta(days=1),
+            paths=[f"fixtures/case_{n:04d}.txt" for n in range(1040)],
+        )
+    ],
 )
 
 
@@ -390,6 +398,7 @@ async def test_two_licenses_have_two_node_ids(hub: Hub, seeded: GitHubSeed) -> N
                             author="tomas-b",
                             committer="iris-calder",
                             before=timedelta(days=1),
+                            committed_before=timedelta(hours=2),
                             paths=["web/app.ts"],
                         ),
                     ]
@@ -399,12 +408,14 @@ async def test_two_licenses_have_two_node_ids(hub: Hub, seeded: GitHubSeed) -> N
     ],
 )
 async def test_a_commit_s_committer_is_the_one_the_seed_declares_else_its_author(hub: Hub, seeded: GitHubSeed) -> None:
-    """Documented: "By default, `committer` will use the information set in `author`."
-    https://docs.github.com/en/rest/git/commits#create-a-commit"""
+    """Documented: "By default, `committer` will use the information set in `author`." (its date too, unless the
+    seed declares when it was committed). https://docs.github.com/en/rest/git/commits#create-a-commit"""
     async with hub.client() as http:
         patched, started = listing(await http.get("/repos/lanternworks/ledger/commits"))
     assert (patched["author"]["login"], patched["committer"]["login"]) == ("tomas-b", "iris-calder")  # type: ignore[index]
     assert patched["commit"]["committer"]["email"] == "iris@example.com"  # type: ignore[index]
+    assert patched["commit"]["author"]["date"] == "2026-08-23T10:50:03Z"  # type: ignore[index]
+    assert patched["commit"]["committer"]["date"] == "2026-08-24T08:50:03Z"  # type: ignore[index]
     assert started["committer"] == started["author"] and started["commit"]["committer"] == started["commit"]["author"]  # type: ignore[index]
 
 
@@ -424,3 +435,21 @@ async def test_a_link_header_points_under_repositories_by_id_and_that_address_an
     assert following == f"https://api.github.com/repositories/{repository_id}/commits?per_page=1&page=2"
     assert listing(second)[0]["sha"] != listing(first)[0]["sha"]
     assert f"/repositories/{repository_id}/branches?per_page=1&page=2" in branches.headers["Link"]
+
+
+async def test_a_commit_by_an_account_with_no_name_is_refused_naming_the_commit(hub: Hub) -> None:
+    """A login is not a name, and the provider makes none up: an author with no declared name (its own or its
+    person's) refuses the seed, naming the commit."""
+    nameless = GitHubSeed(
+        users=[SeedUser(login="no-name")],
+        repositories=[
+            SeedRepository(
+                owner="no-name",
+                name="scratch",
+                files=[SeedFile(path="a.md", text="a")],
+                commits=[SeedCommit(message="Add a", author="no-name", before=timedelta(days=1), paths=["a.md"])],
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match=r"no-name/scratch: the commit 'Add a': no-name has no name"):
+        hub.provider.seed_with(nameless, SCENARIO, hub.store)

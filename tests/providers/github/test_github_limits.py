@@ -16,7 +16,14 @@ def seeded() -> GitHubSeed:
         owner="iris-calder",
         name="wide",
         files=[SeedFile(path=f"generated/file_{n:05d}.py", text=f"# {n}\n") for n in range(1200)],
-        commits=[SeedCommit(message="Generate the files", author="iris-calder", before=timedelta(days=1))],
+        commits=[
+            SeedCommit(
+                message="Generate the files",
+                author="iris-calder",
+                before=timedelta(days=1),
+                paths=[f"generated/file_{n:05d}.py" for n in range(1200)],
+            )
+        ],
     )
     return github_seed(repositories=[ledger(tree_entry_limit=3), wide])
 
