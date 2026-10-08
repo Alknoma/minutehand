@@ -28,6 +28,19 @@ says it is finished. The tools it calls are the same in every recipe:
 
     python fake_model.py [--port 8790]
 
+It also writes what Minutehand's people say, when Minutehand itself asks (a request whose structured answer is
+`WrittenStep`, `WrittenReply`, `WrittenDecision` or `WrittenSummary`), so a run with model-written people needs no
+real model either. The rules read the prompt Minutehand sends, never guess:
+
+    a script step       its facts ("What this reply says:"), as plain sentences; a step that declines, asks back
+                        or defers says so in a fixed sentence
+    conversing          an answer only when the last message asks something (holds "?"): what the person knows,
+                        as plain sentences, or "I do not know."; else no answer
+    a decision          the one the script decided, else the first offered; each input from the reasons given
+    a summary           how many earlier messages there were
+
+Each answer to the same prompt is the same, so a run with it is repeatable.
+
 It uses nothing outside the standard library, so it runs in whatever Python is at hand.
 """
 
@@ -97,6 +110,107 @@ def decide(situation: str) -> list[Call]:
         ),
         Call("close_wait", {"email": person}),
     ]
+
+
+# -- what people say, when Minutehand asks -------------------------------------------------------------------
+
+PEOPLE = ("WrittenStep", "WrittenReply", "WrittenDecision", "WrittenSummary")
+
+
+def _bullets(text: str, heading: str) -> list[str]:
+    """The `- ` lines under `heading`, up to the first line that is not one."""
+    if heading not in text:
+        return []
+    found: list[str] = []
+    for line in text.split(heading, 1)[1].splitlines()[1:]:
+        if not line.startswith("- "):
+            break
+        found.append(line[2:].strip())
+    return found
+
+
+def _sentences(facts: list[str]) -> str:
+    said = []
+    for fact in facts:
+        fact = fact.strip()
+        if not fact:
+            continue
+        fact = fact[0].upper() + fact[1:]
+        said.append(fact if fact.endswith((".", "!", "?")) else fact + ".")
+    return " ".join(said)
+
+
+_UNKNOWN = ("nothing about this beyond", "what you know, as it bears on", "what you know")
+
+
+def _known(system: str, heading: str) -> list[str]:
+    return [f for f in _bullets(system, heading) if not f.startswith(_UNKNOWN)]
+
+
+def _last_message(shown: str) -> str:
+    marker = "Their last message, which you answer now:\n"
+    return shown.split(marker, 1)[1] if marker in shown else shown
+
+
+def person_answer(schema: str, system: str, shown: str) -> dict[str, object]:
+    """What a person says, by the rules above."""
+    known = _known(system, "What you know:")
+    if schema == "WrittenSummary":
+        lines = [line for line in shown.splitlines() if line.startswith("[")]
+        return {"summary": f"{len(lines)} earlier messages."}
+    if schema == "WrittenStep":
+        carries = _known(system, "What this reply says:") or known
+        intent = system.split("What you do with this message: ", 1)[1].splitlines()[0]
+        if intent.startswith("you say that it is not yours"):
+            return {"text": "That is not mine to answer."}
+        if intent.startswith("you do not answer yet: you ask"):
+            return {"text": "Before I answer: what is it for?"}
+        if intent.startswith("you say you will come back"):
+            return {"text": ("I will come back to you on this. " + _sentences(carries)).strip()}
+        return {"text": _sentences(carries) or "I do not know."}
+    if schema == "WrittenReply":
+        if "?" not in _last_message(shown):
+            return {"replies": False, "text": None, "press": None, "form": None}
+        return {"replies": True, "text": _sentences(known) or "I do not know.", "press": None, "form": None}
+    offered = re.findall(r'^- "([a-z][a-z0-9_]*)"', shown, flags=re.MULTILINE)
+    decided = re.search(r'You have decided: "([a-z][a-z0-9_]*)"', system)
+    decision = decided.group(1) if decided else offered[0]
+    because = _known(system, "because:") or known
+    block = shown.split(f'- "{decision}"', 1)[1].split('\n- "', 1)[0] if f'- "{decision}"' in shown else ""
+    inputs = [
+        {"name": name, "value": _sentences(because) or "No reason given."}
+        for name in re.findall(r'input "([a-z][a-z0-9_]*)"', block)
+    ]
+    return {"decision": decision, "inputs": inputs}
+
+
+def people_schema(body: dict[str, object]) -> str | None:
+    """The structured answer a request asks for when Minutehand asks it to write what a person says."""
+    response_format = body["response_format"] if "response_format" in body else None
+    if not isinstance(response_format, dict) or "json_schema" not in response_format:
+        return None
+    name = str(response_format["json_schema"]["name"])
+    return name if name in PEOPLE else None
+
+
+def people_completion(body: dict[str, object], schema: str, number: int) -> dict[str, object]:
+    messages = body["messages"]
+    assert isinstance(messages, list)
+    system = _text(messages[0]["content"])
+    shown = _text(messages[-1]["content"])
+    content = json.dumps(person_answer(schema, system, shown))
+    return {
+        "id": f"chatcmpl-{number}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": body["model"],
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": (len(system) + len(shown)) // 4,
+            "completion_tokens": len(content) // 4,
+            "total_tokens": (len(system) + len(shown) + len(content)) // 4,
+        },
+    }
 
 
 # -- reading a request -----------------------------------------------------------------------------------------
@@ -262,7 +376,10 @@ def handler(served: Served) -> type[BaseHTTPRequestHandler]:
                 served.received.append((path, body))
                 number = len(served.received)
             try:
-                if path.endswith("/chat/completions"):
+                schema = people_schema(body) if path.endswith("/chat/completions") else None
+                if schema is not None:
+                    self.json(200, people_completion(body, schema, number))
+                elif path.endswith("/chat/completions"):
                     self.json(200, chat_completion(body, number))
                 elif path.endswith("/messages") and "stream" in body and body["stream"]:
                     self.stream(message_events(body, number))

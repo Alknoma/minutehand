@@ -39,6 +39,7 @@ from minutehand.domain.world import (
     Operation,
     RecordSnapshot,
     Snapshot,
+    StoredSnapshot,
     TicketSnapshot,
     WorldEvent,
 )
@@ -179,6 +180,18 @@ class Log:
         return self._add(
             hours, Actor.AGENT, operation, ref, MemorySnapshot(collection="default", key=key, value=text), wake
         )
+
+    def stored(
+        self, collection: str, item_id: str, item: object | None, hours: float, *, host: str = "api.crm.test"
+    ) -> WorldEvent:
+        """The agent writes one item of a collection a `store` host keeps; None deletes it."""
+        path = f"/v1/{collection}"
+        ref = EntityRef(provider="crm", kind=EntityKind.STORED, external_id=f"{path}/{item_id}")
+        earlier = [e for e in self.events if e.entity == ref and e.operation is not Operation.DELETE]
+        operation = Operation.DELETE if item is None else Operation.UPDATE if earlier else Operation.CREATE
+        text = None if item is None else json.dumps(item)
+        snapshot = StoredSnapshot(host=host, collection=collection, path=path, id=item_id, item=text)
+        return self._add(hours, Actor.AGENT, operation, ref, snapshot, 1)
 
 
 def reply(who: Person, to: WorldEvent, hours: float) -> PersonReply:

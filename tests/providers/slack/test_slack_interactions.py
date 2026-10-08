@@ -13,9 +13,17 @@ from starlette.responses import JSONResponse, Response
 
 from minutehand.adapters.providers.slack import interactive, state
 from minutehand.adapters.providers.slack.interactive import FormNeverOpened
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.domain.people import PersonReply, Press
-from minutehand.domain.scenario import DelayRange, FormInput, Person, Scripted, ScriptedPress, ScriptedReply
+from minutehand.domain.scenario import (
+    AfterScript,
+    DelayRange,
+    FormInput,
+    Person,
+    Scripted,
+    ScriptedPress,
+    ScriptedReply,
+)
 from minutehand.domain.world import (
     Actor,
     InteractionKind,
@@ -27,6 +35,7 @@ from minutehand.domain.world import (
 )
 from tests.providers.slack.intercepted import SECRET, AgentEndpoint, Intercepted, Received, data
 from tests.providers.slack.slack_workspace import SCENARIO, Workspace
+from tests.support.people import people_model
 
 CARD = [
     {"type": "section", "text": {"type": "mrkdwn", "text": "*Send the contract to Acme?*"}},
@@ -85,6 +94,7 @@ def tomas(press: ScriptedPress) -> Person:
         name="Tomas Brandt",
         email="tomas@example.com",
         reply=Scripted(
+            then=AfterScript.SILENT,
             delay=DelayRange(shortest=timedelta(0), longest=timedelta(0)),
             replies=[ScriptedReply(to_ask=1, press=press)],
         ),
@@ -101,7 +111,9 @@ async def card_to_tomas(slack: Intercepted, workspace: Workspace) -> WorldEvent:
 
 async def decided(person: Person, asked: WorldEvent, workspace: Workspace) -> PersonReply:
     scenario = SCENARIO.model_copy(update={"people": [p for p in SCENARIO.people if p.key != "tomas"] + [person]})
-    reply = await ScriptedReplier(scenario).decide(person, asked, workspace.store.events(), workspace.clock)
+    reply = await PeopleReplier(scenario, people_model()).decide(
+        person, asked, workspace.store.events(), workspace.clock
+    )
     assert reply is not None and reply.press is not None
     return reply
 
@@ -301,7 +313,10 @@ async def test_a_scripted_press_on_a_label_the_message_lacks_is_no_reply(
     asked = await card_to_tomas(slack, workspace)
     person = tomas(ScriptedPress(label="Approve all 3"))
     scenario = SCENARIO.model_copy(update={"people": [*SCENARIO.people[:1], person, SCENARIO.people[2]]})
-    assert await ScriptedReplier(scenario).decide(person, asked, workspace.store.events(), workspace.clock) is None
+    assert (
+        await PeopleReplier(scenario, people_model()).decide(person, asked, workspace.store.events(), workspace.clock)
+        is None
+    )
     assert isinstance(asked.after, MessageSnapshot) and [a.label for a in asked.after.actions] == [
         "Accept",
         "Reject",

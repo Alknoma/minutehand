@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import html
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -30,7 +29,7 @@ from urllib.parse import parse_qsl
 
 from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, TypeAdapter, model_serializer
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 API_BASE = "https://app.asana.com/api/1.0"
@@ -43,15 +42,16 @@ UNPAGINATED_MAX = 1000
 SEARCH_DEFAULT = 20
 TYPEAHEAD_DEFAULT = 20
 TOKEN_LIFETIME_SECONDS = 3600
-RATE_LIMITED = "You have made too many requests recently. Please, be chill."
+RATE_LIMITED = "You've made too many requests and hit a rate limit. Please retry after the given amount of time."
+"""https://developers.asana.com/docs/rate-limits gives this body for every limiter."""
 
 _GID = re.compile(r"^[0-9]+$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_TAG = re.compile(r"<[^>]+>")
 
 
-JSON = "application/json; charset=utf-8"
-"""The content type of every answer, refusals included."""
+JSON = "application/json; charset=UTF-8"
+"""The content type of every answer, refusals included, spelled as Asana spells it
+(`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`)."""
 
 
 class Refusal(ServiceRefusal):
@@ -83,9 +83,11 @@ def unknown(resource: str, gid: str, *, status: int) -> Refusal:
     return Refusal(status, f"{resource}: Unknown object: {gid}")
 
 
-def forbidden() -> Refusal:
-    """An object that exists and the caller may not see."""
-    return Refusal(403, "Forbidden")
+def forbidden(resource: str) -> Refusal:
+    """An object that exists and the caller may not see, as reported of the real service: "You do not have access to
+    this project." (https://forum.asana.com/t/67666), "... this task" (https://forum.asana.com/t/95502), "... this
+    team." (https://forum.asana.com/t/289156)."""
+    return Refusal(403, f"You do not have access to this {resource}.")
 
 
 def premium(sentence: str) -> Refusal:
@@ -93,13 +95,25 @@ def premium(sentence: str) -> Refusal:
     return Refusal(402, sentence)
 
 
-SEARCH_IS_PREMIUM = "Search is only available to premium Asana workspaces."
-FIELDS_ARE_PREMIUM = "Custom fields are only available to premium Asana workspaces."
+SEARCH_IS_PREMIUM = "Search is only available to premium users."
+"""Reported of the real service, 402: https://forum.asana.com/t/106546."""
+FIELDS_ARE_PREMIUM = "Custom Fields are not available for free users or guests."
+"""Reported of the real service: https://forum.asana.com/t/189341."""
+SETTINGS_ARE_PREMIUM = "Custom Field Settings are not available for free users."
+"""Reported of the real service, 402: https://forum.asana.com/t/100330."""
 
 
-def unsupported(name: str) -> Refusal:
-    """Something real Asana has and this provider does not. Never ignored in silence."""
-    return Refusal(501, f"{name}: Not supported by this simulation of Asana")
+def unsupported(name: str) -> NotServed:
+    """Something real Asana has, or a case whose answer Asana does not document, that this provider does not serve:
+    the shared not-served refusal (`domain.errors`), answered 501 in Asana's envelope naming the call and `name`, and
+    recorded as not implemented. Never ignored in silence."""
+    return NotServed(name)
+
+
+def undocumented(case: str) -> NotServed:
+    """A request Asana answers in words no page, recording or report gives: refused by name, never answered with
+    invented ones."""
+    return unsupported(f"{case} (Asana's answer to it is not documented)")
 
 
 def is_gid(value: str) -> bool:
@@ -107,9 +121,30 @@ def is_gid(value: str) -> bool:
     return bool(_GID.match(value))
 
 
+def not_an_id(field: str, value: str) -> Refusal:
+    """Reported of the real service: "workspace: Not a recognized ID: we" (https://forum.asana.com/t/19570), "task:
+    Not a recognized ID: 456789123" (https://forum.asana.com/t/1011489), "projects: [0]: Not a recognized ID: ..."
+    (https://stackoverflow.com/questions/32514368)."""
+    return bad(f"{field}: Not a recognized ID: {value}")
+
+
+def not_a_gid_type(field: str, value: JsonValue) -> Refusal:
+    """A gid sent as another JSON type, as reported: "column: Not a valid GID type: number"
+    (https://github.com/Asana/python-asana/issues/93), "memberships: [0]: section: Not a valid GID type: object"
+    (https://forum.asana.com/t/1108779)."""
+    kind = (
+        "object"
+        if isinstance(value, dict | list) or value is None
+        else "boolean"
+        if isinstance(value, bool)
+        else ("number" if isinstance(value, int | float) else "string")
+    )
+    return bad(f"{field}: Not a valid GID type: {kind}")
+
+
 def gid_in_path(resource: str, value: str) -> str:
     if not is_gid(value):
-        raise bad(f"{resource}: Not a Recognized ID")
+        raise not_an_id(resource, value)
     return value
 
 
@@ -119,7 +154,8 @@ def is_user_identifier(value: str) -> bool:
 
 
 def stamp(moment: datetime) -> str:
-    """Asana's timestamp: UTC, milliseconds, `Z`."""
+    """Asana's timestamp, returned for every date-time it answers: `YYYY-MM-DDTHH:mm:ss.fffZ`, in UTC
+    (https://developers.asana.com/docs/dates-and-times)."""
     at = moment.astimezone(UTC)
     return at.strftime("%Y-%m-%dT%H:%M:%S.") + f"{at.microsecond // 1000:03d}Z"
 
@@ -193,7 +229,6 @@ class AsanaWorkspace(Model):
     is_organization: bool = True
     email_domains: list[str] = []
     premium: bool = True
-    strict_tokens: bool = Field(default=False, description="Only a seeded or minted token is accepted")
     status: StatusRule = SectionStatus()
     rate_limits: list[RateWindow] = []
     unpaginated_limit: int = Field(
@@ -208,8 +243,8 @@ class AsanaUser(Model):
     email: str
     removed: bool = Field(
         default=False,
-        description="Removed from the workspace by an administrator: unlisted, unassignable, its tokens refused; "
-        "what it did before still names it",
+        description="Removed from the workspace by an administrator: unlisted and unassignable; what it did before "
+        "still names it",
     )
 
 
@@ -271,13 +306,13 @@ class AsanaTag(Model):
 
 
 class AsanaCredential(Model):
-    """A token the workspace accepts. The gid is derived from the token itself, which is never stored."""
+    """A token that names a user. The gid is derived from the token itself, which is never stored. Nothing about it
+    is checked: a token that names no one acts as the agent."""
 
     resource_type: Literal["credential"] = "credential"
     gid: str
     kind: CredentialKind
     user: str
-    expires_at: str | None = None
 
 
 class AsanaMembership(Model):
@@ -292,7 +327,7 @@ class AsanaFieldValue(Model):
     option: str | None = None
     options: list[str] = []
     text: str | None = None
-    number: float | None = None
+    number: int | float | None = None
     date: str | None = None
     date_time: str | None = None
     people: list[str] = []
@@ -354,6 +389,7 @@ def dump(entity: Model) -> str:
 Fields = dict[str, JsonValue]
 
 _TASK_UNSUPPORTED = (
+    "html_notes",
     "followers",
     "start_on",
     "start_at",
@@ -370,10 +406,24 @@ def envelope(body: bytes) -> Fields:
     try:
         decoded = json.loads(body) if body else None
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        # Reported: https://stackoverflow.com/questions/38211523
         raise bad("Could not parse request data, invalid JSON") from error
+    if isinstance(decoded, dict):
+        stray = [k for k in decoded if k not in ("data", "options")]
+        if stray:
+            raise bad(unwrapped(stray[0]))
     if not isinstance(decoded, dict) or "data" not in decoded or not isinstance(decoded["data"], dict):
-        raise bad("Missing input: data")
+        raise undocumented("a write body without a `data` object")
     return decoded["data"]
+
+
+def unwrapped(field: str) -> str:
+    """What Asana answers a body with a field outside `data`, as reported from the real service
+    (https://forum.asana.com/t/238695)."""
+    return (
+        f"Unrecognized request field {field} . The only allowed keys at the top level are: data, options. "
+        "Is it possible you did not wrap object properties in a data object?"
+    )
 
 
 def _string(fields: Fields, name: str) -> str | None:
@@ -381,7 +431,7 @@ def _string(fields: Fields, name: str) -> str | None:
         return None
     value = fields[name]
     if not isinstance(value, str):
-        raise bad(f"{name}: Not a string")
+        raise undocumented(f"{name} that is not a string")
     return value
 
 
@@ -393,9 +443,13 @@ def _required(fields: Fields, name: str) -> str:
 
 
 def _gid_field(fields: Fields, name: str) -> str | None:
-    value = _string(fields, name)
-    if value is not None and not is_gid(value):
-        raise bad(f"{name}: Not a Recognized ID")
+    if name not in fields or fields[name] is None:
+        return None
+    value = fields[name]
+    if not isinstance(value, str):
+        raise not_a_gid_type(name, value)
+    if not is_gid(value):
+        raise not_an_id(name, value)
     return value
 
 
@@ -404,11 +458,13 @@ def _gids(fields: Fields, name: str) -> list[str]:
         return []
     raw = fields[name]
     if not isinstance(raw, list):
-        raise bad(f"{name}: Not an array")
+        raise undocumented(f"{name} that is not an array")
     found: list[str] = []
-    for item in raw:
-        if not isinstance(item, str) or not is_gid(item):
-            raise bad(f"{name}: Not a Recognized ID")
+    for n, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise not_a_gid_type(f"{name}: [{n}]", item)
+        if not is_gid(item):
+            raise not_an_id(f"{name}: [{n}]", item)
         found.append(item)
     return found
 
@@ -416,7 +472,7 @@ def _gids(fields: Fields, name: str) -> list[str]:
 def _boolean(fields: Fields, name: str) -> bool:
     value = fields[name]
     if not isinstance(value, bool):
-        raise bad(f"{name}: Not a boolean")
+        raise undocumented(f"{name} that is not a JSON boolean")
     return value
 
 
@@ -424,35 +480,38 @@ def _due(fields: Fields) -> tuple[str | None, str | None]:
     due_on = _string(fields, "due_on")
     due_at = _string(fields, "due_at")
     if due_on is not None and due_at is not None:
-        raise bad("Cannot specify both due_on and due_at")
+        # Reported: https://forum.asana.com/t/808508
+        raise bad("You may only provide one of due_on or due_at!")
     if due_on is not None and not is_date(due_on):
-        raise bad("due_on: Invalid date")
+        raise not_a_date("due_on", due_on)
     if due_at is not None:
         parsed = parse_stamp(due_at)
         if parsed is None:
-            raise bad("due_at: Invalid datetime")
+            raise undocumented(f"due_at `{due_at}`, not a date-time")
         due_at = stamp(parsed)
     return due_on, due_at
 
 
+def not_a_date(field: str, value: str) -> Refusal:
+    """Reported of the real service: "created_on.after: Date must be in ISO-8601 (yyyy-mm-dd) format, not: ..."
+    (https://forum.asana.com/t/69643)."""
+    return bad(f"{field}: Date must be in ISO-8601 (yyyy-mm-dd) format, not: {value}")
+
+
 def _assignee(fields: Fields) -> str | None:
+    """As sent; a value that names no user is refused where the workspace is known (`app.View.user`)."""
     value = fields["assignee"]
     if value is None:
         return None
-    if not isinstance(value, str) or not is_user_identifier(value):
-        raise bad("assignee: Not a Recognized ID")
+    if not isinstance(value, str):
+        raise not_a_gid_type("assignee", value)
     return value
 
 
 def _notes(fields: Fields) -> str | None:
-    """`notes`, or `html_notes` as the text it shows; Asana refuses both at once. None when neither was sent."""
-    if "notes" in fields and "html_notes" in fields:
-        raise bad("Cannot specify both notes and html_notes")
-    if "html_notes" in fields:
-        marked = _string(fields, "html_notes") or ""
-        if "<body>" not in marked:
-            raise bad("html_notes: Invalid HTML: must be enclosed in <body> tags")
-        return html.unescape(plain(marked))
+    """`notes` as sent; None when it was not sent. `html_notes` is not served: Asana keeps the two as one text and
+    documents neither how it reads the plain text out of the HTML nor how it marks plain text up
+    (https://developers.asana.com/docs/rich-text), so neither can be answered for the other."""
     if "notes" in fields:
         return _string(fields, "notes") or ""
     return None
@@ -463,11 +522,14 @@ def _custom_fields(fields: Fields) -> dict[str, JsonValue]:
     raw = fields["custom_fields"]
     if raw is None:
         return {}
+    if isinstance(raw, str | int | float) and not isinstance(raw, bool):
+        # Reported: https://forum.asana.com/t/170757
+        raise bad(f"custom_fields: Value is not a JSON object: {raw}")
     if not isinstance(raw, dict):
-        raise bad("custom_fields: Not an object")
+        raise undocumented("custom_fields that are not an object")
     for gid in raw:
         if not is_gid(gid):
-            raise bad("custom_fields: Not a Recognized ID")
+            raise not_an_id("custom_fields", gid)
     return dict(raw)
 
 
@@ -487,14 +549,15 @@ def _memberships(fields: Fields) -> list[MembershipIn]:
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise bad("memberships: Not an array")
+        raise undocumented("memberships that are not an array")
     found: list[MembershipIn] = []
-    for item in raw:
+    for n, item in enumerate(raw):
         if not isinstance(item, dict):
-            raise bad("memberships: Not an object")
+            raise undocumented("a membership that is not an object")
         project = _gid_field(item, "project")
         if project is None:
-            raise bad("memberships.project: Missing input")
+            # Reported: https://forum.asana.com/t/10481
+            raise bad(f"memberships: [{n}]: project: Missing required field")
         found.append(MembershipIn(project=project, section=_gid_field(item, "section")))
     return found
 
@@ -521,11 +584,13 @@ def task_create(fields: Fields, *, parent: str | None = None) -> TaskCreate:
     projects = _gids(fields, "projects")
     memberships = _memberships(fields) if "memberships" in fields else []
     if projects and memberships:
-        raise bad("Cannot specify both projects and memberships")
+        # Asana takes both (https://forum.asana.com/t/92977); how it combines them is not documented.
+        raise undocumented("a task created with both projects and memberships")
     workspace = _gid_field(fields, "workspace")
     under = parent if parent is not None else _gid_field(fields, "parent")
     if not projects and not memberships and workspace is None and under is None:
-        raise bad("Missing input: workspace")
+        # Reported: https://forum.asana.com/t/44096
+        raise bad("You should specify one of workspace, parent, projects")
     return TaskCreate(
         name=_string(fields, "name") or "",
         notes=_notes(fields) or "",
@@ -556,9 +621,13 @@ class TaskUpdate(Model):
 
 def task_update(fields: Fields) -> TaskUpdate:
     _refuse_unsupported(fields, _TASK_UNSUPPORTED)
-    for fixed in ("projects", "workspace", "memberships", "tags", "parent"):
+    for fixed in ("projects", "tags"):
         if fixed in fields:
+            # Reported: https://forum.asana.com/t/77626, https://stackoverflow.com/questions/42604985
             raise bad(f"{fixed}: Cannot write this property")
+    for fixed in ("workspace", "memberships", "parent"):
+        if fixed in fields:
+            raise undocumented(f"{fixed} written on a task update")
     sent: dict[str, JsonValue] = {}
     if "name" in fields:
         sent["name"] = _string(fields, "name") or ""
@@ -603,7 +672,7 @@ def one_gid(fields: Fields, name: str) -> str:
 def members_in(fields: Fields) -> list[str]:
     """`members`: Asana takes one comma-separated string, or an array, of user identifiers."""
     if "members" not in fields or fields["members"] is None:
-        raise bad("members: Missing input")
+        raise bad("members: Missing input")  # the documented form: https://developers.asana.com/docs/errors
     raw = fields["members"]
     named: list[str] = []
     if isinstance(raw, str):
@@ -611,15 +680,15 @@ def members_in(fields: Fields) -> list[str]:
     elif isinstance(raw, list):
         for item in raw:
             if not isinstance(item, str):
-                raise bad("members: Not a Recognized ID")
+                raise undocumented("a member that is not a string")
             named.append(item.strip())
     else:
-        raise bad("members: Not an array")
+        raise undocumented("members that are neither a string nor an array")
     if not named:
         raise bad("members: Missing input")
     for identifier in named:
         if not is_user_identifier(identifier):
-            raise bad("members: Not a Recognized ID")
+            raise undocumented(f"a member `{identifier}` that is not a gid, an email or `me`")
     return named
 
 
@@ -689,8 +758,10 @@ class StoryCreate(Model):
 def story_create(fields: Fields) -> StoryCreate:
     _refuse_unsupported(fields, ("html_text", "is_pinned", "sticker_name"))
     text = _string(fields, "text")
-    if text is None or not text.strip():
-        raise bad("Missing input: text")
+    if text is None:
+        raise bad("text: Missing input")  # the documented form: https://developers.asana.com/docs/errors
+    if not text.strip():
+        raise undocumented("a comment of nothing but spaces")
     return StoryCreate(text=text)
 
 
@@ -706,36 +777,34 @@ def custom_field_value(definition: AsanaCustomField, sent: JsonValue, users: Map
     match definition.subtype:
         case "enum":
             if not isinstance(sent, str) or not is_gid(sent):
-                raise bad(f"{where}: Not a Recognized ID")
+                raise undocumented(f"{where} that is not an enum option's gid")
             return value.model_copy(update={"option": _enum_option(definition, sent, where)})
         case "multi_enum":
             if not isinstance(sent, list):
-                raise bad(f"{where}: Not an array")
+                raise undocumented(f"{where} that is not an array")
             chosen: list[str] = []
             for item in sent:
                 if not isinstance(item, str) or not is_gid(item):
-                    raise bad(f"{where}: Not a Recognized ID")
+                    raise undocumented(f"{where} holding something that is not an enum option's gid")
                 chosen.append(_enum_option(definition, item, where))
             return value.model_copy(update={"options": list(dict.fromkeys(chosen))})
         case "text":
             if not isinstance(sent, str):
-                raise bad(f"{where}: Not a string")
+                raise undocumented(f"{where} that is not a string")
             return value.model_copy(update={"text": sent})
         case "number":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             if isinstance(sent, bool) or not isinstance(sent, int | float):
-                raise bad(f"{where}: Not a number")
-            return value.model_copy(update={"number": float(sent)})
+                raise undocumented(f"{where} that is not a number")
+            return value.model_copy(update={"number": sent})
         case "date":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             return _date_value(value, sent, where)
         case "people":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             if not isinstance(sent, list):
-                raise bad(f"{where}: Not an array")
+                raise undocumented(f"{where} that is not an array")
             people: list[str] = []
             for item in sent:
-                if not isinstance(item, str) or not is_user_identifier(item):
-                    raise bad(f"{where}: Not a Recognized ID")
-                if item not in users:
-                    raise bad(f"{where}: Unknown object: {item}")
+                if not isinstance(item, str) or item not in users:
+                    raise undocumented(f"{where} naming someone who is not a user of the workspace")
                 people.append(users[item])
             return value.model_copy(update={"people": list(dict.fromkeys(people))})
 
@@ -743,40 +812,28 @@ def custom_field_value(definition: AsanaCustomField, sent: JsonValue, users: Map
 def _date_value(value: AsanaFieldValue, sent: JsonValue, where: str) -> AsanaFieldValue:
     """`{"date": "YYYY-MM-DD"}` or `{"date_time": "..."}`; a moment also answers its UTC date."""
     if not isinstance(sent, dict):
-        raise bad(f"{where}: Not an object")
+        raise undocumented(f"{where} that is not an object")
     at = sent["date_time"] if "date_time" in sent else None
     if at is not None:
         moment = parse_stamp(at) if isinstance(at, str) else None
         if moment is None:
-            raise bad(f"{where}.date_time: Invalid datetime")
+            raise undocumented(f"{where}.date_time that is not a date-time")
         return value.model_copy(update={"date": moment.astimezone(UTC).date().isoformat(), "date_time": stamp(moment)})
     on = sent["date"] if "date" in sent else None
     if on is None:
         return value
     if not isinstance(on, str) or not is_date(on):
-        raise bad(f"{where}.date: Invalid date")
+        raise undocumented(f"{where}.date that is not a date")
     return value.model_copy(update={"date": on})
 
 
 def _enum_option(definition: AsanaCustomField, gid: str, where: str) -> str:
     option = next((o for o in definition.enum_options if o.gid == gid), None)
     if option is None:
-        raise bad(f"{where}: Not a recognized enum option: {gid}")
+        raise undocumented(f"{where} naming an enum option the field does not have")
     if not option.enabled:
-        raise bad(f"{where}: Enum option {gid} is disabled")
+        raise undocumented(f"{where} naming a disabled enum option")
     return gid
-
-
-class OAuthRefusal(ServiceRefusal):
-    """The OAuth endpoint's own error shape (RFC 6749), not the API's envelope."""
-
-    def __init__(self, error: str, description: str) -> None:
-        super().__init__(description)
-        self.error = error
-        self.description = description
-
-    def render(self, asked: Asked) -> Rendered:
-        return Rendered(status=400, content_type=JSON, body=oauth_failed(self))
 
 
 class TokenGrant(Model):
@@ -789,14 +846,10 @@ class TokenGrant(Model):
 def token_grant(body: bytes) -> TokenGrant:
     pairs = dict(parse_qsl(body.decode("utf-8", errors="replace"), keep_blank_values=True))
     if "grant_type" not in pairs:
-        raise OAuthRefusal("invalid_request", "The grant_type parameter is missing.")
+        raise undocumented("a token request without a grant_type")
     return TokenGrant(
         grant_type=pairs["grant_type"], refresh_token=pairs["refresh_token"] if "refresh_token" in pairs else None
     )
-
-
-def oauth_failed(refusal: OAuthRefusal) -> bytes:
-    return json.dumps({"error": refusal.error, "error_description": refusal.description}).encode()
 
 
 def token_answer(access_token: str, user: AsanaUser) -> bytes:
@@ -809,14 +862,6 @@ def token_answer(access_token: str, user: AsanaUser) -> bytes:
             "data": {"id": int(user.gid), "gid": user.gid, "name": user.name, "email": user.email},
         }
     ).encode()
-
-
-def html_notes(notes: str) -> str:
-    return "<body>" + html.escape(notes, quote=False) + "</body>"
-
-
-def plain(text: str) -> str:
-    return _TAG.sub("", text)
 
 
 def display_number(number: float, precision: int) -> str:
@@ -849,7 +894,7 @@ class Query:
             return None
         spelled = value.lower()  # Asana's own SDK sends Python's `False`
         if spelled not in ("true", "false"):
-            raise bad(f"{name}: Not a boolean")
+            raise undocumented(f"{name} `{value}`, not a boolean")
         return spelled == "true"
 
     def count(self, name: str) -> int | None:
@@ -857,7 +902,7 @@ class Query:
         if value is None:
             return None
         if not value.isdigit() or not 1 <= int(value) <= PAGE_MAX:
-            raise bad(f"{name}: Must be between 1 and {PAGE_MAX}")
+            raise undocumented(f"{name} `{value}`, not between 1 and {PAGE_MAX}")
         return int(value)
 
     def moment(self, name: str) -> datetime | None:
@@ -866,7 +911,7 @@ class Query:
             return None
         parsed = parse_stamp(value)
         if parsed is None:
-            raise bad(f"{name}: Invalid datetime")
+            raise undocumented(f"{name} `{value}`, not a date-time")
         return parsed
 
     def gids(self, name: str) -> list[str] | None:
@@ -877,7 +922,7 @@ class Query:
         found = [part.strip() for part in value.split(",") if part.strip()]
         for gid in found:
             if not is_gid(gid):
-                raise bad(f"{name}: Not a Recognized ID")
+                raise not_an_id(name, gid)
         return found
 
     def refuse(self, names: Sequence[str]) -> None:
@@ -978,7 +1023,6 @@ class CustomFieldOut(Model):
     precision: int | None
     enabled: bool = True
     is_global_to_workspace: bool = True
-    has_notifications_enabled: bool = False
     is_formula_field: bool = False
 
     @model_serializer(mode="wrap")
@@ -1005,7 +1049,7 @@ class CustomFieldValueOut(Model):
     enum_options: list[EnumOptionOut] | None = None
     enum_value: EnumOptionOut | None = None
     multi_enum_values: list[EnumOptionOut] | None = None
-    number_value: float | None = None
+    number_value: int | float | None = None
     precision: int | None = None
     text_value: str | None = None
     date_value: DateValueOut | None = None
@@ -1032,8 +1076,6 @@ class ProjectMembershipOut(Model):
     member: UserOut
     project: ProjectOut
     parent: ProjectOut
-    write_access: Literal["full_write"] = "full_write"
-    access_level: Literal["editor"] = "editor"
 
 
 class TagOut(Model):
@@ -1072,7 +1114,6 @@ class TaskOut(Model):
     resource_subtype: Literal["default_task"] = "default_task"
     name: str
     notes: str
-    html_notes: str
     completed: bool
     completed_at: str | None
     due_on: str | None
@@ -1082,8 +1123,11 @@ class TaskOut(Model):
     assignee: UserOut | None
     created_by: UserOut
     parent: TaskRefOut | None
-    subtasks: list[TaskRefOut]
     num_subtasks: int
+    dependencies: list[TaskRefOut] = Field(
+        default=[], description="Always empty: nothing in the world can link tasks (`addDependencies` is not served)"
+    )
+    dependents: list[TaskRefOut] = Field(default=[], description="Always empty, as `dependencies`")
     memberships: list[MembershipOut]
     projects: list[ProjectOut]
     tags: list[TagOut]
@@ -1098,7 +1142,6 @@ class StoryOut(Model):
     resource_subtype: Literal["comment_added"] = "comment_added"
     type: Literal["comment"] = "comment"
     text: str
-    html_text: str
     created_at: str
     created_by: UserOut
     target: Compact
@@ -1132,7 +1175,6 @@ COMPACT: Mapping[str, tuple[str, ...]] = {
         "gid",
         "resource_type",
         "name",
-        "resource_subtype",
         "type",
         "enum_options",
         "enum_value",
@@ -1140,31 +1182,77 @@ COMPACT: Mapping[str, tuple[str, ...]] = {
         "number_value",
         "text_value",
         "date_value",
-        "people_value",
         "display_value",
         "enabled",
         "is_formula_field",
-        "precision",
     ),
     "custom_field_setting": ("gid", "resource_type"),
-    "project_membership": ("gid", "resource_type", "user", "parent", "access_level"),
+    "project_membership": ("gid", "resource_type", "member"),
 }
+"""Each resource's compact record: the fields of its `...Compact` schema in Asana's OpenAPI document that this provider
+serves, less those marked [Opt In] (https://developers.asana.com/docs/inputoutput-options)."""
+
+OPT_IN: Mapping[str, frozenset[str]] = {
+    "task": frozenset({"num_subtasks", "dependencies", "dependents"}),
+    "team": frozenset({"description"}),
+    "project_membership": frozenset({"parent", "project"}),
+}
+"""Fields Asana's OpenAPI document marks [Opt In]: answered only when `opt_fields` names them, never in a full record."""
 
 FieldTree = dict[str, "FieldTree"]
 
+_GROUP = re.compile(r"\(([^()]*)\)")
+
+
+def _expanded(path: str) -> list[str]:
+    """One `opt_fields` path with its groups spread out: `(followers|assignee).name` is two paths
+    (https://developers.asana.com/docs/inputoutput-options)."""
+    found = _GROUP.search(path)
+    if found is None:
+        return [path]
+    return [
+        expanded
+        for term in found.group(1).split("|")
+        for expanded in _expanded(path[: found.start()] + term + path[found.end() :])
+    ]
+
 
 def field_tree(query: Query) -> FieldTree | None:
-    """`opt_fields=name,assignee.email` as a nested selection; None when the caller named none."""
+    """`opt_fields=name,assignee.email` as a nested selection; None when the caller named none. A path may start
+    with `this.` and may group terms, `(a|b)`, as Asana's input/output options page writes them."""
     raw = query.text("opt_fields")
     if raw is None:
         return None
     tree: FieldTree = {}
-    for path in raw.split(","):
-        node = tree
-        for part in path.strip().split("."):
-            if part:
+    for written in raw.split(","):
+        for path in _expanded(written.strip()):
+            node = tree
+            parts = [p for p in path.split(".") if p]
+            for part in parts[1:] if parts[:1] == ["this"] else parts:
                 node = node.setdefault(part, {})
     return tree
+
+
+def _known(model: type[Model]) -> frozenset[str]:
+    return frozenset(model.model_fields)
+
+
+KNOWN: Mapping[str, frozenset[str]] = {
+    "task": _known(TaskOut) | _known(TaskRefOut),
+    "user": _known(UserOut),
+    "workspace": _known(WorkspaceOut),
+    "team": _known(TeamOut),
+    "project": _known(ProjectOut),
+    "section": _known(SectionOut),
+    "story": _known(StoryOut),
+    "custom_field": _known(CustomFieldOut) | _known(CustomFieldValueOut),
+    "custom_field_setting": _known(CustomFieldSettingOut),
+    "project_membership": _known(ProjectMembershipOut),
+    "tag": _known(TagOut),
+    "enum_option": _known(EnumOptionOut),
+}
+"""Every field each resource is ever answered with here. A field `opt_fields` names that is not one is refused by name:
+answering without it would say Asana has no such field, or that it is empty."""
 
 
 def _reference(value: JsonValue) -> JsonValue:
@@ -1177,24 +1265,33 @@ def _reference(value: JsonValue) -> JsonValue:
         return [_reference(item) for item in value]
     if not isinstance(value, dict):
         return value
-    if value.get("resource_type") == "custom_field":
+    if "resource_type" in value and value["resource_type"] == "custom_field":
         return _compact(value)
     if "gid" in value:
         return {k: value[k] for k in ("gid", "resource_type") if k in value}
     return {k: _reference(v) for k, v in value.items()}
 
 
-def _narrow(value: JsonValue, tree: FieldTree) -> JsonValue:
+def _narrow(value: JsonValue, tree: FieldTree, at: str) -> JsonValue:
+    """Exactly the fields `tree` names, and `gid`. A field this resource is never answered with, or a path into
+    something that is not an object, is refused naming the path."""
     if not tree:
         return _reference(value)
     if isinstance(value, list):
-        return [_narrow(item, tree) for item in value]
+        return [_narrow(item, tree, at) for item in value]
+    if value is None:
+        return None
     if not isinstance(value, dict):
-        return value
+        raise unsupported(f"opt_fields={at}.{next(iter(tree))}")
+    kind = value["resource_type"] if "resource_type" in value else None
+    known = KNOWN[kind] if isinstance(kind, str) and kind in KNOWN else frozenset(value)
     out: dict[str, JsonValue] = {"gid": value["gid"]} if "gid" in value else {}
     for key, sub in tree.items():
+        path = f"{at}.{key}" if at else key
+        if key not in known:
+            raise unsupported(f"opt_fields={path}")
         if key in value:
-            out[key] = _narrow(value[key], sub)
+            out[key] = _narrow(value[key], sub, path)
     return out
 
 
@@ -1210,17 +1307,43 @@ def _compact(value: JsonValue) -> JsonValue:
     return {k: _compact(v) for k, v in value.items()}
 
 
+NESTED_FULL: frozenset[tuple[str, str]] = frozenset(
+    {("task", "custom_fields"), ("custom_field_setting", "custom_field")}
+)
+"""The fields of a full record that Asana's OpenAPI document gives as another resource's full record
+(`TaskResponse.custom_fields` is `[CustomFieldResponse]`, `CustomFieldSettingResponse.custom_field` a
+`CustomFieldResponse`); every other resource a full record names is compact."""
+
+
+def _full(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    kind = value["resource_type"] if "resource_type" in value else None
+    hidden = OPT_IN[kind] if isinstance(kind, str) and kind in OPT_IN else frozenset()
+    out: dict[str, JsonValue] = {}
+    for key, held in value.items():
+        if key in hidden:
+            continue
+        if isinstance(kind, str) and (kind, key) in NESTED_FULL:
+            if isinstance(held, list):
+                out[key] = [_full(i) if isinstance(i, dict) else i for i in held]
+            else:
+                out[key] = _full(held) if isinstance(held, dict) else held
+            continue
+        out[key] = _compact(held)
+    return out
+
+
 def shape(item: Representation, tree: FieldTree | None, *, full: bool) -> JsonValue:
     """One resource as Asana answers it: narrowed by opt_fields, else full (one resource) or compact (a list).
 
-    A full record holds the resources it names compact.
+    A full record leaves out what is [Opt In] and holds the resources it names compact, but where Asana's document
+    gives them full (`NESTED_FULL`).
     """
     value: JsonValue = item.model_dump(mode="json")
     if tree is not None:
-        return _narrow(value, tree)
+        return _narrow(value, tree, "")
     if not full or not isinstance(value, dict):
         return _compact(value)
-    return {k: _compact(v) for k, v in value.items()}
+    return _full(value)
 
 
 class NextPage(Model):
@@ -1233,14 +1356,18 @@ def encode_offset(after: str) -> str:
     return base64.urlsafe_b64encode(f"after:{after}".encode()).decode().rstrip("=")
 
 
+BAD_OFFSET = "offset: Your pagination token is invalid."
+"""Reported of the real service, 400: https://forum.asana.com/t/538741."""
+
+
 def decode_offset(token: str) -> str:
     try:
         text = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode()
     except (binascii.Error, UnicodeDecodeError) as error:
-        raise bad("offset: Invalid offset token") from error
+        raise bad(BAD_OFFSET) from error
     head, _, position = text.partition(":")
     if head != "after" or not is_gid(position):
-        raise bad("offset: Invalid offset token")
+        raise bad(BAD_OFFSET)
     return position
 
 
@@ -1258,7 +1385,7 @@ def page(
     limit = query.count("limit")
     offset = query.text("offset")
     if offset is not None and limit is None:
-        raise bad("offset: Cannot be used without limit")
+        raise undocumented("an offset without a limit")
     if limit is None:
         if len(items) > unpaginated_limit:
             raise bad("The result is too large. You should use pagination (may require specifying a workspace)!")

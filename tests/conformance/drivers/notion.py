@@ -39,6 +39,7 @@ from tests.conformance.contract import (
     PersonSeen,
     Session,
     ok,
+    uncredentialed,
 )
 
 PROVIDER = "notion"
@@ -186,8 +187,10 @@ class NotionSession(Documents):
     def people_pages(self, page_size: int) -> list[list[str]]:
         return [[str(u["id"]) for u in page] for page in self._get_pages("list users", "users", page_size)]
 
-    def unknown_credential(self) -> httpx.Response:
-        return self._http.get("users/me", headers={"Authorization": f"Bearer {UNSEEDED}"})
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        if credentialed:
+            return self._http.get("users/me", headers={"Authorization": f"Bearer {UNSEEDED}"})
+        return uncredentialed(self._http, "GET", "users/me")
 
     def observe(self) -> str:
         answered: list[str] = []
@@ -485,7 +488,6 @@ class NotionDriver(Driver):
         "documents": 1,
     }
     # 401 `unauthorized`: "The bearer token is not valid." (https://developers.notion.com/reference/status-codes)
-    unknown_refusal: ClassVar[tuple[int, str]] = (401, "unauthorized")
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:

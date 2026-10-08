@@ -16,7 +16,6 @@ import base64
 import hashlib
 import json
 import re
-import xml.etree.ElementTree as ElementTree
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import ClassVar
@@ -34,10 +33,12 @@ from tests.conformance.contract import Api, Driver, IdKind, PersonSeen, Session,
 REGION = "us-east-1"
 SCHEDULER = f"scheduler.{REGION}.amazonaws.com"
 SQS = f"sqs.{REGION}.amazonaws.com"
-STS = f"sts.{REGION}.amazonaws.com"
 QUEUE = "conformance-wakes"
 AT = "at(2030-01-01T09:00:00)"
-STS_NS = {"sts": "https://sts.amazonaws.com/doc/2011-06-15/"}
+NO_WHOAMI = (
+    "STS GetCallerIdentity is not served: the aws provider answers EventBridge Scheduler and SQS only, and refuses "
+    "every other AWS service by name; Minutehand enforces no credentials, so no caller has an identity to answer"
+)
 NO_PEOPLE = (
     "the scenario's people are no AWS principals: the aws provider seeds no IAM user, role or access key for a "
     "person (AwsProvider.seed declares no resources), so AWS has no account of theirs to list or act as"
@@ -102,14 +103,7 @@ class AwsSession(Session):
     # ------------------------------------------------------------------------------------------ accounts
 
     def whoami(self) -> str:
-        """STS GetCallerIdentity (query protocol): the caller's ARN."""
-        form = urlencode({"Action": "GetCallerIdentity", "Version": "2011-06-15"}).encode()
-        headers = {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
-        answered = ok("GetCallerIdentity", self._send("sts", "POST", f"https://{STS}/", form, headers))
-        arn = ElementTree.fromstring(answered.content).find("sts:GetCallerIdentityResult/sts:Arn", STS_NS)
-        if arn is None or not arn.text:
-            raise AssertionError(f"GetCallerIdentity answered no Arn: {answered.text[:300]}")
-        return arn.text
+        raise NotImplementedError(NO_WHOAMI)
 
     def people(self) -> list[PersonSeen]:
         raise NotImplementedError(NO_PEOPLE)
@@ -117,8 +111,10 @@ class AwsSession(Session):
     def people_pages(self, page_size: int) -> list[list[str]]:
         raise NotImplementedError(NO_PEOPLE)
 
-    def unknown_credential(self) -> httpx.Response:
-        """ListSchedules signed with an access key no world was given."""
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        """ListSchedules signed with an access key no world was given, or not signed at all."""
+        if not credentialed:
+            return self._http.get(f"https://{SCHEDULER}/schedules")
         stranger = Credentials("AKIAUNKNOWNCALLER000", "unknownunknownunknownunknownunknownunkno")
         return self._scheduler("GET", "/schedules", credentials=stranger)
 
@@ -191,6 +187,7 @@ class AwsDriver(Driver):
     session = AwsSession
     absent: ClassVar[Mapping[str, str]] = {
         "accounts.people": NO_PEOPLE,
+        "accounts.whoami": NO_WHOAMI,
         "accounts.person_credentials": NO_PEOPLE,
         "accounts.title": NO_PEOPLE,
         "accounts.bot": NO_PEOPLE,
@@ -207,13 +204,12 @@ class AwsDriver(Driver):
     page_floor: ClassVar[Mapping[str, int]] = {}
     # A request signed with an access key AWS does not know: 403 UnrecognizedClientException, "The security token
     # included in the request is invalid." (EventBridge Scheduler API reference, Common Errors).
-    unknown_refusal = (403, "The security token included in the request is invalid")
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:
             raise NotImplementedError(f"AWS has no login of a person's own: {self.absent['accounts.vendor_login']}")
         # The access key is claimed as a token only so the world names it (`credential_of`); nothing routes on it.
-        claims = Claims(hosts=[SCHEDULER, SQS, STS], tokens=[access_key(tag)])
+        claims = Claims(hosts=[SCHEDULER, SQS], tokens=[access_key(tag)])
         return CreateWorld(seed=Seed.model_validate(seed), claims=claims)
 
     def connect(self, api: Api, world: WorldView, *, person: str | None = None) -> Session:

@@ -7,6 +7,7 @@ a scenario carries a provider's own seed."""
 from __future__ import annotations
 
 import ssl
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -14,7 +15,14 @@ import httpx
 from minutehand.adapters.control.wire import Claims, CreateWorld
 from minutehand.adapters.providers.github import wire
 from minutehand.adapters.providers.github.provider import build
-from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, SeedRepository, SeedToken, SeedUser
+from minutehand.adapters.providers.github.seed import (
+    GitHubSeed,
+    SeedCommit,
+    SeedFile,
+    SeedRepository,
+    SeedToken,
+    SeedUser,
+)
 from minutehand.domain.scenario import Seed
 from minutehand.domain.world import Actor, Operation
 from minutehand.serve import ServeOptions, serving
@@ -29,7 +37,11 @@ def _github(token: str, kind: wire.TokenKind, repository: str) -> GitHubSeed:
         tokens=[SeedToken(token=token, kind=kind, login="dev")],
         repositories=[
             SeedRepository(
-                owner="dev", name=repository, private=True, files=[SeedFile(path="main.py", text="print('hi')\n")]
+                owner="dev",
+                name=repository,
+                private=True,
+                files=[SeedFile(path="main.py", text="print('hi')\n")],
+                commits=[SeedCommit(message="Say hi", author="dev", before=timedelta(days=1), paths=["main.py"])],
             )
         ],
     )

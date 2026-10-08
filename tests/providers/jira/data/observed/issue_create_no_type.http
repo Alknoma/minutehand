@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:44 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: f152e1189bebd9b8fb3e2a939187cbc6
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 1f5677a426fb4c8588e4f7e6eb336a05
+Atl-Request-Id: 1f5677a4-26fb-4c85-88e4-f7e6eb336a05
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=169,atl-edge-internal;dur=20,atl-edge-upstream;dur=149,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 b6c35d3a56993160193b44d456bee468.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: px6iaim4wtLwQxG9_XDDJlpUxH0zwYM5lNVzVYZTmCxVP3r4i4lsHQ==
+
+{"errorMessages":[],"errors":{"issuetype":"Specify an issue type"}}

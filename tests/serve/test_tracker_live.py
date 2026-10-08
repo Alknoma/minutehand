@@ -198,15 +198,16 @@ def test_a_jira_account_deactivated_reads_inactive_and_is_reactivated(served: Se
         assert http.get(account).json()["active"] is True
 
 
-def test_a_youtrack_account_banned_reads_banned_and_its_token_no_longer_signs_in(served: Served) -> None:
+def test_a_youtrack_account_banned_reads_banned_and_its_token_still_acts_as_it(served: Served) -> None:
+    """Minutehand checks no credential: a banned account's token still reaches the API, as that account."""
     seed, claims = _youtrack_world("perm:trackerban")
     with _world(served, seed, claims) as world, _http(served, {"Authorization": "Bearer perm:trackerban"}) as http:
         me = "https://trackerban.youtrack.cloud/api/users/me?fields=login,banned"
-        assert http.get(me).json()["login"] == "sofia"
+        assert http.get(me).json() == {"login": "sofia", "banned": False, "$type": "Me"}
         world.deactivate_person("youtrack", "sofia")
-        assert http.get(me).status_code == 401
+        assert http.get(me).json() == {"login": "sofia", "banned": True, "$type": "Me"}
         world.reactivate_person("youtrack", "sofia")
-        assert http.get(me).status_code == 200
+        assert http.get(me).json()["banned"] is False
 
 
 def test_a_notion_member_removed_is_unlisted_and_not_found(served: Served) -> None:
@@ -252,19 +253,27 @@ def test_a_person_change_a_provider_cannot_show_is_refused_as_unsupported(
 # ------------------------------------------------------------------ YouTrack permissions
 
 
-def test_a_youtrack_permission_withheld_and_granted_again_mid_test_changes_what_the_api_allows(
+def test_a_youtrack_permission_withheld_and_granted_again_mid_test_changes_what_the_api_reports(
     served: Served,
 ) -> None:
+    """Minutehand enforces no permission: a withheld one leaves the read answered and is reported by Hub's
+    permissions cache."""
     seed, claims = _youtrack_world("perm:trackergrant")
     with _world(served, seed, claims) as world, _http(served, {"Authorization": "Bearer perm:trackergrant"}) as http:
         issue = _ticket(world, "youtrack")
         url = f"https://trackergrant.youtrack.cloud/api/issues/{issue.external_id}?fields=idReadable"
-        assert http.get(url).status_code == 200
+        cache = "https://trackergrant.youtrack.cloud/hub/api/rest/permissions/cache?fields=permission/key,projects/key"
+
+        def reads_launch() -> bool:
+            held = [e for e in http.get(cache).json() if e["permission"]["key"] == "jetbrains.youtrack.readIssue"]
+            return bool(held) and "LAUNCH" in [p["key"] for p in held[0]["projects"]]
+
+        assert http.get(url).status_code == 200 and reads_launch()
         withheld = world.withhold("youtrack", "sofia", "jetbrains.youtrack.readIssue", project="LAUNCH")
         assert withheld.actor is Actor.SCENARIO
-        assert http.get(url).status_code == 403
+        assert http.get(url).status_code == 200 and not reads_launch()
         world.grant("youtrack", "sofia", "jetbrains.youtrack.readIssue", project="LAUNCH")
-        assert http.get(url).status_code == 200
+        assert reads_launch()
 
 
 def test_a_youtrack_permission_it_does_not_name_is_refused(served: Served) -> None:

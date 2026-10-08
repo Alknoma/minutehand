@@ -2,8 +2,8 @@
 a field may be.
 
 Every seeded project carries the full standard set (State, Priority, Type, Assignee, Due Date, Estimation, Spent
-time, Story Points). A project made through `POST /admin/projects` carries YouTrack's default template: Priority,
-Type, State and Assignee, and no Due Date, which a client attaches afterwards.
+time, Story Points). A project made through `POST /admin/projects` carries the fields its template's page documents
+(Default, Scrum or Kanban) of the single-valued types this fake holds; `TEMPLATE_GAPS` names the rest.
 """
 
 from __future__ import annotations
@@ -42,8 +42,6 @@ STANDARD = [STATE, ASSIGNEE, PRIORITY, TYPE, DUE_DATE, ESTIMATION, SPENT_TIME, S
 """The fields every instance defines, in YouTrack's own order."""
 SEEDED_SET = [PRIORITY, TYPE, STATE, ASSIGNEE, DUE_DATE, ESTIMATION, SPENT_TIME, STORY_POINTS]
 """What a seeded project carries unless its seed says otherwise."""
-TEMPLATE_SET = [PRIORITY, TYPE, STATE, ASSIGNEE]
-"""What YouTrack's default template gives a project made through the API: no Due Date."""
 
 
 class Value(Model):
@@ -80,8 +78,101 @@ TYPES = [
     for n in ("Bug", "Cosmetics", "Exception", "Feature", "Task", "Usability Problem", "Performance Problem", "Epic")
 ]
 DEFAULTS: dict[str, str] = {"State": "Open", "Priority": "Normal", "Type": "Bug"}
-TEMPLATE_DEFAULTS: dict[str, str] = {"State": "Submitted", "Priority": "Normal", "Type": "Bug"}
 STANDARD_VALUES: dict[str, list[Value]] = {"State": SEEDED_STATES, "Priority": PRIORITIES, "Type": TYPES}
+
+
+class TemplateField(Model):
+    """One field a project template attaches, as the template's page lists it."""
+
+    name: str
+    type: wire.FieldType
+    values: list[Value] = []
+    default: str | None = None
+    can_be_empty: bool = True
+    empty_text: str
+
+
+_ASSIGNEE = TemplateField(name="Assignee", type=wire.FieldType.USER, empty_text="Unassigned")
+_PRIORITY = TemplateField(
+    name="Priority",
+    type=wire.FieldType.ENUM,
+    values=PRIORITIES,
+    default="Normal",
+    can_be_empty=False,
+    empty_text="No priority",
+)
+TEMPLATES: dict[str | None, list[TemplateField]] = {
+    None: [
+        _PRIORITY,
+        TemplateField(
+            name="Type", type=wire.FieldType.ENUM, values=TYPES, default="Bug", can_be_empty=False, empty_text="No type"
+        ),
+        TemplateField(
+            name="State",
+            type=wire.FieldType.STATE,
+            values=TEMPLATE_STATES,
+            default="Submitted",
+            can_be_empty=False,
+            empty_text="No state",
+        ),
+        _ASSIGNEE,
+    ],
+    "scrum": [
+        TemplateField(
+            name="Type",
+            type=wire.FieldType.ENUM,
+            values=[Value(name=n) for n in ("Epic", "User Story", "Task", "Bug")],
+            default="Task",
+            can_be_empty=False,
+            empty_text="No type",
+        ),
+        _ASSIGNEE,
+        TemplateField(
+            name="State",
+            type=wire.FieldType.STATE,
+            values=[
+                Value(name="Open"),
+                Value(name="In Progress"),
+                Value(name="To Verify"),
+                Value(name="Done", resolved=True, outcome=TicketState.DONE),
+                Value(name="Duplicate", resolved=True, outcome=TicketState.CANCELLED),
+            ],
+            default="Open",
+            can_be_empty=False,
+            empty_text="No state",
+        ),
+        *(
+            TemplateField(name=n, type=wire.FieldType.INTEGER, empty_text="Not estimated")
+            for n in ("Ideal days", "Story points", "Original estimation")
+        ),
+    ],
+    "kanban": [
+        TemplateField(
+            name="Stage",
+            type=wire.FieldType.STATE,
+            values=[
+                *(Value(name=n) for n in ("Backlog", "Develop", "Review", "Test", "Staging")),
+                Value(name="Done", resolved=True, outcome=TicketState.DONE),
+            ],
+            default="Backlog",
+            can_be_empty=False,
+            empty_text="No stage",
+        ),
+        _ASSIGNEE,
+        _PRIORITY,
+    ],
+}
+"""The fields `POST /admin/projects` attaches for no `template`, `scrum` and `kanban`, from the Default, Scrum and
+Kanban Project Template pages (https://www.jetbrains.com/help/youtrack/cloud/default-project-template.html,
+.../scrum-project-template.html, .../kanban-project-template.html), less `TEMPLATE_GAPS`. The empty texts are this
+fake's: the pages give none for a field that cannot be empty."""
+TEMPLATE_GAPS: dict[str | None, list[str]] = {
+    None: ["Subsystem (ownedField[1])", "Fix Versions (version[*])", "Affected versions (version[*])",
+           "Fixed in build (build[1])"],
+    "scrum": ["Priority (enum[*])", "Sprints (enum[*])"],
+    "kanban": [],
+}  # fmt: skip
+"""Fields a template's page lists that a project made here does not carry: their types are not held."""
 
 
 class Ids:
@@ -147,17 +238,15 @@ def project_field(
     )
 
 
-def standard_field(ids: Ids, definition: Definition, *, template: bool) -> wire.StoredProjectField:
-    """A standard field with its standard bundle and default, as a seeded project or the default template has it."""
-    values = TEMPLATE_STATES if template and definition is STATE else STANDARD_VALUES.get(definition.name)
-    defaults = TEMPLATE_DEFAULTS if template else DEFAULTS
+def standard_field(ids: Ids, definition: Definition) -> wire.StoredProjectField:
+    """A standard field with its standard bundle and default, as a seeded project has it."""
     return project_field(
         ids,
         stored_definition(definition),
-        values=values,
+        values=STANDARD_VALUES.get(definition.name),
         can_be_empty=definition.can_be_empty,
         empty_text=definition.empty_text,
-        default=defaults.get(definition.name),
+        default=DEFAULTS.get(definition.name),
     )
 
 

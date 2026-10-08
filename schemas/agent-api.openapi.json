@@ -265,7 +265,8 @@
           "file",
           "tool_call",
           "memory",
-          "next_wake"
+          "next_wake",
+          "stored"
         ],
         "title": "EntityKind",
         "type": "string"

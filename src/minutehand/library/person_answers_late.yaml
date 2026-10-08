@@ -15,7 +15,7 @@ scenario:
     - key: "{team.owner_key}"
       name: "{team.owner_name}"
       email: "{team.owner_email}"
-      reply: {kind: scripted, replies: []}
+      reply: {kind: scripted, then: silent}
     - key: "{team.ask_key}"
       name: "{team.ask_name}"
       email: "{team.ask_email}"
@@ -23,10 +23,10 @@ scenario:
         kind: scripted
         delay: {shortest: P3D, longest: P3D}
         replies:
-          - {to_ask: 1, text: "{team.answer}"}
+          - {to_ask: 1, facts: ["{team.answer}"]}
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
-    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", tell: "{team.tell}"}
+    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", holding: ["{team.tell}"]}
   assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
     - id: reminds_at_most_twice_before_due   # more reminders than that, before the answer is even due, is nagging
       each: ask

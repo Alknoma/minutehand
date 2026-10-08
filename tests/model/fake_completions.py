@@ -58,6 +58,11 @@ class Received:
         return self.said[-1][1]
 
     @property
+    def asked(self) -> str:
+        """The message a person is asked to answer, as the transcript Minutehand sends shows it last."""
+        return self.last.rstrip().splitlines()[-1].split("] They: ", 1)[-1]
+
+    @property
     def schema_name(self) -> str:
         response_format = self.body["response_format"]
         assert isinstance(response_format, dict)

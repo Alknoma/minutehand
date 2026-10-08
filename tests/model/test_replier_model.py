@@ -12,19 +12,18 @@ import pytest
 from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.refusals import RunRefused
-from minutehand.application.replier_model import (
+from minutehand.application.replier import (
     HELPFULNESS,
     PERSON_PROMPT_VERSION,
-    ModelReplier,
     PeopleReplier,
     WrittenReply,
 )
-from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.conversation import Provenance
 from minutehand.domain.scenario import (
     Absence,
     AbsenceTrigger,
+    AfterScript,
     Answers,
     DelayRange,
     Helpfulness,
@@ -105,16 +104,20 @@ async def test_each_helpfulness_reaches_the_model_and_the_reply_lands_when_a_scr
 ) -> None:
     written = sofia(helpfulness, voice="terse")
     scripted = written.model_copy(
-        update={"reply": Scripted(delay=DELAY, replies=[ScriptedReply(to_ask=1, text="scripted")])}
+        update={
+            "reply": Scripted(
+                then=AfterScript.SILENT, delay=DELAY, replies=[ScriptedReply(to_ask=1, verbatim="scripted")]
+            )
+        }
     )
     store, clock = world(tmp_path)
     asked = say(store, Actor.AGENT, QUESTION, [written.email], "m1")
     async with fake_completions(answering) as fake:
-        reply = await ModelReplier(
+        reply = await PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), written]), model(fake)
-        ).decide(written, asked, store.events(), clock)
-    same = await ScriptedReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), scripted])).decide(
-        scripted, asked, store.events(), clock
+        ).decide(written, asked, store.events(), clock, store)
+    same = await PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), scripted]), None).decide(
+        scripted, asked, store.events(), clock, store
     )
 
     assert reply is not None and same is not None
@@ -128,7 +131,7 @@ async def test_each_helpfulness_reaches_the_model_and_the_reply_lands_when_a_scr
     assert "Sofia Romano, Head of Partnerships" in system and "terse" in system
     assert all(f in system for f in FACTS)
     assert (STALE[0] in system) is (helpfulness is Helpfulness.MISTAKEN)
-    assert received.said[1:] == [("user", QUESTION)]
+    assert received.last.endswith(f"Their last message, which you answer now:\n[2026-08-24 10:00 UTC] They: {QUESTION}")
     assert received.temperature == 0.3 and received.schema_name == "WrittenReply"
 
 
@@ -137,9 +140,9 @@ async def test_a_message_that_needs_no_answer_gets_none(tmp_path: Path) -> None:
     store, clock = world(tmp_path)
     thanks = say(store, Actor.AGENT, "Thanks, that is all I needed.", [who.email], "m1")
     async with fake_completions(answering) as fake:
-        reply = await ModelReplier(
+        reply = await PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
-        ).decide(who, thanks, store.events(), clock)
+        ).decide(who, thanks, store.events(), clock, store)
     assert reply is None and len(fake.received) == 1
 
 
@@ -150,11 +153,14 @@ async def test_a_person_asked_beyond_their_facts_is_told_to_say_they_do_not_know
     store, clock = world(tmp_path)
     asked = say(store, Actor.AGENT, "Who signs for legal, and what is the price?", [who.email], "m1")
     async with fake_completions(answering) as fake:
-        await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
-            who, asked, store.events(), clock
+        await PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
+            who, asked, store.events(), clock, store
         )
     system = fake.received[0].system
-    assert "You state nothing that is not in what you know. Asked something it does not cover" in system
+    assert (
+        "You state nothing that is not in what you know or in what you said before. Asked something it does not cover"
+        in system
+    )
     assert "you say you do not know" in system
     assert STALE[0] not in system and "what you believe" not in system
 
@@ -164,13 +170,13 @@ async def test_a_person_with_no_facts_is_told_they_know_nothing(tmp_path: Path) 
     store, clock = world(tmp_path)
     asked = say(store, Actor.AGENT, QUESTION, [who.email], "m1")
     async with fake_completions(answering) as fake:
-        await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
-            who, asked, store.events(), clock
+        await PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
+            who, asked, store.events(), clock, store
         )
     assert "What you know:\n- nothing about this beyond what the messages themselves say" in fake.received[0].system
 
 
-async def test_the_earlier_exchange_with_that_person_and_no_one_else_is_given_in_order(tmp_path: Path) -> None:
+async def test_what_the_person_can_see_is_given_in_order_and_no_one_elses_private_messages(tmp_path: Path) -> None:
     who = sofia()
     store, clock = world(tmp_path)
     say(store, Actor.AGENT, "Hi Sofia, a question soon.", [who.email], "m1")
@@ -180,16 +186,18 @@ async def test_the_earlier_exchange_with_that_person_and_no_one_else_is_given_in
     say(store, Actor.PERSON, "Tom again, in a group with her.", [who.email], "m5")
     asked = say(store, Actor.AGENT, QUESTION, [who.email], "m6")
     async with fake_completions(answering) as fake:
-        await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
-            who, asked, store.events(), clock
+        await PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
+            who, asked, store.events(), clock, store
         )
-    # Hers: a PERSON message where the agent wrote to her, not addressed to her. Not hers: another
-    # conversation, or a message addressed to her, which someone else wrote.
-    assert fake.received[0].said[1:] == [
-        ("user", "Hi Sofia, a question soon."),
-        ("assistant", "Sure, go ahead."),
-        ("user", QUESTION),
+    # Hers to see: the agent's messages to her, her own (a PERSON message where she was written to, not addressed to
+    # her), and someone else's addressed to her. Not hers: the agent's direct messages to Tom, and Tom's to it.
+    shown = fake.received[0].last
+    assert shown.splitlines()[1:4] == [
+        "[2026-08-24 10:00 UTC] They: Hi Sofia, a question soon.",
+        "[2026-08-24 10:00 UTC] You: Sure, go ahead.",
+        "[2026-08-24 10:00 UTC] Someone: Tom again, in a group with her.",
     ]
+    assert "Tom, unrelated." not in shown and "Tom here." not in shown
 
 
 async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(tmp_path: Path) -> None:
@@ -206,10 +214,10 @@ async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(
         )
     )
     async with fake_completions(answering) as fake:
-        reply = await ModelReplier(
+        reply = await PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
-        ).decide(who, asked, store.events(), clock)
-    assert fake.received[0].said[1:] == [("user", QUESTION)]
+        ).decide(who, asked, store.events(), clock, store)
+    assert "Thinking..." not in fake.received[0].last and fake.received[0].last.endswith(f"They: {QUESTION}")
     assert reply is not None and reply.text == "It is 40k a year."
 
 
@@ -218,9 +226,9 @@ async def test_a_person_may_name_their_own_model(tmp_path: Path) -> None:
     store, clock = world(tmp_path)
     asked = say(store, Actor.AGENT, QUESTION, [who.email], "m1")
     async with fake_completions(answering) as fake:
-        reply = await ModelReplier(
+        reply = await PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
-        ).decide(who, asked, store.events(), clock)
+        ).decide(who, asked, store.events(), clock, store)
     assert fake.received[0].model == "people-large"
     assert reply is not None and reply.written_by is not None and reply.written_by.model == "people-large"
 
@@ -234,16 +242,20 @@ async def test_absence_and_working_hours_move_a_written_reply_as_they_move_a_scr
     }
     written = sofia().model_copy(update=timing)
     scripted = written.model_copy(
-        update={"reply": Scripted(delay=DELAY, replies=[ScriptedReply(to_ask=1, text="scripted")])}
+        update={
+            "reply": Scripted(
+                then=AfterScript.SILENT, delay=DELAY, replies=[ScriptedReply(to_ask=1, verbatim="scripted")]
+            )
+        }
     )
     store, clock = world(tmp_path, FRIDAY_1630)
     asked = say(store, Actor.AGENT, QUESTION, [written.email], "m1")
     async with fake_completions(answering) as fake:
-        reply = await ModelReplier(
+        reply = await PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), written]), model(fake)
-        ).decide(written, asked, store.events(), clock)
-    same = await ScriptedReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), scripted])).decide(
-        scripted, asked, store.events(), clock
+        ).decide(written, asked, store.events(), clock, store)
+    same = await PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), scripted]), None).decide(
+        scripted, asked, store.events(), clock, store
     )
     assert reply is not None and same is not None
     assert reply.at == same.at >= FRIDAY_1630 + timedelta(days=3, hours=1)
@@ -260,16 +272,19 @@ async def test_an_answer_that_breaks_its_own_rule_is_sent_back_once(tmp_path: Pa
         return WrittenReply(replies=True, text="40k.")
 
     async with fake_completions(careless) as fake:
-        reply = await ModelReplier(
+        reply = await PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
-        ).decide(who, asked, store.events(), clock)
+        ).decide(who, asked, store.events(), clock, store)
     assert reply is not None and reply.text == "40k."
     assert len(fake.received) == 2 and "replies is true, so text must be the reply" in fake.received[1].last
 
 
 async def test_the_router_sends_scripted_people_to_the_script_and_written_ones_to_the_model(tmp_path: Path) -> None:
     written = sofia()
-    tom = person("tom", Scripted(delay=DELAY, replies=[ScriptedReply(to_ask=1, text="From the script.")]))
+    tom = person(
+        "tom",
+        Scripted(then=AfterScript.SILENT, delay=DELAY, replies=[ScriptedReply(to_ask=1, verbatim="From the script.")]),
+    )
     store, clock = world(tmp_path)
     to_tom = say(store, Actor.AGENT, QUESTION, [tom.email], "m1")
     to_sofia = say(store, Actor.AGENT, QUESTION, [written.email], "m2")
@@ -277,9 +292,9 @@ async def test_the_router_sends_scripted_people_to_the_script_and_written_ones_t
         replier = PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), written, tom]), model(fake)
         )
-        from_tom = await replier.decide(tom, to_tom, store.events(), clock)
+        from_tom = await replier.decide(tom, to_tom, store.events(), clock, store)
         assert fake.received == []
-        from_sofia = await replier.decide(written, to_sofia, store.events(), clock)
+        from_sofia = await replier.decide(written, to_sofia, store.events(), clock, store)
     assert from_tom is not None and from_tom.text == "From the script." and from_tom.written_by is None
     assert from_sofia is not None and from_sofia.text == "It is 40k a year." and len(fake.received) == 1
 
@@ -290,8 +305,14 @@ def test_a_written_person_with_no_model_is_refused_by_name() -> None:
     assert "no model is configured" in str(raised.value)
 
 
-def test_scripted_people_need_no_model() -> None:
+def test_scripted_people_with_exact_words_and_no_more_to_say_need_no_model() -> None:
     PeopleReplier(scenario(), None)
+
+
+def test_a_scripted_person_who_goes_on_conversing_with_no_model_is_refused_by_name() -> None:
+    goes_on = person("tom", Scripted(replies=[ScriptedReply(to_ask=1, verbatim="Yes.")]))
+    with pytest.raises(RunRefused, match=r"tom \(they go on conversing once their script is used"):
+        PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), goes_on]), None)
 
 
 def card(store: SqliteStore, to: list[str]) -> WorldEvent:
@@ -324,9 +345,9 @@ async def test_the_person_is_shown_the_controls_and_a_press_with_a_reason_comes_
         return WrittenReply(replies=True, text=None, press="Reject", form="The price is 45k now.")
 
     async with fake_completions(rejects) as fake:
-        reply = await ModelReplier(
+        reply = await PeopleReplier(
             scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)
-        ).decide(who, asked, store.events(), clock)
+        ).decide(who, asked, store.events(), clock, store)
 
     assert reply is not None and reply.press is not None
     assert (reply.press.action_id, reply.press.value, [f.value for f in reply.press.form]) == (
@@ -349,6 +370,6 @@ async def test_a_press_the_message_does_not_carry_is_refused(tmp_path: Path) -> 
 
     async with fake_completions(invents) as fake:
         with pytest.raises(RunRefused, match="Approve all"):
-            await ModelReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
-                who, asked, store.events(), clock
+            await PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), who]), model(fake)).decide(
+                who, asked, store.events(), clock, store
             )

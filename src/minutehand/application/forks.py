@@ -30,12 +30,14 @@ from minutehand.domain.experiment import (
     Override,
     PersonChange,
     PromptPatch,
+    ReplyAt,
     TicketEdit,
 )
 from minutehand.domain.inboxes import item_words
 from minutehand.domain.memory import canonical
 from minutehand.domain.run import Verdict
 from minutehand.domain.scenario import (
+    AfterScript,
     Answers,
     DispatchFault,
     DispatchRule,
@@ -201,10 +203,12 @@ def behaviour(reply: ReplyBehaviour) -> str:
     shortest, longest = reply.delay.shortest, reply.delay.longest
     delay = f"after {span(shortest)}" if shortest == longest else f"after {span(shortest)} to {span(longest)}"
     if isinstance(reply, Scripted):
-        said = f"answers with {len(reply.replies)} scripted repl{'y' if len(reply.replies) == 1 else 'ies'} {delay}"
+        steps = len(reply.replies)
+        said = f"follows a script of {steps} step{'' if steps == 1 else 's'} {delay}"
         if reply.presses_every is not None:
             said += f", and presses {_quoted(reply.presses_every.label)} on every message that offers it"
-        return said
+        then = "goes on conversing" if reply.then is AfterScript.ANSWERS else "says nothing more"
+        return f"{said}; once it is used, {then}"
     assert isinstance(reply, Answers)
     how = {
         Helpfulness.FULL: "answers in full",
@@ -248,6 +252,11 @@ def change_words(
         was = people.get(override.person)
         before = behaviour(was.reply) if was is not None else "was not in the scenario"
         return f"{_person(people, override.person)} {behaviour(override.reply)} from the fork on; before, {before}"
+    if isinstance(override, ReplyAt):
+        return (
+            f"{_person(people, override.person)} answers their ask {override.to_ask} exactly {span(override.after)} "
+            "after it, whatever was drawn"
+        )
     if isinstance(override, PromptPatch):
         if override.find is None:
             return f"appends {_quoted(override.text)} to the system prompt of {_calls(override.where)}"
@@ -313,7 +322,9 @@ def short_words(override: Override, scenario: Scenario) -> str:
     if isinstance(override, PersonChange):
         person = people.get(override.person)
         name = person.name if person is not None else override.person
-        return f"{name} {behaviour(override.reply).split(',')[0]}"
+        return f"{name} {behaviour(override.reply).split(';')[0].split(', ')[0]}"
+    if isinstance(override, ReplyAt):
+        return f"{override.person} answers ask {override.to_ask} at +{span(override.after)}"
     if isinstance(override, PromptPatch):
         verb = "prompt +" if override.find is None else "prompt edit"
         return f"{verb} {_quoted(override.text, 40)}"

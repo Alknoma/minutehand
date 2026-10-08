@@ -13,7 +13,6 @@ from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.application.files import load_agent
 from minutehand.application.outbound import described, outbound_uses, suggested
-from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
 from minutehand.domain.outbound import Acknowledge, Answer, HtmlAt, InForks, PassThrough, RecordedRun, Replay
 from minutehand.domain.run import OutboundUse
@@ -77,11 +76,14 @@ def test_overlapping_declarations_are_refused_naming_both() -> None:
         Capturing([PassThrough(host="*.example.com"), Acknowledge(host="api.example.com")])
 
 
-def test_a_declared_host_a_provider_claims_is_refused_at_load_naming_both(registry: Registry) -> None:
-    with pytest.raises(ProviderConflict) as refused:
-        refuse_claimed([Acknowledge(host="api.ledger.test")], registry, DEFAULT_MODEL_HOSTS)
-    assert "'api.ledger.test' is declared acknowledge" in str(refused.value)
-    assert "provider 'ledger' claims '*.ledger.test'" in str(refused.value)
+def test_a_declared_host_a_provider_claims_is_accepted_for_what_the_provider_does_not_serve(
+    registry: Registry,
+) -> None:
+    """The provider still answers what it serves; the declaration takes only what it says it does not
+    (`test_store.py`)."""
+    declared = Acknowledge(host="api.ledger.test")
+    refuse_claimed([declared], registry, DEFAULT_MODEL_HOSTS)
+    assert Capturing([declared]).find("api.ledger.test") == declared
 
 
 def test_a_declared_model_api_is_refused(registry: Registry) -> None:
@@ -99,10 +101,9 @@ def test_a_declaration_named_as_a_provider_is_refused(registry: Registry) -> Non
         refuse_claimed([Acknowledge(host="mail.example", name="ledger")], registry, DEFAULT_MODEL_HOSTS)
 
 
-def test_a_run_whose_agent_declares_a_provider_host_is_refused_before_it_starts(tmp_path: Path) -> None:
+def test_a_run_whose_agent_declares_a_provider_host_starts_with_it_declared(tmp_path: Path) -> None:
     agent = _agent(Acknowledge(host="slack.com"))
-    with pytest.raises(RunRefused, match=r"'slack.com' is declared acknowledge, and provider 'slack' claims"):
-        session.capturing_for(agent, Registry.installed(), state=tmp_path)
+    assert session.capturing_for(agent, Registry.installed(), state=tmp_path).find("slack.com") == agent.outbound[0]
 
 
 def test_a_host_used_only_to_change_things_is_suggested_as_acknowledge_and_anything_else_as_pass_through() -> None:

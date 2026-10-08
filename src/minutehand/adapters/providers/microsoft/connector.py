@@ -11,14 +11,15 @@
 | `GET /conversations/{id}/members`, `/pagedmembers`, `/members/{member}` | The conversation's roster |
 | `GET /teams/{team}`, `/teams/{team}/conversations` | A team's details and channels |
 
-Every call must carry a token the identity platform issued to a bot registered in the world for
-`https://api.botframework.com`; anything else is 401, with the connector's own body. A bot not installed in the
-conversation is refused 403, an unknown conversation 404. Activities are stored whole: an Adaptive Card stays
+Minutehand does not enforce credentials: any bearer token, or none, is accepted, and the bot calling is the app
+the token names or else the world's own bot. A bot not installed in the conversation is refused 403, an unknown
+conversation 404. Activities are stored whole: an Adaptive Card stays
 the JSON the bot sent (`cards.cards_of` lists its inputs and actions).
 """
 
 from __future__ import annotations
 
+from pydantic import JsonValue
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route, Router
@@ -36,8 +37,7 @@ from minutehand.adapters.providers.microsoft.state import (
     graph_time,
     message_ref,
 )
-from minutehand.adapters.providers.microsoft.wire import TokenUse
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -48,7 +48,6 @@ MAX_ACTIVITY_UTF16_BYTES = 100 * 1024
 PAGE_DEFAULT = 200
 PAGE_MIN = 50
 PAGE_MAX = 500
-DENIED = '{"message":"Authorization has been denied for this request."}'
 
 
 class ConnectorRefusal(ServiceRefusal):
@@ -122,16 +121,14 @@ class Connector:
     # ------------------------------------------------------------------ lookups
 
     def _bot(self, request: Request) -> AppRecord:
-        token = bearer(request)
-        if token is None:
-            raise _Denied()
-        try:
-            claims = tokens.decode(token, use=TokenUse.ACCESS)
-        except tokens.TokenRefused as e:
-            raise _Denied() from e
-        app = self._world.app(claims.appid)
-        if claims.aud != tokens.BOT_FRAMEWORK_AUDIENCE or app is None:
-            raise _Denied()
+        """The bot calling: the app its bearer token names. Minutehand does not enforce credentials: a missing,
+        unreadable or foreign token, or one naming an app the world does not hold, is the world's own bot calling."""
+        claims = tokens.presented(bearer(request))
+        app = self._world.app(claims.appid) if claims is not None else None
+        if app is None:
+            app = next(iter(self._world.apps()), None)
+        if app is None:
+            raise NotServed("a connector call in a world with no bot registered")
         return app
 
     def _conversation(self, conversation: str, app: AppRecord) -> ConversationRecord:
@@ -156,7 +153,7 @@ class Connector:
         try:
             return wire.read(wire.SentActivity, request_body)
         except wire.Unreadable as e:
-            raise ConnectorRefusal(400, "BadArgument", f"The activity could not be read: {e.message}.") from e
+            raise ConnectorRefusal(400, "Bad Argument", f"The activity could not be read: {e.message}.") from e
 
     # ------------------------------------------------------------------ send, reply
 
@@ -176,9 +173,11 @@ class Connector:
         self, app: AppRecord, conversation: ConversationRecord, sent: wire.SentActivity, *, reply_to: str | None
     ) -> wire.Activity:
         if sent.type != wire.ActivityType.MESSAGE.value:
-            raise ConnectorRefusal(400, "BadArgument", f"Activity type '{sent.type}' cannot be sent to a conversation.")
+            raise ConnectorRefusal(
+                400, "Bad Argument", f"Activity type '{sent.type}' cannot be sent to a conversation."
+            )
         if not sent.text and not sent.attachments:
-            raise ConnectorRefusal(400, "BadArgument", "Activity must have text or attachments.")
+            raise ConnectorRefusal(400, "Bad Argument", "Activity must have text or attachments.")
         thread: str | None = None
         if reply_to is not None:
             found = self._world.message(reply_to)
@@ -202,6 +201,8 @@ class Connector:
             text=sent.text,
             textFormat=sent.textFormat,
             attachments=sent.attachments,
+            entities=list[wire.Mention | JsonValue](sent.entities) if sent.entities is not None else None,
+            locale=sent.locale,
             replyToId=thread,
         )
         self._world.write(
@@ -231,7 +232,9 @@ class Connector:
         if current.sender.id != bot_mri(app.app_id):
             raise ConnectorRefusal(403, "NotEnoughPermissions", "A bot can update only the activities it sent.")
         if sent.text and sent.attachments:
-            raise ConnectorRefusal(400, "BadSyntax", "Activity resulted into multiple skype activities")
+            raise NotServed(
+                "an update carrying both text and an attachment: the connector's answer to it is not documented"
+            )
         updated = current.model_copy(
             update={
                 "text": sent.text if sent.text is not None else (None if sent.attachments else current.text),
@@ -278,20 +281,24 @@ class Connector:
         try:
             asked = wire.read(wire.SentConversation, await request.body())
         except wire.Unreadable as e:
-            raise ConnectorRefusal(400, "BadArgument", f"The conversation could not be read: {e.message}.") from e
+            raise ConnectorRefusal(400, "Bad Argument", f"The conversation could not be read: {e.message}.") from e
         tenant = asked.channelData.tenant.id if asked.channelData and asked.channelData.tenant else asked.tenantId
         if not tenant:
-            raise ConnectorRefusal(400, "BadArgument", "Tenant id is required to create a conversation in Teams.")
+            raise ConnectorRefusal(400, "Bad Argument", "Tenant id is required to create a conversation in Teams.")
         if asked.bot is not None and asked.bot.id not in (app.app_id, bot_mri(app.app_id)):
-            raise ConnectorRefusal(400, "BadArgument", "The bot in the request is not the bot that signed in.")
+            raise NotServed(
+                "a conversation created naming another bot than the caller: the connector's answer is not documented"
+            )
         if asked.isGroup or len(asked.members) != 1:
             raise ConnectorRefusal(
-                400, "BadArgument", "Only a 1:1 conversation with exactly one member can be created by a bot."
+                400, "Bad Argument", "Only a 1:1 conversation with exactly one member can be created by a bot."
             )
         member = asked.members[0].id
         user = self._world.user_by_mri(member) or self._world.user(member)
         if user is None or user.tenant_id != tenant or app.tenant_id != tenant:
-            raise ConnectorRefusal(404, "MemberNotFound", "The member was not found in the tenant.")
+            raise NotServed(
+                "a conversation with someone who is no user of the tenant: the connector's answer is not documented"
+            )
         conversation = self._world.personal_with(user.user.id, tenant)
         if user.user.accountEnabled is False:
             raise ConnectorRefusal(403, "BotNotInConversationRoster", "The bot is not part of the conversation roster.")
@@ -336,7 +343,7 @@ class Connector:
         if token:
             position = next((i for i, m in enumerate(everyone) if m.aadObjectId == token), None)
             if position is None:
-                raise ConnectorRefusal(400, "BadArgument", "The continuation token is not valid.")
+                raise NotServed("a continuationToken the connector never gave: its answer is not documented")
             start = position
         page = everyone[start : start + size]
         following = everyone[start + size].aadObjectId if start + size < len(everyone) else None
@@ -352,7 +359,7 @@ class Connector:
         wanted = request.path_params["member"]
         found = next((m for m in self._members(conversation) if wanted in (m.id, m.aadObjectId)), None)
         if found is None:
-            raise ConnectorRefusal(404, "MemberNotFound", "The member was not found in the conversation.")
+            raise NotServed("a member the conversation does not hold: the connector's answer is not documented")
         self._world.saw(conversation_ref(conversation.id), Operation.READ)
         return Response(wire.dump(found), media_type=JSON)
 
@@ -365,7 +372,7 @@ class Connector:
         thread = request.path_params["team"]
         team = self._world.team_by_thread(thread) or self._world.team(thread)
         if team is None:
-            raise ConnectorRefusal(404, "NotFound", "The team was not found.")
+            raise NotServed(f"a team the world does not hold ({thread}): the connector's answer is not documented")
         general = self._conversation(team.general_channel_id, app)
         return team.id, general
 
@@ -400,17 +407,8 @@ class Connector:
     async def _answer(request: Request, handler) -> Response:
         try:
             return await handler(request)
-        except _Denied:
-            return Response(DENIED, status_code=401, media_type=JSON)
         except ConnectorRefusal as refusal:
             return _refused(refusal)
-
-
-class _Denied(ServiceRefusal):
-    """The call carries no token the connector accepts."""
-
-    def render(self, asked: Asked) -> Rendered:
-        return Rendered(status=401, content_type=JSON, body=DENIED.encode())
 
 
 def connector_router(store: Store, clock: Clock) -> Router:
@@ -420,6 +418,7 @@ def connector_router(store: Store, clock: Clock) -> Router:
         routes=[
             Route(conv, api.create, methods=["POST"]),
             Route(conv + "/{conversation}/activities", api.send, methods=["POST"]),
+            Route(conv + "/{conversation}/activities/history", not_served, methods=["POST"]),
             Route(conv + "/{conversation}/activities/{activity}", api.send, methods=["POST"]),
             Route(conv + "/{conversation}/activities/{activity}", api.update, methods=["PUT"]),
             Route(conv + "/{conversation}/activities/{activity}", api.delete, methods=["DELETE"]),
@@ -428,5 +427,14 @@ def connector_router(store: Store, clock: Clock) -> Router:
             Route(conv + "/{conversation}/members/{member}", api.member, methods=["GET"]),
             Route("/{region}/v3/teams/{team}", api.team, methods=["GET"]),
             Route("/{region}/v3/teams/{team}/conversations", api.team_conversations, methods=["GET"]),
+            Route("/{rest:path}", not_served, methods=EVERY_METHOD),
         ]
     )
+
+
+EVERY_METHOD = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+
+async def not_served(request: Request) -> Response:
+    """Every other call on the host is refused by name (501), never answered with a bare 404 or 405."""
+    raise NotServed("not an operation this provider serves on this host")

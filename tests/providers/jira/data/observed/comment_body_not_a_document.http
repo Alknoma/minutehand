@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:45 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 12a7e3e9b22f6e1bc9a4b32a8bc115a1
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 97625450afa44c5c9adfda406b3928d2
+Atl-Request-Id: 97625450-afa4-4c5c-9adf-da406b3928d2
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=198,atl-edge-internal;dur=14,atl-edge-upstream;dur=184,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 e95f678bb58d10054e62bc2bee3e437a.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P1
+X-Amz-Cf-Id: UOAs5xcSLfqVD9Flui1kVEEqwRfTe58djHkgMHh7d1aJiMu7W3LcbQ==
+
+{"errorMessages":["You do not have the permission to comment on this issue."],"errors":{"comment":"Comment body is not valid!"}}

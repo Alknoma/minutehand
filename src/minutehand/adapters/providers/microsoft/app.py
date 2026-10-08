@@ -27,7 +27,7 @@ from starlette.routing import Router
 from starlette.types import Message, Receive, Scope, Send
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.microsoft import tokens, wire
+from minutehand.adapters.providers.microsoft import surface, wire
 from minutehand.adapters.providers.microsoft.common import JSON, GraphRefusal, graph_error
 from minutehand.adapters.providers.microsoft.connector import connector_router
 from minutehand.adapters.providers.microsoft.graph_calendar import CALENDAR_SEGMENTS, Calendar
@@ -51,7 +51,7 @@ from minutehand.adapters.providers.microsoft.subscriptions import (
     drive_watch,
     mail_watch,
 )
-from minutehand.adapters.providers.microsoft.wire import TokenUse
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -94,13 +94,13 @@ class GraphApp:
         if key is None:
             found = next((s for s in self._world.subscriptions() if s.subscription.resource == resource), None)
             if found is None:
-                raise GraphRefusal(404, "ResourceNotFound", "The subscription's resource is no longer known.")
+                raise NotServed("a subscription whose resource is no longer known: Graph's answer is not recorded")
             return found.watches
         user = self._world.user_by(key)
         if user is None:
-            raise GraphRefusal(404, "ResourceNotFound", f"The resource '{resource}' could not be found.")
+            raise NotServed(f"a subscription to {resource!r}, which the world does not hold: not recorded")
         if claims is not None and claims.oid is not None and claims.oid != user.user.id:
-            raise GraphRefusal(403, "ExtensionError", "Access is denied to another user's mailbox.")
+            raise NotServed("a user's subscription to another user's mailbox: Graph's answer is not recorded")
         if rest[-1] == "events":
             return calendar_watch(user.user.id)
         if rest == ["messages"]:  # enum-lint: exempt Graph's path segment
@@ -117,14 +117,14 @@ class GraphApp:
             if drive_parts[0] == "me" and claims is None:
                 found = next((s for s in self._world.subscriptions() if s.subscription.resource == resource), None)
                 if found is None:
-                    raise GraphRefusal(404, "ResourceNotFound", "The subscription's resource is no longer known.")
+                    raise NotServed("a subscription whose resource is no longer known: Graph's answer is not recorded")
                 return found.watches, DRIVE_LIMIT
             if claims is not None:
                 address = self.files.address(Caller(claims), drive_parts)
             else:
                 drive = self._world.drive(drive_parts[1]) if drive_parts[0] == "drives" else None
                 if drive is None:
-                    raise GraphRefusal(404, "ResourceNotFound", "The subscription's resource is no longer known.")
+                    raise NotServed("a subscription whose resource is no longer known: Graph's answer is not recorded")
                 return drive_watch(drive.drive.id), DRIVE_LIMIT
             return drive_watch(address.drive.drive.id), DRIVE_LIMIT
         if parts[-1:] == ["messages"]:
@@ -136,8 +136,8 @@ class GraphApp:
                 channel = self._world.conversation(parts[3])
                 if channel is not None and channel.team_id == parts[1]:
                     return conversation_watch(channel.id), MESSAGES_LIMIT
-            raise GraphRefusal(404, "ResourceNotFound", f"The resource '{resource}' could not be found.")
-        raise GraphRefusal(400, "ExtensionError", f"Subscriptions to '{resource}' are not supported.")
+            raise NotServed(f"a subscription to {resource!r}, which the world does not hold: not recorded")
+        raise NotServed(f"a subscription to {resource!r}: not a resource this provider watches")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         request = Request(scope, receive)
@@ -150,10 +150,10 @@ class GraphApp:
     async def _route(self, request: Request) -> Response:
         path = request.url.path
         if not path.startswith("/v1.0/"):
-            raise GraphRefusal(400, "BadRequest", "Invalid version: only v1.0 is served.")
+            raise NotServed("Graph is served at v1.0 only")
+        if not surface.served(request.method, path.removeprefix("/v1.0")):
+            raise NotServed("not on the Graph v1.0 surface this provider serves (surface.SERVED)")
         parts = [p for p in path.removeprefix("/v1.0/").split("/") if p]
-        if not parts:
-            raise GraphRefusal(400, "BadRequest", "Invalid request")
         head = parts[0]
         if head == "subscriptions":
             return await self._subscription(request, parts)
@@ -177,7 +177,7 @@ class GraphApp:
             return await self._teams.chats(request, parts)
         if head == "communications":
             return await self._teams.communications(request, parts)
-        raise GraphRefusal(400, "BadRequest", f"Resource not found for the segment '{head}'.")
+        raise NotServed(f"the segment {head!r}")
 
     async def _subscription(self, request: Request, parts: list[str]) -> Response:
         method = request.method
@@ -193,12 +193,12 @@ class GraphApp:
                 return await self._subscriptions.renew(request)
             if method == "DELETE":  # enum-lint: exempt HTTP's method name
                 return await self._subscriptions.delete(request)
-        raise GraphRefusal(405, "BadRequest", f"{method} is not allowed on subscriptions.")
+        raise NotServed(f"{method} on subscriptions")
 
 
 class SharePointHost:
     """What Graph hands out on the site's own host: a download, an upload session, a copy's monitor. Each URL
-    carries its own credential (`tempauth`), as SharePoint's do."""
+    carries its own credential (`tempauth`), as SharePoint's do; Minutehand does not enforce it."""
 
     def __init__(self, graph: GraphApp, clock: Clock) -> None:
         self._files = graph.files
@@ -212,20 +212,10 @@ class SharePointHost:
             response = graph_error(refusal, self._clock, request)
         await response(scope, receive, send)
 
-    def _authorised(self, request: Request, audience: str) -> None:
-        token = request.query_params["tempauth"] if "tempauth" in request.query_params else ""
-        try:
-            claims = tokens.decode(token, use=TokenUse.ACCESS)
-        except tokens.TokenRefused as e:
-            raise GraphRefusal(401, "unauthenticated", f"The pre-authenticated URL is not valid: {e.reason}.") from e
-        if claims.aud != audience:
-            raise GraphRefusal(401, "unauthenticated", "The pre-authenticated URL was issued for something else.")
-
     async def _route(self, request: Request) -> Response:
         path = request.url.path
         if path == "/_layouts/15/download.aspx":
             item = request.query_params["UniqueId"] if "UniqueId" in request.query_params else ""
-            self._authorised(request, f"download {item}")
             return self._files.download(item)
         monitor = re.fullmatch(r"/_api/v2\.0/monitor/([^/]+)", path)
         if monitor is not None:
@@ -233,9 +223,8 @@ class SharePointHost:
         upload = re.fullmatch(r"/_api/v2\.0/drives/[^/]+/items/[^/]+/uploadSession", path)
         if upload is not None:
             guid = (request.query_params["guid"] if "guid" in request.query_params else "").strip("'")
-            self._authorised(request, f"upload {guid}")
             return await self._files.upload_fragment(request, guid)
-        raise GraphRefusal(404, "itemNotFound", "Nothing is served at this address.")
+        raise NotServed("nothing Graph hands out is at this address")
 
 
 class MicrosoftApp:

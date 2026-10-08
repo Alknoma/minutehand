@@ -57,7 +57,7 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_its_agent_was_veri
 
     by_id = {r.run_id: r for r in listed.runs}
     assert by_id[parent].changed is None and root.fork is None
-    assert by_id[answered].changed == "Sofia Romano answers with 1 scripted reply after 36 hours"
+    assert by_id[answered].changed == "Sofia Romano follows a script of 1 step after 36 hours"
     assert by_id[later].changed == "deadline +3.0 days"
 
     fork = one.fork
@@ -84,14 +84,14 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_its_agent_was_veri
     assert cli.main(["findings", answered, "--state", str(state)]) == 0
     said = capsys.readouterr().out
     assert f"forked from {parent} at seq {at_seq}: after wake 1" in said
-    assert "Sofia Romano (sofia) answers with 1 scripted reply" in said
+    assert "Sofia Romano (sofia) follows a script of 1 step" in said
     assert "its agent at the start: verified: its memory and its report" in said
     assert "verdict: failed -> passed" in said
     assert "the records part at the first " in said and ANSWER in said
 
     cli.main(["runs", "--state", str(state)])
     listing = capsys.readouterr().out
-    assert "after wake 1" in listing and "deadline +3.0 days" in listing and "Sofia Romano answers" in listing
+    assert "after wake 1" in listing and "deadline +3.0 days" in listing and "Sofia Romano follows a script" in listing
 
     async with connected(state) as mcp:
         runs = await call(mcp, "list_runs", RunListing)

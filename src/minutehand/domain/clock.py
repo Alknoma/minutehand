@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.domain.scenario import DispatchFault, Model, PlannedBy
+from minutehand.domain.scenario import DelayRange, DispatchFault, Model, PlannedBy, Window
 
 
 class DueKind(StrEnum):
@@ -23,6 +23,31 @@ class Due(Model):
     at: AwareDatetime
     kind: DueKind
     ref: str
+
+
+class DrawnFrom(StrEnum):
+    """Where the moment a person answers was drawn from."""
+
+    DELAY = "delay"  # their reply's delay range, in calendar time, then pushed to when they are available
+    WINDOW = "window"  # their `reply_within`, or a step's `within`, in their available time
+    REMINDED = "reminded"  # their `reminded.sooner_within`, drawn again on a follow-up, in their available time
+    PINNED = "pinned"  # a fork's `reply_at`: no draw
+    AUTOMATIC = "automatic"  # their automatic reply while away with a delegate: at once
+
+
+class Drawn(Model):
+    """How the moment of one reply was decided: what it was drawn from, the seed, and the draw. The same seed, person
+    and ask give the same draw on every run and every fork."""
+
+    source: DrawnFrom
+    seed: int
+    asked_at: AwareDatetime = Field(description="The ask (or follow-up) the draw is measured from")
+    delay: DelayRange | None = Field(default=None, description="The range drawn from, for DELAY")
+    window: Window | None = Field(default=None, description="The window drawn from, for WINDOW and REMINDED")
+    offset: timedelta = Field(
+        description="The draw: calendar time after the ask for DELAY, available time after it for WINDOW and REMINDED"
+    )
+    lands_at: AwareDatetime = Field(description="The moment the reply lands")
 
 
 class DueSource(StrEnum):
@@ -81,6 +106,9 @@ class DueEntry(Model):
     asked_for: AwareDatetime | None = Field(
         default=None,
         description="Set on a late or second delivery: the moment the agent asked for, which the entry repeats",
+    )
+    drawn: Drawn | None = Field(
+        default=None, description="A person's reply: the window or delay its moment was drawn from, and the draw"
     )
 
     def open_at(self, moment: datetime) -> bool:

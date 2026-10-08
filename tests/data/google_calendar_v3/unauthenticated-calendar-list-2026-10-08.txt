@@ -1,0 +1,76 @@
+### GET https://www.googleapis.com/calendar/v3/users/me/calendarList (no credentials), retrieved 2026-10-08
+HTTP/2 401 
+www-authenticate: Bearer realm="https://accounts.google.com/"
+vary: X-Origin
+vary: Referer
+vary: Origin,Accept-Encoding
+content-type: application/json; charset=UTF-8
+server: ESF
+accept-ranges: none
+
+{
+  "error": {
+    "code": 401,
+    "message": "Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.",
+    "errors": [
+      {
+        "message": "Login Required.",
+        "domain": "global",
+        "reason": "required",
+        "location": "Authorization",
+        "locationType": "header"
+      }
+    ],
+    "status": "UNAUTHENTICATED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "CREDENTIALS_MISSING",
+        "domain": "googleapis.com",
+        "metadata": {
+          "method": "calendar.v3.CalendarList.List",
+          "service": "calendar-json.googleapis.com"
+        }
+      }
+    ]
+  }
+}
+
+### GET https://www.googleapis.com/calendar/v3/users/me/calendarList?prettyPrint=false (no credentials), retrieved 2026-10-08
+HTTP/2 401 
+www-authenticate: Bearer realm="https://accounts.google.com/"
+vary: X-Origin
+vary: Referer
+vary: Origin,Accept-Encoding
+content-type: application/json; charset=UTF-8
+server: ESF
+accept-ranges: none
+
+{
+  "error": {
+    "code": 401,
+    "message": "Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.",
+    "errors": [
+      {
+        "message": "Login Required.",
+        "domain": "global",
+        "reason": "required",
+        "location": "Authorization",
+        "locationType": "header"
+      }
+    ],
+    "status": "UNAUTHENTICATED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "CREDENTIALS_MISSING",
+        "domain": "googleapis.com",
+        "metadata": {
+          "method": "calendar.v3.CalendarList.List",
+          "service": "calendar-json.googleapis.com"
+        }
+      }
+    ]
+  }
+}
+

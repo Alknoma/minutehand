@@ -17,11 +17,12 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import (
+    AfterScript,
     DelayRange,
     Person,
     PersonPosts,
@@ -50,6 +51,7 @@ SCENARIO = Scenario(
             name="Nadia Rahman",
             email="nadia@example.com",
             reply=Scripted(
+                then=AfterScript.SILENT,
                 delay=DelayRange(shortest=timedelta(hours=1, minutes=4), longest=timedelta(hours=1, minutes=4)),
                 replies=[ScriptedReply(to_ask=1, press=ScriptedPress(label="Accept"))],
             ),
@@ -95,7 +97,7 @@ async def played(agent: AgentEndpoint, tmp_path: Path, *, card_by_edit: bool) ->
             store=store,
             clock=clock,
             services=Services(providers=[provider], pushes={"slack": provider}),
-            replier=ScriptedReplier(SCENARIO),
+            replier=PeopleReplier(SCENARIO, None),
             mounts=proxy,
             signing={"slack": SECRET},
         )

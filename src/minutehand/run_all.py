@@ -11,8 +11,11 @@ They are filled in the agent file's text and in each word of the command, and ha
 MINUTEHAND_RUN_PORT and MINUTEHAND_RUN_DIR too. An agent file naming either is written out once per scenario,
 beside the original (so its relative paths read the same) under a hidden name, and removed after the run.
 
-Each scenario says the verdict it is written to reach (`expect_outcome`, default `passed`); the command exits 1 when
-any run's verdict differs, 2 when any could not be performed, and 0 otherwise.
+With `--samples N` each scenario is run N times, each under a seed of its own counted up from `--seed` (default the
+scenario's own seed), so the people's moments differ from one sample to the next and any sample is played again by
+`minutehand run --seed S`. Each scenario says the verdict it is written to reach (`expect_outcome`, default
+`passed`): every sample must reach it, or, written as a rate (`{passed: ">= 0.9"}`), that share of its samples. The
+command exits 1 when a scenario misses it, 2 when any run could not be performed, and 0 otherwise.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from minutehand import session
 from minutehand.adapters.proxy.trust import authority
 from minutehand.application.files import FileKind, FileRefused, kind_of, load_scenario, read_yaml
 from minutehand.domain.run import VerdictKind
-from minutehand.domain.scenario import ExpectedOutcome, Model, Scenario
+from minutehand.domain.scenario import ExpectedOutcome, Model, OutcomeRate, Scenario, derived_seed
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 
 PORT = "{run.port}"
@@ -63,18 +66,31 @@ class Timeline(Model):
     moments: list[Moment]
 
 
-class ScenarioPlayed(Model):
-    """One scenario of the folder, and how its run came out against what it was written to reach."""
+class SamplePlayed(Model):
+    """One run of a scenario, under one seed."""
 
-    file: str
-    scenario: str
-    expected: ExpectedOutcome
+    seed: int
     verdict: VerdictKind | None = Field(default=None, description="None: the run could not be performed")
     words: str = Field(description="The verdict's sentence, or why the run could not be performed")
     run_id: str | None = None
-    matched: bool
     timeline: list[Timeline] = []
     log: str = Field(description="Where the run's own output was written")
+
+
+class ScenarioPlayed(Model):
+    """One scenario of the folder, its samples, and how they came out against what it was written to reach."""
+
+    file: str
+    scenario: str
+    expected: ExpectedOutcome | OutcomeRate
+    samples: list[SamplePlayed]
+    counts: dict[str, int] = Field(description="How many samples reached each verdict; `not_performed` for the rest")
+    failing_seeds: list[int] = Field(description="The seeds whose sample did not reach the outcome expected")
+    matched: bool
+
+    @property
+    def performed(self) -> bool:
+        return all(s.verdict is not None for s in self.samples)
 
 
 class Batch(Model):
@@ -85,9 +101,25 @@ class Batch(Model):
 
     @property
     def exit_code(self) -> int:
-        if any(p.verdict is None for p in self.played):
+        if any(not p.performed for p in self.played):
             return 2
         return 0 if all(p.matched for p in self.played) else 1
+
+
+def judged(
+    expected: ExpectedOutcome | OutcomeRate, samples: list[SamplePlayed]
+) -> tuple[bool, list[int], dict[str, int]]:
+    """Whether the samples reach what the scenario expects, the seeds of those that do not, and the count of each
+    verdict. A plain outcome is expected of every sample; a rate, of that share of them."""
+    outcome = expected if isinstance(expected, ExpectedOutcome) else expected.outcome
+    wanted = _EXPECTED[outcome]
+    failing = [s.seed for s in samples if s.verdict is not wanted]
+    counts = {k.value: sum(1 for s in samples if s.verdict is k) for k in VerdictKind}
+    counts["not_performed"] = sum(1 for s in samples if s.verdict is None)
+    if isinstance(expected, ExpectedOutcome):
+        return not failing, failing, counts
+    share = (len(samples) - len(failing)) / len(samples) if samples else 0.0
+    return expected.rate.met(share), failing, counts
 
 
 def scenarios_in(folder: Path) -> list[Path]:
@@ -130,9 +162,20 @@ def _filled(text: str, port: int, folder: Path) -> str:
 
 
 async def play_all(
-    folder: Path, agent: Path, *, state: Path, command: list[str] | None, jobs: int, judge: bool = False
+    folder: Path,
+    agent: Path,
+    *,
+    state: Path,
+    command: list[str] | None,
+    jobs: int,
+    judge: bool = False,
+    samples: int = 1,
+    seed: int | None = None,
 ) -> Batch:
-    """Every scenario in `folder`, at most `jobs` at a time."""
+    """Every scenario in `folder`, `samples` times each under seeds counted up from `seed`, at most `jobs` runs at
+    a time."""
+    if samples < 1:
+        raise FileRefused(f"run-all needs at least one sample of each scenario, not {samples}")
     found = scenarios_in(folder)
     if not found:
         raise FileRefused(f"{folder}: holds no scenario file")
@@ -140,18 +183,53 @@ async def play_all(
     batch = state / BATCHES / secrets.token_hex(4)
     gate = asyncio.Semaphore(max(1, jobs))
 
-    async def one(path: Path) -> ScenarioPlayed:
+    async def one(path: Path, sample_seed: int | None, n: int) -> SamplePlayed:
         async with gate:
-            return await _play(path, agent, state=state, batch=batch, command=command, judge=judge)
+            return await _play(
+                path, agent, state=state, batch=batch, command=command, judge=judge, seed=sample_seed, n=n
+            )
 
-    return Batch(folder=str(folder), played=list(await asyncio.gather(*(one(p) for p in found))))
+    played: list[ScenarioPlayed] = []
+    planned = [(p, load_scenario(p)) for p in found]
+    runs = []
+    for path, written in planned:
+        base = seed if seed is not None else (written.seed if written.seed is not None else derived_seed(written.name))
+        seeds = [None] if samples == 1 and seed is None else [base + n for n in range(samples)]
+        runs.append([one(path, s, n) for n, s in enumerate(seeds)])
+    results = await asyncio.gather(*(asyncio.gather(*r) for r in runs))
+    for (path, written), sampled in zip(planned, results, strict=True):
+        done = list(sampled)
+        matched, failing, counts = judged(written.expect_outcome, done)
+        played.append(
+            ScenarioPlayed(
+                file=str(path),
+                scenario=written.name,
+                expected=written.expect_outcome,
+                samples=done,
+                counts=counts,
+                failing_seeds=failing,
+                matched=matched,
+            )
+        )
+    return Batch(folder=str(folder), played=played)
 
 
 async def _play(
-    path: Path, agent: Path, *, state: Path, batch: Path, command: list[str] | None, judge: bool
-) -> ScenarioPlayed:
+    path: Path,
+    agent: Path,
+    *,
+    state: Path,
+    batch: Path,
+    command: list[str] | None,
+    judge: bool,
+    seed: int | None,
+    n: int,
+) -> SamplePlayed:
     written = load_scenario(path)
-    own = batch / written.name
+    played_seed = (
+        seed if seed is not None else (written.seed if written.seed is not None else derived_seed(written.name))
+    )
+    own = batch / written.name / str(n) if seed is not None else batch / written.name
     own.mkdir(parents=True, exist_ok=True)
     port = free_port()
     text = agent.read_text(encoding="utf-8")
@@ -161,6 +239,7 @@ async def _play(
         copy.write_text(_filled(text, port, own), encoding="utf-8")
     argv = [sys.executable, "-m", "minutehand", "run", str(path), "--agent", str(copy if uses else agent)]
     argv += ["--state", str(state), "--json", *(["--judge"] if judge else [])]
+    argv += ["--seed", str(seed)] if seed is not None else []
     if command:
         argv += ["--", *(_filled(word, port, own) for word in command)]
     log = own / "run.log"
@@ -176,23 +255,17 @@ async def _play(
         outcome = session.Played.model_validate_json(out).outcomes[0]
     except (ValidationError, IndexError):
         said = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-        return ScenarioPlayed(
-            file=str(path),
-            scenario=written.name,
-            expected=written.expect_outcome,
+        return SamplePlayed(
+            seed=played_seed,
             words=said[-1] if said else f"minutehand run exited {process.returncode} and said nothing",
-            matched=False,
             log=str(log),
         )
     verdict = outcome.result.verdict
-    return ScenarioPlayed(
-        file=str(path),
-        scenario=written.name,
-        expected=written.expect_outcome,
+    return SamplePlayed(
+        seed=outcome.record.seed,
         verdict=verdict.kind,
         words=verdict.words,
         run_id=outcome.record.run_id,
-        matched=verdict.kind is _EXPECTED[written.expect_outcome],
         timeline=timeline(state, outcome.record.run_id),
         log=str(log),
     )
@@ -240,20 +313,38 @@ def offset(delta: timedelta) -> str:
 
 
 def described(batch: Batch) -> str:
-    """The summary, then each scenario's timeline."""
+    """The summary, then each scenario's samples and, for a scenario played once, its timeline."""
     width = max(len(p.scenario) for p in batch.played)
     lines = [f"{len(batch.played)} scenarios in {batch.folder}", ""]
     for p in batch.played:
-        got = p.verdict.value if p.verdict is not None else "not performed"
         mark = "ok      " if p.matched else "DIFFERS "
-        lines.append(f"  {mark}{p.scenario:<{width}}  {got:<13} expected {p.expected.value:<11} {p.run_id or ''}")
+        expected = (
+            p.expected.value
+            if isinstance(p.expected, ExpectedOutcome)
+            else f"{p.expected.outcome.value} {p.expected.rate}"
+        )
+        if len(p.samples) == 1:
+            one = p.samples[0]
+            got = one.verdict.value if one.verdict is not None else "not performed"
+            lines.append(
+                f"  {mark}{p.scenario:<{width}}  {got:<13} expected {expected:<11} {one.run_id or ''} seed {one.seed}"
+            )
+            continue
+        counted = ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in p.counts.items() if n)
+        lines.append(f"  {mark}{p.scenario:<{width}}  {counted}; expected {expected}")
+        if p.failing_seeds:
+            lines.append(f"  {'':8}{'':<{width}}  failing seeds: {', '.join(str(s) for s in p.failing_seeds)}")
     for p in batch.played:
-        lines += ["", f"{p.scenario}: {p.words}"]
-        if p.verdict is None:
-            lines.append(f"  its output: {p.log}")
-        for line in p.timeline:
-            lines.append(f"  {line.person}")
-            lines += [f"    {offset(m.after)}  {m.what}" for m in line.moments]
+        for one in p.samples:
+            if len(p.samples) > 1 and one.verdict is not None and one.seed not in p.failing_seeds:
+                continue
+            lines += ["", f"{p.scenario} (seed {one.seed}): {one.words}"]
+            if one.verdict is None:
+                lines.append(f"  its output: {one.log}")
+            for line in one.timeline:
+                lines.append(f"  {line.person}")
+                lines += [f"    {offset(m.after)}  {m.what}" for m in line.moments]
     differs = [p.scenario for p in batch.played if not p.matched]
     lines += ["", f"differs from what it expects: {', '.join(differs)}" if differs else "every scenario as expected"]
+    lines += ["play a sample again with `minutehand run <scenario> --seed <seed>`"] if differs else []
     return "\n".join(lines)

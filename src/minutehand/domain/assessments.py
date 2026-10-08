@@ -19,7 +19,8 @@ condition holds, the number of some facts between two moments is within bounds.
 
 Moments are an anchor and an optional ISO 8601 offset (`ask+P1D`, `deadline-PT2H`, `answer`). Placeholders in
 `message` and `holding` are `{namespace.name}` (`domain/templates.py`): `{person.key}`, `{person.name}`,
-`{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`.
+`{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`; in `holding` only, `{ask.facts}`: each fact
+the answer carried, which a model put in the person's words, so a relay is read by the fact and not the wording.
 """
 
 from __future__ import annotations
@@ -141,6 +142,7 @@ class Thing(StrEnum):
     INBOX_ITEM = "inbox_item"
     FILE = "file"
     TOOL_CALL = "tool_call"
+    STORED = "stored"
 
 
 class FollowUps(Model):
@@ -163,7 +165,8 @@ class Messages(Model):
     )
     holding: list[str] = Field(
         default=[],
-        description="Each phrase must be in the text, in any case; `{ask.answer}` is the answer itself, and "
+        description="Each phrase must be in the text, in any case; `{ask.facts}`, alone as a phrase, is each fact the "
+        "answer's script step carried (else the answer itself), `{ask.answer}` the answer in the person's words, and "
         "`{person.key}`, `{person.name}` the person the rule is read for",
     )
     to_away: bool | None = Field(
@@ -217,6 +220,23 @@ class Commitments(Model):
     waiting_on: list[Who] = Field(default=[], description="Waiting on any of these people; empty: on anyone or nothing")
 
 
+class Written(StrEnum):
+    """Where a person's words came from (`domain.people.Writing`), as a rule names it."""
+
+    SCRIPT = "script"  # a model, from a step of their script
+    VERBATIM = "verbatim"  # the step's exact words, or a control pressed
+    CONVERSING = "conversing"  # a model, from their own facts: no plan, or after the script was used
+    AUTOMATIC = "automatic"  # their automatic reply while away
+    BY_HAND = "by_hand"  # whoever drives a standing world, speaking for them
+
+
+class Replies(Model):
+    """What people said back to the agent: each reply or decision that landed, counted at the moment it landed."""
+
+    by: list[Who] = Field(default=[], description="By any of these people; empty: by anyone")
+    written: list[Written] = Field(default=[], description="Whose words, any of these; empty: any")
+
+
 class Asks(Model):
     """The run's asks: each wait for a person's answer, counted at the moment it was made."""
 
@@ -248,6 +268,20 @@ class Memory(Model):
         return self
 
 
+class StoredItems(Model):
+    """Items an outbound host declared `store` keeps (`domain.outbound.DeclaredStore`), as they stood at the count's
+    `until` (the run's end without one): each item held there is one fact, counted at the moment its version there
+    was written, so `since` keeps only those written from then on."""
+
+    host: str | None = Field(default=None, description="Of the declaration of this host pattern; None: of any")
+    collection: str | None = Field(default=None, description="In the collection of this name; None: in any")
+    values: dict[str, Scalar] = Field(
+        default={},
+        description="Each field of the item (a dotted path into it, `address.city`) equal to this; an item that "
+        "lacks the field does not match",
+    )
+
+
 class Count(Model):
     """Which facts a rule counts, and between which moments."""
 
@@ -260,6 +294,8 @@ class Count(Model):
     commitments: Commitments | None = None
     asks: Asks | None = None
     memory: Memory | None = None
+    stored: StoredItems | None = None
+    replies: Replies | None = None
     since: MomentText | None = Field(default=None, description="From this moment, inclusive; absent: the start")
     until: MomentText | None = Field(default=None, description="To this moment, inclusive; absent: the end")
 
@@ -281,6 +317,8 @@ class Count(Model):
             ("commitments", self.commitments),
             ("asks", self.asks),
             ("memory", self.memory),
+            ("stored", self.stored),
+            ("replies", self.replies),
         ]
 
     @property
@@ -289,7 +327,19 @@ class Count(Model):
         return next(k for k, v in self._kinds() if v is not None)
 
 
-_COUNTED = ("follow_ups", "touches", "messages", "writes", "wakes", "planned_wakes", "commitments", "asks", "memory")
+_COUNTED = (
+    "follow_ups",
+    "touches",
+    "messages",
+    "writes",
+    "wakes",
+    "planned_wakes",
+    "commitments",
+    "asks",
+    "memory",
+    "stored",
+    "replies",
+)
 _ON_AN_ASK = ("follow_ups", "touches")
 
 
@@ -392,10 +442,15 @@ class Rule(Model):
             refuse_unknown(
                 f"rule {self.id}: holding",
                 list(self.count.messages.holding),
-                ("ask.answer", "person.key", "person.name"),
+                ("ask.answer", "ask.facts", "person.key", "person.name"),
             )
             if "ask.answer" in str(self.count.messages.holding) and self.each is not Each.ASK:
                 raise ValueError(f"rule {self.id}: {{ask.answer}} is the answer to an ask: write `each: ask`")
+            if "ask.facts" in str(self.count.messages.holding):
+                if self.each is not Each.ASK:
+                    raise ValueError(f"rule {self.id}: {{ask.facts}} are an ask's answer's facts: write `each: ask`")
+                if any("{ask.facts}" in p and p.strip() != "{ask.facts}" for p in self.count.messages.holding):
+                    raise ValueError(f"rule {self.id}: {{ask.facts}} stands alone as a phrase: it is each fact")
         if self.count.memory is not None:
             named = [n for n in (self.count.memory.key, self.count.memory.prefix) if n is not None]
             refuse_unknown(f"rule {self.id}: memory", list(named), ("person.key",))

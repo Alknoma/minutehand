@@ -569,6 +569,31 @@ def test_the_owner_must_be_told_each_answer_in_its_own_words() -> None:
     assert finding.message == "the owner was never told what sofia answered"
 
 
+def test_the_owner_is_told_each_fact_an_answer_carried_whatever_words_a_model_put_it_in() -> None:
+    written = """
+    - id: tells_the_owner_every_fact
+      each: ask
+      when: {answered: true}
+      count: {messages: {to: [owner], holding: ["{ask.facts}"]}, since: answer}
+      at_least: 1
+    """
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([OWNER], 3, text="Sofia: the hall by the lake is ours, booked for the 14th.")
+    worded = reply(SOFIA, ask, 2).model_copy(
+        update={"text": "We have the hall by the lake.", "facts": ["hall by the lake", "the 14th"]}
+    )
+    assert found(view(scenario(OWNER, SOFIA), log, [worded]), written) == []
+    missing = worded.model_copy(update={"facts": ["hall by the lake", "the 15th"]})
+    [finding] = found(view(scenario(OWNER, SOFIA), log, [missing]), written)
+    assert finding.check == "tells_the_owner_every_fact"
+
+
+def test_ask_facts_inside_a_longer_phrase_is_refused() -> None:
+    with pytest.raises(ValueError, match="stands alone as a phrase"):
+        rules("- id: r\n  each: ask\n  count: {messages: {holding: ['said {ask.facts}']}}\n  at_most: 0\n")
+
+
 def test_an_escalation_names_the_person_it_is_about() -> None:
     written = """
     - id: escalates_at_three_days
@@ -885,3 +910,35 @@ def test_a_memory_count_naming_both_a_key_and_a_prefix_or_a_person_it_is_not_rea
         rules("- id: m\n  count: {memory: {key: 'asks/{person.key}'}}\n  at_most: 0\n")
     with pytest.raises(ValidationError, match=r"ask\.answer"):
         rules("- id: m\n  each: ask\n  count: {memory: {key: '{ask.answer}'}}\n  at_most: 0\n")
+
+
+# -- what the agent kept in a `store` host ----------------------------------------------------------------------------
+
+
+def test_stored_counts_the_items_a_collection_holds_at_a_moment_matching_a_field() -> None:
+    log = Log()
+    log.stored("contacts", "1", {"name": "Ana", "stage": "lead"}, 0)
+    log.stored("contacts", "2", {"name": "Ben", "stage": "lead"}, 1)
+    log.stored("deals", "9", {"name": "Ana's deal"}, 1)
+    log.stored("contacts", "1", {"name": "Ana", "stage": "customer"}, 3)
+    log.stored("contacts", "2", None, 4)
+    log.stored("contacts", "3", {"name": "Cy"}, 2, host="api.other.test")
+    world = view(scenario(OWNER, SOFIA), log)
+    at_the_end = "- id: e\n  count: {stored: {host: api.crm.test, collection: contacts}}\n  exactly: 2\n"
+    [one] = found(world, at_the_end)
+    assert one.message == "the run: 1 stored; expected exactly 2" and one.evidence == [4], "ben was deleted by the end"
+    before = "- id: b\n  count: {stored: {collection: contacts}, until: start+PT2H30M}\n  at_most: 0\n"
+    assert [f.evidence for f in found(world, before)] == [[1, 2, 6]], "cy is a contact on another host"
+    leads = (
+        "- id: l\n  count: {stored: {collection: contacts, values: {stage: lead}}, until: start+PT2H}\n  at_most: 0\n"
+    )
+    assert [f.evidence for f in found(world, leads)] == [[1, 2]]
+    customers = "- id: c\n  count: {stored: {values: {stage: customer}}}\n  exactly: 1\n"
+    assert found(world, customers) == []
+    written = "- id: w\n  count: {writes: {things: [stored], operations: [delete]}}\n  exactly: 1\n"
+    assert found(world, written) == [], "a stored item is a write to the world"
+
+
+def test_a_count_naming_stored_beside_another_fact_is_refused() -> None:
+    with pytest.raises(ValidationError, match="this names 2"):
+        rules("- id: s\n  count: {stored: {}, memory: {key: a}}\n  at_most: 0\n")

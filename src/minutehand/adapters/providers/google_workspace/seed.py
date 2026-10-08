@@ -43,7 +43,7 @@ from minutehand.adapters.providers.google_workspace import (
     wire,
 )
 from minutehand.adapters.providers.google_workspace.app import OPERATIONS
-from minutehand.adapters.providers.google_workspace.calendars import CalendarWorld, html_link
+from minutehand.adapters.providers.google_workspace.calendars import CalendarRecord, CalendarWorld, html_link
 from minutehand.adapters.providers.google_workspace.gmail import MailWorld
 from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.adapters.providers.google_workspace.state import (
@@ -250,7 +250,7 @@ def seed(scenario: Scenario, world: Store) -> None:
     calendars = CalendarWorld(world)
     for person in scenario.people:
         zone = person.working_hours.timezone if person.working_hours is not None else "UTC"
-        calendars.keep_calendar(person.email, zone)
+        calendars.keep_calendar(CalendarRecord(id=person.email, timeZone=zone), actor=Actor.SCENARIO)
     _seed_emails(own.emails, scenario, MailWorld(world))
     _seed_events(own.events, scenario, calendars)
     write_faults(drive, own.faults, start)

@@ -177,8 +177,11 @@ class GitHubSession(Session):
         pages = self._pages("list organization members", f"/orgs/{ORGANIZATION}/members", page_size)
         return [[str(m["id"]) for m in page] for page in pages]
 
-    def unknown_credential(self) -> httpx.Response:
-        with self._api.http(_headers(self._nobody), base_url=API) as client:
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        headers = _headers(self._nobody)
+        if not credentialed:
+            del headers["Authorization"]
+        with self._api.http(headers, base_url=API) as client:
             return client.get("/user")
 
     def observe(self) -> str:
@@ -265,8 +268,8 @@ class GitHubDriver(Driver):
         "people": 1,
     }
     # https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api: an invalid token is
-    # 401 "Bad credentials" (README, "Credentials").
-    unknown_refusal = (401, "Bad credentials")
+    # 401 "Bad credentials". The provider deliberately does not enforce credentials (its README, "Credentials"), so
+    # once a world claims a call it answers it; an unclaimed one never reaches it.
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         named = dict(logins or {})
@@ -294,6 +297,14 @@ class GitHubDriver(Driver):
                     "owner": ORGANIZATION,
                     "name": REPOSITORY,
                     "files": [{"path": "README.md", "text": "Launch notes\n"}],
+                    "commits": [
+                        {
+                            "message": "Start the launch notes",
+                            "author": AGENT_LOGIN,
+                            "before": "P1D",
+                            "paths": ["README.md"],
+                        }
+                    ],
                     "collaborators": [
                         {"login": AGENT_LOGIN, "permission": "admin"},
                         *({"login": login[k], "permission": "push"} for k in keys),

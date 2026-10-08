@@ -10,13 +10,24 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from minutehand.domain.checks import CheckReport, Needs, RunView
 from minutehand.domain.conversation import ModelMessage
 from minutehand.domain.world import EntityRef
 
 AnswerT = TypeVar("AnswerT", bound=BaseModel)
+
+
+class Answered[T: BaseModel](BaseModel):
+    """A structured answer, and what it cost: the tokens the service counted, None when it said nothing of them."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    answer: T
+    model: str = Field(description="The model the request named")
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class ModelFailed(Exception):
@@ -35,7 +46,7 @@ class Model(Protocol):
         *,
         model: str | None = None,
         temperature: float | None = None,
-    ) -> AnswerT:
+    ) -> Answered[AnswerT]:
         """The model's answer to `messages` under `system`, validated as an `answer`.
 
         `model` names another model than `model_id` for this request; `temperature` None leaves the provider's

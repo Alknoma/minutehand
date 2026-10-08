@@ -15,6 +15,7 @@ from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from minutehand.application.steps import StepEdge
 from minutehand.checks.runner import RunResult
+from minutehand.domain.conversation import PersonCall
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -184,6 +185,18 @@ class OwedView(Model):
     what: str
 
 
+class PersonOwesView(Model):
+    """An answer or decision a person owes: when it lands, what it answers, how its words are written (`script`,
+    `verbatim`, `conversing`, `automatic`), and why the last try to write them failed, when it did."""
+
+    at: AwareDatetime
+    person: str = Field(description="Person.key")
+    answers: EntityRef
+    decision: bool = Field(description="A decision on an item in the service's own product, not a message")
+    writing: str
+    failed: str | None = None
+
+
 class WorldView(Model):
     world_id: str = Field(description="Also the run id: `minutehand findings`, `view` and the MCP tools read it")
     name: str
@@ -192,6 +205,12 @@ class WorldView(Model):
     now: AwareDatetime = Field(description="The world's clock, simulated")
     head: int = Field(description="The latest WorldEvent.seq")
     owed: list[OwedView] = Field(default=[], description="What falls due as the clock moves")
+    people_owe: list[PersonOwesView] = Field(
+        default=[], description="Each answer and decision people owe, with its moment, earliest first"
+    )
+    person_calls: list[PersonCall] = Field(
+        default=[], description="Every call made to a model for this world's people: model, prompt version, tokens"
+    )
     resets: int = Field(default=0, ge=0, description="How many times it was reset; its record from before each is kept")
     case_id: str | None = Field(default=None, description="The case it belongs to; also that case's run id")
     case: str | None = Field(default=None, description="The case label it was opened under")
@@ -567,7 +586,7 @@ class DueDecisionView(Model):
     inbox: ProviderKey
     item: EntityRef
     person: str
-    decision: str
+    decision: str | None = Field(description="None: a model decides when it falls due")
     inputs: dict[str, str] = {}
 
 

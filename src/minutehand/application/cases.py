@@ -28,6 +28,7 @@ from collections.abc import Sequence
 from pydantic import Field
 
 from minutehand.application.refusals import RunRefused
+from minutehand.domain.conversation import PersonCall
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario
 from minutehand.domain.storage import Freed, RunUsage
@@ -119,6 +120,12 @@ class CaseStore:
     def replies(self) -> list[PersonReply]:
         return [r for part in self._parts for r in part.store.replies()]
 
+    def person_calls(self) -> list[PersonCall]:
+        return [c for part in self._parts for c in part.store.person_calls()]
+
+    def written(self, key: str) -> str | None:
+        return next((w for part in self._parts if (w := part.store.written(key)) is not None), None)
+
     def versions(self, entity: EntityRef) -> list[Stored]:
         found = [
             v.model_copy(update={"seq": part.at(v.seq)}) for part in self._parts for v in part.store.versions(entity)
@@ -175,6 +182,9 @@ class CaseStore:
         raise self._refused("written")
 
     def remember(self, reply: PersonReply) -> None:
+        raise self._refused("written")
+
+    def record_person_call(self, call: PersonCall) -> None:
         raise self._refused("written")
 
     def wake_began(self, wake: int) -> None:

@@ -20,7 +20,7 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.runner import evaluate_run
 from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Command, WakeReason, WakeRequest
@@ -42,15 +42,15 @@ SCENARIO = Scenario.model_validate(
         "deadline_after": "P3D",
         "people": [
             {"key": "owen", "name": "Owen Okafor", "email": "owen@example.com",
-             "reply": {"kind": "scripted", "replies": []}},
+             "reply": {"kind": "scripted", "then": "silent", "replies": []}},
             {"key": "sofia", "name": "Sofia Romano", "email": "sofia@example.com",
-             "reply": {"kind": "scripted", "delay": {"shortest": "PT4H", "longest": "PT4H"},
-                       "replies": [{"to_ask": 1, "text": f"{TELL} is free on Tuesday at 10."},
+             "reply": {"kind": "scripted", "then": "silent", "delay": {"shortest": "PT4H", "longest": "PT4H"},
+                       "replies": [{"to_ask": 1, "verbatim": f"{TELL} is free on Tuesday at 10."},
                                    {"to_ask": 2, "press": {"label": "Accept"}}]}},
         ],
         "expect": [
             {"kind": "person_asked", "person": "sofia", "mentions": ["room"], "at_most": 2},
-            {"kind": "relayed", "said_by": "sofia", "to": "owen", "tell": TELL},
+            {"kind": "relayed", "said_by": "sofia", "to": "owen", "holding": [TELL]},
         ],
         "provider_seeds": [{"provider": "microsoft",
                             "body": {"mailbox": {"key": "agent", "name": "Assistant", "local": "assistant"}}}],
@@ -176,7 +176,7 @@ async def _run(tmp_path: Path, webhook: Webhook, *, subscribe: bool) -> tuple[Ru
             store=store,
             clock=clock,
             services=Services(providers=[provider], pushes={"microsoft": provider}),
-            replier=ScriptedReplier(SCENARIO),
+            replier=PeopleReplier(SCENARIO, None),
             mounts=proxy,
             signing={},
         )

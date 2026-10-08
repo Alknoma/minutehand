@@ -6,8 +6,8 @@ this driver raises as `SlackRefused` naming the method and the code.
 A world is one workspace, its own by `tag`: the bot token `xoxb-<tag>`, and for each person a user token
 `xoxp-<tag>-<key>` (Slack's user token, which acts as the person who authorized it:
 https://docs.slack.dev/authentication/tokens). Every token is declared as a Slack sign-in (the person's own for a
-user token), so the workspace answers exactly these and refuses any other as `invalid_auth`. The workspace itself
-lists no tokens (`WorkspaceSeed.tokens`): one that lists them takes only those, which would refuse every sign-in.
+user token), so each acts as its own account; any other token, or none, acts as the bot (the provider's
+`CLAIMS.md`: no credential is ever refused). The workspace itself lists no tokens (`WorkspaceSeed.tokens`).
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from tests.conformance.contract import (
     PersonSeen,
     Session,
     ok,
+    uncredentialed,
 )
 
 PROVIDER = "slack"
@@ -163,8 +164,10 @@ class SlackSession(Messaging):
     def people_pages(self, page_size: int) -> list[list[str]]:
         return [[str(m["id"]) for m in page] for page in self._pages("users.list", "members", limit=page_size)]
 
-    def unknown_credential(self) -> httpx.Response:
-        return self._http.post("auth.test", headers={"Authorization": f"Bearer {UNSEEDED}"})
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        if credentialed:
+            return self._http.post("auth.test", headers={"Authorization": f"Bearer {UNSEEDED}"})
+        return uncredentialed(self._http, "POST", "auth.test")
 
     def observe(self) -> str:
         launch = self.channel(STAMP_CHANNEL)
@@ -372,9 +375,6 @@ class SlackDriver(Driver):
         "people": 1,
         "history": 1,
     }
-    unknown_refusal: ClassVar[tuple[int, str]] = (200, "invalid_auth")
-    """Slack answers every refusal but a rate limit with HTTP 200 and `{"ok": false, "error": "invalid_auth"}` for a
-    token it never issued (https://docs.slack.dev/reference/methods/auth.test)."""
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
         if logins:

@@ -2,13 +2,18 @@
 
 The app calls `apps.connections.open` with its app-level token (`xapp-`) and is answered a `wss://` URL on
 `wss-primary.slack.com`, carrying a ticket the world records. It opens that URL through the proxy, which sends the
-upgrade to this provider's socket server (`SlackProvider.sockets`, served by `adapters.proxy.local`): a ticket the
-world handed out and nobody used is let in, the connection is told `hello`, and the ticket is spent. From then on
-each event the scenario pushes to an agent whose Slack target is `socket_mode` goes on its newest connection as an
-`events_api` envelope, and the push waits for the app's acknowledgement (`{"envelope_id": ...}`): unacknowledged
-for `ACK_WITHIN` seconds, it is sent again with `retry_attempt` counted up and `retry_reason` `timeout`, up to
-`inbound.RETRIES` more times, and then fails the agent, as a refused request does at a request URL. Every message
-either way crosses the proxy and is recorded there (`Exchange.frame`).
+upgrade to this provider's socket server (`SlackProvider.sockets`, served by `adapters.proxy.local`): every
+connection at the URL's path is let in, whatever ticket it carries (Minutehand never refuses a credential), and told
+`hello`. From then on each event the scenario pushes to an agent whose Slack target is `socket_mode` goes on its
+newest connection as an `events_api` envelope, and the push waits for the app's acknowledgement
+(`{"envelope_id": ...}`): unacknowledged for `ACK_WITHIN` seconds, it is sent again as a new envelope with
+`retry_attempt` counted up, up to `inbound.RETRIES` more times, and then fails the agent, as a refused request does at
+a request URL. Every message either way crosses the proxy and is recorded there (`Exchange.frame`).
+
+Sources: the envelope, the acknowledgement and `hello` (https://docs.slack.dev/apis/events-api/using-socket-mode);
+three seconds to acknowledge (https://docs.slack.dev/tools/bolt-python/concepts/acknowledge); three retries
+(https://docs.slack.dev/apis/events-api); `retry_attempt` on an `events_api` envelope (read by `slack_sdk`'s
+`SocketModeRequest`). No page gives a retry's `retry_reason` over Socket Mode, so none is sent.
 
 The open connections of a world are held by its `Hub`, found by the world's store (`hub`): connections, never
 state. The tickets handed out and spent are the state, in the world's log.
@@ -38,19 +43,20 @@ HOST = "wss-primary.slack.com"
 PATH = "/link/"
 TICKETS = "socket_mode_tickets"
 ACK_WITHIN = 3.0
-"""Real seconds Slack waits for an app to acknowledge an envelope before it sends it again."""
+"""Real seconds Slack waits for an app to acknowledge an envelope before it sends it again: "you only have 3 seconds
+to respond" (https://docs.slack.dev/tools/bolt-python/concepts/acknowledge)."""
 CONNECT_WITHIN = 30.0
 """Real seconds a push waits for the agent to have a connection open, as it starts up, before failing it."""
 RECONNECT_AFTER = 3600
-"""What `hello` says of when Slack will ask the app to reconnect; nothing here asks."""
+"""What `hello` says of when Slack will ask the app to reconnect, as the page's example gives it; nothing here asks."""
 
 
 class SocketTicket(Model):
-    """One `apps.connections.open` answer: the ticket its URL carries, and whether a connection has used it."""
+    """One `apps.connections.open` answer: the ticket its URL carries, recorded as the agent asking for a
+    connection."""
 
     ticket: str
     app_id: str
-    used: bool = False
 
 
 def ticket_ref(ticket: str) -> EntityRef:
@@ -107,8 +113,8 @@ class Hub:
 
     async def push(self, callback: wire.EventCallback) -> None:
         """Send `callback` as an `events_api` envelope on the newest connection, again until it is acknowledged."""
-        envelope_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{HOST}/{callback.event_id}"))
         for attempt in range(PUSH_ATTEMPTS):
+            envelope_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{HOST}/{callback.event_id}/{attempt}"))
             socket = await self._newest()
             acked = asyncio.get_running_loop().create_future()
             self._acks[envelope_id] = acked
@@ -116,7 +122,6 @@ class Hub:
                 envelope_id=envelope_id,
                 payload=callback,
                 retry_attempt=attempt,
-                retry_reason="timeout" if attempt else "",
             )
             try:
                 await socket.send_text(wire.envelope_body(envelope))
@@ -127,7 +132,7 @@ class Hub:
             finally:
                 self._acks.pop(envelope_id, None)
         raise SocketNotAcknowledged(
-            f"the agent did not acknowledge Socket Mode envelope {envelope_id} ({callback.event.type}) in "
+            f"the agent did not acknowledge Socket Mode event {callback.event_id} ({callback.event.type}) in "
             f"{PUSH_ATTEMPTS} sends {ACK_WITHIN:g} seconds apart"
         )
 
@@ -157,9 +162,9 @@ def hub(world: Store) -> Hub:
 
 
 def socket_app(world: Store, clock: Clock) -> ASGIApp:
-    """The socket server's app: a connection at `/link/` carrying a ticket the world handed out and nobody used is
-    accepted and told `hello`; any other is refused before the handshake completes, as Slack refuses a stale URL.
-    Nothing it does is stamped: `clock` is the port's, and a ticket is spent at whatever moment it is used."""
+    """The socket server's app: a connection at `/link/` is accepted and told `hello`, whatever ticket it carries;
+    one at any other path is refused before the handshake completes. `clock` is the port's; nothing here is
+    stamped."""
     connections = hub(world)
 
     async def app(
@@ -170,27 +175,18 @@ def socket_app(world: Store, clock: Clock) -> ASGIApp:
             await send({"type": "http.response.body", "body": b""})
             return
         socket = WebSocket(scope, receive, send)
-        slack = SlackWorld(world)
-        ticket = socket.query_params["ticket"] if "ticket" in socket.query_params else ""
-        held = slack.body(ticket_ref(ticket), SocketTicket) if ticket else None
-        if socket.url.path != PATH or held is None or held.used:
+        if socket.url.path != PATH:
             await socket.close(code=1008)
             return
-        slack.write(
-            ticket_ref(ticket),
-            held.model_copy(update={"used": True}),
-            operation=Operation.UPDATE,
-            actor=Actor.AGENT,
-            parent=TICKETS,
-            after=RecordSnapshot(resource="socket_mode", text="the agent opened its Socket Mode connection"),
-        )
+        slack = SlackWorld(world)
+        app_id = socket.query_params["app_id"] if "app_id" in socket.query_params else slack.team.app_id
         await socket.accept()
         await connections.opened(socket)
         try:
             hello = wire.SocketHello(
                 num_connections=connections.count(),
                 debug_info=wire.SocketDebugInfo(host=HOST, approximate_connection_time=RECONNECT_AFTER),
-                connection_info=wire.SocketConnectionInfo(app_id=held.app_id),
+                connection_info=wire.SocketConnectionInfo(app_id=app_id),
             )
             await socket.send_text(hello.model_dump_json())
             while True:

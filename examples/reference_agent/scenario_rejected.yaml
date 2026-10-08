@@ -6,7 +6,7 @@ owner: owen
 starts_at: 2026-08-24T09:00:00Z      # a Monday
 deadline_after: P5D
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, replies: []}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
   - key: rosa
     name: Rosa Lind
     email: rosa@lakeside.example
@@ -14,7 +14,7 @@ people:
       kind: scripted
       delay: {shortest: PT20H, longest: P2D}
       replies:
-        - {to_ask: 1, text: "Yes, Lakeside Hall is free on Friday. Your booking reference is LH-2291."}
+        - {to_ask: 1, facts: ["Yes, Lakeside Hall is free on Friday. Your booking reference is LH-2291."]}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
@@ -23,6 +23,6 @@ people:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}
       replies: []
-      decisions: [{decision: reject, inputs: {reason: "We already hold a room at the office that day."}}]
+      decisions: [{decision: reject, facts: ["We already hold a room at the office that day."]}]
 expect:
   - {kind: person_asked, person: rosa, by: PT1H}

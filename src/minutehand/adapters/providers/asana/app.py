@@ -7,25 +7,26 @@ is outside that prefix and arrives as it is. Every answer is Asana's envelope:
 answered in full, a collection compact, and `opt_fields` narrows either.
 
 Who calls is the user the bearer token maps to: a token the scenario seeded or the
-token endpoint minted; any bearer token acts as the agent when the scenario seeded
-none. `me` is that user, and what they create is theirs.
+token endpoint minted. Any other token, or none, acts as the agent: Minutehand does
+not enforce credentials, so no call is ever refused for its token. `me` is that user,
+and what they create is theirs.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 
 from pydantic import JsonValue
 from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.asana import state, wire
+from minutehand.adapters.providers.asana import state, surface, wire
 from minutehand.adapters.providers.asana.state import AGENT_GID, AsanaWorld
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
@@ -33,23 +34,6 @@ from minutehand.ports.store import Store
 
 Handler = Callable[[Request, wire.AsanaUser], Awaitable[Response]]
 
-_JSON = "application/json; charset=utf-8"
-_SEARCH = (
-    "text",
-    "completed",
-    "assignee.any",
-    "assignee.not",
-    "projects.any",
-    "projects.not",
-    "sections.any",
-    "tags.any",
-    "is_subtask",
-    "sort_by",
-    "sort_ascending",
-    "limit",
-    "opt_fields",
-    "opt_pretty",
-)
 _SEARCH_UNSUPPORTED = (
     "projects.all",
     "sections.not",
@@ -98,14 +82,83 @@ _CUSTOM_FIELD_SEARCH = "custom_fields."
 _SORTS = ("modified_at", "created_at")
 _TYPEAHEAD = ("task", "user", "project", "tag")
 _NEEDS_FILTER = "Must specify exactly one of project, tag, section, user task list, or assignee + workspace"
-_NEEDS_TEAM = (
-    "If the workspace for your project is an organization, you must also supply a team to share the project with."
+_NEEDS_TEAM = "Missing required team field"
+"""Reported of the real service: https://forum.asana.com/t/31198."""
+
+
+SERVED: tuple[tuple[str, str, str], ...] = (
+    ("GET", "/users/me", "me"),
+    ("GET", "/users", "users"),
+    ("GET", "/users/{gid}", "user"),
+    ("GET", "/users/{gid}/teams", "user_teams"),
+    ("GET", "/workspaces", "workspaces"),
+    ("GET", "/workspaces/{gid}", "workspace"),
+    ("GET", "/workspaces/{gid}/users", "workspace_users"),
+    ("GET", "/workspaces/{gid}/teams", "workspace_teams"),
+    ("GET", "/workspaces/{gid}/projects", "workspace_projects"),
+    ("POST", "/workspaces/{gid}/projects", "create_workspace_project"),
+    ("GET", "/workspaces/{gid}/custom_fields", "workspace_custom_fields"),
+    ("GET", "/workspaces/{gid}/tags", "workspace_tags"),
+    ("POST", "/workspaces/{gid}/tags", "create_workspace_tag"),
+    ("GET", "/workspaces/{gid}/tasks/search", "search"),
+    ("GET", "/workspaces/{gid}/typeahead", "typeahead"),
+    ("GET", "/teams/{gid}", "team"),
+    ("GET", "/teams/{gid}/users", "team_users"),
+    ("GET", "/teams/{gid}/projects", "team_projects"),
+    ("POST", "/teams/{gid}/projects", "create_team_project"),
+    ("GET", "/projects", "projects"),
+    ("POST", "/projects", "create_project"),
+    ("GET", "/projects/{gid}", "project"),
+    ("GET", "/projects/{gid}/sections", "project_sections"),
+    ("POST", "/projects/{gid}/sections", "create_section"),
+    ("GET", "/projects/{gid}/tasks", "project_tasks"),
+    ("GET", "/projects/{gid}/project_memberships", "project_memberships"),
+    ("POST", "/projects/{gid}/addMembers", "add_members"),
+    ("POST", "/projects/{gid}/removeMembers", "remove_members"),
+    ("GET", "/projects/{gid}/custom_field_settings", "custom_field_settings"),
+    ("POST", "/projects/{gid}/addCustomFieldSetting", "add_custom_field_setting"),
+    ("POST", "/projects/{gid}/removeCustomFieldSetting", "remove_custom_field_setting"),
+    ("GET", "/sections/{gid}", "section"),
+    ("GET", "/sections/{gid}/tasks", "section_tasks"),
+    ("POST", "/sections/{gid}/addTask", "add_task_to_section"),
+    ("GET", "/custom_fields/{gid}", "custom_field"),
+    ("GET", "/tags", "tags"),
+    ("POST", "/tags", "create_tag"),
+    ("GET", "/tags/{gid}", "tag"),
+    ("GET", "/tags/{gid}/tasks", "tag_tasks"),
+    ("GET", "/tasks", "list_tasks"),
+    ("POST", "/tasks", "create_task"),
+    ("GET", "/tasks/{gid}", "get_task"),
+    ("PUT", "/tasks/{gid}", "update_task"),
+    ("DELETE", "/tasks/{gid}", "delete_task"),
+    ("GET", "/tasks/{gid}/subtasks", "subtasks"),
+    ("POST", "/tasks/{gid}/subtasks", "create_subtask"),
+    ("POST", "/tasks/{gid}/setParent", "set_parent"),
+    ("GET", "/tasks/{gid}/tags", "task_tags"),
+    ("POST", "/tasks/{gid}/addTag", "add_tag"),
+    ("POST", "/tasks/{gid}/removeTag", "remove_tag"),
+    ("GET", "/tasks/{gid}/stories", "stories"),
+    ("POST", "/tasks/{gid}/stories", "create_story"),
 )
-_NOT_ORGANIZATION = "organization: Not an organization"
+"""Method, path and `AsanaApi` handler of every operation this provider serves (`/-/oauth_token` aside, which is outside
+the API's prefix)."""
+
+
+def _shape(path: str) -> str:
+    return re.sub(r"\{[^}]+\}", "{}", path)
+
+
+UNSERVED: tuple[tuple[str, str, str], ...] = tuple(
+    (method, path, operation)
+    for method, path, operation in surface.OPERATIONS
+    if (method, _shape(path)) not in {(m, _shape(p)) for m, p, _ in SERVED}
+)
+"""Every operation of Asana's published OpenAPI document (`surface.OPERATIONS`) that this provider does not serve:
+method, path and operationId. Each raises the shared not-served refusal, answered 501 naming it, never 404 as if Asana had no such route (`test_asana_surface.py`)."""
 
 
 def _answer(body: bytes, status: int = 200, headers: dict[str, str] | None = None) -> Response:
-    return Response(body, status_code=status, media_type=_JSON, headers=headers)
+    return Response(body, status_code=status, media_type=wire.JSON, headers=headers)
 
 
 def _at(value: str) -> datetime:
@@ -138,7 +191,7 @@ class View:
             raise wire.bad("organization: Missing input")
         found = self.workspace(gid, status=400, field="organization")
         if not found.is_organization:
-            raise wire.bad(_NOT_ORGANIZATION)
+            raise wire.undocumented("an organization parameter naming a workspace that is not an organization")
         return found
 
     def visible(self, project: wire.AsanaProject) -> bool:
@@ -149,7 +202,7 @@ class View:
         if found is None:
             raise wire.unknown(field, gid, status=status)
         if not self.visible(found):
-            raise wire.forbidden()
+            raise wire.forbidden("project")
         return found
 
     def sees(self, task: wire.AsanaTask) -> bool:
@@ -167,16 +220,25 @@ class View:
         if found is None:
             raise wire.unknown(field, gid, status=status)
         if not self.sees(found):
-            raise wire.forbidden()
+            raise wire.forbidden("task")
         return found
 
     def user(self, identifier: str, *, field: str, status: int) -> wire.AsanaUser:
+        """The user a gid, an email or `me` names. An assignee naming nobody is refused as reported of the real
+        service: "assignee: Not a user in Organization: <as sent>" (https://forum.asana.com/t/60069, also for a value
+        that is no identifier at all), and in a plain workspace "assignee: Not a user in Workspace: <its gid>"
+        (https://forum.asana.com/t/852848)."""
+        found = self.world.resolve_user(identifier, me=self.caller.gid) if wire.is_user_identifier(identifier) else None
+        if found is not None and not found.removed:
+            return found
+        if field == "assignee":
+            home = self.world.home()
+            if home.is_organization:
+                raise wire.bad(f"assignee: Not a user in Organization: {identifier}")
+            raise wire.bad(f"assignee: Not a user in Workspace: {home.gid}")
         if not wire.is_user_identifier(identifier):
-            raise wire.bad(f"{field}: Not a Recognized ID")
-        found = self.world.resolve_user(identifier, me=self.caller.gid)
-        if found is None or found.removed:
-            raise wire.unknown(field, identifier, status=status)
-        return found
+            raise wire.not_an_id(field, identifier)
+        raise wire.unknown(field, identifier, status=status)
 
     def team(self, gid: str, *, field: str = "team", status: int = 404) -> wire.AsanaTeam:
         found = self.world.team(wire.gid_in_path(field, gid))
@@ -387,7 +449,6 @@ class View:
             gid=task.gid,
             name=task.name,
             notes=task.notes,
-            html_notes=wire.html_notes(task.notes),
             completed=task.completed,
             completed_at=task.completed_at,
             due_on=task.due_on,
@@ -397,7 +458,6 @@ class View:
             assignee=self.user_of(task.assignee) if task.assignee is not None else None,
             created_by=self.user_of(task.created_by),
             parent=self._ref_out(parent) if parent is not None else None,
-            subtasks=[self._ref_out(t) for t in subtasks],
             num_subtasks=len(subtasks),
             memberships=[
                 wire.MembershipOut(
@@ -418,7 +478,6 @@ class View:
         return wire.StoryOut(
             gid=story.gid,
             text=story.text,
-            html_text=wire.html_notes(story.text),
             created_at=story.created_at,
             created_by=self.user_of(story.created_by),
             target=wire.Compact(gid=story.task, resource_type="task", name=task.name if task is not None else ""),
@@ -449,6 +508,13 @@ def _one(request: Request, item: wire.Representation, status: int = 200) -> Resp
     return _answer(wire.one(item, wire.field_tree(_query(request))), status)
 
 
+def _created(request: Request, item: wire.Representation, collection: str) -> Response:
+    """201 with the record, and "the API URL where the object can be retrieved ... in the `Location` header"
+    (https://developers.asana.com/docs/errors)."""
+    location = f"{wire.API_BASE}/{collection}/{item.gid}"
+    return _answer(wire.one(item, wire.field_tree(_query(request))), 201, {"Location": location})
+
+
 def _completed_since(query: wire.Query, tasks: list[wire.AsanaTask]) -> list[wire.AsanaTask]:
     """`completed_since=now` keeps open tasks; a moment keeps open tasks and those completed since."""
     value = query.text("completed_since")
@@ -477,25 +543,14 @@ class AsanaApi:
         return wire.stamp(self._clock.now())
 
     def _caller(self, request: Request) -> wire.AsanaUser:
+        """The user a seeded or minted token names; any other token, or none, is the agent. Minutehand does not
+        enforce credentials: no token is ever refused, whatever it is, whoever it names, however old."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
-        scheme, _, token = authorization.partition(" ")
-        token = token.strip()
-        if scheme.lower() != "bearer" or not token:
-            raise wire.Refusal(401, "Not Authorized")
-        home = self._world.home()
-        credential = self._world.credential(token)
+        _, _, token = authorization.partition(" ")
+        credential = self._world.credential(token.strip()) if token.strip() else None
         if credential is None or credential.kind is not wire.CredentialKind.ACCESS:
-            if home.strict_tokens:
-                raise wire.Refusal(401, "Not Authorized")
             return _held(self._world.user(AGENT_GID), AGENT_GID)
-        if credential.expires_at is not None and self._clock.now() >= _at(credential.expires_at):
-            raise wire.Refusal(
-                401, "The bearer token has expired. If you have a refresh token, use it to get a new one."
-            )
-        user = _held(self._world.user(credential.user), credential.user)
-        if user.removed:
-            raise wire.Refusal(401, "Not Authorized")
-        return user
+        return _held(self._world.user(credential.user), credential.user)
 
     def _listed[Out: wire.Representation](self, request: Request, items: list[Out]) -> Response:
         """One page of a collection, by the workspace's own threshold for a read without `limit`."""
@@ -532,29 +587,18 @@ class AsanaApi:
     # ------------------------------------------------------------------ sign-in
 
     async def oauth_token(self, request: Request) -> Response:
-        """A refresh: the refresh token the scenario seeded buys a new access token for its user, valid for an
-        hour of the run's time. The code grant needs a browser and is not served."""
-        try:
-            grant = wire.token_grant(await request.body())
-            if grant.grant_type != "refresh_token":
-                raise wire.OAuthRefusal(
-                    "unsupported_grant_type", f"The grant type {grant.grant_type} is not served by this simulation."
-                )
-            refresh = self._world.credential(grant.refresh_token or "")
-            if refresh is None or refresh.kind is not wire.CredentialKind.REFRESH:
-                raise wire.OAuthRefusal("invalid_grant", "The refresh token is invalid or has been revoked.")
-        except wire.OAuthRefusal as refusal:
-            return _answer(wire.oauth_failed(refusal), 400)
-        user = _held(self._world.user(refresh.user), refresh.user)
+        """A refresh: a refresh token the scenario seeded buys a new access token for its user, and any other buys
+        one for the agent (Minutehand does not enforce credentials). The code grant needs a browser and is not
+        served."""
+        grant = wire.token_grant(await request.body())
+        if grant.grant_type != "refresh_token":
+            raise wire.unsupported(f"the `{grant.grant_type}` grant at /-/oauth_token")
+        refresh = self._world.credential(grant.refresh_token or "")
+        whose = refresh.user if refresh is not None and refresh.kind is wire.CredentialKind.REFRESH else AGENT_GID
+        user = _held(self._world.user(whose), whose)
         token = f"1/{user.gid}:{self._world.next_gid()}"
-        expires = self._clock.now() + timedelta(seconds=wire.TOKEN_LIFETIME_SECONDS)
         self._world.put_record(
-            wire.AsanaCredential(
-                gid=state.credential_gid(token),
-                kind=wire.CredentialKind.ACCESS,
-                user=user.gid,
-                expires_at=wire.stamp(expires),
-            ),
+            wire.AsanaCredential(gid=state.credential_gid(token), kind=wire.CredentialKind.ACCESS, user=user.gid),
             parent=state.CREDENTIALS,
             actor=Actor.AGENT,
         )
@@ -615,7 +659,7 @@ class AsanaApi:
         view = self._view(caller)
         workspace = view.workspace(request.path_params["gid"])
         if not workspace.is_organization:
-            raise wire.bad(_NOT_ORGANIZATION)
+            raise wire.undocumented("the teams of a workspace that is not an organization")
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return self._listed(request, [view.team_out(t) for t in self._world.teams() if t.workspace == workspace.gid])
 
@@ -680,11 +724,11 @@ class AsanaApi:
             raise wire.bad("workspace: Missing input")
         home = view.workspace(workspace_gid, status=400)
         if chosen_team is not None and chosen_team.workspace != home.gid:
-            raise wire.bad("team: Must be in the same workspace as the project")
+            raise wire.undocumented("a project's team in another workspace than the project")
         if home.is_organization and chosen_team is None:
             raise wire.bad(_NEEDS_TEAM)
         if chosen_team is not None and caller.gid not in chosen_team.members:
-            raise wire.forbidden()
+            raise wire.forbidden("team")
         now = self._now()
         project = wire.AsanaProject(
             gid=self._world.next_gid(),
@@ -702,7 +746,7 @@ class AsanaApi:
             parent=project.gid,
             actor=Actor.AGENT,
         )
-        return _one(request, view.project_out(project), 201)
+        return _created(request, view.project_out(project), "projects")
 
     async def create_project(self, request: Request, caller: wire.AsanaUser) -> Response:
         return await self._create_project(request, caller, workspace=None, team=None)
@@ -735,7 +779,7 @@ class AsanaApi:
             gid=self._world.next_gid(), name=sent.name, project=project.gid, created_at=self._now()
         )
         self._world.put_record(section, parent=project.gid, actor=Actor.AGENT)
-        return _one(request, view.section_out(section), 201)
+        return _created(request, view.section_out(section), "sections")
 
     async def project_tasks(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -786,10 +830,10 @@ class AsanaApi:
         project = view.project(request.path_params["gid"])
         gid = wire.one_gid(wire.envelope(await request.body()), "custom_field")
         if not self._world.home().premium:
-            raise wire.premium(wire.FIELDS_ARE_PREMIUM)
+            raise wire.premium(wire.SETTINGS_ARE_PREMIUM)
         field = view.custom_field(gid, status=400)
         if field.gid in project.custom_fields:
-            raise wire.bad(f"custom_field: Custom field {field.gid} is already applied to this project")
+            raise wire.undocumented("a custom field setting for a field already on the project")
         changed = project.model_copy(update={"custom_fields": [*project.custom_fields, field.gid]})
         self._world.put_record(changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE)
         return _one(request, view.setting_out(changed, field))
@@ -799,7 +843,7 @@ class AsanaApi:
         project = view.project(request.path_params["gid"])
         field = view.custom_field(wire.one_gid(wire.envelope(await request.body()), "custom_field"), status=400)
         if field.gid not in project.custom_fields:
-            raise wire.bad(f"custom_field: Custom field {field.gid} is not on this project")
+            raise wire.undocumented("removing a custom field setting the project does not have")
         changed = project.model_copy(update={"custom_fields": [f for f in project.custom_fields if f != field.gid]})
         self._world.put_record(changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE)
         return _answer(wire.empty())
@@ -820,15 +864,16 @@ class AsanaApi:
         return self._listed(request, [view.task_out(t) for t in _completed_since(_query(request), found)])
 
     async def add_task_to_section(self, request: Request, caller: wire.AsanaUser) -> Response:
-        """Move the task to the section within the section's project; a task not in that project joins it."""
+        """Move the task to the section within the section's project: "This will remove the task from other sections
+        of the project" (the OpenAPI document's addTaskForSection). What Asana does with a task not in that project is
+        not documented, and is refused by name."""
         view = self._view(caller)
         section = view.section(request.path_params["gid"])
         task = view.task(wire.one_gid(wire.envelope(await request.body()), "task"), status=400)
         placed = wire.AsanaMembership(project=section.project, section=section.gid)
-        if any(m.project == section.project for m in task.memberships):
-            memberships = [placed if m.project == section.project else m for m in task.memberships]
-        else:
-            memberships = [*task.memberships, placed]
+        if not any(m.project == section.project for m in task.memberships):
+            raise wire.undocumented("adding a task to a section of a project it is not in")
+        memberships = [placed if m.project == section.project else m for m in task.memberships]
         moved = task.model_copy(update={"memberships": memberships, "modified_at": self._now()})
         self._world.put_task(moved, operation=Operation.UPDATE, actor=Actor.AGENT)
         return _answer(wire.empty())
@@ -876,7 +921,7 @@ class AsanaApi:
             created_at=self._now(),
         )
         self._world.put_record(tag, parent=state.TAGS, actor=Actor.AGENT)
-        return _one(request, view.tag_out(tag), 201)
+        return _created(request, view.tag_out(tag), "tags")
 
     async def create_tag(self, request: Request, caller: wire.AsanaUser) -> Response:
         return await self._create_tag(request, caller, workspace=None)
@@ -972,7 +1017,8 @@ class AsanaApi:
         for gid, value in sent.items():
             field = view.custom_field(gid, field="custom_fields", status=400)
             if field.gid not in carried:
-                raise wire.bad(f"custom_fields: Custom field {field.gid} is not on given task")
+                # Reported: https://forum.asana.com/t/618448
+                raise wire.bad(f"Custom field with ID {field.gid} is not on given object")
             written[field.gid] = wire.custom_field_value(field, value, users)
         return list(written.values())
 
@@ -980,13 +1026,14 @@ class AsanaApi:
         """Where a new task lands: each named project's named section, or its first."""
         named = [wire.MembershipIn(project=p) for p in dict.fromkeys(sent.projects)] or sent.memberships
         placed: list[wire.AsanaMembership] = []
-        for membership in named:
-            field = "projects" if sent.projects else "memberships.project"
+        for n, membership in enumerate(named):
+            # Reported: "projects: [0]: Unknown object: ..." (https://stackoverflow.com/questions/37837171)
+            field = f"projects: [{n}]" if sent.projects else f"memberships: [{n}]: project"
             project = view.project(membership.project, field=field, status=400)
             if membership.section is not None:
-                section = view.section(membership.section, field="memberships.section", status=400)
+                section = view.section(membership.section, field=f"memberships: [{n}]: section", status=400)
                 if section.project != project.gid:
-                    raise wire.bad("memberships.section: Must be a section of the membership's project")
+                    raise wire.undocumented("a membership whose section is not of its project")
                 placed.append(wire.AsanaMembership(project=project.gid, section=section.gid))
                 continue
             sections = self._world.sections(project.gid)
@@ -1004,14 +1051,15 @@ class AsanaApi:
         if sent.workspace is not None:
             workspace = view.workspace(sent.workspace, status=400).gid
             if any(p.workspace != workspace for p in projects):
-                raise wire.bad("projects: Must be in the same workspace as the task")
+                raise wire.undocumented("a task's projects in another workspace than the task")
         elif projects:
             workspace = projects[0].workspace
         else:
             assert under is not None
             workspace = under.workspace
         assignee = view.user(sent.assignee, field="assignee", status=400) if sent.assignee is not None else None
-        tags = [view.tag(t, field="tags", status=400).gid for t in dict.fromkeys(sent.tags)]
+        # Reported: "tags: [1]: Unknown object: ..." (https://stackoverflow.com/a/42913309)
+        tags = [view.tag(t, field=f"tags: [{n}]", status=400).gid for n, t in enumerate(dict.fromkeys(sent.tags))]
         now = self._now()
         task = wire.AsanaTask(
             gid=self._world.next_gid(),
@@ -1032,7 +1080,7 @@ class AsanaApi:
         )
         task = task.model_copy(update={"custom_fields": self._values(view, task, sent.custom_fields)})
         self._world.put_task(task, operation=Operation.CREATE, actor=Actor.AGENT)
-        return _one(request, self._view(caller).task_out(task), 201)
+        return _created(request, self._view(caller).task_out(task), "tasks")
 
     async def create_task(self, request: Request, caller: wire.AsanaUser) -> Response:
         return await self._create_task(request, caller, parent=None)
@@ -1091,7 +1139,7 @@ class AsanaApi:
             ancestor: wire.AsanaTask | None = parent
             while ancestor is not None:
                 if ancestor.gid == task.gid:
-                    raise wire.bad("parent: A task cannot be a subtask of itself or of its own subtask")
+                    raise wire.undocumented("a parent that is the task itself or one of its subtasks")
                 ancestor = self._world.task(ancestor.parent) if ancestor.parent is not None else None
         changed = task.model_copy(update={"parent": sent.parent, "modified_at": self._now()})
         self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT)
@@ -1112,7 +1160,7 @@ class AsanaApi:
             gid=self._world.next_gid(), text=sent.text, task=task.gid, created_by=caller.gid, created_at=self._now()
         )
         self._world.put_story(story, actor=Actor.AGENT)
-        return _one(request, view.story_out(story), 201)
+        return _created(request, view.story_out(story), "stories")
 
     async def stories(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)
@@ -1132,8 +1180,7 @@ class AsanaApi:
         for name in query.names():
             if name in _SEARCH_UNSUPPORTED or name.startswith(_CUSTOM_FIELD_SEARCH):
                 raise wire.unsupported(name)
-            if name not in _SEARCH:
-                raise wire.bad(f"{name}: Unrecognized parameter")
+            # An unknown parameter is "silently ignored" (an Asana engineer: https://stackoverflow.com/a/28948207).
         limit = query.count("limit") or wire.SEARCH_DEFAULT
         sort_by = query.text("sort_by") or "modified_at"
         if sort_by not in _SORTS:
@@ -1209,9 +1256,13 @@ class AsanaApi:
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return _answer(wire.unpaged(found[:count], wire.field_tree(query)))
 
-    async def webhooks(self, request: Request, caller: wire.AsanaUser) -> Response:
-        """Asana's webhooks: the `X-Hook-Secret` handshake and event delivery are not served. Said, not ignored."""
-        raise wire.unsupported("webhooks")
+    def unserved(self, method: str, path: str, operation: str) -> Handler:
+        """An operation Asana has and this provider does not serve, refused by name."""
+
+        async def refuse(request: Request, caller: wire.AsanaUser) -> Response:
+            raise wire.unsupported(f"{method} {path} ({operation})")
+
+        return refuse
 
 
 def build_app(store: Store, clock: Clock) -> Starlette:
@@ -1219,66 +1270,19 @@ def build_app(store: Store, clock: Clock) -> Starlette:
     g = api.guarded
 
     async def no_route(request: Request, exc: Exception) -> Response:
-        if isinstance(exc, HTTPException) and exc.status_code == 405:
-            return _answer(wire.failed("Method not allowed"), 405)
+        """Asana answers a path it has no route for, and a method a path does not take, 404 "No matching route for
+        request" (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`)."""
+        del request, exc
         return _answer(wire.failed("No matching route for request"), 404)
 
     return Starlette(
         routes=[
             Route("/-/oauth_token", api.oauth_token, methods=["POST"]),
-            Route("/users/me", g(api.me), methods=["GET"]),
-            Route("/users", g(api.users), methods=["GET"]),
-            Route("/users/{gid}", g(api.user), methods=["GET"]),
-            Route("/users/{gid}/teams", g(api.user_teams), methods=["GET"]),
-            Route("/workspaces", g(api.workspaces), methods=["GET"]),
-            Route("/workspaces/{gid}", g(api.workspace), methods=["GET"]),
-            Route("/workspaces/{gid}/users", g(api.workspace_users), methods=["GET"]),
-            Route("/workspaces/{gid}/teams", g(api.workspace_teams), methods=["GET"]),
-            Route("/workspaces/{gid}/projects", g(api.workspace_projects), methods=["GET"]),
-            Route("/workspaces/{gid}/projects", g(api.create_workspace_project), methods=["POST"]),
-            Route("/workspaces/{gid}/custom_fields", g(api.workspace_custom_fields), methods=["GET"]),
-            Route("/workspaces/{gid}/tags", g(api.workspace_tags), methods=["GET"]),
-            Route("/workspaces/{gid}/tags", g(api.create_workspace_tag), methods=["POST"]),
-            Route("/workspaces/{gid}/tasks/search", g(api.search), methods=["GET"]),
-            Route("/workspaces/{gid}/typeahead", g(api.typeahead), methods=["GET"]),
-            Route("/teams/{gid}", g(api.team), methods=["GET"]),
-            Route("/teams/{gid}/users", g(api.team_users), methods=["GET"]),
-            Route("/teams/{gid}/projects", g(api.team_projects), methods=["GET"]),
-            Route("/teams/{gid}/projects", g(api.create_team_project), methods=["POST"]),
-            Route("/projects", g(api.projects), methods=["GET"]),
-            Route("/projects", g(api.create_project), methods=["POST"]),
-            Route("/projects/{gid}", g(api.project), methods=["GET"]),
-            Route("/projects/{gid}/sections", g(api.project_sections), methods=["GET"]),
-            Route("/projects/{gid}/sections", g(api.create_section), methods=["POST"]),
-            Route("/projects/{gid}/tasks", g(api.project_tasks), methods=["GET"]),
-            Route("/projects/{gid}/project_memberships", g(api.project_memberships), methods=["GET"]),
-            Route("/projects/{gid}/addMembers", g(api.add_members), methods=["POST"]),
-            Route("/projects/{gid}/removeMembers", g(api.remove_members), methods=["POST"]),
-            Route("/projects/{gid}/custom_field_settings", g(api.custom_field_settings), methods=["GET"]),
-            Route("/projects/{gid}/addCustomFieldSetting", g(api.add_custom_field_setting), methods=["POST"]),
-            Route("/projects/{gid}/removeCustomFieldSetting", g(api.remove_custom_field_setting), methods=["POST"]),
-            Route("/sections/{gid}", g(api.section), methods=["GET"]),
-            Route("/sections/{gid}/tasks", g(api.section_tasks), methods=["GET"]),
-            Route("/sections/{gid}/addTask", g(api.add_task_to_section), methods=["POST"]),
-            Route("/custom_fields/{gid}", g(api.custom_field), methods=["GET"]),
-            Route("/tags", g(api.tags), methods=["GET"]),
-            Route("/tags", g(api.create_tag), methods=["POST"]),
-            Route("/tags/{gid}", g(api.tag), methods=["GET"]),
-            Route("/tags/{gid}/tasks", g(api.tag_tasks), methods=["GET"]),
-            Route("/tasks", g(api.list_tasks), methods=["GET"]),
-            Route("/tasks", g(api.create_task), methods=["POST"]),
-            Route("/tasks/{gid}", g(api.get_task), methods=["GET"]),
-            Route("/tasks/{gid}", g(api.update_task), methods=["PUT"]),
-            Route("/tasks/{gid}", g(api.delete_task), methods=["DELETE"]),
-            Route("/tasks/{gid}/subtasks", g(api.subtasks), methods=["GET"]),
-            Route("/tasks/{gid}/subtasks", g(api.create_subtask), methods=["POST"]),
-            Route("/tasks/{gid}/setParent", g(api.set_parent), methods=["POST"]),
-            Route("/tasks/{gid}/tags", g(api.task_tags), methods=["GET"]),
-            Route("/tasks/{gid}/addTag", g(api.add_tag), methods=["POST"]),
-            Route("/tasks/{gid}/removeTag", g(api.remove_tag), methods=["POST"]),
-            Route("/tasks/{gid}/stories", g(api.stories), methods=["GET"]),
-            Route("/tasks/{gid}/stories", g(api.create_story), methods=["POST"]),
-            Route("/webhooks", g(api.webhooks), methods=["GET", "POST"]),
+            *(Route(path, g(getattr(api, handler)), methods=[method]) for method, path, handler in SERVED),
+            *(
+                Route(path, g(api.unserved(method, path, operation)), methods=[method])
+                for method, path, operation in UNSERVED
+            ),
         ],
         exception_handlers={404: no_route, 405: no_route},
     )

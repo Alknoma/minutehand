@@ -1,0 +1,23 @@
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+Content-Length: 185
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:13:36 GMT
+X-Trace-Id: a47e5d826a0f45f1bc869414d0f547c4
+X-Failure-Category: FAILURE_CLIENT_TCS
+X-Frame-Options: SameOrigin
+Server: AtlassianEdge
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: a47e5d826a0f45f1bc869414d0f547c4
+Atl-Request-Id: a47e5d82-6a0f-45f1-bc86-9414d0f547c4
+Strict-Transport-Security: max-age=63072000; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=12,atl-edge-internal;dur=9,atl-edge-upstream;dur=3,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 7b738a305684430709d8a56bad209768.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P1
+X-Amz-Cf-Id: HI9Pmgil1-wLsBvPLkKhCNUFyj-xLp8TlelvO99DtetAKxngc2bDeQ==
+
+{"timestamp":"2026-10-08T07:13:36.234600367Z","status":404,"error":"Not Found","message":"No message available","path":"/ex/jira/00000000-0000-0000-0000-000000000000/rest/api/3/myself"}

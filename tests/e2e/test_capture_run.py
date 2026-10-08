@@ -5,6 +5,7 @@ a person, a lookup it makes reaches the real host, the run says what it called, 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -28,12 +29,24 @@ from minutehand.checks.ledger import build
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.checks import FindingKind, ObligationKind
 from minutehand.domain.experiment import Fork
-from minutehand.domain.outbound import Acknowledge, Answer, HtmlAt, InForks, MessageReading, PassThrough
+from minutehand.domain.outbound import (
+    Acknowledge,
+    Answer,
+    Collection,
+    DeclaredStore,
+    HtmlAt,
+    InForks,
+    Listing,
+    MessageReading,
+    PassThrough,
+    Stamp,
+)
 from minutehand.domain.scenario import PersonAsked, Scenario, Silent
-from minutehand.domain.world import Actor, AnsweredBy, CaptureMode, MessageSnapshot
+from minutehand.domain.world import Actor, AnsweredBy, CaptureMode, EntityKind, MessageSnapshot, Operation
 from tests.capture.support import stored_bytes
-from tests.e2e.support import OWNER, agent_under_test, answers, scenario, world
+from tests.e2e.support import OWNER, SOFIA, T0, agent_under_test, answers, scenario, world
 from tests.proxy.upstream import Authority, make_authority, model_api
+from tests.support.rules import rules
 
 MAIL_HOST = "api.mail.test"
 MAILED = "I have asked Sofia to confirm the partner pricing and will report back."
@@ -182,3 +195,102 @@ async def test_a_fork_replays_its_parents_lookups_by_default_and_calls_the_real_
         assert own.exchange.response_body == '{"received": 3}'
     looked = launched.state(state, child.record.run_id, root=parent.record.run_id)["looked_up"]
     assert isinstance(looked, list) and looked[-1] == own.exchange.response_body
+
+
+# -- a host declared `store` -----------------------------------------------------------------------------------------
+
+CRM_HOST = "api.crm.test"
+CRM = DeclaredStore(
+    host=CRM_HOST,
+    name="crm",
+    collections=[Collection(path="/v1/contacts", stamps=[Stamp(at="created_at")], listing=Listing(items_at="results"))],
+)
+COUNTED = """
+- id: one_contact_left
+  count: {stored: {host: api.crm.test, collection: contacts}}
+  exactly: 1
+- id: sofia_marked_answered
+  count: {stored: {collection: contacts, values: {stage: answered, email: sofia@example.com}}}
+  exactly: 1
+"""
+
+
+def _keeping_contacts(agent: AgentUnderTest, monkeypatch: pytest.MonkeyPatch) -> AgentUnderTest:
+    monkeypatch.setenv("CRM_URL", f"https://{CRM_HOST}/v1/contacts")
+    return agent.model_copy(update={"outbound": [CRM], "assess": rules(COUNTED)})
+
+
+def _crm(launched_state: dict[str, object]) -> list[dict[str, object]]:
+    calls = launched_state["crm"]
+    assert isinstance(calls, list)
+    return calls
+
+
+async def test_an_agent_creates_reads_lists_patches_and_deletes_contacts_kept_as_sent_and_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
+    state = tmp_path / "state"
+    [outcome] = await session.play(
+        scenario(answers(after=timedelta(hours=2))),
+        _keeping_contacts(launched.agent, monkeypatch),
+        state=state,
+        command=launched.command,
+        listen=session.Listen(receive_telemetry=False),
+    )
+    run_id = outcome.record.run_id
+    made, told, read, listed, patched, deleted, gone = _crm(launched.state(state, run_id))
+    sofia = json.loads(str(made["text"]))
+    assert made["status"] == 201 and set(sofia) == {"name", "email", "stage", "id", "created_at"}
+    assert {k: sofia[k] for k in ("name", "email", "stage")} == {"name": "Sofia", "email": SOFIA, "stage": "asked"}
+    assert sofia["created_at"] == T0.isoformat().replace("+00:00", "Z")  # the run's clock, in the first wake
+    assert (read["call"], read["status"], read["text"]) == (f"GET /{sofia['id']}", 200, made["text"])
+    assert json.loads(str(listed["text"])) == {"results": [sofia, json.loads(str(told["text"]))]}
+    assert (patched["status"], json.loads(str(patched["text"]))) == (200, {**sofia, "stage": "answered"})
+    assert (deleted["status"], deleted["text"], gone["status"]) == (204, "", 404)
+    # Every item is a world event under the declaration's name; the rules counted what was left.
+    kept = [e for e in world(state, run_id).events() if e.entity.kind is EntityKind.STORED]
+    assert [(e.operation, e.entity.provider) for e in kept] == [
+        (Operation.CREATE, "crm"),
+        (Operation.CREATE, "crm"),
+        (Operation.UPDATE, "crm"),
+        (Operation.DELETE, "crm"),
+    ]
+    assert not [f for f in outcome.result.findings if f.check in ("one_contact_left", "sofia_marked_answered")]
+    assert [(u.host, u.mode, u.calls) for u in outcome.record.outbound] == [(CRM_HOST, CaptureMode.STORE, 7)]
+
+
+async def test_a_fork_sees_the_stored_contacts_as_they_stood_at_its_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parent creates two contacts in its first wake, then on Sofia's answer patches one and deletes the other.
+    A fork after the first wake lists both as they were created: neither the patch nor the delete is in it."""
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
+    agent = _keeping_contacts(launched.agent, monkeypatch)
+    state = tmp_path / "state"
+    listen = session.Listen(receive_telemetry=False)
+    [parent] = await session.play(
+        scenario(answers(after=timedelta(hours=36))), agent, state=state, command=launched.command, listen=listen
+    )
+    after_first_wake = next(p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1)
+    changes = Fork(parent_run=parent.record.run_id, at_seq=after_first_wake.seq)
+    [child] = await session.fork(parent.record.run_id, changes, state=state, command=launched.command, listen=listen)
+
+    made, told, _, _, parent_patched, _, _ = _crm(launched.state(state, parent.record.run_id))
+    in_fork = _crm(launched.state(state, child.record.run_id, root=parent.record.run_id))
+    [listed] = [c for c in in_fork if c["call"] == "GET "]
+    assert json.loads(str(listed["text"])) == {
+        "results": [json.loads(str(made["text"])), json.loads(str(told["text"]))]
+    }, "the fork lists the contacts as created, not as its parent left them"
+    assert json.loads(str(parent_patched["text"]))["stage"] == "answered"
+    stored = [
+        (e.run_id, e.operation)
+        for e in world(state, child.record.run_id, root=parent.record.run_id).events()
+        if e.entity.kind is EntityKind.STORED
+    ]
+    assert stored == [
+        (parent.record.run_id, Operation.CREATE),
+        (parent.record.run_id, Operation.CREATE),
+        (child.record.run_id, Operation.UPDATE),
+        (child.record.run_id, Operation.DELETE),
+    ]

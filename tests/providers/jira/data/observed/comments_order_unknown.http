@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:40 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 37fe1d7ca5a134ef79469dcd45a1ff29
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: e8e1db417cfb444ca61be9f7246c205c
+Atl-Request-Id: e8e1db41-7cfb-444c-a61b-e9f7246c205c
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=167,atl-edge-internal;dur=24,atl-edge-upstream;dur=143,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 631030d5d9f5d291096ae3c92f9f2d0e.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: aLIp-Y5tP0CenyfvF0yqUyKAD7wWbo8s09bDy3RnxaSXem5B7-mL2A==
+
+{"errorMessages":["The field to order by should be one of [created]. Instead, it was: author."],"errors":{}}

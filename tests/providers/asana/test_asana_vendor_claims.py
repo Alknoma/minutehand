@@ -157,19 +157,16 @@ def refused(response: httpx.Response, status: int) -> str:
 # ---------------------------------------------------------------------------------------------- authentication
 
 
-async def test_a_write_with_no_token_is_refused_not_authorized_and_writes_nothing(asana: Proxied) -> None:
-    """DOCUMENTED: a request without a valid token is a 401 (https://developers.asana.com/docs/errors), on a
-    write as on a read."""
-    before = asana.store.head()
+async def test_a_write_with_no_token_is_answered_as_the_agent(asana: Proxied) -> None:
+    """Minutehand does not enforce credentials (CLAIMS.md): Asana answers a write with no token 401 "Not Authorized"
+    (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`), and this fake writes it, as the
+    agent."""
     bare = {"Authorization": ""}
     project = await asana.http.post(
         "/projects", headers=bare, json={"data": {"workspace": WS, "team": SURVEY, "name": "Buoy Moorings"}}
     )
-    task = await asana.http.post("/tasks", headers=bare, json={"data": {"workspace": WS, "name": "Check buoy 4"}})
-
-    assert refused(project, 401) == "Not Authorized"
-    assert refused(task, 401) == "Not Authorized"
-    assert asana.store.head() == before
+    assert project.status_code == 201, project.text
+    assert [m["gid"] for m in project.json()["data"]["members"]] == [state.AGENT_GID]
 
 
 # ---------------------------------------------------------------------------------------------- the data envelope
@@ -186,15 +183,18 @@ async def test_a_write_with_no_token_is_refused_not_authorized_and_writes_nothin
         (f"/projects/{TIDES}/addCustomFieldSetting", {"custom_field": DEPTH}),
     ],
 )
-async def test_a_write_not_wrapped_in_data_is_refused_missing_input_data(
+async def test_a_write_not_wrapped_in_data_is_refused_naming_the_stray_field(
     asana: Proxied, path: str, unwrapped: dict[str, object]
 ) -> None:
-    """OBSERVED: every write body sits inside a top-level `data` object, and one that does not is refused
-    400 "Missing input: data" without a write. Asana's options guide places options beside `data`
-    (https://developers.asana.com/docs/inputoutput-options) but does not state the refusal or its words."""
+    """OBSERVED: a body with a field outside `data` is refused naming it, in the words reported from the real service
+    (https://forum.asana.com/t/238695), without a write."""
     before = asana.store.head()
 
-    assert refused(await asana.http.post(path, json=unwrapped), 400) == "Missing input: data"
+    first = next(iter(unwrapped))
+    assert refused(await asana.http.post(path, json=unwrapped), 400) == (
+        f"Unrecognized request field {first} . The only allowed keys at the top level are: data, options. "
+        "Is it possible you did not wrap object properties in a data object?"
+    )
     assert asana.store.head() == before
 
 
@@ -221,26 +221,12 @@ async def test_completing_a_task_leaves_its_section_and_its_status_field_where_t
 @pytest.mark.parametrize("sent", ["true", 1, None])
 async def test_an_update_whose_completed_is_not_a_json_boolean_is_refused(asana: Proxied, sent: object) -> None:
     """DOCUMENTED: `completed` is a boolean (https://developers.asana.com/reference/updatetask); the string
-    "true" is not one, and nothing is written."""
+    "true" is not one, and nothing is written. Asana's words for it are not reported, so it is refused by name."""
     before = asana.store.head()
 
-    message = refused(await asana.http.put(f"/tasks/{CHANNEL}", json={"data": {"completed": sent}}), 400)
+    message = refused(await asana.http.put(f"/tasks/{CHANNEL}", json={"data": {"completed": sent}}), 501)
 
-    assert message == "completed: Not a boolean"
-    assert asana.store.head() == before
-
-
-async def test_html_notes_not_enclosed_in_body_is_refused(asana: Proxied) -> None:
-    """DOCUMENTED: rich text must be wrapped in a `<body>` element and invalid rich text is a 400
-    (https://developers.asana.com/docs/rich-text)."""
-    before = asana.store.head()
-    created = await asana.http.post(
-        "/tasks", json={"data": {"name": "Mark the wreck", "projects": [HARBOUR], "html_notes": "near <b>pier 3</b>"}}
-    )
-    updated = await asana.http.put(f"/tasks/{CHANNEL}", json={"data": {"html_notes": "plain words"}})
-
-    assert "<body>" in refused(created, 400)
-    assert "<body>" in refused(updated, 400)
+    assert "completed that is not a JSON boolean" in message
     assert asana.store.head() == before
 
 
@@ -354,7 +340,7 @@ async def test_a_custom_field_setting_naming_a_field_by_its_name_is_refused_not_
     sent = {"data": {"custom_field": "Depth"}}
 
     assert refused(await asana.http.post(f"/projects/{TIDES}/addCustomFieldSetting", json=sent), 400) == (
-        "custom_field: Not a Recognized ID"
+        "custom_field: Not a recognized ID: Depth"
     )
 
 
@@ -420,13 +406,13 @@ async def plain(tmp_path: Path) -> AsyncIterator[Proxied]:
         yield found
 
 
-async def test_a_plain_workspace_refuses_to_list_my_teams_not_an_organization(plain: Proxied) -> None:
-    """OBSERVED: teams exist only in organizations, so asking for the caller's teams in a workspace that is not
-    one is refused, not answered with an empty list. That `organization` is required is documented
-    (https://developers.asana.com/reference/getteamsforuser); this refusal and its words are not."""
+async def test_my_teams_in_a_plain_workspace_are_refused_by_name(plain: Proxied) -> None:
+    """That `organization` is required is documented (https://developers.asana.com/reference/getteamsforuser);
+    what Asana answers when it names a workspace that is not an organization is not, so it is refused by name."""
     teams = await plain.http.get("/users/me/teams", params={"organization": WS})
 
-    assert refused(teams, 400) == "organization: Not an organization"
+    assert teams.status_code == 501
+    assert "a workspace that is not an organization" in refused(teams, 501)
 
 
 async def test_a_project_in_a_plain_workspace_needs_no_team_and_has_none(plain: Proxied) -> None:
@@ -437,6 +423,17 @@ async def test_a_project_in_a_plain_workspace_needs_no_team_and_has_none(plain: 
     )
 
     assert got(made, 201) == {"gid": got(made, 201)["gid"], "name": "Buoy Moorings", "team": None}
+
+
+async def test_an_assignee_naming_nobody_in_a_plain_workspace_is_refused_in_asanas_words(plain: Proxied) -> None:
+    """OBSERVED: "assignee: Not a user in Workspace: <workspace gid>" (https://forum.asana.com/t/852848)."""
+    before = plain.store.head()
+    made = await plain.http.post(
+        "/tasks", json={"data": {"workspace": WS, "name": "x", "assignee": "nobody@x.example"}}
+    )
+
+    assert refused(made, 400) == f"assignee: Not a user in Workspace: {WS}"
+    assert plain.store.head() == before
 
 
 # ---------------------------------------------------------------------------------------------- too large

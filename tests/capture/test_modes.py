@@ -19,8 +19,8 @@ from minutehand.application.outbound import described, outbound_uses, suggested
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.outbound import Acknowledge, Answer, PassThrough, Route, UnknownHosts
 from minutehand.domain.world import AnsweredBy, BodyKept, CaptureMode
+from minutehand.ports.model import Answered, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.model import ModelFailed
 from tests.capture.support import (
     SECRET_API_KEY,
     SECRET_BODY,
@@ -314,11 +314,13 @@ class PaymentsModel:
         if self.fails:
             raise ModelFailed("the model answered twice with something that is not the answer asked for")
         if asked.rstrip().split("The request to answer now:\n", 1)[1].startswith("POST /charges"):
-            return answer(status=201, body=json.dumps({"id": "ch_1", "amount": 500}))
+            return Answered(
+                answer=answer(status=201, body=json.dumps({"id": "ch_1", "amount": 500})), model=self.model_id
+            )
         listed = (
             [{"id": "ch_1", "amount": 500}] if "POST /charges" in asked.split("The request to answer now:")[0] else []
         )
-        return answer(status=200, body=json.dumps({"data": listed}))
+        return Answered(answer=answer(status=200, body=json.dumps({"data": listed})), model=self.model_id)
 
 
 async def test_a_model_answers_writes_to_an_undeclared_host_and_every_call_after_from_what_it_answered(

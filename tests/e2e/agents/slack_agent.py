@@ -21,7 +21,10 @@ set), STRAY_URL (fetched once when the goal arrives), LOOKUP_URL (fetched when t
 the answer), MAIL_URL (an email API, posted to once when the goal arrives, to MAIL_TO, in the shape a
 SendGrid-like API takes: the text as HTML, MAIL_TEXT when set), AROUND_URL (a Slack call made around the proxy
 when the goal arrives: posted to AROUND_URL, standing for the real slack.com, by a client that ignores every proxy
-variable, under the HTTP client span OpenTelemetry's instrumentation would make for https://slack.com/api/chat.postMessage).
+variable, under the HTTP client span OpenTelemetry's instrumentation would make for https://slack.com/api/chat.postMessage),
+CRM_URL (a contacts collection of a REST API: when the goal arrives the agent creates ASK_EMAIL and OWNER_EMAIL as
+contacts and reads the first back; on the answer it lists them, marks the first answered and deletes the second;
+every answer goes into its memory under `crm`, for the test).
 
 With --trace it traces itself with the stock OpenTelemetry SDK, exported over OTLP/HTTP to wherever its
 environment's OTEL_* variables point: each message it sends is a span `agent turn`, under which a GenAI span
@@ -179,6 +182,25 @@ class Agent:
             looked.append(answer.read().decode())
             state["looked_up"] = looked
 
+    def crm(self, state: dict[str, object], method: str, path: str = "", sent: object | None = None) -> object:
+        """One call to the contacts API, its status and answer kept in memory under `crm`, in order."""
+        request = urllib.request.Request(
+            os.environ["CRM_URL"] + path,
+            data=json.dumps(sent).encode() if sent is not None else None,
+            headers={"content-type": "application/json", "authorization": "Bearer crm-key-nobody-checks"},
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as answer:
+                status, text = answer.status, answer.read().decode()
+        except urllib.error.HTTPError as refused:
+            status, text = refused.code, refused.read().decode()
+        kept = state["crm"] if "crm" in state else []
+        assert isinstance(kept, list)
+        kept.append({"call": f"{method} {path}", "status": status, "text": text})
+        state["crm"] = kept
+        return json.loads(text) if text else None
+
     def flush(self) -> None:
         if self.traces is not None:
             self.traces.force_flush()
@@ -212,6 +234,12 @@ class Agent:
                 state["mailed"] = answer.status
         if "AROUND_URL" in os.environ:
             self.around()
+        if "CRM_URL" in os.environ:
+            asked = self.crm(state, "POST", "", {"name": "Sofia", "email": env("ASK_EMAIL"), "stage": "asked"})
+            told = self.crm(state, "POST", "", {"name": "Owner", "email": env("OWNER_EMAIL"), "stage": "told"})
+            assert isinstance(asked, dict) and isinstance(told, dict)
+            state["contacts"] = [asked["id"], told["id"]]
+            self.crm(state, "GET", f"/{asked['id']}")
         self.dm(env("ASK_EMAIL"), QUESTION)
         if self.behaviour == "forgetful":
             state["next_wake"] = None
@@ -265,6 +293,12 @@ class Agent:
         if event["user"] == self.user_id(env("ASK_EMAIL")):
             state["answer"] = event["text"]
             self.look_up(state)
+            if "CRM_URL" in os.environ:
+                asked, told = state["contacts"]  # type: ignore[misc]
+                self.crm(state, "GET")
+                self.crm(state, "PATCH", f"/{asked}", {"stage": "answered"})
+                self.crm(state, "DELETE", f"/{told}")
+                self.crm(state, "GET", f"/{told}")
             self.slack.chat_postMessage(channel=event["channel"], text=THANKS)
             self.dm(env("OWNER_EMAIL"), f"Thanks: the pricing is confirmed ({event['text']}).")
             state["status"] = "done"

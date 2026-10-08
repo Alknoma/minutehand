@@ -125,29 +125,3 @@ def test_a_binary_upload_and_download_are_kept_as_the_bytes_that_crossed(
         calls = world.calls()[-len(sent) :]
         broken = _compare(sent, calls, session.secrets)
     assert not broken, "\n".join(broken)
-
-
-@parametrize(cases(Property.RECORD, Family.ACCOUNTS, ["unknown_credential_refused_and_unclaimed"]))
-def test_a_request_with_an_unknown_credential_is_refused_as_the_vendor_refuses_it_and_kept_unclaimed(
-    case: Case, harness: Harness, record_property: Record
-) -> None:
-    driver = require(case.provider, Family.ACCOUNTS)
-    status, phrase = driver.unknown_refusal
-    with harness.world(driver, seed(case.provider)) as world, harness.session(driver, world) as session:
-        before = harness.client.unmatched().head
-        held = len(world.calls())
-        answered = session.unknown_credential()
-        kept = harness.client.unmatched(since=before).calls
-        in_world = world.calls()[held:]
-    broken: list[str] = []
-    if answered.status_code != status or phrase not in answered.text:
-        broken.append(
-            f"answered {answered.status_code} {answered.text[:200]!r}; the vendor's documented refusal is "
-            f"{status} holding {phrase!r}"
-        )
-    path = answered.request.url.raw_path.decode("ascii")
-    if not any(c.exchange.path.split("?")[0] == path.split("?")[0] for c in kept):
-        broken.append(f"the call is not in the unclaimed list: {[c.exchange.path for c in kept]}")
-    if in_world:
-        broken.append(f"the call was kept in a world: {[c.exchange.path for c in in_world]}")
-    assert not broken, "\n".join(broken)

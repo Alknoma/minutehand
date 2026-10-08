@@ -22,7 +22,17 @@ from minutehand.adapters.providers.google_workspace.seed import FaultSeed, Works
 from minutehand.adapters.providers.google_workspace.wire import FaultKind
 from minutehand.domain.scenario import DocumentHappening, Edited, ProviderSeed, Trashed
 from minutehand.domain.world import Actor, DocumentSnapshot, Operation
-from tests.providers.google_workspace.proxied import REFRESH, ROBOT, SCENARIO, START, SUPPLIERS, Google, google, serving
+from tests.providers.google_workspace.proxied import (
+    REFRESH,
+    ROBOT,
+    SCENARIO,
+    START,
+    SUPPLIERS,
+    Google,
+    google,
+    receiver_certificate,
+    serving,
+)
 
 __all__ = ["google"]
 
@@ -370,9 +380,11 @@ class Webhook:
 
 
 @pytest.fixture
-async def webhook() -> AsyncIterator[Webhook]:
-    """The agent's own webhook route, which takes Drive's notifications and answers 200."""
+async def webhook(google: Google, tmp_path: Path) -> AsyncIterator[Webhook]:
+    """The agent's own HTTPS webhook route, serving a certificate the run's CA signed, which takes Drive's
+    notifications and answers 200."""
     heard: list[dict[str, str]] = []
+    cert, key = receiver_certificate(google.proxy, tmp_path / "receiver")
 
     async def drive_webhook(request: Request) -> Response:
         heard.append({k.lower(): v for k, v in request.headers.items() if k.lower().startswith("x-goog-")})
@@ -385,13 +397,15 @@ async def webhook() -> AsyncIterator[Webhook]:
             port=0,
             log_level="warning",
             lifespan="off",
+            ssl_certfile=str(cert),
+            ssl_keyfile=str(key),
         )
     )
     serving = asyncio.create_task(server.serve())
     while not server.started:
         await asyncio.sleep(0.01)
     port = server.servers[0].sockets[0].getsockname()[1]
-    yield Webhook(url=f"http://127.0.0.1:{port}/api/v1/webhook/drive", heard=heard)
+    yield Webhook(url=f"https://127.0.0.1:{port}/api/v1/webhook/drive", heard=heard)
     server.should_exit = True
     await serving
 

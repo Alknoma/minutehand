@@ -254,6 +254,11 @@ class Reaction(Aliased):
     type: str
 
 
+def mentions(activity: Activity) -> list[Mention]:
+    """The activity's mention entities, in the order sent."""
+    return [e for e in activity.entities or [] if isinstance(e, Mention)]
+
+
 class Activity(Aliased):
     """One Bot Framework activity, as the connector stores it and as it is pushed to a bot."""
 
@@ -269,7 +274,9 @@ class Activity(Aliased):
     text: str | None = None
     textFormat: str | None = None
     attachments: list[Attachment] | None = None
-    entities: list[Mention] | None = None
+    entities: list[Mention | JsonValue] | None = Field(
+        default=None, description="As the sender sent them: a mention read as one, any other entity kept as it came"
+    )
     channelData: ChannelData | None = None
     replyToId: str | None = None
     value: JsonValue = None
@@ -293,6 +300,7 @@ class SentActivity(Lenient):
     entities: list[JsonValue] | None = None
     replyToId: str | None = None
     summary: str | None = None
+    locale: str | None = None
 
 
 class SentConversation(Lenient):
@@ -385,7 +393,9 @@ class InnerError(Aliased):
 
 
 class GraphErrorBody(Aliased):
-    code: str
+    code: str | None = Field(
+        default=None, description="Left out where Microsoft documents the status of a refusal but not its code"
+    )
     message: str
     innerError: InnerError | None = Field(
         default=None, description="Every refusal of Graph's carries one; Minutehand's own errors, none"
@@ -745,6 +755,8 @@ def encoded(content: bytes) -> str:
 class SentItem(Lenient):
     """A PATCH, a folder create, or a copy: the fields a caller may set on an item."""
 
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
     name: str | None = None
     folder: JsonValue = None
     file: JsonValue = None
@@ -763,11 +775,15 @@ class ParentReferenceIn(Lenient):
 
 
 class CopyRequest(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
     name: str | None = None
     parentReference: ParentReferenceIn | None = None
 
 
 class MoveRequest(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
     name: str | None = None
     parentReference: ParentReferenceIn | None = None
     file: JsonValue = None
@@ -947,15 +963,20 @@ class MailMessage(Aliased):
     odata_type: str | None = Field(
         default=None, validation_alias=AliasChoices("odata_type", "@odata.type"), serialization_alias="@odata.type"
     )
+    odata_etag: str = Field(
+        validation_alias=AliasChoices("odata_etag", "@odata.etag"), serialization_alias="@odata.etag"
+    )
     id: str
     createdDateTime: str
     lastModifiedDateTime: str
+    changeKey: str
     receivedDateTime: str
     sentDateTime: str
     hasAttachments: bool = False
-    internetMessageId: str
-    subject: str
-    bodyPreview: str
+    subject: str | None = Field(
+        default=None, description="Left out where Outlook composes it and no source says how (a declined invitation)"
+    )
+    bodyPreview: str | None = Field(default=None, description="Left out with the body")
     importance: Literal["low", "normal", "high"] = "normal"
     parentFolderId: str
     conversationId: str
@@ -964,7 +985,11 @@ class MailMessage(Aliased):
     isDraft: bool = False
     webLink: str
     inferenceClassification: Literal["focused", "other"] = "focused"
-    body: ItemBody
+    body: ItemBody | None = Field(
+        default=None,
+        description="Left out of a reply: Graph composes it from the comment and the quoted original, and no source "
+        "says how",
+    )
     sender: Recipient
     from_: Recipient = Field(validation_alias=AliasChoices("from_", "from"), serialization_alias="from")
     toRecipients: list[Recipient]
@@ -1007,21 +1032,31 @@ class SentRecipient(Lenient):
 
 
 class SentMessage(Lenient):
+    """A message a caller sends: the properties this provider keeps; any other it names is refused by name, never
+    dropped (`model_extra`)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
     subject: str = ""
     body: SentBody | None = None
     toRecipients: list[SentRecipient] = []
     ccRecipients: list[SentRecipient] = []
     bccRecipients: list[SentRecipient] = []
+    replyTo: list[SentRecipient] = []
     importance: Literal["low", "normal", "high"] = "normal"
 
 
 class SendMailRequest(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
     message: SentMessage | None = None
     saveToSentItems: bool = True
 
 
 class ReplyRequest(Lenient):
-    comment: str = ""
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    comment: str | None = None
     message: SentMessage | None = None
 
 
@@ -1060,6 +1095,9 @@ class Location(Aliased):
 class Event(Aliased):
     """An event as Graph reads it from one mailbox: `isOrganizer` and `responseStatus` are that mailbox's own."""
 
+    odata_etag: str = Field(
+        validation_alias=AliasChoices("odata_etag", "@odata.etag"), serialization_alias="@odata.etag"
+    )
     id: str
     createdDateTime: str
     lastModifiedDateTime: str

@@ -1,0 +1,23 @@
+HTTP/1.1 410 Gone
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:39 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: ab761f36a1bddc4cfc665fc56800d0ee
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: d801f8c7bb274813a437600ffeb94896
+Atl-Request-Id: d801f8c7-bb27-4813-a437-600ffeb94896
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=164,atl-edge-internal;dur=20,atl-edge-upstream;dur=144,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 47a4d6b9adddb82472da5b2f7c4b855a.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P1
+X-Amz-Cf-Id: b92eMKK6cujsN1n85yuzMb5SjrQDSDmfzsIwPmYw0QKzWAmc4C-nvg==
+
+{"errorMessages":["The requested API has been removed. Please migrate to the /rest/api/3/search/jql API. A full migration guideline is available at https://developer.atlassian.com/changelog/#CHANGE-2046"],"errors":{}}

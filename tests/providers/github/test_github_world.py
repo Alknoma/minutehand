@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from minutehand.adapters.providers.github import wire
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.provider import build
-from minutehand.adapters.providers.github.seed import GitHubSeed, SeedRepository, SeedToken, SeedUser
+from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, SeedRepository, SeedToken, SeedUser
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
@@ -81,3 +81,9 @@ def test_a_github_user_who_is_nobody_in_the_scenario_is_refused(tmp_path: Path) 
     store = SqliteStore(tmp_path / "world.db", "root", RunClock(START))
     with pytest.raises(ValueError, match="who is nobody in the scenario"):
         build().seed_with(GitHubSeed(users=[SeedUser(login="ghost", person="ghost")]), SCENARIO, store)
+
+
+def test_a_repository_with_files_and_no_commit_is_rejected_naming_it() -> None:
+    """GitHub holds no file outside a commit, and the provider makes none up: the seed must declare one."""
+    with pytest.raises(ValueError, match=r"lanternworks/ghost: a repository with files has the commits that made them"):
+        SeedRepository(owner="lanternworks", name="ghost", files=[SeedFile(path="a.md", text="a")])

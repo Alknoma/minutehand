@@ -1,0 +1,18 @@
+HTTP/1.1 400 Bad Request
+Server: nginx
+Date: Thu, 08 Oct 2026 07:16:33 GMT
+Content-Type: application/json;charset=utf-8
+Content-Length: 77
+Connection: keep-alive
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: Location
+Access-Control-Expose-Headers: X-Version
+X-XSS-Protection: 1; mode=block
+Content-Security-Policy: frame-ancestors 'self' hub.jetbrains.com discuss.kotlinlang.org buildserver.labs.intellij.net web.ea.pages.jetbrains.team intellij-support.jetbrains.com dotnettools-support.jetbrains.com resharper-support.jetbrains.com rider-support.jetbrains.com teamcity-support.jetbrains.com release-generator.labs.jb.gg youtrack-support.jetbrains.com;
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: same-origin
+X-Version: 4d9db3d37ca89837d477e35d02a28217902b7dcbf394aa7d430a9487f676588b
+Cache-Control: no-cache, no-store, no-transform, must-revalidate
+
+{"error":"bad_request","error_description":"Query string has invalid syntax"}

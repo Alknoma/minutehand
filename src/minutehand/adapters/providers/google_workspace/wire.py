@@ -29,9 +29,10 @@ from urllib.parse import parse_qsl
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.google_workspace.docs import DocBody
 from minutehand.adapters.providers.google_workspace.slides import Deck
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 FOLDER = "application/vnd.google-apps.folder"
@@ -95,6 +96,19 @@ class Refusal(ServiceRefusal):
         return Rendered(status=self.code, content_type=ERROR_TYPE, body=error_body(self), headers=headers)
 
 
+class Unserved(Refusal, NotServed):
+    """Something real Google does that this fake does not, in Google's envelope: answered 501 as rendered, or, when
+    the run declares the host outbound, by that declaration instead (`noted`)."""
+
+
+def noted(refusal: Refusal) -> Refusal:
+    """`refusal`, as the app is about to answer it; one that says what the fake does not serve (`Unserved`) is
+    noted as not served, so the proxy may hand the call to the run's own declaration for the host."""
+    if isinstance(refusal, NotServed):
+        answering.unimplemented(refusal, refusal.answer.error.message)
+    return refusal
+
+
 def error_answer(status: int, code: str, message: str) -> Rendered:
     """What Minutehand answers in Google's place (501, 500), in the envelope every Google API client reads an error
     from (`googleapiclient` raises `HttpError` with `message` as its reason): `code` as the `errors` entry's
@@ -149,9 +163,10 @@ def forbidden(reason: str, message: str) -> Refusal:
     return drive_refusal(403, reason, message)
 
 
-def not_implemented(message: str) -> Refusal:
+def not_implemented(message: str) -> Unserved:
     """Something real Drive does that this fake does not. Loud, and never mistaken for Google's own answer."""
-    return drive_refusal(501, "notImplemented", message, domain="minutehand")
+    item = ErrorItem(domain="minutehand", reason="notImplemented", message=message)
+    return Unserved(GoogleError(error=ErrorBody(code=501, message=message, errors=[item])))
 
 
 def login_required() -> Refusal:
@@ -850,9 +865,9 @@ class ChannelWrite(Model):
     id: str = ""
     type: str = ""
     address: str = ""
-    expiration: str | None = Field(default=None, description="Milliseconds since the epoch, as a string")
+    expiration: str | int | None = Field(default=None, description="Milliseconds since the epoch, int64 as JSON")
     token: str | None = None
-    params: dict[str, str] | None = None
+    params: dict[str, str | int] | None = None
 
 
 class ChannelAnswer(Model):

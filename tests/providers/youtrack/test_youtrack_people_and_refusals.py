@@ -1,6 +1,6 @@
 """What happens without the agent, and what the scenario makes the instance refuse: people acting on seeded issues at
-their moment, seen in the API and the activity feed as themselves; tokens, permissions, required fields and faults,
-each through the run's proxy."""
+their moment, seen in the API and the activity feed as themselves; tokens and permissions, which never refuse a call;
+required fields and faults, which do; each through the run's proxy."""
 
 from __future__ import annotations
 
@@ -135,48 +135,68 @@ async def test_history_seeded_before_the_run_reads_as_its_people(yt: httpx.Async
     refusal(await yt.get("/api/issues/LAUNCH-3/activities", params={"fields": "id"}), 400)
 
 
-# --------------------------------------------------------------------------- tokens
+# --------------------------------------------------------------------------- tokens: identity, never a check
 
 
-async def test_an_unknown_token_is_refused_401_once_tokens_are_seeded(team: Instance, tmp_path: Path) -> None:
+async def test_an_unknown_token_acts_as_the_agent_even_once_tokens_are_seeded(team: Instance, tmp_path: Path) -> None:
+    """Minutehand deliberately checks no credential: a token the seed does not name, an empty Authorization and a
+    Hub call with it all act as the agent's account."""
     async with proxied(team, tmp_path / "ca", token="perm:not.a.seeded.one") as http:
-        refused = refusal(await http.get("/api/users/me", params={"fields": "id"}), 401)
-        bare = refusal(await http.get("/api/users/me", headers={"Authorization": ""}), 401)
-        hub = refusal(await http.get("/hub/api/rest/permissions/cache"), 401)
-    assert (
-        refused == bare == hub == {"error": "Unauthorized", "error_description": "Not authorized, try to login first"}
-    )
+        me = entity(await http.get("/api/users/me", params={"fields": "login"}))
+        bare = entity(await http.get("/api/users/me", params={"fields": "login"}, headers={"Authorization": ""}))
+        hub = entity(await http.get("/hub/api/rest/users/me", params={"fields": "login"}))
+        tomas = entity(await http.get("/api/users/me", params={"fields": "login"}, headers=as_user(TOMAS_TOKEN)))
+    assert me["login"] == bare["login"] == hub["login"] == "agent-bot"
+    assert tomas["login"] == "tomas"
 
 
-async def test_an_issued_token_expires_after_an_hour_of_the_runs_time(yt: httpx.AsyncClient, team: Instance) -> None:
+async def test_an_issued_token_keeps_acting_as_its_user_after_its_hour(yt: httpx.AsyncClient, team: Instance) -> None:
     issued = await yt.post(
         "/hub/api/rest/oauth2/token",
         content=f"grant_type=client_credentials&client_id={CLIENT_ID}&client_secret={CLIENT_SECRET}".encode(),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     token = issued.json()["access_token"]
-    entity(await yt.get("/api/users/me", params={"fields": "id"}, headers=as_user(token)))
-    team.clock.jump(START + timedelta(hours=1))
-    refusal(await yt.get("/api/users/me", params={"fields": "id"}, headers=as_user(token)), 401)
+    team.clock.jump(START + timedelta(hours=2))
+    later = entity(await yt.get("/api/users/me", params={"fields": "login"}, headers=as_user(token)))
     unsupported = refusal(
         await yt.post(
             "/hub/api/rest/oauth2/token",
             content=b"grant_type=password",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         ),
-        400,
+        501,
     )
-    assert unsupported["error"] == "unsupported_grant_type"
+    assert issued.json()["expires_in"] == 3600 and later["login"] == "agent-bot"
+    assert "the grant password" in str(unsupported["error_description"]), "Hub's answer is not recorded"
 
 
-# --------------------------------------------------------------------------- permissions
+async def test_a_wrong_client_secret_still_gets_a_token(yt: httpx.AsyncClient) -> None:
+    issued = await yt.post(
+        "/hub/api/rest/oauth2/token",
+        content=f"grant_type=client_credentials&client_id={CLIENT_ID}&client_secret=wrong".encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    stranger = await yt.post(
+        "/hub/api/rest/oauth2/token",
+        content=b"grant_type=client_credentials&client_id=nobody&client_secret=nothing",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert issued.status_code == 200 and stranger.status_code == 200
+    me = entity(
+        await yt.get("/api/users/me", params={"fields": "login"}, headers=as_user(stranger.json()["access_token"]))
+    )
+    assert me["login"] == "agent-bot"
+
+
+# --------------------------------------------------------------------------- permissions: reported, never enforced
 
 
 def granted(tmp_path: Path, grants: list[dict[str, object]]) -> Instance:
     return seeded(tmp_path, scenario_with(grants=grants))
 
 
-async def test_without_update_issue_a_field_write_is_refused_403(tmp_path: Path) -> None:
+async def test_a_withheld_update_issue_does_not_refuse_a_field_write(tmp_path: Path) -> None:
     team = granted(
         tmp_path,
         [{"login": "tomas", "permission": "jetbrains.youtrack.updateIssue", "project": "LAUNCH", "held": False}],
@@ -184,72 +204,55 @@ async def test_without_update_issue_a_field_write_is_refused_403(tmp_path: Path)
     async with proxied(team, tmp_path / "ca", token=TOMAS_TOKEN) as http:
         fields = entity(await http.get("/api/issues/LAUNCH-1", params={"fields": "customFields(id,name)"}))
         state = named(fields["customFields"], "State")["id"]
-        refused = refusal(
-            await http.post(f"/api/issues/LAUNCH-1/customFields/{state}", json={"value": {"name": "Fixed"}}), 403
-        )
-        elsewhere = await http.post("/api/issues/OPS-1/comments", json={"text": "still mine to write"})
-    assert refused == {"error": "Forbidden", "error_description": "Insufficient permissions: Update Issue is required"}
-    assert elsewhere.status_code == 200
+        written = await http.post(f"/api/issues/LAUNCH-1/customFields/{state}", json={"value": {"name": "Fixed"}})
+    assert written.status_code == 200, written.text
 
 
-async def test_without_read_issue_a_project_is_out_of_every_search_and_its_issues_403(tmp_path: Path) -> None:
+async def test_a_withheld_read_issue_leaves_a_project_in_searches_and_readable(tmp_path: Path) -> None:
     team = granted(
         tmp_path,
         [{"login": "agent-bot", "permission": "jetbrains.youtrack.readIssue", "project": "OPS", "held": False}],
     )
     async with proxied(team, tmp_path / "ca") as http:
-        found = entities(await http.get("/api/issues", params={"query": "", "fields": "idReadable"}))
-        refusal(await http.get("/api/issues/OPS-1", params={"fields": "id"}), 403)
+        found = entities(await http.get("/api/issues", params={"query": "project: OPS", "fields": "idReadable"}))
+        read = entity(await http.get("/api/issues/OPS-1", params={"fields": "idReadable"}))
         counted = entity(await http.post("/api/issuesGetter/count", params={"fields": "count"}, json={"query": ""}))
-    assert [i["idReadable"] for i in found] == ["LAUNCH-3", "LAUNCH-1", "LAUNCH-2"] and counted["count"] == 3
+    assert [i["idReadable"] for i in found] == ["OPS-1"] and read["idReadable"] == "OPS-1"
+    assert counted["count"] == 4
 
 
-async def test_without_create_project_a_project_is_refused_403_and_a_grant_lets_one_be_changed(tmp_path: Path) -> None:
-    team = granted(
-        tmp_path,
-        [
-            {"login": "agent-bot", "permission": "jetbrains.jetpass.project-create", "held": False},
-            {"login": "tomas", "permission": "jetbrains.jetpass.project-update", "held": True},
-        ],
-    )
+async def test_a_withheld_create_project_does_not_refuse_a_create_and_the_cache_still_reports_it(
+    tmp_path: Path,
+) -> None:
+    team = granted(tmp_path, [{"login": "agent-bot", "permission": "jetbrains.jetpass.project-create", "held": False}])
     async with proxied(team, tmp_path / "ca") as http:
-        refused = refusal(
-            await http.post("/api/admin/projects", json={"name": "X", "shortName": "X", "leader": {"id": "1-0"}}), 403
-        )
-        made = await http.post(
-            "/api/admin/projects",
-            json={"name": "Summit", "shortName": "SUMMIT", "leader": {"id": "1-2"}},
-            headers=as_user(TOMAS_TOKEN),
-        )
+        made = await http.post("/api/admin/projects", json={"name": "X", "shortName": "X", "leader": {"id": "1-0"}})
         attached = await http.post(
             f"/api/admin/projects/{made.json()['id']}/customFields",
             json={"field": {"id": "58-5"}, "$type": "SimpleProjectCustomField"},
-            headers=as_user(TOMAS_TOKEN),
         )
         cache = await http.get("/hub/api/rest/permissions/cache", params={"fields": "permission/key,global"})
-    assert refused["error_description"] == "Insufficient permissions: Create Project is required"
-    assert made.status_code == 200 and attached.status_code == 200
+    assert made.status_code == 200 and attached.status_code == 200, attached.text
     assert "jetbrains.jetpass.project-create" not in [e["permission"]["key"] for e in cache.json()]
 
 
-async def test_hub_refuses_a_team_change_without_update_project_403(tmp_path: Path) -> None:
+async def test_a_withheld_update_project_does_not_refuse_a_team_change(tmp_path: Path) -> None:
     team = granted(tmp_path, [{"login": "agent-bot", "permission": "jetbrains.jetpass.project-update", "held": False}])
-    launch = team.youtrack.project("0-1000")
     vendor = team.youtrack.user_by_login("vendor")
-    assert launch is not None and vendor is not None
+    assert vendor is not None
     async with proxied(team, tmp_path / "ca") as http:
-        refused = refusal(
-            await http.post(f"/hub/api/rest/usergroups/{launch.teamRingId}/users", json={"id": vendor.ringId}), 403
-        )
-        groups = entity(await http.get("/hub/api/rest/usergroups", params={"fields": "name"}))
-    assert refused["error_description"] == "Insufficient permissions: Update Project is required"
-    assert [g["name"] for g in groups["usergroups"]] == ["All Users", "Registered Users"]  # type: ignore[union-attr,index]
+        added = await http.post("/api/admin/projects/0-1000/team/ownUsers", json={"id": vendor.id})
+        users = entities(await http.get("/api/admin/projects/0-1000/team/users", params={"fields": "login"}))
+    assert added.status_code == 200, added.text
+    assert "vendor" in [u["login"] for u in users]
 
 
 # --------------------------------------------------------------------------- what a project requires
 
 
 async def test_a_required_field_with_no_default_refuses_a_create_without_it_400(tmp_path: Path) -> None:
+    """The refusal's body is the one https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-missing-type.html
+    shows: `Field required`, naming the field in `error_field`."""
     projects = json.loads(json.dumps(YOUTRACK_SEED["projects"]))
     ops_fields = projects[1]["fields"]
     ops_fields[1] = {"name": "Type", "values": [{"name": "Hardware"}, {"name": "Shipping"}], "can_be_empty": False}
@@ -272,12 +275,12 @@ async def test_a_required_field_with_no_default_refuses_a_create_without_it_400(
             )
         )
         cleared = refusal(
-            await http.post("/api/issues/OPS-2", json={"customFields": [{"name": "Type", "value": None}]}), 400
+            await http.post("/api/issues/OPS-2", json={"customFields": [{"name": "Type", "value": None}]}), 501
         )
-    assert refused == {"error": "bad_request", "error_description": "Type is required"}
+    assert refused == {"error": "Field required", "error_description": "Type is required", "error_field": "Type"}
     assert named(made["customFields"], "Priority")["value"] == {"name": "P2 - Normal", "$type": "EnumBundleElement"}
     assert named(made["customFields"], "Type")["value"] == {"name": "Shipping", "$type": "EnumBundleElement"}
-    assert cleared["error_description"] == "Value is not allowed"
+    assert "clearing Type, which cannot be empty" in str(cleared["error_description"]), "unrecorded: refused by name"
 
 
 # --------------------------------------------------------------------------- faults and an unknown count
@@ -297,7 +300,7 @@ async def test_a_fault_refuses_one_route_for_its_while_429_with_retry_after(tmp_
         after = await http.post(f"/api/issues/LAUNCH-1/customFields/{state}", json={"value": {"name": "Fixed"}})
     assert (before.status_code, during.status_code, reads.status_code, after.status_code) == (200, 429, 200, 200)
     assert during.headers["Retry-After"] == "1200"
-    assert during.json() == {"error": "Too Many Requests", "error_description": "Too many requests. Try again later."}
+    assert during.json() == {"error": "Too Many Requests", "error_description": "HTTP 429 Too Many Requests"}
 
 
 async def test_a_count_still_running_answers_minus_one(tmp_path: Path) -> None:

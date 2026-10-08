@@ -13,13 +13,21 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import read_checkpoint
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier_model import PeopleReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.runner import RunResult, contract_breaks, evaluate, view_of
 from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Command, WakeRequest
 from minutehand.domain.inboxes import HttpInbox
 from minutehand.domain.run import RunRecord
-from minutehand.domain.scenario import DelayRange, Person, ReplyBehaviour, Scenario, Scripted, ScriptedDecision
+from minutehand.domain.scenario import (
+    AfterScript,
+    DelayRange,
+    Person,
+    ReplyBehaviour,
+    Scenario,
+    Scripted,
+    ScriptedDecision,
+)
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Exchange, MessageSnapshot, Operation
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
@@ -81,6 +89,7 @@ def inbox(product: Product, *, everyone: bool = False, gates: bool = True, **mor
 
 def deciding(*decisions: ScriptedDecision, hours: float = 2, longest: float | None = None) -> Scripted:
     return Scripted(
+        then=AfterScript.SILENT,
         delay=DelayRange(shortest=timedelta(hours=hours), longest=timedelta(hours=longest or hours)),
         replies=[],
         decisions=list(decisions),
@@ -89,7 +98,7 @@ def deciding(*decisions: ScriptedDecision, hours: float = 2, longest: float | No
 
 def people(nadia: ReplyBehaviour, **nadia_has: object) -> list[Person]:
     return [
-        Person(key="owen", name="Owen Hart", email=OWEN, reply=Scripted(replies=[], decisions=[])),
+        Person(key="owen", name="Owen Hart", email=OWEN, reply=Scripted(then=AfterScript.SILENT, decisions=[])),
         Person.model_validate(
             {
                 "key": "nadia",

@@ -33,10 +33,18 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from minutehand.adapters.model.openai_compatible import (
+    API_KEY_VARIABLE,
+    BASE_URL_VARIABLE,
+    DEFAULT_BASE_URL,
+    MODEL_VARIABLE,
+)
+from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.scenario import Model
@@ -263,11 +271,37 @@ class HostCheck(Model):
     )
 
 
+class PeopleModel(Model):
+    """Whether a model is configured to write what people say: needed by every run or standing world in which a
+    person speaks in a model's words (conversing, a script step's words, a decision's reasons)."""
+
+    configured: bool
+    said: str = Field(description="Which model at which service, or what is missing")
+
+
+def people_model(environ: Mapping[str, str]) -> PeopleModel:
+    """The model this environment configures for people, as `run` and `serve` read it."""
+    try:
+        found = model_from_environment(environ)
+    except RunRefused as e:
+        return PeopleModel(configured=False, said=str(e))
+    if found is None:
+        return PeopleModel(
+            configured=False,
+            said=f"no model is configured ({MODEL_VARIABLE}, {API_KEY_VARIABLE}): a run or standing world in which a "
+            "person speaks in a model's words is refused",
+        )
+    base = environ[BASE_URL_VARIABLE] if BASE_URL_VARIABLE in environ else ""
+    base = base or DEFAULT_BASE_URL
+    return PeopleModel(configured=True, said=f"{found.model_id} at {base}")
+
+
 class Diagnosis(Model):
     interpreter: str
     libraries: list[LibraryCheck]
     hosts: list[HostCheck]
     notes: list[str]
+    people_model: PeopleModel = Field(description="Whether a model is configured to write what people say")
 
     no_proxy: list[str] = Field(default=[], description="The NO_PROXY the agent is handed, entry by entry")
     docker: list[str] = Field(
@@ -365,6 +399,7 @@ async def diagnose(
         notes=notes,
         no_proxy=no_proxy,
         docker=docker_warnings(claimed_hosts(agent), os.environ),
+        people_model=people_model(os.environ),
     )
 
 
@@ -394,5 +429,7 @@ def described(diagnosis: Diagnosis) -> str:
                 lines.append(f"  ok   {host.host}")
     if diagnosis.docker:
         lines += ["", *[f"WARN {warning}" for warning in diagnosis.docker]]
+    mark = "ok  " if diagnosis.people_model.configured else "MISS"
+    lines += ["", f"  {mark} the model that writes what people say: {diagnosis.people_model.said}"]
     lines += ["", *[f"note: {n}" for n in diagnosis.notes]]
     return "\n".join(lines)

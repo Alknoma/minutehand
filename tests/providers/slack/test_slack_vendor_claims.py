@@ -9,7 +9,6 @@ table of them, and the list of the old emulator's habits that were not carried o
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,14 +16,10 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
 from minutehand.adapters.providers.slack import state, wire
-from minutehand.adapters.providers.slack.provider import build
-from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID
-from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.run_clock import RunClock
-from minutehand.domain.scenario import Scenario
+from minutehand.adapters.providers.slack.state import BOT_USER_ID
 from minutehand.domain.world import Actor, Operation
-from tests.providers.slack.intercepted import Intercepted, data, off_loop
-from tests.providers.slack.slack_workspace import GENERAL, SCENARIO, START, Workspace, client_for, form
+from tests.providers.slack.intercepted import Intercepted, data
+from tests.providers.slack.slack_workspace import GENERAL, START, Workspace
 
 DIVIDER: dict[str, Any] = {"type": "divider"}
 PROSE: dict[str, Any] = {"type": "section", "text": {"type": "mrkdwn", "text": "Two invoices wait on you"}}
@@ -94,14 +89,6 @@ async def test_one_unknown_id_in_a_group_dm_refuses_the_whole_open_user_not_foun
 
 
 # ---------------------------------------------------------------------- tokens and people
-
-
-async def test_a_token_that_is_not_slacks_is_refused_invalid_auth(slack: Intercepted) -> None:
-    """DOCUMENTED: a token not shaped like Slack's is `invalid_auth`.
-    https://docs.slack.dev/reference/methods/auth.test"""
-    answer = await refusal(slack.asynchronous(token="ghp_not-a-slack-token").auth_test())
-
-    assert answer["error"] == "invalid_auth"
 
 
 async def test_every_member_is_served_with_a_timezone(slack: Intercepted) -> None:
@@ -207,23 +194,6 @@ async def test_a_message_of_more_than_fifty_blocks_is_refused_invalid_blocks(
 
     assert answer["error"] == "invalid_blocks"
     assert len(fifty["message"]["blocks"]) == 50
-
-
-async def test_as_user_true_leaves_the_app_as_the_author(slack: Intercepted) -> None:
-    """OBSERVED: `as_user` is a legacy flag; sent form-encoded as "1" by slack_sdk, it is a boolean and never a user
-    id, and a bot token's message stays the app's own, with its `bot_id`. The reference describes the flag as legacy
-    (https://docs.slack.dev/reference/methods/chat.postMessage) without saying what a bot token gets."""
-    sdk = slack.sync()
-
-    posted = data(
-        await off_loop(
-            lambda: sdk.api_call(
-                "chat.postMessage", params={"channel": GENERAL, "text": "stand-up moved", "as_user": True}
-            )
-        )
-    )
-
-    assert (posted["message"]["user"], posted["message"]["bot_id"]) == (BOT_USER_ID, BOT_ID)
 
 
 async def test_an_update_draws_the_blocks_it_is_given(slack: Intercepted) -> None:
@@ -420,25 +390,3 @@ async def test_a_view_of_more_than_a_hundred_blocks_is_refused_invalid_arguments
 
     assert answer["error"] == "invalid_arguments"
     assert len(shown["view"]["blocks"]) == 100
-
-
-SIGNED_IN = "xoxb-the-one-this-workspace-issued"
-
-
-async def test_a_token_the_workspace_never_issued_is_refused_invalid_auth(tmp_path: Path) -> None:
-    """DOCUMENTED: a token Slack did not issue for this workspace is `invalid_auth`, while the one it issued
-    is answered. A scenario that declares a Slack sign-in names every token the workspace knows.
-    https://docs.slack.dev/reference/methods/auth.test"""
-    scenario = Scenario.model_validate(
-        {**SCENARIO.model_dump(), "sign_ins": [{"provider": "slack", "credential": SIGNED_IN}]}
-    )
-    clock = RunClock(START)
-    store = SqliteStore(tmp_path / "world.db", "root", clock)
-    provider = build()
-    provider.seed(scenario, store)
-    async with client_for(provider, store, clock) as c:
-        known = await form(c, "auth.test", token=SIGNED_IN)
-        stranger = await form(c, "auth.test", token="xoxb-well-shaped-but-never-issued")
-
-    assert known["ok"] is True
-    assert stranger["ok"] is False and stranger["error"] == "invalid_auth"

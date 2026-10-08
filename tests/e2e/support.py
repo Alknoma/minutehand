@@ -21,6 +21,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import (
+    AfterScript,
     DelayRange,
     GeneratedSecret,
     Person,
@@ -49,11 +50,13 @@ THANKS = "Thank you!"
 
 def answers(*, to_ask: int = 1, after: timedelta) -> Scripted:
     return Scripted(
-        delay=DelayRange(shortest=after, longest=after), replies=[ScriptedReply(to_ask=to_ask, text=ANSWER)]
+        then=AfterScript.SILENT,
+        delay=DelayRange(shortest=after, longest=after),
+        replies=[ScriptedReply(to_ask=to_ask, verbatim=ANSWER)],
     )
 
 
-NEVER_EXPECTED_TO_ANSWER = Scripted(replies=[])
+NEVER_EXPECTED_TO_ANSWER = Scripted(then=AfterScript.SILENT)
 """Someone who answers nothing and from whom no answer is expected: the owner, thanked at the end."""
 
 

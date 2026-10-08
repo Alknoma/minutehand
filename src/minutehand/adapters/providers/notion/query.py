@@ -101,9 +101,9 @@ def parse_filter(
     compound = [k for k in ("and", "or") if k in found]
     if compound:
         if len(found) != 1:
-            raise wire.invalid(f"{where} should hold `and` or `or` and nothing beside it.")
+            raise wire.undocumented(f"{where} holding `and` or `or` beside something else")
         if depth >= MAX_DEPTH:
-            raise wire.invalid(f"{where}: compound filters may be nested at most {MAX_DEPTH} deep.")
+            raise wire.undocumented(f"{where}: compound filters nested deeper than {MAX_DEPTH}")
         key = compound[0]
         parts = wire.as_list(found[key], f"{where}.{key}")
         return Compound(
@@ -114,44 +114,50 @@ def parse_filter(
         which = wire.as_text(found["timestamp"], f"{where}.timestamp")
         kind = next((t for t in TIMESTAMPS if t.value == which), None)
         if kind is None:
-            raise wire.invalid(f"{where}.timestamp should be created_time or last_edited_time; got `{which}`.")
+            raise wire.undocumented(f"{where}.timestamp `{which}`")
         wire.only_keys(found, ["timestamp", which], where)
         if which not in found:
-            raise wire.invalid(f"{where}.{which} should be defined.")
+            raise wire.failed(f"{where}.{which}", "defined")
         return _condition(None, kind, found[which], f"{where}.{which}")
     if "property" not in found:
-        raise wire.invalid(f"{where} should be a property filter, a timestamp filter, `and` or `or`.")
+        raise wire.undocumented(f"{where} that is no filter")
     key = wire.as_text(found["property"], f"{where}.property")
     by_id = {str(s["id"]): n for n, s in schema.items()}
     name = key if key in schema else by_id[key] if key in by_id else None
     if name is None:
-        raise wire.invalid(f"{where}.property: `{key}` is not a property of this database.")
+        # Reported: https://github.com/ikisuke/wagumi-sbt/issues/13
+        raise wire.reported(f"Could not find property with name or id: {key}")
     kind = wire.schema_type(schema[name])
     typed = [k for k in found if k not in ("property", "type")]
     if typed != [kind.value]:
-        shown = typed[0] if typed else "nothing"
-        raise wire.invalid(f"{where}: `{name}` is a {kind.value} property, and the filter gives {shown}.")
+        if len(typed) != 1:
+            raise wire.undocumented(f"{where} giving no single filter type")
+        # Reported: https://community.n8n.io/t/need-help-troubleshooting-an-issue-with-notion-node/10730
+        raise wire.reported(
+            "The property type in the database does not match the property type of the filter provided: "
+            f"database property {kind.value} does not match filter {typed[0]}"
+        )
     return _condition(name, kind, found[kind.value], f"{where}.{kind.value}")
 
 
 def _condition(name: str | None, kind: wire.PropertyType, given: JsonValue, where: str) -> Condition:
     body = wire.as_object(given, where)
     if len(body) != 1:
-        raise wire.invalid(f"{where} should hold exactly one condition.")
+        raise wire.undocumented(f"{where} holding no single condition")
     condition, value = next(iter(body.items()))
     if condition not in CONDITIONS[kind]:
-        raise wire.invalid(f"{where}.{condition} is not a condition of a {kind.value} filter.")
+        raise wire.undocumented(f"{where}.{condition}, not a condition of a {kind.value} filter")
     at = f"{where}.{condition}"
     if condition in ("is_empty", "is_not_empty"):
         if value is not True:
-            raise wire.invalid(f"{at} should be true.")
+            raise wire.undocumented(f"{at} that is not true")
     elif condition in RELATIVE or condition == "this_week":
         wire.only_keys(wire.as_object(value, at), [], at)
     elif CONDITIONS[kind] is DATE:
         wire.read_date(wire.as_text(value, at), at)
     elif CONDITIONS[kind] is NUMBER:
         if isinstance(value, bool) or not isinstance(value, int | float):
-            raise wire.invalid(f"{at} should be a number.")
+            raise wire.undocumented(f"{at} that is not a number")
     elif CONDITIONS[kind] is CHECKBOX:
         wire.as_bool(value, at)
     elif CONDITIONS[kind] is CONTAINS and kind is not wire.PropertyType.MULTI_SELECT:
@@ -317,20 +323,21 @@ def parse_sorts(given: JsonValue, schema: dict[str, wire.Json]) -> list[Sort]:
         wire.only_keys(sort, ["property", "timestamp", "direction"], where)
         direction = wire.as_text(sort["direction"], f"{where}.direction") if "direction" in sort else "ascending"
         if direction not in ("ascending", "descending"):
-            raise wire.invalid(f"{where}.direction should be ascending or descending; got `{direction}`.")
+            raise wire.failed(f"{where}.direction", wire.one_of(["ascending", "descending"], optional=True), direction)
         if ("property" in sort) == ("timestamp" in sort):
-            raise wire.invalid(f"{where} should name a property or a timestamp, not both.")
+            raise wire.undocumented(f"{where} naming both or neither of a property and a timestamp")
         if "property" in sort:
             key = wire.as_text(sort["property"], f"{where}.property")
             name = key if key in schema else by_id[key] if key in by_id else None
             if name is None:
-                raise wire.invalid(f"{where}.property: `{key}` is not a property of this database.")
+                # Reported: https://github.com/azu/bluenotiondb/issues/14
+                raise wire.reported(f"Could not find sort property with name or id: {key}")
             found.append(Sort(name=name, descending=direction == "descending"))
         else:
             which = wire.as_text(sort["timestamp"], f"{where}.timestamp")
             kind = next((t for t in TIMESTAMPS if t.value == which), None)
             if kind is None:
-                raise wire.invalid(f"{where}.timestamp should be created_time or last_edited_time.")
+                raise wire.undocumented(f"{where}.timestamp `{which}`")
             found.append(Sort(timestamp=kind, descending=direction == "descending"))
     return found
 

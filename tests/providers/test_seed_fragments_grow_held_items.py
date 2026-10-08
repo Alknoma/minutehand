@@ -44,8 +44,11 @@ CASES: list[tuple[str, dict[str, object], dict[str, object], str]] = [
     (
         "github",
         {"users": [{"login": "octo", "person": "owen"}],
-         "repositories": [{"owner": "octo", "name": "notes", "files": [{"path": "README.md", "text": "hi"}]}]},
-        {"repositories": [{"owner": "octo", "name": "notes", "files": [{"path": "docs/plan.md", "text": "plan"}]}]},
+         "repositories": [{"owner": "octo", "name": "notes", "files": [{"path": "README.md", "text": "hi"}],
+                           "commits": [{"message": "Add the notes", "author": "octo", "before": "P1D", "paths": ["README.md"]}]}]},
+        {"repositories": [{"owner": "octo", "name": "notes", "files": [{"path": "docs/plan.md", "text": "plan"}],
+                           "commits": [{"message": "Add the plan", "author": "octo", "before": "PT1H",
+                                        "paths": ["docs/plan.md"]}]}]},
         "docs/plan.md",
     ),
     (

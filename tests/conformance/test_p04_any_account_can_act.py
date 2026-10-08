@@ -205,3 +205,40 @@ def _deactivated(world: OpenWorld, provider: str, account: Account, session: Ses
         return
     found = _find(session.people(), account)
     assert not found.active, f"deactivated, the API lists {found}"
+
+
+@parametrize(cases(Property.ACCOUNTS, Family.ACCOUNTS, ["any_credential_acts_as_the_default_identity"]))
+def test_any_credential_or_none_is_accepted_and_acts_as_the_seeds_default_identity(
+    case: Case, harness: Harness, record_property: Record
+) -> None:
+    """Authentication always passes: a request carrying no credential, or one nobody seeded, is answered, never
+    refused for its credential, as the seed's declared default identity (the account the world's own credential,
+    the agent's, acts as), and is kept in the world it reached. The world is the server's default, so a call that
+    names no world in its URL still reaches it."""
+    driver = require(case.provider, Family.ACCOUNTS)
+    spec = harness.spec(driver, seed(case.provider))
+    spec = spec.model_copy(update={"claims": spec.claims.model_copy(update={"default": True})})
+    with harness.world(driver, seed(case.provider), spec=spec) as world, harness.session(driver, world) as session:
+        broken: list[str] = []
+        identity: str | None = None
+        if not absent(driver, "accounts.whoami", record_property):
+            try:
+                identity = session.whoami()
+            except VendorRefused as refused:
+                broken.append(f"the world's own credential cannot say who it is: {refused}")
+        held = len(world.calls())
+        answered = {
+            "no credential": session.stranger(credentialed=False),
+            "a credential nobody seeded": session.stranger(credentialed=True),
+        }
+        in_world = world.calls()[held:]
+    for carrying, response in answered.items():
+        if response.status_code >= 400:
+            broken.append(f"with {carrying}: refused {response.status_code} {response.text[:200]!r}")
+        elif identity is not None and identity not in response.text:
+            broken.append(f"with {carrying}: answered {response.text[:200]!r}, not as {identity!r}")
+    if len(in_world) != len(answered):
+        broken.append(
+            f"the world kept {len(in_world)} of the {len(answered)} calls: {[c.exchange.path for c in in_world]}"
+        )
+    assert not broken, "\n".join(broken)

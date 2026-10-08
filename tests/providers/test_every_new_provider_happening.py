@@ -31,7 +31,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.files import load_scenario
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage
 from minutehand.domain.people import InboundTarget
@@ -137,7 +137,7 @@ async def test_one_run_lands_a_jira_ticket_a_notion_page_a_microsoft_file_a_team
             store=store,
             clock=clock,
             services=Services(providers=[jira(), notion(), teams], pushes={"microsoft": teams}),
-            replier=ScriptedReplier(scenario),
+            replier=PeopleReplier(scenario, None),
             mounts=proxy,
             signing={"microsoft": "the Bot Framework signs with its key, not a secret"},
         )

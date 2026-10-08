@@ -14,25 +14,33 @@ pytestmark = [pytest.mark.packaging, pytest.mark.timeout(900)]
 
 
 def _in_container(image: str, scenario: str, behaviour: str) -> subprocess.CompletedProcess[str]:
-    """`docker run` as the example's README gives it: examples/ mounted read-only, the agent started inside."""
+    """`docker run` as the example's README gives it: examples/ mounted read-only, the agent started inside, and,
+    since Rosa's words are a model's, the recipes' stand-in model started beside it, as the README runs it offline."""
+    script = (
+        "python ../recipes/fake_model.py >/dev/null & "
+        "until python -c 'import socket; socket.create_connection((\"127.0.0.1\", 8790), 1)' 2>/dev/null; "
+        "do sleep 0.2; done; "
+        'exec minutehand run "$0" --agent agent.yaml -- python agent.py'
+    )
     return run(
         tool("docker"),
         "run",
         "--rm",
         "--env",
         f"AGENT_BEHAVIOUR={behaviour}",
+        *("--env", "MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1"),
+        *("--env", "MINUTEHAND_MODEL=people"),
+        *("--env", "MINUTEHAND_MODEL_API_KEY=offline"),
         "--volume",
         f"{EXAMPLE.parent}:/examples:ro",
         "--workdir",
         "/examples/follow_up",
+        "--entrypoint",
+        "sh",
         f"{image}-example",
-        "run",
+        "-c",
+        script,
         scenario,
-        "--agent",
-        "agent.yaml",
-        "--",
-        "python",
-        "agent.py",
     )
 
 

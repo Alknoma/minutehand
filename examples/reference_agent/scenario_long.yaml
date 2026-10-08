@@ -7,5 +7,5 @@ starts_at: 2026-08-24T09:00:00Z
 deadline_after: P60D
 max_wakes: 300
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, replies: []}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
   - {key: rosa, name: Rosa Lind, email: rosa@lakeside.example, reply: {kind: silent}}

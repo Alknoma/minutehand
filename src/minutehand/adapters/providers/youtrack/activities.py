@@ -27,17 +27,15 @@ class Category(StrEnum):
 
 
 def categories(text: str | None) -> set[Category]:
-    """The `categories=` parameter, which YouTrack requires."""
+    """The `categories=` parameter, which YouTrack requires; a name it does not know is passed over. Both as the
+    public instance answers (`tests/providers/youtrack/data/observed/activities_no_categories.http`,
+    `activities_unknown_category.http`)."""
     if text is None or not text.strip():
-        raise wire.bad_request("Parameter 'categories' should be specified")
+        raise wire.Refusal(400, "Bad Request", "No requested categories specified as a filter parameter")
     chosen: set[Category] = set()
     for name in (n.strip() for n in text.split(",")):
-        if not name:
-            continue
-        try:
+        if name in {c.value for c in Category}:
             chosen.add(Category(name))
-        except ValueError as error:
-            raise wire.bad_request(f"Unknown activity category: {name}") from error
     return chosen
 
 

@@ -213,7 +213,6 @@ class Presenter:
         return wire.CommentOut(
             id=comment.id,
             text=comment.text,
-            textPreview=comment.text,
             author=self.user_by_id(comment.author),
             created=comment.created,
             updated=comment.updated,
@@ -274,7 +273,6 @@ class Presenter:
             numberInProject=issue.numberInProject,
             summary=issue.summary,
             description=issue.description,
-            wikifiedDescription=issue.description or "",
             project=self.project(project),
             reporter=self.user_by_id(issue.reporter),
             updater=self.user_by_id(issue.updater),
@@ -282,7 +280,6 @@ class Presenter:
             updated=issue.updated,
             resolved=issue.resolved,
             customFields=custom,
-            fields=custom,
             comments=comments,
             commentsCount=len(comments),
             tags=tags,

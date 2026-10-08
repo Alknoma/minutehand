@@ -7,7 +7,6 @@ clock shows), and a list standing in for the orchestrator's pending wakes.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,7 +14,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from minutehand.adapters.providers.aws.provider import AwsProvider, build
-from minutehand.adapters.providers.aws.wire import SqsDelete, UnsupportedTarget, sqs_delete
+from minutehand.adapters.providers.aws.wire import SqsDelete, sqs_delete
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind, next_jump
@@ -100,14 +99,6 @@ class AwsRun:
             self.proxy.stop()
 
 
-@pytest.fixture
-def run(tmp_path: Path) -> Iterator[AwsRun]:
-    aws = AwsRun(tmp_path / "a", "run-a")
-    yield aws
-    assert aws.proxy.refused == [], "a call left for a host no provider claims"
-    aws.stop()
-
-
 def test_it_satisfies_the_ports() -> None:
     aws: AwsProvider = build()
     provider: Provider = aws
@@ -159,15 +150,17 @@ def test_a_fifo_target_gets_the_message_group_id(run: AwsRun) -> None:
     assert [m["Attributes"]["MessageGroupId"] for m in received] == ["mission-42"]
 
 
-def test_a_rate_schedule_books_after_the_simulated_now_and_rebooks_after_firing(run: AwsRun) -> None:
+def test_a_rate_schedule_with_no_start_date_fires_at_once_and_rebooks_after_firing(run: AwsRun) -> None:
+    """The reference: "If you do not provide a StartDate for a rate-based schedule, your schedule starts invoking the target
+    immediately" (EventBridge Scheduler User Guide, Schedule types)."""
     url, queue = run.queue()
     run.schedule("every-six-hours", "rate(6 hours)", queue)
-    assert [d.at for d in run.wakes.pending] == [START + timedelta(hours=6)]
+    assert [d.at for d in run.wakes.pending] == [START]
     run.advance()
     assert run.poll(url) == ['{"wake": "every-six-hours"}']
-    assert [d.at for d in run.wakes.pending] == [START + timedelta(hours=12)]
+    assert [d.at for d in run.wakes.pending] == [START + timedelta(hours=6)]
     run.advance()
-    assert [d.at for d in run.wakes.pending] == [START + timedelta(hours=18)]
+    assert [d.at for d in run.wakes.pending] == [START + timedelta(hours=12)]
 
 
 def test_a_cron_schedule_books_its_next_occurrence_in_its_timezone_and_rebooks_after_firing(run: AwsRun) -> None:
@@ -185,7 +178,7 @@ def test_a_cron_schedule_books_its_next_occurrence_in_its_timezone_and_rebooks_a
 
 def test_a_recurring_schedule_stops_at_its_end_date(run: AwsRun) -> None:
     _, queue = run.queue()
-    arn = run.schedule("twice", "rate(6 hours)", queue, EndDate=START + timedelta(hours=13))
+    arn = run.schedule("twice", "rate(6 hours)", queue, EndDate=START + timedelta(hours=7))
     run.advance()
     run.advance()
     assert run.wakes.pending == []
@@ -233,17 +226,18 @@ def test_action_after_completion_delete_removes_a_one_time_schedule_once_it_fire
     assert (Actor.SCENARIO, Operation.DELETE, None) in run.log()
 
 
-def test_firing_a_lambda_target_is_refused_by_name(run: AwsRun) -> None:
-    run.schedule("lambda", "at(2026-08-25T00:00:00)", "arn:aws:lambda:us-east-1:000000000000:function:wake-agent")
-    before = run.log()
-    with pytest.raises(UnsupportedTarget, match="lambda"):
-        run.advance()
-    assert run.log() == before, "nothing was delivered, so nothing is recorded as delivered"
+def test_a_schedule_with_a_lambda_target_is_refused_by_name_and_books_nothing(run: AwsRun) -> None:
+    lambda_arn = "arn:aws:lambda:us-east-1:000000000000:function:wake-agent"
+    with pytest.raises(ClientError, match=r"NotImplemented.*only SQS queue targets are served") as refused:
+        run.schedule("lambda", "at(2026-08-25T00:00:00)", lambda_arn)
+    assert refused.value.response["ResponseMetadata"]["HTTPStatusCode"] == 501
+    assert lambda_arn in str(refused.value)
+    assert run.wakes.pending == [] and run.log() == []
 
 
 def test_an_invalid_expression_is_refused_and_books_nothing(run: AwsRun) -> None:
     _, queue = run.queue()
-    for bad in ("rate(1 hours)", "at(next tuesday)", "cron(0 9 * * MON *)"):
+    for bad in ("rate(0 hours)", "at(next tuesday)", "cron(0 9 * * MON *)"):
         with pytest.raises(ClientError, match="ValidationException"):
             run.schedule("bad", bad, queue)
     assert run.wakes.pending == []

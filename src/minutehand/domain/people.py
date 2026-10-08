@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from pydantic import AwareDatetime, Field, model_validator
 
+from minutehand.domain.clock import Drawn
 from minutehand.domain.conversation import Provenance
-from minutehand.domain.scenario import FormInput, Model, ProviderKey, SigningSecret
+from minutehand.domain.scenario import FormInput, Model, ProviderKey, ScriptedDecision, ScriptedReply, SigningSecret
 from minutehand.domain.world import EntityRef
 
 
@@ -28,6 +29,16 @@ class Decides(Model):
 
     decision: str = Field(description="The name of one of the inbox's decisions")
     inputs: dict[str, str] = Field(default={}, description="Each input the decision takes, by its name")
+
+
+class Writing(StrEnum):
+    """Where a reply's words came from."""
+
+    SCRIPT = "script"  # a model, from a step of the person's script: its facts and intent
+    VERBATIM = "verbatim"  # the step's exact words, or a control pressed: no model
+    CONVERSING = "conversing"  # a model, from the person's own facts: no plan (`Answers`), or after the script
+    AUTOMATIC = "automatic"  # their automatic reply while away with a delegate covering: no model, never an answer
+    BY_HAND = "by_hand"  # whoever drives a standing world, speaking for the person
 
 
 class PersonReply(Model):
@@ -50,6 +61,16 @@ class PersonReply(Model):
         description="The longest delay the person had when this reply was decided: how long the agent's wait on it "
         "may take before silence is the agent's to act on. None: the person's delay in the scenario as it stands",
     )
+    writing: Writing = Field(default=Writing.BY_HAND, description="Where its words came from")
+    facts: list[str] = Field(
+        default=[], description="The facts a script step gave it to carry, which a model put in its own words"
+    )
+    drawn: Drawn | None = Field(default=None, description="How its moment was drawn; None: given by hand")
+
+    @property
+    def answers(self) -> bool:
+        """Whether it is the person's own answer: an automatic reply says only that they are away."""
+        return self.writing is not Writing.AUTOMATIC
 
 
 class PersonMessage(Model):
@@ -137,3 +158,20 @@ class InboundCredential(Model):
     """The headers that make a request the test builds look pushed by the provider's own service."""
 
     headers: list[Header] = Field(min_length=1)
+
+
+class Plan(Model):
+    """What a person will do about one ask, and when: decided from the scenario and the world, before any word."""
+
+    person: str = Field(description="Person.key")
+    asked: EntityRef
+    nth: int = Field(ge=1, description="Which of their asks (or items) it is")
+    writing: Writing
+    step: ScriptedReply | None = None
+    decision: ScriptedDecision | None = None
+    press: Press | None = None
+    drawn: Drawn
+
+    @property
+    def at(self) -> datetime:
+        return self.drawn.lands_at

@@ -1,0 +1,73 @@
+HTTP/1.1 404 Not Found
+Content-Type: text/html
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:13:36 GMT
+Server: AtlassianEdge
+Vary: Accept-Encoding
+Atl-Missing-Tcs: true
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: dd13e81e3afc4251bdeadadacb472b32
+Atl-Request-Id: dd13e81e-3afc-4251-bdea-dadacb472b32
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=190,atl-edge-internal;dur=52,atl-edge-upstream;dur=138,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 43bacd4616205757182033ec3ba3e3c6.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: SB89mJMyAFFtx5xEPIUkP0N6eLwe7D_-eFCkZC_QSJ3qX_fgrA_51g==
+
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Atlassian Cloud Notifications - Page Unavailable</title>
+        <link rel="stylesheet" href="/_edge/resources/aui-prototyping.css">
+    </head>
+    <body>
+        <div id="page">
+            <section id="content" role="main" class="aui-page-notification aui-page-size-medium">
+                <div id="notifications" class="aui-page-panel">
+                    <div class="aui-page-header-inner">
+                        <section class="aui-page-panel-content">
+                            <h1>Page unavailable</h1>
+                            <div class="aui-page-notification-description">
+                                Your Atlassian Cloud site is currently unavailable.
+                                <br/><br/>
+                                Please check <a href="https://status.atlassian.com">Atlassian Status</a> for known problems.
+                                <br />
+                                If there are no known problems and your page hasn't appeared again in 5-10 minutes then please contact our support team.
+                            </div>
+                            <br>
+                            <p>
+                                <a href="https://status.atlassian.com" class="aui-button aui-button-primary">
+                                    Atlassian Status
+                                </a>
+                                &nbsp;
+                                <a href="https://support.atlassian.com" class="aui-button">
+                                    Contact Support
+                                </a>
+                            </p>
+                            <br>
+                            <p style="color:#B3B3B3; font:normal 12px/18px Helvetica, Arial;">Request ID: dd13e81e3afc4251bdeadadacb472b32</p>
+                        </section>
+                    </div>
+                </div>
+            </section>
+            <footer id="footer">
+                <section class="footer-body">
+                    <ul>
+                        <li><a href="https://status.atlassian.com">Atlassian Status</a></li>
+                        <li><a href="https://confluence.atlassian.com/display/cloud/What's+New">Release Summary</a></li>
+                        <li><a href="https://confluence.atlassian.com/display/Cloud/Atlassian+Cloud+Documentation">Documentation</a></li>
+                    </ul>
+                    <div id="footer-logo"><a href="https://www.atlassian.com/" target="_blank">Atlassian</a></div>
+                </section>
+            </footer>
+        </div>
+    </body>
+</html>

@@ -1,11 +1,11 @@
 """Notion's public API, version 2022-06-28, as one ASGI app over the run's store and clock.
 
-**Sign-in.** Every `/v1` call carries `Authorization: Bearer <secret>`: a seeded internal
-integration's token or an access token minted by `/v1/oauth/token`. An unknown, missing or
-revoked secret is 401 `unauthorized`. The token names the integration, its bot user and
-its workspace; every call acts as that bot. `/v1/oauth/token` takes `Authorization: Basic`
-with a public integration's client id and secret, and a JSON body: an authorization code
-the seed holds (single use) or a refresh token it minted.
+**Who calls.** A `/v1` call's bearer token names an integration when the seed holds it or
+`/v1/oauth/token` minted it: that integration, its bot user and its workspace. Any other
+token, or none, is the agent's integration (`NotionWorld.agent`). Minutehand does not enforce
+credentials: no call is ever refused for its token, and no integration's capabilities refuse
+one. `/v1/oauth/token` mints tokens for the integration its client id or its code names, or
+the agent's.
 
 **Version.** `Notion-Version` must be present (400 `missing_version`) and must be
 `2022-06-28`: a later version changes shapes this fake does not serve, and is refused with
@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from urllib.parse import parse_qs, unquote
@@ -37,7 +38,7 @@ from starlette.types import Receive, Scope, Send
 
 from minutehand.adapters import answering
 from minutehand.adapters.providers.notion import query as notion_query
-from minutehand.adapters.providers.notion import webhooks, wire
+from minutehand.adapters.providers.notion import surface, webhooks, wire
 from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row, page_ref, record_ref, title_of
 from minutehand.domain.world import Actor, Operation
@@ -46,6 +47,43 @@ from minutehand.ports.store import Store
 
 JSON = "application/json; charset=utf-8"
 EDITS_BLOCKS = ("PATCH", "DELETE")
+
+SERVED: tuple[tuple[str, str, str], ...] = (
+    ("POST", "/v1/search", "search"),
+    ("POST", "/v1/pages", "page_create"),
+    ("GET", "/v1/pages/{page_id}", "page_get"),
+    ("PATCH", "/v1/pages/{page_id}", "page_update"),
+    ("GET", "/v1/pages/{page_id}/properties/{property_id}", "page_property"),
+    ("GET", "/v1/blocks/{block_id}", "block_get"),
+    ("PATCH", "/v1/blocks/{block_id}", "block_update"),
+    ("DELETE", "/v1/blocks/{block_id}", "block_delete"),
+    ("GET", "/v1/blocks/{block_id}/children", "children_list"),
+    ("PATCH", "/v1/blocks/{block_id}/children", "children_append"),
+    ("POST", "/v1/databases", "database_create"),
+    ("GET", "/v1/databases/{database_id}", "database_get"),
+    ("PATCH", "/v1/databases/{database_id}", "database_update"),
+    ("POST", "/v1/databases/{database_id}/query", "database_query"),
+    ("GET", "/v1/users", "users_list"),
+    ("GET", "/v1/users/me", "users_me"),
+    ("GET", "/v1/users/{user_id}", "user_get"),
+    ("GET", "/v1/comments", "comments_list"),
+    ("POST", "/v1/comments", "comments_create"),
+)
+"""Method, path and `NotionApi` handler of every operation this provider serves (`/v1/oauth/token` aside)."""
+
+
+def _shape(path: str) -> str:
+    return re.sub(r"\{[^}]+\}", "{}", path)
+
+
+UNSERVED: tuple[tuple[str, str, str], ...] = tuple(
+    (method, path, operation)
+    for method, path, operation in surface.OPERATIONS
+    if (method, _shape(path)) not in {(m, _shape(p)) for m, p, _ in SERVED} | {("POST", "/v1/oauth/token")}
+)
+"""Every operation of Notion's published OpenAPI document and of 2022-06-28 (`surface.OPERATIONS`) that this provider
+does not serve: method, path and operationId. Each raises the shared not-served refusal, answered 501 naming it,
+never `invalid_request_url` as if Notion had no such endpoint (`test_notion_surface.py`)."""
 
 
 @dataclass
@@ -65,6 +103,27 @@ class Call:
 
 
 Handler = Callable[[Request, Call], Awaitable[Response]]
+
+
+def _cursor(cursor: str, ids: Sequence[str], kind: str) -> str:
+    """The id a `start_cursor` names in a list, refused as the real service is reported to refuse one it did not
+    issue (https://github.com/brekkylab/backlot/issues/375): listing users or querying a database, "The start_cursor
+    provided is invalid: <cursor>"; listing children or comments, or searching, a cursor that is not a uuid as a
+    validation failure. What those last answer to a uuid they did not issue is not documented."""
+    where = "body.start_cursor" if kind in ("page_or_database", "page") else "query.start_cursor"
+    try:
+        found = wire.canonical_id(cursor, where)
+    except wire.Refusal:
+        if kind in ("user", "page"):
+            raise wire.reported(f"The start_cursor provided is invalid: {cursor}") from None
+        if kind == "property_item":
+            raise wire.undocumented(f"{where} that Notion did not issue") from None
+        raise wire.failed(where, "a valid uuid", cursor, optional=True) from None
+    if found not in ids:
+        if kind in ("user", "page"):
+            raise wire.reported(f"The start_cursor provided is invalid: {cursor}")
+        raise wire.undocumented(f"{where} that Notion did not issue")
+    return found
 
 
 def _answer(found: JsonValue, status: int = 200) -> Response:
@@ -90,21 +149,11 @@ class NotionApi:
             headers=refusal.headers,
         )
 
-    def guarded(self, handler: Handler, need: wire.Capability | None) -> Callable[[Request], Awaitable[Response]]:
+    def guarded(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
             try:
-                call = self._signed_in(request)
-                if "notion-version" not in request.headers:
-                    raise wire.Refusal(
-                        wire.ErrorCode.MISSING_VERSION, "The Notion-Version header is required and was not sent."
-                    )
-                version = request.headers["notion-version"]
-                if version != wire.API_VERSION:
-                    raise wire.invalid(
-                        f"Notion-Version {version} is not served by this simulation; it answers {wire.API_VERSION}."
-                    )
-                if need is not None and need not in call.integration.capabilities:
-                    raise wire.restricted(need.value)
+                call = self._caller(request)
+                wire.served_version(request.headers["notion-version"] if "notion-version" in request.headers else None)
                 self._faults(request, call)
                 return await handler(request, call)
             except wire.Refusal as refusal:
@@ -112,18 +161,13 @@ class NotionApi:
 
         return endpoint
 
-    def _signed_in(self, request: Request) -> Call:
+    def _caller(self, request: Request) -> Call:
+        """The integration the bearer token names, or the agent's for any other token or none."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
-        scheme, _, secret = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not secret.strip():
-            raise wire.unauthorized()
-        token = self._world.token(secret.strip())
-        if token is None or token.used or token.type in (wire.TokenKind.CODE, wire.TokenKind.REFRESH):
-            raise wire.unauthorized()
-        integration = self._world.integration(token.integration)
-        if integration is None:
-            raise wire.unauthorized()
-        return Call(integration=integration, secret=secret.strip())
+        _, _, secret = authorization.partition(" ")
+        token = self._world.token(secret.strip()) if secret.strip() else None
+        integration = self._world.integration(token.integration) if token is not None else None
+        return Call(integration=integration or self._world.agent(), secret=secret.strip())
 
     def _faults(self, request: Request, call: Call) -> None:
         path = request.url.path
@@ -184,19 +228,19 @@ class NotionApi:
     def _page(self, call: Call, page_id: str) -> wire.StoredPage:
         page = self._world.page(page_id)
         if page is None or not self.reaches(call, page_id):
-            raise wire.not_found(wire.Missing.PAGE, page_id)
+            raise wire.not_found(wire.Missing.PAGE, page_id, call.integration.name)
         return page
 
     def _database(self, call: Call, database_id: str) -> wire.StoredDatabase:
         database = self._world.database(database_id)
         if database is None or not self.reaches(call, database_id):
-            raise wire.not_found(wire.Missing.DATABASE, database_id)
+            raise wire.not_found(wire.Missing.DATABASE, database_id, call.integration.name)
         return database
 
     def _holding(self, call: Call, block_id: str) -> wire.StoredPage:
         holder = self._world.holding(call.workspace, block_id)
         if holder is None or not self.reaches(call, holder.id):
-            raise wire.not_found(wire.Missing.BLOCK, block_id)
+            raise wire.not_found(wire.Missing.BLOCK, block_id, call.integration.name)
         return holder
 
     # ------------------------------------------------------------------ rendering
@@ -281,7 +325,7 @@ class NotionApi:
             "is_inline": database.is_inline,
             "properties": {name: dict(prop) for name, prop in database.schema_.items()},
             "parent": database.parent.render(),
-            "url": f"https://www.notion.so/{database.id.replace('-', '')}",
+            "url": wire.record_url(database.id),
             "public_url": None,
             "archived": database.archived,
             "in_trash": database.archived,
@@ -370,10 +414,7 @@ class NotionApi:
     ) -> wire.Json:
         start = 0
         if cursor is not None:
-            cursor_id = wire.canonical_id(cursor, "start_cursor")
-            if cursor_id not in ids:
-                raise wire.invalid("start_cursor does not name a position in this list.")
-            start = list(ids).index(cursor_id)
+            start = list(ids).index(_cursor(cursor, ids, kind))
         page = list(items[start : start + size])
         following = ids[start + size] if start + size < len(ids) else None
         return wire.render_list(page, following, kind, self.request_id(request))
@@ -388,23 +429,31 @@ class NotionApi:
         if "filter" in body and body["filter"] is not None:
             found = wire.as_object(body["filter"], "body.filter")
             wire.only_keys(found, ["property", "value"], "body.filter")
-            if "property" not in found or found["property"] != "object":
-                raise wire.invalid("body.filter.property should be `object`.")
-            wanted = wire.as_text(found["value"], "body.filter.value") if "value" in found else ""
+            # Reported: https://github.com/brekkylab/backlot/issues/375
+            if wire.required(found, "property", "body.filter") != "object":
+                raise wire.failed("body.filter.property", wire.one_of(["object"]), found["property"])
+            wanted = wire.as_text(wire.required(found, "value", "body.filter"), "body.filter.value")
             if wanted not in ("page", "database"):
-                raise wire.invalid(f"body.filter.value should be `page` or `database`; got `{wanted}`.")
+                raise wire.failed("body.filter.value", wire.one_of(["page", "database"]), wanted)
         descending = True
         if "sort" in body and body["sort"] is not None:
             sort = wire.as_object(body["sort"], "body.sort")
             wire.only_keys(sort, ["direction", "timestamp"], "body.sort")
+            # Reported: https://github.com/brekkylab/backlot/issues/375
             if "timestamp" not in sort or sort["timestamp"] != "last_edited_time":
-                raise wire.invalid("body.sort.timestamp should be `last_edited_time`.")
-            direction = wire.as_text(sort["direction"], "body.sort.direction") if "direction" in sort else ""
+                raise wire.reported('body.sort.timestamp should be "last_edited_time" when sorting by timestamp.')
+            direction = sort["direction"] if "direction" in sort else None
             if direction not in ("ascending", "descending"):
-                raise wire.invalid("body.sort.direction should be `ascending` or `descending`.")
+                raise wire.failed(
+                    "body.sort.direction",
+                    wire.one_of(["ascending", "descending"], optional=True),
+                    wire.UNDEFINED if direction is None else direction,
+                )
             descending = direction == "descending"
         size = wire.page_size(body["page_size"] if "page_size" in body else None, "body.page_size")
-        cursor = wire.as_text(body["start_cursor"], "body.start_cursor") if "start_cursor" in body else None
+        cursor = (
+            wire.as_text(body["start_cursor"], "body.start_cursor", optional=True) if "start_cursor" in body else None
+        )
         found_items: list[tuple[str, str, wire.Json]] = []
         if wanted != "database":
             for page in self._world.pages(call.workspace):
@@ -440,11 +489,11 @@ class NotionApi:
     async def page_create(self, request: Request, call: Call) -> Response:
         body = await self._body(request)
         wire.only_keys(body, ["parent", "properties", "children", "icon", "cover"], "body")
-        if "parent" not in body:
-            raise wire.invalid("body.parent should be defined.")
-        parent = self._parent(call, wire.as_object(body["parent"], "body.parent"))
-        properties = wire.as_object(body["properties"], "body.properties") if "properties" in body else {}
-        children = wire.as_list(body["children"], "body.children") if "children" in body else []
+        parent = self._parent(call, wire.as_object(wire.required(body, "parent", "body"), "body.parent"))
+        properties = (
+            wire.as_object(body["properties"], "body.properties", optional=True) if "properties" in body else {}
+        )
+        children = wire.as_list(body["children"], "body.children", optional=True) if "children" in body else []
         editor = self._editor(call)
         page = editor.create_page(
             editor.mint("page", within=parent.id or call.workspace),
@@ -465,15 +514,15 @@ class NotionApi:
     def _parent(self, call: Call, given: wire.Json) -> wire.Parent:
         keys = [k for k in given if k != "type"]
         if len(keys) != 1:
-            raise wire.invalid("body.parent should name exactly one of page_id, database_id or workspace.")
+            raise wire.undocumented("body.parent naming no single parent")
         key = keys[0]
         try:
             kind = wire.ParentType(key)
         except ValueError as error:
-            raise wire.invalid(f"body.parent.{key} is not a parent a page can be made under.") from error
+            raise wire.undocumented(f"body.parent.{key}, not a parent a page is made under") from error
         if kind is wire.ParentType.WORKSPACE:
             if given["workspace"] is not True or call.integration.type is not wire.IntegrationKind.PUBLIC:
-                raise wire.invalid("body.parent: only a public integration may make a page at the workspace's top.")
+                raise wire.undocumented("a page at the workspace's top made by an internal integration")
             return wire.Parent(type=wire.ParentType.WORKSPACE)
         if kind is wire.ParentType.PAGE_ID:
             page = self._page(
@@ -485,7 +534,7 @@ class NotionApi:
                 call, wire.canonical_id(wire.as_text(given[key], "body.parent.database_id"), "body.parent.database_id")
             )
             return wire.Parent(type=wire.ParentType.DATABASE_ID, id=database.id)
-        raise wire.invalid(f"body.parent.{key} is not a parent a page can be made under.")
+        raise wire.undocumented(f"body.parent.{key}, not a parent a page is made under")
 
     async def page_update(self, request: Request, call: Call) -> Response:
         page = self._page(call, self._id(request, "page_id"))
@@ -574,7 +623,7 @@ class NotionApi:
         if page is not None and self.reaches(call, block_id):
             holder, container = page, page.id
         elif self._world.database(block_id) is not None and self.reaches(call, block_id):
-            raise wire.invalid("A child_database block has no block children; query the database for its rows.")
+            raise wire.undocumented("the block children of a child_database")
         else:
             holder, container = self._holding(call, block_id), block_id
         live = self._live_children(holder, container)
@@ -587,14 +636,13 @@ class NotionApi:
         block_id = self._id(request, "block_id")
         body = await self._body(request)
         wire.only_keys(body, ["children", "after"], "body")
-        if "children" not in body:
-            raise wire.invalid("body.children should be defined.")
+        wire.required(body, "children", "body")
         if self._world.page(block_id) is not None:
             self._page(call, block_id)
         else:
             self._holding(call, block_id)
         after = (
-            wire.canonical_id(wire.as_text(body["after"], "body.after"), "body.after")
+            wire.canonical_id(wire.as_text(body["after"], "body.after", optional=True), "body.after")
             if "after" in body and body["after"] is not None
             else None
         )
@@ -655,9 +703,8 @@ class NotionApi:
     async def database_create(self, request: Request, call: Call) -> Response:
         body = await self._body(request)
         wire.only_keys(body, ["parent", "title", "description", "properties", "icon", "cover", "is_inline"], "body")
-        if "parent" not in body or "properties" not in body:
-            raise wire.invalid("body.parent and body.properties should be defined.")
-        parent = self._parent(call, wire.as_object(body["parent"], "body.parent"))
+        parent = self._parent(call, wire.as_object(wire.required(body, "parent", "body"), "body.parent"))
+        wire.required(body, "properties", "body")
         editor = self._editor(call)
         database_id = editor.mint("database", within=parent.id or call.workspace)
         schema: dict[str, wire.Json] = {}
@@ -678,13 +725,7 @@ class NotionApi:
 
     # ------------------------------------------------------------------ users
 
-    def _users_allowed(self, call: Call) -> None:
-        held = call.integration.capabilities
-        if wire.Capability.READ_USERS_WITH_EMAIL not in held and wire.Capability.READ_USERS_WITHOUT_EMAIL not in held:
-            raise wire.restricted(wire.Capability.READ_USERS_WITHOUT_EMAIL.value)
-
     async def users_list(self, request: Request, call: Call) -> Response:
-        self._users_allowed(call)
         query = self._query(request)
         users = self._world.users(call.workspace)
         return self._listed(
@@ -699,15 +740,14 @@ class NotionApi:
     async def users_me(self, request: Request, call: Call) -> Response:
         me = self._world.user(call.bot)
         if me is None:
-            raise wire.unauthorized()
+            raise LookupError(f"notion integration {call.bot} has no bot user in the world")
         return _answer(self._user(call, me))
 
     async def user_get(self, request: Request, call: Call) -> Response:
-        self._users_allowed(call)
         user_id = self._id(request, "user_id")
         user = self._world.user(user_id)
         if user is None or user.workspace != call.workspace or user.removed:
-            raise wire.not_found(wire.Missing.USER, user_id)
+            raise wire.not_found(wire.Missing.USER, user_id, call.integration.name)
         return _answer(self._user(call, user))
 
     # ------------------------------------------------------------------ comments
@@ -728,8 +768,9 @@ class NotionApi:
         query = self._query(request)
         raw = self._one(query, "block_id")
         if raw is None:
-            raise wire.invalid("block_id should be given in the query.")
-        page = self._page(call, wire.canonical_id(raw, "block_id"))
+            # Reported: https://github.com/brekkylab/backlot/issues/393
+            raise wire.failed("query.block_id", "defined")
+        page = self._page(call, wire.canonical_id(raw, "query.block_id"))
         comments = self._world.comments(page.id)
         comments.sort(key=lambda c: c.created_time)
         self._world.saw(page_ref(page), Operation.READ)
@@ -738,7 +779,7 @@ class NotionApi:
             [self.render_comment(c) for c in comments],
             [c.id for c in comments],
             self._one(query, "start_cursor"),
-            wire.page_size(self._one(query, "page_size")),
+            wire.page_size(self._one(query, "page_size"), refuses_range=True),
             "comment",
         )
 
@@ -746,21 +787,18 @@ class NotionApi:
         body = await self._body(request)
         wire.only_keys(body, ["parent", "discussion_id", "rich_text"], "body")
         if ("parent" in body) == ("discussion_id" in body):
-            raise wire.invalid("body should give either parent or discussion_id.")
+            raise wire.undocumented("a comment giving both a parent and a discussion_id, or neither")
         editor = self._editor(call)
-        if "rich_text" not in body:
-            raise wire.invalid("body.rich_text should be defined.")
-        text = wire.rich_text(body["rich_text"], "body.rich_text", editor)
+        text = wire.rich_text(wire.required(body, "rich_text", "body"), "body.rich_text", editor)
         if "parent" in body:
             parent = wire.as_object(body["parent"], "body.parent")
-            if "page_id" not in parent:
-                raise wire.invalid("body.parent.page_id should be defined.")
-            page = self._page(
-                call, wire.canonical_id(wire.as_text(parent["page_id"], "page_id"), "body.parent.page_id")
-            )
+            given = wire.as_text(wire.required(parent, "page_id", "body.parent"), "body.parent.page_id")
+            page = self._page(call, wire.canonical_id(given, "body.parent.page_id"))
             discussion = None
         else:
-            discussion = wire.canonical_id(wire.as_text(body["discussion_id"], "discussion_id"), "body.discussion_id")
+            discussion = wire.canonical_id(
+                wire.as_text(body["discussion_id"], "body.discussion_id"), "body.discussion_id"
+            )
             page = self._discussion_page(call, discussion)
         return _answer(self.render_comment(editor.comment(page.id, discussion, text, by=call.bot)))
 
@@ -770,56 +808,36 @@ class NotionApi:
                 return self._page(call, page.id)
         raise wire.not_found(wire.Missing.COMMENT, discussion)
 
+    def unserved(self, method: str, path: str, operation: str) -> Handler:
+        """An operation Notion has and this provider does not serve, refused by name."""
+
+        async def refuse(request: Request, call: Call) -> Response:
+            raise wire.unserved(f"{method} {path} ({operation})")
+
+        return refuse
+
     # ------------------------------------------------------------------ OAuth
 
     async def token(self, request: Request) -> Response:
-        """The token endpoint of a public integration: an authorization code, or a refresh token, for tokens."""
+        """The token endpoint: an authorization code or a refresh token buys an access token and a refresh token for
+        the integration its client id names, else the one the code or refresh token was issued to, else the agent's.
+        Minutehand does not enforce credentials: no client, code or refresh token is refused."""
         try:
-            integration = self._client(request)
-            if integration is None:
-                return Response(
-                    wire.oauth_error("invalid_client", "The client id and secret do not name a public integration."),
-                    status_code=401,
-                    media_type=JSON,
-                )
             asked = wire.read_token_request(await self._body(request))
         except wire.Refusal as refusal:
             return self.refused(request, refusal)
         if asked.grant_type == wire.GrantType.AUTHORIZATION_CODE:
-            presented, kind = asked.code, wire.TokenKind.CODE
+            presented = asked.code
         elif asked.grant_type == wire.GrantType.REFRESH_TOKEN:
-            presented, kind = asked.refresh_token, wire.TokenKind.REFRESH
+            presented = asked.refresh_token
         else:
-            return Response(
-                wire.oauth_error("unsupported_grant_type", f"grant_type {asked.grant_type} is not taken here."),
-                status_code=400,
-                media_type=JSON,
-            )
+            raise wire.undocumented(f"the `{asked.grant_type}` grant at /v1/oauth/token")
         held = self._world.token(presented) if presented else None
-        if (
-            presented is None
-            or held is None
-            or held.type is not kind
-            or held.used
-            or held.integration != integration.id
-        ):
-            return Response(
-                wire.oauth_error("invalid_grant", "The code or refresh token is unknown, used, or another client's."),
-                status_code=400,
-                media_type=JSON,
-            )
-        if kind is wire.TokenKind.CODE and held.redirect_uri is not None and asked.redirect_uri != held.redirect_uri:
-            return Response(
-                wire.oauth_error("invalid_grant", "redirect_uri does not match the one the code was issued for."),
-                status_code=400,
-                media_type=JSON,
-            )
+        issued = self._world.integration(held.integration) if held is not None else None
+        integration = self._client(request) or issued or self._world.agent()
         seq = str(self._world.next_seq())
         access = "ntn_" + wire.digest(f"access\x1f{presented}\x1f{seq}")[:46]
         refresh = "nrt_" + wire.digest(f"refresh\x1f{presented}\x1f{seq}")[:46]
-        self._world.write_token(
-            presented, held.model_copy(update={"used": True}), operation=Operation.UPDATE, actor=Actor.AGENT
-        )
         for secret, made in ((access, wire.TokenKind.ACCESS), (refresh, wire.TokenKind.REFRESH)):
             self._world.write_token(
                 secret,
@@ -850,17 +868,18 @@ class NotionApi:
         )
 
     def _client(self, request: Request) -> wire.StoredIntegration | None:
+        """The public integration whose client id `Authorization: Basic` names; its secret is not checked."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
         scheme, _, encoded = authorization.partition(" ")
         if scheme.lower() != "basic":
             return None
         try:
-            client_id, _, secret = base64.b64decode(encoded.strip()).decode("utf-8").partition(":")
+            client_id = base64.b64decode(encoded.strip()).decode("utf-8").partition(":")[0]
         except (binascii.Error, UnicodeDecodeError):
             return None
         for workspace in self._world.workspaces():
             for integration in self._world.integrations(workspace.id):
-                if integration.client_id == client_id and integration.client_secret_digest == wire.digest(secret):
+                if integration.client_id is not None and integration.client_id == client_id:
                     return integration
         return None
 
@@ -883,6 +902,10 @@ class NotionApp:
         async with self._one_at_a_time:
             await webhooks.deliver(self._world, self._clock)
 
+    @property
+    def routes(self) -> list[Route]:
+        return list(self._routes)
+
     def delivering(self) -> int:
         """`DeliversInBackground`: webhook deliveries started and not yet answered."""
         return len(self._sending)
@@ -897,11 +920,7 @@ class NotionApp:
             matched = [r.matches(scope)[0] for r in self._routes]
             if Match.FULL not in matched:
                 request = Request(scope, receive)
-                refusal = (
-                    wire.Refusal(wire.ErrorCode.INVALID_REQUEST, f"{request.method} is not taken at this path.")
-                    if Match.PARTIAL in matched
-                    else wire.Refusal(wire.ErrorCode.INVALID_REQUEST_URL, "There is no endpoint at this path.")
-                )
+                refusal = wire.Refusal(wire.ErrorCode.INVALID_REQUEST_URL, wire.INVALID_REQUEST_URL)
                 await self._api.refused(request, refusal)(scope, receive, send)
                 return
         await self._router(scope, receive, send)
@@ -913,31 +932,13 @@ class NotionApp:
 
 def build_app(store: Store, clock: Clock) -> NotionApp:
     api = NotionApi(store, clock)
-    read, update, insert = wire.Capability.READ_CONTENT, wire.Capability.UPDATE_CONTENT, wire.Capability.INSERT_CONTENT
 
-    def route(path: str, method: str, handler: Handler, need: wire.Capability | None) -> Route:
-        return Route(path, api.guarded(handler, need), methods=[method])
+    def route(path: str, method: str, handler: Handler) -> Route:
+        return Route(path, api.guarded(handler), methods=[method])
 
     routes = [
-        route("/v1/search", "POST", api.search, read),
-        route("/v1/pages", "POST", api.page_create, insert),
-        route("/v1/pages/{page_id}", "GET", api.page_get, read),
-        route("/v1/pages/{page_id}", "PATCH", api.page_update, update),
-        route("/v1/pages/{page_id}/properties/{property_id}", "GET", api.page_property, read),
-        route("/v1/blocks/{block_id}", "GET", api.block_get, read),
-        route("/v1/blocks/{block_id}", "PATCH", api.block_update, update),
-        route("/v1/blocks/{block_id}", "DELETE", api.block_delete, update),
-        route("/v1/blocks/{block_id}/children", "GET", api.children_list, read),
-        route("/v1/blocks/{block_id}/children", "PATCH", api.children_append, insert),
-        route("/v1/databases", "POST", api.database_create, insert),
-        route("/v1/databases/{database_id}", "GET", api.database_get, read),
-        route("/v1/databases/{database_id}", "PATCH", api.database_update, update),
-        route("/v1/databases/{database_id}/query", "POST", api.database_query, read),
-        route("/v1/users", "GET", api.users_list, None),
-        route("/v1/users/me", "GET", api.users_me, None),
-        route("/v1/users/{user_id}", "GET", api.user_get, None),
-        route("/v1/comments", "GET", api.comments_list, wire.Capability.READ_COMMENTS),
-        route("/v1/comments", "POST", api.comments_create, wire.Capability.INSERT_COMMENTS),
+        *(route(path, method, getattr(api, handler)) for method, path, handler in SERVED),
         Route("/v1/oauth/token", api.token, methods=["POST"]),
+        *(route(path, method, api.unserved(method, path, operation)) for method, path, operation in UNSERVED),
     ]
     return NotionApp(api, routes, NotionWorld(store), clock)

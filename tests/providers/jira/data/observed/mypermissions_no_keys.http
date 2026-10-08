@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:39 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 38bb590a0fb848d8a7096743424bb49f
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: e00d47d8deae403f9669f8e9f950ea80
+Atl-Request-Id: e00d47d8-deae-403f-9669-f8e9f950ea80
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=162,atl-edge-internal;dur=18,atl-edge-upstream;dur=144,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 de7ea130d8abbaa413859a682934a51c.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: hiEHPKHzeCR-NfPI9x4N_eercZiX5VtUvI-mHUeR1gr-dcyvWYselg==
+
+{"errorMessages":["The 'permissions' query parameter is required."],"errors":{}}

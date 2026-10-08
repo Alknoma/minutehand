@@ -87,7 +87,7 @@ class YouTrackProvider:
 
     def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
         """An administrator bans or unbans the person's account: banned, it reads `banned: true` in YouTrack and
-        Hub, its tokens no longer sign in, and it cannot be assigned."""
+        Hub and it cannot be assigned. Its tokens still act as it: Minutehand checks no credential."""
         youtrack = YouTrackWorld(world)
         user = _account(youtrack, person)
         if change not in (PersonChange.DEACTIVATED, PersonChange.REACTIVATED):
@@ -100,7 +100,8 @@ class YouTrackProvider:
 
     def permit(self, grant: PermissionGrant, person: Person, world: Store, clock: Clock) -> None:
         """A permission given to or taken from the person, in one project (by short name or name) or all of them,
-        after every grant already made, so it is the last word."""
+        after every grant already made, so it is the last word. Hub's permissions cache reports it; no call is refused
+        for it."""
         youtrack = YouTrackWorld(world)
         user = _account(youtrack, person)
         try:

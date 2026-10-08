@@ -5,12 +5,12 @@ owner: owner
 starts_at: "2026-08-24T10:00:00Z"
 deadline_after: P4D
 people:
-  - {key: owner, name: Owner, email: owner@example.com, reply: {kind: scripted, replies: []}}
+  - {key: owner, name: Owner, email: owner@example.com, reply: {kind: scripted, then: silent}}
   - key: ana
     name: Ana
     email: ana@example.com
     reply:
       kind: scripted
       delay: {shortest: PT5H, longest: PT5H}
-      replies: [{to_ask: 1, text: "About 40k for Q3."}]
+      replies: [{to_ask: 1, facts: ["About 40k for Q3."]}]
   - {key: ben, name: Ben, email: ben@example.com, reply: {kind: silent}}

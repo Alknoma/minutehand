@@ -1,0 +1,23 @@
+HTTP/1.1 404 Not Found
+Content-Type: application/problem+json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:10:16 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 57284dd55b8d11597b2de6703ca17fa2
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 1dd3b57b2c534919b5991cfdcfa664b9
+Atl-Request-Id: 1dd3b57b-2c53-4919-b599-1cfdcfa664b9
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=179,atl-edge-internal;dur=18,atl-edge-upstream;dur=161,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 b971fb66f084bd7b4f212f76bba6cfa2.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: DwTg5qAGnFvQV_H6CLgrW3Xb_vAdsIUZhb0S7UZNtqkZPi-0VPU0KQ==
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"No endpoint GET /rest/api/3/issue/PUB-1/no-such-thing.","instance":"/rest/api/3/issue/PUB-1/no-such-thing"}

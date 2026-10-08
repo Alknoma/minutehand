@@ -23,6 +23,7 @@ from minutehand.application.library import entries, entry, write
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.library import TeamValues, Who
 from tests.architecture.support import MINUTEHAND, ROOT, Rig, free_port
+from tests.support.people import people_environment
 
 REFERENCE_TEAM = TeamValues(
     goal="Get a venue confirmed for the team's offsite on Friday, and tell Owen its booking reference.",
@@ -146,7 +147,7 @@ def test_the_follow_up_example_against_the_library(tmp_path: Path, name: str, be
     port = free_port()
     agent = tmp_path / "agent.yaml"
     agent.write_text((FOLLOW_UP / "agent.yaml").read_text().replace("8700", str(port)))
-    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")} | people_environment()
     state = tmp_path / "state"
     done = subprocess.run(
         [MINUTEHAND, "run", path, "--agent", agent, "--state", state, "--", sys.executable, FOLLOW_UP / "agent.py"],

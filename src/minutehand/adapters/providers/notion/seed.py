@@ -12,8 +12,10 @@ every run.
 - Each `SeededDocument` for this provider is a page in the first workspace, under a
   top-level page named by its `folder` (made the first time a document names it) or at the
   top, shared with every integration of that workspace.
-- With no `NotionSeed`, there is one workspace with the scenario's people and documents and
-  no integration, so every call is refused as unauthorized: a token must be seeded.
+- Every Notion call is made as an integration, so a seed must declare at least one; one that
+  declares none (or no `NotionSeed` at all) is refused at seeding, saying so. A call whose
+  token names no integration is made as the first integration the seed declares
+  (`NotionWorld.agent`): Minutehand does not enforce credentials.
 
 Everything is written as actor SCENARIO, stamped with the scenario's start.
 """
@@ -117,7 +119,6 @@ class SeedAuthorization(Model):
     """A person approved a public integration in their browser; the code is what Notion handed the redirect."""
 
     code: str
-    redirect_uri: str | None = None
 
 
 class SeedIntegration(Model, Keyed):
@@ -300,6 +301,11 @@ def seed(scenario: Scenario, world: Store) -> None:
     notion = NotionWorld(world)
     found = read(scenario)
     workspaces = found.workspaces or [DEFAULT_WORKSPACE]
+    if not any(w.integrations for w in workspaces):
+        raise ValueError(
+            "the Notion seed declares no integration: every Notion call is made as one, so declare the agent's in "
+            "workspaces[].integrations"
+        )
     now = scenario.starts_at
     owner = next(p for p in scenario.people if p.key == scenario.owner)
     people = {p.key: p for p in scenario.people}
@@ -311,6 +317,8 @@ def seed(scenario: Scenario, world: Store) -> None:
         raise ValueError(f"a Notion row is the seeded document {unknown[0]!r}, which is no seeded Notion document")
     for workspace in workspaces:
         _seed_workspace(notion, workspace, people, owner, now, documents)
+    where, first = next((w, i) for w in workspaces for i in w.integrations)
+    notion.write_agent(wire.StoredAgent(integration=object_id(where.key, first.key)))
     _seed_documents(notion, workspaces[0], scenario, owner, now, set(claimed))
     for n, hook in enumerate(found.webhooks):
         where = next(w for w in workspaces for i in w.integrations if i.key == hook.integration)
@@ -580,7 +588,7 @@ def _seed_integration(
     for granted in integration.authorizations:
         notion.write_token(
             granted.code,
-            wire.StoredToken(type=wire.TokenKind.CODE, integration=bot, redirect_uri=granted.redirect_uri),
+            wire.StoredToken(type=wire.TokenKind.CODE, integration=bot),
             operation=Operation.CREATE,
             actor=Actor.SCENARIO,
         )

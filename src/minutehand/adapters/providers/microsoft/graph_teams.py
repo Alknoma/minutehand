@@ -41,6 +41,7 @@ from minutehand.adapters.providers.microsoft.state import (
     team_ref,
     user_ref,
 )
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
 
@@ -80,17 +81,17 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
                 application=wire.Identity(id=m.mentioned.id.removeprefix("28:"), displayName=m.mentioned.name)
                 if world.user_by_mri(m.mentioned.id) is None
                 else None,
-                user=wire.Identity(id=m.mentioned.aadObjectId or m.mentioned.id, displayName=m.mentioned.name)
-                if world.user_by_mri(m.mentioned.id) is not None
+                user=wire.Identity(id=mentioned.user.id, displayName=m.mentioned.name)
+                if (mentioned := world.user_by_mri(m.mentioned.id)) is not None
                 else None,
             ),
         )
-        for n, m in enumerate(activity.entities or [])
+        for n, m in enumerate(wire.mentions(activity))
     ]
     team = world.team(conversation.team_id) if conversation.team_id is not None else None
     channel = conversation.type is wire.ConversationType.CHANNEL
     text = activity.text or ""
-    for n, mention in enumerate(activity.entities or []):
+    for n, mention in enumerate(wire.mentions(activity)):
         text = text.replace(
             mention.text, f'<at id="{n}">{mention.text.removeprefix("<at>").removesuffix("</at>")}</at>'
         )
@@ -129,10 +130,10 @@ class TeamsGraph:
     def _bounds(request: Request, default: int, most: int) -> tuple[int, int]:
         top = query(request, "$top")
         if top is not None and (not top.isdigit() or int(top) < 1):
-            raise bad_request(f"Invalid page size specified: '{top}'.")
+            raise NotServed(f"$top={top}: the page names 1 and up, and no answer to anything else")
         size = min(int(top), most) if top else default
         if top and int(top) > most:
-            raise bad_request(f"Invalid page size specified: '{top}'. Must be between 1 and {most} inclusive.")
+            raise NotServed(f"$top={top}: past the documented most of {most}, whose answer is not documented")
         skip = query(request, "$skiptoken")
         offset = 0
         if skip:
@@ -178,7 +179,7 @@ class TeamsGraph:
     def _refuse_options(request: Request, allowed: set[str]) -> None:
         for option in ("$filter", "$orderby", "$search", "$expand", "$count"):
             if option in request.query_params and option not in allowed:
-                raise bad_request(f"Query option '{option}' is not allowed on this resource.")
+                raise NotServed(f"the query option {option} here")
 
     # ------------------------------------------------------------------ users
 
@@ -204,16 +205,16 @@ class TeamsGraph:
         if starts is not None:
             field, value = starts.group(1), _quoted(starts.group(2)).lower()
             return [u for u in users if (getattr(u.user, field) or "").lower().startswith(value)]
-        raise bad_request(f"Invalid filter clause: '{clause}' is not supported here.")
+        raise NotServed(f"the $filter clause {clause!r}")
 
     async def users(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         if parts[0] == "me":
             if claims.oid is None:
-                raise bad_request("/me request is only valid with delegated authentication flow.")
+                raise NotServed("/me with no signed-in user: Graph documents no answer to an application")
             parts = ["users", claims.oid, *parts[1:]]
         if request.method != "GET":
-            raise GraphRefusal(405, "Request_BadRequest", "Users are read only here.")
+            raise NotServed(f"{request.method} on a user")
         if len(parts) == 1:
             self._refuse_options(request, {"$filter", "$count"})
             clause = query(request, "$filter")
@@ -247,7 +248,7 @@ class TeamsGraph:
                 if c.type is not wire.ConversationType.CHANNEL and user.user.id in c.members
             ]
             return self._page(request, chats, f"{GRAPH}/$metadata#users('{user.user.id}')/chats")
-        raise bad_request(f"Unsupported segment '{'/'.join(parts[2:])}'.")
+        raise NotServed(f"the segment '{'/'.join(parts[2:])}'")
 
     # ------------------------------------------------------------------ presence and automatic replies
 
@@ -285,7 +286,6 @@ class TeamsGraph:
 
     async def communications(self, request: Request, parts: list[str]) -> Response:
         """`GET /communications/presences/{id}` and `POST /communications/getPresencesByUserId`."""
-        graph_caller(request)
         if request.method == "GET" and len(parts) == 3 and parts[1] == "presences":
             user = self._user(parts[2])
             self._world.saw(user_ref(user.user.id), Operation.READ)
@@ -294,10 +294,12 @@ class TeamsGraph:
             try:
                 asked = wire.read(wire.PresencesByUserId, await request.body())
             except wire.Unreadable as e:
-                raise bad_request(e.message) from e
+                raise NotServed(
+                    f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+                ) from e
             found = [self.presence(self._user(i)) for i in asked.ids]
             return self._page(request, found, f"{GRAPH}/$metadata#Collection(microsoft.graph.presence)")
-        raise bad_request(f"Unsupported segment '{'/'.join(parts)}'.")
+        raise NotServed(f"the segment '{'/'.join(parts)}'")
 
     # ------------------------------------------------------------------ teams and channels
 
@@ -323,9 +325,8 @@ class TeamsGraph:
         )
 
     async def teams(self, request: Request, parts: list[str]) -> Response:
-        graph_caller(request)
         if len(parts) < 2:
-            raise bad_request("Listing teams is not supported; name a team.")
+            raise NotServed("listing teams")
         team = self._team(parts[1])
         rest = parts[2:]
         if not rest and request.method == "GET":
@@ -340,7 +341,7 @@ class TeamsGraph:
         if rest == ["members"]:
             return self._members(request, team.members, team.tenant_id, f"teams('{team.id}')/members")
         if rest[:1] != ["channels"]:
-            raise bad_request(f"Unsupported segment '{'/'.join(rest)}'.")
+            raise NotServed(f"the segment '{'/'.join(rest)}'")
         if len(rest) == 1:
             self._refuse_options(request, {"$filter"})
             channels = self._world.channels_of(team.id)
@@ -348,7 +349,7 @@ class TeamsGraph:
             if clause:
                 equal = re.fullmatch(r"\s*displayName\s+eq\s+'((?:[^']|'')*)'\s*", clause)
                 if equal is None:
-                    raise bad_request(f"Invalid filter clause: '{clause}' is not supported here.")
+                    raise NotServed(f"the $filter clause {clause!r}")
                 channels = [c for c in channels if (c.display_name or "General") == _quoted(equal.group(1))]
             self._world.saw(team_ref(team.id), Operation.SEARCH)
             return self._page(
@@ -375,7 +376,7 @@ class TeamsGraph:
             return await self._messages(
                 request, channel, rest[3:], f"teams('{team.id}')/channels('{channel.graph_id}')/messages"
             )
-        raise bad_request(f"Unsupported segment '{'/'.join(rest[2:])}'.")
+        raise NotServed(f"the segment '{'/'.join(rest[2:])}'")
 
     def _members(self, request: Request, members: list[str], tenant: str, context: str) -> Response:
         found: list[wire.ConversationMember] = []
@@ -409,10 +410,13 @@ class TeamsGraph:
         )
 
     async def chats(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         if len(parts) == 1:
             if claims.oid is None:
-                raise GraphRefusal(403, "Forbidden", "Requested API is not supported in application-only context")
+                raise NotServed(
+                    "GET /chats with no signed-in user: Graph lists a signed-in user's chats, and does not document "
+                    "its answer to an application"
+                )
             mine = [
                 self._chat(c)
                 for c in self._world.conversations()
@@ -430,7 +434,7 @@ class TeamsGraph:
             return self._members(request, chat.members, chat.tenant_id, f"chats('{chat.graph_id}')/members")
         if rest[0] == "messages":
             return await self._messages(request, chat, rest[1:], f"chats('{chat.graph_id}')/messages")
-        raise bad_request(f"Unsupported segment '{'/'.join(rest)}'.")
+        raise NotServed(f"the segment '{'/'.join(rest)}'")
 
     # ------------------------------------------------------------------ messages
 
@@ -441,22 +445,30 @@ class TeamsGraph:
         every = self._world.messages(conversation.id)
         roots = [m for m in every if not channel or m.replyToId is None]
 
-        def replies_of(root: str) -> list[wire.ChatMessage]:
-            return [chat_message(self._world, conversation, m) for m in every if m.replyToId == root]
+        def modified(m: wire.Activity) -> str:
+            return m.localTimestamp or m.timestamp
 
-        if request.method == "POST":
-            raise GraphRefusal(
-                403,
-                "Forbidden",
-                "Sending messages through Graph is not supported here; a bot sends through the Bot Framework connector.",
+        def replies_of(root: str) -> list[wire.ChatMessage]:
+            """Newest first, as the documented example answer of chatmessage-list-replies lists them."""
+            replies = sorted(
+                reversed([m for m in every if m.replyToId == root]), key=lambda m: m.timestamp, reverse=True
             )
+            return [chat_message(self._world, conversation, m) for m in replies]
+
+        def latest(m: wire.Activity) -> str:
+            """A channel message by its whole reply chain's last change (channel-list-messages), a chat's by its own
+            `lastModifiedDateTime`, the default chat-list-messages documents; newest first either way."""
+            if not channel:
+                return modified(m)
+            return max([modified(m), *(modified(r) for r in every if r.replyToId == m.id)])
+
         if not rest:
             self._refuse_options(request, {"$expand"} if channel else set())
             expand = query(request, "$expand")
             if expand is not None and expand != "replies":
-                raise bad_request(f"Expanding '{expand}' is not supported.")
+                raise NotServed(f"$expand={expand}")
             found = []
-            for m in reversed(roots):
+            for m in sorted(reversed(roots), key=latest, reverse=True):
                 message = chat_message(self._world, conversation, m)
                 if expand == "replies":
                     message = message.model_copy(
@@ -479,10 +491,8 @@ class TeamsGraph:
         if rest[1:] == ["replies"] and channel:
             self._refuse_options(request, set())
             self._world.saw(conversation_ref(conversation.id), Operation.READ)
-            return self._page(
-                request, list(reversed(replies_of(root.id))), f"{GRAPH}/$metadata#{context}('{root.id}')/replies"
-            )
-        raise bad_request(f"Unsupported segment '{'/'.join(rest[1:])}'.")
+            return self._page(request, replies_of(root.id), f"{GRAPH}/$metadata#{context}('{root.id}')/replies")
+        raise NotServed(f"the segment '{'/'.join(rest[1:])}'")
 
 
 def _mailbox_time(at: datetime) -> str:
@@ -491,6 +501,7 @@ def _mailbox_time(at: datetime) -> str:
 
 
 def _reply_text(user: UserRecord, away: tuple[datetime, datetime, AwayRecord]) -> str:
-    """The automatic reply a person away would have set: that they are out, why if they said, and until when."""
-    why = f" ({away[2].reason})" if away[2].reason else ""
-    return f"{user.user.displayName} is out of office{why} until {away[1].astimezone(UTC):%A %d %B %Y}."
+    """The automatic reply a person away set: the reason the scenario gives, as written, and nothing composed around
+    it (Minutehand keeps data as sent); empty when none is given."""
+    del user
+    return away[2].reason or ""

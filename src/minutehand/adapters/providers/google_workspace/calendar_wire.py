@@ -44,16 +44,13 @@ class Attendee(Model):
     responseStatus: str = "needsAction"
     comment: str | None = None
     additionalGuests: int | None = None
+    resource: bool | None = None
 
 
 class Actor(Model):
     email: str
     displayName: str | None = None
     self: bool | None = None
-
-
-class Reminders(Model):
-    useDefault: bool = True
 
 
 class StoredEvent(Model):
@@ -80,8 +77,24 @@ class StoredEvent(Model):
     sequence: int = 0
     attendees: list[Attendee] | None = None
     guestsCanModify: bool | None = None
-    reminders: Reminders = Reminders()
+    guestsCanInviteOthers: bool | None = None
+    guestsCanSeeOtherGuests: bool | None = None
+    anyoneCanAddSelf: bool | None = None
+    privateCopy: bool | None = None
+    endTimeUnspecified: bool | None = None
+    reminders: JsonValue = Field(default=None, description="As written, verbatim")
+    extendedProperties: JsonValue = Field(default=None, description="As written, verbatim")
+    source: JsonValue = Field(default=None, description="As written, verbatim")
     eventType: str = "default"
+
+
+class CancelledEvent(Model):
+    """What an incremental list serves for an event deleted since its sync token."""
+
+    kind: Literal["calendar#event"] = "calendar#event"
+    etag: str
+    id: str
+    status: Literal["cancelled"] = "cancelled"
 
 
 class EventList(Model):
@@ -94,16 +107,7 @@ class EventList(Model):
     defaultReminders: list[JsonValue] = []
     nextPageToken: str | None = None
     nextSyncToken: str | None = None
-    items: list[StoredEvent]
-
-
-class CancelledEvent(Model):
-    """What an incremental list serves for an event deleted since its sync token."""
-
-    kind: Literal["calendar#event"] = "calendar#event"
-    etag: str
-    id: str
-    status: Literal["cancelled"] = "cancelled"
+    items: list[StoredEvent | CancelledEvent]
 
 
 class IncrementalList(Model):
@@ -124,16 +128,74 @@ class CalendarListEntry(Model):
     etag: str
     id: str
     summary: str
+    description: str | None = None
+    location: str | None = None
     timeZone: str
+    dataOwner: str | None = Field(default=None, description="Set only for secondary calendars")
     accessRole: str = "owner"
-    primary: bool = True
+    primary: bool | None = Field(default=None, description="True on the caller's primary; the default is False")
     selected: bool = True
     defaultReminders: list[JsonValue] = []
+
+
+class CalendarResource(Model):
+    """`calendars.get` and `calendars.insert`'s answer: the calendar's own metadata, whoever reads it."""
+
+    kind: Literal["calendar#calendar"] = "calendar#calendar"
+    etag: str
+    id: str
+    summary: str
+    description: str | None = None
+    location: str | None = None
+    timeZone: str
+    dataOwner: str | None = Field(default=None, description="Set only for secondary calendars")
+
+
+class CalendarWrite(Model):
+    """What `calendars.insert` takes."""
+
+    summary: str | None = None
+    description: str | None = None
+    location: str | None = None
+    timeZone: str | None = None
+
+
+class CalendarListWrite(Model):
+    """What `calendarList.insert` takes: the calendar's id."""
+
+    id: str | None = None
+
+
+class AclScope(Model):
+    type: str
+    value: str | None = None
+
+
+class AclRule(Model):
+    kind: Literal["calendar#aclRule"] = "calendar#aclRule"
+    etag: str
+    id: str
+    scope: AclScope
+    role: str
+
+
+class Acl(Model):
+    kind: Literal["calendar#acl"] = "calendar#acl"
+    etag: str
+    nextPageToken: str | None = None
+    nextSyncToken: str | None = None
+    items: list[AclRule]
+
+
+class AclWrite(Model):
+    role: str | None = None
+    scope: AclScope | None = None
 
 
 class CalendarList(Model):
     kind: Literal["calendar#calendarList"] = "calendar#calendarList"
     etag: str
+    nextPageToken: str | None = None
     nextSyncToken: str | None = None
     items: list[CalendarListEntry]
 
@@ -170,10 +232,53 @@ class AttendeeWrite(Model):
     responseStatus: str | None = None
     comment: str | None = None
     additionalGuests: int | None = None
+    resource: bool | None = None
+    id: str | None = Field(default=None, description="Google's profile id: assigned, so what is sent is ignored")
+    self: bool | None = Field(default=None, description="Read-only: ignored")
+    organizer: bool | None = Field(default=None, description="Read-only: ignored")
+
+
+VERBATIM = (
+    "summary",
+    "description",
+    "location",
+    "colorId",
+    "transparency",
+    "visibility",
+    "guestsCanModify",
+    "guestsCanInviteOthers",
+    "guestsCanSeeOtherGuests",
+    "anyoneCanAddSelf",
+    "privateCopy",
+    "endTimeUnspecified",
+    "reminders",
+    "extendedProperties",
+    "source",
+)
+"""The event fields a write stores as sent and a read answers as stored."""
+READ_ONLY = frozenset(
+    {"kind", "etag", "htmlLink", "created", "updated", "creator", "organizer", "hangoutLink", "attendeesOmitted",
+     "locked"}
+)  # fmt: skip
+"""Event fields the reference marks read-only: a body that carries them (an event read and sent back) has them
+ignored."""
+NOT_SERVED = (
+    "conferenceData",
+    "attachments",
+    "gadget",
+    "outOfOfficeProperties",
+    "focusTimeProperties",
+    "workingLocationProperties",
+    "birthdayProperties",
+    "eventLabelId",
+    "recurringEventId",
+    "originalStartTime",
+)
+"""Event fields this fake does not serve yet: a write that sets one is refused, naming it."""
 
 
 class EventWrite(Model):
-    """The part of an event a caller writes. Calendar ignores a field it does not know, and so does `read_body`."""
+    """The part of an event a caller writes; the reference's other fields are `READ_ONLY` or `NOT_SERVED`."""
 
     id: str | None = None
     summary: str | None = None
@@ -188,6 +293,17 @@ class EventWrite(Model):
     status: str | None = None
     recurrence: list[str] | None = None
     guestsCanModify: bool | None = None
+    guestsCanInviteOthers: bool | None = None
+    guestsCanSeeOtherGuests: bool | None = None
+    anyoneCanAddSelf: bool | None = None
+    privateCopy: bool | None = None
+    endTimeUnspecified: bool | None = None
+    reminders: JsonValue = None
+    extendedProperties: JsonValue = None
+    source: JsonValue = None
+    sequence: int | None = None
+    iCalUID: str | None = None
+    eventType: str | None = None
 
 
 class FreeBusyItem(Model):
@@ -250,13 +366,16 @@ def instant(time: EventTime, fallback: str | None, where: str) -> datetime:
 
 
 def normal(time: EventTime, fallback: str | None, where: str) -> EventTime:
-    """A start or end as Calendar answers it: a `dateTime` always carries its offset."""
+    """A start or end as Calendar answers it: as written, but a `dateTime` written without an offset is given the
+    offset of its `timeZone` (then the calendar's)."""
     if time.dateTime is None:
         if time.date is None:
             raise refused(400, "required", f"Missing {where} time.")
         return time
     found = instant(time, fallback, where)
-    return EventTime(dateTime=found.isoformat(), timeZone=time.timeZone)
+    if datetime.fromisoformat(time.dateTime.replace("Z", "+00:00")).tzinfo is not None:
+        return time
+    return time.model_copy(update={"dateTime": found.isoformat()})
 
 
 def utc(found: datetime) -> str:

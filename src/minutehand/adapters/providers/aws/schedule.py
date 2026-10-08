@@ -43,6 +43,9 @@ class ScheduleRecord(Model):
     target_arn: str
     target_input: str | None
     message_group_id: str | None
+    client_token: str | None = None
+    request: ScheduleRequest
+    """The CreateSchedule or UpdateSchedule body, as sent."""
     anchored_at: AwareDatetime
     next_at: AwareDatetime | None
 
@@ -59,14 +62,16 @@ class ScheduleRecord(Model):
             account=account,
             expression_text=request.schedule_expression,
             expression=expression(request.schedule_expression),
-            timezone=request.schedule_expression_timezone,
+            timezone=request.schedule_expression_timezone or "UTC",
             start_date=request.start_date,
             end_date=request.end_date,
             state=request.state,
-            action_after_completion=request.action_after_completion,
+            action_after_completion=request.action_after_completion or ActionAfterCompletion.NONE,
+            request=request,
             target_arn=request.target.arn,
             target_input=request.target.input,
             message_group_id=request.target.sqs_parameters.message_group_id if request.target.sqs_parameters else None,
+            client_token=request.client_token,
             anchored_at=now,
             next_at=None,
         )
@@ -79,10 +84,14 @@ class ScheduleRecord(Model):
         )
 
     def first_occurrence(self, now: datetime) -> datetime | None:
-        """A one-time schedule fires at its time even when that is already past; a recurring one, after `now`."""
+        """A one-time schedule fires at its time even when that is already past. A rate schedule with no
+        StartDate "starts invoking the target immediately" (EventBridge Scheduler User Guide, Schedule types); with
+        one, at its StartDate. A cron schedule, at its first time after `now`."""
         match self.expression:
             case At(local=local):
                 return local.replace(tzinfo=timezone_of(self.timezone)).astimezone(UTC)
+            case Rate() if self.start_date is None:
+                return now if self.end_date is None or now <= self.end_date else None
             case Rate() | Cron():
                 return self.occurrence_after(now)
 
@@ -92,9 +101,7 @@ class ScheduleRecord(Model):
             case At():
                 return None
             case Rate(every=every):
-                found = _next_rate(
-                    self.start_date or self.anchored_at, every, now, include_anchor=self.start_date is not None
-                )
+                found = _next_rate(self.start_date or self.anchored_at, every, now)
             case Cron() as cron:
                 floor = max(now, self.start_date - timedelta(microseconds=1)) if self.start_date else now
                 found = _next_cron(cron, timezone_of(self.timezone), floor)
@@ -103,16 +110,19 @@ class ScheduleRecord(Model):
         return found
 
 
-def _next_rate(anchor: datetime, every: timedelta, now: datetime, *, include_anchor: bool) -> datetime:
-    """anchor + k * every for the smallest k (k >= 1, or >= 0 when anchored at a StartDate) after now."""
+def _next_rate(anchor: datetime, every: timedelta, now: datetime) -> datetime:
+    """anchor + k * every for the smallest k >= 0 after now."""
     if now < anchor:
-        return anchor if include_anchor else anchor + every
+        return anchor
     k = (now - anchor) // every + 1
     return anchor + k * every
 
 
 def _next_cron(cron: Cron, zone: ZoneInfo, now: datetime) -> datetime | None:
-    """The first minute after `now` that the expression names, read as wall time in `zone`."""
+    """The first minute after `now` that the expression names, read as wall time in `zone`. A wall time the zone
+    skips (spring forward) is skipped, and one it repeats (fall back) runs once, at its first instance: "if a cron
+    expression falls on a non-existent date and time, your schedule invocation is skipped ... your schedule runs
+    only once and does not repeat its invocation" (User Guide, Daylight savings time on EventBridge Scheduler)."""
     local_now = now.astimezone(zone)
     day = local_now.date()
     last = (local_now + _HORIZON).date()
@@ -127,7 +137,10 @@ def _next_cron(cron: Cron, zone: ZoneInfo, now: datetime) -> datetime | None:
         ):
             for hour in hours:
                 for minute in minutes:
-                    candidate = datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone).astimezone(UTC)
+                    wall = datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone)
+                    candidate = wall.astimezone(UTC)
+                    if candidate.astimezone(zone).replace(tzinfo=None) != wall.replace(tzinfo=None):
+                        continue
                     if candidate > now:
                         return candidate
         day += timedelta(days=1)

@@ -9,9 +9,9 @@ people:
   - key: owen
     name: Owen Hart
     email: owen@example.com
-    reply:                            # Owen is told the outcome and owes no answer: nothing is scripted for him.
-      kind: scripted                  # (`silent` would make every message to him a question he leaves unanswered.)
-      replies: []
+    reply:                            # Owen is told the outcome and owes no answer: a script with no steps
+      kind: scripted                  # that says nothing more once used. (`silent` would make every message to
+      then: silent                    # him a question he leaves unanswered.)
 
   - key: rosa
     name: Rosa Lind
@@ -22,8 +22,8 @@ people:
         shortest: PT36H
         longest: PT36H
       replies:
-        - to_ask: 1                   # her answer to the first message she gets
-          text: The lakeside hall, booked for the 14th.
+        - to_ask: 1                   # what her answer to the first message she gets says; a model writes the words
+          facts: ["The lakeside hall, booked for the 14th."]
 
 # What has to have happened by the end for the run to pass.
 expect:
@@ -33,9 +33,9 @@ expect:
     person: owen
     mentions: [confirmed]
   - kind: relayed                     # Owen is told what Rosa said, not only that something is "confirmed":
-    said_by: rosa                     # the tell is a phrase only her answer holds, and the scenario is
-    to: owen                          # refused if the goal or anyone else could hand it to the agent.
-    tell: lakeside hall
+    said_by: rosa                     # the fact only her answer carries, whatever words it is written in; the
+    to: owen                          # scenario is refused if the goal or anyone else could hand it to the agent.
+    holding: [lakeside hall]
 
 # How the agent must behave, as this team sees it (docs/assessments.md): Minutehand judges nothing else.
 assess:

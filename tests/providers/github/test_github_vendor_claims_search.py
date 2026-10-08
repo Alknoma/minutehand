@@ -3,9 +3,11 @@ docstring says whether the claim is documented (with the page) or observed. `CLA
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
-from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, SeedRepository
+from minutehand.adapters.providers.github.seed import GitHubSeed, SeedCommit, SeedFile, SeedRepository
 from tests.providers.github.github_world import Hub, body, github_seed, refusal
 
 LEDGER = "repo:lanternworks/ledger"
@@ -24,6 +26,14 @@ def seeded() -> GitHubSeed:
         files=[
             SeedFile(path="fixtures/large.py", text=LARGE_BUT_INLINE),
             SeedFile(path="fixtures/small.py", text="ZEPHYRMARK_SMALL = 2\n"),
+        ],
+        commits=[
+            SeedCommit(
+                message="Add the fixtures",
+                author="iris-calder",
+                before=timedelta(days=1),
+                paths=["fixtures/large.py", "fixtures/small.py"],
+            )
         ],
     )
     base = github_seed()
@@ -121,3 +131,12 @@ async def test_a_file_past_the_index_ceiling_is_not_searchable_though_it_reads_i
     async with hub.client() as http:
         inline = body(await http.get("/repos/iris-calder/bulky/contents/fixtures/large.py"))
     assert inline["encoding"] == "base64"
+
+
+async def test_a_hit_carries_no_score_made_up_by_the_provider(hub: Hub) -> None:
+    """The description requires `score` and documents nothing of how it is computed, and recording it needs a
+    credential: it is left out rather than invented (CLAIMS.md, "Pending a recording")."""
+    async with hub.client() as http:
+        found = body(await http.get("/search/code", params={"q": "retry repo:lanternworks/ledger"}))
+    items = found["items"]
+    assert isinstance(items, list) and items and all("score" not in item for item in items)

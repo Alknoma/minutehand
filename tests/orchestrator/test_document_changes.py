@@ -9,7 +9,7 @@ from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.providers.google_workspace.provider import GoogleWorkspaceProvider
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.application.orchestrator import Services, run_scenario
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import DocumentHappening, Renamed, Scenario, SeededDocument
@@ -70,7 +70,7 @@ async def played(rig: Rig, drive: GoogleWorkspaceProvider) -> tuple[RunRecord, l
             editors={CHAT: rig.chat},
             schedulers={rig.sched.manifest.key: rig.sched},
         ),
-        replier=ScriptedReplier(scn),
+        replier=PeopleReplier(scn, None),
         mounts=rig.mounts,
         signing={CHAT: SECRET},
         traffic=rig.board,

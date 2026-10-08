@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:37 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 41cf7246afa1aec40c765f3048a815b3
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: f3a253ed30ee4cff82d52214320a19b1
+Atl-Request-Id: f3a253ed-30ee-4cff-82d5-2214320a19b1
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=157,atl-edge-internal;dur=15,atl-edge-upstream;dur=142,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 a084e11026df00de9c97cfaaecd58138.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: vdqrsC6mipWk6SItnqyQcyENmD-Ie7rmt-j-YwrtA_JS_UNWI6ay8Q==
+
+{"errorMessages":["Error in the JQL Query: The quoted string 'unclosed' has not been completed. (line 1, character 11)"],"errors":{}}

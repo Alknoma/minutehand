@@ -5,12 +5,12 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
 from minutehand.domain.checks import FindingKind, ObligationKind
-from minutehand.domain.scenario import DelayRange, PersonAsked, Scripted, ScriptedReply, Silent
+from minutehand.domain.scenario import AfterScript, DelayRange, PersonAsked, Scripted, ScriptedReply, Silent
 from tests.checks.world import START, Log, person, scenario, view
 
 OWNER = person("owner", Silent())
@@ -53,12 +53,13 @@ async def test_an_email_does_not_move_a_scripted_persons_script_on() -> None:
     sofia = person(
         "sofia",
         Scripted(
+            then=AfterScript.SILENT,
             delay=DelayRange(shortest=timedelta(hours=1), longest=timedelta(hours=1)),
-            replies=[ScriptedReply(to_ask=1, text="Signed.")],
+            replies=[ScriptedReply(to_ask=1, verbatim="Signed.")],
         ),
     )
     log = Log()
     log.email([sofia], 1)
     asked = log.message([sofia], 2)
-    reply = await ScriptedReplier(scenario(sofia)).decide(sofia, asked, log.events, RunClock(START))
+    reply = await PeopleReplier(scenario(sofia), None).decide(sofia, asked, log.events, RunClock(START))
     assert reply is not None and reply.text == "Signed."

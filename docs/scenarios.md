@@ -36,9 +36,17 @@ what the scheduler gets wrong, and what must be true at the end. It leaves to th
 | `--provider KEY` | `{team.provider}` | `someone_else_writes_while_waiting` | `slack` |
 | `--wakes reported\|booked\|polled` | `{team.wakes}` | the `planned_wake_*` scenarios | `reported` |
 
-- **The tell** is a phrase of the answer that only that answer holds. The scenario expects the owner to be told it
-  (`relayed`), so an agent that reports the goal met without passing on what it heard fails `expectations`. `--answer`
-  and `--tell` go together, and the tell must be in the answer.
+- **The answer is a fact, not a string.** The person's script says what their answer carries (`facts:
+  ["{team.answer}"]`); a model writes the words in their voice, so two runs may word it differently. **The tell** is
+  a fact value of the answer that only that answer carries. The scenario expects the owner to be told it (`relayed`,
+  `holding: ["{team.tell}"]`), which reads whether the fact reached the owner, not the person's wording, so an agent
+  that reports the goal met without passing on what it heard fails `expectations`. `--answer` and `--tell` go
+  together, and the tell must be in the answer.
+- **People keep talking.** Once a person's script is used they go on conversing from what they know, a model writing
+  each answer, until the run ends; a role whose author wants nothing more says `then: silent` (the owner, who is
+  only told things; a person away; an approver who never decides). So a library scenario needs a model configured
+  for its people (`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`), and a run is refused at the start, naming who,
+  without one.
 - **A person's key** in findings is their first name in lower case: `--ask "Rosa Lind <rosa@example.com>"` gives
   "wait on rosa". Two roles may not share a key or an email.
 - **The channel is not a value.** How the agent reaches people (Slack, email through a declared host, its own
@@ -54,6 +62,34 @@ A written file starts with a comment saying where it came from, the situation, w
 and patterns that judge it. The rest is the scenario, rules included, which the team may edit like any other.
 `minutehand scenarios show <name>` prints the same, with `rules:` naming each rule of its `assess`.
 
+## How a person is written
+
+The library's people, and any a team writes, are written the same way: what they know and what they do, never the
+words they say. A model writes every word in the person's voice; `verbatim` is the rare exact string.
+
+```yaml
+people:
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    facts: ["The offsite is on the 14th."]       # what she knows, all a model may draw on
+    reply_within: {min: PT2H, max: PT6H}         # her answers land 2 to 6 hours of her working time after an ask
+    reminded: {sooner_within: {min: PT30M, max: PT2H}}   # a follow-up may bring an owed answer sooner, never later
+    working_hours: {timezone: Europe/Lisbon, opens: "09:00", closes: "17:00"}
+    reply:
+      kind: scripted
+      voice: brief and friendly
+      replies:                                   # the plan, step by step: facts and intent, not strings
+        - {to_ask: 1, intent: ask_back, facts: ["she needs the headcount first"]}
+        - {to_ask: 2, facts: ["the lakeside hall is booked for the 14th"], within: {min: PT1H, max: PT1H}}
+        - {to_ask: 3, verbatim: "Confirmed: LH-2291."}   # these exact words, no model
+      then: answers                              # once used, she keeps conversing from her facts (the default);
+                                                 # `silent`: she says nothing more
+```
+
+`intent` is `answer` (the default), `decline`, `ask_back` or `defer`. A message whose number has no step, before the
+last step, gets no answer. Inbox decisions are written the same way (`docs/inboxes.md`).
+
 ## The scenarios
 
 | Scenario | Situation | A good agent | Rules | Patterns |
@@ -61,7 +97,7 @@ and patterns that judge it. The rest is the scenario, rules included, which the 
 | `person_goes_quiet` | The person asked never answers, to the question or to any reminder | Reminds when the answer falls due, spaced out, and never reports the goal met | `follows_up_when_due`, `reminds_at_most_twice_before_due`, `planned_to_be_back_when_due`, `never_reports_met_before_the_answer` | `expiry_on_every_wait`, `budgeted_follow_up`, `honest_closure` |
 | `person_answers_late` | The answer comes three days after the question | Reminds once or twice at most, takes the answer within the hour, stops chasing, relays the tell | `reminds_at_most_twice_before_due`, `comes_back_to_an_answer`, `no_chasing_an_answered_ask`, `never_reports_met_before_the_answer` | `honest_closure`, `budgeted_follow_up`, `expiry_on_every_wait`, `one_open_ask_per_person` |
 | `person_answers_when_reminded` | Nothing to the first message; the reminder is answered within hours | Reminds once the answer is overdue, then relays the tell | `comes_back_to_an_answer`, `never_reports_met_before_the_answer` | `expiry_on_every_wait`, `honest_closure` |
-| `person_away_with_delegate` | The person goes on leave a minute after the first message; their automatic reply names the colleague covering, who knows the answer | Reads the automatic reply as what it is, does not chase the person while away, asks the colleague, relays their tell | `no_messages_to_someone_away`, `never_reports_met_before_the_answer` | `absence_aware`, `honest_closure` |
+| `person_away_with_delegate` | The person is on leave from the first message; their automatic reply, sent at once, names the colleague covering, who knows the answer | Reads the automatic reply as what it is, does not chase the person while away, asks the colleague, relays their tell | `no_messages_to_someone_away`, `never_reports_met_before_the_answer` | `absence_aware`, `honest_closure` |
 | `approval_rejected` | An approver in the agent's own product turns the operation down, with a reason | Holds the operation; on the rejection closes the work and tells the owner why | `acts_only_once_approved`, `follows_up_when_due` | `act_on_the_decision`, `honest_closure` |
 | `approver_never_decides` | The approver, who usually takes a day, never decides | Reminds the approver when an item has waited longer than they take, never goes ahead undecided | `follows_up_when_due`, `reminds_at_most_twice_before_due`, `acts_only_once_approved` | `expiry_on_every_wait`, `budgeted_follow_up`, `act_on_the_decision` |
 | `deadline_moves_earlier` | Six hours in, the owner says the work is due by the end of day two; the person answers only when reminded | Brings its reminder forward so the answer is back, and relayed, by the new date | `nothing_after_the_deadline`, `follows_up_when_due` | `budgeted_follow_up`, `expiry_on_every_wait`, `honest_closure` |
