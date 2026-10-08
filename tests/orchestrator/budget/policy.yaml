@@ -27,6 +27,6 @@ assess:
     each: ask
     where: {person_not: [owner]}
     when: {answered: true}
-    count: {messages: {to: [owner], holding: ["{ask.answer}"]}, since: answer}
+    count: {messages: {to: [owner], holding: ["{ask.facts}"]}, since: answer}
     at_least: 1
     message: "the owner was never told what {person.key} answered"

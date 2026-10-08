@@ -196,4 +196,5 @@ async def test_one_run_through_every_part(tmp_path: Path) -> None:
         if c.exchange.captured and c.exchange.captured.answered_by is AnsweredBy.MODEL
     }
     assert modeled == {"crm.example", "mcp.example"}
-    assert len(fake.received) == 2, "the model was asked once for each undeclared write, and nothing else"
+    standing_in = [r for r in fake.received if r.schema_name == "ModeledAnswer"]
+    assert len(standing_in) == 2, "the model was asked once for each undeclared write, and nothing else"

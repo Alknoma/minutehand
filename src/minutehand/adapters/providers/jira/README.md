@@ -8,9 +8,9 @@ error message here is this provider's own wording in Jira's shapes.
 
 | Host | Paths |
 |---|---|
-| `<site>.atlassian.net` | `/rest/api/3/...`, `/rest/agile/1.0/...`; Basic auth (an account's email and an API token) |
-| `api.atlassian.com` | `/ex/jira/<cloudId>/rest/...` (the same site, Bearer access token); `/oauth/token/accessible-resources` |
-| `auth.atlassian.com` | `POST /oauth/token`, `grant_type=refresh_token`, JSON or form; refresh tokens rotate |
+| `<site>.atlassian.net` | `/rest/api/3/...`, `/rest/agile/1.0/...` |
+| `api.atlassian.com` | `/ex/jira/<cloudId>/rest/...` (the same site); `/oauth/token/accessible-resources` |
+| `auth.atlassian.com` | `POST /oauth/token`, `refresh_token`, `authorization_code` or `client_credentials`, JSON or form; a seeded grant's refresh token rotates |
 
 Issues: create (`fields`, screen-checked per issue type), get (`fields`, `expand=changelog,names`), edit
 (`fields`, and `update` for labels and `set`), delete (`deleteSubtasks`), assignee, transitions (list with
@@ -25,8 +25,9 @@ project, a board's sprints, moving issues into a sprint.
 JQL (`jql.py`, `search.py`): `AND`/`OR`/`NOT`, parentheses, `= != ~ !~ > >= < <= IN NOT IN IS IS NOT`, `EMPTY`,
 quoted values with escapes, `ORDER BY` several fields, `currentUser()`, `now()`, `startOfDay()`, `endOfDay()`,
 `startOfWeek()`, `startOfMonth()`, `openSprints()`, `closedSprints()`, relative dates (`-7d`, `2w`, `-4h`),
-`resolution = Unresolved`, custom fields as `cf[n]` or by name. Anything it cannot read, and a query with no
-restriction, is a 400.
+`endOfWeek()`, `endOfMonth()`, `startOfYear()`, `endOfYear()`, `futureSprints()`, `resolution = Unresolved`,
+custom fields as `cf[n]` or by name. A query that is not JQL, and one with no restriction, is a 400; JQL Atlassian
+documents that this fake does not serve is a 501 naming it.
 
 Workflows are per project: statuses with a category (`new`, `indeterminate`, `done`) and transitions with ids,
 sources and screens. Entering a done status sets `resolution` (the transition's screen value, else Done, or
@@ -43,8 +44,15 @@ A's entry carries `outwardIssue: B` (label it with the type's `outward`, "blocks
 (https://developer.atlassian.com/cloud/jira/platform/issue-linking-model/). `GET /issueLink/{id}` names the ends
 as the create does. Read from the documentation; not verified against a live site.
 
-Permissions are project roles (Administrators, Member, Viewer): no role, and an issue or project is a 404; a
-viewer who writes gets a 403. Site administration does not grant reading a project's issues.
+**Credentials and permissions are not enforced.** Any credential, or none, is let in: a seeded API token or access
+token acts as its account, a Basic username that is an account's email as that account, and anything else as the
+agent. Project roles (Administrators, Member, Viewer) say only who belongs to a project: with no role an issue or
+project is a 404, and anyone in a project may do anything there. `CLAIMS.md` lists every check removed.
+
+**Surface.** `tests/data/vendor_surface/jira.json` is the subset of Atlassian's OpenAPI descriptions for the
+resources this fake claims (212 operations, fetched 2026-10-08): 45 are served, 167 are refused by name with a
+501 (`surface.py`), as is every documented parameter or body property a served operation does not act on.
+`CLAIMS.md` cites the source of every behaviour.
 
 Seeding: `seed.JiraSeed`, the scenario's `provider_seeds` entry for `jira`, naming a seeded ticket by its `key`
 (`SeededIssue.ticket`, `SeededLink.to`, `parent`). The ticket's own labels and comments are the issue's
@@ -62,18 +70,20 @@ run clock's time, recorded as actor PERSON with that person as the changelog's o
 - A person deletes an issue (`OpenWorld.delete_ticket`, or a `TicketFate` with `deleted: true`): the issue, its
   subtasks and the links naming them go, as actor PERSON, and the API answers 404 for it.
 - An account is deactivated or reactivated (`OpenWorld.deactivate_person` / `reactivate_person`): it reads
-  `active: false`, its credentials sign in to nothing, and it is not assignable (400). Removing an account is
+  `active: false` and is not assignable (400); its credentials still act as it, since none is checked. Removing an account is
   refused as unsupported: Jira Cloud deactivates, it does not delete.
 
 ## What it does not do
 
-- API v2 (`/rest/api/2`), the old `/rest/api/3/search`, bulk create, webhooks, watchers, votes, worklogs,
-  attachments, components and versions (empty lists), issue security, groups, filters, dashboards.
+- Everything `surface.UNSERVED` names (501), and API v2 (`/rest/api/2`), webhooks, issue security, groups,
+  filters, dashboards (501, naming the path). Components and versions read as empty lists. The old
+  `/rest/api/3/search` answers 410, as Jira does.
 - Writing `timetracking`, ranking, epics' own endpoints, sprint create or edit, board configuration.
-- The authorization-code grant (no browser flow: tokens are seeded), scopes (every token holds every scope),
-  Connect and Forge apps, personal access tokens.
-- JQL `WAS`/`CHANGED`, history functions, `membersOf()`, saved filters, and Lucene stemming in `text ~`: words
-  match whole (or as a prefix with `*`), a quoted phrase matches in order.
+- The browser half of the authorization-code flow (any code is traded for tokens), scopes (every token holds
+  every scope), Connect and Forge apps.
+- JQL `WAS`/`CHANGED`, history functions, `membersOf()` and the other fields and functions `search.py` lists as
+  unserved (501, naming them), saved filters, and Lucene stemming in `text ~`: words match whole (or as a prefix
+  with `*`), a quoted phrase matches in order.
 - Workflow conditions, validators and post functions beyond setting the resolution; a screen's field rules
   beyond required and on-screen.
 - Rate limits other than those a seed declares.

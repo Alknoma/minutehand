@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.conversation import ModelMessage, Speaker
 from minutehand.domain.scenario import Model
-from minutehand.ports.model import AnswerT, ModelFailed
+from minutehand.ports.model import Answered, AnswerT, ModelFailed
 
 BASE_URL_VARIABLE = "MINUTEHAND_MODEL_BASE_URL"
 API_KEY_VARIABLE = "MINUTEHAND_MODEL_API_KEY"
@@ -79,8 +79,14 @@ class _Choice(_Answered):
     finish_reason: str | None = None
 
 
+class _Usage(_Answered):
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
 class _Completion(_Answered):
     choices: list[_Choice] = Field(min_length=1)
+    usage: _Usage | None = None
 
 
 def _role(speaker: Speaker) -> Literal["user", "assistant"]:
@@ -115,6 +121,25 @@ def _tighten(node: JsonValue) -> None:
         _tighten(value)
 
 
+class _Spent:
+    """The tokens a request and its one retry cost, summed as the service counted them."""
+
+    def __init__(self) -> None:
+        self.input: int | None = None
+        self.output: int | None = None
+
+    def add(self, usage: _Usage | None) -> None:
+        if usage is None:
+            return
+        if usage.prompt_tokens is not None:
+            self.input = (self.input or 0) + usage.prompt_tokens
+        if usage.completion_tokens is not None:
+            self.output = (self.output or 0) + usage.completion_tokens
+
+    def answered(self, answer: AnswerT, model: str) -> Answered[AnswerT]:
+        return Answered(answer=answer, model=model, input_tokens=self.input, output_tokens=self.output)
+
+
 # -- the client ---------------------------------------------------------------------------------------------
 
 
@@ -138,16 +163,17 @@ class OpenAICompatible:
         *,
         model: str | None = None,
         temperature: float | None = None,
-    ) -> AnswerT:
+    ) -> Answered[AnswerT]:
         said = [_Said(role="system", content=system)]
         said += [_Said(role=_role(m.speaker), content=m.text) for m in messages]
         response_format = _ResponseFormat(json_schema=_JsonSchema(name=answer.__name__, schema_=strict_schema(answer)))
         named = model or self.model_id
+        spent = _Spent()
         content = await self._complete(
-            _Request(model=named, messages=said, response_format=response_format, temperature=temperature)
+            _Request(model=named, messages=said, response_format=response_format, temperature=temperature), spent
         )
         try:
-            return answer.model_validate_json(content)
+            return spent.answered(answer.model_validate_json(content), named)
         except ValidationError as first:
             said += [
                 _Said(role="assistant", content=content),
@@ -161,16 +187,16 @@ class OpenAICompatible:
                 ),
             ]
         content = await self._complete(
-            _Request(model=named, messages=said, response_format=response_format, temperature=temperature)
+            _Request(model=named, messages=said, response_format=response_format, temperature=temperature), spent
         )
         try:
-            return answer.model_validate_json(content)
+            return spent.answered(answer.model_validate_json(content), named)
         except ValidationError as second:
             raise ModelFailed(
                 f"{named} twice answered with something that is not a {answer.__name__}:\n{_errors(second)}"
             ) from None
 
-    async def _complete(self, request: _Request) -> str:
+    async def _complete(self, request: _Request, spent: _Spent) -> str:
         body = request.model_dump_json(by_alias=True, exclude_none=True)
         try:
             async with httpx.AsyncClient(timeout=self._timeout, trust_env=False) as client:
@@ -189,6 +215,7 @@ class OpenAICompatible:
             raise ModelFailed(
                 f"{self._url} answered with something that is not a chat completion: {self._scrub(response.text)}"
             ) from None
+        spent.add(completion.usage)
         reply = completion.choices[0].message
         if reply.refusal is not None:
             raise ModelFailed(f"{request.model} refused: {self._scrub(reply.refusal)}")

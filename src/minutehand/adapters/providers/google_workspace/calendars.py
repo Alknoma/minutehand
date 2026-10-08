@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from urllib.parse import quote
 
+from pydantic import Field, JsonValue
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
@@ -48,6 +51,7 @@ from minutehand.domain.world import (
     Operation,
     RecordSnapshot,
     Stored,
+    WorldEvent,
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -56,32 +60,162 @@ JSON = "application/json; charset=UTF-8"
 CALENDARS = "calendars"
 _SCAN = 1000
 
-OPERATIONS = frozenset(
+
+class Method(Model):
+    """One method of Calendar v3's discovery document (https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest):
+    its name without the `calendar.` prefix, its HTTP method and path under `/calendar/v3/`, the parameters this
+    fake serves (`serves`), and the documented parameters it does not serve yet (`refuses`), each answered 501
+    naming the method and the parameter."""
+
+    name: str
+    http: str
+    path: str
+    serves: frozenset[str] = frozenset()
+    refuses: frozenset[str] = frozenset()
+
+
+_LIST_PARAMETERS = frozenset(
     {
-        "calendarList.list",
-        "events.list",
-        "events.get",
-        "events.insert",
-        "events.patch",
-        "events.update",
-        "events.delete",
-        "freebusy.query",
-        "events.watch",
-        "channels.stop",
+        "alwaysIncludeEmail",
+        "calendarId",
+        "eventTypes",
+        "iCalUID",
+        "maxAttendees",
+        "maxResults",
+        "orderBy",
+        "pageToken",
+        "privateExtendedProperty",
+        "q",
+        "sharedExtendedProperty",
+        "showDeleted",
+        "showHiddenInvitations",
+        "singleEvents",
+        "syncToken",
+        "timeMax",
+        "timeMin",
+        "timeZone",
+        "updatedMin",
     }
 )
+_EVENTS_LIST_SERVES = frozenset(
+    {
+        "alwaysIncludeEmail",  # "Deprecated and ignored."
+        "calendarId",
+        "maxResults",
+        "orderBy",
+        "pageToken",
+        "q",
+        "showDeleted",
+        "singleEvents",
+        "syncToken",
+        "timeMax",
+        "timeMin",
+        "updatedMin",
+    }
+)
+_WRITE_SERVES = frozenset({"alwaysIncludeEmail", "calendarId", "eventId", "sendNotifications", "sendUpdates"})
+_WRITE_REFUSES = frozenset({"conferenceDataVersion", "eventLabelVersion", "maxAttendees", "supportsAttachments"})
+
+SERVED: tuple[Method, ...] = (
+    Method(name="acl.insert", http="POST", path="calendars/{calendarId}/acl",
+           serves=frozenset({"calendarId", "sendNotifications"})),
+    Method(name="acl.list", http="GET", path="calendars/{calendarId}/acl",
+           serves=frozenset({"calendarId", "maxResults", "pageToken", "showDeleted"}),
+           refuses=frozenset({"syncToken"})),
+    Method(name="calendarList.insert", http="POST", path="users/me/calendarList",
+           refuses=frozenset({"colorRgbFormat"})),
+    Method(name="calendarList.list", http="GET", path="users/me/calendarList",
+           serves=frozenset({"maxResults", "minAccessRole", "pageToken", "showDeleted", "showHidden"}),
+           refuses=frozenset({"showOwnOrganizationOnly", "syncToken"})),
+    Method(name="calendars.get", http="GET", path="calendars/{calendarId}", serves=frozenset({"calendarId"})),
+    Method(name="calendars.insert", http="POST", path="calendars"),
+    Method(name="channels.stop", http="POST", path="channels/stop"),
+    Method(name="events.delete", http="DELETE", path="calendars/{calendarId}/events/{eventId}",
+           serves=frozenset({"calendarId", "eventId", "sendNotifications", "sendUpdates"})),
+    Method(name="events.get", http="GET", path="calendars/{calendarId}/events/{eventId}",
+           serves=frozenset({"alwaysIncludeEmail", "calendarId", "eventId"}),
+           refuses=frozenset({"maxAttendees", "timeZone"})),
+    Method(name="events.insert", http="POST", path="calendars/{calendarId}/events",
+           serves=frozenset({"calendarId", "sendNotifications", "sendUpdates"}), refuses=_WRITE_REFUSES),
+    Method(name="events.list", http="GET", path="calendars/{calendarId}/events", serves=_EVENTS_LIST_SERVES,
+           refuses=_LIST_PARAMETERS - _EVENTS_LIST_SERVES),
+    Method(name="events.patch", http="PATCH", path="calendars/{calendarId}/events/{eventId}",
+           serves=_WRITE_SERVES, refuses=_WRITE_REFUSES),
+    Method(name="events.update", http="PUT", path="calendars/{calendarId}/events/{eventId}",
+           serves=_WRITE_SERVES, refuses=_WRITE_REFUSES),
+    Method(name="events.watch", http="POST", path="calendars/{calendarId}/events/watch",
+           serves=frozenset({"calendarId"}), refuses=_LIST_PARAMETERS - {"calendarId"}),
+    Method(name="freebusy.query", http="POST", path="freeBusy"),
+)  # fmt: skip
+"""Every Calendar method this fake serves, with the parameters it serves and those it refuses by name."""
+
+REFUSED: tuple[Method, ...] = (
+    Method(name="acl.delete", http="DELETE", path="calendars/{calendarId}/acl/{ruleId}"),
+    Method(name="acl.get", http="GET", path="calendars/{calendarId}/acl/{ruleId}"),
+    Method(name="acl.patch", http="PATCH", path="calendars/{calendarId}/acl/{ruleId}"),
+    Method(name="acl.update", http="PUT", path="calendars/{calendarId}/acl/{ruleId}"),
+    Method(name="acl.watch", http="POST", path="calendars/{calendarId}/acl/watch"),
+    Method(name="calendarList.delete", http="DELETE", path="users/me/calendarList/{calendarId}"),
+    Method(name="calendarList.get", http="GET", path="users/me/calendarList/{calendarId}"),
+    Method(name="calendarList.patch", http="PATCH", path="users/me/calendarList/{calendarId}"),
+    Method(name="calendarList.update", http="PUT", path="users/me/calendarList/{calendarId}"),
+    Method(name="calendarList.watch", http="POST", path="users/me/calendarList/watch"),
+    Method(name="calendars.clear", http="POST", path="calendars/{calendarId}/clear"),
+    Method(name="calendars.delete", http="DELETE", path="calendars/{calendarId}"),
+    Method(name="calendars.patch", http="PATCH", path="calendars/{calendarId}"),
+    Method(name="calendars.transferOwnership", http="POST", path="calendars/{calendarId}/transferOwnership"),
+    Method(name="calendars.update", http="PUT", path="calendars/{calendarId}"),
+    Method(name="colors.get", http="GET", path="colors"),
+    Method(name="events.import", http="POST", path="calendars/{calendarId}/events/import"),
+    Method(name="events.instances", http="GET", path="calendars/{calendarId}/events/{eventId}/instances"),
+    Method(name="events.move", http="POST", path="calendars/{calendarId}/events/{eventId}/move"),
+    Method(name="events.quickAdd", http="POST", path="calendars/{calendarId}/events/quickAdd"),
+    Method(name="settings.get", http="GET", path="users/me/settings/{setting}"),
+    Method(name="settings.list", http="GET", path="users/me/settings"),
+    Method(name="settings.watch", http="POST", path="users/me/settings/watch"),
+)
+"""Every other method of the discovery document: each answered 501 naming it."""
+
+STANDARD_PARAMETERS = frozenset({"alt", "fields", "key", "oauth_token", "prettyPrint", "quotaUser", "userIp"})
+"""The parameters the discovery document gives every method. `fields` selects; `alt` has the one value `json`;
+`key`, `quotaUser` and `userIp` say whose quota a call counts against, which no answer shows; `oauth_token` is the
+caller's token, read as `access_token` is; `prettyPrint` indents the answer."""
+
+OPERATIONS = frozenset(m.name for m in SERVED)
 """Every Calendar call a fault may name, by Google's own method name."""
 
 
 class CalendarRecord(Model):
-    """An account's primary calendar, seeded for each person."""
+    """A calendar: an account's primary, seeded for each person, whose id is its address; or a secondary one
+    `calendars.insert` made, whose data owner is the account that made it."""
 
     id: str
     timeZone: str
+    summary: str | None = Field(default=None, description="As written; None on a primary, read as its address")
+    description: str | None = None
+    location: str | None = None
+    dataOwner: str | None = Field(default=None, description="The account that made it; None on a primary")
+
+
+ROLES = ("none", "freeBusyReader", "reader", "writerWithoutPrivateAccess", "writer", "owner")
+"""An ACL rule's roles, least first, as the AclRule reference lists them."""
 
 
 def calendar_parent(address: str) -> str:
     return f"calendar:{address.lower()}"
+
+
+def acl_parent(calendar: str) -> str:
+    return f"acl:{calendar.lower()}"
+
+
+def list_parent(address: str) -> str:
+    return f"calendarList:{address.lower()}"
+
+
+def calendar_id(seq: int) -> str:
+    """An id for a calendar `calendars.insert` made, from the change that made it."""
+    return hashlib.sha256(f"calendar\x1f{seq}".encode()).hexdigest()[:26] + "@group.calendar.google.com"
 
 
 def event_ref(event: str) -> EntityRef:
@@ -130,6 +264,23 @@ def invitation(event: cal.StoredEvent) -> MessageSnapshot | RecordSnapshot:
     )
 
 
+class HeldCalendar(Model):
+    record: CalendarRecord
+    seq: int = Field(description="The change that last wrote it, its etag; 0 for an account seeded without one")
+
+    @property
+    def id(self) -> str:
+        return self.record.id
+
+    @property
+    def summary(self) -> str:
+        return self.record.summary if self.record.summary is not None else self.record.id
+
+    @property
+    def timeZone(self) -> str:
+        return self.record.timeZone
+
+
 class CalendarWorld:
     """Typed reads and writes of the run's calendars and events."""
 
@@ -141,30 +292,78 @@ class CalendarWorld:
     def store(self) -> Store:
         return self._store
 
-    def calendar(self, address: str) -> cal.CalendarListEntry | None:
-        """An account's primary calendar; None when nobody in the world has that address."""
-        user = self._drive.user(address)
+    def calendar(self, calendar_id: str) -> HeldCalendar | None:
+        """A calendar by its id (an address names its account's primary, in any case); None when there is none."""
+        held = self._store.get(record_ref(calendar_parent(calendar_id)))
+        if held is not None and held.parent == CALENDARS:
+            return HeldCalendar(record=CalendarRecord.model_validate_json(held.body), seq=held.seq)
+        user = self._drive.user(calendar_id)
         if user is None or user.emailAddress is None:
             return None
-        held = self._store.get(record_ref(calendar_parent(user.emailAddress)))
-        zone = CalendarRecord.model_validate_json(held.body).timeZone if held is not None else "UTC"
-        return cal.CalendarListEntry(
-            etag=f'"{held.seq if held is not None else 0}"',
-            id=user.emailAddress,
-            summary=user.emailAddress,
-            timeZone=zone,
-        )
+        return HeldCalendar(record=CalendarRecord(id=user.emailAddress, timeZone="UTC"), seq=0)
 
-    def keep_calendar(self, address: str, time_zone: str) -> None:
-        self._store.apply(
+    def secondary(self) -> list[HeldCalendar]:
+        """Every calendar `calendars.insert` made."""
+        found: list[HeldCalendar] = []
+        for stored in self._store.children(MANIFEST.key, EntityKind.RECORD, CALENDARS, limit=_SCAN):
+            record = CalendarRecord.model_validate_json(stored.body)
+            if record.dataOwner is not None:
+                found.append(HeldCalendar(record=record, seq=stored.seq))
+        return found
+
+    def keep_calendar(self, record: CalendarRecord, *, actor: Actor, operation: Operation = Operation.CREATE) -> int:
+        return self._store.apply(
             Change(
-                entity=record_ref(calendar_parent(address)),
-                operation=Operation.CREATE,
-                actor=Actor.SCENARIO,
-                body=wire.dump(CalendarRecord(id=address, timeZone=time_zone)),
+                entity=record_ref(calendar_parent(record.id)),
+                operation=operation,
+                actor=actor,
+                body=wire.dump(record),
                 parent=CALENDARS,
             )
+        ).seq
+
+    def rules(self, calendar: CalendarRecord) -> list[cal.AclRule]:
+        """The rules `acl.insert` wrote on the calendar, a later one for a scope replacing the earlier."""
+        stored = self._store.children(MANIFEST.key, EntityKind.RECORD, acl_parent(calendar.id), limit=_SCAN)
+        return [cal.AclRule.model_validate_json(s.body) for s in stored]
+
+    def listed(self, address: str) -> list[str]:
+        """The calendars `calendarList.insert` put on an account's calendar list."""
+        stored = self._store.children(MANIFEST.key, EntityKind.RECORD, list_parent(address), limit=_SCAN)
+        return [CalendarRecord.model_validate_json(s.body).id for s in stored]
+
+    def keep_listed(self, address: str, calendar: CalendarRecord, *, actor: Actor) -> None:
+        ref = record_ref(f"{list_parent(address)}:{calendar.id.lower()}")
+        self._store.apply(
+            Change(
+                entity=ref,
+                operation=Operation.UPDATE if self._store.get(ref) is not None else Operation.CREATE,
+                actor=actor,
+                body=wire.dump(calendar),
+                parent=list_parent(address),
+            )
         )
+
+    def keep_rule(self, calendar: CalendarRecord, rule: cal.AclRule, *, actor: Actor) -> None:
+        ref = record_ref(f"{acl_parent(calendar.id)}:{rule.id}")
+        held = self._store.get(ref)
+        self._store.apply(
+            Change(
+                entity=ref,
+                operation=Operation.UPDATE if held is not None else Operation.CREATE,
+                actor=actor,
+                body=wire.dump(rule),
+                parent=acl_parent(calendar.id),
+            )
+        )
+
+    def role(self, calendar: CalendarRecord, address: str) -> str | None:
+        """The access role an account has on a calendar by its ACL, None when no rule names it."""
+        mine = address.lower()
+        if calendar.dataOwner is not None and calendar.dataOwner.lower() == mine:
+            return "owner"
+        named = [r for r in self.rules(calendar) if r.scope.type == "user" and (r.scope.value or "").lower() == mine]
+        return named[-1].role if named and named[-1].role != "none" else None  # enum-lint: exempt Calendar ACL role
 
     def event(self, event: str) -> tuple[cal.StoredEvent, Stored] | None:
         stored = self._store.get(event_ref(event))
@@ -178,6 +377,28 @@ class CalendarWorld:
         return any(
             isinstance(cal.KEPT.validate_json(v.body), cal.StoredEvent) for v in self._store.versions(event_ref(event))
         )
+
+    def deleted(self, event: str) -> tuple[cal.StoredEvent, WorldEvent] | None:
+        """A deleted event: its last version, and the change that deleted it; None when it is not deleted."""
+        if self._store.get(event_ref(event)) is not None:
+            return None
+        kept = [k for k in (cal.KEPT.validate_json(v.body) for v in self._store.versions(event_ref(event)))]
+        last = [k for k in kept if isinstance(k, cal.StoredEvent)]
+        if not last:
+            return None
+        removal = [e for e in self._store.events() if e.entity == event_ref(event) and e.operation is Operation.DELETE]
+        return (last[-1], removal[-1]) if removal else None
+
+    def deletions(self) -> list[tuple[cal.StoredEvent, WorldEvent]]:
+        """Every deleted event, with the change that deleted it."""
+        found: list[tuple[cal.StoredEvent, WorldEvent]] = []
+        for change in self._store.events():
+            ref = change.entity
+            if ref.provider == MANIFEST.key and ref.kind is EntityKind.MESSAGE and change.operation is Operation.DELETE:
+                gone = self.deleted(ref.external_id)
+                if gone is not None and gone[1].seq == change.seq:
+                    found.append(gone)
+        return found
 
     def taken(self, event: str) -> bool:
         """Whether anything of this provider's was ever written under this id."""
@@ -198,15 +419,15 @@ class CalendarWorld:
                 return found
             after = page[-1].entity.external_id
 
-    def on(self, address: str) -> list[tuple[cal.StoredEvent, Stored]]:
-        """Every event on an account's calendar: those it organizes and those it is a guest of."""
-        wanted = address.lower()
+    def on(self, calendar_id: str) -> list[tuple[cal.StoredEvent, Stored]]:
+        """Every event on a calendar: those it organizes and those its account is a guest of."""
+        wanted = calendar_id.lower()
+        organizers = [u.emailAddress for u in self._drive.users() if u.emailAddress is not None]
+        organizers += [c.id for c in self.secondary()]
         found: list[tuple[cal.StoredEvent, Stored]] = []
-        for user in self._drive.users():
-            if user.emailAddress is None:
-                continue
-            for event, stored in self.organized(user.emailAddress):
-                if user.emailAddress.lower() == wanted or any(a.email.lower() == wanted for a in event.attendees or []):
+        for organizer in organizers:
+            for event, stored in self.organized(organizer):
+                if organizer.lower() == wanted or any(a.email.lower() == wanted for a in event.attendees or []):
                     found.append((event, stored))
         return found
 
@@ -300,17 +521,57 @@ class CalendarWorld:
 Handler = Callable[[Request, Caller], Awaitable[Response]]
 
 
+def _pretty(request: Request, body: bytes) -> bytes:
+    """`prettyPrint`, true unless it says false, "Returns response with indentations and line breaks": two spaces a
+    level, as Google indents (`tests/data/google_calendar_v3/unauthenticated-calendar-list-2026-10-08.txt`)."""
+    if _param(request, "prettyPrint") == "false":
+        return body
+    return json.dumps(json.loads(body), indent=2, ensure_ascii=False).encode() + b"\n"
+
+
 def _json(answer: Model, request: Request, model: type[Model], status: int = 200) -> Response:
     fields = request.query_params["fields"] if "fields" in request.query_params else None
-    return Response(wire.respond(answer, wire.selection(fields, model, "*")), status_code=status, media_type=JSON)
+    body = wire.respond(answer, wire.selection(fields, model, "*"))
+    return Response(_pretty(request, body), status_code=status, media_type=JSON)
 
 
-def _refused(refusal: wire.Refusal) -> Response:
-    return Response(wire.error_body(refusal), status_code=refusal.code, media_type=JSON, headers=refusal.headers)
+def _refused(refusal: wire.Refusal, request: Request) -> Response:
+    wire.noted(refusal)
+    body = _pretty(request, wire.error_body(refusal))
+    return Response(body, status_code=refusal.code, media_type=JSON, headers=refusal.headers)
 
 
 def _param(request: Request, name: str) -> str | None:
     return request.query_params[name] if name in request.query_params else None
+
+
+def _parameters(request: Request, method: Method) -> None:
+    """A documented parameter this fake does not serve yet is refused, naming it; `alt` has one value, `json`."""
+    for name in request.query_params:
+        if name not in method.serves | method.refuses | STANDARD_PARAMETERS | {"access_token"}:
+            raise mail.not_implemented(
+                f"minutehand's Google Calendar does not serve the parameter {name} of calendar.{method.name}: the "
+                "discovery document does not name it, and Google's answer to it is not recorded"
+            )
+        if name in method.refuses:
+            raise mail.not_implemented(
+                f"minutehand's Google Calendar does not serve the parameter {name} of calendar.{method.name}"
+            )
+    alt = _param(request, "alt")
+    if alt is not None and alt != "json":  # enum-lint: exempt Calendar alt value
+        raise mail.not_implemented(f"minutehand's Google Calendar does not serve alt={alt}")
+
+
+def _latest(etags: list[str]) -> str:
+    """A collection's etag: its latest member's, so reading it again unchanged answers the same."""
+    return max(etags, key=lambda e: int(e.strip('"')), default='"0"')
+
+
+def _insufficient(needs: str) -> wire.Refusal:
+    """A caller holding a role on a calendar below what the call needs: Google's answer is not recorded."""
+    return mail.not_implemented(
+        f"minutehand's Google Calendar does not serve this call to a caller holding less than {needs} on the calendar"
+    )
 
 
 def _not_found() -> wire.Refusal:
@@ -328,32 +589,37 @@ class CalendarApi:
     def calendars(self) -> CalendarWorld:
         return self._calendars
 
-    def guarded(self, handler: Handler, operation: str) -> Callable[[Request], Awaitable[Response]]:
+    def guarded(self, handler: Handler, method: Method) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
             try:
-                caller = signed_in(
-                    self._drive,
-                    self._clock,
-                    bearer(request, _param(request, "access_token")),
-                    missing=wire.login_required(),
-                )
-                kind = due_fault(self._drive, self._clock, operation)
+                token = _param(request, "access_token") or _param(request, "oauth_token")
+                caller = signed_in(self._drive, self._clock, bearer(request, token), missing=wire.login_required())
+                _parameters(request, method)
+                kind = due_fault(self._drive, self._clock, method.name)
                 if kind is not None:
                     raise mail.fault(kind)
                 return await handler(request, caller)
             except wire.Refusal as refusal:
-                return _refused(refusal)
+                return _refused(refusal, request)
 
         return endpoint
 
-    def _own(self, request: Request, caller: Caller) -> cal.CalendarListEntry:
-        """The calendar the path names, which must be the caller's own."""
-        spelled = request.path_params["calendar_id"]
-        if spelled != "primary" and spelled.lower() != caller.email.lower():
+    def _role(self, calendar: HeldCalendar, caller: Caller) -> str | None:
+        """The caller's access role on a calendar: owner of their own primary, else what its ACL grants them."""
+        if calendar.record.dataOwner is None and calendar.id.lower() == caller.email.lower():
+            return "owner"
+        return self._calendars.role(calendar.record, caller.email)
+
+    def _own(self, request: Request, caller: Caller, *, needs: str = "reader") -> HeldCalendar:
+        """The calendar the path names (`primary` is the caller's own), which the caller must hold at least `needs`
+        on. A calendar the caller has no role on is a 404, as one that does not exist is."""
+        spelled = request.path_params["calendarId"]
+        found = self._calendars.calendar(caller.email if spelled == "primary" else spelled)
+        role = self._role(found, caller) if found is not None else None
+        if found is None or role is None:
             raise _not_found()
-        found = self._calendars.calendar(caller.email)
-        if found is None:
-            raise _not_found()
+        if ROLES.index(role) < ROLES.index(needs):
+            raise _insufficient(needs)
         return found
 
     def _served(self, event: cal.StoredEvent, calendar: str, caller: Caller) -> cal.StoredEvent:
@@ -374,6 +640,24 @@ class CalendarApi:
                 or None,
             }
         )
+
+    def _on_calendar(self, event: cal.StoredEvent, calendar: str) -> bool:
+        mine = calendar.lower()
+        return event.organizer.email.lower() == mine or any(a.email.lower() == mine for a in event.attendees or [])
+
+    def _cancelled(
+        self, event: cal.StoredEvent, removal: WorldEvent, calendar: str, caller: Caller, *, details: bool
+    ) -> cal.StoredEvent | cal.CancelledEvent:
+        """A deleted event as Calendar answers it: "Deleted events are only guaranteed to have the id field
+        populated"; "On the organizer's calendar, cancelled events continue to expose event details", which an
+        incremental sync without `showDeleted` leaves out."""
+        etag = f'"{removal.seq}"'
+        if details and event.organizer.email.lower() == calendar.lower():
+            gone = event.model_copy(
+                update={"status": "cancelled", "etag": etag, "updated": wire.rfc3339(removal.sim_time)}
+            )
+            return self._served(gone, calendar, caller)
+        return cal.CancelledEvent(etag=etag, id=event.id)
 
     def _visible(self, event_id: str, calendar: str) -> tuple[cal.StoredEvent, Stored]:
         found = self._calendars.event(event_id)
@@ -419,6 +703,7 @@ class CalendarApi:
                     responseStatus=status,
                     comment=guest.comment if guest.comment is not None else (kept.comment if kept else None),
                     additionalGuests=guest.additionalGuests,
+                    resource=guest.resource,
                 )
             )
         return found
@@ -435,19 +720,188 @@ class CalendarApi:
 
     # ------------------------------------------------------------------ routes
 
+    def _entry(self, calendar: HeldCalendar, role: str, caller: Caller) -> cal.CalendarListEntry:
+        record = calendar.record
+        return cal.CalendarListEntry(
+            etag=f'"{calendar.seq}"',
+            id=record.id,
+            summary=calendar.summary,
+            description=record.description,
+            location=record.location,
+            timeZone=record.timeZone,
+            dataOwner=record.dataOwner,
+            accessRole=role,
+            primary=True if record.dataOwner is None and record.id.lower() == caller.email.lower() else None,
+        )
+
+    def _listed(self, caller: Caller) -> list[cal.CalendarListEntry]:
+        """The caller's calendar list: their primary, each secondary calendar they are the data owner of, and each
+        calendar they added with `calendarList.insert` and still hold a role on. Sharing a calendar does not add it
+        to the grantee's list."""
+        found: list[cal.CalendarListEntry] = []
+        own = self._calendars.calendar(caller.email)
+        if own is not None:
+            found.append(self._entry(own, "owner", caller))
+        added = {i.lower() for i in self._calendars.listed(caller.email)}
+        for calendar in self._calendars.secondary():
+            owned = (calendar.record.dataOwner or "").lower() == caller.email.lower()
+            role = self._role(calendar, caller)
+            if role is not None and (owned or calendar.id.lower() in added):
+                found.append(self._entry(calendar, role, caller))
+        for spelled in added:
+            calendar = self._calendars.calendar(spelled)
+            if calendar is None or calendar.record.dataOwner is not None or calendar.id.lower() == caller.email.lower():
+                continue
+            role = self._role(calendar, caller)
+            if role is not None:
+                found.append(self._entry(calendar, role, caller))
+        return found
+
+    async def calendar_list_insert(self, request: Request, caller: Caller) -> Response:
+        """Add a calendar the caller holds a role on to their calendar list; one they cannot see is a 404."""
+        asked = wire.read_body(cal.CalendarListWrite, wire.read_object(await request.body()))
+        if not asked.id:
+            raise mail.not_implemented("minutehand's Google Calendar does not serve calendarList.insert without an id")
+        calendar = self._calendars.calendar(asked.id)
+        role = self._role(calendar, caller) if calendar is not None else None
+        if calendar is None or role is None:
+            raise _not_found()
+        self._calendars.keep_listed(caller.email, calendar.record, actor=Actor.AGENT)
+        return _json(self._entry(calendar, role, caller), request, cal.CalendarListEntry)
+
     async def calendar_list(self, request: Request, caller: Caller) -> Response:
-        found = self._calendars.calendar(caller.email)
-        items = [found] if found is not None else []
+        least = _param(request, "minAccessRole")
+        if least is not None and least not in ROLES[1:]:
+            raise cal.refused(400, "invalid", f"Invalid value for: minAccessRole: {least}")
+        items = [e for e in self._listed(caller) if least is None or ROLES.index(e.accessRole) >= ROLES.index(least)]
+        size, offset = self._results(request), self._offset(request)
+        more = offset + size < len(items)
         self._calendars.saw(record_ref(calendar_parent(caller.email)), Operation.READ)
-        answer = cal.CalendarList(etag=f'"{self._calendars.store.head()}"', items=items)
+        answer = cal.CalendarList(
+            etag=_latest([e.etag for e in items]),
+            nextPageToken=wire.encode_page(offset + size) if more else None,
+            items=items[offset : offset + size],
+        )
         return _json(answer, request, cal.CalendarList)
 
-    async def events_insert(self, request: Request, caller: Caller) -> Response:
+    def _resource(self, calendar: HeldCalendar) -> cal.CalendarResource:
+        record = calendar.record
+        return cal.CalendarResource(
+            etag=f'"{calendar.seq}"',
+            id=record.id,
+            summary=calendar.summary,
+            description=record.description,
+            location=record.location,
+            timeZone=record.timeZone,
+            dataOwner=record.dataOwner,
+        )
+
+    async def calendars_get(self, request: Request, caller: Caller) -> Response:
+        """`primary` or a calendar the caller holds a role on; any other is a 404 `notFound`."""
         calendar = self._own(request, caller)
-        self._send_updates(request)
-        asked = wire.read_body(cal.EventWrite, wire.read_object(await request.body()))
+        self._calendars.saw(record_ref(calendar_parent(calendar.id)), Operation.READ)
+        return _json(self._resource(calendar), request, cal.CalendarResource)
+
+    async def calendars_insert(self, request: Request, caller: Caller) -> Response:
+        """A secondary calendar whose data owner is the caller, on their calendar list as its owner."""
+        asked = wire.read_body(cal.CalendarWrite, wire.read_object(await request.body()))
+        if not asked.summary or not asked.timeZone:
+            raise mail.not_implemented(
+                "minutehand's Google Calendar does not serve calendars.insert without a summary and a timeZone: "
+                "Google's answer to either missing is not recorded"
+            )
+        cal.zone(asked.timeZone)
+        seq = self._calendars.store.head() + 1
+        record = CalendarRecord(
+            id=calendar_id(seq),
+            summary=asked.summary,
+            description=asked.description,
+            location=asked.location,
+            timeZone=asked.timeZone,
+            dataOwner=caller.email,
+        )
+        kept = self._calendars.keep_calendar(record, actor=Actor.AGENT)
+        return _json(self._resource(HeldCalendar(record=record, seq=kept)), request, cal.CalendarResource)
+
+    async def acl_list(self, request: Request, caller: Caller) -> Response:
+        """The calendar's rules, for a caller holding writer or owner on it ("Provides read access to the
+        calendar's ACLs")."""
+        calendar = self._own(request, caller, needs="writer")
+        rules = self._calendars.rules(calendar.record)
+        size, offset = self._results(request), self._offset(request)
+        more = offset + size < len(rules)
+        self._calendars.saw(record_ref(acl_parent(calendar.id)), Operation.SEARCH)
+        answer = cal.Acl(
+            etag=_latest([f'"{calendar.seq}"', *(r.etag for r in rules)]),
+            nextPageToken=wire.encode_page(offset + size) if more else None,
+            items=rules[offset : offset + size],
+        )
+        return _json(answer, request, cal.Acl)
+
+    async def acl_insert(self, request: Request, caller: Caller) -> Response:
+        """A rule granting one user a role on a calendar the caller owns."""
+        calendar = self._own(request, caller, needs="owner")
+        asked = wire.read_body(cal.AclWrite, wire.read_object(await request.body()))
+        if asked.role is None:
+            raise cal.refused(400, "required", "Missing role.")
+        if asked.scope is None or not asked.scope.type:
+            raise cal.refused(400, "required", "Missing scope type.")
+        if asked.role not in ROLES:
+            raise cal.refused(400, "invalid", f"Invalid role: {asked.role}")
+        if asked.role not in ("writer", "owner"):  # enum-lint: exempt Calendar ACL roles
+            raise mail.not_implemented(f"minutehand's Google Calendar does not serve the ACL role {asked.role}")
+        if asked.scope.type != "user":
+            raise mail.not_implemented(f"minutehand's Google Calendar does not serve the ACL scope {asked.scope.type}")
+        if not asked.scope.value:
+            raise cal.refused(400, "required", "Missing scope value.")
+        rule = cal.AclRule(
+            etag=f'"{self._calendars.store.head() + 1}"',
+            id=f"user:{asked.scope.value}",
+            scope=cal.AclScope(type="user", value=asked.scope.value),
+            role=asked.role,
+        )
+        self._calendars.keep_rule(calendar.record, rule, actor=Actor.AGENT)
+        return _json(rule, request, cal.AclRule)
+
+    def _write(self, found: dict[str, JsonValue], held: cal.StoredEvent | None) -> cal.EventWrite:
+        """The body of an insert, patch or update, read: a field this fake does not serve yet is refused, naming
+        it; a read-only one (an event read and sent back) is ignored."""
+        for name in cal.NOT_SERVED:
+            if name in found and found[name] is not None:
+                raise mail.not_implemented(f"minutehand's Google Calendar does not serve the event field {name}")
+        asked = wire.read_body(cal.EventWrite, found)
         if asked.recurrence:
-            raise mail.not_implemented("recurring events (recurrence)")
+            raise mail.not_implemented("minutehand's Google Calendar does not serve the event field recurrence")
+        if asked.eventType is not None and asked.eventType != (held.eventType if held is not None else "default"):
+            raise mail.not_implemented(f"minutehand's Google Calendar does not serve eventType {asked.eventType}")
+        if asked.iCalUID is not None and (held is None or asked.iCalUID != held.iCalUID):
+            raise mail.not_implemented("minutehand's Google Calendar does not serve writing an event's iCalUID")
+        return asked
+
+    def _matches(self, request: Request, event: cal.StoredEvent) -> None:
+        """`If-Match`: the change goes ahead only while the event's etag is the one named; otherwise a 412
+        `conditionNotMet` and nothing changes."""
+        if "if-match" not in request.headers:
+            return
+        named = [t.strip() for t in request.headers["if-match"].split(",")]
+        if "*" in named or event.etag in named:
+            return
+        item = wire.ErrorItem(
+            domain="global",
+            reason="conditionNotMet",
+            message="Precondition Failed",
+            locationType="header",
+            location="If-Match",
+        )
+        raise wire.Refusal(
+            wire.GoogleError(error=wire.ErrorBody(code=412, message="Precondition Failed", errors=[item]))
+        )
+
+    async def events_insert(self, request: Request, caller: Caller) -> Response:
+        calendar = self._own(request, caller, needs="writer")
+        self._send_updates(request)
+        found = wire.read_object(await request.body())
+        asked = self._write(found, None)
         if asked.start is None:
             raise cal.refused(400, "required", "Missing start time.")
         if asked.end is None:
@@ -461,7 +915,6 @@ class CalendarApi:
                 raise cal.refused(409, "duplicate", "The requested identifier already exists.")
         new_id = asked.id or event_id(seq)
         now = wire.rfc3339(self._clock.now())
-        me = cal.Actor(email=calendar.id, displayName=caller.user.displayName)
         event = cal.StoredEvent(
             etag=f'"{seq}"',
             id=new_id,
@@ -469,27 +922,28 @@ class CalendarApi:
             htmlLink=html_link(new_id, calendar.id),
             created=now,
             updated=now,
-            summary=asked.summary,
-            description=asked.description,
-            location=asked.location,
-            colorId=asked.colorId,
-            creator=cal.Actor(email=caller.email, displayName=caller.user.displayName),
-            organizer=me,
+            creator=cal.Actor(email=caller.email),
+            organizer=cal.Actor(email=calendar.id),
             start=start,
             end=end,
-            transparency=asked.transparency,
-            visibility=asked.visibility,
             iCalUID=f"{new_id}@google.com",
+            sequence=asked.sequence or 0,
             attendees=self._attendees(asked.attendees or [], calendar.id, []) or None,
-            guestsCanModify=asked.guestsCanModify,
+            **{name: getattr(asked, name) for name in cal.VERBATIM},
         )
         self._calendars.write(event, operation=Operation.CREATE, actor=Actor.AGENT, snapshot=True)
         self._channels.tell_calendars_later(calendars_of(event))
         return _json(self._served(event, calendar.id, caller), request, cal.StoredEvent)
 
     async def events_get(self, request: Request, caller: Caller) -> Response:
+        """An event on the calendar; a deleted one as its cancelled copy, which "the get method always returns"."""
         calendar = self._own(request, caller)
-        event, _ = self._visible(request.path_params["event_id"], calendar.id)
+        spelled = request.path_params["eventId"]
+        gone = self._calendars.deleted(spelled)
+        if gone is not None and self._on_calendar(gone[0], calendar.id):
+            self._calendars.saw(event_ref(spelled), Operation.READ)
+            return _json(self._cancelled(gone[0], gone[1], calendar.id, caller, details=True), request, cal.StoredEvent)
+        event, _ = self._visible(spelled, calendar.id)
         self._calendars.saw(event_ref(event.id), Operation.READ)
         return _json(self._served(event, calendar.id, caller), request, cal.StoredEvent)
 
@@ -501,17 +955,16 @@ class CalendarApi:
 
     async def _changed(self, request: Request, caller: Caller, *, replace: bool) -> Response:
         """`events.patch` sets what the body names; `events.update` replaces the event with the body."""
-        calendar = self._own(request, caller)
+        calendar = self._own(request, caller, needs="writer")
         self._send_updates(request)
-        event, _ = self._visible(request.path_params["event_id"], calendar.id)
+        event, _ = self._visible(request.path_params["eventId"], calendar.id)
         if event.organizer.email.lower() != calendar.id.lower():
             raise cal.refused(
                 403, "forbiddenForNonOrganizer", "Shared properties can only be changed by the organizer of the event."
             )
+        self._matches(request, event)
         found = wire.read_object(await request.body())
-        asked = wire.read_body(cal.EventWrite, found)
-        if asked.recurrence:
-            raise mail.not_implemented("recurring events (recurrence)")
+        asked = self._write(found, event)
         if asked.status is not None and asked.status not in ("confirmed", "tentative"):
             raise mail.not_implemented(f"setting an event's status to {asked.status}; delete it instead")
         named = set(found) if not replace else set(cal.EventWrite.model_fields)
@@ -529,7 +982,9 @@ class CalendarApi:
             "etag": f'"{seq}"',
             "sequence": event.sequence + 1 if moved else event.sequence,
         }
-        for name in ("summary", "description", "location", "colorId", "transparency", "visibility", "guestsCanModify"):
+        if "sequence" in named and asked.sequence is not None:
+            update["sequence"] = asked.sequence
+        for name in cal.VERBATIM:
             if name in named:
                 update[name] = getattr(asked, name)
         if "status" in named and asked.status is not None:
@@ -544,13 +999,14 @@ class CalendarApi:
         return _json(self._served(changed, calendar.id, caller), request, cal.StoredEvent)
 
     async def events_delete(self, request: Request, caller: Caller) -> Response:
-        calendar = self._own(request, caller)
+        calendar = self._own(request, caller, needs="writer")
         self._send_updates(request)
-        event, _ = self._visible(request.path_params["event_id"], calendar.id)
+        event, _ = self._visible(request.path_params["eventId"], calendar.id)
         if event.organizer.email.lower() != calendar.id.lower():
             raise cal.refused(
                 403, "forbiddenForNonOrganizer", "Shared properties can only be changed by the organizer of the event."
             )
+        self._matches(request, event)
         self._calendars.delete(event, actor=Actor.AGENT)
         self._channels.tell_calendars_later(calendars_of(event))
         return Response(status_code=204)
@@ -560,11 +1016,11 @@ class CalendarApi:
         created, changed or deleted, by the agent or by anyone else."""
         calendar = self._own(request, caller)
         asked, expires = self._channels.asked(await request.body(), CALENDAR_LIFETIME)
-        spelled = request.path_params["calendar_id"]
+        spelled = request.path_params["calendarId"]
         channel = wire.CalendarChannel(
             id=asked.id,
             resourceId=hashlib.sha256(f"calendar events\x1f{calendar.id.lower()}".encode()).hexdigest()[:27],
-            resourceUri=f"https://www.googleapis.com/calendar/v3/calendars/{spelled}/events?alt=json",
+            resourceUri=f"https://www.googleapis.com/calendar/v3/calendars/{quote(spelled, safe='')}/events?alt=json",
             address=asked.address,
             expiration=wire.rfc3339(expires),
             token=asked.token,
@@ -593,31 +1049,45 @@ class CalendarApi:
         if order == "startTime" and not single:
             raise cal.refused(400, "badRequest", "The requested ordering is not available for the particular query.")
         words = (_param(request, "q") or "").casefold().split()
-        found: list[tuple[datetime, cal.StoredEvent]] = []
-        for event, _ in self._calendars.on(calendar.id):
+        show_deleted = _param(request, "showDeleted") == "true"
+        candidates: list[tuple[cal.StoredEvent, WorldEvent | None]] = [
+            (e, None) for e, _ in self._calendars.on(calendar.id)
+        ]
+        if show_deleted or updated_min is not None:
+            # "When specified, entries deleted since this time will always be included regardless of showDeleted."
+            candidates += [(e, gone) for e, gone in self._calendars.deletions() if self._on_calendar(e, calendar.id)]
+        found: list[tuple[datetime, str, cal.StoredEvent | cal.CancelledEvent]] = []
+        for event, removal in candidates:
             start = cal.instant(event.start, calendar.timeZone, "start")
             end = cal.instant(event.end, calendar.timeZone, "end")
             if not cal.overlaps(start, end, low, high):
                 continue
-            if updated_min is not None and wire.moment(event.updated) < updated_min:
+            changed_at = wire.moment(event.updated) if removal is None else removal.sim_time
+            if updated_min is not None and changed_at < updated_min:
                 continue
             if words and not all(w in self._searchable(event) for w in words):
                 continue
-            found.append((start, event))
+            served = (
+                self._served(event, calendar.id, caller)
+                if removal is None
+                else self._cancelled(event, removal, calendar.id, caller, details=True)
+            )
+            found.append((start, wire.rfc3339(changed_at), served))
         if order == "updated":  # enum-lint: exempt Calendar's orderBy value
-            found.sort(key=lambda pair: pair[1].updated)
+            found.sort(key=lambda row: row[1])
         else:
-            found.sort(key=lambda pair: (pair[0], pair[1].id))
+            found.sort(key=lambda row: (row[0], row[2].id))
         size = self._results(request)
         offset = self._offset(request)
-        page = [self._served(e, calendar.id, caller) for _, e in found[offset : offset + size]]
+        page = [e for _, _, e in found[offset : offset + size]]
         more = offset + size < len(found)
         seq, changed = self._last_change(calendar.id)
         answer = cal.EventList(
             etag=f'"{seq}"',
-            summary=calendar.id,
+            summary=calendar.summary,
             updated=wire.rfc3339(changed),
             timeZone=calendar.timeZone,
+            accessRole=self._role(calendar, caller) or "none",
             nextPageToken=wire.encode_page(offset + size) if more else None,
             nextSyncToken=None if more else f"s{seq}",
             items=page,
@@ -625,7 +1095,7 @@ class CalendarApi:
         self._calendars.saw(record_ref(calendar_parent(calendar.id)), Operation.SEARCH)
         return _json(answer, request, cal.EventList)
 
-    def _incremental(self, request: Request, caller: Caller, calendar: cal.CalendarListEntry, sync: str) -> Response:
+    def _incremental(self, request: Request, caller: Caller, calendar: HeldCalendar, sync: str) -> Response:
         """Every event on the calendar changed since the sync token, a deleted one as `cancelled`, oldest change
         first. A token cannot be combined with the filters a full list takes, as Calendar's guide says."""
         for name in ("timeMin", "timeMax", "q", "orderBy", "updatedMin", "iCalUID", "privateExtendedProperty"):
@@ -634,19 +1104,22 @@ class CalendarApi:
         store = self._calendars.store
         if not sync.startswith("s") or not sync[1:].isdigit() or int(sync[1:]) > store.head():
             raise cal.refused(410, "fullSyncRequired", "Sync token is no longer valid, a full sync is required.")
+        show_deleted = _param(request, "showDeleted") == "true"
         items: list[cal.StoredEvent | cal.CancelledEvent] = []
-        for event_key, seq, _ in self._changes(calendar.id, since=int(sync[1:])):
+        for event_key, _, _ in self._changes(calendar.id, since=int(sync[1:])):
             current = self._calendars.event(event_key)
-            if current is None:
-                items.append(cal.CancelledEvent(etag=f'"{seq}"', id=event_key))
-            else:
+            gone = self._calendars.deleted(event_key)
+            if current is not None:
                 items.append(self._served(current[0], calendar.id, caller))
+            elif gone is not None:
+                items.append(self._cancelled(gone[0], gone[1], calendar.id, caller, details=show_deleted))
         last, changed = self._last_change(calendar.id)
         answer = cal.IncrementalList(
             etag=f'"{last}"',
-            summary=calendar.id,
+            summary=calendar.summary,
             updated=wire.rfc3339(changed),
             timeZone=calendar.timeZone,
+            accessRole=self._role(calendar, caller) or "none",
             nextSyncToken=f"s{last}",
             items=items,
         )
@@ -750,24 +1223,38 @@ class CalendarApi:
 
     async def not_built(self, request: Request) -> Response:
         return _refused(
-            mail.not_implemented(f"minutehand's Google Calendar does not implement {request.method} {request.url.path}")
+            mail.not_implemented(
+                f"minutehand's Google Calendar does not implement {request.method} {request.url.path}"
+            ),
+            request,
         )
 
-    def routes(self) -> list[Route]:
-        def call(handler: Handler, operation: str) -> Callable[[Request], Awaitable[Response]]:
-            return self.guarded(handler, operation)
+    def _refuse(self, method: Method) -> Callable[[Request], Awaitable[Response]]:
+        async def endpoint(request: Request) -> Response:
+            return _refused(
+                mail.not_implemented(f"minutehand's Google Calendar does not serve calendar.{method.name}"), request
+            )
 
-        events = "/calendar/v3/calendars/{calendar_id}/events"
-        return [
-            Route("/calendar/v3/users/me/calendarList", call(self.calendar_list, "calendarList.list"), methods=["GET"]),
-            Route(events, call(self.events_list, "events.list"), methods=["GET"]),
-            Route(events, call(self.events_insert, "events.insert"), methods=["POST"]),
-            Route(f"{events}/{{event_id}}", call(self.events_get, "events.get"), methods=["GET"]),
-            Route(f"{events}/{{event_id}}", call(self.events_patch, "events.patch"), methods=["PATCH"]),
-            Route(f"{events}/{{event_id}}", call(self.events_update, "events.update"), methods=["PUT"]),
-            Route(f"{events}/{{event_id}}", call(self.events_delete, "events.delete"), methods=["DELETE"]),
-            Route("/calendar/v3/freeBusy", call(self.freebusy, "freebusy.query"), methods=["POST"]),
-            Route(f"{events}/watch", call(self.events_watch, "events.watch"), methods=["POST"]),
-            Route("/calendar/v3/channels/stop", call(self.channels_stop, "channels.stop"), methods=["POST"]),
-            Route("/calendar/v3/{rest:path}", self.not_built, methods=EVERY_METHOD),
-        ]
+        return endpoint
+
+    def routes(self) -> list[Route]:
+        handlers: dict[str, Handler] = {
+            "acl.insert": self.acl_insert,
+            "acl.list": self.acl_list,
+            "calendarList.insert": self.calendar_list_insert,
+            "calendarList.list": self.calendar_list,
+            "calendars.get": self.calendars_get,
+            "calendars.insert": self.calendars_insert,
+            "channels.stop": self.channels_stop,
+            "events.delete": self.events_delete,
+            "events.get": self.events_get,
+            "events.insert": self.events_insert,
+            "events.list": self.events_list,
+            "events.patch": self.events_patch,
+            "events.update": self.events_update,
+            "events.watch": self.events_watch,
+            "freebusy.query": self.freebusy,
+        }
+        served = [Route(f"/calendar/v3/{m.path}", self.guarded(handlers[m.name], m), methods=[m.http]) for m in SERVED]
+        refused = [Route(f"/calendar/v3/{m.path}", self._refuse(m), methods=[m.http]) for m in REFUSED]
+        return [*served, *refused, Route("/calendar/v3/{rest:path}", self.not_built, methods=EVERY_METHOD)]

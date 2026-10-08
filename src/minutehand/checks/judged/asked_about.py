@@ -62,17 +62,19 @@ class AskedAbout:
             judged: list[tuple[WorldEvent, AskedAboutVerdict]] = []
             for event in candidates:
                 assert isinstance(event.after, MessageSnapshot)
-                verdict = await model.answer(
-                    ASKED_ABOUT_PROMPT,
-                    [
-                        ModelMessage(
-                            speaker=Speaker.ASKER,
-                            text=_message(people[expected.person], expected.about, event.after.text),
-                        )
-                    ],
-                    AskedAboutVerdict,
-                    temperature=0,
-                )
+                verdict = (
+                    await model.answer(
+                        ASKED_ABOUT_PROMPT,
+                        [
+                            ModelMessage(
+                                speaker=Speaker.ASKER,
+                                text=_message(people[expected.person], expected.about, event.after.text),
+                            )
+                        ],
+                        AskedAboutVerdict,
+                        temperature=0,
+                    )
+                ).answer
                 judged.append((event, verdict))
             matched = [e for e, v in judged if v.asks_about]
             count = len(matched)

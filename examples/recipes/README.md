@@ -73,6 +73,11 @@ Each agent is pointed at it through its framework's own base-URL setting (`MODEL
 `ANTHROPIC_BASE_URL` for the Claude Agent SDK). The fake listens on `127.0.0.1`, which is in the `NO_PROXY`
 Minutehand hands the agent, so the model calls go straight to it and Minutehand neither sees nor records them.
 
+It also writes what Minutehand's people say: a scenario's person speaks in a model's words, and Minutehand asks the
+model it is configured with (`MINUTEHAND_MODEL_BASE_URL`, `MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`). Pointed
+at the fake, a person's answer is the facts their script gives them, as plain sentences, so a run stays offline and
+repeatable.
+
 With a real model you drop the base URL, and the calls go to `api.openai.com` or `api.anthropic.com`. Those are
 model hosts Minutehand knows: it tunnels them through untouched by default, records each call with
 `--record-model-calls`, and takes another host, such as your own model gateway, with `--model-host HOST`
@@ -84,6 +89,7 @@ From a recipe's folder, in a checkout with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 python ../fake_model.py &                # the fake model, on 127.0.0.1:8790
+export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
 
 uv run --group recipes minutehand run scenario_late.yaml --agent agent.yaml -- python agent.py
 uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py

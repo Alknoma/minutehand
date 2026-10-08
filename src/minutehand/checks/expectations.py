@@ -9,10 +9,12 @@ a paragraph. Nothing here guesses at that. Each met expectation is reported as a
 informational finding that quotes what met it, trimmed, and who it went to, so a
 reader sees a hollow pass for what it is.
 
-A `Relayed` expectation asks whether a message carried what a person said, and is
-answered from the log alone, through the phrase the scenario's author declared as
-the tell: the first thing in the world to hold it must be that person's own reply,
-and a match is a later message from the agent to the named person that holds it.
+A `Relayed` expectation asks whether a message carried a fact a person told the
+agent, and is answered from the log alone, through the values the scenario's author
+declared (`holding`): the person must have said it first, in a reply whose words or
+whose step's facts hold it (a model writes the words, so the fact, not the wording,
+is what counts), and a match is a later message from the agent to the named person
+that holds every value.
 
 A `PersonAsked` with `about` asks what a message means, which no word match can
 answer: it is left to the judged check `asked_about`, and noted here as left.
@@ -206,7 +208,7 @@ class Expectations:
                 and event.operation is Operation.CREATE
                 and isinstance(after, MessageSnapshot)
                 and email[expected.to] in after.recipient_emails
-                and has_words(after.text, [expected.tell])
+                and has_words(after.text, expected.holding)
             )
         raise TypeError(f"no matcher for {type(expected).__name__}")
 
@@ -228,7 +230,7 @@ class Expectations:
             on = f" on {expected.server}" if expected.server is not None else ""
             return f"tool {expected.tool!r} called{on}{words}"
         if isinstance(expected, Relayed):
-            return f"{expected.to} told what {expected.said_by} said ({expected.tell!r})"
+            return f"{expected.to} told what {expected.said_by} said ({', '.join(repr(v) for v in expected.holding)})"
         if isinstance(expected, DocumentCreated):
             parts = [f" titled with {expected.titled}" if expected.titled else ""]
             parts.append(f" in {expected.space}" if expected.space is not None else "")
@@ -316,23 +318,46 @@ def _held(event: WorldEvent) -> str | None:
 
 
 def _heard(expected: Relayed, view: RunView) -> tuple[WorldEvent | None, str | None]:
-    """The event by which `said_by` first put the tell into the world, or why there is none: someone else held
-    it first, or they never said it."""
-    first = next((e for e in view.events if (text := _held(e)) is not None and has_words(text, [expected.tell])), None)
-    if first is None:
-        return None, f"{expected.said_by} never said it"
-    spoken = (
-        first.actor is Actor.PERSON
-        and first.operation is Operation.CREATE
-        and (
-            isinstance(first.after, MessageSnapshot)
-            or (isinstance(first.after, InteractionSnapshot) and first.after.person == expected.said_by)
-        )
-        and any(
-            r.person == expected.said_by and r.at == first.sim_time and has_words(r.text, [expected.tell])
+    """The event by which `said_by` first told the agent the values: their reply landing, a reply whose words or
+    whose step's facts hold them. None, and why, when they never did, or the agent wrote them before."""
+    carrying = sorted(
+        (
+            r
             for r in view.replies
-        )
+            if r.person == expected.said_by
+            and r.answers
+            and (has_words(r.text, expected.holding) or has_words("\n".join(r.facts), expected.holding))
+        ),
+        key=lambda r: r.at,
     )
-    if not spoken:
+    landed = {r.at for r in carrying}
+    heard = next(
+        (
+            e
+            for e in view.events
+            if e.actor is Actor.PERSON
+            and e.operation is Operation.CREATE
+            and e.sim_time in landed
+            and (
+                isinstance(e.after, MessageSnapshot)
+                or (isinstance(e.after, InteractionSnapshot) and e.after.person == expected.said_by)
+            )
+        ),
+        None,
+    )
+    if heard is None:
+        return None, f"{expected.said_by} never said it"
+    first = next(
+        (
+            e
+            for e in view.events
+            if e.seq < heard.seq
+            and e.actor is not Actor.PERSON
+            and (text := _held(e)) is not None
+            and has_words(text, expected.holding)
+        ),
+        None,
+    )
+    if first is not None:
         return None, f"{_FIRST[first.actor]} (seq {first.seq}) before {expected.said_by} said it, so nothing relayed it"
-    return first, None
+    return heard, None

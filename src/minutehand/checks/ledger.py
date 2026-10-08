@@ -64,9 +64,19 @@ class Away(Model):
     starts: AwareDatetime
     ends: AwareDatetime
     delegate: str | None
+    on_first_ask: bool = Field(
+        default=False, description="It began with the agent's first message to them, which found them leaving"
+    )
 
     def covers(self, moment: datetime) -> bool:
         return self.starts <= moment < self.ends
+
+    def away_when_written_to(self, moment: datetime) -> bool:
+        """Whether a message at `moment` reached them while away: the message their absence began with did not;
+        it is the one their automatic reply answers."""
+        if self.on_first_ask and moment == self.starts:
+            return False
+        return self.covers(moment)
 
 
 def recipients(event: WorldEvent, scenario: Scenario) -> list[Person]:
@@ -90,7 +100,16 @@ def absences(scenario: Scenario, events: list[WorldEvent]) -> list[Away]:
                 lasts=absence.lasts,
             )
             if found is not None:
-                stretches.append(Away(person=person.key, starts=found[0], ends=found[1], delegate=absence.delegate))
+                stretches.append(
+                    Away(
+                        person=person.key,
+                        starts=found[0],
+                        ends=found[1],
+                        delegate=absence.delegate,
+                        on_first_ask=absence.trigger is AbsenceTrigger.ON_FIRST_ASK
+                        and absence.starts_after == timedelta(0),
+                    )
+                )
     return stretches
 
 
@@ -140,9 +159,10 @@ def build(
     by_key = {p.key: p for p in scenario.people}
     by_email = {p.email: p for p in scenario.people}
     away = absences(scenario, events)
-    asked = {(_ref(r.in_reply_to), r.person) for r in replies}
-    answered = {(_ref(r.in_reply_to), r.person): r for i, r in enumerate(replies) if i not in withdrawn}
-    decided = {(_ref(r.in_reply_to), r.person): r for r in replies}
+    answers = [(i, r) for i, r in enumerate(replies) if r.answers]  # an automatic reply says only they are away
+    asked = {(_ref(r.in_reply_to), r.person) for _, r in answers}
+    answered = {(_ref(r.in_reply_to), r.person): r for i, r in answers if i not in withdrawn}
+    decided = {(_ref(r.in_reply_to), r.person): r for _, r in answers}
     opened: list[_Open] = []
     holder: dict[tuple[str, EntityKind, str], str | None] = {}
 
@@ -259,6 +279,8 @@ def _patience(person: Person, reply: PersonReply | None) -> timedelta:
     them since), else their delay in the scenario."""
     if reply is not None and reply.patience is not None:
         return reply.patience
+    if person.reply_within is not None:
+        return person.reply_within.max
     return _longest(person).longest
 
 

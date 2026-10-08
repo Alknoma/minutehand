@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from minutehand.doctor import claimed_hosts, docker_warnings
+from minutehand.doctor import claimed_hosts, docker_warnings, people_model
 
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 
@@ -142,3 +142,12 @@ def test_the_doctor_warns_of_a_docker_config_that_sends_every_host_direct(tmp_pa
 
     found = json.loads(done.stdout)
     assert len(found["docker"]) == 1 and "sets proxies.default.noProxy to '*'" in found["docker"][0], done.stderr
+
+
+def test_doctor_says_whether_a_model_is_configured_to_write_what_people_say() -> None:
+    configured = people_model({"MINUTEHAND_MODEL": "people-1", "MINUTEHAND_MODEL_API_KEY": "k"})
+    assert configured.configured and configured.said == "people-1 at https://api.openai.com/v1"
+    missing = people_model({})
+    assert not missing.configured and "no model is configured" in missing.said and "is refused" in missing.said
+    half = people_model({"MINUTEHAND_MODEL": "people-1"})
+    assert not half.configured and "MINUTEHAND_MODEL_API_KEY is not set" in half.said

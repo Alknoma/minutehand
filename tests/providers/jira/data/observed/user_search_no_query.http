@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:40 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: c34253c4fe479094c6db57dd99ae7adf
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: e33101cc82dd49a08d15a138d9195324
+Atl-Request-Id: e33101cc-82dd-49a0-8d15-a138d9195324
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=164,atl-edge-internal;dur=21,atl-edge-upstream;dur=143,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 1d4017b5d1ddbdf05af097603dc5cf2e.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: M7jWrEdb3k59On5kJig_sVvuWk0lPzxwRbjZLWpXQNLPMYLQ69tX5A==
+
+{"errorMessages":["The username or property query parameter must be provided"],"errors":{}}

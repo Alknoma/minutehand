@@ -57,7 +57,7 @@ async def test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_
         assert isinstance(request.after, MessageSnapshot)
         assert request.after.recipient_emails == ["sofia@example.com"]
         assert [a.label for a in request.after.actions] == ["Accept", "Tentative", "Decline"]
-        assert "Room Ferris" in request.after.text and "Vendor review" in request.after.text
+        assert request.after.text == "Vendor review\n\nShortlist and prices.", "the request carries the event's body"
         hers = await http.get(f"{GRAPH}/users/sofia@example.com/events/{event['id']}", headers=auth)
         assert hers.status_code == 403, "a user's token reads only their own calendar"
         app = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
@@ -122,7 +122,11 @@ async def test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answe
 ) -> None:
     async with microsoft.http() as http:
         auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
-        window = {"startDateTime": "2026-09-14T00:00:00Z", "endDateTime": "2026-09-16T00:00:00Z"}
+        window = {
+            "startDateTime": "2026-09-14T00:00:00Z",
+            "endDateTime": "2026-09-16T00:00:00Z",
+            "$orderby": "start/dateTime",
+        }
         dania = (await http.get(f"{GRAPH}/users/dania@example.com/calendarView", params=window, headers=auth)).json()
         assert [(e["subject"], e["isOrganizer"]) for e in dania["value"]] == [
             ("Budget sync", False),
@@ -134,7 +138,7 @@ async def test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answe
         schedule = await http.post(
             f"{GRAPH}/users/{AGENT}/calendar/getSchedule",
             json={
-                "schedules": ["sofia@example.com", "dania@example.com", "owen@example.com", "nobody@example.com"],
+                "schedules": ["sofia@example.com", "dania@example.com", "owen@example.com"],
                 "startTime": {"dateTime": "2026-09-14T10:00:00", "timeZone": "UTC"},
                 "endTime": {"dateTime": "2026-09-14T12:00:00", "timeZone": "UTC"},
                 "availabilityViewInterval": 30,
@@ -146,14 +150,24 @@ async def test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answe
         assert views["sofia@example.com"]["availabilityView"] == "0220", "Budget sync, 10:30 to 11:30, hers"
         assert views["dania@example.com"]["availabilityView"] == "0220", "she accepted it"
         assert views["owen@example.com"]["availabilityView"] == "0000", "he declined it"
-        assert views["nobody@example.com"]["error"]["responseCode"] == "ErrorMailRecipientNotFound"
+        nobody = await http.post(
+            f"{GRAPH}/users/{AGENT}/calendar/getSchedule",
+            json={
+                "schedules": ["nobody@example.com"],
+                "startTime": {"dateTime": "2026-09-14T10:00:00", "timeZone": "UTC"},
+                "endTime": {"dateTime": "2026-09-14T12:00:00", "timeZone": "UTC"},
+            },
+            headers=auth,
+        )
+        assert nobody.status_code == 501, "no Graph page or recording shows the answer for an unknown address"
 
 
-async def test_a_calendar_view_without_a_window_is_refused(tenant: Tenant, microsoft: Intercepted) -> None:
+async def test_a_calendar_view_without_a_window_is_refused_by_name(tenant: Tenant, microsoft: Intercepted) -> None:
+    """The page names startDateTime and endDateTime required and documents no answer without them: not served."""
     async with microsoft.http() as http:
         auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
         refused = await http.get(f"{GRAPH}/users/{AGENT}/calendarView", headers=auth)
-        assert refused.status_code == 400 and refused.json()["error"]["code"] == "ErrorInvalidParameter"
+        assert refused.status_code == 501 and "startDateTime and endDateTime" in refused.json()["error"]["message"]
 
 
 async def test_an_event_retried_with_its_transaction_id_is_made_once(tenant: Tenant, microsoft: Intercepted) -> None:

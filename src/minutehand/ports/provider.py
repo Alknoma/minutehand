@@ -58,7 +58,7 @@ class Provider(Protocol):
 class GrpcMethod:
     """One unary method of a service's gRPC API: the path its clients call (`/package.Service/Method`), the message
     it takes, and what answers it. `answer` is handed the request decoded as `request` and returns the answer
-    message; it raises `domain.errors.GrpcRefusal` where the real service refuses, `NotImplementedError` for what
+    message; it raises `domain.errors.GrpcRefusal` where the real service refuses, `NotServed` for what
     the fake does not do (answered UNIMPLEMENTED), and anything else is Minutehand's bug (answered INTERNAL). A
     table of handlers, not a model: nothing of it is stored or sent."""
 

@@ -216,10 +216,10 @@ def not_found() -> wire.Refusal:
     return refusal(404, "notFound", "Requested entity was not found.")
 
 
-def not_implemented(message: str) -> wire.Refusal:
+def not_implemented(message: str) -> wire.Unserved:
     """Something real Gmail or Calendar does that this fake does not. Loud, and never mistaken for Google's own."""
     item = wire.ErrorItem(domain="minutehand", reason="notImplemented", message=message)
-    return wire.Refusal(
+    return wire.Unserved(
         wire.GoogleError(error=wire.ErrorBody(code=501, message=message, errors=[item], status="UNIMPLEMENTED"))
     )
 

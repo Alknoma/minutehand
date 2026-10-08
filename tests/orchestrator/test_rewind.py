@@ -14,14 +14,14 @@ from minutehand.adapters.agent.reach import reach_for
 from minutehand.application.checkpoint import NotRestorable, Remembered, checkpoint_seqs, checkpoints
 from minutehand.application.memory import digest, memory_of
 from minutehand.application.refusals import RunRefused
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.restore import Restored, Verification
 from minutehand.application.rewind import RESTORE_RECORD, changed_scenario, fork_run
 from minutehand.domain.agent import AgentUnderTest, Booked
 from minutehand.domain.experiment import DeadlineShift, Fork, PersonChange, PromptPatch, TicketEdit
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import Scenario, TicketState
+from minutehand.domain.scenario import AfterScript, Scenario, TicketState
 from minutehand.domain.world import Actor, EntityKind, EntityRef, TicketSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -59,7 +59,7 @@ async def fork(
         agent=agent,
         reach=reach_for(agent, env=rig.env()),
         services=rig.services(),
-        replier_for=ScriptedReplier,
+        replier_for=lambda s, pins: PeopleReplier(s, None, pins=pins),
         state_dir=rig.tmp / "state",
         mounts=rig.mounts,
         traffic=rig.board,
@@ -314,13 +314,22 @@ def test_a_fork_whose_change_leaves_a_relayed_tell_unsayable_is_refused_saying_w
                     "key": "rosa",
                     "name": "Rosa",
                     "email": "rosa@example.com",
-                    "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": "Reference LH-2291."}]},
+                    "reply": {
+                        "kind": "scripted",
+                        "then": "silent",
+                        "replies": [{"to_ask": 1, "verbatim": "Reference LH-2291."}],
+                    },
                 },
             ],
-            "expect": [{"kind": "relayed", "said_by": "rosa", "to": "owen", "tell": "LH-2291"}],
+            "expect": [{"kind": "relayed", "said_by": "rosa", "to": "owen", "holding": ["LH-2291"]}],
         }
     )
-    change = PersonChange(person="rosa", reply=Scripted(replies=[ScriptedReply(to_ask=1, text="Friday is taken.")]))
+    change = PersonChange(
+        person="rosa",
+        reply=Scripted(then=AfterScript.SILENT, replies=[ScriptedReply(to_ask=1, verbatim="Friday is taken.")]),
+    )
 
-    with pytest.raises(RunRefused, match=r"self-contradictory: .*no scripted reply of rosa holds the tell 'LH-2291'"):
+    with pytest.raises(
+        RunRefused, match=r"self-contradictory: .*no step of rosa's script and none of their facts holds 'LH-2291'"
+    ):
         changed_scenario(scenario, Fork(parent_run="p", at_seq=1, overrides=[change]))

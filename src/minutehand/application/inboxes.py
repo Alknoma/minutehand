@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.inboxes import HttpInbox, ListedItem
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Account, Answers, Person, Scenario, Scripted, Silent
+from minutehand.domain.scenario import Account, AfterScript, Answers, Person, Scenario, Scripted, Silent
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -60,9 +60,11 @@ def readers(scenario: Scenario, reach: ReachesInbox) -> list[Person]:
 
 
 def refuse_undecided(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> None:
-    """Every person who can receive items says what they do with them: a script of decisions (`[]` leaves every item
-    pending), silence, or a model. Each decision a script names exists in an inbox it can apply to, with the inputs
-    it takes."""
+    """Every person who can receive items says what they do with them: a script of decisions, silence, or a model
+    (`Answers`, or a script that goes on conversing once it is used, `then: answers`). A script that says nothing of
+    items and nothing more once it is used is refused: there is no default decision. Each decision a script names
+    exists in an inbox it can apply to, and gives no input the decision does not take; what it leaves out, a model
+    writes."""
     for reach in reaches:
         declared = reach.declared
         for person in readers(scenario, reach):
@@ -70,11 +72,11 @@ def refuse_undecided(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> Non
             if isinstance(behaviour, Silent | Answers):
                 continue
             assert isinstance(behaviour, Scripted)
-            if behaviour.decisions is None:
+            if behaviour.decisions is None and behaviour.then is AfterScript.SILENT:
                 raise RunRefused(
                     f"{person.key} can receive items in inbox {declared.name} and their script says nothing of "
-                    "deciding them; there is no default decision: give them `decisions` (`[]` leaves every item "
-                    "pending), `reply: {kind: silent}`, or have a model write their replies"
+                    "deciding them and `then: silent`; there is no default decision: give them `decisions` (`[]` "
+                    "leaves every item pending), `reply: {kind: silent}`, or `then: answers` for a model to decide"
                 )
     names = {r.declared.name: r.declared for r in reaches}
     for person in scenario.people:
@@ -94,7 +96,7 @@ def refuse_undecided(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> Non
                 )
             try:
                 for decision in found:
-                    decision.refuse_inputs(scripted.inputs, person.key)
+                    decision.refuse_unknown_inputs(scripted.inputs, person.key)
             except ValueError as e:
                 raise RunRefused(str(e)) from e
 

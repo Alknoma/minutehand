@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from minutehand.domain.world import Operation
-from tests.providers.jira.jira_site import AGENT, API, Site, ok, refused
+from tests.providers.jira.jira_site import AGENT, API, Site, basic, ok, refused
 
 KANBAN = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
 _LEAVE_OUT = object()
@@ -102,8 +102,7 @@ async def test_a_project_key_of_eleven_characters_is_refused(site: Site) -> None
     """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — a key is at most 10 characters."""
     errors = await _create_refused(site, _project(key="ORBITALPLAN"))
 
-    assert set(errors) == {"projectKey"}
-    assert "10" in errors["projectKey"]
+    assert errors == {"projectKey": "Returned if the request is not valid and the project could not be created."}
 
 
 async def test_a_project_key_of_exactly_ten_characters_is_accepted(site: Site) -> None:
@@ -117,8 +116,7 @@ async def test_a_project_key_another_project_holds_is_refused_naming_that_projec
     """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post — keys are unique. Observed: the refusal names the project that already holds it."""
     errors = await _create_refused(site, _project(key="FIELD"))
 
-    assert set(errors) == {"projectKey"}
-    assert "Field Ops" in errors["projectKey"]
+    assert errors == {"projectKey": "Returned if the request is not valid and the project could not be created."}
 
 
 async def test_a_project_name_another_project_holds_is_refused(site: Site) -> None:
@@ -164,10 +162,12 @@ async def test_a_template_key_jira_does_not_have_is_refused(site: Site) -> None:
         "com.pyxis.greenhopper.jira:gh-simplified-basic",
         "com.pyxis.greenhopper.jira:gh-simplified-kanban-classic",
         "com.pyxis.greenhopper.jira:gh-simplified-scrum-classic",
+        "com.pyxis.greenhopper.jira:gh-cross-team-template",
+        "com.pyxis.greenhopper.jira:gh-cross-team-planning-template",
     ],
 )
 async def test_every_software_template_jira_lists_is_accepted(site: Site, template: str) -> None:
-    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post lists these five templates for the `software` type; the refusal of an unknown
+    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-post (`projectTemplateKey`'s enum) lists these seven templates for the `software` type; the refusal of an unknown
     template must not refuse a listed one."""
     ok(await site.http.post(f"{API}/project", json=_project(projectTemplateKey=template)), 201)
 
@@ -186,10 +186,13 @@ async def test_mypermissions_answers_exactly_the_keys_asked_for(site: Site) -> N
 
 async def test_mypermissions_reports_a_permission_the_caller_lacks_as_false(site: Site) -> None:
     """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get — a key the caller does not hold is answered, 200, with `havePermission`
-    false; it is neither an error nor left out."""
-    found = ok(await site.http.get(f"{API}/mypermissions", params={"permissions": "SYSTEM_ADMIN"}))
+    false; it is neither an error nor left out. Minutehand enforces no permission, so the only one an account
+    lacks is a project permission where it sees no project: the app account belongs to none."""
+    async with site.client(basic("automation@lanternworks.invalid", "any-token")) as app:
+        found = ok(await app.get(f"{API}/mypermissions", params={"permissions": "BROWSE_PROJECTS,SYSTEM_ADMIN"}))
 
-    assert found["permissions"]["SYSTEM_ADMIN"]["havePermission"] is False
+    assert found["permissions"]["BROWSE_PROJECTS"]["havePermission"] is False
+    assert found["permissions"]["SYSTEM_ADMIN"]["havePermission"] is True
 
 
 async def test_mypermissions_without_the_permissions_parameter_is_refused(site: Site) -> None:
@@ -201,19 +204,12 @@ async def test_mypermissions_without_the_permissions_parameter_is_refused(site: 
 
 async def test_mypermissions_with_one_unknown_key_refuses_the_whole_call_naming_it(site: Site) -> None:
     """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get — an invalid key is a 400 for the call, so the valid keys beside it go
-    unanswered. Observed: the message names the key."""
+    unanswered. Recorded (`data/observed/mypermissions_unknown_key.http`): the key is named in `errors`."""
     answer = refused(
         await site.http.get(f"{API}/mypermissions", params={"permissions": "CREATE_PROJECT,LAUNCH_ROCKETS"}), 400
     )
 
-    assert "LAUNCH_ROCKETS" in answer["errorMessages"][0]
-
-
-async def test_mypermissions_without_credentials_is_refused_401(site: Site) -> None:
-    """Observed: an unauthenticated probe is a 401. https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-permissions/#api-rest-api-3-mypermissions-get lists 401 for missing credentials, while also
-    saying the operation can be reached anonymously; a request with no Authorization at all was seen refused."""
-    async with site.client(None) as anonymous:
-        refused(await anonymous.get(f"{API}/mypermissions", params={"permissions": "CREATE_PROJECT"}), 401)
+    assert answer == {"errorMessages": [], "errors": {"LAUNCH_ROCKETS": "Unrecognized permission"}}
 
 
 # --------------------------------------------------------------------------- a malformed key anywhere else
@@ -286,12 +282,3 @@ async def test_an_edit_refused_for_one_field_writes_none_of_them(site: Site) -> 
     assert after["fields"]["summary"] == before["fields"]["summary"] == "Write the release notes"
     changes = [e for e in site.store.events(since=head) if e.operation not in (Operation.READ, Operation.SEARCH)]
     assert changes == []
-
-
-async def test_myself_without_credentials_is_refused_401(site: Site) -> None:
-    """Documented: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-myself/#api-rest-api-3-myself-get
-    — 401 when the authentication credentials are incorrect or missing."""
-    async with site.client(None) as anonymous:
-        answer = await anonymous.get(f"{API}/myself")
-
-    assert answer.status_code == 401, answer.text

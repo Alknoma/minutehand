@@ -36,7 +36,8 @@
     acknowledge: "acknowledged here, never sent",
     pass_through: "passed through to the real host",
     replay: "declared to replay",
-    discovered: "passed through, undeclared (--capture-unknown)"
+    discovered: "passed through, undeclared (--capture-unknown)",
+    store: "kept and read back as declared, never sent"
   };
   var ANSWERED_BY = {
     declaration: "answered as declared",

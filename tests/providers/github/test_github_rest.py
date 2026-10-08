@@ -156,6 +156,11 @@ async def test_a_binary_file_reads_as_its_bytes(hub: Hub) -> None:
     assert isinstance(encoded, str) and base64.b64decode(encoded.replace("\n", "")) == LOGO
 
 
-async def test_an_unserved_path_is_github_s_404(hub: Hub) -> None:
+async def test_an_unserved_path_is_refused_by_name_not_answered_as_github_s_404(hub: Hub) -> None:
     async with hub.client() as http:
-        refusal(await http.get("/repos/lanternworks/ledger/pulls"), 404, "Not Found")
+        refusal(
+            await http.get("/repos/lanternworks/ledger/pulls"),
+            501,
+            "minutehand's github fake does not implement GET /repos/lanternworks/ledger/pulls: it is not among the "
+            "calls this provider serves (its README's table)",
+        )

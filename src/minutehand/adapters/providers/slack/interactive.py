@@ -23,6 +23,7 @@ from minutehand.adapters.providers.slack.inbound import DeliveryRefused
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.application.refusals import AgentFailed
+from minutehand.domain.errors import NotServed
 from minutehand.domain.people import Delivery, InboundTarget, PersonReply, Press
 from minutehand.domain.scenario import FormInput, PersonCommands
 from minutehand.domain.world import (
@@ -50,7 +51,7 @@ def _refuse_socket_mode(target: InboundTarget) -> None:
     """Over Socket Mode a press or a slash command goes as an `interactive` or `slash_commands` envelope, which is
     not served: refused, naming that, rather than sent anywhere else."""
     if target.delivery is Delivery.SOCKET_MODE:
-        raise NotImplementedError(
+        raise NotServed(
             "a press or a slash command over Socket Mode (an `interactive` or `slash_commands` envelope) is not "
             "served; give the agent's Slack target a request URL to play presses and commands"
         )

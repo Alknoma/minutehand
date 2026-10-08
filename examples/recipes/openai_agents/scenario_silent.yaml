@@ -9,7 +9,7 @@ people:
   - key: owen
     name: Owen Hart
     email: owen@example.com
-    reply: {kind: scripted, replies: []}
+    reply: {kind: scripted, then: silent}
   - key: rosa
     name: Rosa Lind
     email: rosa@example.com

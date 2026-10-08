@@ -1,15 +1,16 @@
 """The AWS provider's manifest. Data only: loading it imports neither moto nor the provider.
 
-`FINISHED` covers exactly the surface its tests exercise, and nothing else of AWS:
+`FINISHED` covers exactly what its tests exercise, and every other operation of AWS's own surface for the two
+services (botocore's `scheduler` and `sqs` models) is refused 501 by name, as is every other AWS service:
 
-- EventBridge Scheduler CreateSchedule, UpdateSchedule and DeleteSchedule, with
-  `at(...)`, `rate(...)` and `cron(...)` expressions (no `L`, `W` or `#`), a
-  ScheduleExpressionTimezone, StartDate, EndDate, State and ActionAfterCompletion;
-- delivery of a fired schedule to an SQS target, with SqsParameters.MessageGroupId;
-- SQS CreateQueue, GetQueueAttributes and ReceiveMessage as moto answers them.
+- EventBridge Scheduler CreateSchedule, UpdateSchedule, DeleteSchedule, GetSchedule and ListSchedules, with
+  `at(...)`, `rate(...)` and `cron(...)` expressions (no `L`, `W` or `#`), a ScheduleExpressionTimezone,
+  StartDate, EndDate, State and ActionAfterCompletion, in the `default` group;
+- delivery of a fired schedule to an SQS queue target in the run's account, with SqsParameters.MessageGroupId;
+- SQS CreateQueue, GetQueueUrl, GetQueueAttributes, ListQueues, SendMessage, ReceiveMessage, DeleteMessage,
+  DeleteMessageBatch and ChangeMessageVisibility, on the run's clock.
 
-Every other AWS call is answered by moto as moto answers it, which is `GENERATED`
-in all but name; a target other than SQS raises when its schedule fires.
+Where each behaviour comes from is in `CLAIMS.md`.
 """
 
 from __future__ import annotations

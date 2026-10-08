@@ -48,6 +48,7 @@ from tests.conformance.contract import (
     Session,
     VendorRefused,
     ok,
+    uncredentialed,
 )
 
 PROVIDER = "microsoft"
@@ -343,10 +344,11 @@ class MicrosoftSession(Messaging, Documents):
     def people_pages(self, page_size: int) -> list[list[str]]:
         return [[str(u["id"]) for u in page] for page in self._pages("/users", **{"$select": "id", "$top": page_size})]
 
-    def unknown_credential(self) -> httpx.Response:
-        """A Graph read with an access token no sign-in minted. (Client credentials for an unknown app at the
-        tenant's token endpoint would be routed to the tenant's world by the tenant in the path.)"""
-        return self._http.get(f"{GRAPH}/users", headers={"Authorization": f"Bearer {UNSEEDED}"})
+    def stranger(self, *, credentialed: bool) -> httpx.Response:
+        """A Graph read with an access token no sign-in minted, or with none."""
+        if credentialed:
+            return self._http.get(f"{GRAPH}/users", headers={"Authorization": f"Bearer {UNSEEDED}"})
+        return uncredentialed(self._http, "GET", f"{GRAPH}/users")
 
     def observe(self) -> str:
         launch = self.channel(STAMP_CHANNEL)
@@ -832,9 +834,6 @@ class MicrosoftDriver(Driver):
         "history": 1,
         "documents": 1,
     }
-    unknown_refusal: ClassVar[tuple[int, str]] = (401, "InvalidAuthenticationToken")
-    """Graph refuses an access token it cannot validate 401 with code `InvalidAuthenticationToken`
-    (https://learn.microsoft.com/en-us/graph/errors; https://learn.microsoft.com/en-us/graph/resolve-auth-errors)."""
 
     def __init__(self) -> None:
         self._people: dict[str, dict[str, Mapping[str, Any]]] = {}

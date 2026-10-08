@@ -27,11 +27,13 @@ from minutehand.application.checkpoint import (
     PendingTimer,
     PendingWake,
     Remembered,
+    Unwritten,
     write_checkpoint,
 )
 from minutehand.application.dues import Dues
 from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_undecided
 from minutehand.application.machine import record_machine, run_machine
+from minutehand.application.moments import automatic_reply, follow_up_of, messages_to, sooner
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
@@ -50,8 +52,8 @@ from minutehand.domain.agent import (
     WakeRequest,
 )
 from minutehand.domain.checks import WakeRecord
-from minutehand.domain.clock import Due, DueKind, next_jump
-from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
+from minutehand.domain.clock import DrawnFrom, Due, DueKind, next_jump
+from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply, Plan
 from minutehand.domain.run import RunRecord, StopReason, wake_limit
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
 from minutehand.domain.world import (
@@ -67,6 +69,7 @@ from minutehand.domain.world import (
 )
 from minutehand.ports.agent import AgentDriver, TakesReplies
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import ModelFailed
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
     ActsOnTickets,
@@ -284,6 +287,7 @@ class Orchestrator:
         self._replies: list[PersonReply] = []
         self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
+        self._unwritten: list[Unwritten] = []
         self._commitments: list[Commitment] | None = None
         self._failure: str | None = None
         self._seen = 0
@@ -370,6 +374,7 @@ class Orchestrator:
             )
         self._dues.resume(list(checkpoint.pending))
         self._fated = list(checkpoint.fated)
+        self._unwritten = list(checkpoint.unwritten)
         self._commitments = checkpoint.commitments
         self._last_report = checkpoint.agent.report
         if replan is not None:
@@ -599,6 +604,7 @@ class Orchestrator:
                 replies=len(self._replies),
                 withdrawn=self._withdrawn,
                 fated=self._fated,
+                unwritten=self._unwritten,
                 commitments=self._commitments,
                 pending=self._dues.items,
                 agent=self._remembered(),
@@ -912,6 +918,7 @@ class Orchestrator:
         placeholder. An edit in a later wake that changes the text is put to the person again unless they
         have already answered that message: a reply still on its way to the edited message is withdrawn and
         decided afresh on the new text."""
+        await self._retry()
         history: list[WorldEvent] | None = None
         shown: dict[EntityRef, WorldEvent] = {}
         for event in new:
@@ -986,10 +993,80 @@ class Orchestrator:
             message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
         )
 
+    def _owed(self) -> list[tuple[EntityRef, datetime]]:
+        """Every answer people owe or gave, by the message it answers: an automatic or withdrawn reply is none."""
+        return [(r.in_reply_to, r.at) for i, r in enumerate(self._replies) if r.answers and i not in self._withdrawn]
+
     async def _ask(self, person: Person, asked: WorldEvent, history: list[WorldEvent]) -> None:
-        reply = await self._replier.decide(person, asked, history, self._clock)
+        """`person` was asked something: their automatic reply if they are away while someone covers; a follow-up on
+        an answer they owe moves that answer only when they declare `reminded`; else whatever they plan to do."""
+        automatic = automatic_reply(self._scenario, person, asked, history, self._replies)
+        if automatic is not None:
+            self._land(person, automatic)
+        owed = self._owed()
+        if isinstance(asked.after, MessageSnapshot) and asked.operation is Operation.CREATE:
+            reminded = follow_up_of(asked, messages_to(person, history), owed)
+            if reminded is not None:
+                self._remind(person, asked, reminded, history)
+                return
+        planned = self._replier.plan(person, asked, history, owed)
+        if planned is None:
+            return
+        await self._write(person, asked, planned, history)
+
+    async def _write(self, person: Person, asked: WorldEvent, planned: Plan, history: list[WorldEvent]) -> None:
+        """The words of what `person` planned, written now; when the model fails, still owed and tried again on the
+        run's next turn (`_retry`), the failure kept with the world."""
+        try:
+            reply = await self._replier.write(person, asked, planned, history, self._store, self._clock)
+        except ModelFailed:
+            self._unwritten.append(Unwritten(person=person.key, asked=asked.seq))
+            return
         if reply is None:
             return
+        if reply.at < self._clock.now():
+            reply = reply.model_copy(update={"at": self._clock.now()})
+        self._land(person, reply)
+
+    async def _retry(self) -> None:
+        """Every answer whose words a model failed to write, tried again now, in the order they were owed."""
+        if not self._unwritten:
+            return
+        waiting, self._unwritten = self._unwritten, []
+        events = self._store.events()
+        by_seq = {e.seq: e for e in events}
+        by_key = {p.key: p for p in self._scenario.people}
+        for owed in waiting:
+            person, asked = by_key[owed.person], by_seq[owed.asked]
+            history = [e for e in events if e.seq <= asked.seq]
+            planned = self._replier.plan(person, asked, history, self._owed())
+            if planned is not None:
+                await self._write(person, asked, planned, history)
+
+    def _remind(self, person: Person, follow_up: WorldEvent, reminded: WorldEvent, history: list[WorldEvent]) -> None:
+        """A follow-up on an answer `person` owes to `reminded`: drawn again from their `reminded.sooner_within`,
+        and moved there when that is sooner; a moment a fork pinned stays."""
+        waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
+        owing = [
+            i
+            for i, r in enumerate(self._replies)
+            if r.in_reply_to == reminded.entity and r.person == person.key and i in waiting and r.answers
+        ]
+        if not owing:
+            return
+        position = owing[-1]
+        reply = self._replies[position]
+        if reply.drawn is not None and reply.drawn.source is DrawnFrom.PINNED:
+            return
+        drawn = sooner(self._scenario, person, follow_up, history, reply.at)
+        if drawn is None:
+            return
+        self._dues.cancel(lambda p: isinstance(p, PendingReply) and p.reply == position)
+        self._withdrawn.append(position)
+        self._land(person, reply.model_copy(update={"at": max(drawn.lands_at, self._clock.now()), "drawn": drawn}))
+
+    def _land(self, person: Person, reply: PersonReply) -> None:
+        """Keep `reply` with the run and put it in the table, due when it lands."""
         if reply.decides is not None:
             if self._inboxes is None or not self._inboxes.holds(reply.in_reply_to):
                 raise RunRefused(f"{person.key} decided on {reply.in_reply_to.provider}, which is no inbox of the run")
@@ -1005,7 +1082,8 @@ class Orchestrator:
             PendingReply(
                 due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{position}"),
                 reply=position,
-            )
+            ),
+            drawn=reply.drawn,
         )
 
     def _fate(self, person: Person, assigned: WorldEvent) -> None:
@@ -1039,6 +1117,7 @@ class Orchestrator:
                 replies=len(self._replies),
                 withdrawn=self._withdrawn,
                 fated=self._fated,
+                unwritten=self._unwritten,
                 commitments=self._commitments,
                 pending=self._dues.items,
                 agent=self._remembered(),

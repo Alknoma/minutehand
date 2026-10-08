@@ -32,16 +32,20 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from minutehand.adapters.providers.microsoft import wire
-from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, bad_request, graph_caller, query
+from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, graph_caller, query
 from minutehand.adapters.providers.microsoft.graph_mail import (
+    RECIPIENTS_INVALID,
     Composed,
     Mail,
     address_of,
-    as_html,
+    body_as_asked,
     mailbox_owner,
     outlook_id,
     plain,
+    preference_applied,
     recipient_of,
+    refuse_unserved_preferences,
+    weak_etag,
 )
 from minutehand.adapters.providers.microsoft.state import (
     CALENDAR,
@@ -55,6 +59,7 @@ from minutehand.adapters.providers.microsoft.state import (
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.subscriptions import calendar_watch, notify
+from minutehand.domain.errors import NotServed
 from minutehand.domain.people import PersonReply
 from minutehand.domain.world import (
     Actor,
@@ -74,11 +79,13 @@ NEVER = "0001-01-01T00:00:00Z"
 
 ANSWERS = {
     "accept": (wire.ResponseKind.ACCEPTED, wire.MeetingMessageType.ACCEPTED, "Accepted"),
-    "tentativelyAccept": (wire.ResponseKind.TENTATIVE, wire.MeetingMessageType.TENTATIVE, "Tentative"),
-    "decline": (wire.ResponseKind.DECLINED, wire.MeetingMessageType.DECLINED, "Declined"),
+    "tentativelyAccept": (wire.ResponseKind.TENTATIVE, wire.MeetingMessageType.TENTATIVE, None),
+    "decline": (wire.ResponseKind.DECLINED, wire.MeetingMessageType.DECLINED, None),
 }
 """Each answer to an invitation, by the action Graph names it with: the attendee's response, the message the
-organizer is sent, and the word its subject opens with."""
+organizer is sent, and the word its subject opens with where a recording shows it: "Accepted: <subject>" is in
+Microsoft's recorded sample of sent items (`graph_mail.DATA_CONNECT_SENT_ITEMS`); no source shows the subject of a
+tentative or declining answer, so theirs is left out."""
 
 REQUEST_ACTIONS = [
     MessageAction(action_id="accept", label="Accept"),
@@ -103,7 +110,7 @@ def moment(sent: wire.SentDateTime) -> datetime:
     try:
         found = datetime.fromisoformat(sent.dateTime.replace("Z", "+00:00"))
     except ValueError as e:
-        raise GraphRefusal(400, "ErrorInvalidRequest", f"'{sent.dateTime}' is not a valid dateTime.") from e
+        raise NotServed(f"the dateTime {sent.dateTime!r}: Graph documents no answer to one it cannot read") from e
     if found.tzinfo is not None:
         return found.astimezone(UTC)
     zone = sent.timeZone or "UTC"
@@ -112,7 +119,7 @@ def moment(sent: wire.SentDateTime) -> datetime:
     try:
         return found.replace(tzinfo=ZoneInfo(zone)).astimezone(UTC)
     except (ZoneInfoNotFoundError, ValueError) as e:
-        raise NotImplementedError(f"the time zone {zone!r}: only UTC and IANA names are read") from e
+        raise NotServed(f"the time zone {zone!r}: only UTC and IANA names are read") from e
 
 
 def outlook_time(at: datetime) -> wire.DateTimeTimeZone:
@@ -120,14 +127,6 @@ def outlook_time(at: datetime) -> wire.DateTimeTimeZone:
     return wire.DateTimeTimeZone(
         dateTime=utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond:06d}0", timeZone="UTC"
     )
-
-
-def described(stored: wire.StoredEvent) -> str:
-    """What a meeting request says: its subject, when and where, and its body."""
-    when = f"{stored.starts:%A %d %B %Y, %H:%M} to {stored.ends:%H:%M} UTC"
-    place = f"\nWhere: {stored.event.location.displayName}" if stored.event.location.displayName else ""
-    body = plain(stored.event.body)
-    return f"When: {when}{place}" + (f"\n\n{body}" if body else "")
 
 
 class Calendar:
@@ -146,7 +145,7 @@ class Calendar:
         """The events in a user's calendar: those they organize and those they are invited to."""
         return [e for e in self._world.events() if e.organizer_id == user.user.id or self.attends(e, user) is not None]
 
-    def seen_by(self, stored: wire.StoredEvent, user: UserRecord) -> wire.Event:
+    def seen_by(self, stored: wire.StoredEvent, user: UserRecord, request: Request | None = None) -> wire.Event:
         organizer = stored.organizer_id == user.user.id
         attendee = self.attends(stored, user)
         status = (
@@ -156,7 +155,8 @@ class Calendar:
             if attendee is not None
             else wire.ResponseStatus(response=wire.ResponseKind.NONE)
         )
-        return stored.event.model_copy(update={"isOrganizer": organizer, "responseStatus": status})
+        body = body_as_asked(request, stored.event.body) if request is not None else stored.event.body
+        return stored.event.model_copy(update={"isOrganizer": organizer, "responseStatus": status, "body": body})
 
     def _found(self, user: UserRecord, event: str) -> wire.StoredEvent:
         stored = self._world.event(event)
@@ -167,7 +167,8 @@ class Calendar:
     # ------------------------------------------------------------------ Graph
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
+        refuse_unserved_preferences(request)
         owner, rest = mailbox_owner(self._world, claims, parts)
         method = request.method
         if rest[:1] == ["calendar"] and rest[1:2] in (["events"], ["calendarView"], ["getSchedule"]):
@@ -195,24 +196,24 @@ class Calendar:
                 try:
                     asked = wire.read(wire.EventResponseRequest, await request.body())
                 except wire.Unreadable as e:
-                    raise bad_request(e.message) from e
+                    raise NotServed(
+                        f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+                    ) from e
                 if stored.organizer_id == owner.user.id:
-                    raise GraphRefusal(
-                        400,
-                        "ErrorInvalidRequest",
-                        "Your request can't be completed. You can't respond to your own meeting.",
+                    raise NotServed(
+                        f"{rest[2]} by the organizer of the meeting: Graph's answer is not documented or recorded"
                     )
                 await self.respond(
                     stored, owner, rest[2], actor=Actor.AGENT, send=asked.sendResponse, comment=asked.comment
                 )
                 return Response(status_code=202)
-        raise NotImplementedError(f"{method} /{'/'.join(parts)}")
+        raise NotServed(f"{method} /{'/'.join(parts)}")
 
     def _one(self, request: Request, owner: UserRecord, stored: wire.StoredEvent, status: int = 200) -> Response:
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
         context = f"{GRAPH}/$metadata#users('{owner.user.id}')/events/$entity"
-        body = wire.select(wire.with_context(wire.dump(self.seen_by(stored, owner)), context), fields)
-        return Response(body, status_code=status, media_type=GRAPH_JSON)
+        body = wire.select(wire.with_context(wire.dump(self.seen_by(stored, owner, request)), context), fields)
+        return Response(body, status_code=status, media_type=GRAPH_JSON, headers=preference_applied(request))
 
     def _calendars(self, owner: UserRecord, *, single: bool) -> Response:
         calendar = wire.CalendarResource(
@@ -234,7 +235,7 @@ class Calendar:
         if not text:
             return events
         if re.search(r"\s+or\s+|\bnot\b", text, flags=re.IGNORECASE):
-            raise NotImplementedError(f"$filter with 'or' or 'not' on events: {text}")
+            raise NotServed(f"$filter with 'or' or 'not' on events: {text}")
         found = events
         for part in re.split(r"\s+and\s+(?=(?:[^']*'[^']*')*[^']*$)", text.strip(), flags=re.IGNORECASE):
             when = re.fullmatch(r"\s*(start|end)/dateTime\s+(eq|ne|gt|ge|lt|le)\s+'([^']+)'\s*", part)
@@ -248,18 +249,20 @@ class Calendar:
                 wanted = subject.group(1).replace("''", "'")
                 found = [e for e in found if e.event.subject == wanted]
             else:
-                raise NotImplementedError(f"$filter clause on events: {part.strip()}")
+                raise NotServed(f"$filter clause on events: {part.strip()}")
         return found
 
     def _listed(self, request: Request, owner: UserRecord, events: list[wire.StoredEvent], where: str) -> Response:
         for option in ("$search", "$expand", "$count", "$skiptoken"):
             if option in request.query_params:
-                raise NotImplementedError(f"{option} on events")
+                raise NotServed(f"{option} on events")
         found = self._filtered(events, query(request, "$filter"))
-        order = (query(request, "$orderby") or "start/dateTime").strip()
-        side, _, direction = order.partition(" ")
+        order = (query(request, "$orderby") or "").strip()
+        if not order and len(found) > 1:
+            raise NotServed("listing events without $orderby: Graph documents no order for them (user-list-events)")
+        side, _, direction = (order or "start/dateTime").partition(" ")
         if side not in ("start/dateTime", "end/dateTime") or direction.lower() not in ("", "asc", "desc"):
-            raise NotImplementedError(f"$orderby on events: {order}")
+            raise NotServed(f"$orderby on events: {order}")
         found = sorted(
             found, key=lambda e: e.starts if side == "start/dateTime" else e.ends, reverse=direction.lower() == "desc"
         )
@@ -267,9 +270,9 @@ class Calendar:
         if (top is not None and (not top.isdigit() or not 1 <= int(top) <= PAGE_MAX)) or (
             skip is not None and not skip.isdigit()
         ):
-            raise bad_request(f"Invalid paging: $top must be 1 to {PAGE_MAX} and $skip a whole number.")
+            raise NotServed(f"$top={top} $skip={skip}: the page names $top 1 to {PAGE_MAX}, and no answer to more")
         size, offset = int(top) if top else PAGE_DEFAULT, int(skip) if skip else 0
-        page = [self.seen_by(e, owner) for e in found[offset : offset + size]]
+        page = [self.seen_by(e, owner, request) for e in found[offset : offset + size]]
         following = None
         if offset + size < len(found):
             kept = "&".join(
@@ -287,15 +290,13 @@ class Calendar:
             )
         )
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
-        return Response(wire.select_page(body, fields), media_type=GRAPH_JSON)
+        return Response(wire.select_page(body, fields), media_type=GRAPH_JSON, headers=preference_applied(request))
 
     def _window(self, start: str | None, end: str | None) -> tuple[datetime, datetime]:
         if not start or not end:
-            raise GraphRefusal(
-                400,
-                "ErrorInvalidParameter",
-                "This request requires a time window specified by the query string parameters StartDateTime and "
-                "EndDateTime.",
+            raise NotServed(
+                "calendarView without startDateTime and endDateTime: the page names both required and documents no "
+                "answer without them"
             )
         return moment(wire.SentDateTime(dateTime=start)), moment(wire.SentDateTime(dateTime=end))
 
@@ -306,26 +307,19 @@ class Calendar:
 
     # ------------------------------------------------------------------ making and changing
 
-    def _attendees(self, sent: list[wire.SentAttendee], organizer: UserRecord) -> list[wire.Attendee]:
+    @staticmethod
+    def _attendees(sent: list[wire.SentAttendee]) -> list[wire.Attendee]:
+        """The attendees as sent, each one's `status` Graph's own (none yet)."""
         found: list[wire.Attendee] = []
-        seen: set[str] = {address_of(organizer).lower()}
         for a in sent:
             address = a.emailAddress.address
             if not address or "@" not in address:
-                raise GraphRefusal(400, "ErrorInvalidRecipients", f"An attendee's address is not valid: '{address}'.")
-            canonical = self._mail.canonical(address)
-            if canonical.lower() in seen:
-                continue
-            seen.add(canonical.lower())
-            user = self._world.user_by(canonical)
+                raise GraphRefusal(400, "ErrorInvalidRecipients", RECIPIENTS_INVALID)
             found.append(
                 wire.Attendee(
                     type=a.type,
                     status=wire.ResponseStatus(response=wire.ResponseKind.NONE),
-                    emailAddress=wire.EmailAddress(
-                        name=a.emailAddress.name or (user.user.displayName if user is not None else None),
-                        address=canonical,
-                    ),
+                    emailAddress=wire.EmailAddress(name=a.emailAddress.name, address=address),
                 )
             )
         return found
@@ -336,14 +330,20 @@ class Calendar:
             return wire.ItemBody(contentType="html", content="")
         kind = sent.contentType.lower()
         if kind not in ("text", "html"):
-            raise bad_request(f"'{sent.contentType}' is not a body content type: text or html.")
-        return as_html(wire.ItemBody(contentType=kind, content=sent.content))  # type: ignore[arg-type]
+            raise NotServed(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
+        return wire.ItemBody(contentType=kind, content=sent.content)  # type: ignore[arg-type]
 
     async def _create(self, request: Request, owner: UserRecord) -> Response:
         try:
             asked = wire.read(wire.EventRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        unread = sorted(str(n) for n in (asked.model_extra or {}))
+        if unread or asked.isOnlineMeeting:
+            raise NotServed(
+                f"the event properties {', '.join([*unread, *(['isOnlineMeeting'] if asked.isOnlineMeeting else [])])}"
+                ": they would not be kept or acted on as sent"
+            )
         if asked.transactionId:
             again = next(
                 (
@@ -356,10 +356,10 @@ class Calendar:
             if again is not None:
                 return self._one(request, owner, again, 201)
         if asked.start is None or asked.end is None:
-            raise GraphRefusal(400, "ErrorInvalidRequest", "An event needs both 'start' and 'end'.")
+            raise NotServed("an event without both start and end: Graph documents no answer to it")
         starts, ends = moment(asked.start), moment(asked.end)
         if ends < starts:
-            raise GraphRefusal(400, "ErrorInvalidRequest", "The event's end is before its start.")
+            raise NotServed("an event whose end is before its start: Graph's answer is not documented or recorded")
         stored = self.make(
             owner,
             subject=asked.subject or "",
@@ -367,10 +367,9 @@ class Calendar:
             starts=starts,
             ends=ends,
             location=asked.location.displayName if asked.location is not None else "",
-            attendees=self._attendees(asked.attendees or [], owner),
+            attendees=self._attendees(asked.attendees or []),
             actor=Actor.AGENT,
             transaction=asked.transactionId,
-            online=bool(asked.isOnlineMeeting),
         )
         if stored.event.attendees:
             stored = await self._invite(stored, owner, stored.event.attendees)
@@ -389,7 +388,6 @@ class Calendar:
         attendees: list[wire.Attendee],
         actor: Actor,
         transaction: str | None = None,
-        online: bool = False,
         seeded: str | None = None,
     ) -> wire.StoredEvent:
         """Write a new event in `organizer`'s calendar, inviting nobody yet. `seeded` names an event the scenario
@@ -403,6 +401,7 @@ class Calendar:
                 createdDateTime=now,
                 lastModifiedDateTime=now,
                 changeKey=outlook_id(event_id, now),
+                odata_etag=weak_etag(outlook_id(event_id, now)),
                 iCalUId="040000008200E00074C5B7101A82E008" + outlook_id(event_id, "ical").removeprefix("AAMkA")[:32],
                 transactionId=transaction,
                 subject=subject,
@@ -415,7 +414,6 @@ class Calendar:
                 organizer=recipient_of(organizer),
                 isOrganizer=True,
                 responseStatus=wire.ResponseStatus(response=wire.ResponseKind.ORGANIZER, time=now),
-                isOnlineMeeting=online,
                 webLink=f"https://outlook.office365.com/owa/?itemid={event_id}&exvsurl=1&path=/calendar/item",
             ),
             organizer_id=organizer.user.id,
@@ -437,7 +435,7 @@ class Calendar:
             Composed(
                 sender=organizer,
                 subject=stored.event.subject,
-                body=wire.ItemBody(contentType="text", content=described(stored)),
+                body=stored.event.body,
                 to=[wire.Recipient(emailAddress=a.emailAddress) for a in attendees],
                 conversation=stored.conversation,
                 meeting=wire.MeetingMessageType.REQUEST,
@@ -454,20 +452,18 @@ class Calendar:
         try:
             asked = wire.read(wire.EventRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         extra = sorted(asked.model_extra or {})
         if extra or asked.transactionId is not None:
-            raise NotImplementedError(
+            raise NotServed(
                 f"PATCH of {', '.join([*extra, *(['transactionId'] if asked.transactionId else [])])} on an event"
             )
         if stored.organizer_id != owner.user.id:
-            raise NotImplementedError(
-                "an attendee's own changes to an event: an event here is its organizer's one item"
-            )
+            raise NotServed("an attendee's own changes to an event: an event here is its organizer's one item")
         starts = moment(asked.start) if asked.start is not None else stored.starts
         ends = moment(asked.end) if asked.end is not None else stored.ends
         if ends < starts:
-            raise GraphRefusal(400, "ErrorInvalidRequest", "The event's end is before its start.")
+            raise NotServed("an event whose end is before its start: Graph's answer is not documented or recorded")
         event = stored.event
         subject = asked.subject if asked.subject is not None else event.subject
         place = asked.location.displayName if asked.location is not None else event.location.displayName
@@ -483,7 +479,7 @@ class Calendar:
             kept = {a.emailAddress.address.lower(): a for a in event.attendees}
             attendees = [
                 kept[a.emailAddress.address.lower()] if a.emailAddress.address.lower() in kept else a
-                for a in self._attendees(asked.attendees, owner)
+                for a in self._attendees(asked.attendees)
             ]
             added = [a for a in attendees if a.emailAddress.address.lower() not in kept]
         if moved:
@@ -505,6 +501,7 @@ class Calendar:
                         "attendees": attendees,
                         "lastModifiedDateTime": now,
                         "changeKey": outlook_id(event.id, now),
+                        "odata_etag": weak_etag(outlook_id(event.id, now)),
                     }
                 ),
                 "starts": starts,
@@ -523,7 +520,7 @@ class Calendar:
 
     def _delete(self, owner: UserRecord, stored: wire.StoredEvent) -> Response:
         if stored.organizer_id != owner.user.id:
-            raise NotImplementedError(
+            raise NotServed(
                 "an attendee removing an event from their own calendar: an event here is its organizer's one item"
             )
         self._world.remove(
@@ -569,7 +566,11 @@ class Calendar:
         changed = stored.model_copy(
             update={
                 "event": stored.event.model_copy(
-                    update={"attendees": attendees, "changeKey": outlook_id(stored.event.id, now, mine)}
+                    update={
+                        "attendees": attendees,
+                        "changeKey": outlook_id(stored.event.id, now, mine),
+                        "odata_etag": weak_etag(outlook_id(stored.event.id, now, mine)),
+                    }
                 )
             }
         )
@@ -584,8 +585,9 @@ class Calendar:
             await self._mail.send(
                 Composed(
                     sender=user,
-                    subject=f"{word}: {stored.event.subject}",
-                    body=wire.ItemBody(contentType="text", content=comment),
+                    subject=f"{word}: {stored.event.subject}" if word is not None else None,
+                    body=None,
+                    said=comment,
                     to=[recipient_of(organizer)],
                     conversation=stored.conversation,
                     meeting=meeting,
@@ -665,27 +667,23 @@ class Calendar:
         try:
             asked = wire.read(wire.ScheduleRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         start, end = moment(asked.startTime), moment(asked.endTime)
         if end <= start:
-            raise GraphRefusal(400, "ErrorInvalidRequest", "The schedule's endTime must be after its startTime.")
+            raise NotServed("getSchedule whose endTime is not after its startTime: Graph documents no answer")
         if not 5 <= asked.availabilityViewInterval <= 1440:
-            raise GraphRefusal(400, "ErrorInvalidRequest", "availabilityViewInterval must be from 5 to 1440 minutes.")
+            raise NotServed(
+                f"availabilityViewInterval {asked.availabilityViewInterval}: the page names 5 to 1440, and no answer to"
+                " another"
+            )
         step = timedelta(minutes=asked.availabilityViewInterval)
         found: list[wire.ScheduleInformation] = []
         for address in asked.schedules:
             user = self._world.user_by(address)
             if user is None:
-                found.append(
-                    wire.ScheduleInformation(
-                        scheduleId=address,
-                        error=wire.FreeBusyError(
-                            message="The specified recipient could not be found.",
-                            responseCode="ErrorMailRecipientNotFound",
-                        ),
-                    )
+                raise NotServed(
+                    f"getSchedule for {address!r}, who has no mailbox in the tenant: Graph's answer is not recorded"
                 )
-                continue
             items = self._busy(user, start, end)
             view = ""
             slot = start

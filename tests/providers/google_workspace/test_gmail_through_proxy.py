@@ -17,7 +17,7 @@ from minutehand.adapters.providers.google_workspace.seed import SeededEmail, Wor
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Scripted, SignIn
+from minutehand.domain.scenario import AfterScript, Person, ProviderSeed, Scenario, Scripted, SignIn
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation
 from tests.providers.google_workspace.proxied import REFRESH, START, serving
 
@@ -33,9 +33,11 @@ def scenario(emails: list[SeededEmail] | None = None) -> Scenario:
         owner="mara",
         starts_at=START,
         people=[
-            Person(key="mara", name="Mara Lindqvist", email="mara@example.com", reply=Scripted(replies=[])),
-            Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(replies=[])),
-            Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(replies=[])),
+            Person(
+                key="mara", name="Mara Lindqvist", email="mara@example.com", reply=Scripted(then=AfterScript.SILENT)
+            ),
+            Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(then=AfterScript.SILENT)),
+            Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(then=AfterScript.SILENT)),
         ],
         sign_ins=[
             SignIn(provider="google_workspace", credential=REFRESH, person="mara"),

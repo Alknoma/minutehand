@@ -96,7 +96,7 @@ async def test_the_count_reads_the_same_language(yt: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.parametrize(
-    ("query", "description"),
+    ("query", "child"),
     [
         ("State: Done", 'The value "Done" isn\'t used for the State field.'),
         ("project: LAUNCH Priority: {P0 - Outage}", 'The value "P0 - Outage" isn\'t used for the Priority field.'),
@@ -104,19 +104,34 @@ async def test_the_count_reads_the_same_language(yt: httpx.AsyncClient) -> None:
         ("tag: nosuch", 'The value "nosuch" isn\'t used for the tag field.'),
         ("project: NOPE", 'The value "NOPE" isn\'t used for the project field.'),
         ("Due Date: soon", 'The value "soon" isn\'t used for the Due Date field.'),
-        ("(State: Open)", "Cannot parse search query '(State: Open)': parentheses are not read"),
-        ("Severity: High", "Cannot parse search query 'Severity: High': no field is called 'Severity'"),
-        (
-            "project: LAUNCH sort by: Wibble",
-            "Cannot parse search query 'project: LAUNCH sort by: Wibble': cannot sort by 'Wibble'",
-        ),
-        ("State: {In Progress", "Cannot parse search query 'State: {In Progress': a brace is left open"),
+        ("project: LAUNCH sort by: Wibble", "Sort field is expected."),
     ],
 )
-async def test_a_query_the_fake_cannot_read_is_refused_400_never_answered(
-    yt: httpx.AsyncClient, query: str, description: str
+async def test_a_query_naming_what_nothing_has_is_refused_400_never_answered(
+    yt: httpx.AsyncClient, query: str, child: str
 ) -> None:
+    """As JetBrains' public instance answers (`data/observed/query_value_not_used.http`,
+    `query_sort_field_unknown.http`)."""
     refused = refusal(await yt.get("/api/issues", params={"query": query, "fields": "idReadable"}), 400)
     counted = refusal(await yt.post("/api/issuesGetter/count", params={"fields": "count"}, json={"query": query}), 400)
 
-    assert refused == {"error": "invalid_query", "error_description": description} == counted
+    assert (
+        refused
+        == counted
+        == {
+            "error": "invalid_query",
+            "error_description": "Can't parse search query, please check and update query syntax",
+            "error_developer_message": "Can't parse search query",
+            "error_field": "query",
+            "error_children": [{"error": child, "error_description": ""}],
+        }
+    )
+
+
+@pytest.mark.parametrize("query", ["(State: Open)", "Severity: High", "State: {In Progress"])
+async def test_a_query_the_fake_cannot_read_is_refused_501_naming_it(yt: httpx.AsyncClient, query: str) -> None:
+    """The public instance reads parentheses and an unknown attribute (`data/observed/query_parentheses.http`,
+    `query_attribute_unknown.http`); this fake does not, and says so rather than inventing an error."""
+    refused = refusal(await yt.get("/api/issues", params={"query": query, "fields": "idReadable"}), 501)
+
+    assert repr(query) in str(refused["error_description"])

@@ -1,0 +1,24 @@
+HTTP/1.1 404 Not Found
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:33 GMT
+Server: AtlassianEdge
+Vary: Accept-Encoding
+Timing-Allow-Origin: *
+X-Arequestid: 3248503e26cf4ad471718f4a2c7052b6
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: c1d451d747cb42e785d3cab0e3dea78f
+Atl-Request-Id: c1d451d7-47cb-42e7-85d3-cab0e3dea78f
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=225,atl-edge-internal;dur=44,atl-edge-upstream;dur=181,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 270422e8437423d7517c53ffc5f4f118.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P2
+X-Amz-Cf-Id: jT3bUorD2U_ZCGy_q8WMSHDezEYIGCV8xJ0SGIt0rCKvZ4WiBVkD6A==
+
+{"errorMessages":["Issue does not exist or you do not have permission to see it."],"errors":{}}

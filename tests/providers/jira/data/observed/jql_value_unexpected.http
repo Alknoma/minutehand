@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:10:31 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: b8ee6dceaa6662bff6c01f437a8f1841
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 2017f0086ad644699e63ffff61c34c05
+Atl-Request-Id: 2017f008-6ad6-4469-9e63-ffff61c34c05
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=175,atl-edge-internal;dur=25,atl-edge-upstream;dur=150,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 afbc92b5d429c9d302ae27205c21263e.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P1
+X-Amz-Cf-Id: AG1T9wfEoUNHa8kTGapsYOgOYIzR5XBC0yaAaRMxZ-4hr7P5oGlfpA==
+
+{"errorMessages":["Error in JQL Query: Expecting either a value, list or function but got '='. You must surround '=' in quotation marks to use it as a value. (line 1, character 28)"],"errors":{}}

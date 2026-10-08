@@ -36,46 +36,41 @@ async def test_client_credentials_tokens_name_the_app_tenant_and_audience(
         ] == tenant.directory.bot_app_id
 
 
-async def _refusal(http: httpx.AsyncClient, tenant: Tenant, path: str, **form: str) -> tuple[int, str, str]:
-    answered = await http.post(f"{LOGIN}/{path}/oauth2/v2.0/token", data=form)
-    body = answered.json()
-    return answered.status_code, body["error"], body["error_description"].split(":")[0]
+async def _asked(http: httpx.AsyncClient, path: str, **form: str) -> httpx.Response:
+    return await http.post(f"{LOGIN}/{path}/oauth2/v2.0/token", data=form)
 
 
-async def test_a_wrong_secret_an_unknown_tenant_a_bad_scope_and_an_unknown_grant_are_refused(
-    tenant: Tenant, microsoft: Intercepted
-) -> None:
+async def test_any_secret_any_client_and_any_tenant_get_a_token(tenant: Tenant, microsoft: Intercepted) -> None:
+    """Minutehand does not enforce credentials: a wrong secret, no secret, an app id no directory holds and a tenant
+    the world does not hold are each answered with a token; the client id is its `appid` as sent."""
+    d = tenant.directory
+    graph = "https://graph.microsoft.com/.default"
+    good = {"grant_type": "client_credentials", "client_id": d.bot_app_id, "scope": graph}
+    async with microsoft.http() as http:
+        wrong = await _asked(http, d.tenant_id, **{**good, "client_secret": "nope"})
+        none = await _asked(http, d.tenant_id, **good)
+        stranger = await _asked(http, d.tenant_id, **{**good, "client_id": "someone-else", "client_secret": "x"})
+        elsewhere = await _asked(http, "00000000-0000-0000-0000-000000000000", **{**good, "client_secret": "x"})
+        for answered in (wrong, none, stranger, elsewhere):
+            assert answered.status_code == 200, answered.text
+        claims = jwt.decode(stranger.json()["access_token"], options={"verify_signature": False})
+        assert (claims["appid"], claims["tid"]) == ("someone-else", d.tenant_id)
+        assert "roles" not in claims
+        assert jwt.decode(elsewhere.json()["access_token"], options={"verify_signature": False})["tid"] == d.tenant_id
+
+
+async def test_a_bad_scope_and_an_unknown_grant_are_refused(tenant: Tenant, microsoft: Intercepted) -> None:
+    """The protocol's own refusals, which no credential decides: a client-credentials scope without `/.default`
+    (AADSTS1002012) and a grant type the endpoint has none of (AADSTS70003)."""
     d = tenant.directory
     good = {"grant_type": "client_credentials", "client_id": d.bot_app_id, "client_secret": d.bot_app_secret}
     async with microsoft.http() as http:
-        assert await _refusal(
-            http,
-            tenant,
-            d.tenant_id,
-            **{**good, "client_secret": "nope", "scope": "https://graph.microsoft.com/.default"},
-        ) == (401, "invalid_client", "AADSTS7000215")
-        assert await _refusal(
-            http,
-            tenant,
-            "00000000-0000-0000-0000-000000000000",
-            **{**good, "scope": "https://graph.microsoft.com/.default"},
-        ) == (400, "invalid_request", "AADSTS90002")
-        assert await _refusal(http, tenant, d.tenant_id, **{**good, "scope": "Files.Read"}) == (
-            400,
-            "invalid_scope",
-            "AADSTS1002012",
-        )
-        assert await _refusal(http, tenant, d.tenant_id, **{**good, "grant_type": "password", "scope": "x"}) == (
-            400,
-            "unsupported_grant_type",
-            "AADSTS70003",
-        )
-        assert await _refusal(
-            http,
-            tenant,
-            d.tenant_id,
-            **{**good, "client_id": "someone-else", "scope": "https://graph.microsoft.com/.default"},
-        ) == (400, "unauthorized_client", "AADSTS700016")
+        scope = await _asked(http, d.tenant_id, **{**good, "scope": "Files.Read"})
+        grant = await _asked(http, d.tenant_id, **{**good, "grant_type": "password", "scope": "x"})
+    assert (scope.status_code, scope.json()["error"]) == (400, "invalid_scope")
+    assert scope.json()["error_description"].startswith("AADSTS1002012")
+    assert (grant.status_code, grant.json()["error"]) == (400, "unsupported_grant_type")
+    assert grant.json()["error_description"].startswith("AADSTS70003")
 
 
 async def test_a_user_signs_in_by_code_refreshes_and_reads_themself(tenant: Tenant, microsoft: Intercepted) -> None:
@@ -135,16 +130,21 @@ async def test_a_user_signs_in_by_code_refreshes_and_reads_themself(tenant: Tena
         ).status_code == 200
 
 
-async def test_authorize_without_a_user_named_is_refused(tenant: Tenant, microsoft: Intercepted) -> None:
+async def test_authorize_without_a_user_named_is_refused_as_not_served(tenant: Tenant, microsoft: Intercepted) -> None:
+    """No browser asks who signs in, so authorize without `login_hint` is not served, by name (501)."""
     async with microsoft.http() as http:
         answered = await http.get(
             f"{LOGIN}/common/oauth2/v2.0/authorize",
             params={"client_id": tenant.directory.bot_app_id, "redirect_uri": REDIRECT, "response_type": "code"},
         )
-    assert answered.status_code == 400 and answered.json()["error"] == "invalid_request"
+    assert answered.status_code == 501
+    assert "login_hint" in answered.text
 
 
-async def test_a_code_presented_twice_with_another_redirect_is_refused(tenant: Tenant, microsoft: Intercepted) -> None:
+async def test_a_code_presented_with_another_redirect_and_another_client_still_signs_the_user_in(
+    tenant: Tenant, microsoft: Intercepted
+) -> None:
+    """Minutehand does not enforce credentials: a code is read only for the user it names."""
     d = tenant.directory
     async with microsoft.http() as http:
         authorized = await http.get(
@@ -156,10 +156,12 @@ async def test_a_code_presented_twice_with_another_redirect_is_refused(tenant: T
             f"{LOGIN}/{d.tenant_id}/oauth2/v2.0/token",
             data={
                 "grant_type": "authorization_code",
-                "client_id": d.bot_app_id,
-                "client_secret": d.bot_app_secret,
+                "client_id": "another-client",
+                "client_secret": "wrong",
                 "code": code,
                 "redirect_uri": "https://elsewhere.example.com/cb",
             },
         )
-    assert answered.status_code == 400 and answered.json()["error"] == "invalid_grant"
+        assert answered.status_code == 200, answered.text
+        me = await http.get(f"{GRAPH}/me", headers=bearer(answered.json()["access_token"]))
+    assert me.json()["mail"] == "sofia@example.com"

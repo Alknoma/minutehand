@@ -216,6 +216,10 @@ jobs:
           AGENT_BEHAVIOUR: diligent
         run: |
           "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
+          # Rosa's words are a model's: the recipes' stand-in writes them offline, as the example's README says.
+          "$RUNNER_TEMP/venv/bin/python" ../recipes/fake_model.py &
+          until "$RUNNER_TEMP/venv/bin/python" -c 'import socket; socket.create_connection(("127.0.0.1", 8790), 1)' 2>/dev/null; do sleep 0.2; done
+          export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
           "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \
             -- "$RUNNER_TEMP/venv/bin/python" agent.py
       - name: The image the action built

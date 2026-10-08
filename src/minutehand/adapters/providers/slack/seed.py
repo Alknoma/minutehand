@@ -67,7 +67,9 @@ class WorkspaceSeed(Model, Keyed):
     app_id: str = Field(default=state.APP_ID, pattern=r"^A[A-Z0-9]+$")
     bot_name: str = state.BOT_NAME
     tokens: list[str] = Field(
-        default=[], description="Bot tokens this workspace accepts, each selecting it; none: any xoxb-/xoxp- token"
+        default=[],
+        description="Tokens that select this workspace; any other token is answered in the first workspace that "
+        "declares none, else the first",
     )
     members: list[str] | None = Field(default=None, description="Person.key of each member; None: every person")
     oauth_code: str | None = Field(default=None, description="The install code `oauth.v2.access` answers it for")
@@ -253,15 +255,6 @@ def _workspace(
         actor=Actor.SCENARIO,
         parent=state.APP,
     )
-
-    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
-        slack.write(
-            state.sign_in_ref(sign_in.credential),
-            wire.SlackSignIn(user=None if sign_in.person is None else state.user_id(sign_in.person)),
-            operation=Operation.CREATE,
-            actor=Actor.SCENARIO,
-            parent=state.SIGN_INS,
-        )
 
     general = wire.SlackChannel(
         id=state.named_channel_id(state.GENERAL, team),

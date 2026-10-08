@@ -5,10 +5,12 @@ their teams, the workspace, teams, projects (create, members, sections, custom f
 settings), custom fields (enum, multi-enum, text, number, date, people) and their
 values on tasks, tags, tasks (create, read, update, delete, list, search, typeahead,
 subtasks, parent, section moves, tags) and comment stories; seeded tokens mapped to
-users, the OAuth refresh at `/-/oauth_token`, the free-plan 402 and throttling 429. A
-field or parameter Asana has and this provider does not is answered 501 by name, never
-ignored, and so is `/webhooks`; a route not served at all (attachments, user task
-lists, portfolios, goals) is answered Asana's 404 "No matching route for request".
+users (any other token acts as the agent: credentials are not enforced), the OAuth
+refresh at `/-/oauth_token`, the free-plan 402 and throttling 429. Every other operation
+of Asana's OpenAPI document under those resources (webhooks, events, attachments and
+memberships among them), and every field or parameter Asana has and this provider does
+not, is answered 501 by name, never ignored; a route Asana does not have, or one under a
+resource not claimed (portfolios, goals), is Asana's 404 "No matching route for request".
 """
 
 from __future__ import annotations

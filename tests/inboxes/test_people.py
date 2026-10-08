@@ -17,7 +17,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import checkpoints
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier_model import DECISION_PROMPT_VERSION, PeopleReplier, WrittenDecision, WrittenInput
+from minutehand.application.replier import DECISION_PROMPT_VERSION, PeopleReplier, WrittenDecision, WrittenInput
 from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.traffic import SeenCall
@@ -153,7 +153,7 @@ async def _fork(tmp_path: Path, product: Product, change: list[Override]) -> lis
         agent=agent,
         reach=Reach(main=driver),
         services=Services(providers=[]),
-        replier_for=lambda s: PeopleReplier(s, None, [declared]),
+        replier_for=lambda s, pins: PeopleReplier(s, None, [declared], pins=pins),
         state_dir=tmp_path / "state",
         traffic=_Quiet(),
         inboxes=Inboxes(scn, [reach]),

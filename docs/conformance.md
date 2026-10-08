@@ -23,9 +23,9 @@ It is marked `conformance` and runs in the default test run (`uv run pytest -q -
 | 1 | Seeded is held or refused | Every field of the shared seed models, seeded with a distinctive value, is read back through the vendor's API (and the neutral view, where it has a field for it), or creating the world is refused naming the field and the provider. Never accepted and absent. |
 | 2 | Family equivalence | The same lifecycle driven through each provider of a family leaves the neutral record the neutral model states, and the same whole neutral sequence as the family's first provider. |
 | 3 | What people do, everywhere | Every happening and control-API act of a family works on each provider of it — seen through the vendor's API as that person's, recorded as theirs at the world's clock — or is refused at the call naming the provider. So are account changes and permissions. |
-| 4 | Any account can act | A member, an account with no email, one known by a vendor login, a bot: each signs in when it has a credential, is listed, is assigned / messaged / shared with, acts through the control API, is deactivated — or that operation is refused with its reason; never "no such person". |
+| 4 | Any account can act | A member, an account with no email, one known by a vendor login, a bot: each signs in when it has a credential, is listed, is assigned / messaged / shared with, acts through the control API, is deactivated — or that operation is refused with its reason; never "no such person". Any credential, none and one nobody seeded included, is accepted and acts as the seed's default identity (the account the world's own credential acts as). |
 | 5 | Ids are stable | Every seeded thing's vendor id is the same after a live addition and in a second world whose seed lists one more of each kind first; ids match the vendor's documented format; a seed that may declare an id gets exactly it. |
-| 6 | The record is complete and verbatim | Every request is in the world's calls once, in order, byte-identical both ways (binary too), with no credential kept; an unknown credential is refused as the vendor refuses it and kept unclaimed. |
+| 6 | The record is complete and verbatim | Every request is in the world's calls once, in order, byte-identical both ways (binary too), with no credential kept. |
 | 7 | State lives only in the record | Reset returns the seeded answers; a world reopened in a used server answers as in a fresh one; two worlds changed at once never see each other. |
 | 8 | Time is the world's | What is created after the clock is set to an unusual moment carries that moment in the vendor's format; advancing moves new timestamps and nothing else. |
 | 9 | Faults | Every fault kind a provider declares can be declared on a live world, answers the vendor's documented status and shape through its real client library (its typed error), is consumed or expires, and is recorded; an armed fault answers once and is recorded. |
@@ -54,7 +54,7 @@ The driver defines `DRIVER`, an instance of a `Driver` subclass (`tests/conforma
 - `connect(api, world, person=None)`: a session as the agent or a person. Every request goes through `api.http`,
   which keeps what was sent and answered for property 6.
 - `id_formats` (a documented regular expression per kind, its source cited beside it), `page_floor`,
-  `unknown_refusal`, `vendor_login`, and where the provider has them `faults()`, `declared_ids()`, `permission()`,
+  `vendor_login`, and where the provider has them `faults()`, `declared_ids()`, `permission()`,
   `signed_in()`.
 - `absent`: capability → the vendor's reason it has no such thing. Names come from `CAPABILITIES`; each declared
   exception is reported at the end of the run under "declared vendor exceptions", never silently skipped.
@@ -80,7 +80,7 @@ Generated from a run of `test/conformance` with `integration-main` merged (`eb06
 |---|---|---|---|---|---|---|---|---|---|---|
 | asana | 8 / 3 / 3 | 0 / 1 / 0 | 9 / 6 / 0 | 1 / 0 / 3 | 1 / 1 / 1 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | aws | 0 / 1 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 1 / 1 / 0 | 2 / 0 / 1 | 0 / 1 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
-| github | 0 / 5 / 2 | — | 4 / 0 / 0 | 0 / 4 / 0 | 0 / 2 / 1 | 0 / 2 / 0 | 0 / 3 / 0 | 0 / 1 / 0 | 4 / 0 / 0 | 0 / 1 / 0 |
+| github | 0 / 5 / 2 | — | 4 / 0 / 0 | 3 / 1 / 0 | 0 / 2 / 1 | 0 / 2 / 0 | 0 / 3 / 0 | 0 / 1 / 0 | 4 / 0 / 0 | 0 / 1 / 0 |
 | google_cloud_tasks | 1 / 0 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 0 / 1 / 1 | 3 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
 | google_workspace | 8 / 2 / 16 | 0 / 1 / 2 | 11 / 1 / 12 | 0 / 0 / 4 | 0 / 1 / 2 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 11 / 0 / 0 | 1 / 0 / 2 |
 | jira | 7 / 5 / 2 | 1 / 1 / 0 | 15 / 0 / 0 | 2 / 1 / 1 | 2 / 1 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
@@ -88,7 +88,7 @@ Generated from a run of `test/conformance` with `integration-main` merged (`eb06
 | notion | 2 / 5 / 9 | 0 / 2 / 0 | 9 / 1 / 1 | 0 / 0 / 4 | 1 / 1 / 1 | 1 / 2 / 0 | 3 / 0 / 0 | 0 / 1 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
 | slack | 15 / 2 / 0 | 2 / 2 / 0 | 17 / 0 / 0 | 0 / 3 / 1 | 3 / 0 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 5 / 0 / 0 | 2 / 0 / 0 |
 | youtrack | 7 / 4 / 3 | 1 / 1 / 0 | 15 / 0 / 0 | 1 / 2 / 1 | 2 / 1 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
-| **all** | **57 / 42 / 49** | **4 / 12 / 2** | **101 / 12 / 20** | **5 / 12 / 23** | **10 / 8 / 12** | **8 / 14 / 1** | **26 / 3 / 1** | **7 / 3 / 0** | **38 / 0 / 0** | **14 / 1 / 4** |
+| **all** | **57 / 42 / 49** | **4 / 12 / 2** | **101 / 12 / 20** | **8 / 9 / 23** | **10 / 8 / 12** | **8 / 14 / 1** | **26 / 3 / 1** | **7 / 3 / 0** | **38 / 0 / 0** | **14 / 1 / 4** |
 
 ### Not applicable, and why
 

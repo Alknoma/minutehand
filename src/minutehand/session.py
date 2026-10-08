@@ -79,7 +79,7 @@ from minutehand.application.inboxes import Inboxes
 from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.refusals import RunRefused, refuse_unheld
-from minutehand.application.replier_model import PeopleReplier
+from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.restore import Progress, Restored
 from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run, not_restorable
 from minutehand.application.run_clock import RunClock
@@ -115,7 +115,6 @@ from minutehand.domain.outbound import Acknowledge, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import (
-    Answers,
     GeneratedSecret,
     Model,
     Person,
@@ -222,11 +221,13 @@ async def play(
     judge: bool = False,
     listen: Listen | None = None,
     progress: Progress | None = None,
+    seed: int | None = None,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
 
-    `model` writes the replies of `Answers` people and, with `judge`, runs the judged checks; a scenario
-    with an `Answers` person and no model is refused before anything starts.
+    `model` writes what people say (conversing, and each step of a script in the person's words) and, with
+    `judge`, runs the judged checks; a scenario with anyone a model speaks for and no model is refused before
+    anything starts. `seed` replaces the scenario's own seed, where every draw of the run comes from.
 
     `command`, when given, is the agent's own program: started before each run with only the proxy, its
     CA and the run's signing secrets added to this process's environment, waited for until it accepts
@@ -246,8 +247,8 @@ async def play(
             "a contained agent's sandbox clock starts at the real present and only moves forward: leave starts_at out "
             "of the scenario, so the run starts now"
         )
-    scenario = written.starting(_now())
-    _refuse_unwritten(scenario, model)
+    scenario = written.starting(_now()).seeded(seed)
+    _refuse_unwritten(scenario, agent, model)
     own_checks = _own_checks(agent)
     rules = rules_for(agent, scenario, own_checks)
     listen = listen or Listen()
@@ -354,7 +355,7 @@ async def fork(
     agent = AgentUnderTest.model_validate_json((directory / AGENT).read_text(encoding="utf-8"))
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
-    _refuse_unwritten(changed, model)
+    _refuse_unwritten(changed, agent, model)
     own_checks = _own_checks(agent)
     rules = rules_for(agent, changed, own_checks)
     listen = listen or Listen()
@@ -416,7 +417,7 @@ async def fork(
                     agent=agent,
                     reach=reach_for(agent, env=env),
                     services=services,
-                    replier_for=lambda s: PeopleReplier(s, model, agent.inboxes),
+                    replier_for=lambda s, pins: PeopleReplier(s, model, agent.inboxes, pins=pins),
                     state_dir=state / RUNS,
                     wire=routing,
                     telemetry=telemetry,
@@ -1010,14 +1011,14 @@ def capturing_for(
         raise RunRefused(f"agent {agent.name}'s outbound hosts: {e}") from e
 
 
-def _refuse_unwritten(scenario: Scenario, model: LanguageModel | None) -> None:
-    """An `Answers` person needs a model to write their replies; without one the run is refused before it starts."""
-    written = [p.key for p in scenario.people if isinstance(p.reply, Answers)]
-    if written and model is None:
+def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: LanguageModel | None) -> None:
+    """A person whose words a model writes (conversing, a script step's words, a decision's reasons) needs a model;
+    without one the run is refused before it starts, naming each and why."""
+    needing = unspoken(scenario, agent.inboxes)
+    if needing and model is None:
         raise RunRefused(
-            f"a model writes the replies of {', '.join(written)} (reply kind 'answers'), and no model is "
-            f"configured: set {MODEL_VARIABLE} and {API_KEY_VARIABLE}, and {BASE_URL_VARIABLE} for a service "
-            "other than OpenAI's"
+            f"a model writes what {'; '.join(needing)} say, and no model is configured: set {MODEL_VARIABLE} and "
+            f"{API_KEY_VARIABLE}, and {BASE_URL_VARIABLE} for a service other than OpenAI's"
         )
 
 

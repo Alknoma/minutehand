@@ -63,6 +63,7 @@ async def answer(
         f"Earlier exchanges with {host}, oldest first:\n\n{history or '(none: the service is empty)'}\n\n"
         f"The request to answer now:\n{method} {path}\n{_shown(body)}"
     )
-    return await model.answer(
+    answered = await model.answer(
         SYSTEM.format(host=host), [ModelMessage(speaker=Speaker.ASKER, text=asked)], ModeledAnswer, temperature=0
     )
+    return answered.answer

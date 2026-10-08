@@ -18,6 +18,7 @@ from minutehand.domain.run import VerdictKind
 from minutehand.domain.world import CaptureMode, MessageSnapshot
 from tests.e2e.support import free_port
 from tests.proxy.upstream import Answer, make_authority, model_api
+from tests.support.people import people_model
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "follow_up"
 
@@ -49,6 +50,7 @@ async def test_the_example_emails_owen_what_rosa_said_and_looks_the_venue_up(
             agent,
             state=tmp_path / "state",
             command=[sys.executable, str(EXAMPLE / "agent.py")],
+            model=people_model(),
             listen=session.Listen(upstream_ca=authority.ca_cert, receive_telemetry=False),
         )
     assert [r.path for r in real.received] == ["/v1/search?q=The%20lakeside%20hall%2C%20booked%20for%20the%2014th."]

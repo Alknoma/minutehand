@@ -146,10 +146,11 @@ inboxes:
     reply:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}
-      replies: []
       decisions:
         - {decision: approve}                                       # every item
-        - {to_item: 2, decision: reject, inputs: {reason: Twice is once too many}}
+        - {to_item: 2, decision: reject, facts: [this is the second request this week]}   # a model writes the reason
+        - {to_item: 3, decision: reject, inputs: {reason: Twice is once too many}}        # these exact words
+      then: silent                                                   # nothing more than the script says
 ```
 
 **Each person who can receive items must say what they do with them.** That is any member or guest Minutehand can
@@ -157,14 +158,17 @@ act as, and the person's options are:
 
 | The person is | They |
 |---|---|
-| `Scripted`, with `decisions` | Make the scripted decision. `to_item: n` (the nth item waiting on them, in `inbox` when it names one) wins over a decision for every item. |
-| `Scripted`, with `decisions: []` | Leave every item pending. |
+| `Scripted`, with `decisions` | Make the scripted decision. `to_item: n` (the nth item waiting on them, in `inbox` when it names one) wins over a decision for every item. What the decision takes (a reason) is written by the model from the decision's `facts`, in the person's voice; `inputs` fixes the exact words instead, and needs no model. |
+| `Scripted`, once its decisions are used (or with none), `then: answers` (the default) | Decide as `Answers` does. |
+| `Scripted`, once its decisions are used, `then: silent` | Leave every item pending. |
 | `Silent` | Never decide. |
-| `Answers` | Are shown the summary, each decision with its description and inputs, and pick one through the model port (`person-decision/1`). |
+| `Answers` | Are shown the summary, each decision with its description and inputs, and what they can see of their conversations, and pick one through the model port (`person-decision/2`). |
 
-There is no default decision. A run is refused before anything starts when such a person is `Scripted` and says
-nothing (`decisions` absent). A scripted decision that no inbox offers, or that lacks an input it requires, is
-refused the same way.
+There is no default decision. A run is refused before anything starts when such a person is `Scripted`, says
+nothing of items (`decisions` absent) and `then: silent`. A scripted decision that no inbox offers, or that gives an
+input the decision does not take, is refused the same way. A person whose decisions a model writes (a reason it
+leaves out, or deciding at all) needs a model: with none configured the run, or the standing world, is refused at
+the start, naming them.
 
 ## What Minutehand does with it
 
@@ -263,6 +267,7 @@ earliest `due`, `perform_due()`, then wake the agent.
   change asks the person again.
 - **The gate check reads only the agent's recorded calls.** An operation whose id never appears in a call's path or
   request body (it lives only in the agent's database) is invisible to it.
-- **Silent and model-written people decide only in a run, not in a standing world**, which has no model. In a
-  standing world a person decides by script, or when the harness calls `decide`.
+- **A standing world decides as a run does**, with the server's own model (`docs/serve.md`, "People and time"):
+  a decision a model makes is written when the world's clock passes its moment (`advance`, `inboxes/due`), not
+  before, so `inboxes/read` shows its moment and not yet the decision.
 - **MCP inboxes are designed, not built.**

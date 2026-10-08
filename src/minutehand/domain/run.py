@@ -93,6 +93,10 @@ class OutboundUse(Model):
     connections: int = Field(default=0, ge=0, description="The tunnels those bursts were on")
     bytes_sent: int = Field(default=0, ge=0, description="On those tunnels, from the agent")
     bytes_received: int = Field(default=0, ge=0, description="On those tunnels, to the agent")
+    not_served: int = Field(
+        default=0, ge=0, description="Calls the provider claiming the host does not serve, answered as declared"
+    )
+    not_served_by: list[str] = Field(default=[], description="The providers that did not serve them")
 
 
 class OperationCount(Model):

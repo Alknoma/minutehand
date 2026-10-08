@@ -143,4 +143,4 @@ async def test_a_refusal_reaches_the_sdk_as_its_own_error(sdk: Sdk) -> None:
     assert refused.value.status == 400
     answered = refused.value.body
     assert answered is not None
-    assert json.loads(answered)["errors"][0]["message"] == "assignee: Not a Recognized ID"
+    assert json.loads(answered)["errors"][0]["message"] == "assignee: Not a user in Organization: jsmith"

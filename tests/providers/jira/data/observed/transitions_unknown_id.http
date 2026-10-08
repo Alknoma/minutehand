@@ -1,0 +1,24 @@
+HTTP/1.1 200 OK
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:43 GMT
+Server: AtlassianEdge
+Vary: Accept-Encoding,Accept-Encoding
+Timing-Allow-Origin: *
+X-Arequestid: 0e194b8c0a2242d724c7356ba4e22649
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 57fcbef460be471c85e3b5a0c3611b2d
+Atl-Request-Id: 57fcbef4-60be-471c-85e3-b5a0c3611b2d
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+X-Cache: Miss from cloudfront
+Via: 1.1 44a573337ffdbe84c022df0c6c66d98a.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: mAdv0VVa30clU2ilx2VQghlvp5UyFZGJFbCpuwdvZ_DfK4IQMQaGRw==
+Server-Timing: cdn-upstream-layer;desc="EDGE",cdn-upstream-dns;dur=0,cdn-upstream-connect;dur=0,cdn-upstream-fbl;dur=323,atl-edge;dur=261,atl-edge-internal;dur=17,atl-edge-upstream;dur=244,atl-edge-pop;desc="aws-ap-northeast-2",cdn-cache-miss,cdn-pop;desc="TPE53-P3",cdn-rid;desc="mAdv0VVa30clU2ilx2VQghlvp5UyFZGJFbCpuwdvZ_DfK4IQMQaGRw==",cdn-downstream-fbl;dur=328
+
+{"expand":"transitions","transitions":[]}

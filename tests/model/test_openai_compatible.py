@@ -39,7 +39,7 @@ ASKED = [
 
 async def test_the_request_carries_the_system_text_the_messages_and_a_strict_schema() -> None:
     async with fake_completions(lambda _: Forecast(sunny=True, note=None)) as fake:
-        answered = await client(fake.base_url).answer("You forecast.", ASKED, Forecast, temperature=0.2)
+        answered = (await client(fake.base_url).answer("You forecast.", ASKED, Forecast, temperature=0.2)).answer
 
     assert answered == Forecast(sunny=True, note=None)
     [received] = fake.received
@@ -72,7 +72,7 @@ async def test_an_answer_that_does_not_validate_is_sent_back_once_with_the_error
         return '{"sunny": "maybe"}' if len(fake.received) == 1 else Forecast(sunny=False, note=None)
 
     async with fake_completions(rule) as fake:
-        answered = await client(fake.base_url).answer("s", ASKED, Forecast)
+        answered = (await client(fake.base_url).answer("s", ASKED, Forecast)).answer
 
     assert answered == Forecast(sunny=False, note=None)
     first, second = fake.received
@@ -113,7 +113,7 @@ async def test_the_proxy_variables_of_the_environment_are_ignored(monkeypatch: p
     for name in ("NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
     async with fake_completions(lambda _: Forecast(sunny=True, note=None)) as fake:
-        assert await client(fake.base_url).answer("s", ASKED, Forecast) == Forecast(sunny=True, note=None)
+        assert (await client(fake.base_url).answer("s", ASKED, Forecast)).answer == Forecast(sunny=True, note=None)
 
 
 def test_no_key_and_no_model_in_the_environment_is_no_model() -> None:

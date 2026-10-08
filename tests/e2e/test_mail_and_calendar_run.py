@@ -21,6 +21,7 @@ from minutehand.domain.agent import AgentUnderTest, Reported
 from minutehand.domain.checks import FindingKind, ObligationKind
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import (
+    AfterScript,
     DelayRange,
     Person,
     PersonAsked,
@@ -45,7 +46,7 @@ DELAY = timedelta(hours=3, minutes=10)
 
 def scenario() -> Scenario:
     sofia = [
-        ScriptedReply(to_ask=1, text="Yes, 40k a year."),
+        ScriptedReply(to_ask=1, verbatim="Yes, 40k a year."),
         ScriptedReply(to_ask=2, press=ScriptedPress(label="Yes")),
     ]
     return Scenario(
@@ -55,13 +56,18 @@ def scenario() -> Scenario:
         starts_at=T0,
         deadline_after=timedelta(days=2),
         people=[
-            Person(key="owner", name="Olive Owner", email=OWNER, reply=Scripted(replies=[])),
-            Person(key="assistant", name="Ada Assistant", email="assistant@example.com", reply=Scripted(replies=[])),
+            Person(key="owner", name="Olive Owner", email=OWNER, reply=Scripted(then=AfterScript.SILENT)),
+            Person(
+                key="assistant",
+                name="Ada Assistant",
+                email="assistant@example.com",
+                reply=Scripted(then=AfterScript.SILENT),
+            ),
             Person(
                 key="sofia",
                 name="Sofia Romano",
                 email=SOFIA,
-                reply=Scripted(delay=DelayRange(shortest=DELAY, longest=DELAY), replies=sofia),
+                reply=Scripted(then=AfterScript.SILENT, delay=DelayRange(shortest=DELAY, longest=DELAY), replies=sofia),
             ),
         ],
         sign_ins=[SignIn(provider="google_workspace", credential=REFRESH, person="assistant")],
@@ -69,7 +75,7 @@ def scenario() -> Scenario:
         expect=[
             PersonAsked(person="sofia", mentions=["partner pricing"]),
             PersonAsked(person="sofia", at_least=2),
-            Relayed(said_by="sofia", to="owner", tell="40k"),
+            Relayed(said_by="sofia", to="owner", holding=["40k"]),
         ],
     )
 

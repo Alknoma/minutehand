@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from minutehand.adapters.providers.google_cloud_tasks import wire
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.world import Actor, CallOutcome, GrpcCode, RecordedCall, RecordSnapshot
 from tests.orchestrator.world import serving as handler_at
@@ -119,12 +120,16 @@ say(missing=refused(lambda: client.create_task(parent=other, task={"http_request
     await client.finished()
 
     missing, twice = refusal(heard, "missing"), refusal(heard, "twice")
-    assert missing == ["NotFound", "Queue does not exist."]
-    assert twice == ["AlreadyExists", "Requested entity already exists"]
+    other = "projects/sim-project/locations/us-central1/queues/nowhere"
+    assert missing == ["NotFound", f"{other}: {wire.QUEUE_MUST_EXIST}"]
+    assert twice == ["AlreadyExists", f"{QUEUE}/tasks/once: {wire.TASK_EXISTS}"]
     signed = refusal(heard, "signed")
     assert signed[0] == "MethodNotImplemented" and "signing keys" in signed[1]
-    assert refusal(heard, "paused")[0] == "MethodNotImplemented", "a method the fake does not serve"
-    assert refusal(heard, "malformed")[0] == "InvalidArgument"
+    paused = refusal(heard, "paused")
+    assert paused[0] == "MethodNotImplemented", "a method the fake does not serve"
+    assert "google.cloud.tasks.v2.CloudTasks/PauseQueue: pausing and resuming a queue are not served" in paused[1]
+    malformed = refusal(heard, "malformed")
+    assert malformed[0] == "InvalidArgument" and malformed[1].endswith(wire.TASK_NAME_FORMAT)
     outcomes = [(c.exchange.path.rsplit("/", 1)[1], c.exchange.outcome) for c in tasks.store.calls()]
     assert outcomes == [
         ("CreateTask", CallOutcome.ANSWERED),
@@ -135,7 +140,8 @@ say(missing=refused(lambda: client.create_task(parent=other, task={"http_request
         ("GetTask", CallOutcome.REFUSED),
     ]
     [not_found] = [c for c in tasks.store.calls() if c.exchange.grpc and c.exchange.grpc.code is GrpcCode.NOT_FOUND]
-    assert not_found.exchange.grpc is not None and not_found.exchange.grpc.message == "Queue does not exist."
+    assert not_found.exchange.grpc is not None
+    assert not_found.exchange.grpc.message == f"{other}: {wire.QUEUE_MUST_EXIST}"
     signed_call = tasks.store.calls()[3].exchange
     assert signed_call.failure is not None and signed_call.failure.kind is CallOutcome.NOT_IMPLEMENTED
 

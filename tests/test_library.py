@@ -81,15 +81,12 @@ def test_the_team_values_land_where_the_scenario_names_them() -> None:
 
     late = entry("person_answers_late").written(TEAM)
     assert isinstance(late.people[1].reply, Scripted)
-    assert late.people[1].reply.replies[0].text == "Signed off. The approval number is QF-7781."
-    assert late.expect[1] == Relayed(said_by="tomas", to="priya", tell="QF-7781")
+    assert late.people[1].reply.replies[0].facts == ["Signed off. The approval number is QF-7781."]
+    assert late.expect[1] == Relayed(said_by="tomas", to="priya", holding=["QF-7781"])
 
     away = entry("person_away_with_delegate").written(TEAM)
     assert away.people[1].absences[0].delegate == "lena"
-    assert (
-        isinstance(away.people[1].reply, Scripted)
-        and "Lena Fox (lena@example.com)" in away.people[1].reply.replies[0].text
-    )
+    assert away.people[1].absences[0].reason == "on leave"
 
     rejected = entry("approval_rejected").written(TEAM)
     assert rejected.people[2].credential is not None and rejected.people[2].credential.env == "FINANCE_APP_TOKEN"

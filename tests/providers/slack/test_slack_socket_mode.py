@@ -139,7 +139,6 @@ async def test_what_a_person_says_reaches_a_socket_mode_agent_as_an_envelope_it_
     ]
     assert [(e.actor, e.after.text) for e in tickets if isinstance(e.after, RecordSnapshot)] == [
         (Actor.AGENT, "a Socket Mode connection was asked for"),
-        (Actor.AGENT, "the agent opened its Socket Mode connection"),
     ]
 
 
@@ -150,9 +149,7 @@ async def test_an_envelope_the_agent_never_acknowledges_is_sent_again_and_then_f
     agent = await socket_agent(proxied, ack=False)
     assert (await agent.heard()) == {"connected": True}
 
-    with pytest.raises(
-        SocketNotAcknowledged, match=r"did not acknowledge Socket Mode envelope .* \(message\) in 4 sends"
-    ):
+    with pytest.raises(SocketNotAcknowledged, match=r"did not acknowledge Socket Mode event .* \(message\) in 4 sends"):
         await workspace.provider.say(
             PersonMessage(person="iris", text="Anyone there?", at=START),
             SOCKET,
@@ -166,13 +163,10 @@ async def test_an_envelope_the_agent_never_acknowledges_is_sent_again_and_then_f
     await agent.finished()
     assert retries == [0, 1, 2, 3]
     sent = [json.loads(c.exchange.response_body or "{}") for c in frames(workspace)][1:]
-    assert [(e["retry_attempt"], e["retry_reason"]) for e in sent] == [
-        (0, ""),
-        (1, "timeout"),
-        (2, "timeout"),
-        (3, "timeout"),
-    ]
-    assert len({e["envelope_id"] for e in sent}) == 1, "a retry carries the envelope it retries"
+    assert [e["retry_attempt"] for e in sent] == [0, 1, 2, 3]
+    assert not any("retry_reason" in e for e in sent), "no page gives Socket Mode's retry_reason"
+    assert len({e["envelope_id"] for e in sent}) == 4, "each send is an envelope with its own unique identifier"
+    assert len({e["payload"]["event_id"] for e in sent}) == 1, "every send carries the one event"
 
 
 async def test_an_event_due_with_no_connection_open_fails_the_agent_is_refused(
@@ -185,9 +179,7 @@ async def test_an_event_due_with_no_connection_open_fails_the_agent_is_refused(
         )
 
 
-async def test_a_socket_url_whose_ticket_was_used_or_never_issued_is_refused(
-    workspace: Workspace, proxied: Proxy
-) -> None:
+async def test_a_socket_url_is_let_in_whatever_ticket_it_carries(workspace: Workspace, proxied: Proxy) -> None:
     program = f"""
 import json, os, sys
 from slack_sdk import WebClient
@@ -218,29 +210,29 @@ print(json.dumps({{"outcomes": outcomes}}), flush=True)
     client = Client(child)
     outcomes = (await client.heard())["outcomes"]
     await client.finished()
-    assert outcomes == [True, False, False], "the first connects; a spent ticket and an unknown one do not"
+    assert outcomes == [True, True, True], "a used ticket and one never issued connect: no credential is refused"
     upgrades = [
         c.exchange.status
         for c in workspace.store.calls()
         if c.exchange.host == "wss-primary.slack.com" and c.exchange.frame is None
     ]
-    assert upgrades == [101, 403, 403]
+    assert upgrades == [101, 101, 101]
 
 
-async def test_an_app_level_token_is_refused_anywhere_but_apps_connections_open(
+async def test_any_token_is_answered_on_apps_connections_open_and_an_app_level_token_on_any_method(
     workspace: Workspace, proxied: Proxy
 ) -> None:
     program = f"""
 import json
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-def error(call):
+def answer(call):
     try:
-        call()
+        return call().data["ok"]
     except SlackApiError as e:
         return e.response["error"]
-say = {{"bot_on_open": error(lambda: WebClient(token={TOKEN!r}).apps_connections_open(app_token={TOKEN!r})),
-       "app_on_bot": error(lambda: WebClient(token={APP_TOKEN!r}).auth_test())}}
+say = {{"bot_on_open": answer(lambda: WebClient(token={TOKEN!r}).apps_connections_open(app_token={TOKEN!r})),
+       "app_on_bot": answer(lambda: WebClient(token={APP_TOKEN!r}).auth_test())}}
 print(json.dumps(say), flush=True)
 """
     child = await asyncio.create_subprocess_exec(
@@ -255,7 +247,7 @@ print(json.dumps(say), flush=True)
     client = Client(child)
     heard = await client.heard()
     await client.finished()
-    assert heard == {"bot_on_open": "not_allowed_token_type", "app_on_bot": "not_allowed_token_type"}
+    assert heard == {"bot_on_open": True, "app_on_bot": True}, "Minutehand does not enforce token types"
 
 
 def test_an_inbound_target_in_socket_mode_that_names_a_url_is_refused() -> None:

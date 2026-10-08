@@ -90,7 +90,7 @@ async def test_update_and_delete_change_only_the_bots_own_activity(connector: Bo
     assert isinstance(last.after, MessageSnapshot) and last.after.recipient_emails == ["sofia@example.com"]
 
 
-async def test_an_update_with_text_and_a_card_together_is_refused(connector: Bot) -> None:
+async def test_an_update_with_text_and_a_card_together_is_refused_by_name(connector: Bot) -> None:
     _, chat = connector.chat("sofia")
     url = f"{CONNECTOR}v3/conversations/{chat.id}/activities"
     sent = (await connector.http.post(url, json={"type": "message", "text": "x"}, headers=connector.auth)).json()
@@ -102,8 +102,8 @@ async def test_an_update_with_text_and_a_card_together_is_refused(connector: Bot
         ],
     }
     assert (
-        error_code(await connector.http.put(f"{url}/{sent['id']}", json=both, headers=connector.auth), 400)
-        == "BadSyntax"
+        error_code(await connector.http.put(f"{url}/{sent['id']}", json=both, headers=connector.auth), 501)
+        == "not_implemented"
     )
 
 
@@ -172,16 +172,21 @@ async def test_a_team_and_its_channels_are_answered_even_with_a_doubled_slash(co
     assert [c["id"] for c in channels.json()["conversations"]] == [connector.general]
 
 
-async def test_calls_without_a_connector_token_are_refused(tenant: Tenant, microsoft: Intercepted) -> None:
+async def test_any_token_or_none_is_the_worlds_bot_sending(tenant: Tenant, microsoft: Intercepted) -> None:
+    """Minutehand does not enforce credentials: no token, a Graph token and a forged one each send as the bot."""
     url = f"{CONNECTOR}v3/conversations/{tenant.directory.general_channel_id}/activities"
     async with microsoft.http() as http:
-        none = await http.post(url, json={"type": "message", "text": "x"})
         graph = await token(http, tenant, "https://graph.microsoft.com/.default")
-        wrong_audience = await http.post(url, json={"type": "message", "text": "x"}, headers=bearer(graph))
-        forged = await http.post(url, json={"type": "message", "text": "x"}, headers=bearer(graph[:-4] + "AAAA"))
-    for answered in (none, wrong_audience, forged):
-        assert answered.status_code == 401
-        assert answered.json() == {"message": "Authorization has been denied for this request."}
+        answers = [
+            await http.post(url, json={"type": "message", "text": "none"}),
+            await http.post(url, json={"type": "message", "text": "graph"}, headers=bearer(graph)),
+            await http.post(url, json={"type": "message", "text": "forged"}, headers=bearer(graph[:-4] + "AAAA")),
+            await http.post(url, json={"type": "message", "text": "junk"}, headers=bearer("not-a-jwt")),
+        ]
+    assert [a.status_code for a in answers] == [201, 201, 201, 201]
+    sent = tenant.world.messages(tenant.directory.general_channel_id)
+    assert [m.text for m in sent] == ["none", "graph", "forged", "junk"]
+    assert {m.sender.id for m in sent} == {f"28:{tenant.directory.bot_app_id}"}
 
 
 async def test_an_unknown_conversation_and_an_oversized_activity_are_refused(connector: Bot) -> None:
@@ -197,3 +202,35 @@ async def test_an_unknown_conversation_and_an_oversized_activity_are_refused(con
         headers=connector.auth,
     )
     assert error_code(huge, 413) == "MessageSizeTooBig"
+
+
+async def test_connector_operations_not_served_are_refused_by_name(connector: Bot) -> None:
+    """The connector's other operations (Get Conversations, Send Conversation History, Upload Attachment, an
+    activity's members) are refused by name, 501, never a bare 404 or 405."""
+    base = f"{CONNECTOR}v3/conversations"
+    general = connector.general
+    for method, url in (
+        ("GET", base),
+        ("POST", f"{base}/{general}/activities/history"),
+        ("POST", f"{base}/{general}/attachments"),
+        ("GET", f"{base}/{general}/activities/1/members"),
+    ):
+        answered = await connector.http.request(method, url, json={}, headers=connector.auth)
+        assert error_code(answered, 501) == "not_implemented"
+        assert f"{method} /teams/v3/conversations" in answered.json()["error"]["message"]
+
+
+async def test_a_member_the_conversation_does_not_hold_is_refused_by_name(connector: Bot) -> None:
+    """Teams' status-code table has no code for a member that is not there, so the call is refused by name."""
+    answered = await connector.http.get(
+        f"{CONNECTOR}v3/conversations/{connector.general}/members/29:nobody", headers=connector.auth
+    )
+    assert error_code(answered, 501) == "not_implemented"
+
+
+async def test_a_payload_the_connector_cannot_use_is_bad_argument_as_teams_spells_it(connector: Bot) -> None:
+    """Teams' status-code table spells the 400 code `Bad Argument`, with its space."""
+    answered = await connector.http.post(
+        f"{CONNECTOR}v3/conversations/{connector.general}/activities", json={"type": "message"}, headers=connector.auth
+    )
+    assert error_code(answered, 400) == "Bad Argument"

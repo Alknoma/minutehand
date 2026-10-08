@@ -7,8 +7,8 @@ projects with their keys, workflows, issue types, screens and members, custom fi
 other accounts (an app, a deactivated person, a customer), what each seeded issue (named by its ticket's `key`) carries
 beyond its title, body, assignee, state, labels and comments, and the calls the site answers 429.
 
-Without a Jira seed the site is `minutehand.atlassian.net` and accepts no credential: every call is a 401
-until a seed names one.
+Without a Jira seed the site is `minutehand.atlassian.net`. Minutehand checks no credential: a seeded credential
+says which account calls, and any other credential, or none, is the agent.
 """
 
 from __future__ import annotations
@@ -213,7 +213,6 @@ class JiraSeed(Model):
     cloud_id: str | None = Field(default=None, description="By default derived from the site's name")
     agent_name: str = "Agent"
     agent_email: str = "agent@minutehand.invalid"
-    agent_site_admin: bool = True
     accounts: list[SeededAccount] = []
     credentials: list[SeededCredential] = []
     projects: list[SeededProject] = []
@@ -277,9 +276,9 @@ LINK_TYPES = [
     ("Relates", "relates to", "relates to"),
 ]
 ROLES = [
-    wire.StoredRole(id="10002", name="Administrators", edits=True, administers=True),
-    wire.StoredRole(id="10003", name="Member", edits=True),
-    wire.StoredRole(id="10004", name="Viewer", edits=False),
+    wire.StoredRole(id="10002", name="Administrators"),
+    wire.StoredRole(id="10003", name="Member"),
+    wire.StoredRole(id="10004", name="Viewer"),
 ]
 SYSTEM_SCREEN = ["summary", "issuetype", "project", "description", "assignee", "reporter", "priority", "labels",
                  "duedate", "parent"]  # fmt: skip
@@ -441,7 +440,6 @@ def seed(scenario: Scenario, world: Store) -> None:
             accountId=site.agent,
             displayName=spec.agent_name,
             emailAddress=spec.agent_email,
-            siteAdmin=spec.agent_site_admin,
         )
     }
     for person in scenario.people:

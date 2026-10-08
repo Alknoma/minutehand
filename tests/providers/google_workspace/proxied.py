@@ -14,6 +14,7 @@ A program talks to the test one JSON line at a time on stdout (`say(...)`) and w
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import sys
@@ -24,16 +25,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from mitmproxy import certs
+from mitmproxy.options import CONF_BASENAME
 
 from minutehand.adapters.providers.google_workspace.provider import GoogleWorkspaceProvider, build
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
+from minutehand.adapters.proxy.trust import KEY_SIZE
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import (
     Access,
     AccessRole,
+    AfterScript,
     DocumentKind,
     Person,
     Scenario,
@@ -66,9 +73,9 @@ SCENARIO = Scenario(
     owner="mara",
     starts_at=START,
     people=[
-        Person(key="mara", name="Mara Lindqvist", email="mara@example.com", reply=Scripted(replies=[])),
-        Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(replies=[])),
-        Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(replies=[])),
+        Person(key="mara", name="Mara Lindqvist", email="mara@example.com", reply=Scripted(then=AfterScript.SILENT)),
+        Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(then=AfterScript.SILENT)),
+        Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(then=AfterScript.SILENT)),
     ],
     sign_ins=[
         SignIn(provider="google_workspace", credential=REFRESH, person="mara"),
@@ -195,6 +202,22 @@ def client_environment(proxy: Proxy) -> dict[str, str]:
     }
     handed = agent_environment(Listen(), proxy.port, proxy.ca_bundle, {}, telemetry_port=None)
     return {**inherited, **handed, "PYTHONPATH": str(OFFLINE)}
+
+
+def receiver_certificate(proxy: Proxy, directory: Path) -> tuple[Path, Path]:
+    """A certificate for 127.0.0.1 signed by the run's CA, and its key: what an agent's HTTPS receiver serves so a
+    Google push to it verifies, as a real receiver serves one a public CA signed. (certificate.pem, key.pem)"""
+    store = certs.CertStore.from_store(proxy.ca_cert.parent, CONF_BASENAME, KEY_SIZE)
+    entry = store.get_cert("127.0.0.1", [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))])
+    directory.mkdir(parents=True, exist_ok=True)
+    cert, key = directory / "receiver.pem", directory / "receiver-key.pem"
+    cert.write_bytes(entry.cert.to_pem())
+    key.write_bytes(
+        entry.privatekey.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+        )
+    )
+    return cert, key
 
 
 @pytest.fixture

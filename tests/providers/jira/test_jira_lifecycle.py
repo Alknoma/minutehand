@@ -9,7 +9,17 @@ from typing import Any
 
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
-from tests.providers.jira.jira_site import CLIENT_ID, CLIENT_SECRET, IRIS, OAUTH_REFRESH, START, Site, ok
+from tests.providers.jira.jira_site import (
+    AGENT,
+    CLIENT_ID,
+    CLIENT_SECRET,
+    CLOUD_ID,
+    IRIS,
+    OAUTH_REFRESH,
+    START,
+    Site,
+    ok,
+)
 
 
 def _doc(text: str) -> dict[str, Any]:
@@ -41,7 +51,11 @@ async def test_an_oauth_app_runs_an_issue_from_creation_to_deletion(site: Site) 
             json={"grant_type": "refresh_token", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
                   "refresh_token": OAUTH_REFRESH},
         )  # fmt: skip
-        assert reused.status_code == 403 and reused.json()["error"] == "invalid_grant", "refresh tokens rotate"
+        again = ok(reused)
+        assert again["access_token"] != token["access_token"], "refresh tokens rotate"
+        async with site.client(f"Bearer {again['access_token']}") as spent:
+            ex = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/rest/api/3"
+            assert ok(await spent.get(f"{ex}/myself"))["accountId"] == AGENT, "a spent grant is no one's: the agent's"
 
     async with site.client(f"Bearer {token['access_token']}") as app:
         [resource] = ok(await app.get("https://api.atlassian.com/oauth/token/accessible-resources"))

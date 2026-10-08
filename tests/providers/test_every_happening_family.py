@@ -16,7 +16,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.files import load_scenario
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage
 from minutehand.domain.run import StopReason
@@ -46,7 +46,7 @@ async def test_one_run_plays_a_ticket_happening_on_asana_and_youtrack_a_document
             store=store,
             clock=clock,
             services=Services(providers=providers, pushes={"slack": chat}),
-            replier=ScriptedReplier(scenario),
+            replier=PeopleReplier(scenario, None),
             mounts=proxy,
             signing={"slack": SECRET},
         )

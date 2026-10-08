@@ -1,0 +1,40 @@
+# Answers of the real Notion API (https://api.notion.com) recorded on 2026-10-08 with curl, with no token or with a
+# token that is not one ("secret_bogus"): the error object, and what the service answers before any credential is
+# read (a path or method it has no endpoint for, a body that is not JSON). Only the status line, the content type and
+# the body are kept.
+
+$ curl -sS -i https://api.notion.com/v1/users/me
+HTTP/2 401 
+content-type: application/json; charset=utf-8
+{"object":"error","status":401,"code":"unauthorized","message":"Authorization header must use the format \"Bearer <token>\".","request_id":"891b6ed8-06a2-4267-aec5-e77df2d844c6"}
+
+$ curl -sS -i -H Authorization: Bearer secret_bogus -H Notion-Version: 2022-06-28 https://api.notion.com/v1/users/me
+HTTP/2 401 
+content-type: application/json; charset=utf-8
+{"object":"error","status":401,"code":"unauthorized","message":"API token is invalid.","request_id":"3f0c980d-7a4c-4bcd-9e3b-692c0145d8c2"}
+
+$ curl -sS -i -H Authorization: Bearer secret_bogus -H Notion-Version: 2022-06-28 https://api.notion.com/v1/nothing/here
+HTTP/2 400 
+content-type: application/json; charset=utf-8
+{"object":"error","status":400,"code":"invalid_request_url","message":"Invalid request URL.","request_id":"043cc122-5be5-4c62-b491-134719b1d955"}
+
+$ curl -sS -i -X PUT -H Authorization: Bearer secret_bogus -H Notion-Version: 2022-06-28 https://api.notion.com/v1/users/me
+HTTP/2 400 
+content-type: application/json; charset=utf-8
+{"object":"error","status":400,"code":"invalid_request_url","message":"Invalid request URL.","request_id":"11c09c86-29a3-490f-a894-e61cfd58c727"}
+
+$ curl -sS -i -X POST -H Authorization: Bearer secret_bogus -H Notion-Version: 2022-06-28 -H Content-Type: application/json -d {bad https://api.notion.com/v1/pages
+HTTP/2 400 
+content-type: application/json; charset=utf-8
+{"object":"error","status":400,"code":"invalid_json","message":"Error parsing JSON body.","request_id":"a4524019-c7b1-4484-b9eb-1b249253a9c9"}
+
+$ curl -sS -i -X POST -H Authorization: Bearer secret_bogus -H Notion-Version: 2022-06-28 -H Content-Type: application/json -d {} https://api.notion.com/v1/databases/668d797c76fa49349b05ad288df2d136/query
+HTTP/2 401 
+content-type: application/json; charset=utf-8
+{"object":"error","status":401,"code":"unauthorized","message":"API token is invalid.","request_id":"f211b7ea-42ee-4cf4-805e-52e17e829415"}
+
+$ curl -sS -i -X POST -u cid:csecret -H Content-Type: application/json -d {"grant_type":"refresh_token","refresh_token":"bogus"} https://api.notion.com/v1/oauth/token
+HTTP/2 401 
+content-type: application/json; charset=utf-8
+{"error":"invalid_client","request_id":"2bea4db3-7016-4cc8-87d2-c5ed9ba30b74"}
+

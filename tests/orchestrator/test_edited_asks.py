@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import timedelta
 
 from minutehand import session
-from minutehand.application.replier_scripted import ScriptedReplier
-from minutehand.domain.people import PersonReply
+from minutehand.application.moments import Owed
+from minutehand.application.replier import PeopleReplier
+from minutehand.domain.people import PersonReply, Plan
 from minutehand.domain.run import StopReason
 from minutehand.domain.scenario import Person, Scenario
 from minutehand.domain.world import Actor, MessageSnapshot, Operation, WorldEvent
 from minutehand.ports.clock import Clock
+from minutehand.ports.store import Store
 from tests.orchestrator.rig import T0, Rig, scenario
 
 PLACEHOLDER = "Thinking..."
@@ -21,15 +24,26 @@ class Overheard:
     """`ports.people.Replier`: the scripted replier, keeping the text of every message put to someone."""
 
     def __init__(self, scn: Scenario) -> None:
-        self._scripted = ScriptedReplier(scn)
+        self._scripted = PeopleReplier(scn, None)
         self.asked: list[tuple[str, str]] = []
 
-    async def decide(
-        self, person: Person, asked: WorldEvent, history: list[WorldEvent], clock: Clock
-    ) -> PersonReply | None:
+    def plan(
+        self, person: Person, asked: WorldEvent, history: Sequence[WorldEvent], owed: Sequence[Owed]
+    ) -> Plan | None:
         assert isinstance(asked.after, MessageSnapshot)
         self.asked.append((person.key, asked.after.text))
-        return await self._scripted.decide(person, asked, history, clock)
+        return self._scripted.plan(person, asked, history, owed)
+
+    async def write(
+        self,
+        person: Person,
+        asked: WorldEvent,
+        plan: Plan,
+        history: Sequence[WorldEvent],
+        world: Store,
+        clock: Clock,
+    ) -> PersonReply | None:
+        return await self._scripted.write(person, asked, plan, history, world, clock)
 
 
 def _person_messages(events: list[WorldEvent]) -> list[WorldEvent]:
@@ -77,10 +91,16 @@ async def test_a_placeholder_edited_in_a_later_wake_is_asked_again_and_its_first
 class AnswersOnlyThePlaceholder(Overheard):
     """Sofia answers the placeholder and has nothing to say to the question it was edited into."""
 
-    async def decide(
-        self, person: Person, asked: WorldEvent, history: list[WorldEvent], clock: Clock
+    async def write(
+        self,
+        person: Person,
+        asked: WorldEvent,
+        plan: Plan,
+        history: Sequence[WorldEvent],
+        world: Store,
+        clock: Clock,
     ) -> PersonReply | None:
-        reply = await super().decide(person, asked, history, clock)
+        reply = await super().write(person, asked, plan, history, world, clock)
         assert isinstance(asked.after, MessageSnapshot)
         return None if asked.after.text == QUESTION else reply
 

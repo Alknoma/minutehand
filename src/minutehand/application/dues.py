@@ -25,7 +25,7 @@ from minutehand.application.checkpoint import (
     PendingWake,
 )
 from minutehand.domain.agent import WakeReason
-from minutehand.domain.clock import PLANNED_BY, REACHED, Due, DueClosed, DueEntry, DueSource
+from minutehand.domain.clock import PLANNED_BY, REACHED, Drawn, Due, DueClosed, DueEntry, DueSource
 from minutehand.domain.scenario import DispatchFault, DispatchRule, Model, PlannedBy
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, WorldEvent
 from minutehand.ports.clock import Clock
@@ -97,7 +97,14 @@ class Dues:
     def items(self) -> list[Pending]:
         return list(self._items)
 
-    def enter(self, pending: Pending, *, fault: DispatchFault | None = None, asked_for: datetime | None = None) -> None:
+    def enter(
+        self,
+        pending: Pending,
+        *,
+        fault: DispatchFault | None = None,
+        asked_for: datetime | None = None,
+        drawn: Drawn | None = None,
+    ) -> None:
         """Put an entry in the table. One that names the same moment as an entry already there from the same
         source is that entry, unchanged: an agent that reports the same next wake after every wake planned it once.
         `fault` and `asked_for` mark a late or second delivery a dispatch rule entered."""
@@ -113,6 +120,7 @@ class Dues:
             entered_wake=self._clock.wake(),
             fault=fault,
             asked_for=asked_for,
+            drawn=drawn,
         )
         self._write(ref, entry, Operation.CREATE)
         self._open[key_of(pending.due)] = (ref, entry)

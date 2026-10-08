@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:39 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 7c8528c56892789e9a16f26098ee2e99
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: b5aa82210466427c88d9851aedd21435
+Atl-Request-Id: b5aa8221-0466-427c-88d9-851aedd21435
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=166,atl-edge-internal;dur=18,atl-edge-upstream;dur=148,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 a6cd9de66980942c2c8ead084584ba72.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: k-dtvbC_qAu2tuMRUpSJa837jskTIWdcwIEKNJL8wUTH5as4ssl8UA==
+
+{"errorMessages":[],"errors":{"LAUNCH_ROCKETS":"Unrecognized permission"}}

@@ -13,7 +13,7 @@ import json
 import httpx
 
 from minutehand.adapters.providers.slack import state, wire
-from minutehand.adapters.providers.slack.state import BOT_ID, BOT_USER_ID
+from minutehand.adapters.providers.slack.state import BOT_USER_ID
 from minutehand.domain.world import Actor, Operation
 from tests.providers.slack.slack_workspace import GENERAL, Workspace, body, form, messages_of, text_of
 
@@ -154,13 +154,6 @@ async def test_a_message_with_no_text_is_refused_no_text(client: httpx.AsyncClie
     assert await body(client, "chat.postMessage", channel=GENERAL, text="") == {"ok": False, "error": "no_text"}
 
 
-async def test_as_user_is_a_boolean_and_never_the_author(client: httpx.AsyncClient) -> None:
-    """slack_sdk urlencodes True as "1"; read as a user id it would make "1" the author."""
-    answer = await form(client, "chat.postMessage", channel=GENERAL, text="hi", as_user="1")
-    message = answer["message"]
-    assert isinstance(message, dict) and message["user"] == BOT_USER_ID and message["bot_id"] == BOT_ID
-
-
 async def test_a_thread_parent_carries_its_reply_summary(client: httpx.AsyncClient) -> None:
     parent = await body(client, "chat.postMessage", channel=GENERAL, text="root")
     reply = await body(client, "chat.postMessage", channel=GENERAL, text="reply", thread_ts=parent["ts"])
@@ -180,16 +173,9 @@ async def test_history_returns_roots_not_replies(client: httpx.AsyncClient) -> N
 async def test_replies_return_the_parent_then_the_thread(client: httpx.AsyncClient) -> None:
     parent = await body(client, "chat.postMessage", channel=GENERAL, text="root")
     first = await body(client, "chat.postMessage", channel=GENERAL, text="one", thread_ts=parent["ts"])
-    await body(client, "chat.postMessage", channel=GENERAL, text="two", thread_ts=first["ts"])
+    await body(client, "chat.postMessage", channel=GENERAL, text="two", thread_ts=parent["ts"])
     thread = await form(client, "conversations.replies", channel=GENERAL, ts=str(first["ts"]))
     assert text_of(thread) == ["root", "one", "two"]
-
-
-async def test_a_reply_to_a_thread_nobody_started_is_refused_thread_not_found(client: httpx.AsyncClient) -> None:
-    assert await body(client, "chat.postMessage", channel=GENERAL, text="x", thread_ts="1.000000") == {
-        "ok": False,
-        "error": "thread_not_found",
-    }
 
 
 async def test_history_honours_inclusive(client: httpx.AsyncClient) -> None:

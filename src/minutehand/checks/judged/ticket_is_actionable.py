@@ -78,12 +78,14 @@ class TicketIsActionable:
                 assignee = f"{person.name}, {person.title}" if person.title else person.name
             else:
                 assignee = ticket.assignee_email or "nobody yet"
-            verdict = await model.answer(
-                TICKET_PROMPT,
-                [ModelMessage(speaker=Speaker.ASKER, text=_ticket(ticket, assignee, first))],
-                TicketVerdict,
-                temperature=0,
-            )
+            verdict = (
+                await model.answer(
+                    TICKET_PROMPT,
+                    [ModelMessage(speaker=Speaker.ASKER, text=_ticket(ticket, assignee, first))],
+                    TicketVerdict,
+                    temperature=0,
+                )
+            ).answer
             judged += 1
             if verdict.knows_what and verdict.knows_by_when:
                 continue

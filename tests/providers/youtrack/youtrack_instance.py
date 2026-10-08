@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from minutehand.adapters.answering import Guarded
 from minutehand.adapters.providers.youtrack import state, wire
 from minutehand.adapters.providers.youtrack.provider import YouTrackProvider, build
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
@@ -101,7 +102,9 @@ def client_for(
 ) -> httpx.AsyncClient:
     headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=provider.app(store, clock)),
+        transport=httpx.ASGITransport(
+            app=Guarded(provider.app(store, clock), provider, provider="youtrack", clock=clock)
+        ),
         base_url=base_url,
         headers=headers,
     )

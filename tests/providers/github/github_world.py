@@ -38,6 +38,7 @@ API = "https://api.github.com"
 IRIS = "ghp_iris0000000000000000000000000000000000"
 NO_SCOPES = "ghp_irisnoscope00000000000000000000000000"
 TOMAS = "github_pat_tomas_selects_only_the_ledger_0000000000000000"
+"""A fine-grained token its issuer limited to one repository: a limit Minutehand does not enforce."""
 OUTSIDER = "ghp_outsider000000000000000000000000000000"
 
 HEADERS = {"Accept": "application/vnd.github.v3+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -103,7 +104,10 @@ def ledger(**changes: object) -> SeedRepository:
         ],
         commits=[
             SeedCommit(
-                message="Start the ledger", author="iris-calder", before=timedelta(days=30), paths=["README.md"]
+                message="Start the ledger",
+                author="iris-calder",
+                before=timedelta(days=30),
+                paths=["README.md", "docs/guide.md", "assets/logo.png", "vendor/bundle.min.js"],
             ),
             SeedCommit(
                 message="Retry billing calls\n\nWith a doubling wait.",
@@ -131,12 +135,7 @@ def github_seed(**changes: object) -> GitHubSeed:
         tokens=[
             SeedToken(token=IRIS, kind=wire.TokenKind.CLASSIC, login="iris-calder"),
             SeedToken(token=NO_SCOPES, kind=wire.TokenKind.CLASSIC, login="iris-calder", scopes=[]),
-            SeedToken(
-                token=TOMAS,
-                kind=wire.TokenKind.FINE_GRAINED,
-                login="tomas-b",
-                repositories=["lanternworks/ledger"],
-            ),
+            SeedToken(token=TOMAS, kind=wire.TokenKind.FINE_GRAINED, login="tomas-b"),
             SeedToken(token=OUTSIDER, kind=wire.TokenKind.CLASSIC, login="outsider"),
         ],
         repositories=[
@@ -146,6 +145,11 @@ def github_seed(**changes: object) -> GitHubSeed:
                 name="notes",
                 description="Public notes",
                 files=[SeedFile(path="README.md", text="# Notes\n\nNothing about billing here.\n")],
+                commits=[
+                    SeedCommit(
+                        message="Start the notes", author="iris-calder", before=timedelta(0), paths=["README.md"]
+                    )
+                ],
             ),
             SeedRepository(
                 owner="lanternworks",
@@ -153,6 +157,9 @@ def github_seed(**changes: object) -> GitHubSeed:
                 private=True,
                 collaborators=[wire.Collaborator(login="tomas-b", permission=wire.Permission.PULL)],
                 files=[SeedFile(path="plan.md", text="# Plans\n\nretry the launch later\n")],
+                commits=[
+                    SeedCommit(message="Plan the launch", author="iris-calder", before=timedelta(0), paths=["plan.md"])
+                ],
             ),
             SeedRepository(owner="iris-calder", name="empty"),
         ],

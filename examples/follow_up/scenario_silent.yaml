@@ -9,9 +9,9 @@ people:
   - key: owen
     name: Owen Hart
     email: owen@example.com
-    reply:                            # Owen is told the outcome and owes no answer: nothing is scripted for him.
-      kind: scripted                  # (`silent` would make every message to him a question he leaves unanswered.)
-      replies: []
+    reply:                            # Owen is told the outcome and owes no answer: a script with no steps
+      kind: scripted                  # that says nothing more once used. (`silent` would make every message to
+      then: silent                    # him a question he leaves unanswered.)
 
   - key: rosa
     name: Rosa Lind

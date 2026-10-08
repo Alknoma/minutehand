@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:41 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 6c0f79908aeac5fe6a6b1641afb55107
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 6a62d9e677274a9da8442c722b71f142
+Atl-Request-Id: 6a62d9e6-7727-4a9d-a844-2c722b71f142
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=155,atl-edge-internal;dur=16,atl-edge-upstream;dur=139,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 fd7ea4c6e0cceb16ab1ea34b64551382.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: y66hGsNbW4tazB-fETUNXQjc_oNH6_ELBdfEzPPTZFvxQytEKKVnMg==
+
+{"errorMessages":["No project, issue key or issue ID was provided"],"errors":{}}

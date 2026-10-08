@@ -127,13 +127,23 @@ async def test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask(
 ) -> None:
     async with microsoft.http() as http:
         auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
-        everything = (await http.get(f"{GRAPH}/users/{AGENT}/messages", headers=auth)).json()["value"]
+        unordered = await http.get(f"{GRAPH}/users/{AGENT}/messages", headers=auth)
+        assert unordered.status_code == 501, "Graph documents no order for a list without $orderby"
+        everything = (
+            await http.get(
+                f"{GRAPH}/users/{AGENT}/messages", params={"$orderby": "receivedDateTime desc"}, headers=auth
+            )
+        ).json()["value"]
         assert [m["subject"] for m in everything] == ["Re: Vendor review", "Lunch", "Vendor review"], "newest first"
         kickoff = everything[2]
         assert everything[0]["conversationId"] == kickoff["conversationId"] != everything[1]["conversationId"]
         same = await http.get(
             f"{GRAPH}/users/{AGENT}/messages",
-            params={"$filter": f"conversationId eq '{kickoff['conversationId']}'", "$select": "subject"},
+            params={
+                "$filter": f"receivedDateTime ge 2000-01-01T00:00:00Z and conversationId eq '{kickoff['conversationId']}'",
+                "$orderby": "receivedDateTime",
+                "$select": "subject",
+            },
             headers=auth,
         )
         assert [set(m) - {"@odata.etag"} for m in same.json()["value"]] == [{"id", "subject"}] * 2
@@ -148,7 +158,14 @@ async def test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask(
         following = (await http.get(page["@odata.nextLink"], headers=auth)).json()
         assert [m["subject"] for m in following["value"]] == ["Re: Vendor review"]
         assert "@odata.nextLink" not in following
-        unread = await http.get(f"{GRAPH}/users/{AGENT}/messages", params={"$filter": "isRead eq false"}, headers=auth)
+        unread = await http.get(
+            f"{GRAPH}/users/{AGENT}/messages",
+            params={
+                "$filter": "receivedDateTime ge 2000-01-01T00:00:00Z and isRead eq false",
+                "$orderby": "receivedDateTime",
+            },
+            headers=auth,
+        )
         assert {m["subject"] for m in unread.json()["value"]} == {"Vendor review", "Re: Vendor review"}
         text = await http.get(
             f"{GRAPH}/users/{AGENT}/messages/{kickoff['id']}",
@@ -204,6 +221,7 @@ async def test_a_users_token_reaching_another_mailbox_is_refused_access_denied(
         assert (await http.get(f"{GRAPH}/me/messages", headers=auth)).status_code == 200
         refused = await http.get(f"{GRAPH}/users/{AGENT}/messages", headers=auth)
         assert refused.status_code == 403 and refused.json()["error"]["code"] == "ErrorAccessDenied"
+        assert refused.json()["error"]["message"] == "Access is denied. Check credentials and try again."
 
 
 async def test_a_send_with_no_recipient_or_a_bad_address_is_refused_invalid_recipients(
@@ -218,6 +236,7 @@ async def test_a_send_with_no_recipient_or_a_bad_address_is_refused_invalid_reci
                 headers=auth,
             )
             assert refused.status_code == 400 and refused.json()["error"]["code"] == "ErrorInvalidRecipients"
+            assert refused.json()["error"]["message"] == "At least one recipient isn't valid.", "as recorded"
         assert sent_by_agent(tenant) == []
 
 
@@ -240,14 +259,14 @@ async def test_a_mail_subscription_past_seven_days_or_on_a_folder_that_is_none_i
         week = await http.post(
             f"{GRAPH}/subscriptions", json={**base, "expirationDateTime": _at(tenant, timedelta(days=8))}, headers=auth
         )
-        assert week.status_code == 400 and "10080 minutes" in week.json()["error"]["message"]
+        assert week.status_code == 501 and "10080 minutes" in week.json()["error"]["message"]
         nowhere = await http.post(
             f"{GRAPH}/subscriptions",
             json={**base, "resource": f"/users/{AGENT}/mailFolders('Archive2')/messages",
                   "expirationDateTime": _at(tenant, timedelta(days=1))},
             headers=auth,
         )  # fmt: skip
-        assert nowhere.status_code == 404
+        assert nowhere.status_code == 501, "a folder the mailbox does not hold: Graph's answer is not recorded"
         held = await http.post(
             f"{GRAPH}/subscriptions", json={**base, "expirationDateTime": _at(tenant, timedelta(days=6))}, headers=auth
         )

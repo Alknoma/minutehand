@@ -116,7 +116,7 @@ async def test_an_update_round_trips_its_blocks_and_an_empty_list_clears_them(sl
 
 async def test_threads_replies_ephemeral_delete_and_reactions_through_the_blocking_client(slack: Intercepted) -> None:
     sdk = slack.sync()
-    root = data(await off_loop(lambda: sdk.chat_postMessage(channel=GENERAL, text="root", mrkdwn=False)))
+    root = data(await off_loop(lambda: sdk.chat_postMessage(channel=GENERAL, text="root")))
     data(await off_loop(lambda: sdk.chat_postMessage(channel=GENERAL, text="reply", thread_ts=root["ts"])))
     thread = data(
         await off_loop(lambda: sdk.conversations_replies(channel=GENERAL, ts=root["ts"], limit=200, inclusive=False))
@@ -166,24 +166,20 @@ async def test_a_deactivated_person_and_a_bot_cannot_be_dmed(
 # ------------------------------------------------------------------ oauth
 
 
-async def test_the_install_code_is_exchanged_for_the_bot_token_once(slack: Intercepted) -> None:
+async def test_any_install_code_is_exchanged_for_a_new_bot_token_every_time(slack: Intercepted) -> None:
+    """Minutehand never refuses a credential: a code used before, and an exchange with no client secret, each mint a
+    bot token of the workspace."""
     sdk = slack.sync(token="")
     granted = data(await off_loop(lambda: sdk.oauth_v2_access(client_id="111.222", client_secret="shh", code="c0de")))
-    with pytest.raises(SlackApiError) as reused:
-        await off_loop(lambda: sdk.oauth_v2_access(client_id="111.222", client_secret="shh", code="c0de"))
+    again = data(await off_loop(lambda: sdk.oauth_v2_access(client_id="111.222", client_secret="shh", code="c0de")))
+    secretless = data(await off_loop(lambda: sdk.oauth_v2_access(client_id="", client_secret="", code="c")))
 
     assert granted["team"] == {"id": state.TEAM_ID, "name": state.TEAM_NAME}
     assert granted["access_token"].startswith("xoxb-") and granted["bot_user_id"] == state.BOT_USER_ID
     assert granted["authed_user"]["id"] == state.user_id("iris"), "the scenario's owner installed the app"
-    assert reused.value.response["error"] == "invalid_code"
+    assert len({granted["access_token"], again["access_token"], secretless["access_token"]}) == 3
     who = data(await off_loop(slack.sync(token=granted["access_token"]).auth_test))
     assert who["team_id"] == state.TEAM_ID
-
-
-async def test_an_exchange_without_the_apps_secret_is_refused(slack: Intercepted) -> None:
-    with pytest.raises(SlackApiError) as refused:
-        await off_loop(lambda: slack.sync(token="").oauth_v2_access(client_id="111.222", client_secret="", code="c"))
-    assert refused.value.response["error"] == "bad_client_secret"
 
 
 # ------------------------------------------------------------------ views
@@ -215,9 +211,7 @@ async def test_a_modal_needs_a_trigger_the_person_gave(slack: Intercepted) -> No
 # ------------------------------------------------------------------ files
 
 
-async def test_a_file_downloads_with_a_bot_token_and_without_one_lands_on_the_sign_in_page(
-    slack: Intercepted, workspace: Workspace
-) -> None:
+async def test_a_file_downloads_with_a_bot_token_and_without_one(slack: Intercepted, workspace: Workspace) -> None:
     from minutehand.adapters.providers.slack.seed import write_file
     from minutehand.domain.scenario import SeededFile
 
@@ -231,12 +225,12 @@ async def test_a_file_downloads_with_a_bot_token_and_without_one_lands_on_the_si
     )
     async with slack.http() as http:
         got = await http.get(file.url_private_download, headers={"Authorization": "Bearer xoxb-1"})
-        anonymous = await http.get(file.url_private, follow_redirects=True)
+        anonymous = await http.get(file.url_private)
 
     assert (
         got.status_code == 200 and got.text == "# The brief" and got.headers["content-type"].startswith("text/markdown")
     )
-    assert anonymous.status_code == 200 and anonymous.text.startswith("<!DOCTYPE html>")
+    assert anonymous.status_code == 200 and anonymous.text == "# The brief", "a credential is never refused"
 
 
 # ------------------------------------------------------------------ faults

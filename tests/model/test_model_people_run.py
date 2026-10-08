@@ -17,7 +17,7 @@ from minutehand.adapters.model.openai_compatible import (
     OpenAICompatible,
 )
 from minutehand.application.refusals import RunRefused
-from minutehand.application.replier_model import PERSON_PROMPT_VERSION, WrittenReply
+from minutehand.application.replier import PERSON_PROMPT_VERSION, WrittenReply
 from minutehand.checks.judged.asked_about import AskedAboutVerdict
 from minutehand.checks.ledger import build
 from minutehand.domain.checks import FindingKind, ObligationKind
@@ -25,7 +25,7 @@ from minutehand.domain.conversation import Provenance
 from minutehand.domain.experiment import Fork
 from minutehand.domain.outbound import Acknowledge, HtmlAt, MessageReading
 from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import Answers, DelayRange, PersonAsked, Scenario
+from minutehand.domain.scenario import Answers, DelayRange, PersonAsked, Scenario, Scripted, ScriptedReply
 from minutehand.domain.world import Actor
 from tests.e2e.support import OWNER, QUESTION, SOFIA, T0, THANKS, agent_under_test, messages, scenario, texts, world
 from tests.model.fake_completions import FakeCompletions, Received, fake_completions
@@ -92,8 +92,10 @@ async def test_a_model_written_answer_is_delivered_when_a_scripted_one_would_be_
 
     # She was asked twice: the question, and the thank-you, which the model said needs no answer.
     asked = fake.for_schema("WrittenReply")
-    assert [r.last for r in asked] == [QUESTION, THANKS]
-    assert asked[1].said[1:] == [("user", QUESTION), ("assistant", WRITTEN), ("user", THANKS)]
+    assert [r.asked for r in asked] == [QUESTION, THANKS]
+    # Her second prompt holds the first exchange: her own answer is part of what she is told she said.
+    shown = asked[1].last
+    assert shown.index(f"They: {QUESTION}") < shown.index(f"You: {WRITTEN}") < shown.index(f"They: {THANKS}")
     thanks = messages(events, Actor.AGENT, to=SOFIA)[1]
     waits = build(scn, events, store.replies())
     assert [o.opened_by for o in waits if o.kind is ObligationKind.ANSWER_FROM_PERSON and o.person == "sofia"] == [
@@ -128,7 +130,7 @@ async def test_a_fork_replays_an_answer_written_before_it_and_asks_the_model_not
 
     async with fake_completions(the_model) as fake:
         [parent] = await session.play(scn, launched.agent, state=state, command=launched.command, model=model(fake))
-        assert [r.last for r in fake.received] == [QUESTION, THANKS]
+        assert [r.asked for r in fake.received] == [QUESTION, THANKS]
         before_the_fork = len(fake.received)
         after_start = next(p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1)
         [child] = await session.fork(
@@ -138,15 +140,17 @@ async def test_a_fork_replays_an_answer_written_before_it_and_asks_the_model_not
             command=launched.command,
             model=model(fake),
         )
-        # The answer to QUESTION was written before the fork and is replayed; only the agent's new message,
-        # its thank-you after the fork, is put to the model.
-        assert [r.last for r in fake.received[before_the_fork:]] == [THANKS]
+        # The answer to QUESTION was written before the fork and is kept; the agent's thank-you after the fork is
+        # put to Sofia in exactly the context her parent's was, so the model's answer is replayed from the world.
+        assert fake.received[before_the_fork:] == []
 
     assert child.record.stop is StopReason.AGENT_DONE
     events = world(state, child.record.run_id, root=parent.record.run_id).events()
     assert texts(messages(events, Actor.PERSON)) == [WRITTEN]
     assert [m.sim_time for m in messages(events, Actor.PERSON)] == [T0 + timedelta(hours=36)]
     assert texts(messages(events, Actor.AGENT, to=OWNER))
+    [replayed] = world(state, child.record.run_id, root=parent.record.run_id).person_calls()
+    assert replayed.replayed and replayed.asked == messages(events, Actor.AGENT, to=SOFIA)[1].entity
 
 
 async def test_a_scenario_with_a_written_person_and_no_model_is_refused_before_it_starts(
@@ -161,6 +165,21 @@ async def test_a_scenario_with_a_written_person_and_no_model_is_refused_before_i
     message = str(raised.value)
     assert "sofia" in message and all(v in message for v in (MODEL_VARIABLE, API_KEY_VARIABLE, BASE_URL_VARIABLE))
     assert not state.exists()
+
+
+async def test_a_script_that_can_run_out_with_no_model_is_refused_before_it_starts_naming_the_person(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched = agent_under_test(tmp_path, monkeypatch, "diligent")
+    state = tmp_path / "state"
+    goes_on = Scripted(replies=[ScriptedReply(to_ask=1, verbatim="Yes, 40k.")])
+
+    with pytest.raises(RunRefused) as raised:
+        await session.play(scenario(goes_on), launched.agent, state=state, command=launched.command)
+
+    message = str(raised.value)
+    assert "sofia (they go on conversing once their script is used: `then: answers`, the default)" in message
+    assert MODEL_VARIABLE in message and not state.exists()
 
 
 async def test_a_question_emailed_to_a_person_whose_replies_a_model_writes_is_never_put_to_them(
@@ -182,6 +201,6 @@ async def test_a_question_emailed_to_a_person_whose_replies_a_model_writes_is_ne
             with_sofia_writing(), agent, state=tmp_path / "state", command=launched.command, model=model(fake)
         )
     assert outcome.record.stop is StopReason.AGENT_DONE
-    assert [r.last for r in fake.for_schema("WrittenReply")] == [QUESTION, THANKS]
+    assert [r.asked for r in fake.for_schema("WrittenReply")] == [QUESTION, THANKS]
     events = world(tmp_path / "state", outcome.record.run_id).events()
     assert emailed in texts(messages(events, Actor.AGENT, to=SOFIA))

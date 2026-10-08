@@ -98,7 +98,7 @@ async def test_pages_retrieve_reads_a_row_with_every_property_type(sdk: Sdk) -> 
     assert props["Notes"]["rich_text"][0]["plain_text"] == "Ship it"
     assert props["Depends on"]["relation"] == [{"id": ids("audit")}]
     assert props["Created"]["created_time"] == "2026-09-14T08:30:00.000Z"
-    assert row["url"].startswith("https://www.notion.so/Launch-site-")
+    assert row["url"].startswith("https://app.notion.com/p/Launch-site-")
 
 
 async def test_pages_create_under_a_page_with_children(sdk: Sdk) -> None:

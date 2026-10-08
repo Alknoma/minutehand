@@ -1,9 +1,14 @@
 """Facts about how YouTrack answers issue, field, search and link calls, each carried over from an older stand-in
 that had learned it, driven through the run's proxy with `httpx`. Each docstring says whether the fact is in
-YouTrack's documentation (with the page) or was observed and is undocumented. `CLAIMS.md` beside the provider lists
+YouTrack's documentation (with the page), was recorded from a live instance, or is the older stand-in's own and
+unverified. `CLAIMS.md` beside the provider lists
 them all."""
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -39,38 +44,41 @@ async def test_a_project_reference_not_shaped_as_an_entity_id_is_refused_400_bef
     yt: httpx.AsyncClient, team: Instance, reference: str
 ) -> None:
     """Documented: an issue is created in a project named by its database id
-    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues.html). Observed, undocumented: anything
-    not shaped `<n>-<n>` is refused 400 "Invalid structure of entity id" whether or not a project goes by that name,
-    and a well-shaped id naming nothing is a 404."""
+    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues.html), and an id of another shape is
+    refused 400 `bad_request` "Invalid structure of entity id: <id>" (https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-ring-id.html). What a
+    create naming a well-shaped id of no project answers is neither documented nor recorded: refused by name."""
     head = team.store.head()
 
     refused = refusal(
         await yt.post("/api/issues", json={"project": {"id": reference}, "summary": "Order lanyards"}), 400
     )
-    missing = refusal(await yt.post("/api/issues", json={"project": {"id": "0-77"}, "summary": "Order lanyards"}), 404)
+    missing = refusal(await yt.post("/api/issues", json={"project": {"id": "0-77"}, "summary": "Order lanyards"}), 501)
 
     assert refused == {"error": "bad_request", "error_description": f"Invalid structure of entity id: {reference}"}
-    assert missing["error_description"] == "Entity with id 0-77 not found"
+    assert "naming project 0-77, which does not exist" in str(missing["error_description"])
     assert team.store.head() == head
 
 
-async def test_a_state_at_the_top_level_of_an_update_is_refused_400(yt: httpx.AsyncClient, team: Instance) -> None:
-    """Observed, undocumented: an issue's state is a custom field, so an update naming `state` beside `summary` is
-    refused rather than ignored."""
+async def test_a_state_at_the_top_level_of_an_update_is_refused_501_naming_it(
+    yt: httpx.AsyncClient, team: Instance
+) -> None:
+    """The Issue entity has no `state` (https://www.jetbrains.com/help/youtrack/devportal/api-entity-Issue.html);
+    what YouTrack answers for it is neither documented nor recorded, so it is refused by name, never ignored."""
     head = team.store.head()
 
-    refusal(await yt.post("/api/issues/LAUNCH-1", json={"state": "Fixed"}), 400)
+    refused = refusal(await yt.post("/api/issues/LAUNCH-1", json={"state": "Fixed"}), 501)
+    assert "the body property 'state'" in str(refused["error_description"])
 
     assert team.store.head() == head
     assert value_name(entity(await yt.get("/api/issues/LAUNCH-1", params={"fields": ISSUE_FIELDS})), "State") == "Open"
 
 
-async def test_an_assignee_off_the_team_in_the_create_body_is_refused_value_not_allowed(
+async def test_an_assignee_off_the_team_in_the_create_body_is_refused_501_naming_it(
     yt: httpx.AsyncClient, team: Instance
 ) -> None:
-    """Observed, undocumented: the create body's `customFields` writes the same Assignee field the field route does,
-    so a user who exists but is not on the project's team is refused there too, in the same words, and no issue is
-    made."""
+    """ "Value is not allowed" for an assignee off the team is recorded live for an update only (CLAIMS row 57);
+    what a create body carrying one answers is neither documented nor recorded, so it is refused by name and no
+    issue is made."""
     head = team.store.head()
     refused = refusal(
         await yt.post(
@@ -81,30 +89,26 @@ async def test_an_assignee_off_the_team_in_the_create_body_is_refused_value_not_
                 "customFields": [{"name": "Assignee", "$type": "SingleUserIssueCustomField", "value": {"id": VENDOR}}],
             },
         ),
-        400,
+        501,
     )
 
-    assert refused == {
-        "error": "",
-        "error_description": "Value is not allowed",
-        "error_developer_message": "Value is not allowed",
-        "error_field": "value",
-    }
+    assert "off LAUNCH's team" in str(refused["error_description"])
     assert team.store.head() == head
 
 
 # --------------------------------------------------------------------------- field writes
 
 
-async def test_clearing_the_state_is_refused_and_the_issue_still_reads_its_state(yt: httpx.AsyncClient) -> None:
-    """Observed, undocumented: an issue cannot be in no state, so a clear of State through the field route is refused
-    "Value is not allowed" and the issue keeps, and reads back, the state it had."""
+async def test_clearing_the_state_is_refused_501_and_the_issue_still_reads_its_state(yt: httpx.AsyncClient) -> None:
+    """Documented that State cannot be empty (https://www.jetbrains.com/help/youtrack/cloud/default-project-template.html);
+    what a clear answers is neither documented nor recorded, so it is refused by name and the issue keeps its
+    state."""
     state = await field_id(yt, "LAUNCH-1", "State")
 
-    refused = refusal(await yt.post(f"/api/issues/LAUNCH-1/customFields/{state}", json={"value": None}), 400)
+    refused = refusal(await yt.post(f"/api/issues/LAUNCH-1/customFields/{state}", json={"value": None}), 501)
     after = entity(await yt.get("/api/issues/LAUNCH-1", params={"fields": ISSUE_FIELDS}))
 
-    assert refused["error_description"] == "Value is not allowed"
+    assert "clearing State, which cannot be empty" in str(refused["error_description"])
     assert value_name(after, "State") == "Open"
 
 
@@ -160,7 +164,7 @@ async def test_unresolved_reads_each_projects_own_resolved_values(yt: httpx.Asyn
 
 
 async def test_a_field_search_leaves_out_an_issue_holding_another_value(yt: httpx.AsyncClient) -> None:
-    """Observed, undocumented: a search on Priority or Type finds the issues holding exactly that value, and an issue
+    """Unverified, the older stand-in's own: a search on Priority or Type finds the issues holding exactly that value, and an issue
     created a moment before, holding the project's default, is not among them."""
     made = entity(
         await yt.post("/api/issues", params={"fields": "idReadable"}, json={"project": {"id": LAUNCH}, "summary": "x"})
@@ -177,12 +181,18 @@ async def test_a_field_search_leaves_out_an_issue_holding_another_value(yt: http
 async def test_a_value_the_field_has_not_got_is_refused_invalid_query_not_answered_empty(
     yt: httpx.AsyncClient,
 ) -> None:
-    """Observed, undocumented: Field Ops has no state called Open, and a search for it is refused `invalid_query`
-    naming the field, so "nothing matched" and "that is not a value here" never read the same."""
+    """Recorded from JetBrains' public instance on 2026-10-08 (`data/observed/query_value_not_used.http`): a search
+    naming a value no issue's field holds is a 400 `invalid_query` whose child names the value and the field, not
+    an empty answer."""
     refused = refusal(await yt.get("/api/issues", params={"query": "project: OPS state: Open", "fields": "id"}), 400)
 
-    assert refused["error"] == "invalid_query"
-    assert "isn't used for the State field" in str(refused["error_description"])
+    assert refused == {
+        "error": "invalid_query",
+        "error_description": "Can't parse search query, please check and update query syntax",
+        "error_developer_message": "Can't parse search query",
+        "error_field": "query",
+        "error_children": [{"error": 'The value "Open" isn\'t used for the State field.', "error_description": ""}],
+    }
 
 
 # --------------------------------------------------------------------------- links
@@ -190,8 +200,65 @@ async def test_a_value_the_field_has_not_got_is_refused_invalid_query_not_answer
 
 async def test_a_readable_key_in_a_link_body_is_refused_with_the_entity_id_wording(yt: httpx.AsyncClient) -> None:
     """Documented: a link is added by posting the other issue's database id to one slot of the issue's links
-    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues-issueID-links.html). Observed: a readable
-    key there is refused by its shape, naming it."""
+    (https://www.jetbrains.com/help/youtrack/devportal/resource-api-issues-issueID-links.html); a readable key
+    there is refused by its shape in the words https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-ring-id.html shows."""
     refused = refusal(await yt.post("/api/issues/LAUNCH-1/links/106-0t/issues", json={"id": "LAUNCH-2"}), 400)
 
     assert refused["error_description"] == "Invalid structure of entity id: LAUNCH-2"
+
+
+# --------------------------------------------------------------------------- held to recordings of the real service
+
+OBSERVED = Path(__file__).parent / "data" / "observed"
+
+
+def _recorded(name: str) -> tuple[int, Any]:
+    head, _, body = (OBSERVED / f"{name}.http").read_bytes().decode("utf-8").partition("\r\n\r\n")
+    return int(head.split()[1]), json.loads(body)
+
+
+async def test_an_unknown_projects_team_answers_as_the_public_instance_does(yt: httpx.AsyncClient) -> None:
+    status, recorded = _recorded("unknown_project_team")
+    answer = await yt.get("/api/admin/projects/0-99999/team", params={"fields": "id"})
+
+    assert (answer.status_code, answer.json()) == (status, recorded)
+
+
+async def test_a_value_no_field_holds_answers_as_the_public_instance_does(yt: httpx.AsyncClient) -> None:
+    status, recorded = _recorded("query_value_not_used")
+    answer = await yt.get("/api/issues", params={"query": "State: Zzqqxx", "fields": "id"})
+
+    assert answer.status_code == status
+    assert {k: v for k, v in answer.json().items() if k != "error_children"} == {
+        k: v for k, v in recorded.items() if k != "error_children"
+    }
+    assert answer.json()["error_children"] == [
+        {"error": 'The value "Zzqqxx" isn\'t used for the State field.', "error_description": ""}
+    ], "the public instance names every field the value could be for (`Stage,State`); this instance has State alone"
+
+
+@pytest.mark.parametrize(
+    ("name", "path"),
+    [
+        ("activities_no_categories", "/api/issues/LAUNCH-1/activities?fields=id"),
+        ("activities_unknown_category", "/api/issues/LAUNCH-1/activities?categories=ZzNope&fields=id"),
+        ("issue_activities_bad_start", "/api/issues/LAUNCH-1/activities?categories=CommentsCategory&start=x&fields=id"),
+        ("fields_syntax_invalid", "/api/issues?fields=id,summary(&$top=1"),
+        ("skip_not_a_number", "/api/issues?fields=id&$skip=x&$top=1"),
+        ("top_not_a_number", "/api/issues?fields=id&$top=x"),
+        ("top_negative", "/api/issues?fields=id&$top=-1"),
+    ],
+)
+async def test_a_read_answers_as_the_public_instance_does(yt: httpx.AsyncClient, name: str, path: str) -> None:
+    status, recorded = _recorded(name)
+    answer = await yt.get(path)
+
+    assert (answer.status_code, answer.json()) == (status, recorded)
+
+
+async def test_an_attribute_fields_names_that_the_entity_has_not_got_is_left_out(yt: httpx.AsyncClient) -> None:
+    """As recorded (`data/observed/fields_attribute_unknown.http`): answered, without it."""
+    _, recorded = _recorded("fields_attribute_unknown")
+    answer = entities(await yt.get("/api/issues", params={"fields": "id,zzzattr", "$top": "1"}))
+
+    assert set(answer[0]) == set(recorded[0]) == {"id", "$type"}

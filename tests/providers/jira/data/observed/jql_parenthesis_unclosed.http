@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Thu, 08 Oct 2026 07:08:37 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: e3664d4823483ef92f229373a2653e81
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 76ac64947e9948d1a4c746077c3c2fe6
+Atl-Request-Id: 76ac6494-7e99-48d1-a4c7-46077c3c2fe6
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=161,atl-edge-internal;dur=18,atl-edge-upstream;dur=143,atl-edge-pop;desc="aws-ap-northeast-2"
+X-Cache: Error from cloudfront
+Via: 1.1 7067d99a7d3a7a94e3770670ce590928.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE54-P1
+X-Amz-Cf-Id: DntnUUJrs7yd6udDyBaO28GB2lRl6mWhezTzo6WheFbFfJcmD6cdIA==
+
+{"errorMessages":["Error in the JQL Query: Expecting ')' before the end of the query."],"errors":{}}

@@ -28,9 +28,9 @@ async def test_project_equals_a_quoted_key_or_a_name(site: Site) -> None:
     assert await keys(site, 'project = "Field Ops"') == ["FIELD-1"]
 
 
-async def test_a_project_the_caller_cannot_see_is_refused_as_unknown(site: Site) -> None:
-    body = refused(await site.http.post(f"{API}/search/jql", json={"jql": "project = VAULT"}), 400)
-    assert body["errorMessages"] == ["The value 'VAULT' does not exist for the field 'project'."]
+async def test_a_project_the_caller_cannot_see_matches_nothing(site: Site) -> None:
+    """As a public site answers a project it has not got (`data/observed/jql_project_unknown.http`)."""
+    assert await keys(site, "project = VAULT") == []
     assert "VAULT-1" not in await keys(site, "statusCategory = new")
 
 
@@ -151,22 +151,45 @@ async def test_key_in_a_list(site: Site) -> None:
 @pytest.mark.parametrize(
     ("jql", "message"),
     [
-        ("", "A query with no restriction cannot be run here: add a condition to the JQL."),
-        ("ORDER BY duedate ASC", "A query with no restriction cannot be run here: add a condition to the JQL."),
-        ("colour = red", "Field 'colour' does not exist, or you are not allowed to see it."),
-        ('status = "Shipped"', "The value 'Shipped' does not exist for the field 'status'."),
-        ('assignee = "nobody-at-all"', "The value 'nobody-at-all' does not exist for the field 'assignee'."),
-        (
-            "project = LAUNCH AND",
-            "Error in the JQL query: expected a field name at character 20, but found the end of the query.",
-        ),
-        ("status was Done", "Error in the JQL query: the 'WAS' operator is not supported here."),
-        ("assignee = membersOf(x)", "The function 'membersOf()' cannot be used with the field 'assignee'."),
-        ("updated >= yesterday", "Date value 'yesterday' for field 'updated' is invalid: write 'yyyy/MM/dd HH:mm', "
-         "'yyyy-MM-dd HH:mm', 'yyyy/MM/dd', 'yyyy-MM-dd', or a period such as '-5d' or '4w 2d'."),
-        ('text = "export"', "The operator '=' is not supported by the 'text' field."),
+        ("", "Unbounded JQL queries are not allowed here. Please add a search restriction to your query."),
+        ("ORDER BY duedate ASC", "Unbounded JQL queries are not allowed here. Please add a search restriction to your query."),
+        ("project = LAUNCH AND", "Error in the JQL Query: Expecting a field name at the end of the query."),
+        ("project =", "Error in JQL Query: Expecting either a value, list or function before the end of the query."),
+        ("project = LAUNCH AND status = = Done",
+         "Error in JQL Query: Expecting either a value, list or function but got '='. You must surround '=' in "
+         "quotation marks to use it as a value. (line 1, character 31)"),
+        ("project = LAUNCH status", "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'status'. (line 1, character 18)"),
+        ("project = LAUNCH AND (status = Done", "Error in the JQL Query: Expecting ')' before the end of the query."),
+        ('summary ~ "unclosed', "Error in the JQL Query: The quoted string 'unclosed' has not been completed. (line 1, character 11)"),
     ],
 )  # fmt: skip
 async def test_a_query_that_cannot_be_read_is_refused_with_400(site: Site, jql: str, message: str) -> None:
+    """Each sentence as a public Jira Cloud site answers it (`data/observed/jql_*.http`)."""
     body = refused(await site.http.post(f"{API}/search/jql", json={"jql": jql}), 400)
     assert body == {"errorMessages": [message], "errors": {}}
+
+
+@pytest.mark.parametrize(
+    "jql",
+    [
+        "colour = red",
+        'status = "Shipped"',
+        'assignee = "nobody-at-all"',
+        "assignee = noSuchFunction()",
+        "status = currentUser()",
+        "updated >= yesterday",
+        'text = "export"',
+        "status is Done",
+        "key = LAUNCH-999",
+    ],
+)
+async def test_a_query_naming_what_the_site_has_not_got_matches_nothing(site: Site, jql: str) -> None:
+    """As a public Jira Cloud site answers each (`data/observed/jql_field_unknown.http`, `jql_value_unknown.http`,
+    `jql_function_unknown.http`, `jql_function_wrong_field.http`, `jql_date_invalid.http`,
+    `jql_operator_unsupported.http`, `jql_is_not_empty_value.http`, `jql_key_unknown.http`): 200, no issues."""
+    assert ok(await site.http.post(f"{API}/search/jql", json={"jql": jql})) == {"issues": [], "isLast": True}
+
+
+async def test_an_order_by_field_the_site_has_not_got_is_passed_over(site: Site) -> None:
+    """As recorded (`data/observed/jql_order_field_unknown.http`): the query answers, ordered by the rest."""
+    assert sorted(await keys(site, "project = LAUNCH ORDER BY zzfield")) == ["LAUNCH-1", "LAUNCH-2"]

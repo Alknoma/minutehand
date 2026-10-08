@@ -8,7 +8,7 @@ import httpx
 from minutehand.adapters.providers.asana import state
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, Operation
-from tests.providers.asana.asana_workspace import Workspace, error
+from tests.providers.asana.asana_workspace import Workspace, error, unserved
 from tests.providers.asana.rich_workspace import (
     ALICE_TOKEN,
     BACKEND,
@@ -42,7 +42,6 @@ TASK_FIELDS = ",".join(
         "custom_fields.number_value",
         "custom_fields.display_value",
         "parent.gid",
-        "subtasks.name",
         "tags.name",
     ]
 )
@@ -346,14 +345,19 @@ async def test_add_task_moves_it_to_the_section_and_status_is_read_from_the_fiel
     assert [t["gid"] for t in listed] == [INCIDENT], "the done ticket says Done in its Status field, not its section"
 
 
-async def test_a_task_in_a_section_of_another_project_joins_that_project(agent: httpx.AsyncClient) -> None:
+async def test_a_task_put_in_a_section_of_another_project_is_refused_by_name(
+    rich: Workspace, agent: httpx.AsyncClient
+) -> None:
+    """addTaskForSection documents moving a task within its project; what it does to a task not in the section's
+    project is not documented, so it is refused by name and nothing is written."""
     other = got(
         await agent.post("/projects", json={"data": {"name": "Ops", "workspace": WS, "team": ENGINEERING}}), 201
     )
     untitled = got(await agent.get(f"/projects/{other['gid']}/sections"))[0]["gid"]
-    await agent.post(f"/sections/{untitled}/addTask", json={"data": {"task": INCIDENT}})
-    read = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "projects.name"}))
-    assert [p["name"] for p in read["projects"]] == ["Backend Services", "Ops"]
+    head = rich.store.head()
+    answered = await agent.post(f"/sections/{untitled}/addTask", json={"data": {"task": INCIDENT}})
+    assert unserved(answered).startswith("adding a task to a section of a project it is not in")
+    assert rich.store.head() == head
 
 
 async def test_set_parent_makes_a_subtask_and_unsets_it(agent: httpx.AsyncClient) -> None:
@@ -366,8 +370,8 @@ async def test_set_parent_makes_a_subtask_and_unsets_it(agent: httpx.AsyncClient
     assert got(parented)["parent"] == {"gid": INCIDENT, "name": "API timeout in production"}
     subtasks = got(await agent.get(f"/tasks/{INCIDENT}/subtasks", params={"opt_fields": "name"}))
     assert [s["name"] for s in subtasks] == ["Raise the pool size", "Write the runbook"]
-    read = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "subtasks.name,num_subtasks"}))
-    assert read["num_subtasks"] == 2
+    read = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "num_subtasks"}))
+    assert read == {"gid": INCIDENT, "num_subtasks": 2}
     unset = await agent.post(f"/tasks/{made['gid']}/setParent", json={"data": {"parent": None}})
     assert got(unset)["parent"] is None
 
@@ -415,14 +419,15 @@ async def test_workspace_custom_fields_list_the_definitions(agent: httpx.AsyncCl
     assert (one["name"], one["precision"], "enum_options" in one) == ("Story Points", 1, False)
 
 
-async def test_html_notes_are_read_as_the_text_they_show(agent: httpx.AsyncClient) -> None:
-    made = got(
-        await agent.post(
-            "/tasks",
-            json={
-                "data": {"name": "x", "projects": [BACKEND], "html_notes": "<body>Call <b>Bob</b> &amp; Alice</body>"}
-            },
-        ),
-        201,
-    )
-    assert got(await agent.get(f"/tasks/{made['gid']}", params={"opt_fields": "notes"}))["notes"] == "Call Bob & Alice"
+async def test_html_notes_are_refused_by_name_written_or_read(rich: Workspace, agent: httpx.AsyncClient) -> None:
+    """Asana keeps `notes` and `html_notes` as one text and documents neither conversion
+    (https://developers.asana.com/docs/rich-text): neither can be answered for the other, so neither is served."""
+    before = rich.store.head()
+    sent = {"name": "x", "projects": [BACKEND], "html_notes": "<body>Call <b>Bob</b> &amp; Alice</body>"}
+    created = await agent.post("/tasks", json={"data": sent})
+    assert unserved(created) == "html_notes"
+    updated = await agent.put(f"/tasks/{INCIDENT}", json={"data": {"html_notes": "<body>x</body>"}})
+    assert unserved(updated) == "html_notes"
+    assert rich.store.head() == before
+    read = await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "name,html_notes"})
+    assert unserved(read) == "opt_fields=html_notes"

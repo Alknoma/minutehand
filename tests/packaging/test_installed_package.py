@@ -21,6 +21,7 @@ from tests.packaging.conftest import (
     run,
     tool,
 )
+from tests.support.people import people_environment
 
 pytestmark = [pytest.mark.packaging, pytest.mark.timeout(900)]
 
@@ -175,8 +176,9 @@ def test_the_pytest_plugin_serves_its_fixtures_from_the_installed_wheel(
 
 def _example(installed: Installed, scenario: str, behaviour: str, state: Path) -> subprocess.CompletedProcess[str]:
     """The example's own command line, from its folder; the agent runs in this checkout's environment, which
-    has slack_sdk, and Minutehand in the clean one, which does not."""
-    env = {**outside_this_project(), "AGENT_BEHAVIOUR": behaviour}
+    has slack_sdk, and Minutehand in the clean one, which does not. Rosa's words are a model's: the recipes'
+    stand-in writes them, as the example's README runs it offline."""
+    env = {**outside_this_project(), **people_environment(), "AGENT_BEHAVIOUR": behaviour}
     argv = [str(installed.minutehand), "run", scenario, "--agent", "agent.yaml", "--state", str(state)]
     return run(*argv, "--", sys.executable, "agent.py", cwd=EXAMPLE, env=env)
 

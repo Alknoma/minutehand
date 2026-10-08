@@ -84,14 +84,14 @@ def _seed(*, expect: list[dict[str, Any]]) -> dict[str, Any]:
                 "key": "dani",
                 "name": "Dani Ruiz",
                 "email": "dani@example.com",
-                "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": ANSWER}]},
+                "reply": {"kind": "scripted", "then": "silent", "replies": [{"to_ask": 1, "verbatim": ANSWER}]},
             },
             # told things, never asked: scripted, with nothing to say
             {
                 "key": "nadia",
                 "name": "Nadia Okafor",
                 "email": "nadia@example.com",
-                "reply": {"kind": "scripted", "replies": []},
+                "reply": {"kind": "scripted", "then": "silent", "replies": []},
             },
         ],
         "expect": expect,
@@ -100,7 +100,7 @@ def _seed(*, expect: list[dict[str, Any]]) -> dict[str, Any]:
 
 EXPECT = [
     {"kind": "person_asked", "person": "dani"},
-    {"kind": "relayed", "said_by": "dani", "to": "nadia", "tell": "Wednesday afternoon"},
+    {"kind": "relayed", "said_by": "dani", "to": "nadia", "holding": ["Wednesday afternoon"]},
     {"kind": "person_asked", "person": "owen", "mentions": ["Wednesday"]},
 ]
 
