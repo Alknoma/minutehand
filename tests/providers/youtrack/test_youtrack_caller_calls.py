@@ -192,12 +192,14 @@ async def test_priority_and_type_take_a_bundle_value_by_name(yt: httpx.AsyncClie
     entity(await yt.post(f"/api/issues/OPS-1/customFields/{kind}", json={"value": {"name": "Epic"}}))
     read = entity(await yt.get("/api/issues/OPS-1", params={"fields": "customFields(name,value(name))"}))
     not_in_this_bundle = refusal(
-        await yt.post(f"/api/issues/OPS-1/customFields/{priority}", json={"value": {"name": "Critical"}}), 400
+        await yt.post(f"/api/issues/OPS-1/customFields/{priority}", json={"value": {"name": "Critical"}}), 501
     )
 
     assert named(read["customFields"], "Priority")["value"] == {"name": "P1 - Urgent", "$type": "EnumBundleElement"}
     assert named(read["customFields"], "Type")["value"] == {"name": "Epic", "$type": "EnumBundleElement"}
-    assert not_in_this_bundle["error_description"] == "Value is not allowed"
+    assert "the value Critical for Priority, which its bundle has not got" in str(
+        not_in_this_bundle["error_description"]
+    ), "unrecorded for a bundle: refused by name"
 
 
 async def test_due_date_takes_epoch_milliseconds_and_story_points_a_number(yt: httpx.AsyncClient) -> None:
@@ -365,7 +367,7 @@ async def test_create_project_from_the_default_template(yt: httpx.AsyncClient) -
     assert [v["name"] for v in named(states["customFields"], "State")["bundle"]["values"]][:2] == ["Submitted", "Open"]  # type: ignore[index]
     refusal(
         await yt.post("/api/admin/projects", json={"name": "Again", "shortName": "SUMMIT", "leader": {"id": AGENT}}),
-        400,
+        501,
     )
     refusal(
         await yt.post(
@@ -414,13 +416,13 @@ async def test_attaching_a_field_to_a_created_project_is_not_refused_for_update_
     attached = entity(
         await yt.post(f"/api/admin/projects/{OPS}/customFields", params={"fields": "id,field(id,name)"}, json=body)
     )
-    again = refusal(await yt.post(f"/api/admin/projects/{OPS}/customFields", json=body), 400)
+    again = refusal(await yt.post(f"/api/admin/projects/{OPS}/customFields", json=body), 501)
     wrong_type = refusal(
         await yt.post(
             f"/api/admin/projects/{OPS}/customFields",
             json={"field": {"id": "58-6"}, "$type": "SimpleProjectCustomField"},
         ),
-        400,
+        501,
     )
 
     assert on_made["$type"] == "SimpleProjectCustomField"
@@ -429,7 +431,7 @@ async def test_attaching_a_field_to_a_created_project_is_not_refused_for_update_
         "field": {"id": "58-5", "name": "Due Date", "$type": "CustomField"},
         "$type": "SimpleProjectCustomField",
     }
-    assert "already present" in str(again["error_description"])
+    assert "which OPS already carries" in str(again["error_description"])
     assert "PeriodProjectCustomField" in str(wrong_type["error_description"])
     due = await field_id(yt, "OPS-1", "Due Date")
     entity(await yt.post(f"/api/issues/OPS-1/customFields/{due}", json={"value": 1788004800000}))
@@ -574,7 +576,7 @@ async def test_an_issue_carries_an_existing_tag_by_id_and_drops_it(yt: httpx.Asy
     assert [t["name"] for t in carried] == ["docs", "press"]
     assert dropped.status_code == 200 and [t["name"] for t in left] == ["docs"]
     refusal(await yt.post("/api/issues/LAUNCH-1/tags", json={"name": "press"}), 400)
-    refusal(await yt.post("/api/issues/LAUNCH-1/tags", json={"id": "6-999"}), 404)
+    refusal(await yt.post("/api/issues/LAUNCH-1/tags", json={"id": "6-999"}), 501)
 
 
 # --------------------------------------------------------------------------- Hub

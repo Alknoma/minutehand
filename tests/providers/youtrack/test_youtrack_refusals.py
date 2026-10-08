@@ -74,10 +74,12 @@ async def test_a_user_id_is_not_an_issue_and_is_refused_404(client: httpx.AsyncC
 
 
 async def test_an_unknown_project_is_refused_404(instance: Instance, client: httpx.AsyncClient) -> None:
+    """Recorded from JetBrains' public instance (`data/observed/unknown_project_custom_fields.http`): an unknown
+    project in the path is a 404 "Entity with id … not found"."""
     head = instance.store.head()
-    refusal(await client.post("/api/issues", json={"project": {"id": "0-77"}, "summary": "x"}), 404)
-    refusal(await client.get("/api/admin/projects/0-77"), 404)
-    refusal(await client.get("/api/admin/projects/NOPE/customFields"), 404)
+    for path in ("/api/admin/projects/0-77", "/api/admin/projects/NOPE/customFields"):
+        answer = refusal(await client.get(path), 404)
+        assert answer == {"error": "Not Found", "error_description": f"Entity with id {path.split('/')[4]} not found"}
 
     assert instance.store.head() == head
 
@@ -108,16 +110,17 @@ async def test_an_update_clearing_the_summary_is_refused_400(client: httpx.Async
 
 
 @pytest.mark.parametrize("field", ["title", "assignee", "state", "priority", "labels"])
-async def test_a_property_the_issue_has_not_got_is_refused_400(client: httpx.AsyncClient, field: str) -> None:
+async def test_a_property_the_issue_has_not_got_is_refused_501_naming_it(client: httpx.AsyncClient, field: str) -> None:
+    """What YouTrack answers for a property its Issue has not got is neither documented nor recorded."""
     answer = refusal(
-        await client.post("/api/issues", json={"project": {"id": LAUNCH}, "summary": "x", field: "y"}), 400
+        await client.post("/api/issues", json={"project": {"id": LAUNCH}, "summary": "x", field: "y"}), 501
     )
 
-    assert answer["error_description"] == f"Unsupported property: {field}"
+    assert f"the body property '{field}'" in str(answer["error_description"])
 
 
 @pytest.mark.parametrize("value", ["Done", "Closed", "Resolved"])
-async def test_a_state_the_project_has_not_got_is_refused_400(
+async def test_a_state_the_project_has_not_got_is_refused_501_naming_it(
     instance: Instance, client: httpx.AsyncClient, value: str
 ) -> None:
     head = instance.store.head()
@@ -130,11 +133,11 @@ async def test_a_state_the_project_has_not_got_is_refused_400(
     )
 
     for answer in (created, updated, commanded):
-        assert refusal(answer, 400)["error_description"] == "Value is not allowed"
+        assert f"the value {value} for State" in str(refusal(answer, 501)["error_description"])
     assert instance.store.head() == head
 
 
-async def test_clearing_the_state_is_refused_400(client: httpx.AsyncClient) -> None:
+async def test_clearing_the_state_is_refused_501_naming_it(client: httpx.AsyncClient) -> None:
     answer = refusal(
         await client.post(
             "/api/issues/LAUNCH-1",
@@ -144,10 +147,10 @@ async def test_clearing_the_state_is_refused_400(client: httpx.AsyncClient) -> N
                 ]
             },
         ),
-        400,
+        501,
     )
 
-    assert answer["error_description"] == "Value is not allowed"
+    assert "clearing State, which cannot be empty" in str(answer["error_description"])
 
 
 async def test_an_assignee_off_the_project_team_is_refused_400(instance: Instance, client: httpx.AsyncClient) -> None:
@@ -170,8 +173,9 @@ async def test_an_assignee_off_the_project_team_is_refused_400(instance: Instanc
         "/api/commands", json={"query": f"for {outsider.login}", "issues": [{"idReadable": "LAUNCH-1"}]}
     )
 
-    for answer in (by_login, by_id, on_create, commanded):
+    for answer in (by_login, by_id, commanded):
         assert refusal(answer, 400)["error_description"] == "Value is not allowed"
+    assert "off LAUNCH's team" in str(refusal(on_create, 501)["error_description"]), "the create body is unrecorded"
     assert instance.store.head() == head
 
 
@@ -179,7 +183,7 @@ async def test_an_assignee_who_does_not_exist_is_refused_400(client: httpx.Async
     refusal(await client.post("/api/issues/LAUNCH-1", json={"customFields": [assignee_field("nobody")]}), 400)
 
 
-async def test_a_field_the_project_has_not_got_is_refused_404(client: httpx.AsyncClient) -> None:
+async def test_a_field_the_project_has_not_got_is_refused_501_naming_it(client: httpx.AsyncClient) -> None:
     refusal(
         await client.post(
             "/api/issues/LAUNCH-1",
@@ -189,7 +193,7 @@ async def test_a_field_the_project_has_not_got_is_refused_404(client: httpx.Asyn
                 ]
             },
         ),
-        404,
+        501,
     )
 
 
@@ -207,7 +211,11 @@ async def test_a_query_naming_a_value_nothing_has_is_refused_400_not_answered_em
     answer = refusal(await client.get("/api/issues", params={"query": query}), 400)
 
     assert answer["error"] == "invalid_query"
-    assert f"isn't used for the {field} field" in str(answer["error_description"])
+    assert answer["error_description"] == "Can't parse search query, please check and update query syntax"
+    assert answer["error_field"] == "query"
+    assert answer["error_children"] == [
+        {"error": f'The value "{query.split(": ")[1]}" isn\'t used for the {field} field.', "error_description": ""}
+    ], "as data/observed/query_value_not_used.http records it"
 
 
 @pytest.mark.parametrize("query", ["", "Severity Critical", "close it", "State"])

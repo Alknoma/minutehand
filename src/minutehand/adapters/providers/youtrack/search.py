@@ -1,6 +1,7 @@
 """What a parsed query matches, decided against the instance as the caller sees it.
 
-A value nothing in scope has is refused with YouTrack's `invalid_query`, never answered with nothing: a filter the
+A value nothing in scope has is refused with YouTrack's `invalid_query`, as JetBrains' public instance answers it
+(`tests/providers/youtrack/data/observed/query_value_not_used.http`), never answered with nothing: a filter the
 tracker cannot read and a filter nothing matches are different answers, and a caller that reads the first as the
 second reports work as missing that is there.
 """

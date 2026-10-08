@@ -217,7 +217,7 @@ class YouTrackApi:
             raise wire.not_found(body.leader.id if body.leader is not None and body.leader.id else "")
         projects = self.world.projects()
         if any(p.shortName.lower() == key.lower() for p in projects):
-            raise wire.bad_request(f"Project with shortName {key} already exists")
+            raise _undocumented(f"a project whose shortName {key} another project holds")
         ids = fields.Ids(projects)
         number = max((state.ordinal(p.id)[1] for p in projects), default=-1) + 1
         made = new_project(
@@ -271,11 +271,9 @@ class YouTrackApi:
             raise wire.not_found(body.field.id if body.field is not None and body.field.id else "")
         expected = wire.PROJECT_FIELD_TYPES[definition.fieldType]
         if body.type_ != expected:
-            raise wire.bad_request(
-                f"Unknown entity type: {body.type_}. A {definition.fieldType.value} field is attached as {expected}"
-            )
+            raise _undocumented(f"attaching {definition.name} as {body.type_}, not as {expected}")
         if any(f.field == definition.id for f in project.fields):
-            raise wire.bad_request(f"Custom field {definition.name} is already present in project {project.shortName}")
+            raise _undocumented(f"attaching {definition.name}, which {project.shortName} already carries")
         ids = fields.Ids(self.world.projects())
         values: list[fields.Value] = []
         if definition.fieldType in wire.BUNDLED:
@@ -298,10 +296,7 @@ class YouTrackApi:
     ) -> list[wire.StoredBundleValue]:
         """A bundled field is attached with the values of a bundle the instance has: the request names it."""
         if bundle is None or bundle.id is None:
-            raise wire.bad_request(
-                f"Custom field {definition.name} is of type {definition.fieldType.value} and cannot be added to a "
-                "project without its bundle"
-            )
+            raise _undocumented(f"attaching the bundled field {definition.name} without naming its bundle")
         for project in self.world.projects():
             for field in project.fields:
                 if field.bundle == bundle.id and field.field == definition.id:
@@ -331,8 +326,9 @@ class YouTrackApi:
         member = self.world.user(self.entity_id(body, "id"))
         if member is None:
             raise wire.not_found(body.id or "")
-        if member.id not in project.team:
-            self.world.write_project(project.model_copy(update={"team": [*project.team, member.id]}), actor=Actor.AGENT)
+        if member.id in project.team:
+            raise _undocumented(f"adding {member.login} to the team of {project.shortName}, which already holds them")
+        self.world.write_project(project.model_copy(update={"team": [*project.team, member.id]}), actor=Actor.AGENT)
         return self.answer(call, self.presenter().user(member))
 
     # ------------------------------------------------------------------ the instance's fields and bundles
@@ -534,7 +530,7 @@ class YouTrackApi:
         project_id = self.entity_id(body.project, "project")
         project = self.world.project(project_id)
         if project is None:
-            raise wire.not_found(project_id)
+            raise _undocumented(f"a create naming project {project_id}, which does not exist")
         if body.summary is None or not body.summary.strip():
             raise wire.bad_request("summary is required")
         number = self.world.next_number(project.id)
@@ -551,7 +547,7 @@ class YouTrackApi:
             updated=call.now,
             values={f.id: f.defaultValue for f in project.fields if f.defaultValue is not None},
         )
-        written = self._with_fields(project, issue, body.customFields)
+        written = self._with_fields(project, issue, body.customFields, creating=True)
         written = written.model_copy(update={"tags": self._tags_named(body.tags)})
         self._require_filled(project, written)
         written = written.model_copy(
@@ -570,7 +566,7 @@ class YouTrackApi:
         for reference in tags:
             tag_id = self.entity_id(reference, "tag")
             if self.world.tag(tag_id) is None:
-                raise wire.not_found(tag_id)
+                raise _undocumented(f"a body naming tag {tag_id}, which does not exist")
             if tag_id not in named:
                 named.append(tag_id)
         return named
@@ -615,7 +611,12 @@ class YouTrackApi:
         return self.answer(call, self.presenter().issue_field(project, changed, field))
 
     def _with_fields(
-        self, project: wire.StoredProject, issue: wire.StoredIssue, writes: list[wire.CustomFieldIn]
+        self,
+        project: wire.StoredProject,
+        issue: wire.StoredIssue,
+        writes: list[wire.CustomFieldIn],
+        *,
+        creating: bool = False,
     ) -> wire.StoredIssue:
         """The issue with a `customFields` block applied, every write checked before any is kept."""
         values = dict(issue.values)
@@ -624,8 +625,8 @@ class YouTrackApi:
             if field is None and write.name is not None:
                 field = self.world.project_field(project, write.name)
             if field is None:
-                raise wire.Refusal(404, "Not Found", f"Entity with name {write.name or write.id} not found")
-            value = self._coerced(project, field, write.value)
+                raise _undocumented(f"a write to the field {write.name or write.id}, which the project does not carry")
+            value = self._coerced(project, field, write.value, creating=creating)
             if value is None:
                 values.pop(field.id, None)
             else:
@@ -633,12 +634,17 @@ class YouTrackApi:
         return issue.model_copy(update={"values": values})
 
     def _coerced(
-        self, project: wire.StoredProject, field: wire.StoredProjectField, value: wire.FieldValueIn | None
+        self,
+        project: wire.StoredProject,
+        field: wire.StoredProjectField,
+        value: wire.FieldValueIn | None,
+        *,
+        creating: bool = False,
     ) -> wire.FieldValue | None:
         """What a write to the field stores; None clears it. A value the field will not take is refused."""
         if value is None:
             if not field.canBeEmpty:
-                raise wire.value_not_allowed()
+                raise _undocumented(f"clearing {self.definition_of(field).name}, which cannot be empty")
             return None
         if isinstance(value, bool):
             raise wire.value_not_allowed()
@@ -656,7 +662,9 @@ class YouTrackApi:
                 None,
             )
             if found is None:
-                raise wire.value_not_allowed()
+                raise _undocumented(
+                    f"the value {value.name or value.id} for {self.definition_of(field).name}, which its bundle has not got"
+                )
             return found.id
         if kind is wire.FieldType.USER:
             if not isinstance(value, wire.ValueIn):
@@ -668,6 +676,10 @@ class YouTrackApi:
                 if value.login is not None
                 else None
             )
+            if creating and user is not None and user.id not in project.team:
+                raise _undocumented(
+                    f"creating an issue assigned to {user.login}, who is off {project.shortName}'s team"
+                )
             if user is None or user.banned or user.id not in project.team:
                 raise wire.value_not_allowed()
             return user.id
@@ -751,7 +763,7 @@ class YouTrackApi:
         tag_id = self.entity_id(wire.EntityIn(id=body.id), "id")
         tag = self.world.tag(tag_id)
         if tag is None:
-            raise wire.not_found(tag_id)
+            raise _undocumented(f"a body naming tag {tag_id}, which does not exist")
         if tag.id not in issue.tags:
             self._written(self.home(issue), issue, issue.model_copy(update={"tags": [*issue.tags, tag.id]}), call)
         return self.answer(call, self.presenter().tag(tag))
@@ -1048,3 +1060,9 @@ def _dispatch(answers: dict[str, Callable[[Request], Awaitable[Response]]]) -> C
         return await answers["GET" if request.method == "HEAD" else request.method](request)
 
     return route
+
+
+def _undocumented(what: str) -> NotImplementedError:
+    """A request whose answer neither YouTrack's documentation nor a recording of the real service gives: refused
+    by name, never answered with an error this fake would have to invent."""
+    return NotImplementedError(f"{what}: what YouTrack answers is neither documented nor recorded")

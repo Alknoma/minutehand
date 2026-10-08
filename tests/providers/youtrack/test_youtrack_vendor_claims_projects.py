@@ -98,21 +98,21 @@ async def test_a_project_with_no_leader_is_refused_400_naming_the_leader(yt: htt
     assert team.store.head() == head
 
 
-async def test_a_login_as_leader_and_a_short_name_in_use_are_refused_400(yt: httpx.AsyncClient) -> None:
+async def test_a_login_as_leader_is_refused_400_and_a_short_name_in_use_501(yt: httpx.AsyncClient) -> None:
     """Documented: the leader is named by database id
     (https://www.jetbrains.com/help/youtrack/devportal/resource-api-admin-projects.html), so a login there is
-    refused by its shape (https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-ring-id.html). Unverified, the older stand-in's own: a short name already taken is refused as
-    existing."""
+    refused by its shape (https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-ring-id.html). What a
+    short name already taken answers is neither documented nor recorded: refused by name."""
     by_login = refusal(
         await yt.post("/api/admin/projects", json={"name": "Summit", "shortName": "SUMMIT", "leader": {"id": "iris"}}),
         400,
     )
     taken = refusal(
-        await yt.post("/api/admin/projects", json={"name": "Again", "shortName": "OPS", "leader": {"id": IRIS}}), 400
+        await yt.post("/api/admin/projects", json={"name": "Again", "shortName": "OPS", "leader": {"id": IRIS}}), 501
     )
 
     assert by_login["error_description"] == "Invalid structure of entity id: iris"
-    assert "already exists" in str(taken["error_description"])
+    assert "shortName OPS another project holds" in str(taken["error_description"])
 
 
 @pytest.mark.parametrize(
@@ -232,10 +232,10 @@ async def register_id(yt: httpx.AsyncClient, name: str) -> object:
     return named(register, name)["id"]
 
 
-async def test_a_bundled_field_attached_without_its_bundle_is_refused_400(yt: httpx.AsyncClient) -> None:
+async def test_a_bundled_field_attached_without_its_bundle_is_refused_501_naming_it(yt: httpx.AsyncClient) -> None:
     """Documented: a bundled field is attached as a bundle field that names its bundle
-    (https://www.jetbrains.com/help/youtrack/devportal/api-entity-BundleProjectCustomField.html). Unverified, the
-    older stand-in's own: one attached bare is refused."""
+    (https://www.jetbrains.com/help/youtrack/devportal/api-entity-BundleProjectCustomField.html). What one attached
+    bare answers is neither documented nor recorded: refused by name, attaching nothing."""
     sprint = await register_id(yt, "Sprint")
 
     refusal(
@@ -243,7 +243,7 @@ async def test_a_bundled_field_attached_without_its_bundle_is_refused_400(yt: ht
             f"/api/admin/projects/{OPS}/customFields",
             json={"field": {"id": sprint}, "$type": "VersionProjectCustomField"},
         ),
-        400,
+        501,
     )
 
     assert "Sprint" not in await project_field_names(yt, OPS)
@@ -304,10 +304,11 @@ async def test_a_team_is_a_group_of_its_own_and_youtrack_withholds_its_hub_id(yt
 
 
 async def test_an_unknown_projects_team_is_refused_404(yt: httpx.AsyncClient) -> None:
-    """The team of a project id naming nothing is a 404 in YouTrack's not-found words."""
+    """Recorded from JetBrains' public instance (`data/observed/unknown_project_team.http`): the team of a project id
+    naming nothing is a 404 "Entity with id … not found"."""
     refused = refusal(await yt.get("/api/admin/projects/0-99/team", params={"fields": "users(id)"}), 404)
 
-    assert refused["error_description"] == "Entity with id 0-99 not found"
+    assert refused == {"error": "Not Found", "error_description": "Entity with id 0-99 not found"}
 
 
 async def test_youtracks_team_users_route_refuses_a_post_405_and_changes_nothing(yt: httpx.AsyncClient) -> None:
@@ -319,10 +320,12 @@ async def test_youtracks_team_users_route_refuses_a_post_405_and_changes_nothing
     assert await team_ids(yt, LAUNCH) == before
 
 
-async def test_adding_a_member_twice_leaves_one_membership(yt: httpx.AsyncClient) -> None:
-    """A second add of the same user to a team answers the user and changes nothing."""
+async def test_adding_a_member_twice_is_refused_501_and_leaves_one_membership(yt: httpx.AsyncClient) -> None:
+    """What a second add of the same user answers is neither documented nor recorded: refused by name."""
     entity(await yt.post(f"/api/admin/projects/{LAUNCH}/team/ownUsers", json={"id": VENDOR}))
-    entity(await yt.post(f"/api/admin/projects/{LAUNCH}/team/ownUsers", json={"id": VENDOR}))
+    again = refusal(await yt.post(f"/api/admin/projects/{LAUNCH}/team/ownUsers", json={"id": VENDOR}), 501)
+
+    assert "which already holds them" in str(again["error_description"])
 
     assert (await team_ids(yt, LAUNCH)).count(VENDOR) == 1
 

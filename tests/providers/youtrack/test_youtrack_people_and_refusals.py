@@ -275,12 +275,12 @@ async def test_a_required_field_with_no_default_refuses_a_create_without_it_400(
             )
         )
         cleared = refusal(
-            await http.post("/api/issues/OPS-2", json={"customFields": [{"name": "Type", "value": None}]}), 400
+            await http.post("/api/issues/OPS-2", json={"customFields": [{"name": "Type", "value": None}]}), 501
         )
     assert refused == {"error": "Field required", "error_description": "Type is required", "error_field": "Type"}
     assert named(made["customFields"], "Priority")["value"] == {"name": "P2 - Normal", "$type": "EnumBundleElement"}
     assert named(made["customFields"], "Type")["value"] == {"name": "Shipping", "$type": "EnumBundleElement"}
-    assert cleared["error_description"] == "Value is not allowed"
+    assert "clearing Type, which cannot be empty" in str(cleared["error_description"]), "unrecorded: refused by name"
 
 
 # --------------------------------------------------------------------------- faults and an unknown count

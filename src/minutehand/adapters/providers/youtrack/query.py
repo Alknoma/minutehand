@@ -13,8 +13,10 @@ Search (`GET /api/issues?query=`, `POST /api/issuesGetter/count`):
 - `or` between terms; every term of one side must hold.
 - `sort by: field [asc|desc], …` last.
 
-A parenthesis, an attribute nothing is called, or a value left open is refused with YouTrack's `invalid_query`
-rather than read as text and answered.
+A `sort by:` naming no field is YouTrack's `invalid_query` "Sort field is expected.", as JetBrains' public instance
+answers it. A parenthesis, an attribute nothing is called, or a value left open is refused by name
+(`NotImplementedError`): the public instance reads the first two (an unknown attribute as text), and this fake
+does not.
 
 Commands (`POST /api/commands`): `<field> <value>`, `for <login>`, `tag <name>`, `untag <name>`, any number in one
 query, each value running until the next command word or braced.
@@ -25,7 +27,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 
-from minutehand.adapters.providers.youtrack.wire import bad_request, unparsed_query
+from minutehand.adapters.providers.youtrack.wire import bad_request, sort_field_expected, unparsed_query
 from minutehand.domain.scenario import Model
 
 ME = "me"
@@ -148,7 +150,7 @@ def _sort_keys(text: str, terms: str, field_names: list[str]) -> list[SortKey]:
         name = part[1:-1] if part.startswith("{") and part.endswith("}") else part
         named = _attribute(name, fields)
         if named is None:
-            raise unparsed_query(text, f"cannot sort by {name!r}")
+            raise sort_field_expected()
         keys.append(SortKey(attribute=named[0], keyword=named[1], descending=descending))
     return keys
 

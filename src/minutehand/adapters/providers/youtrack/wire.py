@@ -56,7 +56,7 @@ class Refusal(ServiceRefusal):
         developer_message: str | None = None,
         field: str | None = None,
         retry_after: int | None = None,
-        children: tuple[tuple[str, str], ...] = (),
+        children: tuple[tuple[str, str, str | None], ...] = (),
     ) -> None:
         super().__init__(description)
         self.status = status
@@ -66,7 +66,7 @@ class Refusal(ServiceRefusal):
         self.field = field
         self.retry_after = retry_after
         self.children = children
-        """Each `(error, description)` of an `invalid_properties` refusal's `error_children`."""
+        """Each `(error, description, developer message)` of the refusal's `error_children`."""
 
     def render(self, asked: Asked) -> Rendered:
         """`{"error", "error_description", …}`, with `Retry-After` when it says when to retry."""
@@ -77,7 +77,7 @@ class Refusal(ServiceRefusal):
 class ErrorChildOut(Wire):
     error: str
     error_description: str
-    error_developer_message: str
+    error_developer_message: str | None = None
 
 
 class ErrorOut(Wire):
@@ -95,8 +95,8 @@ def error_body(refusal: Refusal) -> bytes:
         error_developer_message=refusal.developer_message,
         error_field=refusal.field,
         error_children=[
-            ErrorChildOut(error=error, error_description=text, error_developer_message=text)
-            for error, text in refusal.children
+            ErrorChildOut(error=error, error_description=text, error_developer_message=developer)
+            for error, text, developer in refusal.children
         ]
         or None,
     )
@@ -138,15 +138,40 @@ def numeric_short_name() -> Refusal:
     """A project whose `shortName` is digits alone, as YouTrack's REST troubleshooting shows it
     (https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-numeric-project-id.html)."""
     text = "Project ID cannot be numeric"
-    return Refusal(400, "invalid_properties", text, children=(("no-type-is-invalid", text),))
+    return Refusal(400, "invalid_properties", text, children=(("no-type-is-invalid", text, text),))
 
 
 def invalid_query(value: str, field: str) -> Refusal:
-    return Refusal(400, "invalid_query", f'The value "{value}" isn\'t used for the {field} field.')
+    """A search naming a value no issue's field holds, as JetBrains' public instance answers it
+    (`tests/providers/youtrack/data/observed/query_value_not_used.http`, recorded 2026-10-08)."""
+    return Refusal(
+        400,
+        "invalid_query",
+        "Can't parse search query, please check and update query syntax",
+        developer_message="Can't parse search query",
+        field="query",
+        children=((f'The value "{value}" isn\'t used for the {field} field.', "", None),),
+    )
 
 
-def unparsed_query(text: str, why: str) -> Refusal:
-    return Refusal(400, "invalid_query", f"Cannot parse search query {text!r}: {why}")
+def unparsed_query(text: str, why: str) -> NotImplementedError:
+    """A search this fake cannot read. JetBrains' public instance reads parentheses and an attribute it does not
+    know (as text) without complaint (`tests/providers/youtrack/data/observed/query_parentheses.http`,
+    `query_attribute_unknown.http`), so such a query is refused by name, never with an error this fake invents."""
+    return NotImplementedError(f"the search query {text!r}: {why}; this fake does not read it")
+
+
+def sort_field_expected() -> Refusal:
+    """A `sort by:` naming no field there is, as JetBrains' public instance answers it
+    (`tests/providers/youtrack/data/observed/query_sort_field_unknown.http`, recorded 2026-10-08)."""
+    return Refusal(
+        400,
+        "invalid_query",
+        "Can't parse search query, please check and update query syntax",
+        developer_message="Can't parse search query",
+        field="query",
+        children=(("Sort field is expected.", "", None),),
+    )
 
 
 # --------------------------------------------------------------------------- stored
@@ -579,7 +604,10 @@ def read_body(model: type[Body], raw: bytes) -> Body:
         first = error.errors()[0]
         where = ".".join(str(part) for part in first["loc"])
         if first["type"] == "extra_forbidden":
-            raise bad_request(f"Unsupported property: {where}") from error
+            raise NotImplementedError(
+                f"the body property '{where}': {model.__name__} has not got it, and what YouTrack answers for a "
+                "property its entity lacks is not documented"
+            ) from error
         raise bad_request(f"Invalid value of {where}") from error
 
 
