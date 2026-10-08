@@ -240,77 +240,6 @@
       "title": "Booked",
       "type": "object"
     },
-    "Collection": {
-      "additionalProperties": false,
-      "description": "One REST collection a `store` host keeps: `path` lists and creates (GET, POST), and `<path>/<id>` reads,\nreplaces, patches and deletes one item (GET, PUT, PATCH, DELETE). A `{name}` segment of `path` matches any one\nsegment, and each value of it is a collection of its own: `/v1/companies/{company}/contacts`.",
-      "properties": {
-        "created_status": {
-          "default": 201,
-          "maximum": 299,
-          "minimum": 200,
-          "title": "Created Status",
-          "type": "integer"
-        },
-        "deleted_status": {
-          "default": 204,
-          "maximum": 299,
-          "minimum": 200,
-          "title": "Deleted Status",
-          "type": "integer"
-        },
-        "id": {
-          "$ref": "#/$defs/ItemId",
-          "default": {
-            "at": "id",
-            "format": "uuid",
-            "prefix": ""
-          }
-        },
-        "listing": {
-          "$ref": "#/$defs/minutehand__domain__outbound__Listing",
-          "default": {
-            "cursor_param": null,
-            "default_limit": 100,
-            "envelope": {},
-            "items_at": null,
-            "limit_param": null,
-            "next_at": null
-          }
-        },
-        "name": {
-          "anyOf": [
-            {
-              "pattern": "^[A-Za-z0-9_.-]{1,64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "What an assessment counts it by (`stored: {collection: ...}`); the last literal segment of `path` when None",
-          "title": "Name"
-        },
-        "path": {
-          "description": "`/v1/contacts`; a `{name}` segment matches any one segment",
-          "title": "Path",
-          "type": "string"
-        },
-        "stamps": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/Stamp"
-          },
-          "title": "Stamps",
-          "type": "array"
-        }
-      },
-      "required": [
-        "path"
-      ],
-      "title": "Collection",
-      "type": "object"
-    },
     "Command": {
       "additionalProperties": false,
       "description": "A command run per wake; it reads a WakeRequest on stdin and prints an AgentReport.",
@@ -490,6 +419,17 @@
           ],
           "default": null
         },
+        "replies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Replies"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "since": {
           "anyOf": [
             {
@@ -502,17 +442,6 @@
           "default": null,
           "description": "From this moment, inclusive; absent: the start",
           "title": "Since"
-        },
-        "stored": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/StoredItems"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
         },
         "touches": {
           "anyOf": [
@@ -673,86 +602,6 @@
         "description"
       ],
       "title": "DecisionInput",
-      "type": "object"
-    },
-    "DeclaredStore": {
-      "additionalProperties": false,
-      "description": "What the agent writes is kept exactly as sent, in the run's world, and read back unchanged: for an API the\nagent writes to and reads its writes back from, which no provider fakes. Minutehand adds to an item only what\nits collection says the API assigns (`id`, `stamps`); credentials are never checked.\n\nA call is answered by the first route that matches it (`routes`, as `acknowledge`), else by the collection\nwhose path it is under, else with `answer`.",
-      "properties": {
-        "answer": {
-          "$ref": "#/$defs/Answer",
-          "default": {
-            "headers": {},
-            "json_body": null,
-            "status": 200,
-            "text": null
-          }
-        },
-        "body_limit": {
-          "default": 1048576,
-          "description": "Bytes of a text or JSON body kept",
-          "minimum": 0,
-          "title": "Body Limit",
-          "type": "integer"
-        },
-        "collections": {
-          "items": {
-            "$ref": "#/$defs/Collection"
-          },
-          "minItems": 1,
-          "title": "Collections",
-          "type": "array"
-        },
-        "host": {
-          "description": "An exact lower-case host, or '*.' and a domain for any host under it",
-          "title": "Host",
-          "type": "string"
-        },
-        "kind": {
-          "const": "store",
-          "default": "store",
-          "title": "Kind",
-          "type": "string"
-        },
-        "name": {
-          "anyOf": [
-            {
-              "pattern": "^[a-z][a-z0-9_]*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "What its world events are recorded under; derived from the host when None",
-          "title": "Name"
-        },
-        "redact": {
-          "default": [],
-          "description": "Body fields kept as [redacted], in the request and the answer, besides credentials",
-          "items": {
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
-            "type": "string"
-          },
-          "title": "Redact",
-          "type": "array"
-        },
-        "routes": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/Route"
-          },
-          "title": "Routes",
-          "type": "array"
-        }
-      },
-      "required": [
-        "host",
-        "collections"
-      ],
-      "title": "DeclaredStore",
       "type": "object"
     },
     "Delivery": {
@@ -1207,7 +1056,7 @@
           "type": "string"
         },
         "pending": {
-          "$ref": "#/$defs/minutehand__domain__inboxes__Listing"
+          "$ref": "#/$defs/Listing"
         }
       },
       "required": [
@@ -1217,17 +1066,6 @@
       ],
       "title": "HttpInbox",
       "type": "object"
-    },
-    "IdFormat": {
-      "description": "How a stored item's id is made when it is created.",
-      "enum": [
-        "uuid",
-        "integer",
-        "prefixed",
-        "sent"
-      ],
-      "title": "IdFormat",
-      "type": "string"
     },
     "InForks": {
       "description": "What a pass-through host does in a fork of a run.",
@@ -1311,31 +1149,6 @@
       "title": "InboundTarget",
       "type": "object"
     },
-    "ItemId": {
-      "additionalProperties": false,
-      "description": "Where an item's id is in its JSON, and how it is made: the one field of an item the API assigns besides\n`stamps`. The item is read and written at `<collection path>/<id>`.",
-      "properties": {
-        "at": {
-          "default": "id",
-          "minLength": 1,
-          "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
-          "title": "At",
-          "type": "string"
-        },
-        "format": {
-          "$ref": "#/$defs/IdFormat",
-          "default": "uuid"
-        },
-        "prefix": {
-          "default": "",
-          "description": "Before the sequence number, with `format: prefixed`",
-          "title": "Prefix",
-          "type": "string"
-        }
-      },
-      "title": "ItemId",
-      "type": "object"
-    },
     "JsonValue": {},
     "Judged": {
       "description": "What a rule's finding asks of whoever reads it.",
@@ -1345,6 +1158,127 @@
       ],
       "title": "Judged",
       "type": "string"
+    },
+    "Listing": {
+      "additionalProperties": false,
+      "description": "How to list what waits on one person: one request, read as that person, and where each item's parts are.\n\n`waits_on` makes it a list of everyone's items (or a team's): each item names whom it waits on, by email or\n`Person.key`, and only the person read for keeps theirs. Without it the list is that person's own.",
+      "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: its kind in the product's words",
+          "title": "Category"
+        },
+        "decisions": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: the names of the decisions allowed on it; None: every one declared",
+          "title": "Decisions"
+        },
+        "gates": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: the id of the operation it holds back, which a later call of the agent's carries when it goes ahead (`checks.acted_without_approval`)",
+          "title": "Gates"
+        },
+        "id": {
+          "description": "In an item: its own id",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "items": {
+          "description": "Every node it selects in the answer is one item: `$.items[*]`, or `$[*]`",
+          "minLength": 1,
+          "title": "Items",
+          "type": "string"
+        },
+        "paging": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Paging"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "request": {
+          "discriminator": {
+            "mapping": {
+              "operation": "#/$defs/OperationRequest",
+              "template": "#/$defs/TemplateRequest"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TemplateRequest"
+            },
+            {
+              "$ref": "#/$defs/OperationRequest"
+            }
+          ],
+          "title": "Request"
+        },
+        "summary": {
+          "description": "In an item: what it asks, in words a person reads",
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "waits_on": {
+          "anyOf": [
+            {
+              "description": "A JSONPath query (RFC 9535)",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In an item: whom it waits on, an email or a key",
+          "title": "Waits On"
+        }
+      },
+      "required": [
+        "request",
+        "items",
+        "id",
+        "summary"
+      ],
+      "title": "Listing",
+      "type": "object"
     },
     "Marked": {
       "additionalProperties": false,
@@ -1505,7 +1439,7 @@
       "properties": {
         "holding": {
           "default": [],
-          "description": "Each phrase must be in the text, in any case; `{ask.answer}` is the answer itself, and `{person.key}`, `{person.name}` the person the rule is read for",
+          "description": "Each phrase must be in the text, in any case; `{ask.facts}`, alone as a phrase, is each fact the answer's script step carried (else the answer itself), `{ask.answer}` the answer in the person's words, and `{person.key}`, `{person.name}` the person the rule is read for",
           "items": {
             "type": "string"
           },
@@ -2020,6 +1954,33 @@
       "title": "Replay",
       "type": "object"
     },
+    "Replies": {
+      "additionalProperties": false,
+      "description": "What people said back to the agent: each reply or decision that landed, counted at the moment it landed.",
+      "properties": {
+        "by": {
+          "default": [],
+          "description": "By any of these people; empty: by anyone",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "written": {
+          "default": [],
+          "description": "Whose words, any of these; empty: any",
+          "items": {
+            "$ref": "#/$defs/Written"
+          },
+          "title": "Written",
+          "type": "array"
+        }
+      },
+      "title": "Replies",
+      "type": "object"
+    },
     "ReplyDelivery": {
       "additionalProperties": false,
       "description": "How a person's answer to a captured send reaches the agent: the request its own inbound webhook expects.\n\n`body` is the JSON (or, with `form`, the form fields) the agent's endpoint reads, as structure; each string in\nit may name the reply's fields as `{name}` (`REPLY_FIELDS`). `thread` is a path into the acknowledged send's\nown answer (its `{message_id}`, as the email API answered it), giving `{in_reply_to}`; without it,\n`{in_reply_to}` is the id of the message in the run.",
@@ -2384,48 +2345,6 @@
       "title": "SecretFromEnvironment",
       "type": "object"
     },
-    "Stamp": {
-      "additionalProperties": false,
-      "description": "A moment the API writes into an item, from the run's clock: a created or updated time.",
-      "properties": {
-        "at": {
-          "minLength": 1,
-          "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
-          "title": "At",
-          "type": "string"
-        },
-        "format": {
-          "$ref": "#/$defs/StampFormat",
-          "default": "iso8601"
-        },
-        "on": {
-          "$ref": "#/$defs/StampOn",
-          "default": "create"
-        }
-      },
-      "required": [
-        "at"
-      ],
-      "title": "Stamp",
-      "type": "object"
-    },
-    "StampFormat": {
-      "enum": [
-        "iso8601",
-        "epoch_seconds",
-        "epoch_milliseconds"
-      ],
-      "title": "StampFormat",
-      "type": "string"
-    },
-    "StampOn": {
-      "enum": [
-        "create",
-        "write"
-      ],
-      "title": "StampOn",
-      "type": "string"
-    },
     "StoppedBy": {
       "description": "How the run stopped, as a rule may name it (`domain.run.StopReason`).",
       "enum": [
@@ -2439,65 +2358,6 @@
       ],
       "title": "StoppedBy",
       "type": "string"
-    },
-    "StoredItems": {
-      "additionalProperties": false,
-      "description": "Items an outbound host declared `store` keeps (`domain.outbound.DeclaredStore`), as they stood at the count's\n`until` (the run's end without one): each item held there is one fact, counted at the moment its version there\nwas written, so `since` keeps only those written from then on.",
-      "properties": {
-        "collection": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In the collection of this name; None: in any",
-          "title": "Collection"
-        },
-        "host": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Of the declaration of this host pattern; None: of any",
-          "title": "Host"
-        },
-        "values": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "default": {},
-          "description": "Each field of the item (a dotted path into it, `address.city`) equal to this; an item that lacks the field does not match",
-          "title": "Values",
-          "type": "object"
-        }
-      },
-      "title": "StoredItems",
-      "type": "object"
     },
     "Succeeds": {
       "additionalProperties": false,
@@ -2597,8 +2457,7 @@
         "record",
         "inbox_item",
         "file",
-        "tool_call",
-        "stored"
+        "tool_call"
       ],
       "title": "Thing",
       "type": "string"
@@ -2826,201 +2685,17 @@
       "title": "Writes",
       "type": "object"
     },
-    "minutehand__domain__inboxes__Listing": {
-      "additionalProperties": false,
-      "description": "How to list what waits on one person: one request, read as that person, and where each item's parts are.\n\n`waits_on` makes it a list of everyone's items (or a team's): each item names whom it waits on, by email or\n`Person.key`, and only the person read for keeps theirs. Without it the list is that person's own.",
-      "properties": {
-        "category": {
-          "anyOf": [
-            {
-              "description": "A JSONPath query (RFC 9535)",
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In an item: its kind in the product's words",
-          "title": "Category"
-        },
-        "decisions": {
-          "anyOf": [
-            {
-              "description": "A JSONPath query (RFC 9535)",
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In an item: the names of the decisions allowed on it; None: every one declared",
-          "title": "Decisions"
-        },
-        "gates": {
-          "anyOf": [
-            {
-              "description": "A JSONPath query (RFC 9535)",
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In an item: the id of the operation it holds back, which a later call of the agent's carries when it goes ahead (`checks.acted_without_approval`)",
-          "title": "Gates"
-        },
-        "id": {
-          "description": "In an item: its own id",
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "items": {
-          "description": "Every node it selects in the answer is one item: `$.items[*]`, or `$[*]`",
-          "minLength": 1,
-          "title": "Items",
-          "type": "string"
-        },
-        "paging": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Paging"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "request": {
-          "discriminator": {
-            "mapping": {
-              "operation": "#/$defs/OperationRequest",
-              "template": "#/$defs/TemplateRequest"
-            },
-            "propertyName": "kind"
-          },
-          "oneOf": [
-            {
-              "$ref": "#/$defs/TemplateRequest"
-            },
-            {
-              "$ref": "#/$defs/OperationRequest"
-            }
-          ],
-          "title": "Request"
-        },
-        "summary": {
-          "description": "In an item: what it asks, in words a person reads",
-          "minLength": 1,
-          "title": "Summary",
-          "type": "string"
-        },
-        "waits_on": {
-          "anyOf": [
-            {
-              "description": "A JSONPath query (RFC 9535)",
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In an item: whom it waits on, an email or a key",
-          "title": "Waits On"
-        }
-      },
-      "required": [
-        "request",
-        "items",
-        "id",
-        "summary"
+    "Written": {
+      "description": "Where a person's words came from (`domain.people.Writing`), as a rule names it.",
+      "enum": [
+        "script",
+        "verbatim",
+        "conversing",
+        "automatic",
+        "by_hand"
       ],
-      "title": "Listing",
-      "type": "object"
-    },
-    "minutehand__domain__outbound__Listing": {
-      "additionalProperties": false,
-      "description": "How a GET of the collection answers: the stored items in the order they were created, in an envelope.\n\nWith `items_at` None the answer is the bare JSON list. With `limit_param`, a page holds at most that many\nitems (`default_limit` when the call names none); with `cursor_param`, the call names the id of the last item\nit has, and `next_at` is where the answer puts the id to send for the next page, absent on the last.",
-      "properties": {
-        "cursor_param": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cursor Param"
-        },
-        "default_limit": {
-          "default": 100,
-          "minimum": 1,
-          "title": "Default Limit",
-          "type": "integer"
-        },
-        "envelope": {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "default": {},
-          "description": "Fields answered beside the items, as given",
-          "title": "Envelope",
-          "type": "object"
-        },
-        "items_at": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Items At"
-        },
-        "limit_param": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Limit Param"
-        },
-        "next_at": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Next At"
-        }
-      },
-      "title": "Listing",
-      "type": "object"
+      "title": "Written",
+      "type": "string"
     }
   },
   "$id": "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json",
@@ -3115,8 +2790,7 @@
             "acknowledge": "#/$defs/Acknowledge",
             "forward": "#/$defs/Forward",
             "pass_through": "#/$defs/PassThrough",
-            "replay": "#/$defs/Replay",
-            "store": "#/$defs/DeclaredStore"
+            "replay": "#/$defs/Replay"
           },
           "propertyName": "kind"
         },
@@ -3132,9 +2806,6 @@
           },
           {
             "$ref": "#/$defs/Forward"
-          },
-          {
-            "$ref": "#/$defs/DeclaredStore"
           }
         ]
       },

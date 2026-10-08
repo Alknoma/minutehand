@@ -48,6 +48,9 @@ class Ask(Model):
     follow_ups: list[Fact] = Field(description="The agent's writes the person could see while it was open, in order")
     touches: list[Fact] = Field(description="Every write of the agent's on the person, the thread or the ticket")
     answer: str | None = Field(default=None, description="What the person answered, when they did by a reply")
+    answer_facts: list[str] = Field(
+        default=[], description="The facts the answer's script step carried, which a model put in the person's words"
+    )
 
     @property
     def person(self) -> str | None:
@@ -93,6 +96,7 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
                 follow_ups=sorted(follow_ups, key=lambda f: f.at),
                 touches=_touches(view, o, by_seq),
                 answer=_answer(view, o),
+                answer_facts=_answer_facts(view, o),
             )
         )
     return found
@@ -126,6 +130,13 @@ def _answer(view: RunView, o: Obligation) -> str | None:
         return None
     said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
     return said[0].text if said else None
+
+
+def _answer_facts(view: RunView, o: Obligation) -> list[str]:
+    if o.settled_at is None or o.person is None:
+        return []
+    said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
+    return list(said[0].facts) if said else []
 
 
 def unchanged(event: WorldEvent, events: dict[int, WorldEvent]) -> bool:
@@ -168,7 +179,7 @@ def messages(view: RunView) -> list[Sent]:
         if not isinstance(event.after, MessageSnapshot):
             continue
         to = [p.key for p in recipients(event, view.scenario)]
-        out = [k for k in to if any(a.person == k and a.covers(event.sim_time) for a in away)]
+        out = [k for k in to if any(a.person == k and a.away_when_written_to(event.sim_time) for a in away)]
         sent.append(Sent(event=event, to=to, to_away=out))
     return sent
 

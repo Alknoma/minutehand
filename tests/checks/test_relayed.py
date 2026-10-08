@@ -1,5 +1,6 @@
-"""`Relayed`: a message from the agent carries what a person said, defined from the log through the tell the
-scenario's author declares, and refused when the scenario lets the agent write the tell without hearing it."""
+"""`Relayed`: a message from the agent carries a fact a person told it, defined from the log through the values the
+scenario's author declares, and refused when the scenario lets the agent write a value without hearing it. The value
+is the fact, not the person's wording: a reply whose step's facts hold it was heard though a model reworded it."""
 
 from __future__ import annotations
 
@@ -9,14 +10,14 @@ from pydantic import ValidationError
 from minutehand.checks.expectations import Expectations
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Direction, Relayed, Scenario, Scripted, ScriptedReply, Silent
+from minutehand.domain.scenario import AfterScript, Direction, Relayed, Scenario, Scripted, ScriptedReply, Silent
 from minutehand.domain.world import Actor
 from tests.checks.world import Log, at, person, scenario, view
 
 ANSWER = "The lakeside hall, booked for the 14th."
-OWEN = person("owen", Scripted(replies=[]))
-ROSA = person("rosa", Scripted(replies=[ScriptedReply(to_ask=1, text=ANSWER)]))
-TOLD = Relayed(said_by="rosa", to="owen", tell="lakeside hall")
+OWEN = person("owen", Scripted(then=AfterScript.SILENT))
+ROSA = person("rosa", Scripted(then=AfterScript.SILENT, replies=[ScriptedReply(to_ask=1, facts=[ANSWER])]))
+TOLD = Relayed(said_by="rosa", to="owen", holding=["lakeside hall"])
 
 
 def _world(*, relay: str, before: str | None = None) -> tuple[Scenario, Log, list[PersonReply]]:
@@ -70,7 +71,22 @@ def test_a_tell_the_agent_wrote_into_a_documents_text_first_relays_nothing() -> 
 def test_a_tell_nobody_said_relays_nothing() -> None:
     world, log, _ = _world(relay="Rosa says: the lakeside hall.")
     [failed] = Expectations().run(view(world, log, [])).findings
-    assert failed.message.endswith(": someone else said it (seq 2) before rosa said it, so nothing relayed it")
+    assert failed.message.endswith(": rosa never said it")
+
+
+def test_a_reply_a_model_reworded_is_heard_by_the_facts_its_step_carried() -> None:
+    log = Log()
+    ask = log.message([ROSA], 1, text="Which venue is booked for the offsite?")
+    log.message([], 30, text="We have the hall by the lake, on the 14th.", actor=Actor.PERSON)
+    log.message([OWEN], 31, text="Rosa says: the lakeside hall.")
+    reworded = PersonReply(
+        person="rosa", in_reply_to=ask.entity, text="We have the hall by the lake, on the 14th.", at=at(30)
+    )
+    carried = reworded.model_copy(update={"facts": [ANSWER]})
+    [met] = Expectations().run(view(scenario(OWEN, ROSA, expect=[TOLD]), log, [carried])).findings
+    assert met.kind is FindingKind.INFORMATIONAL
+    [unheard] = Expectations().run(view(scenario(OWEN, ROSA, expect=[TOLD]), log, [reworded])).findings
+    assert unheard.kind is FindingKind.FAIL and unheard.message.endswith(": rosa never said it")
 
 
 def _refusal(**changes: object) -> str:
@@ -82,22 +98,30 @@ def _refusal(**changes: object) -> str:
 
 
 def test_a_scenario_whose_goal_holds_the_tell_is_refused() -> None:
-    assert "the tell 'lakeside hall' appears in the goal" in _refusal(goal="Book the Lakeside Hall with Rosa.")
+    assert "the relayed fact 'lakeside hall' appears in the goal" in _refusal(goal="Book the Lakeside Hall with Rosa.")
 
 
 def test_a_tell_in_a_direction_or_another_persons_reply_is_refused() -> None:
     told = Direction(text="Prefer the lakeside hall.", after=at(1) - at(0))
     assert "appears in direction 1" in _refusal(directions=[told.model_dump()])
-    tom = person("tom", Scripted(replies=[ScriptedReply(to_ask=1, text="Try the lakeside hall.")]))
+    tom = person(
+        "tom", Scripted(then=AfterScript.SILENT, replies=[ScriptedReply(to_ask=1, verbatim="Try the lakeside hall.")])
+    )
     assert "appears in what tom says or knows" in _refusal(people=[p.model_dump() for p in (OWEN, ROSA, tom)])
 
 
 def test_a_tell_its_speaker_can_never_say_is_refused() -> None:
     silent = person("rosa", Silent())
     assert "rosa is silent" in _refusal(people=[p.model_dump() for p in (OWEN, silent)])
-    elsewhere = person("rosa", Scripted(replies=[ScriptedReply(to_ask=1, text="The town hall.")]))
-    assert "no scripted reply of rosa holds the tell" in _refusal(people=[p.model_dump() for p in (OWEN, elsewhere)])
+    elsewhere = person(
+        "rosa", Scripted(then=AfterScript.SILENT, replies=[ScriptedReply(to_ask=1, verbatim="The town hall.")])
+    )
+    assert "no step of rosa's script and none of their facts holds 'lakeside hall'" in _refusal(
+        people=[p.model_dump() for p in (OWEN, elsewhere)]
+    )
 
 
 def test_a_relay_to_the_speaker_themself_is_refused() -> None:
-    assert "rosa is both" in _refusal(expect=[Relayed(said_by="rosa", to="rosa", tell="lakeside hall").model_dump()])
+    assert "rosa is both" in _refusal(
+        expect=[Relayed(said_by="rosa", to="rosa", holding=["lakeside hall"]).model_dump()]
+    )

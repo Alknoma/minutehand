@@ -29,9 +29,18 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from minutehand.application import memory
-from minutehand.application.checkpoint import Checkpoint, NotRestorable, PendingBooking, PendingReply, checkpoints
+from minutehand.application.checkpoint import (
+    Checkpoint,
+    NotRestorable,
+    Pending,
+    PendingBooking,
+    PendingReply,
+    Unwritten,
+    checkpoints,
+)
 from minutehand.application.inboxes import Inboxes, items_in
 from minutehand.application.memory import store_digest
+from minutehand.application.moments import asks_of, pinned
 from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, OutsideState, Reach, Scorer, Services
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, start_fork
@@ -47,6 +56,7 @@ from minutehand.domain.experiment import (
     ModelSwap,
     PersonChange,
     PromptPatch,
+    ReplyAt,
     TicketEdit,
 )
 from minutehand.domain.provider import Manifest
@@ -64,6 +74,7 @@ from minutehand.domain.world import (
 )
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import ModelFailed
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -95,6 +106,8 @@ def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
     deadline_after = scenario.deadline_after
     dispatch = scenario.dispatch
     for override in fork.overrides:
+        if isinstance(override, ReplyAt) and override.person not in people:
+            raise RunRefused(f"the fork pins a reply of {override.person}, who is not in scenario {scenario.name}")
         if isinstance(override, PersonChange):
             if override.person not in people:
                 raise RunRefused(f"the fork changes {override.person}, who is not in scenario {scenario.name}")
@@ -112,6 +125,7 @@ def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
                 "people": [p.model_dump() for p in people.values()],
                 "deadline_after": deadline_after,
                 "dispatch": [r.model_dump() for r in dispatch],
+                "seed": fork.seed if fork.seed is not None else scenario.seed,
             }
         )
     except ValidationError as e:
@@ -129,7 +143,7 @@ async def fork_run(
     agent: AgentUnderTest,
     reach: Reach,
     services: Services,
-    replier_for: Callable[[Scenario], Replier],
+    replier_for: Callable[[Scenario, Sequence[ReplyAt]], Replier],
     state_dir: Path,
     wire: OnTheWire | None = None,
     telemetry: Telemetry | None = None,
@@ -190,7 +204,7 @@ async def fork_run(
             clock.jump(checkpoint.now)
             while clock.wake() < checkpoint.wake:
                 clock.begin_wake()
-            replier = replier_for(changed)
+            replier = replier_for(changed, [o for o in fork.overrides if isinstance(o, ReplyAt)])
             orchestrator = Orchestrator(
                 scenario=changed,
                 agent=agent,
@@ -233,6 +247,9 @@ async def fork_run(
             changed_people = {o.person for o in fork.overrides if isinstance(o, PersonChange)}
             if changed_people:
                 checkpoint = await _ask_again(child, changed, changed_people, checkpoint, replier, clock)
+            pins = [o for o in fork.overrides if isinstance(o, ReplyAt)]
+            if pins:
+                checkpoint = _pin_owed(child, changed, pins, checkpoint, clock)
             _edit_tickets(fork, services, changed, child, clock)
         except RunRefused:
             child.discard()
@@ -398,6 +415,7 @@ async def _ask_again(
     changed = {p.email: p for p in scenario.people if p.key in people}
     pending = [p for p in checkpoint.pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
     count = len(replies)
+    unwritten = list(checkpoint.unwritten)
     held = items_in(events)
     for event in events:
         after = event.after
@@ -417,7 +435,17 @@ async def _ask_again(
         for email in emails:
             if email not in changed or (event.entity, changed[email].key) in answered:
                 continue
-            reply = await replier.decide(changed[email], event, [e for e in events if e.seq <= event.seq], clock)
+            person = changed[email]
+            history = [e for e in events if e.seq <= event.seq]
+            owed = [(r.in_reply_to, r.at) for i, r in enumerate(child.replies()) if r.answers and i not in withdrawn]
+            planned = replier.plan(person, event, history, owed)
+            if planned is None:
+                continue
+            try:
+                reply = await replier.write(person, event, planned, history, child, clock)
+            except ModelFailed:
+                unwritten.append(Unwritten(person=person.key, asked=event.seq))
+                continue
             if reply is None:
                 continue
             reply = reply.model_copy(update={"at": max(reply.at, clock.now())})
@@ -426,4 +454,40 @@ async def _ask_again(
                 PendingReply(due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count)
             )
             count += 1
+    return checkpoint.model_copy(
+        update={"pending": pending, "replies": count, "withdrawn": withdrawn, "unwritten": unwritten}
+    )
+
+
+def _pin_owed(
+    child: Store, scenario: Scenario, pins: list[ReplyAt], checkpoint: Checkpoint, clock: Clock
+) -> Checkpoint:
+    """A reply owed at the fork that answers an ask the fork pins lands where the pin says, or at the fork when that
+    is already past: the pin wins over the moment drawn before the fork."""
+    events = child.events()
+    replies = child.replies()
+    by_key = {p.key: p for p in scenario.people}
+    owed = [(r.in_reply_to, r.at) for i, r in enumerate(replies) if r.answers and i not in checkpoint.withdrawn]
+    pending: list[Pending] = []
+    withdrawn = list(checkpoint.withdrawn)
+    count = len(replies)
+    for item in checkpoint.pending:
+        if not isinstance(item, PendingReply) or item.reply in withdrawn:
+            pending.append(item)
+            continue
+        reply = replies[item.reply]
+        person = by_key[reply.person]
+        asks = asks_of(person, events, owed)
+        nth = next((n for n, e in enumerate(asks, start=1) if e.entity == reply.in_reply_to), None)
+        pin = next((p for p in pins if p.person == person.key and p.to_ask == nth), None)
+        if pin is None or nth is None:
+            pending.append(item)
+            continue
+        asked = asks[nth - 1]
+        drawn = pinned(scenario, asked, pin.after)
+        moved = reply.model_copy(update={"at": max(drawn.lands_at, clock.now()), "drawn": drawn})
+        child.remember(moved)
+        withdrawn.append(item.reply)
+        pending.append(PendingReply(due=Due(at=moved.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count))
+        count += 1
     return checkpoint.model_copy(update={"pending": pending, "replies": count, "withdrawn": withdrawn})

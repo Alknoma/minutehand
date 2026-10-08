@@ -3,9 +3,9 @@ that carries one, however many there are, and nothing on a message without it; a
 
 from __future__ import annotations
 
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.scenario import DelayRange, Scripted, ScriptedPress, ScriptedReply
+from minutehand.domain.scenario import AfterScript, DelayRange, Scripted, ScriptedPress, ScriptedReply
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -29,8 +29,11 @@ def _card(log: Log, owner_email: str, hours: float, *, approvable: bool) -> Worl
 
 
 async def test_every_approval_card_is_pressed_and_a_message_without_one_is_not() -> None:
-    owner = person("owner", Scripted(delay=QUICK, replies=[], presses_every=ScriptedPress(label="approve")))
-    replier = ScriptedReplier(scenario(owner))
+    owner = person(
+        "owner",
+        Scripted(then=AfterScript.SILENT, delay=QUICK, replies=[], presses_every=ScriptedPress(label="approve")),
+    )
+    replier = PeopleReplier(scenario(owner), None)
     log = Log()
     cards = [_card(log, owner.email, h, approvable=True) for h in (1, 2, 3)]
     plain = _card(log, owner.email, 4, approvable=False)
@@ -42,12 +45,12 @@ async def test_every_approval_card_is_pressed_and_a_message_without_one_is_not()
 
 
 async def test_a_scripted_reply_to_an_ask_is_used_before_pressing_every_card() -> None:
-    script = Scripted(delay=QUICK, replies=[ScriptedReply(to_ask=2, text="Hold on, not this one.")],
+    script = Scripted(then=AfterScript.SILENT, delay=QUICK, replies=[ScriptedReply(to_ask=2, verbatim="Hold on, not this one.")],
                       presses_every=ScriptedPress(label="Approve"))  # fmt: skip
     owner = person("owner", script)
     log = Log()
     first, second = (_card(log, owner.email, h, approvable=True) for h in (1, 2))
-    replier = ScriptedReplier(scenario(owner))
+    replier = PeopleReplier(scenario(owner), None)
     pressed = await replier.decide(owner, first, log.events, RunClock(START))
     written = await replier.decide(owner, second, log.events, RunClock(START))
     assert pressed is not None and pressed.press is not None

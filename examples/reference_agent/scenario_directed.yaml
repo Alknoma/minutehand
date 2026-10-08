@@ -6,7 +6,7 @@ owner: owen
 starts_at: 2026-08-24T09:00:00Z
 deadline_after: P4D
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, replies: []}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
   - key: rosa
     name: Rosa Lind
     email: rosa@lakeside.example
@@ -14,9 +14,9 @@ people:
       kind: scripted
       delay: {shortest: PT20H, longest: P2D}
       replies:
-        - {to_ask: 1, text: "Yes, Lakeside Hall is free on Friday. Your booking reference is LH-2291."}
+        - {to_ask: 1, facts: ["Yes, Lakeside Hall is free on Friday. Your booking reference is LH-2291."]}
 directions:
   - {text: "We will need a projector there.", after: PT6H}
 expect:
   - {kind: person_asked, person: rosa, by: PT1H}
-  - {kind: relayed, said_by: rosa, to: owen, tell: LH-2291}
+  - {kind: relayed, said_by: rosa, to: owen, holding: [LH-2291]}

@@ -1,13 +1,13 @@
 """`minutehand`: run a scenario against an agent, read a run's findings, fork a run, list the runs.
 
-    minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--judge] [--json] [PROXY] [-- <command...>]
-    minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--state DIR] [--judge] [--json] [-- <command...>]
-                                                 every scenario in the folder, in parallel, each in a run of its own;
-                                                 {run.port} and {run.dir} in the agent file and the command are filled
-                                                 per scenario; exits 1 when a verdict differs from the scenario's
-                                                 expect_outcome, 2 when a run could not be performed
+    minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--seed S] [--judge] [--json] [PROXY] [-- <command...>]
+    minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--samples N] [--seed S] [--state DIR] [--judge] [--json] [-- <command...>]
+                                                 every scenario in the folder, in parallel, each in a run of its own,
+                                                 N times under seeds S, S+1, ...; {run.port} and {run.dir} in the agent
+                                                 file and the command are filled per run; exits 1 when a scenario's
+                                                 verdicts miss its expect_outcome, 2 when a run could not be performed
     minutehand findings <run_id> [--state DIR] [--json]
-    minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--judge] [--json] [PROXY] [-- <command...>]
+    minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--seed S] [--state DIR] [--judge] [--json] [PROXY] [-- <command...>]
     minutehand env --agent <agent.yaml> --proxy-port N [PROXY] [--format shell|compose|redirect] [--service NAME...]
                                                  the environment an agent Minutehand does not start needs
     minutehand runs [--state DIR]               every finished run, with what it costs on disk
@@ -242,6 +242,13 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("scenario", type=Path)
     run.add_argument("--agent", type=Path, required=True)
     run.add_argument("--samples", type=int, default=1)
+    run.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="where every draw of the run comes from (people's reply moments); default the scenario's own, or one "
+        "derived from its name; printed in the report",
+    )
     run.add_argument("--judge", action="store_true", help="also run the checks a model judges")
     run.add_argument("--json", action="store_true")
     proxy(run)
@@ -254,6 +261,18 @@ def _parser() -> argparse.ArgumentParser:
     run_all.add_argument("--agent", type=Path, required=True)
     run_all.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1), help="runs at once (default 4)")
     run_all.add_argument("--judge", action="store_true", help="also run the checks a model judges")
+    run_all.add_argument(
+        "--samples",
+        type=int,
+        default=1,
+        help="run each scenario this many times, each under its own seed counted up from --seed (default 1)",
+    )
+    run_all.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="the first seed of each scenario's samples; default each scenario's own seed",
+    )
     run_all.add_argument("--json", action="store_true")
     state(run_all)
 
@@ -266,6 +285,13 @@ def _parser() -> argparse.ArgumentParser:
     fork.add_argument("run_id")
     fork.add_argument("--at", type=int, required=True, help="the checkpoint's seq (listed by `findings`)")
     fork.add_argument("--changes", type=Path, required=True)
+    fork.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="where the fork's draws for asks after the checkpoint come from; default the changes file's, else the "
+        "parent's. Draws made before the checkpoint are kept",
+    )
     fork.add_argument("--judge", action="store_true", help="also run the checks a model judges")
     fork.add_argument("--json", action="store_true")
     proxy(fork)
@@ -818,6 +844,7 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
                 judge=args.judge,
                 listen=_listen(args),
                 progress=_progress("run"),
+                seed=args.seed,
             )
         )
     finally:
@@ -829,7 +856,16 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
 def _run_all(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
     load_agent(args.agent)  # refused here, once, rather than once per scenario
     batch = asyncio.run(
-        run_all.play_all(args.folder, args.agent, state=state, command=command, jobs=args.jobs, judge=args.judge)
+        run_all.play_all(
+            args.folder,
+            args.agent,
+            state=state,
+            command=command,
+            jobs=args.jobs,
+            judge=args.judge,
+            samples=args.samples,
+            seed=args.seed,
+        )
     )
     print(batch.model_dump_json(indent=2) if args.json else run_all.described(batch))
     return batch.exit_code
@@ -846,6 +882,8 @@ def _progress(command: str) -> Callable[[str], None]:
 
 def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
     changes = load_fork(args.changes, parent_run=args.run_id, at_seq=args.at)
+    if args.seed is not None:
+        changes = changes.model_copy(update={"seed": args.seed})
     telemetry = _telemetry()
     try:
         outcomes = asyncio.run(
@@ -1022,7 +1060,7 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
 
 def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None, account: ForkAccount | None) -> str:
     record, result = outcome.record, outcome.result
-    lines = [f"run {record.run_id}: {record.scenario}", f"  {result.verdict.words}"]
+    lines = [f"run {record.run_id}: {record.scenario} (seed {record.seed})", f"  {result.verdict.words}"]
     if restored is not None:
         # The line scripts read since forks were first restored: kept beside the fuller account below.
         verdict = "verified" if restored.verified else f"NOT verified: {restored.unverified}"

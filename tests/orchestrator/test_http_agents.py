@@ -16,7 +16,7 @@ from starlette.routing import Route
 
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.application.orchestrator import Services, run_scenario
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.domain.agent import (
     AgentReport,
     AgentStatus,
@@ -90,7 +90,7 @@ async def _run(rig: Rig, scn: Scenario, agent: AgentUnderTest, run_id: str) -> R
         store=rig.open(run_id, clock),
         clock=clock,
         services=Services(providers=[]),
-        replier=ScriptedReplier(scn),
+        replier=PeopleReplier(scn, None),
     )
 
 
@@ -310,7 +310,7 @@ async def test_a_wake_made_only_of_a_booking_waits_for_the_agent_to_act_on_the_d
             store=store,
             clock=clock,
             services=rig.services(),
-            replier=ScriptedReplier(scn),
+            replier=PeopleReplier(scn, None),
             mounts=rig.board,
         )
 

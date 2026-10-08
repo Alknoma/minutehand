@@ -40,6 +40,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import (
     Access,
     AccessRole,
+    AfterScript,
     DocumentKind,
     Person,
     Scenario,
@@ -72,9 +73,9 @@ SCENARIO = Scenario(
     owner="mara",
     starts_at=START,
     people=[
-        Person(key="mara", name="Mara Lindqvist", email="mara@example.com", reply=Scripted(replies=[])),
-        Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(replies=[])),
-        Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(replies=[])),
+        Person(key="mara", name="Mara Lindqvist", email="mara@example.com", reply=Scripted(then=AfterScript.SILENT)),
+        Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(then=AfterScript.SILENT)),
+        Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(then=AfterScript.SILENT)),
     ],
     sign_ins=[
         SignIn(provider="google_workspace", credential=REFRESH, person="mara"),

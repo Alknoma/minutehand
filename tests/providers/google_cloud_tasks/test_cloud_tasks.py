@@ -30,7 +30,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Scripted, SignIn
+from minutehand.domain.scenario import AfterScript, Person, ProviderSeed, Scenario, Scripted, SignIn
 from minutehand.domain.world import Actor, RecordSnapshot
 from minutehand.ports.provider import BooksWakes, ConfirmsDelivery
 from tests.orchestrator.world import serving as handler_at
@@ -119,7 +119,7 @@ def seeded(**retry: object) -> Scenario:
         goal="Follow up tomorrow.",
         owner="owen",
         starts_at=START,
-        people=[Person(key="owen", name="Owen", email="owen@example.com", reply=Scripted(replies=[]))],
+        people=[Person(key="owen", name="Owen", email="owen@example.com", reply=Scripted(then=AfterScript.SILENT))],
         provider_seeds=[
             ProviderSeed(provider="google_cloud_tasks", body=CloudTasksSeed(queues=[queue]).model_dump_json())
         ],

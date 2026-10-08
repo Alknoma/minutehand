@@ -204,7 +204,7 @@ New declarations (inboxes) use the following.
 | `page` | `cursor` |
 | `run` | `port`, `dir`: anywhere in the agent file and the agent's command under `minutehand run-all`, a free port and a folder of the scenario's own, so runs in parallel share neither; also `MINUTEHAND_RUN_PORT` and `MINUTEHAND_RUN_DIR` in the agent's environment |
 | `case` | reserved |
-| `person`, `ask`, `rule` | in an assessment's `message` and `holding`: `{person.key}`, `{person.name}`, `{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}` (`docs/assessments.md`) |
+| `person`, `ask`, `rule` | in an assessment's `message` and `holding`: `{person.key}`, `{person.name}`, `{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`, and in `holding` `{ask.facts}` (`docs/assessments.md`) |
 | `team` | a team's values in a library scenario: `goal`, `owner_key`, `owner_name`, `owner_email`, the same for `ask` and `other`, `answer`, `tell`, `credential_env`, `provider`, `wakes` (`docs/scenarios.md`) |
 
 **Paths** are JSONPath (RFC 9535), in the subset `domain/jsonpath.py` reads: names, indexes, wildcards, several

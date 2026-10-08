@@ -14,7 +14,7 @@ import pytest
 
 from minutehand.adapters.providers.google_workspace.seed import SeededAttendee, SeededEvent, WorkspaceSeed
 from minutehand.domain.people import PersonReply, Press
-from minutehand.domain.scenario import Person, ProviderSeed, Scenario, Scripted, SignIn, WorkingHours
+from minutehand.domain.scenario import AfterScript, Person, ProviderSeed, Scenario, Scripted, SignIn, WorkingHours
 from minutehand.domain.world import (
     Actor,
     InteractionSnapshot,
@@ -36,11 +36,11 @@ SCENARIO = Scenario(
             key="mara",
             name="Mara Lindqvist",
             email="mara@example.com",
-            reply=Scripted(replies=[]),
+            reply=Scripted(then=AfterScript.SILENT),
             working_hours=WorkingHours(timezone="Europe/Berlin"),
         ),
-        Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(replies=[])),
-        Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(replies=[])),
+        Person(key="dov", name="Dov Aranha", email="dov@example.com", reply=Scripted(then=AfterScript.SILENT)),
+        Person(key="rosa", name="Rosa Field", email="rosa@example.com", reply=Scripted(then=AfterScript.SILENT)),
     ],
     sign_ins=[SignIn(provider="google_workspace", credential=REFRESH, person="mara")],
     provider_seeds=[

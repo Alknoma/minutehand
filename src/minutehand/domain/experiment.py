@@ -46,6 +46,16 @@ class PersonChange(Model):
     reply: ReplyBehaviour
 
 
+class ReplyAt(Model):
+    """From the fork onward this person's answer to their nth ask lands exactly `after` it: no draw, no working hours,
+    no absences. It wins over everything their reply would otherwise draw, and over a reminder."""
+
+    kind: Literal["reply_at"] = "reply_at"
+    person: str = Field(description="Person.key")
+    to_ask: int = Field(ge=1, description="The nth message the agent sent them, counted over the whole run")
+    after: timedelta = Field(ge=timedelta(0), description="How long after that message the answer lands")
+
+
 class TicketEdit(Model):
     """The world is different at the fork: a ticket is in another state or with another person."""
 
@@ -91,7 +101,7 @@ class MemoryEdit(Model):
 
 
 Override = Annotated[
-    PromptPatch | ModelSwap | PersonChange | TicketEdit | DeadlineShift | DispatchChange | MemoryEdit,
+    PromptPatch | ModelSwap | PersonChange | ReplyAt | TicketEdit | DeadlineShift | DispatchChange | MemoryEdit,
     Field(discriminator="kind"),
 ]
 
@@ -101,3 +111,8 @@ class Fork(Model):
     at_seq: int = Field(ge=0, description="The last WorldEvent.seq the fork shares with its parent")
     overrides: list[Override] = []
     samples: int = Field(default=1, ge=1)
+    seed: int | None = Field(
+        default=None,
+        description="Where the fork's draws come from for asks after the checkpoint; None: its parent's. Draws made "
+        "before the checkpoint are kept as the parent made them",
+    )

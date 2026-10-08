@@ -264,7 +264,14 @@ class _Reader:
                 "person.key": subject.person.key if subject.person is not None else "",
                 "person.name": subject.person.name if subject.person is not None else "",
             }
-            phrases = [str(fill(p, known)) for p in m.holding]
+            phrases: list[str] = []
+            for p in m.holding:
+                if p.strip() == "{ask.facts}":
+                    if subject.ask is None or subject.ask.answer is None:
+                        raise _Unread
+                    phrases += subject.ask.answer_facts or [subject.ask.answer]
+                else:
+                    phrases.append(str(fill(p, known)))
             if subject.ask is not None and "{ask.answer}" in " ".join(m.holding) and subject.ask.answer is None:
                 raise _Unread
             thread = (
@@ -320,6 +327,15 @@ class _Reader:
             return self._memory(rule, subject, at)
         if count.stored is not None:
             return self._stored(rule, subject, at)
+        if count.replies is not None:
+            r = count.replies
+            by = {self._key(w, subject) for w in r.by}
+            how = {w.value for w in r.written}
+            return [
+                Fact(at=x.at)
+                for x in self.view.replies
+                if x.at <= self.end and (not by or x.person in by) and (not how or x.writing.value in how)
+            ]
         assert count.asks is not None
         a = count.asks
         of = {self._key(w, subject) for w in a.of}

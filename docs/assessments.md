@@ -89,13 +89,14 @@ rule went unread, so a rule never passes by being skipped unseen.
 |---|---|---|
 | `follow_ups` | a write of the agent's the person could see on the ask while it was open: a message to them or their delegate, a change to the ask's thread or ticket (an `ask` or `handoff` rule only) | none |
 | `touches` | any write of the agent's on the ask's person, thread or ticket, answered or not: after `answer`, the agent coming back to it (`ask` or `handoff` only) | none |
-| `messages` | a message the agent sent | `to`, `to_not` (person keys, `owner`, or `person`: the one the rule is read for), `in_thread` (under the ask's own message), `holding` (phrases, any case; `{ask.answer}` is the answer itself, `{person.key}` and `{person.name}` the person), `to_away` (to someone away then while a delegate covered) |
+| `messages` | a message the agent sent | `to`, `to_not` (person keys, `owner`, or `person`: the one the rule is read for), `in_thread` (under the ask's own message), `holding` (phrases, any case; `{ask.facts}`, a phrase of its own, is each fact the answer's script step carried, which a model put in the person's words, so a relay is read by the fact and never the wording (else the answer itself); `{ask.answer}` is the answer as the person worded it, `{person.key}` and `{person.name}` the person), `to_away` (to someone away then while a delegate covered; the message an absence starts with, which their automatic reply answers, is not) |
 | `writes` | any change the agent made to the world | `things`, `things_not` (`message`, `ticket`, `comment`, `document`, `record`, `inbox_item`, `file`, `tool_call`, `stored`), `operations` (`create`, `update`, `delete`), `repeats_open_ticket` (a ticket filed with the title of one still open in the project), `in_repeated_wake` (in the second delivery of one wake), `gated` (going ahead with an operation an item in the agent's product held back, while pending, turned down or taken back) |
 | `wakes` | a wake of the agent's | `changed_world`, `changed_commitments` |
 | `planned_wakes` | a wake the agent asked for itself (reported, booked, its rhythm, its timer), at the moment it was due | none |
 | `commitments` | a commitment the agent reported as a wake ended | `status` (`open`, `met`, `dropped`), `waiting_on` (people) |
 | `asks` | an ask of the run, at the moment it was made | `of` (people), `open_at` (a moment) |
 | `stored` | an item a host declared `store` holds at `until` (the run's end without it), counted at the moment its version there was written (`docs/capture.md`) | `host` (the declaration's host pattern), `collection` (its name), `values` (each field of the item, a dotted path, equal to the one given) |
+| `replies` | a person's reply or decision that landed, at the moment it landed | `by` (people), `written` (`script`: a model, from a step of their script; `verbatim`: the step's exact words or a control; `conversing`: a model, from their own facts, with no script or once it was used; `automatic`: their automatic reply while away; `by_hand`: a harness speaking for them) |
 | `memory` | a key of the agent's memory (`minutehand.agent.store`) holding a value at `until` (the run's end without it), counted at the moment that value was written; so `since` keeps only keys written from then on | `key` (exactly this key) or `prefix` (keys starting with it), either may hold `{person.key}`; `collection` (default `default`); `values` (each field of the value, a dotted path, equal to the one given: `{status: confirmed}`) |
 
 A `writes` count never includes the agent's memory: a key it writes is its own, not a change a person could see.
@@ -159,7 +160,7 @@ assess:
     each: ask
     where: {person_not: [owner]}
     when: {answered: true}
-    count: {messages: {to: [owner], holding: ["{ask.answer}"]}, since: answer}
+    count: {messages: {to: [owner], holding: ["{ask.facts}"]}, since: answer}
     at_least: 1
     message: "the owner was never told what {person.key} answered"
 ```

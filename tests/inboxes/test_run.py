@@ -17,7 +17,7 @@ from minutehand.application.checkpoint import read_checkpoint
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import WakeReason, WakeRequest
 from minutehand.domain.run import VerdictKind
-from minutehand.domain.scenario import Absence, ScriptedDecision, Silent, WorkingHours
+from minutehand.domain.scenario import Absence, AfterScript, ScriptedDecision, Silent, WorkingHours
 from minutehand.domain.world import Actor, InboxItemSnapshot, ItemStatus, Operation, WorldEvent
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, OWEN, T0, TOKENS, Agent, deciding, hours, inbox, play, scenario, sends
@@ -160,7 +160,7 @@ async def test_an_approver_with_nothing_said_about_deciding_is_refused_naming_th
 ) -> None:
     from minutehand.domain.scenario import Scripted
 
-    scn = scenario(Scripted(replies=[]))
+    scn = scenario(Scripted(then=AfterScript.SILENT))
     with pytest.raises(RunRefused, match="nadia can receive items in inbox approvals"):
         await play(tmp_path, scn, inbox(product), gated_agent(product))
 

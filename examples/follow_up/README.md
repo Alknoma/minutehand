@@ -20,7 +20,14 @@ must behave on the way (`assess:`, `docs/assessments.md`). Those rules are this 
 | `scenario_silent.yaml` | Rosa never answers. Its rule `follows_up_when_due` says the agent must follow her up within the hour of when her answer was due. |
 
 The agent needs `slack_sdk` and `minutehand` (for `minutehand.agent`, which imports only the standard library)
-in the Python that runs it.
+in the Python that runs it. Rosa's words are a model's, written from the facts her script gives her, so Minutehand
+needs a model for its people (`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, and `MINUTEHAND_MODEL_BASE_URL` for a
+service other than OpenAI's); offline, run the recipes' stand-in, which answers by fixed rules:
+
+```bash
+python ../recipes/fake_model.py &
+export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
+```
 
 ## 1. Rosa answers
 

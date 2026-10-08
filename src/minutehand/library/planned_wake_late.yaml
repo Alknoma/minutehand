@@ -16,7 +16,7 @@ scenario:
     - key: "{team.owner_key}"
       name: "{team.owner_name}"
       email: "{team.owner_email}"
-      reply: {kind: scripted, replies: []}
+      reply: {kind: scripted, then: silent}
     - key: "{team.ask_key}"
       name: "{team.ask_name}"
       email: "{team.ask_email}"

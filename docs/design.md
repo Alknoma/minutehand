@@ -34,13 +34,14 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | GitHub provider: `adapters/providers/github/` | REST at `api.github.com` (`/user`, `/user/repos`, a repository, its languages, branches, contents, blobs, trees and commits, code search with text matches, `/rate_limit`, installation-token exchange) and `/graphql` (`viewer`, `repository`); every other operation of GitHub's REST description for those resources refused by name (501), held against a committed subset of that description; any credential accepted (credentials deliberately not enforced; visibility is world data); `ETag` and `If-None-Match`; primary rate limits counted per user and per address in the store; seeded faults (`rate_limited`, `secondary_rate_limited`, `server_error`); see its `README.md` and `CLAIMS.md` | Built and tested | 184 (`tests/providers/github/`) | Repository reads only: no issues, pull requests, webhooks or OAuth web flow. A GraphQL query costs one point. Every branch and commit shows the head's files. The seed comes beside the scenario (`GitHubProvider.seed_with`), not from it. |
 | AWS provider: `adapters/providers/aws/` | moto in the process, on the run's clock, for EventBridge Scheduler and SQS; every operation of botocore's `scheduler` and `sqs` models served or refused by name, every other AWS service refused; EventBridge Scheduler bookings become wakes delivered to SQS; no credential checked; see its `CLAIMS.md` | Built and tested | 69 (`tests/providers/aws/`) and whole runs (`tests/e2e/test_booked_on_aws.py`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. A target other than an SQS queue in the run's account is refused at `CreateSchedule`. A long poll that finds no message is refused by name, since the run's clock does not move inside a call. |
 | Google Cloud Tasks provider: `adapters/providers/google_cloud_tasks/` | Queues and HTTP tasks over the REST API and over gRPC, the client's default, from the same operations and world; a task's `scheduleTime` booked as a wake and delivered as an HTTP call to the agent's handler with Cloud Tasks' headers; a non-2xx answer retried with the queue's backoff until its attempts run out; a task's name taken for 24 hours after it ran or was deleted; every method of the v2 discovery document and of the gRPC service served or refused by name; queues seeded by `CloudTasksSeed`; see its `CLAIMS.md` | Built and tested | 40 (`tests/providers/google_cloud_tasks/` 36 through the real proxy with Google's own `google-cloud-tasks`, 11 on its REST transport and 5 on gRPC; `tests/e2e/test_cloud_tasks_run.py` 4 whole runs, one on gRPC) | gRPC needs `minutehand[grpc]` (grpcio and Google's messages); without it a gRPC call is answered UNIMPLEMENTED, saying so. Tasks asking for signed OIDC or OAuth tokens, App Engine tasks, `tasks:run` and batch calls answer 501. Only a task URL on this machine is called. |
-| Run loop, fork, scripted people, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint | Built and tested | 74 (`tests/orchestrator/`) | A fork starts only at a checkpoint after which the agent did not go on writing its memory in the same wake. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. Only `Scripted` and `Silent` people: `Answers` is refused. |
+| Run loop, fork, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint, with its own seed and pinned reply times | Built and tested | `tests/orchestrator/` | A fork starts only at a checkpoint after which the agent did not go on writing its memory in the same wake. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. |
+| People: `application/replier.py`, `application/moments.py`, `domain/people.py` | Every word a person says or decides, in a run and a standing world alike: a script of facts and intents whose words a model writes, conversing from their facts once the script is used, exact words where a step says `verbatim`; each moment drawn from the run's seed, the person and the ask, in a window of their available time; follow-ups, reminders, automatic replies while away; what each person can see of the world as their context; every model call kept with the world and replayed for the same context. See "People" | Built and tested | `tests/orchestrator/test_moments.py`, `test_conversing.py`, `test_reply_draws.py`, `tests/model/`, `tests/serve/test_written_people.py` | The fact a relay must carry is checked as a substring (`Relayed.holding`, `{ask.facts}`): a relay that paraphrases the value itself is not counted. A follow-up is told from a new ask by its conversation (channel and thread), never by its text. |
 | The agent's memory: `minutehand/agent/` (`store`, `wake`), `domain/memory.py`, `application/memory.py`, `application/restore.py`, the receiver's `/minutehand/agent` routes | What the agent remembers, as JSON under string keys, through one import inert in production; under Minutehand every write recorded in the run's log and every read answered from it, so each run and fork has its own memory and a fork starts from its parent's at the checkpoint with no hooks; the agent's next wake marked the same way; a fork's agent proven by its memory's digest and its report; a fresh empty SQLite file per run for each database of its own the agent file names | Built and tested | `tests/agent/` 21, `tests/e2e/test_memory_run.py` 4, `tests/orchestrator/test_rewind.py`, `tests/orchestrator/test_fork_start.py` 8 | Only state written through the store is part of a run: anything the agent keeps elsewhere is not simulated, not kept apart between runs and not rewound, and is seen only when its report shows it or the agent file names the database ("The agent's memory"). The package ships inside `minutehand`, whose own dependencies are heavy; it imports none of them. |
 | Facts, assessments, ledger, scorecard, patterns: `checks/`, `domain/assessments.py` | The facts of a run (`checks/facts.py`), the team's YAML rules over them (`checks/assessments.py`), the checks that state the scenario's own words and the run's integrity (`expectations`, `near_miss_name`, `agent_contract_changed`, `around_proxy`, `unmatched_call`), the agent's own checks, the obligations ledger, `Effectiveness` (facts only), 10 patterns | Built and tested | `tests/checks/`, `tests/orchestrator/test_team_rules.py`, `tests/test_checks_on_reference_run.py`, `tests/e2e/test_around_proxy_run.py` | A rule counts; whether a message meant something is a judgement no rule makes. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP and, with `minutehand[grpc]`, gRPC on the same port. Metrics are dropped; a log record is kept only when it carries GenAI content. A span is placed in a wake by comparing its SDK's clock with this machine's. |
 | Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Each sample has a memory of its own; what the agent keeps outside the store is carried from one sample into the next. |
-| Standing mode: `serve.py`, `application/standing.py`, `adapters/control/`, `adapters/proxy/worlds.py`, `adapters/proxy/credentials.py`, `minutehand.testing` | `minutehand serve`: one process holding many worlds at once for a test suite; each call routed to the world that claims its host, a world key its URL names (`Manifest.world_keys`), or a credential (including a JSON or form token request's refresh token, code, client id and secret, and client assertion); a control API under `/v1` that also fires a happening, presses a control, declares a provider's own faults and switches, seeds more into an open world, changes people's accounts and permissions, deletes a ticket as a person, mints the credentials a pushed request carries, resets a world in place and shows its raw state; a pytest client and plugin; a composite action for another repository's CI; the image serves by default | Built and tested | 104 (`tests/serve/` 95, `tests/testing/` 3, `tests/e2e/test_cli.py` 2, `tests/test_scenario.py` 3, `tests/packaging/test_stack.py` 1) | Isolation is as fine as the credentials the services carry: one fixed token per stack means one world at a time. A base-URL call is routed as a proxied one. A call whose only claim is a `common` or `organizations` sign-in path, or a shared host with no credential, still reaches the default world only. A recorded call whose response body is binary is answered but not kept (see Known issues). Booked wakes are never fired. See `docs/serve.md`. |
+| Standing mode: `serve.py`, `application/standing.py`, `adapters/control/`, `adapters/proxy/worlds.py`, `adapters/proxy/credentials.py`, `minutehand.testing` | `minutehand serve`: one process holding many worlds at once for a test suite; each call routed to the world that claims its host, a world key its URL names (`Manifest.world_keys`), or a credential (including a JSON or form token request's refresh token, code, client id and secret, and client assertion); a control API under `/v1` that also fires a happening, presses a control, declares a provider's own faults and switches, seeds more into an open world, changes people's accounts and permissions, deletes a ticket as a person, mints the credentials a pushed request carries, resets a world in place and shows its raw state; its people as complete as a run's, every word and decision written by the server's own model when the world's clock passes it, each owed answer and model call listed on the world; a pytest client and plugin; a composite action for another repository's CI; the image serves by default | Built and tested | 104 (`tests/serve/` 95, `tests/testing/` 3, `tests/e2e/test_cli.py` 2, `tests/test_scenario.py` 3, `tests/packaging/test_stack.py` 1) | Isolation is as fine as the credentials the services carry: one fixed token per stack means one world at a time. A base-URL call is routed as a proxied one. A call whose only claim is a `common` or `organizations` sign-in path, or a shared host with no credential, still reaches the default world only. A recorded call whose response body is binary is answered but not kept (see Known issues). Booked wakes are never fired. See `docs/serve.md`. |
 | Reference agent: `examples/reference_agent/` | Two processes (an API on `requests`, a worker on `httpx`) over a job queue in its memory (`minutehand.agent.store`, SQLite in production), email by a captured channel with replies, a pass-through search, a model API on a local HTTPS server, OpenTelemetry over HTTP or gRPC, five behaviours; `docs/reference-agent.md` | Built and tested | 9 (`tests/architecture/`) | |
 | Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Each sample has a memory of its own. |
 | Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
@@ -49,7 +50,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | The agent contract: `agent_api.py`, `schemas/`, `minutehand schema`, `minutehand validate` | One page of every touch point (`docs/agent-contract.md`), JSON Schemas of the files, an OpenAPI document of what an agent may implement, a file validated without a run | Built and tested | 5 functions, 7 cases (`tests/test_schemas.py`) | The older placeholders and dotted paths are listed as debt, not changed. |
 | MCP tools: `adapters/mcp/`, `minutehand mcp` | Seven tools over stdio (`list_scenarios`, `run_scenario`, `list_findings`, `show_evidence`, `rerun_from`, `list_outbound_calls`, `list_runs`) reading and writing the state directory through `session`, as the command line does; see "What a coding agent calls" | Built and tested | 14 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | One run at a time per process: a second `run_scenario` or `rerun_from` while one plays is refused, not queued. |
 | Run viewer: `adapters/web/`, `minutehand view` | A read-only JSON API over a state directory (runs and the fork tree, wakes, events, calls, obligations, findings, scorecard, messages, model calls and traffic, steps and spans) and the one page that draws it, its libraries vendored under `static/` | Built and tested | 20 (`tests/web/`) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. |
-| Container image, model-written people, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
+| Container image, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
 No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
 
@@ -98,7 +99,7 @@ One process with five parts:
 1. **Proxy.** The agent's process gets `HTTPS_PROXY`. Calls to hosts a provider claims are answered by that provider's fake. Calls to model APIs are tunnelled without being decrypted, or decrypted and edited when a fork changes the prompt or model, or decrypted and recorded as spans with `--record-model-calls`. Anything else is refused with 502 and recorded. Beside it, an OTLP/HTTP receiver keeps the agent's own telemetry with the run (see "Telemetry").
 2. **Providers.** One package per service. Its manifest loads at start; its code loads on its first call. Each answers the real API's routes, reads and writes only through `ports.store.Store`, and records every call as `Change`s, which the store turns into `WorldEvent`s.
 3. **Clock.** `RunClock` is the only clock in a run. `next_jump()` moves it to the next moment something is due, every provider stamps from it, and the agent is told the time in `WakeRequest.now`.
-4. **People.** A scenario's `Person` replies after a simulated delay, through the provider as a real inbound event. Replies are scripted text or silence today.
+4. **People.** A scenario's `Person` answers at a moment drawn in their available time, through the provider as a real inbound event. What they say is a model's words from what the scenario says they know and do (a script of facts, then conversing), exact words only where a step says so, or silence where the author says so.
 5. **Facts and assessments.** The facts of a run read from `RunView` (`checks/facts.py`), and the team's own rules over them (`checks/assessments.py`); a few checks in the core state the scenario's own words and the run's integrity. Deterministic first; anything that needs judgement answers `FindingKind.REVIEW`.
 
 The agent under test declares how it is reached (`AgentUnderTest`): where it takes its goal (`GoalByWake` or `GoalByMessage`), how it comes back to work (`wakes`), and where pushed events reach it (`inbound`). At most it answers `WakeRequest` with `AgentReport`. An agent that takes its goal as a Slack message and books its own wake-ups answers nothing.
@@ -116,8 +117,8 @@ deadline_after: P14D
 protected_names: [Ayven]
 people:
   - {key: owner,  name: Test User,      email: owner@example.com, reply: {kind: silent}}
-  - {key: sofia,  name: Sofia Romano,   email: sofia@example.com,
-     reply: {kind: scripted, replies: [{to_ask: 1, text: "Signed and sent back."}]}}
+  - {key: sofia,  name: Sofia Romano,   email: sofia@example.com, reply_within: {min: PT2H, max: PT6H},
+     reply: {kind: scripted, replies: [{to_ask: 1, facts: ["the agreement is signed and sent back"]}]}}
   - {key: dania,  name: Dania Kovac,    email: dania@example.com, reply: {kind: silent}}
 ticket_fates:
   - {assignee: sofia, becomes: done, after: P3D}
@@ -126,7 +127,7 @@ expect:
   - {kind: ticket_created, assignee: dania, by: P5D}
 ```
 
-`Scenario.model_validate` rejects an unknown field, a duplicate `Person.key`, and any `owner`, `assignee`, `delegate` or expected `person` that names nobody. `Person.reply` defaults to `Answers`, a model-written reply, and `ScriptedReplier` refuses a run in which anyone has it; every person in a runnable scenario says `scripted` or `silent`. YAML is read without implicit timestamps or base-60 numbers (`application/files.py`), so `opens: 09:00` is a time, not 540.
+`Scenario.model_validate` rejects an unknown field, a duplicate `Person.key`, and any `owner`, `assignee`, `delegate` or expected `person` that names nobody. `Person.reply` defaults to `Answers`, a person a model writes for from their facts; a run in which anyone's words are a model's, with no model configured, is refused before it starts, naming them ("People"). YAML is read without implicit timestamps or base-60 numbers (`application/files.py`), so `opens: 09:00` is a time, not 540.
 
 ```yaml
 name: forgetful_agent
@@ -216,10 +217,13 @@ The agent stopped after one wake; the clock ran on to the deadline (seq 19 is th
 Built, on the command line:
 
 ```
-minutehand run scenario.yaml --agent agent.yaml -- <command>   -> run id, verdict, findings, scorecard, checkpoints; exit 0, 1, 2, 3, 4 or 5 by the verdict
+minutehand run scenario.yaml --agent agent.yaml [--seed S] -- <command>
+                                                               -> run id, seed, verdict, findings, scorecard, checkpoints; exit 0, 1, 2, 3, 4 or 5 by the verdict
 minutehand findings <run_id>                                   -> the same report, read back from the state directory
-minutehand run-all <folder> --agent agent.yaml -- <command>    -> every scenario in parallel; exit 1 when a verdict differs from its expect_outcome
-minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>
+minutehand run-all <folder> --agent agent.yaml [--samples N --seed S] -- <command>
+                                                               -> every scenario in parallel, N times under seeds S..; exit 1 when a
+                                                                  scenario misses its expect_outcome (a verdict, or a rate of them)
+minutehand fork <run_id> --at <seq> --changes fork.yaml [--seed S] -- <command>
 minutehand runs
 ```
 
@@ -234,7 +238,8 @@ src/minutehand/
   agent/              what an agent imports, standard library only: store.py (its memory), wake.py (its next wake),
                       _store.py (the adapters and the run's backend), _wire.py (HTTP to the run's receiver)
   domain/             pure: no I/O, no clock reads
-    scenario.py       Model, Scenario, Person, Account, Answers, Scripted, ScriptedReply, ScriptedPress, FormInput,
+    scenario.py       Model, Scenario, Person, Account, Speaks, Answers, Scripted, ScriptedReply, Intent, AfterScript,
+                      ScriptedDecision, Window, Reminded, FactChange, ScriptedPress, FormInput, OutcomeRate, Rate,
                       Silent, DelayRange, WorkingHours, Absence, SeededTicket, SeededComment, SeededDocument,
                       DocumentKind, Access, SharedSpace, SignIn, SeededChannel, SeededPost, SeededFile,
                       ProviderSeed, Happening (TicketHappening (Moves, Reassigns, Comments, Deletes) |
@@ -269,7 +274,8 @@ src/minutehand/
                       ChangesPeople, GrantsPermissions, MintsInboundCredentials, OwnsSeed, BooksWakes, Wakes,
                       AgentDriver, Reports, Replier, Telemetry
   application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (a fork's agent proven),
-                      memory.py (the agent's memory in the log), replier_scripted.py, run_clock.py, files.py, refusals.py,
+                      memory.py (the agent's memory in the log), replier.py and moments.py (people), run_clock.py,
+                      files.py, refusals.py,
                       model_calls.py (the join), standing.py and further_seed.py (`minutehand serve`)
   checks/             facts.py (the facts, public), assessments.py (the team's rules read over them), ledger.py,
                       runner.py, effectiveness.py, patterns.py, and the checks of the scenario's words and the
@@ -659,7 +665,7 @@ Orchestrator.run():
                      bookings (BooksWakes.deliver_booking, .advance_booking), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
       read the new events: an agent message to a person, as its text reads when the wake ends
-                           -> Replier.decide -> a pending reply
+                           -> Replier.plan (when, and how) -> Replier.write (the words) -> a pending reply
                            an agent ticket assigned to a person with a TicketFate -> a pending fate
       AgentReport.next_wake replaces the agent's previous DUE wake
       the last next wake the agent marked in the wake (`minutehand.agent.wake`) replaces its next wake
@@ -854,8 +860,9 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   world whose call minted them. Each world has its own lock, so calls in different worlds do not wait on each
   other.
 - **A world** is `application/standing.py`'s `StandingWorld` over a `Seed` (`domain/scenario.py`): its own
-  store and `RunClock`, providers seeded on first use, and, with scripted people on, the replies, fates and
-  directions it owes, fired only when its clock is moved past them.
+  store and `RunClock`, providers seeded on first use, and, with scripted people on, the replies, decisions, fates
+  and directions it owes, fired only when its clock is moved past them; people's words are written then, by the
+  server's model, exactly as in a run ("People").
 - **The record.** A world is a run (`StopReason.CLOSED` when closed), so `findings`, `view` and the MCP tools
   read it; the newest `--keep` closed worlds are kept.
 - **Outbound hosts.** `CreateWorld.outbound` declares, per world, the hosts no provider claims that it captures
@@ -1027,14 +1034,120 @@ A met expectation carries no pattern: there is nothing to fix. Only `FAIL` findi
 "The owner was told what Sofia answered" is `Relayed`, defined from the log alone, with no judgement and no word list:
 
 ```yaml
-  - {kind: relayed, said_by: rosa, to: owen, tell: lakeside hall}
+  - {kind: relayed, said_by: rosa, to: owen, holding: [lakeside hall]}
 ```
 
-- **The tell is the author's.** A phrase only `said_by`'s answer holds. The scenario is refused when its goal, a direction, a seeded ticket or document, or anyone else's scripted reply or facts holds it, when `said_by` is `Silent`, and when none of their scripted replies (or, for a model-written person, none of their facts) holds it.
-- **The person must say it first.** The first event in the world whose text holds the tell must be a message from a person that is `said_by`'s own reply, not withdrawn, landing at that moment (`RunView.replies`). An agent message that held it earlier means the agent did not hear it from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
-- **A match** is an agent message to `to`, after that reply, holding the tell, in any case.
+- **The values are facts, the author's.** Phrases only `said_by`'s answer carries. The scenario is refused when its goal, a direction, a seeded ticket or document, or anyone else's script or facts holds one, when `said_by` is `Silent`, and when none of their script's steps or facts holds it.
+- **The person must say it first.** A reply of `said_by`'s, not withdrawn and not automatic, must carry every value: in its words, or in the facts the script step it was written from carried (`PersonReply.facts`), since a model writes the words and may reword the fact. The relay must come after that reply lands; an agent message (or anything not a person's) that held the values before it means the agent did not hear them from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
+- **A match** is an agent message to `to`, after that reply, holding every value, in any case.
 
-What it gets wrong: the tell is a substring, so a relay that paraphrases ("the hall by the lake") is not counted, and one that quotes the tell inside a sentence that contradicts it is. A model-written person may phrase the fact without the tell, and the expectation then fails though the content was passed on.
+What it gets wrong: a value is a substring, so a relay that paraphrases the value itself ("the hall by the lake") is not counted, and one that quotes it inside a sentence that contradicts it is.
+
+### People
+
+Built and tested (`application/replier.py`, `application/moments.py`, `domain/scenario.py`, `domain/people.py`). Most
+of what a person sends the agent is written by a model; what they know, decide and do, and when, is the scenario
+author's. Minutehand states what they said and when; it never decides how an agent should treat them.
+
+```yaml
+people:
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    facts: ["The offsite is on the 14th."]                 # what she knows: all a model may draw on
+    fact_changes: [{after: P2D, facts: ["The offsite moved to the 21st."]}]   # what she knows from a moment on
+    reply_within: {min: PT2H, max: PT6H}                   # 2 to 6 hours of her available time after each ask
+    reminded: {sooner_within: {min: PT30M, max: PT2H}}     # a follow-up may bring an owed answer sooner; never later
+    working_hours: {timezone: Europe/Lisbon, opens: "09:00", closes: "17:00"}
+    absences: [{trigger: on_first_ask, lasts: P1D, delegate: sam, reason: on leave}]
+    reply:
+      kind: scripted
+      voice: brief and friendly
+      helpfulness: full
+      history_turns: 30                                    # messages shown word for word; older ones as a summary
+      replies:                                             # a one-time plan of facts, not strings
+        - {to_ask: 1, intent: ask_back, facts: ["she needs the headcount first"]}
+        - {to_ask: 2, facts: ["the lakeside hall is booked for the 14th"], within: {min: PT1H, max: PT1H}}
+        - {to_ask: 3, verbatim: "Confirmed: LH-2291."}     # exact words, no model: the rare opt-in
+      decisions: [{decision: reject, facts: ["the office has a room that day"]}]   # a model writes the reason
+      then: answers                                        # once used, she keeps conversing (default); or silent
+```
+
+**A script is a plan of facts.** `Scripted.replies` are steps: the nth ask (`to_ask`) is answered with what the step
+carries (`facts`) and does (`intent`: `answer`, `decline`, `ask_back`, `defer`), the words a model's in the person's
+voice and helpfulness, from the step prompt (`person-step/1`). `verbatim` gives exact words and calls no model;
+`press` uses a control on the message. A message whose number has no step, before the last step, gets no answer.
+A scripted decision (`docs/inboxes.md`) names the decision; what it gives (a reason) is written from its `facts`
+unless `inputs` fixes the words. `Answers` is a person with no plan.
+
+**Then the person keeps talking.** Once the steps are used (`then: answers`, the default), and for `Answers`, each
+further ask is answered by the model from the person's facts, stale facts (for a `mistaken` person), helpfulness
+and voice (`person-reply/3`), which may judge that a message (a thank-you) needs no answer; decisions likewise
+(`person-decision/2`). A run is a continuous conversation, bounded by its deadline and wake limit. Silence is only
+ever the author's: `Silent`, or `then: silent`. Each reply records how its words were written (`PersonReply.writing`:
+`script`, `verbatim`, `conversing`, `automatic`, `by_hand`), and a team's rule counts them (`count: {replies: {by,
+written}}`, `docs/assessments.md`).
+
+**A model is required whenever a person may speak.** `replier.unspoken` names everyone a model writes for (an
+`Answers` person, a script that goes on conversing, a step or decision a model words); with no model configured
+(`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`), a run, a fork, and a standing world
+with `scripted_people: true` are refused before anything starts, naming each person and why. `minutehand doctor`
+says whether one is configured. Nobody goes silent mid-run for want of one.
+
+**When.** `replier.plan` decides whether and when a person answers an ask, never calling a model; `replier.write`
+writes the words. A moment is drawn from a seed of the run's seed, the person and the ask's identity
+(`moments.draw`), so the same seed gives the same moments in every run and fork:
+
+- with `reply_within` (the person's, or a step's or decision's own `within`), a span drawn uniformly between `min` and
+  `max` of their available time, the time inside their working hours and outside their absences, counted from the
+  ask: two hours asked at 16:00 on a Friday of someone working 9 to 17 on weekdays is 10:00 on Monday, and replies
+  spread over the working day instead of piling up at its start;
+- otherwise their `delay`, a span of calendar time, then pushed past absences and into working hours.
+
+The draw is recorded on the reply (`PersonReply.drawn`: source, seed, window or range, the span drawn, the moment)
+and on its entry in the table of what is due (`DueEntry.drawn`). A person away while a delegate covers sends their
+automatic reply at once to the first message in the absence ("Automatic reply: ... For anything urgent, please
+contact ..."), which is no answer: it settles no wait, and the message the absence began with is not counted as one
+sent to someone away.
+
+**Follow-ups and several asks.** A message to a person in a conversation (a channel, and its thread) where they owe an
+answer that has not landed is a follow-up, not an ask: the answer owed answers the ask it was drawn for, in that
+ask's thread, and the follow-up changes nothing, unless the person declares `reminded`: then a moment is drawn
+again from `sooner_within` after the follow-up, and the answer moves there when that is sooner, never later. A new
+ask in another conversation draws its own moment. Follow-ups are not counted as asks by a script's `to_ask`.
+
+**What the model is shown.** Only what the person can see in the world (`replier.seen_by`): the conversation they are
+answering, in full and in order, with times, the agent's messages and their own; then the other conversations they
+take part in (direct messages, channels they are in, threads they are on), most recent first. A message is theirs
+to see when it was addressed to them or is their own; another person's private messages never are. Beyond
+`history_turns` messages (30 by default), the oldest reach the model as one summary, written by a model once
+(`person-summary/1`), kept and replayed. The prompt tells the person to stay consistent with what they said; what
+they know changes only where the scenario says (`fact_changes`, or a later step's facts), never by drift.
+
+**Kept, and replayed.** Every call to the model for a person is kept with the world (`PersonCall` in the store's
+`person_call` table: the key, the model, the prompt version, the tokens, the answer or the failure). Its key is a
+digest of everything the model was shown; any later ask with the same key, in the run, a rerun of it, any fork in
+the same world file, or a standing world after a reset, replays the answer and calls nothing. A fork that changed
+anything the person was shown gets a fresh answer. A call that fails leaves the answer owed: in a run it is tried
+again on the loop's next turn (`Checkpoint.unwritten`), in a standing world on the next `advance`, and lands at its
+drawn moment or then, whichever is later; the failure is on the record.
+
+**Forks.** A fork keeps every reply drawn before its checkpoint as its parent drew it, and draws afresh after it with
+its own seed (`Fork.seed`, `minutehand fork --seed`; the parent's by default). A `reply_at` override
+(`{kind: reply_at, person, to_ask, after}`) pins a reply to exactly `after` its ask, winning over every draw and
+reminder, for an answer still owed at the fork as for one asked after it.
+
+**Seeds and samples.** A run's seed is `minutehand run --seed`, else the scenario's `seed`, else one derived from its
+name; it is recorded in the played scenario and `RunRecord.seed` and printed in the report. `minutehand run-all
+--samples N --seed S` plays each scenario under seeds S to S+N-1 and reports each scenario's count of each verdict and
+the seeds that missed; `expect_outcome` takes a rate (`{passed: ">= 0.9"}`); `run --seed` plays any sample again.
+
+**Standing worlds** (`minutehand serve`) play people the same way, with the server's model from its own environment;
+a world's owed answers are written when its clock passes them (`docs/serve.md`, "People and time").
+
+What it gets wrong: a person's author is resolved from the reply table by time and provider, so another person's
+message they can see may be shown as from "Someone". A follow-up and a new question in the same conversation are
+told apart by the reply owed, not by their text.
 
 ### A person acting in the agent's own product
 
@@ -1176,7 +1289,7 @@ What a rewind needs beyond the world:
 | Part | How it comes back | State |
 |---|---|---|
 | The clock and everything pending | The `Checkpoint` row at the fork's seq | Built |
-| People's replies already given | The `reply` table; copied up to the fork, decided fresh after it | Built |
+| People's replies already given | The `reply` table; copied up to the fork with every moment drawn, decided and drawn fresh after it under the fork's seed; the model's words for the same context replayed from `person_call` | Built |
 | The agent's memory | It is the same log: a fork reads its parent's up to the checkpoint, and proves it by its digest (below) | Built and tested |
 | What the agent keeps outside its memory | Not at all: a database it names is handed fresh and empty; anything else is the agent's. A fork whose agent's report differs from the checkpoint's is refused, naming it (below) | Refused when the report shows it; silently wrong when it does not |
 | AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. The manifest says so (`Manifest.state_outside_log`), and a fork at any checkpoint after the parent first called AWS, or wrote an AWS record, is refused, naming the provider, its first call and what it keeps (`application/rewind.py`; `tests/e2e/test_booked_on_aws.py`). A fork before the first call runs. | Refused, never silently wrong |
@@ -1372,7 +1485,7 @@ class Obligation(Model):
 
 | `ObligationKind` | Opens when | `expected_by` | Settles when |
 |---|---|---|---|
-| `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's `DelayRange.longest`; `patience` is that delay | The first reply to any message on the wait, if the run reached it and it was not withdrawn |
+| `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's patience: the calendar time `reply_within.max` of their available time takes from the ask, else their `DelayRange.longest`; `patience` is that span | The first reply to any message on the wait, if the run reached it and it was not withdrawn |
 | `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus that person's `TicketFate.after`; none without a fate | The person moves it to `DONE` or `CANCELLED` |
 | `ANSWER_FROM_PERSON` (an item) | An item waiting on a person in the agent's own product is first seen (`docs/inboxes.md`) | First seen plus the person's longest delay | The person decides it and the product takes the decision, or the agent withdraws it |
 | `DATE` | The scenario has a deadline | The deadline | The run reaches it |
@@ -1601,48 +1714,6 @@ Ten, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/pattern
 - The scenario library (`docs/scenarios.md`, `minutehand scenarios`) ships eleven situations a team fills with its own goal and people. Grading them from easy to hard, with a pass mark, is the form in which this becomes a standard others measure against; that is not designed yet.
 
 ## Queued behind a working emulator suite
-
-### People written by a model
-
-Designed, not built. The models exist; `ScriptedReplier` refuses any person whose reply is `Answers`, naming them, before the run starts.
-
-```python
-class Person(Model):
-    key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    name: str
-    email: str
-    title: str | None = None
-    facts: list[str] = Field(default=[], description="What this person knows; all a model reply may draw on")
-    stale_facts: list[str] = Field(default=[], description="What they believe that is no longer true")
-    reply: ReplyBehaviour = Answers()
-    working_hours: WorkingHours | None = None
-    absences: list[Absence] = []
-
-
-class Answers(Model):
-    kind: Literal["answers"] = "answers"
-    delay: DelayRange = DelayRange()
-    helpfulness: Helpfulness = Helpfulness.FULL
-    voice: str | None = Field(default=None, description="How they write: terse, formal, chatty")
-    model: str | None = Field(default=None, description="None uses the run's default model")
-    temperature: float = Field(default=0.6, ge=0, le=2)
-```
-
-What is built for people today (`application/replier_scripted.py`, `ScriptedReplier`):
-
-- `Scripted`: the nth message the agent sends a person gets the `ScriptedReply` with `to_ask == n`, or no reply. `Silent`: never.
-- The delay is drawn from the person's `DelayRange` (default 6 to 66 hours) by hashing the scenario's `seed` with the asked message's identity, so the same seed gives the same delays on every run and every fork.
-- A reply that would land inside an `Absence` (from the start, or from the first ask) or outside `WorkingHours` (in the person's own timezone) moves to the next moment they would answer.
-- A reply is stored the first time it is decided and arrives through the provider as a real inbound event: a threaded reply in a channel, a new message in a DM.
-- A scripted reply may use a control instead of writing back (`ScriptedReply.press`): the control on the asked message whose label reads `ScriptedPress.label`, in any case, a person picked for a person picker, and `form` typed into the modal the agent opens in answer. A message with no such control gets no reply: the person cannot press what is not there. A model-written person is shown the message's controls (a link is not one) and may answer with `press` and `form` instead of `text`. Either way the reply is a `PersonReply` with `press` set, stored and replayed like any other, its `text` what the person typed or else the label, so `Relayed` hears a reason typed into a form. The press lands as `InteractionSnapshot` events by actor `PERSON` naming the person, the control, its value and what was typed: "nadia pressed “Accept”" is one event in the log.
-- An edit that changes a message's controls without changing its text is put to the person again, as a text change is: a "Thinking…" message turned into a card by `chat.update` asks its question then.
-- `Scenario.happenings` are what people do unprompted at set offsets, in three families (see "Things people do by themselves"); a messaging one (post, edit, delete, react, join, open the agent's Home tab, run a slash command) wakes the agent with `PERSON_REPLIED`.
-
-Designed:
-
-- Each knob changes what the agent has to cope with: `PARTIAL` and `ASKS_BACK` force a second round, `DECLINES` forces a reroute, `MISTAKEN` plus `stale_facts` tests whether the agent verifies.
-- The replier's first decision is whether a message needs an answer at all. That decision is what opens an `Obligation` (`Replier.decide` returning `None` already opens none).
-- A model-written reply is stored the first time it is written. A fork replays it, so a rerun costs no model call for the people and plays out the same.
 
 ### Checks that need a model
 

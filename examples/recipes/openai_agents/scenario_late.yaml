@@ -9,7 +9,7 @@ people:
   - key: owen
     name: Owen Hart
     email: owen@example.com
-    reply: {kind: scripted, replies: []}   # told the outcome; owes no answer
+    reply: {kind: scripted, then: silent}   # told the outcome; owes no answer
   - key: rosa
     name: Rosa Lind
     email: rosa@example.com
@@ -18,7 +18,7 @@ people:
       delay: {shortest: PT60H, longest: PT60H}
       replies:
         - to_ask: 1
-          text: The lakeside hall, booked for the 14th.
+          facts: ["The lakeside hall, booked for the 14th."]
 
 expect:
   - kind: person_asked
@@ -26,10 +26,10 @@ expect:
   - kind: person_asked
     person: owen
     mentions: [confirmed]
-  - kind: relayed            # Owen is told what Rosa said: a phrase only her answer holds
+  - kind: relayed            # Owen is told what Rosa said: a fact only her answer carries
     said_by: rosa
     to: owen
-    tell: lakeside hall
+    holding: [lakeside hall]
 
 # How the agent must behave, as this team sees it (docs/assessments.md): Minutehand judges nothing else.
 assess:

@@ -29,6 +29,7 @@ from typing import Concatenate
 import zstandard
 from pydantic import TypeAdapter
 
+from minutehand.domain.conversation import PersonCall
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
 from minutehand.domain.storage import Freed, RunUsage
@@ -91,7 +92,7 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 """Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at.
 5: an exchange may carry `captured` and a message `answerable`, which a reader of version 4 would refuse row by
 row; refused here as a whole file instead.
@@ -100,7 +101,9 @@ the pool beside the file; a version 5 file holds every body inline and its snaps
 7: an exchange's body that is not UTF-8 text is kept as its bytes in `content` (`request_binary`,
 `response_binary`); a version 6 file has no such columns, and its calls with such a body were never recorded.
 8: the agent's snapshots and their pool are gone, with the state hooks that wrote them; a version 7 file's
-checkpoints name snapshots this version cannot restore."""
+checkpoints name snapshots this version cannot restore.
+9: the calls made to a model for people (`person_call`), whose answers a rerun or fork replays; a reply carries how
+it was written and how its moment was drawn, which a version 8 reader would refuse row by row."""
 
 _UNKEPT_IN_ROW = {"request_body", "response_body", "request_bytes", "response_bytes"}
 """Kept in columns of their own, not in an exchange's JSON. `inbox_call` is left out of it too when None, so a row
@@ -152,6 +155,10 @@ CREATE TABLE IF NOT EXISTS exchange(
   request_binary INTEGER NOT NULL DEFAULT 0, response_binary INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (run_id, position));
 CREATE TABLE IF NOT EXISTS reply(run_id TEXT NOT NULL, position INTEGER NOT NULL, reply TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS person_call(
+  run_id TEXT NOT NULL, position INTEGER NOT NULL, key TEXT NOT NULL, answered INTEGER NOT NULL, call TEXT NOT NULL,
+  PRIMARY KEY (run_id, position));
+CREATE INDEX IF NOT EXISTS person_call_key ON person_call(key, answered);
 CREATE TABLE IF NOT EXISTS span(
   run_id TEXT NOT NULL, position INTEGER NOT NULL, after_seq INTEGER NOT NULL, wake INTEGER NOT NULL,
   sim_time TEXT NOT NULL, source TEXT NOT NULL, trace_id TEXT NOT NULL, span TEXT NOT NULL,
@@ -172,6 +179,7 @@ _RUN_TABLES = (
     "entity_version",
     "exchange",
     "reply",
+    "person_call",
     "span",
     "span_body",
     "wake_edge",
@@ -188,6 +196,7 @@ _ROW_BYTES = {
     "+COALESCE(length(response_body),0)+COALESCE(length(response_ref),0)+COALESCE(length(provider),0)"
     "+length(sim_time)+32",
     "reply": "length(reply)+8",
+    "person_call": "length(key)+length(call)+16",
     "span": "length(span)+length(sim_time)+length(source)+length(trace_id)+length(placed_by)+32",
     "span_body": "length(ref)+16",
     "wake_edge": "length(edge)+length(wall_time)+8",
@@ -564,6 +573,54 @@ class SqliteStore:
     def replies(self) -> list[PersonReply]:
         rows = self._db.execute("SELECT reply FROM reply WHERE run_id=? ORDER BY position", (self.run_id,)).fetchall()
         return [PersonReply.model_validate_json(r[0]) for r in rows]
+
+    @_locked
+    def record_person_call(self, call: PersonCall) -> None:
+        position = self._db.execute("SELECT COUNT(*) FROM person_call WHERE run_id=?", (self.run_id,)).fetchone()[0]
+        self._db.execute(
+            "INSERT INTO person_call VALUES(?,?,?,?,?)",
+            (self.run_id, position, call.key, int(call.answer is not None), call.model_dump_json()),
+        )
+        self._db.commit()
+
+    @_locked
+    def person_calls(self) -> list[PersonCall]:
+        rows = self._db.execute(
+            "SELECT call FROM person_call WHERE run_id=? ORDER BY position", (self.run_id,)
+        ).fetchall()
+        return [PersonCall.model_validate_json(r[0]) for r in rows]
+
+    @_locked
+    def written(self, key: str) -> str | None:
+        row = self._db.execute(
+            "SELECT call FROM person_call WHERE key=? AND answered=1 ORDER BY rowid LIMIT 1", (key,)
+        ).fetchone()
+        return PersonCall.model_validate_json(row[0]).answer if row is not None else None
+
+    def adopt_written(self, other: Path) -> int:
+        """Every answered person call of the world file at `other` kept here too, as calls of this run marked
+        replayed-from-there, so an ask this file has not seen but `other` answered is replayed: a standing world
+        reset keeps what its people's model already wrote. Answers how many were taken."""
+        source = sqlite3.connect(other)
+        try:
+            rows = source.execute("SELECT call FROM person_call WHERE answered=1 ORDER BY rowid").fetchall()
+        finally:
+            source.close()
+        with self._lock:
+            known = {r[0] for r in self._db.execute("SELECT key FROM person_call WHERE answered=1").fetchall()}
+            taken = 0
+            for (text,) in rows:
+                call = PersonCall.model_validate_json(text)
+                if call.key in known:
+                    continue
+                known.add(call.key)
+                self._db.execute(
+                    "INSERT INTO person_call VALUES(?,?,?,?,?)",
+                    (f"{self.run_id}:earlier", taken, call.key, 1, text),
+                )
+                taken += 1
+            self._db.commit()
+        return taken
 
     @_locked
     def versions(self, entity: EntityRef) -> list[Stored]:
