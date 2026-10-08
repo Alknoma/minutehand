@@ -138,3 +138,27 @@ say(found=found)
         if not (isinstance(found[key], list) and found[key][0] == 501 and named in found[key][1])
     }
     assert not wrong, (sorted(wrong), sorted(set(found) - set(wrong)))
+
+
+async def test_a_parameter_the_document_does_not_name_is_refused_by_name_and_answers_are_indented(
+    tmp_path: Path,
+) -> None:
+    """Google's client refuses an unknown keyword itself, so the call is sent on its own authorised connection."""
+    program = """
+calendar = build("calendar", "v3", credentials=creds, cache_discovery=False)
+base = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
+unknown = calendar._http.request(base + "?colour=blue")
+pretty = calendar._http.request(base)
+compact = calendar._http.request(base + "?prettyPrint=false")
+say(unknown=[unknown[0].status, unknown[1].decode()], pretty=pretty[1].decode(), compact=compact[1].decode())
+"""
+    async with serving(tmp_path, SCENARIO) as google:
+        client = await google.client(program)
+        seen = await client.heard()
+        await client.finished()
+    status, body = seen["unknown"]  # type: ignore[misc]
+    assert status == 501 and "the parameter colour of calendar.calendarList.list" in body
+    pretty, compact = seen["pretty"], seen["compact"]
+    assert isinstance(pretty, str) and isinstance(compact, str)
+    assert pretty.startswith('{\n  "kind": "calendar#calendarList"') and "\n" not in compact
+    assert json.loads(pretty) == json.loads(compact)

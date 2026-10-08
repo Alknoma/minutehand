@@ -353,7 +353,7 @@ class DriveApi:
         try:
             parsed = drive_query.parse(call.q)
         except drive_query.QueryError as error:
-            raise wire.invalid("q", f"Invalid Value: {error}") from error
+            raise wire.invalid("q") from error
         except drive_query.QueryNotSupported as error:
             raise wire.not_implemented(str(error)) from error
         parsed = drive_query.resolved(parsed, ROOT_ALIAS, self._root(caller))

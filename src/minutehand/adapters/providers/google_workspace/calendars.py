@@ -561,6 +561,11 @@ def _parameters(request: Request, method: Method) -> None:
         raise mail.not_implemented(f"minutehand's Google Calendar does not serve alt={alt}")
 
 
+def _latest(etags: list[str]) -> str:
+    """A collection's etag: its latest member's, so reading it again unchanged answers the same."""
+    return max(etags, key=lambda e: int(e.strip('"')), default='"0"')
+
+
 def _insufficient(needs: str) -> wire.Refusal:
     """A caller holding a role on a calendar below what the call needs: Google's answer is not recorded."""
     return mail.not_implemented(
@@ -772,7 +777,7 @@ class CalendarApi:
         more = offset + size < len(items)
         self._calendars.saw(record_ref(calendar_parent(caller.email)), Operation.READ)
         answer = cal.CalendarList(
-            etag=f'"{self._calendars.store.head()}"',
+            etag=_latest([e.etag for e in items]),
             nextPageToken=wire.encode_page(offset + size) if more else None,
             items=items[offset : offset + size],
         )
@@ -826,7 +831,7 @@ class CalendarApi:
         more = offset + size < len(rules)
         self._calendars.saw(record_ref(acl_parent(calendar.id)), Operation.SEARCH)
         answer = cal.Acl(
-            etag=f'"{self._calendars.store.head()}"',
+            etag=_latest([f'"{calendar.seq}"', *(r.etag for r in rules)]),
             nextPageToken=wire.encode_page(offset + size) if more else None,
             items=rules[offset : offset + size],
         )

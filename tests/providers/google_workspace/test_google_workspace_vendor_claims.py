@@ -220,12 +220,20 @@ async def test_an_escaped_apostrophe_finds_the_name_that_holds_one(api: httpx.As
     assert [f["id"] for f in files_of(found)] == [folder["id"]]
 
 
-async def test_an_unknown_query_term_is_refused_400_naming_the_term(api: httpx.AsyncClient) -> None:
-    """OBSERVED: the 400 `invalid` for a term Drive does not have says which term it could not read."""
+async def test_an_unknown_query_term_is_refused_400_invalid_value_on_q(api: httpx.AsyncClient) -> None:
+    """OBSERVED (https://stackoverflow.com/q/67608827, https://stackoverflow.com/q/69699515): a `q` Drive cannot read
+    is a 400 `invalid` "Invalid Value" located at `q`, and the message does not name the term."""
     response = await api.get("/drive/v3/files", params={"q": "hullColour = 'grey'"}, headers=AUTH)
 
-    assert reason_of(response, 400) == "invalid"
-    assert "hullColour" in str(answer(response, 400)["error"])
+    assert answer(response, 400)["error"]["errors"] == [  # type: ignore[index]
+        {
+            "domain": "global",
+            "reason": "invalid",
+            "message": "Invalid Value",
+            "locationType": "parameter",
+            "location": "q",
+        }
+    ]
 
 
 async def test_name_contains_matches_a_prefix_of_a_word_never_a_fragment_inside_one(api: httpx.AsyncClient) -> None:
