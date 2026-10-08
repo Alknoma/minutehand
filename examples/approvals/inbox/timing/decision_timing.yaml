@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# Nadia approves at a moment drawn anywhere in five days, so each seed plays a different timing; Marta, asked at two
+# days, approves within four hours. The team's promise: the laptops are ordered within three days of the request.
+#   minutehand run-all timing --agent agent.yaml --jobs 1 --samples 20 -- env APPROVAL_VIA=inbox python ../agent.py
+name: inbox_decision_timing
+goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P5D
+expect_outcome: {passed: ">= 0.9"}     # of the samples, at least this share must pass
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, decisions: [], then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    reply:
+      kind: scripted
+      decisions: [{decision: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
+      then: silent
+  - key: marta
+    name: Marta Holm
+    email: marta@example.com
+    reply:
+      kind: scripted
+      decisions: [{decision: approve, within: {min: PT1H, max: PT4H}}]
+      then: silent
+assess:
+  - id: ordered_within_three_days
+    count: {stored: {host: api.orders.example, collection: orders}, until: start+P3D}
+    at_least: 1
+    message: "nothing was ordered within three days of the request"

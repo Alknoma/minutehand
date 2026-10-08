@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# The budget is cut twelve hours after Nadia is asked, while her answer is still owed. What she knows changes from
+# then on; the answer she owes does not: it was written from what she knew when asked, so she approves the full
+# order. Only what she is asked after the change is answered from the new facts.
+name: email_budget_changes
+goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P5D
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    facts: ["the Q3 hardware budget covers 40 laptops"]
+    fact_changes:
+      - {after: PT12H, facts: ["the Q3 hardware budget was cut and covers 30 laptops"]}
+    reply_within: {min: PT20H, max: PT20H}
+    reply:
+      kind: scripted
+      replies: [{to_ask: 1, facts: ["I approve PO-7731"]}]
+      then: answers                    # once used, she answers further questions from what she knows then
+  - {key: marta, name: Marta Holm, email: marta@example.com, reply: {kind: scripted, then: silent}}
