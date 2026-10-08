@@ -118,11 +118,7 @@ say(answered=answered, moved=moved, changes=[e["id"] for e in changes["items"]],
         assert calendars["zed@example.com"] == {"errors": [{"domain": "global", "reason": "notFound"}], "busy": []}
         made = first["made"]
         assert isinstance(made, dict)
-        assert made["status"] == "confirmed" and made["organizer"] == {
-            "email": "mara@example.com",
-            "displayName": "Mara Lindqvist",
-            "self": True,
-        }
+        assert made["status"] == "confirmed" and made["organizer"] == {"email": "mara@example.com", "self": True}
         assert made["start"]["dateTime"] == "2026-09-14T15:00:00+02:00"
         assert [(a["email"], a["responseStatus"], "organizer" in a) for a in made["attendees"]] == [
             ("dov@example.com", "needsAction", False),
@@ -218,7 +214,7 @@ say(
                                                    body={"id": "planning0001", "summary": "Two", **slot}).execute()),
     recurring=refused(lambda: calendar.events().insert(calendarId="primary", body={
         "summary": "Weekly", "recurrence": ["RRULE:FREQ=WEEKLY"], **slot}).execute()),
-    acl=refused(lambda: calendar.acl().list(calendarId="primary").execute()),
+    instances=refused(lambda: calendar.events().instances(calendarId="primary", eventId="planning0001").execute()),
     review_self=[a.get("self") for a in review["attendees"]], review_organizer=review["organizer"].get("self"),
 )
 """
@@ -231,7 +227,7 @@ say(
         assert seen["not_organizer"] == [403, "forbiddenForNonOrganizer"]
         assert seen["taken"] == [409, "duplicate"]
         assert seen["recurring"] == [501, "notImplemented"]
-        assert seen["acl"] == [501, "notImplemented"]
+        assert seen["instances"] == [501, "notImplemented"]
         assert seen["review_self"] == [True] and seen["review_organizer"] is None
         made = [e for e in google.store.events() if e.actor is Actor.AGENT and e.operation is Operation.CREATE]
         assert [e.entity.external_id for e in made] == ["planning0001"]
