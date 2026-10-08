@@ -1509,7 +1509,7 @@ The target is one import in the project under test, inert in production (`minute
 
 | Channel | For | Touches the project | State |
 |---|---|---|---|
-| PyPI, run as `uvx minutehand …` | Anyone with Python 3.12 available | Nothing. `uvx` runs it from its own environment. | Not published; `pyproject.toml` declares the `minutehand` console script, version 0.0.1 |
+| PyPI, run as `uvx minutehand …` | Anyone with Python 3.12 available | Nothing. `uvx` runs it from its own environment. | Published on PyPI (`minutehand`, and `minutehand-agent` for the agent's side), released from `main` by publishing a GitHub Release (`docs/releasing.md`) |
 | PyPI, `pip install minutehand-agent` | The agent's own environment: the one import (`minutehand_agent`), the standard library only | One dependency of the agent, inert in production | Not published; `packages/minutehand-agent/`, released with `minutehand` at the same version |
 | Docker image, built from the same release | Any stack, and CI | Nothing | Not built |
 | The git repo | Contributors and provider authors; also `uvx --from git+https://…` before the first release | Nothing | Exists |
