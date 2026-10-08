@@ -163,6 +163,7 @@ async def test_a_reply_says_how_it_was_written_and_drawn_and_its_due_entry_holds
     assert said.index((False, ANSWER)) > said.index((True, QUESTION))
     [due] = [r for r in table.entries if r.kind is DueKind.PERSON_REPLY]
     assert due.due_at == drawn.lands_at and due.source is DueSource.REPLY
+    assert due.drawn == drawn, "a reply the fork entered at its split carries its draw"
 
 
 async def test_each_rule_says_whether_it_held_how_often_it_was_read_and_which_findings_are_its(
