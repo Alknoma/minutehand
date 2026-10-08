@@ -79,10 +79,14 @@ async def test_a_field_this_fake_never_answers_is_refused_501_naming_it(
 
 
 async def test_a_full_task_leaves_out_what_is_opt_in_until_it_is_asked_for(agent: httpx.AsyncClient) -> None:
-    """Asana's OpenAPI document marks `num_subtasks` [Opt In] (TaskBase), and gives no task a `subtasks` field."""
+    """Asana's OpenAPI document marks `num_subtasks`, `dependencies` and `dependents` [Opt In] (TaskBase), and gives
+    no task a `subtasks` field. Nothing in the world links tasks (`addDependencies` is refused by name), so a task's
+    dependencies are none."""
     full = got(await agent.get(f"/tasks/{INCIDENT}"))
-    assert "num_subtasks" not in full and "subtasks" not in full and "html_notes" not in full
+    assert not {"num_subtasks", "dependencies", "dependents", "subtasks", "html_notes"} & set(full)
     assert got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "num_subtasks"}))["num_subtasks"] == 1
+    linked = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "dependencies,dependents"}))
+    assert linked == {"gid": INCIDENT, "dependencies": [], "dependents": []}
 
 
 async def test_a_full_task_holds_its_custom_fields_full_and_a_listed_one_compact(agent: httpx.AsyncClient) -> None:

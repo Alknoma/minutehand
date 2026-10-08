@@ -1076,6 +1076,10 @@ class TaskOut(Model):
     created_by: UserOut
     parent: TaskRefOut | None
     num_subtasks: int
+    dependencies: list[TaskRefOut] = Field(
+        default=[], description="Always empty: nothing in the world can link tasks (`addDependencies` is not served)"
+    )
+    dependents: list[TaskRefOut] = Field(default=[], description="Always empty, as `dependencies`")
     memberships: list[MembershipOut]
     projects: list[ProjectOut]
     tags: list[TagOut]
@@ -1141,7 +1145,7 @@ COMPACT: Mapping[str, tuple[str, ...]] = {
 serves, less those marked [Opt In] (https://developers.asana.com/docs/inputoutput-options)."""
 
 OPT_IN: Mapping[str, frozenset[str]] = {
-    "task": frozenset({"num_subtasks"}),
+    "task": frozenset({"num_subtasks", "dependencies", "dependents"}),
     "team": frozenset({"description"}),
     "project_membership": frozenset({"parent", "project"}),
 }
