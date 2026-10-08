@@ -45,6 +45,8 @@ CA = "ca"
 """The proxy's CA folder under the state directory, as `session` names it."""
 BATCHES = "run-all"
 """The folder under the state directory that holds each batch's per-scenario folders and logs."""
+KEPT = "batch.json"
+"""In a batch's folder: the `Batch` it came to, written once every run of it is over."""
 
 _EXPECTED = {
     ExpectedOutcome.PASSED: VerdictKind.PASSED,
@@ -94,9 +96,12 @@ class ScenarioPlayed(Model):
 
 
 class Batch(Model):
-    """What `run-all --json` prints."""
+    """What `run-all --json` prints, and what it keeps as `batch.json` in the batch's folder under the state
+    directory, for the viewer's samples."""
 
+    batch_id: str = Field(description="The batch's folder under the state directory's `run-all/`")
     folder: str
+    samples: int = Field(ge=1, description="Runs of each scenario asked for")
     played: list[ScenarioPlayed]
 
     @property
@@ -180,7 +185,8 @@ async def play_all(
     if not found:
         raise FileRefused(f"{folder}: holds no scenario file")
     authority(state / CA)  # made once here: runs started together would each make one, and trust another's
-    batch = state / BATCHES / secrets.token_hex(4)
+    batch_id = secrets.token_hex(4)
+    batch = state / BATCHES / batch_id
     gate = asyncio.Semaphore(max(1, jobs))
 
     async def one(path: Path, sample_seed: int | None, n: int) -> SamplePlayed:
@@ -211,7 +217,17 @@ async def play_all(
                 matched=matched,
             )
         )
-    return Batch(folder=str(folder), played=played)
+    done = Batch(batch_id=batch_id, folder=str(folder), samples=samples, played=played)
+    batch.mkdir(parents=True, exist_ok=True)
+    (batch / KEPT).write_text(done.model_dump_json(indent=2), encoding="utf-8")
+    return done
+
+
+def batches(state: Path) -> list[Batch]:
+    """Every batch `run-all` finished under `state`, oldest first by the time its file was written."""
+    base = state / BATCHES
+    found = sorted(base.glob(f"*/{KEPT}"), key=lambda p: p.stat().st_mtime) if base.is_dir() else []
+    return [Batch.model_validate_json(p.read_text(encoding="utf-8")) for p in found]
 
 
 async def _play(
