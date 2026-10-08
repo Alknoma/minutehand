@@ -67,25 +67,28 @@ The unserved operations a GitHub client most often calls, to serve next in this 
 
 ## Credentials
 
-Minutehand deliberately does not enforce credentials. Any `Authorization` is accepted, under any scheme: a token
+Minutehand deliberately does not enforce credentials. Any `Authorization`, or none, is accepted, under any scheme: a token
 the world holds (a classic `ghp_` or fine-grained `github_pat_` personal access token in the seed) acts as its
 user; anything else (an unseeded token, an app's JWT, an installation token from the exchange above, `Basic` with
-a password) acts as the seed's `unknown_credentials_act_as`, by default the first user the seed lists. What a
+a password, an empty token, no `Authorization` at all) acts as the seed's `unknown_credentials_act_as`, by default the first user the seed lists. What a
 token was issued for is never checked: a classic token's scopes are only echoed in `X-OAuth-Scopes`, and a
 fine-grained token selects no repositories. Removed in October 2026, each once a refusal here:
 
 - an unknown token: 401 "Bad credentials";
 - `Basic` authentication, or `Bearer` with nothing after it: 401 "Bad credentials";
 - a classic token without the `repo` scope: every private repository a 404;
-- a fine-grained token's selected repositories: every other repository a 404, and left out of `/user/repos`.
+- a fine-grained token's selected repositories: every other repository a 404, and left out of `/user/repos`;
+- no `Authorization`: `/user`, `/user/repos`, code search and GraphQL 401, on the address's 60 an hour. Only a world
+  that seeds no user still reads a call as nobody's.
 
 What a user may see is world data and stays: a private repository its user neither owns, collaborates on nor
-reaches through an organization is a 404, as one that does not exist, and a call with no `Authorization` at all
-reads public repositories only and is refused `/user`, code search and GraphQL (401), as GitHub refuses them.
+reaches through an organization is a 404, as one that does not exist. In a world that seeds no user, nobody can
+be stood in for: a call there reads public repositories only and is refused `/user`, code search and GraphQL
+(401), as GitHub refuses an unauthenticated call.
 
 Primary rate limits are counted. Every call spends one from its budget: the user's, shared by every token acting
-as them, or the address's with no credential; core 5,000 an hour, search 30 and code search 10 a minute, GraphQL
-5,000 an hour (one point a query), 60 an hour for core without a credential. `X-RateLimit-*` on every answer says
+as them, or the address's when the world has no user to act as; core 5,000 an hour, search 30 and code search 10 a minute, GraphQL
+5,000 an hour (one point a query), 60 an hour for core on the address's. `X-RateLimit-*` on every answer says
 what is left and when the window ends. The call after the last is refused 403 "API rate limit exceeded" with
 `X-RateLimit-Remaining: 0` (a 200 with `RATE_LIMITED` errors on GraphQL) and spends nothing; the budget is whole
 again once the run's clock reaches `X-RateLimit-Reset`. The run's clock stands still inside a wake, so a budget

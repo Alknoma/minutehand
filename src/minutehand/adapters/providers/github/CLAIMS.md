@@ -9,9 +9,9 @@ authors saw it and no recording is held: each of those needs a credential to rec
 a call without one) and is unproven. Tests are in `tests/providers/github/`, files
 `test_github_vendor_claims_rest.py` (R), `test_github_vendor_claims_search.py` (S),
 `test_github_vendor_claims_graphql.py` (G), `test_github_vendor_claims_budget.py` (B), `test_github_refusals.py`
-(F) and `test_github_coverage.py` (C).
+(F), `test_github_coverage.py` (C) and `test_github_world_without_users.py` (W).
 
-Minutehand deliberately does not enforce credentials: every `Authorization` is accepted, and nothing refuses a call
+Minutehand deliberately does not enforce credentials: every `Authorization`, or none, is accepted, and nothing refuses a call
 for what a token was or was not issued for. The claims GitHub documents about refusing credentials are listed
 under "Deliberately not enforced" below, with the tests that hold the provider to accepting them.
 
@@ -19,13 +19,13 @@ under "Deliberately not enforced" below, with the tests that hold the provider t
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
-| No credential: public data is served, `/user` is 401 "Requires authentication" | documented | R `test_without_any_credential_the_user_is_refused_requires_authentication` | https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api |
+| In a world with no user to act as: public data is served, `/user` is 401 "Requires authentication" | documented | W `test_github_world_without_users.py::test_with_nobody_to_act_as_public_data_reads_and_what_needs_a_user_is_refused_401` | https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api |
 | …its `documentation_url` is `https://docs.github.com/rest` | recorded | (same test) | `observed/api.github.com.2026-10-08.json` |
 | `Authorization: Bearer <token>` acts as the token's user | documented | R `test_a_bearer_token_is_served_as_its_user` | https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api |
 | An error body is `message`, `documentation_url` and `status` (a string), with `errors` when there are some | recorded | F, R (every `refusal`) | `observed/api.github.com.2026-10-08.json` |
 | An unknown `X-GitHub-Api-Version` is 400 "Bad Request", the reason a sentence in `errors` | recorded | F `test_an_api_version_github_does_not_serve_is_refused` | `observed/api.github.com.2026-10-08.json` |
 | A GET answers an `ETag`; sent back in `If-None-Match` it is a 304 with no body | documented | R `test_a_get_carries_an_etag_and_sent_back_in_if_none_match_is_a_304_that_spends_nothing` | https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate |
-| …a 304 to an authorized call spends nothing; without a credential it spends | documented | R (same test), R `test_a_304_without_a_credential_still_spends_the_addresss_budget` | (same page) |
+| …a 304 to an authorized call spends nothing; without a credential it spends | documented | R (same test), W `test_github_world_without_users.py::test_with_nobody_to_act_as_a_304_still_spends_the_addresss_budget` | (same page) |
 | …the `ETag` is weak, `W/"` and 64 hex digits | recorded | R (first test) | `observed/api.github.com.2026-10-08.json` |
 | The installation-token exchange is 201 with `token` and `expires_at`, `permissions` as asked | documented | R `test_an_installation_token_is_issued_for_any_app_jwt_and_works_as_any_credential` | https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app |
 | …the token starts `ghs_` and expires an hour after it is made | documented | (same test) | https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app, https://github.blog/2021-04-05-behind-githubs-new-authentication-token-formats/ |
@@ -39,13 +39,13 @@ under "Deliberately not enforced" below, with the tests that hold the provider t
 | No file outside a commit: a seed repository with files and no commit is refused, naming it, and so is a file no commit's `paths` names, in a seed or in a fragment added to an open world | documented (git's object model) | `test_github_world.py` `test_a_repository_with_files_and_no_commit_is_rejected_naming_it`, `test_github_further_seed.py` `test_a_fragment_adding_a_file_to_a_held_repository_without_a_commit_is_refused_naming_it` | https://git-scm.com/book/en/v2/Git-Internals-Git-Objects |
 | A node id names one object: two licenses have two | documented | R `test_two_licenses_have_two_node_ids` | https://docs.github.com/en/graphql/guides/using-global-node-ids |
 | Every answer carries `X-RateLimit-Limit/Remaining/Used/Reset/Resource`; core is 5,000 | documented | R `test_every_answer_carries_the_rate_limit_headers_for_its_budget` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
-| Without a credential the budget is 60 an hour | documented | R `test_an_unauthenticated_answer_carries_the_sixty_an_hour_budget` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
+| With no user to act as, the budget is 60 an hour | documented | W `test_github_world_without_users.py::test_with_nobody_to_act_as_public_data_reads_and_what_needs_a_user_is_refused_401` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | Code search spends its own budget, `code_search`, 10 a minute | documented | R `test_code_search_reports_its_own_ten_a_minute_budget` | https://docs.github.com/en/rest/search/search#search-code |
 | Each call spends one from its budget; the reset moment stays put through the window; a 404 spends too | documented | B `test_each_call_spends_one_from_the_users_budget_and_the_reset_stays_put` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | The budget is the user's, shared by all their tokens, not the token's | documented | B `test_two_tokens_of_one_user_spend_one_budget_and_another_user_has_their_own` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | Core, code search and GraphQL are separate budgets | documented | B `test_each_resource_is_its_own_budget` | https://docs.github.com/en/rest/rate-limit/rate-limit |
 | The call after the last is 403 "API rate limit exceeded", `Remaining: 0`, until `X-RateLimit-Reset`; the budget is whole after it | documented | B `test_the_call_after_the_last_is_refused_403_until_the_reset_on_the_runs_clock` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
-| Without a credential the address's budget is spent and refused the same way | documented | B `test_without_a_credential_the_addresss_budget_is_spent_and_refused_403` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
+| With no user to act as, the address's budget is spent and refused the same way | documented | W `test_github_world_without_users.py::test_with_nobody_to_act_as_a_spent_address_budget_is_refused_403` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
 | A spent GraphQL budget is a 200 whose errors say RATE_LIMITED | documented | B `test_a_spent_graphql_budget_answers_200_with_rate_limited_errors` | https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api |
 | `GET /rate_limit` reports every budget, `rate` as core, and does not count | documented | B `test_rate_limit_reports_every_budget_and_spends_none` | https://docs.github.com/en/rest/rate-limit/rate-limit |
 | A secondary limit is 403 or 429 with `Retry-After`, then calls go through | documented | G `test_a_secondary_limit_is_a_403_or_429_with_retry_after_and_then_the_call_goes_through` | https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api |
@@ -126,6 +126,12 @@ Each test fails if the refusal comes back.
 | A classic token without the `repo` scope reaches no private repository | https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps | Reaches every repository its user may; its scopes are only echoed in `X-OAuth-Scopes` | F `test_a_classic_token_without_the_repo_scope_reads_every_private_repository_its_user_may` |
 | A fine-grained token reaches only the repositories it selected | https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens | Reaches every repository its user may; the seed no longer takes a selection | F `test_a_fine_grained_token_reads_everything_its_user_may_not_only_what_it_selected` |
 | An installation-token exchange for an app that is not installed, or with a bad JWT | https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app | Always 201 | R `test_an_installation_token_is_issued_for_any_app_jwt_and_works_as_any_credential` |
+
+GitHub also refuses a call with no `Authorization` at all, or an empty one, on `/user`, `/user/repos`, code search and
+GraphQL (401), and serves it public data only, on 60 an hour
+(https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api). Minutehand acts as the seed's
+`unknown_credentials_act_as` instead, as for an unknown token; only a world with no user reads a call as nobody's
+(F `test_a_call_with_no_authorization_acts_as_the_first_user_on_rest_graphql_and_search`, F (first test, `empty`)).
 
 Visibility stays world data: a private repository its user does not own, collaborate on or reach through an
 organization is a 404 (F `test_a_private_repository_without_access_is_not_found`).

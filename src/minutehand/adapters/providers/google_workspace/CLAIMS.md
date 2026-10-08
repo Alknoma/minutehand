@@ -72,6 +72,32 @@ that test instead.
 | A created shape holds its own text and fill, apart from the body placeholder | documented | `test_a_shape_keeps_its_own_text_and_fill_apart_from_the_body` | https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request#createshaperequest |
 | A created table's cells hold the text inserted at their `cellLocation`, apart from the body | documented | `test_a_tables_cells_hold_their_own_text_apart_from_the_body` | https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request#createtablerequest |
 
+## Deliberately not enforced (Minutehand is a simulation)
+
+Google documents these refusals; Minutehand answers the call instead, because it does not enforce credentials. Each
+test in `test_any_credential.py` fails if the refusal comes back. Who may see what stays world data: another user's
+mailbox is "Delegation denied", an unshared calendar a 404, a file not shared with the caller not found.
+
+- No credential: 401 "Login Required." (Drive) or `UNAUTHENTICATED` (Docs, Slides, Gmail, Calendar)
+  (https://developers.google.com/workspace/drive/api/guides/handle-errors#resolve_a_401_error_invalid_credentials).
+  Acts as `WorkspaceSeed.unknown_credentials_act_as`, by default the scenario's owner
+  (`test_no_token_acts_as_the_owner_on_drive_docs_gmail_and_calendar`).
+- An unknown, expired or revoked access token: 401 `authError` "Invalid Credentials" (same page). An unknown one acts
+  as the default identity, an expired or revoked one as its user
+  (`test_an_unknown_token_acts_as_the_owner_and_an_expired_or_revoked_one_as_its_user`).
+- `/token` with a refresh token, code or service account Google does not know, revoked, or impersonating nobody:
+  400 `invalid_grant` (https://developers.google.com/identity/protocols/oauth2/web-server#exchange-authorization-code).
+  Every grant is answered in Google's shape, the code grant with a `refresh_token`; a seeded credential signs in as
+  its person, anything else as the default identity
+  (`test_a_seeded_refresh_token_acts_as_its_person_and_any_other_as_the_owner`, `test_a_revoked_refresh_token_signs_in_again`,
+  `test_an_authorization_code_is_answered_with_a_refresh_token_that_signs_in_again`,
+  `test_any_service_account_assertion_signs_in`, `test_the_seed_names_who_an_unknown_credential_acts_as`).
+  A grant missing its required parameter is still `invalid_request`
+  (`test_a_grant_missing_its_required_parameter_is_refused_invalid_request`). No `id_token` is issued for an `openid`
+  scope: the run holds no Google signing key to sign one with.
+- `/revoke` of a token Google does not hold, or already revoked: 400 `invalid_token`
+  (https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke). Always 200 here.
+
 ## Not carried over
 
 - **`alt=media` serving a Google Doc.** The older stand-in answered 200 to a media download of a Doc. Google's
