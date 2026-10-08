@@ -19,7 +19,8 @@ condition holds, the number of some facts between two moments is within bounds.
 
 Moments are an anchor and an optional ISO 8601 offset (`ask+P1D`, `deadline-PT2H`, `answer`). Placeholders in
 `message` and `holding` are `{namespace.name}` (`domain/templates.py`): `{person.key}`, `{person.name}`,
-`{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`.
+`{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`; in `holding` only, `{ask.facts}`: each fact
+the answer carried, which a model put in the person's words, so a relay is read by the fact and not the wording.
 """
 
 from __future__ import annotations
@@ -163,7 +164,8 @@ class Messages(Model):
     )
     holding: list[str] = Field(
         default=[],
-        description="Each phrase must be in the text, in any case; `{ask.answer}` is the answer itself, and "
+        description="Each phrase must be in the text, in any case; `{ask.facts}`, alone as a phrase, is each fact the "
+        "answer's script step carried (else the answer itself), `{ask.answer}` the answer in the person's words, and "
         "`{person.key}`, `{person.name}` the person the rule is read for",
     )
     to_away: bool | None = Field(
@@ -422,10 +424,15 @@ class Rule(Model):
             refuse_unknown(
                 f"rule {self.id}: holding",
                 list(self.count.messages.holding),
-                ("ask.answer", "person.key", "person.name"),
+                ("ask.answer", "ask.facts", "person.key", "person.name"),
             )
             if "ask.answer" in str(self.count.messages.holding) and self.each is not Each.ASK:
                 raise ValueError(f"rule {self.id}: {{ask.answer}} is the answer to an ask: write `each: ask`")
+            if "ask.facts" in str(self.count.messages.holding):
+                if self.each is not Each.ASK:
+                    raise ValueError(f"rule {self.id}: {{ask.facts}} are an ask's answer's facts: write `each: ask`")
+                if any("{ask.facts}" in p and p.strip() != "{ask.facts}" for p in self.count.messages.holding):
+                    raise ValueError(f"rule {self.id}: {{ask.facts}} stands alone as a phrase: it is each fact")
         if self.count.memory is not None:
             named = [n for n in (self.count.memory.key, self.count.memory.prefix) if n is not None]
             refuse_unknown(f"rule {self.id}: memory", list(named), ("person.key",))

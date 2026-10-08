@@ -569,6 +569,31 @@ def test_the_owner_must_be_told_each_answer_in_its_own_words() -> None:
     assert finding.message == "the owner was never told what sofia answered"
 
 
+def test_the_owner_is_told_each_fact_an_answer_carried_whatever_words_a_model_put_it_in() -> None:
+    written = """
+    - id: tells_the_owner_every_fact
+      each: ask
+      when: {answered: true}
+      count: {messages: {to: [owner], holding: ["{ask.facts}"]}, since: answer}
+      at_least: 1
+    """
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([OWNER], 3, text="Sofia: the hall by the lake is ours, booked for the 14th.")
+    worded = reply(SOFIA, ask, 2).model_copy(
+        update={"text": "We have the hall by the lake.", "facts": ["hall by the lake", "the 14th"]}
+    )
+    assert found(view(scenario(OWNER, SOFIA), log, [worded]), written) == []
+    missing = worded.model_copy(update={"facts": ["hall by the lake", "the 15th"]})
+    [finding] = found(view(scenario(OWNER, SOFIA), log, [missing]), written)
+    assert finding.check == "tells_the_owner_every_fact"
+
+
+def test_ask_facts_inside_a_longer_phrase_is_refused() -> None:
+    with pytest.raises(ValueError, match="stands alone as a phrase"):
+        rules("- id: r\n  each: ask\n  count: {messages: {holding: ['said {ask.facts}']}}\n  at_most: 0\n")
+
+
 def test_an_escalation_names_the_person_it_is_about() -> None:
     written = """
     - id: escalates_at_three_days

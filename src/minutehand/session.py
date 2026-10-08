@@ -110,7 +110,7 @@ from minutehand.domain.agent import (
 from minutehand.domain.assessments import Rule, merged, refuse_unknown_people
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, Stability, WakeRecord
 from minutehand.domain.emulator import EmulatorChange
-from minutehand.domain.experiment import Fork, Override, ReplyAt, TicketEdit
+from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.run import RunRecord, StopReason
@@ -356,7 +356,6 @@ async def fork(
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, agent, model)
-    pins = [o for o in changes.overrides if isinstance(o, ReplyAt)]
     own_checks = _own_checks(agent)
     rules = rules_for(agent, changed, own_checks)
     listen = listen or Listen()
@@ -418,7 +417,7 @@ async def fork(
                     agent=agent,
                     reach=reach_for(agent, env=env),
                     services=services,
-                    replier_for=lambda s: PeopleReplier(s, model, agent.inboxes, pins=pins),
+                    replier_for=lambda s, pins: PeopleReplier(s, model, agent.inboxes, pins=pins),
                     state_dir=state / RUNS,
                     wire=routing,
                     telemetry=telemetry,

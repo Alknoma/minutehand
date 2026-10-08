@@ -143,7 +143,7 @@ async def fork_run(
     agent: AgentUnderTest,
     reach: Reach,
     services: Services,
-    replier_for: Callable[[Scenario], Replier],
+    replier_for: Callable[[Scenario, Sequence[ReplyAt]], Replier],
     state_dir: Path,
     wire: OnTheWire | None = None,
     telemetry: Telemetry | None = None,
@@ -204,7 +204,7 @@ async def fork_run(
             clock.jump(checkpoint.now)
             while clock.wake() < checkpoint.wake:
                 clock.begin_wake()
-            replier = replier_for(changed)
+            replier = replier_for(changed, [o for o in fork.overrides if isinstance(o, ReplyAt)])
             orchestrator = Orchestrator(
                 scenario=changed,
                 agent=agent,
