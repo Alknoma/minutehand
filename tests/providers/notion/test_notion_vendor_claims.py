@@ -137,10 +137,9 @@ async def test_a_toggle_created_with_children_reports_and_lists_them(async_sdk: 
     assert [_plain(b) for b in inside] == ["tucked"]
 
 
-async def test_an_append_after_a_grandchild_is_refused_validation_error(async_sdk: Sdk) -> None:
-    """Observed: the `after` block must be a direct child of the block being appended to. The endpoint's page
-    (https://developers.notion.com/reference/patch-block-children) says only that new blocks go after the named
-    one; a nested block as the anchor was seen refused, not silently appended at the end."""
+async def test_an_append_after_a_grandchild_is_refused_by_name(async_sdk: Sdk) -> None:
+    """The `after` block of an append must be one of the block's children; what Notion answers to a grandchild in its
+    place is neither documented nor reported, so it is the shared not-served refusal, and nothing is written."""
     page = await _page(
         async_sdk,
         "Anchors",
@@ -154,8 +153,8 @@ async def test_an_append_after_a_grandchild_is_refused_validation_error(async_sd
         async_sdk, lambda c: c.blocks.children.append(page, children=[_para("stray")], after=buried["id"])
     )
 
-    assert refusal.status == 400
-    assert "after" in str(refusal)
+    assert (refusal.status, refusal.code) == (501, "invalid_request")
+    assert "an `after` that names no child" in str(refusal)
     assert async_sdk.store.head() == head
 
 

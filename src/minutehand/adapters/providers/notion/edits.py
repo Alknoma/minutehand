@@ -126,7 +126,7 @@ class Editor:
         if after is not None:
             listed = children[container] if container in children else []
             if after not in listed:
-                raise wire.invalid(f"after: {after} is not a child of {container}.")
+                raise wire.undocumented("an `after` that names no child of the block appended to")
             position = listed.index(after) + 1
         top = put(container, made, position)
         changed = page.model_copy(
@@ -172,7 +172,7 @@ class Editor:
             assert parent.id is not None
             database = self.database(parent.id)
             if database.archived:
-                raise wire.archived(wire.Missing.DATABASE)
+                raise wire.undocumented("a write into an archived database")
             values, schema = self._row_values(database.schema_, {}, properties)
             if schema != database.schema_:
                 self.world.write_database(
@@ -196,7 +196,7 @@ class Editor:
             assert parent.id is not None
             above = self.page(parent.id)
             if above.archived:
-                raise wire.archived(wire.Missing.PAGE)
+                raise wire.archived()
             self._write(page, Operation.CREATE)
             self._write(self._stub(above, wire.BlockType.CHILD_PAGE, page.id, by), Operation.UPDATE)
         else:
@@ -206,7 +206,7 @@ class Editor:
     def _title_value(self, properties: wire.Json) -> wire.Json:
         """A page outside a database has one property, its title, under `title` or any name."""
         if len(properties) > 1:
-            raise wire.invalid("A page that is not in a database has only a title property.")
+            raise wire.undocumented("a property other than the title on a page outside a database")
         if not properties:
             return {"id": "title", "type": "title", "title": []}
         name, value = next(iter(properties.items()))
@@ -214,7 +214,7 @@ class Editor:
         if isinstance(given, dict) and "title" in given:
             given = given["title"]
         if not isinstance(given, list):
-            raise wire.invalid(f"body.properties.{name} should be the page's title, as rich text.")
+            raise wire.undocumented(f"body.properties.{name} that is not a title")
         return {"id": "title", "type": "title", "title": wire.rich_text(given, f"body.properties.{name}", self)}
 
     def _row_values(
@@ -227,7 +227,9 @@ class Editor:
         for key, raw in given.items():
             name = key if key in widened else by_id[key] if key in by_id else None
             if name is None:
-                raise wire.invalid(f"{key} is not a property of this database.")
+                raise wire.reported(
+                    f"{key} is not a property that exists."
+                )  # https://github.com/bil0u/remarkable2-to-notion/issues/2
             values[name], widened[name] = wire.property_value(widened[name], raw, f"body.properties.{key}", self, self)
         return values, widened
 
@@ -241,7 +243,7 @@ class Editor:
                 archived = wire.as_bool(body[key], f"body.{key}")
                 restoring = restoring or (page.archived and not archived)
         if page.archived and not restoring and any(k in body for k in ("properties", "icon", "cover")):
-            raise wire.archived(wire.Missing.PAGE)
+            raise wire.archived()
         update: dict[str, object] = {"archived": archived}
         if "properties" in body:
             given = wire.as_object(body["properties"], "body.properties")
@@ -274,11 +276,11 @@ class Editor:
         self, container: str, children: JsonValue, *, after: str | None, by: str
     ) -> tuple[wire.StoredPage, list[wire.StoredBlock]]:
         if not wire.as_list(children, "body.children"):
-            raise wire.invalid("body.children should hold at least one block.")
+            raise wire.undocumented("an append of no blocks")
         page = self.world.page(container)
         if page is not None and page.workspace == self.workspace:
             if page.archived:
-                raise wire.archived(wire.Missing.PAGE)
+                raise wire.archived()
             made = wire.new_blocks(children, "body.children", self)
             changed, top = self._place(page, page.id, made, by, after=after)
         else:
@@ -287,7 +289,7 @@ class Editor:
                 raise wire.not_found(wire.Missing.BLOCK, container)
             block = page.blocks[container]
             if block.archived or page.archived:
-                raise wire.archived(wire.Missing.BLOCK)
+                raise wire.archived()
             if block.type is wire.BlockType.TABLE:
                 rows = [
                     wire.table_row(c, block.content, f"body.children[{i}]", self)
@@ -297,7 +299,7 @@ class Editor:
             elif block.type in (wire.BlockType.CHILD_PAGE, wire.BlockType.CHILD_DATABASE) or not wire.takes_children(
                 block.type, block.content
             ):
-                raise wire.invalid(f"A {block.type.value} block cannot have children appended to it.")
+                raise wire.undocumented(f"children appended to a `{block.type.value}` block")
             else:
                 made = wire.new_blocks(children, "body.children", self)
                 changed, top = self._place(page, container, made, by, after=after)
@@ -310,13 +312,14 @@ class Editor:
             raise wire.not_found(wire.Missing.BLOCK, block_id)
         block = page.blocks[block_id]
         if block.type in (wire.BlockType.CHILD_PAGE, wire.BlockType.CHILD_DATABASE):
-            raise wire.invalid(f"A {block.type.value} is changed through its page or database.")
+            raise wire.undocumented(f"a `{block.type.value}` changed through the block endpoint")
         allowed = ["type", "archived", "in_trash", block.type.value]
         named = [k for k in body if k not in allowed]
-        if named:
-            raise wire.invalid(f"body.{named[0]}: a block's type cannot be changed; this is a {block.type.value}.")
-        if "type" in body and body["type"] != block.type.value:
-            raise wire.invalid(f"body.type: a block's type cannot be changed; this is a {block.type.value}.")
+        if (named or ("type" in body and body["type"] != block.type.value)) and block.type.value not in body:
+            # Reported: https://community.zapier.com/troubleshooting-99/error-expected-block-type-divider-in-request-body-17502
+            raise wire.reported(f"Expected block type {block.type.value} in request body")
+        if named or ("type" in body and body["type"] != block.type.value):
+            raise wire.undocumented("a block update naming another block type beside its own")
         archived = block.archived
         for key in ("archived", "in_trash"):
             if key in body:
@@ -324,10 +327,10 @@ class Editor:
         content = block.content
         if block.type.value in body:
             if block.archived and archived:
-                raise wire.archived(wire.Missing.BLOCK)
+                raise wire.archived()
             given = wire.as_object(body[block.type.value], f"body.{block.type.value}")
             if "children" in given:
-                raise wire.invalid(f"body.{block.type.value}.children: append children with the children endpoint.")
+                raise wire.failed(f"body.{block.type.value}.children", "not present", given["children"])
             if block.type is wire.BlockType.TABLE_ROW:
                 content = _row_cells(block, given, self)
             elif block.type is wire.BlockType.TABLE:
@@ -375,13 +378,13 @@ class Editor:
         by: str,
     ) -> wire.StoredDatabase:
         if parent.type is not wire.ParentType.PAGE_ID or parent.id is None:
-            raise wire.invalid("body.parent: a database is made inside a page, with page_id.")
+            raise wire.undocumented("a database made outside a page")
         above = self.page(parent.id)
         if above.archived:
-            raise wire.archived(wire.Missing.PAGE)
+            raise wire.archived()
         titles = [n for n, s in schema.items() if wire.schema_type(s) is wire.PropertyType.TITLE]
         if len(titles) != 1:
-            raise wire.invalid("body.properties should have exactly one title property.")
+            raise wire.undocumented("a database without exactly one title property")
         database = wire.StoredDatabase(
             id=database_id,
             workspace=self.workspace,
@@ -405,7 +408,7 @@ class Editor:
             if key in body:
                 update["archived"] = wire.as_bool(body[key], f"body.{key}")
         if database.archived and "archived" not in update:
-            raise wire.archived(wire.Missing.DATABASE)
+            raise wire.undocumented("a write into an archived database")
         if "title" in body:
             update["title"] = wire.rich_text(body["title"], "body.title", self)
         if "description" in body:
@@ -429,9 +432,9 @@ class Editor:
             where = f"body.properties.{key}"
             if raw is None:
                 if name is None:
-                    raise wire.invalid(f"{where}: there is no such property to remove.")
+                    raise wire.undocumented(f"{where}: removing a property the database does not have")
                 if wire.schema_type(schema[name]) is wire.PropertyType.TITLE:
-                    raise wire.invalid(f"{where}: a database's title property cannot be removed.")
+                    raise wire.undocumented(f"{where}: removing the title property")
                 del schema[name]
                 continue
             asked = wire.as_object(raw, where)
@@ -447,11 +450,11 @@ class Editor:
                     wire.schema_type(schema[name]) is wire.PropertyType.TITLE
                     and wire.schema_type(made) is not wire.PropertyType.TITLE
                 ):
-                    raise wire.invalid(f"{where}: a database's title property cannot change its type.")
+                    raise wire.undocumented(f"{where}: changing the title property's type")
                 made = {**made, "id": schema[name]["id"]}
                 del schema[name]
             elif wire.schema_type(made) is wire.PropertyType.TITLE:
-                raise wire.invalid(f"{where}: a database has only one title property.")
+                raise wire.undocumented(f"{where}: a second title property")
             schema[str(made["name"])] = made
         return schema
 
@@ -492,5 +495,5 @@ def _row_cells(block: wire.StoredBlock, given: wire.Json, names: wire.Names) -> 
     cells = wire.as_list(given["cells"] if "cells" in given else None, "body.table_row.cells")
     width = len(wire.as_list(block.content["cells"], "cells"))
     if len(cells) != width:
-        raise wire.invalid(f"body.table_row.cells should have {width} cells; got {len(cells)}.")
+        raise wire.undocumented(f"body.table_row.cells of {len(cells)} in a table {width} wide")
     return {"cells": [wire.rich_text(c, f"body.table_row.cells[{i}]", names) for i, c in enumerate(cells)]}

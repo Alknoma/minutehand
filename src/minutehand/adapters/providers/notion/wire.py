@@ -42,6 +42,7 @@ MAX_EQUATION = 1000
 
 Json = dict[str, JsonValue]
 _OBJECT: TypeAdapter[Json] = TypeAdapter(Json)
+_OBJECT_OR_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
 
 # --------------------------------------------------------------------------- errors
@@ -120,8 +121,51 @@ def error_answer(status: int, message: str, minted: str) -> Rendered:
     return Rendered(status=status, content_type=ERROR_TYPE, body=json.dumps(body).encode())
 
 
-def invalid(message: str) -> Refusal:
+class _Undefined:
+    """What Notion's validation messages call a field that was not sent."""
+
+
+UNDEFINED = _Undefined()
+
+
+def _shown(value: JsonValue | _Undefined) -> str:
+    """A value as Notion's validation messages quote it: its JSON in backticks, cut at 55 characters, or
+    `undefined` (reported answers of the real service: https://github.com/selfboot/html2notion/issues/17,
+    https://github.com/zant/notion-cards-action/issues/21, https://github.com/niklas-joh/plantScraper/issues/9)."""
+    if isinstance(value, _Undefined):
+        return "`undefined`"
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return f"`{text[:55]}...`" if len(text) > 55 else f"`{text}`"
+
+
+def failed(path: str, expected: str, got: JsonValue | _Undefined = UNDEFINED, *, optional: bool = False) -> Refusal:
+    """A request that does not match Notion's schema, in the words Notion answers it with: "body failed validation:
+    body.properties should be defined, instead was undefined." (https://developers.notion.com/reference/status-codes),
+    "path failed validation: path.page_id should be a valid uuid, instead was ..." and "query failed validation:
+    ..." as reported from the real service; an optional field's expectation ends "or `undefined`". `expected` is
+    one of the expectations reported in those messages: defined, not present, a string, an array, an object, a
+    valid uuid, a number, `≤ N` on a length, or a list of the values it may be."""
+    location = path.split(".")[0].split("[")[0]
+    said = f"{expected} or `undefined`" if optional else expected
+    return Refusal(
+        ErrorCode.VALIDATION_ERROR, f"{location} failed validation: {path} should be {said}, instead was {_shown(got)}."
+    )
+
+
+def one_of(values: Sequence[str], *, optional: bool = False) -> str:
+    """How Notion lists the values a field may take: `"a"` or `"b"`; `"a"`, `"b"`, or `"c"`."""
+    shown = [f'`"{v}"`' for v in values] + (["`undefined`"] if optional else [])
+    return " or ".join(shown) if len(shown) == 2 else ", ".join(shown[:-1]) + ", or " + shown[-1]
+
+
+def reported(message: str) -> Refusal:
+    """A `validation_error` whose words are reported from the real service; each caller cites where."""
     return Refusal(ErrorCode.VALIDATION_ERROR, message)
+
+
+def undocumented(case: str) -> NotImplementedError:
+    """A request Notion answers in words no page, recording or report gives: not answered with invented ones."""
+    return unserved(f"{case} (Notion's answer to it is not documented)")
 
 
 def unserved(name: str) -> NotImplementedError:
@@ -179,8 +223,9 @@ def conflict() -> Refusal:
     return Refusal(ErrorCode.CONFLICT_ERROR, "Conflict occurred while saving. Please try again.")
 
 
-def archived(what: str) -> Refusal:
-    return invalid(f"This {what} is archived and cannot be edited. Restore it first.")
+def archived() -> Refusal:
+    """Reported from the real service: https://github.com/parkminhyun0/bible-mindmap/issues/322 (a page is a block)."""
+    return reported("Can't edit block that is archived. You must unarchive the block before editing.")
 
 
 # --------------------------------------------------------------------------- ids and time
@@ -191,7 +236,7 @@ def canonical_id(raw: str, where: str) -> str:
     try:
         return str(uuid.UUID(hex=raw.replace("-", "")))
     except ValueError as error:
-        raise invalid(f"{where} should be a valid UUID; got `{raw}`.") from error
+        raise failed(where, "a valid uuid", raw) from error
 
 
 def minted_id(*parts: str) -> str:
@@ -253,58 +298,79 @@ def read_object(raw: bytes) -> Json:
     except json.JSONDecodeError as error:
         raise Refusal(ErrorCode.INVALID_JSON, INVALID_JSON) from error
     if not isinstance(found, dict):
-        raise invalid("The request body should be a JSON object.")
+        raise failed("body", "an object", _OBJECT_OR_VALUE.validate_python(found))
     return _OBJECT.validate_python(found)
 
 
-def as_object(value: JsonValue, where: str) -> Json:
+def as_object(value: JsonValue, where: str, *, optional: bool = False) -> Json:
     if not isinstance(value, dict):
-        raise invalid(f"{where} should be an object.")
+        raise failed(where, "an object", value, optional=optional)
     return value
 
 
-def as_list(value: JsonValue, where: str) -> list[JsonValue]:
+def as_list(value: JsonValue, where: str, *, optional: bool = False) -> list[JsonValue]:
     if not isinstance(value, list):
-        raise invalid(f"{where} should be an array.")
+        raise failed(where, "an array", value, optional=optional)
     return value
 
 
-def as_text(value: JsonValue, where: str) -> str:
+def as_text(value: JsonValue, where: str, *, optional: bool = False) -> str:
     if not isinstance(value, str):
-        raise invalid(f"{where} should be a string.")
+        raise failed(where, "a string", value, optional=optional)
     return value
 
 
 def as_bool(value: JsonValue, where: str) -> bool:
+    """No report gives Notion's words for a value that is not a boolean, so one is refused by name."""
     if not isinstance(value, bool):
-        raise invalid(f"{where} should be a boolean.")
+        raise undocumented(f"{where} that is not a boolean")
     return value
 
 
 def as_int(value: JsonValue, where: str) -> int:
+    """No report gives Notion's words for a required number that is not one, so one is refused by name."""
     if isinstance(value, bool) or not isinstance(value, int):
-        raise invalid(f"{where} should be an integer.")
+        raise undocumented(f"{where} that is not an integer")
     return value
 
 
+def required(body: Json, key: str, where: str) -> JsonValue:
+    """`body[key]`, or Notion's refusal of a missing one: "<where>.<key> should be defined, instead was `undefined`."."""
+    if key not in body:
+        raise failed(f"{where}.{key}", "defined")
+    return body[key]
+
+
 def only_keys(body: Json, allowed: Sequence[str], where: str) -> None:
+    """Reported: "body failed validation: body.archived should be not present, instead was `false`."
+    (https://github.com/eval-sys/mcpmark/issues/269)."""
     unknown = sorted(set(body) - set(allowed))
     if unknown:
-        raise invalid(f"{where} has a field Notion does not accept here: {unknown[0]}.")
+        raise failed(f"{where}.{unknown[0]}", "not present", body[unknown[0]])
 
 
-def page_size(value: JsonValue | None, where: str = "page_size") -> int:
-    """`page_size`, from a JSON body (an integer) or a query string (digits)."""
-    if value is None:
+def page_size(value: JsonValue | None, where: str = "query.page_size", *, refuses_range: bool = False) -> int:
+    """`page_size`, from a JSON body (an integer) or a query string (digits), as reported of the real service
+    (https://github.com/brekkylab/backlot/issues/375): not a number is "... should be a number or `undefined`";
+    0, or none, is the default page; listing comments refuses 0 and 101 ("should be ≥ `1` or `undefined`", "should
+    be ≤ `100` or `undefined`"); what other lists answer to more than 100, or to a negative size, is not documented."""
+    if value is None or value == "":
         return MAX_PAGE_SIZE
     if isinstance(value, str):
-        if not value.isdigit():
-            raise invalid(f"{where} should be a number.")
+        if not value.lstrip("-").isdigit():
+            raise failed(where, "a number", value, optional=True)
         value = int(value)
-    size = as_int(value, where)
-    if not 1 <= size <= MAX_PAGE_SIZE:
-        raise invalid(f"{where} should be between 1 and {MAX_PAGE_SIZE}; got {size}.")
-    return size
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise failed(where, "a number", value, optional=True)
+    if refuses_range and value < 1:
+        raise failed(where, "≥ `1`", value, optional=True)
+    if refuses_range and value > MAX_PAGE_SIZE:
+        raise failed(where, f"≤ `{MAX_PAGE_SIZE}`", value, optional=True)
+    if value == 0:
+        return MAX_PAGE_SIZE
+    if not 1 <= value <= MAX_PAGE_SIZE:
+        raise undocumented(f"{where} of {value}")
+    return value
 
 
 # --------------------------------------------------------------------------- rich text
@@ -364,7 +430,7 @@ def _annotations(value: JsonValue | None, where: str) -> Json:
     if "color" in given:
         color = as_text(given["color"], f"{where}.color")
         if color not in COLORS:
-            raise invalid(f"{where}.color is not a Notion colour: {color}.")
+            raise undocumented(f"{where}.color `{color}`, not a Notion colour")
         found["color"] = color
     return found
 
@@ -373,7 +439,7 @@ def _date(value: JsonValue, where: str) -> Json:
     given = as_object(value, where)
     only_keys(given, ["start", "end", "time_zone"], where)
     if "start" not in given:
-        raise invalid(f"{where}.start should be defined.")
+        raise failed(f"{where}.start", "defined")
     start = read_date(as_text(given["start"], f"{where}.start"), f"{where}.start")
     end = given["end"] if "end" in given else None
     if end is not None:
@@ -390,7 +456,7 @@ def read_date(spelled: str, where: str) -> str:
         else:
             datetime.fromisoformat(spelled.replace("Z", "+00:00"))
     except ValueError as error:
-        raise invalid(f"{where} should be an ISO 8601 date or date-time; got `{spelled}`.") from error
+        raise undocumented(f"{where} `{spelled}`, not an ISO 8601 date") from error
     return spelled
 
 
@@ -406,7 +472,9 @@ def rich_text(value: JsonValue, where: str, names: Names) -> list[JsonValue]:
     """A caller's rich text array, checked and normalised to what Notion stores and serves."""
     items = as_list(value, where)
     if len(items) > MAX_RICH_TEXT_ITEMS:
-        raise invalid(f"{where} should have at most {MAX_RICH_TEXT_ITEMS} items; got {len(items)}.")
+        raise failed(
+            f"{where}.length", f"≤ `{MAX_RICH_TEXT_ITEMS}`", len(items)
+        )  # https://github.com/Oligarchy-with-DeamoV/OctopusScraper/issues/73
     return [_rich_item(item, f"{where}[{i}]", names) for i, item in enumerate(items)]
 
 
@@ -415,26 +483,29 @@ def _rich_item(value: JsonValue, where: str, names: Names) -> JsonValue:
     only_keys(item, ["type", "text", "mention", "equation", "annotations", "plain_text", "href"], where)
     spelled = as_text(item["type"], f"{where}.type") if "type" in item else _inferred(item, where)
     if spelled not in RICH_TEXT_TYPES:
-        raise invalid(f"{where}.type should be text, mention or equation; got `{spelled}`.")
+        raise undocumented(f"{where}.type `{spelled}`")
     kind = spelled
     if kind not in item:
-        raise invalid(f"{where}.{kind} should be defined.")
+        raise failed(f"{where}.{kind}", "defined")
     annotations = _annotations(item["annotations"] if "annotations" in item else None, f"{where}.annotations")
     body = as_object(item[kind], f"{where}.{kind}")
     if kind == RichTextType.TEXT:
         only_keys(body, ["content", "link"], f"{where}.text")
         if "content" not in body:
-            raise invalid(f"{where}.text.content should be defined.")
+            raise failed(f"{where}.text.content", "defined")
         content = as_text(body["content"], f"{where}.text.content")
-        if len(content.encode("utf-16-le")) // 2 > MAX_TEXT:
-            raise invalid(f"{where}.text.content should be {MAX_TEXT} characters or fewer; got {len(content)}.")
+        size = len(content.encode("utf-16-le")) // 2
+        if size > MAX_TEXT:
+            raise failed(
+                f"{where}.text.content.length", f"≤ `{MAX_TEXT}`", size
+            )  # https://github.com/trustmaster/gkeep2notion/issues/15
         link = body["link"] if "link" in body else None
         href: str | None = None
         if link is not None:
             linked = as_object(link, f"{where}.text.link")
             href = as_text(linked["url"], f"{where}.text.link.url") if "url" in linked else None
             if href is None:
-                raise invalid(f"{where}.text.link.url should be defined.")
+                raise failed(f"{where}.text.link.url", "defined")
         return {
             "type": kind,
             "text": {"content": content, "link": {"url": href} if href else None},
@@ -445,9 +516,9 @@ def _rich_item(value: JsonValue, where: str, names: Names) -> JsonValue:
     if kind == RichTextType.EQUATION:
         expression = as_text(body["expression"], f"{where}.equation.expression") if "expression" in body else None
         if expression is None:
-            raise invalid(f"{where}.equation.expression should be defined.")
+            raise failed(f"{where}.equation.expression", "defined")
         if len(expression) > MAX_EQUATION:
-            raise invalid(f"{where}.equation.expression should be {MAX_EQUATION} characters or fewer.")
+            raise undocumented(f"{where}.equation.expression over {MAX_EQUATION} characters")
         return {
             "type": kind,
             "equation": {"expression": expression},
@@ -462,7 +533,7 @@ def _inferred(item: Json, where: str) -> str:
     for kind in RICH_TEXT_TYPES:
         if kind in item:
             return kind
-    raise invalid(f"{where} should hold one of text, mention or equation.")
+    raise undocumented(f"{where} holding none of text, mention or equation")
 
 
 def _mention(body: Json, annotations: Json, where: str, names: Names) -> JsonValue:
@@ -470,10 +541,10 @@ def _mention(body: Json, annotations: Json, where: str, names: Names) -> JsonVal
     if spelled in MENTIONS_NOT_BUILT:
         raise unserved(f"a `{spelled}` mention ({where})")
     if spelled not in MENTION_TYPES:
-        raise invalid(f"{where}.mention.type should be one of user, date, page, database; got `{spelled}`.")
+        raise undocumented(f"{where}.mention.type `{spelled}`")
     kind = spelled
     if kind not in body:
-        raise invalid(f"{where}.mention.{kind} should be defined.")
+        raise failed(f"{where}.mention.{kind}", "defined")
     if kind == MentionType.DATE:
         when = _date(body["date"], f"{where}.mention.date")
         if when["end"] is not None or len(str(when["start"])) != len("2022-12-16"):
@@ -490,12 +561,12 @@ def _mention(body: Json, annotations: Json, where: str, names: Names) -> JsonVal
         }
     target = as_object(body[kind], f"{where}.mention.{kind}")
     if "id" not in target:
-        raise invalid(f"{where}.mention.{kind}.id should be defined.")
+        raise failed(f"{where}.mention.{kind}.id", "defined")
     target_id = canonical_id(as_text(target["id"], f"{where}.mention.{kind}.id"), f"{where}.mention.id")
     if kind == MentionType.USER:
         name = names.user_name(target_id)
         if name is None:
-            raise invalid(f"{where}.mention.user.id names nobody in this workspace: {target_id}.")
+            raise undocumented(f"{where}.mention.user.id naming nobody in the workspace")
         plain = f"@{name}"
         mentioned: Json = {"object": "user", "id": target_id}
         href = None
@@ -519,7 +590,7 @@ def _inferred_mention(body: Json, where: str) -> str:
     for kind in MENTION_TYPES:
         if kind in body:
             return kind
-    raise invalid(f"{where}.mention should hold one of user, page, database or date.")
+    raise undocumented(f"{where}.mention holding no mention type")
 
 
 def plain(items: JsonValue) -> str:
@@ -620,100 +691,101 @@ NOT_BUILT = frozenset(
 )
 """Block types Notion takes on a write (its OpenAPI document's `blockObjectRequest`) that this simulation does not
 build; a request naming one is refused by name."""
-CODE_LANGUAGES = frozenset(
-    {
-        "abap",
-        "abc",
-        "agda",
-        "arduino",
-        "ascii art",
-        "assembly",
-        "bash",
-        "basic",
-        "bnf",
-        "c",
-        "c#",
-        "c++",
-        "clojure",
-        "coffeescript",
-        "coq",
-        "css",
-        "dart",
-        "dhall",
-        "diff",
-        "docker",
-        "ebnf",
-        "elixir",
-        "elm",
-        "erlang",
-        "f#",
-        "flow",
-        "fortran",
-        "gherkin",
-        "glsl",
-        "go",
-        "graphql",
-        "groovy",
-        "haskell",
-        "hcl",
-        "html",
-        "idris",
-        "java",
-        "javascript",
-        "json",
-        "julia",
-        "kotlin",
-        "latex",
-        "less",
-        "lisp",
-        "livescript",
-        "llvm ir",
-        "lua",
-        "makefile",
-        "markdown",
-        "markup",
-        "matlab",
-        "mathematica",
-        "mermaid",
-        "nix",
-        "notion formula",
-        "objective-c",
-        "ocaml",
-        "pascal",
-        "perl",
-        "php",
-        "plain text",
-        "powershell",
-        "prolog",
-        "protobuf",
-        "purescript",
-        "python",
-        "r",
-        "racket",
-        "reason",
-        "ruby",
-        "rust",
-        "sass",
-        "scala",
-        "scheme",
-        "scss",
-        "shell",
-        "smalltalk",
-        "solidity",
-        "sql",
-        "swift",
-        "toml",
-        "typescript",
-        "vb.net",
-        "verilog",
-        "vhdl",
-        "visual basic",
-        "webassembly",
-        "xml",
-        "yaml",
-        "java/c/c++/c#",
-    }
+CODE_LANGUAGE_ORDER: tuple[str, ...] = (
+    "abap",
+    "abc",
+    "agda",
+    "arduino",
+    "ascii art",
+    "assembly",
+    "bash",
+    "basic",
+    "bnf",
+    "c",
+    "c#",
+    "c++",
+    "clojure",
+    "coffeescript",
+    "coq",
+    "css",
+    "dart",
+    "dhall",
+    "diff",
+    "docker",
+    "ebnf",
+    "elixir",
+    "elm",
+    "erlang",
+    "f#",
+    "flow",
+    "fortran",
+    "gherkin",
+    "glsl",
+    "go",
+    "graphql",
+    "groovy",
+    "haskell",
+    "hcl",
+    "html",
+    "idris",
+    "java",
+    "javascript",
+    "json",
+    "julia",
+    "kotlin",
+    "latex",
+    "less",
+    "lisp",
+    "livescript",
+    "llvm ir",
+    "lua",
+    "makefile",
+    "markdown",
+    "markup",
+    "matlab",
+    "mathematica",
+    "mermaid",
+    "nix",
+    "notion formula",
+    "objective-c",
+    "ocaml",
+    "pascal",
+    "perl",
+    "php",
+    "plain text",
+    "powershell",
+    "prolog",
+    "protobuf",
+    "purescript",
+    "python",
+    "r",
+    "racket",
+    "reason",
+    "ruby",
+    "rust",
+    "sass",
+    "scala",
+    "scheme",
+    "scss",
+    "shell",
+    "smalltalk",
+    "solidity",
+    "sql",
+    "swift",
+    "toml",
+    "typescript",
+    "vb.net",
+    "verilog",
+    "vhdl",
+    "visual basic",
+    "webassembly",
+    "xml",
+    "yaml",
+    "java/c/c++/c#",
 )
+"""Every language a code block takes, in the order of the enum of `languageRequest` in Notion's OpenAPI document,
+which is the order Notion lists them in when it refuses another."""
+CODE_LANGUAGES = frozenset(CODE_LANGUAGE_ORDER)
 """Every language a code block takes: the enum of `languageRequest` in Notion's OpenAPI document."""
 
 
@@ -731,7 +803,7 @@ def block_type(spelled: str, where: str) -> BlockType:
     try:
         return BlockType(spelled)
     except ValueError as error:
-        raise invalid(f"{where}.type is not a block type: `{spelled}`.") from error
+        raise undocumented(f"{where}.type `{spelled}`, not a block type") from error
 
 
 def new_blocks(value: JsonValue, where: str, names: Names, *, depth: int = 0, seeding: bool = False) -> list[NewBlock]:
@@ -739,7 +811,9 @@ def new_blocks(value: JsonValue, where: str, names: Names, *, depth: int = 0, se
     a link preview, and more than a request's hundred blocks."""
     items = as_list(value, where)
     if len(items) > MAX_CHILDREN and not seeding:
-        raise invalid(f"{where} should have at most {MAX_CHILDREN} items; got {len(items)}.")
+        raise failed(
+            f"{where}.length", f"≤ `{MAX_CHILDREN}`", len(items)
+        )  # https://github.com/Suntory-N-Water/kindle-highlight-syncer/issues/2
     return [_new_block(item, f"{where}[{i}]", names, depth, seeding) for i, item in enumerate(items)]
 
 
@@ -748,30 +822,32 @@ def _new_block(value: JsonValue, where: str, names: Names, depth: int, seeding: 
     named = [k for k in item if k not in ("object", "type")]
     spelled = as_text(item["type"], f"{where}.type") if "type" in item else (named[0] if len(named) == 1 else "")
     if not spelled:
-        raise invalid(f"{where} should name its type.")
+        raise undocumented(f"{where} naming no block type")
     kind = block_type(spelled, where)
     only_keys(item, ["object", "type", kind.value], where)
     if kind in (BlockType.CHILD_PAGE, BlockType.CHILD_DATABASE):
-        raise invalid(f"{where}: a {kind.value} is made with the pages or databases endpoint, not as a block.")
+        raise undocumented(f"a `{kind.value}` written as a block ({where})")
     if kind is BlockType.LINK_PREVIEW and not seeding:
-        raise invalid(f"{where}: a link_preview block cannot be created through the API.")
+        raise undocumented(f"a `link_preview` block written through the API ({where})")
     if kind is BlockType.TABLE_ROW:
-        raise invalid(f"{where}: a table_row can only be a child of a table.")
+        raise undocumented(f"a `table_row` outside a table ({where})")
     if kind.value not in item:
-        raise invalid(f"{where}.{kind.value} should be defined.")
+        raise failed(f"{where}.{kind.value}", "defined")
     body = dict(as_object(item[kind.value], f"{where}.{kind.value}"))
     children_given = body.pop("children") if "children" in body else None
     content = block_content(kind, body, f"{where}.{kind.value}", names, creating=True)
     if children_given is None:
         if kind is BlockType.TABLE:
-            raise invalid(f"{where}.table.children should hold at least one table_row.")
+            raise failed(f"{where}.table.children", "defined")
         return NewBlock(type=kind, content=content)
     if depth >= MAX_NESTING:
-        raise invalid(f"{where}: children may be nested at most {MAX_NESTING} levels deep in one request.")
+        raise failed(
+            f"{where}.{kind.value}.children", "not present", children_given
+        )  # https://github.com/tryfabric/martian/issues/15
     if kind is BlockType.TABLE:
         return NewBlock(type=kind, content=content, children=_table_rows(children_given, content, where, names))
     if not takes_children(kind, content):
-        raise invalid(f"{where}: a {kind.value} block cannot have children.")
+        raise undocumented(f"children of a `{kind.value}` block ({where})")
     return NewBlock(
         type=kind,
         content=content,
@@ -788,7 +864,7 @@ def takes_children(kind: BlockType, content: Json) -> bool:
 def _table_rows(value: JsonValue, table: Json, where: str, names: Names) -> list[NewBlock]:
     rows = as_list(value, f"{where}.table.children")
     if not rows:
-        raise invalid(f"{where}.table.children should hold at least one table_row.")
+        raise undocumented(f"{where}.table.children holding no row")
     return [table_row(row, table, f"{where}.table.children[{i}]", names) for i, row in enumerate(rows)]
 
 
@@ -796,13 +872,13 @@ def table_row(value: JsonValue, table: Json, where: str, names: Names) -> NewBlo
     item = as_object(value, where)
     spelled = as_text(item["type"], f"{where}.type") if "type" in item else "table_row"
     if spelled != BlockType.TABLE_ROW.value or "table_row" not in item:
-        raise invalid(f"{where}: a table holds only table_row blocks.")
+        raise undocumented(f"a block that is not a `table_row` in a table ({where})")
     body = as_object(item["table_row"], f"{where}.table_row")
     only_keys(body, ["cells"], f"{where}.table_row")
     cells = as_list(body["cells"] if "cells" in body else None, f"{where}.table_row.cells")
     width = table["table_width"]
     if len(cells) != width:
-        raise invalid(f"{where}.table_row.cells should have {width} cells, as the table is wide; got {len(cells)}.")
+        raise undocumented(f"{where}.table_row.cells of {len(cells)} in a table {width} wide")
     return NewBlock(
         type=BlockType.TABLE_ROW,
         content={"cells": [rich_text(c, f"{where}.table_row.cells[{i}]", names) for i, c in enumerate(cells)]},
@@ -824,20 +900,22 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
             allowed.append("icon")
         only_keys(body, allowed, where)
         if "rich_text" not in body:
-            raise invalid(f"{where}.rich_text should be defined.")
+            raise failed(f"{where}.rich_text", "defined")
         found: Json = {"rich_text": rich_text(body["rich_text"], f"{where}.rich_text", names)}
         if kind is BlockType.CODE:
             language = as_text(body["language"], f"{where}.language") if "language" in body else None
             if language is None:
-                raise invalid(f"{where}.language should be defined.")
+                raise failed(f"{where}.language", "defined")
             if language not in CODE_LANGUAGES:
-                raise invalid(f"{where}.language should be one of Notion's code languages; got `{language}`.")
+                raise failed(
+                    f"{where}.language", one_of(CODE_LANGUAGE_ORDER), language
+                )  # https://github.com/ALT-F4-LLC/notion.nvim/issues/16
             found["language"] = language
             found["caption"] = rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else []
             return found
         color = as_text(body["color"], f"{where}.color") if "color" in body else "default"
         if color not in COLORS:
-            raise invalid(f"{where}.color is not a Notion colour: {color}.")
+            raise undocumented(f"{where}.color `{color}`, not a Notion colour")
         found["color"] = color
         if kind is BlockType.TO_DO:
             found["checked"] = as_bool(body["checked"], f"{where}.checked") if "checked" in body else False
@@ -853,10 +931,10 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
     if kind is BlockType.TABLE:
         only_keys(body, ["table_width", "has_column_header", "has_row_header"], where)
         if "table_width" not in body:
-            raise invalid(f"{where}.table_width should be defined.")
+            raise failed(f"{where}.table_width", "defined")
         width = as_int(body["table_width"], f"{where}.table_width")
         if width < 1:
-            raise invalid(f"{where}.table_width should be at least 1.")
+            raise undocumented(f"{where}.table_width below 1")
         return {
             "table_width": width,
             "has_column_header": as_bool(body["has_column_header"], where) if "has_column_header" in body else False,
@@ -865,7 +943,7 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
     if kind in (BlockType.BOOKMARK, BlockType.LINK_PREVIEW):
         only_keys(body, ["url", "caption"] if kind is BlockType.BOOKMARK else ["url"], where)
         if "url" not in body:
-            raise invalid(f"{where}.url should be defined.")
+            raise failed(f"{where}.url", "defined")
         found = {"url": as_text(body["url"], f"{where}.url")}
         if kind is BlockType.BOOKMARK:
             found["caption"] = rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else []
@@ -876,15 +954,15 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
         only_keys(body, ["type", "external", "caption"], where)
         external = as_object(body["external"], f"{where}.external")
         if "url" not in external:
-            raise invalid(f"{where}.external.url should be defined.")
+            raise failed(f"{where}.external.url", "defined")
         return {
             "type": "external",
             "external": {"url": as_text(external["url"], f"{where}.external.url")},
             "caption": rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else [],
         }
     if kind is BlockType.TABLE_ROW:
-        raise invalid(f"{where}: a table_row is written with its table.")
-    raise invalid(f"{where}: a {kind.value} block is not written this way.")
+        raise undocumented(f"a `table_row` written alone ({where})")
+    raise undocumented(f"a `{kind.value}` block written this way ({where})")
 
 
 def icon(value: JsonValue, where: str) -> JsonValue:
@@ -896,7 +974,7 @@ def icon(value: JsonValue, where: str) -> JsonValue:
     if "external" in found:
         external = as_object(found["external"], f"{where}.external")
         return {"type": "external", "external": {"url": as_text(external["url"], f"{where}.external.url")}}
-    raise invalid(f"{where} should be an emoji or an external file.")
+    raise undocumented(f"{where} that is neither an emoji nor an external file")
 
 
 def block_text(kind: BlockType, content: Json, title: str | None) -> str:
@@ -1274,14 +1352,14 @@ def schema_from_request(
     given = as_object(value, where)
     kinds = [k for k in given if k not in _SCHEMA_KEYS]
     if len(kinds) != 1:
-        raise invalid(f"{where} should name exactly one property type.")
+        raise undocumented(f"{where} naming no single property type")
     spelled = kinds[0]
     if spelled in PROPERTIES_NOT_BUILT:
         raise unserved(f"`{spelled}` properties ({where})")
     try:
         kind = PropertyType(spelled)
     except ValueError as error:
-        raise invalid(f"{where} names no property type: `{spelled}`.") from error
+        raise undocumented(f"{where} `{spelled}`, not a property type") from error
     config = as_object(given[spelled], f"{where}.{spelled}")
     shown = as_text(given["name"], f"{where}.name") if "name" in given else name
     choices: list[str] = []
@@ -1292,7 +1370,7 @@ def schema_from_request(
     relates_to: str | None = None
     if kind is PropertyType.RELATION:
         if "database_id" not in config:
-            raise invalid(f"{where}.relation.database_id should be defined.")
+            raise failed(f"{where}.relation.database_id", "defined")
         relates_to = canonical_id(as_text(config["database_id"], where), f"{where}.relation.database_id")
         if not known(relates_to):
             raise not_found(Missing.DATABASE, relates_to)
@@ -1308,18 +1386,18 @@ def property_value(schema: Json, value: JsonValue, where: str, names: Names, peo
     added to the schema, as Notion does)."""
     kind = schema_type(schema)
     if kind in READ_ONLY:
-        raise invalid(f"{where}: a {kind.value} property cannot be written.")
+        raise undocumented(f"a write to the read-only `{kind.value}` property {where}")
     given = as_object(value, where)
     given = {k: v for k, v in given.items() if k not in ("id", "type")}
     if list(given) != [kind.value]:
-        raise invalid(f"{where} is a {kind.value} property; the value should be given as `{kind.value}`.")
+        raise undocumented(f"{where}, a `{kind.value}` property, given another type's value")
     raw = given[kind.value]
     stored: JsonValue
     if kind in (PropertyType.TITLE, PropertyType.RICH_TEXT):
         stored = rich_text(raw, f"{where}.{kind.value}", names)
     elif kind is PropertyType.NUMBER:
         if raw is not None and (isinstance(raw, bool) or not isinstance(raw, int | float)):
-            raise invalid(f"{where}.number should be a number or null.")
+            raise undocumented(f"{where}.number that is not a number")
         stored = raw
     elif kind is PropertyType.CHECKBOX:
         stored = as_bool(raw, f"{where}.checkbox")
@@ -1344,10 +1422,10 @@ def property_value(schema: Json, value: JsonValue, where: str, names: Names, peo
         for i, item in enumerate(as_list(raw, f"{where}.people")):
             person = as_object(item, f"{where}.people[{i}]")
             if "id" not in person:
-                raise invalid(f"{where}.people[{i}].id should be defined.")
+                raise failed(f"{where}.people[{i}].id", "defined")
             user_id = canonical_id(as_text(person["id"], where), f"{where}.people[{i}].id")
             if not people.is_member(user_id):
-                raise invalid(f"{where}.people[{i}] names nobody in this workspace: {user_id}.")
+                raise undocumented(f"{where}.people[{i}] naming nobody in the workspace")
             found.append({"object": "user", "id": user_id})
         stored = found
     else:
@@ -1355,7 +1433,7 @@ def property_value(schema: Json, value: JsonValue, where: str, names: Names, peo
         for i, item in enumerate(as_list(raw, f"{where}.relation")):
             linked = as_object(item, f"{where}.relation[{i}]")
             if "id" not in linked:
-                raise invalid(f"{where}.relation[{i}].id should be defined.")
+                raise failed(f"{where}.relation[{i}].id", "defined")
             related.append({"id": canonical_id(as_text(linked["id"], where), f"{where}.relation[{i}].id")})
         stored = related
     return {"id": schema["id"], "type": kind.value, kind.value: stored}, schema
@@ -1370,12 +1448,14 @@ def _choose(schema: Json, kind: PropertyType, value: JsonValue, where: str) -> t
         if ("id" in given and given["id"] == listed["id"]) or ("name" in given and given["name"] == listed["name"]):
             return listed, schema
     if "name" not in given:
-        raise invalid(f"{where}: no option has the id given.")
+        raise undocumented(f"{where} naming no option by its id")
     name = as_text(given["name"], f"{where}.name")
     if kind is PropertyType.STATUS:
-        raise invalid(f"{where}: `{name}` is not an option of this status property.")
+        raise undocumented(f"{where} naming `{name}`, no option of the status property")
     if "," in name:
-        raise invalid(f"{where}.name should not contain a comma.")
+        raise reported(
+            f"Invalid select option, commas not allowed: {name}"
+        )  # https://community.make.com/t/how-to-add-notion-select-value-containing-commas/18286
     added = option(as_text(schema["id"], "id") + "/" + as_text(schema["name"], "name"), name)
     widened = {**schema, kind.value: {**config, "options": [*options, added]}}
     return added, widened
@@ -1466,7 +1546,7 @@ def read_token_request(found: Json) -> TokenRequest:
     try:
         return TokenRequest.model_validate(found)
     except ValidationError as error:
-        raise invalid(f"The token request is not one Notion takes: {error.errors()[0]['msg']}.") from error
+        raise undocumented("a token request Notion does not take") from error
 
 
 def oauth_error(error: str, description: str) -> str:

@@ -105,6 +105,27 @@ class Call:
 Handler = Callable[[Request, Call], Awaitable[Response]]
 
 
+def _cursor(cursor: str, ids: Sequence[str], kind: str) -> str:
+    """The id a `start_cursor` names in a list, refused as the real service is reported to refuse one it did not
+    issue (https://github.com/brekkylab/backlot/issues/375): listing users or querying a database, "The start_cursor
+    provided is invalid: <cursor>"; listing children or comments, or searching, a cursor that is not a uuid as a
+    validation failure. What those last answer to a uuid they did not issue is not documented."""
+    where = "body.start_cursor" if kind in ("page_or_database", "page") else "query.start_cursor"
+    try:
+        found = wire.canonical_id(cursor, where)
+    except wire.Refusal:
+        if kind in ("user", "page"):
+            raise wire.reported(f"The start_cursor provided is invalid: {cursor}") from None
+        if kind == "property_item":
+            raise wire.undocumented(f"{where} that Notion did not issue") from None
+        raise wire.failed(where, "a valid uuid", cursor, optional=True) from None
+    if found not in ids:
+        if kind in ("user", "page"):
+            raise wire.reported(f"The start_cursor provided is invalid: {cursor}")
+        raise wire.undocumented(f"{where} that Notion did not issue")
+    return found
+
+
 def _answer(found: JsonValue, status: int = 200) -> Response:
     return Response(wire.respond(found), status_code=status, media_type=JSON)
 
@@ -393,10 +414,7 @@ class NotionApi:
     ) -> wire.Json:
         start = 0
         if cursor is not None:
-            cursor_id = wire.canonical_id(cursor, "start_cursor")
-            if cursor_id not in ids:
-                raise wire.invalid("start_cursor does not name a position in this list.")
-            start = list(ids).index(cursor_id)
+            start = list(ids).index(_cursor(cursor, ids, kind))
         page = list(items[start : start + size])
         following = ids[start + size] if start + size < len(ids) else None
         return wire.render_list(page, following, kind, self.request_id(request))
@@ -411,23 +429,31 @@ class NotionApi:
         if "filter" in body and body["filter"] is not None:
             found = wire.as_object(body["filter"], "body.filter")
             wire.only_keys(found, ["property", "value"], "body.filter")
-            if "property" not in found or found["property"] != "object":
-                raise wire.invalid("body.filter.property should be `object`.")
-            wanted = wire.as_text(found["value"], "body.filter.value") if "value" in found else ""
+            # Reported: https://github.com/brekkylab/backlot/issues/375
+            if wire.required(found, "property", "body.filter") != "object":
+                raise wire.failed("body.filter.property", wire.one_of(["object"]), found["property"])
+            wanted = wire.as_text(wire.required(found, "value", "body.filter"), "body.filter.value")
             if wanted not in ("page", "database"):
-                raise wire.invalid(f"body.filter.value should be `page` or `database`; got `{wanted}`.")
+                raise wire.failed("body.filter.value", wire.one_of(["page", "database"]), wanted)
         descending = True
         if "sort" in body and body["sort"] is not None:
             sort = wire.as_object(body["sort"], "body.sort")
             wire.only_keys(sort, ["direction", "timestamp"], "body.sort")
+            # Reported: https://github.com/brekkylab/backlot/issues/375
             if "timestamp" not in sort or sort["timestamp"] != "last_edited_time":
-                raise wire.invalid("body.sort.timestamp should be `last_edited_time`.")
-            direction = wire.as_text(sort["direction"], "body.sort.direction") if "direction" in sort else ""
+                raise wire.reported('body.sort.timestamp should be "last_edited_time" when sorting by timestamp.')
+            direction = sort["direction"] if "direction" in sort else None
             if direction not in ("ascending", "descending"):
-                raise wire.invalid("body.sort.direction should be `ascending` or `descending`.")
+                raise wire.failed(
+                    "body.sort.direction",
+                    wire.one_of(["ascending", "descending"], optional=True),
+                    wire.UNDEFINED if direction is None else direction,
+                )
             descending = direction == "descending"
         size = wire.page_size(body["page_size"] if "page_size" in body else None, "body.page_size")
-        cursor = wire.as_text(body["start_cursor"], "body.start_cursor") if "start_cursor" in body else None
+        cursor = (
+            wire.as_text(body["start_cursor"], "body.start_cursor", optional=True) if "start_cursor" in body else None
+        )
         found_items: list[tuple[str, str, wire.Json]] = []
         if wanted != "database":
             for page in self._world.pages(call.workspace):
@@ -463,11 +489,11 @@ class NotionApi:
     async def page_create(self, request: Request, call: Call) -> Response:
         body = await self._body(request)
         wire.only_keys(body, ["parent", "properties", "children", "icon", "cover"], "body")
-        if "parent" not in body:
-            raise wire.invalid("body.parent should be defined.")
-        parent = self._parent(call, wire.as_object(body["parent"], "body.parent"))
-        properties = wire.as_object(body["properties"], "body.properties") if "properties" in body else {}
-        children = wire.as_list(body["children"], "body.children") if "children" in body else []
+        parent = self._parent(call, wire.as_object(wire.required(body, "parent", "body"), "body.parent"))
+        properties = (
+            wire.as_object(body["properties"], "body.properties", optional=True) if "properties" in body else {}
+        )
+        children = wire.as_list(body["children"], "body.children", optional=True) if "children" in body else []
         editor = self._editor(call)
         page = editor.create_page(
             editor.mint("page", within=parent.id or call.workspace),
@@ -488,15 +514,15 @@ class NotionApi:
     def _parent(self, call: Call, given: wire.Json) -> wire.Parent:
         keys = [k for k in given if k != "type"]
         if len(keys) != 1:
-            raise wire.invalid("body.parent should name exactly one of page_id, database_id or workspace.")
+            raise wire.undocumented("body.parent naming no single parent")
         key = keys[0]
         try:
             kind = wire.ParentType(key)
         except ValueError as error:
-            raise wire.invalid(f"body.parent.{key} is not a parent a page can be made under.") from error
+            raise wire.undocumented(f"body.parent.{key}, not a parent a page is made under") from error
         if kind is wire.ParentType.WORKSPACE:
             if given["workspace"] is not True or call.integration.type is not wire.IntegrationKind.PUBLIC:
-                raise wire.invalid("body.parent: only a public integration may make a page at the workspace's top.")
+                raise wire.undocumented("a page at the workspace's top made by an internal integration")
             return wire.Parent(type=wire.ParentType.WORKSPACE)
         if kind is wire.ParentType.PAGE_ID:
             page = self._page(
@@ -508,7 +534,7 @@ class NotionApi:
                 call, wire.canonical_id(wire.as_text(given[key], "body.parent.database_id"), "body.parent.database_id")
             )
             return wire.Parent(type=wire.ParentType.DATABASE_ID, id=database.id)
-        raise wire.invalid(f"body.parent.{key} is not a parent a page can be made under.")
+        raise wire.undocumented(f"body.parent.{key}, not a parent a page is made under")
 
     async def page_update(self, request: Request, call: Call) -> Response:
         page = self._page(call, self._id(request, "page_id"))
@@ -597,7 +623,7 @@ class NotionApi:
         if page is not None and self.reaches(call, block_id):
             holder, container = page, page.id
         elif self._world.database(block_id) is not None and self.reaches(call, block_id):
-            raise wire.invalid("A child_database block has no block children; query the database for its rows.")
+            raise wire.undocumented("the block children of a child_database")
         else:
             holder, container = self._holding(call, block_id), block_id
         live = self._live_children(holder, container)
@@ -610,14 +636,13 @@ class NotionApi:
         block_id = self._id(request, "block_id")
         body = await self._body(request)
         wire.only_keys(body, ["children", "after"], "body")
-        if "children" not in body:
-            raise wire.invalid("body.children should be defined.")
+        wire.required(body, "children", "body")
         if self._world.page(block_id) is not None:
             self._page(call, block_id)
         else:
             self._holding(call, block_id)
         after = (
-            wire.canonical_id(wire.as_text(body["after"], "body.after"), "body.after")
+            wire.canonical_id(wire.as_text(body["after"], "body.after", optional=True), "body.after")
             if "after" in body and body["after"] is not None
             else None
         )
@@ -678,9 +703,8 @@ class NotionApi:
     async def database_create(self, request: Request, call: Call) -> Response:
         body = await self._body(request)
         wire.only_keys(body, ["parent", "title", "description", "properties", "icon", "cover", "is_inline"], "body")
-        if "parent" not in body or "properties" not in body:
-            raise wire.invalid("body.parent and body.properties should be defined.")
-        parent = self._parent(call, wire.as_object(body["parent"], "body.parent"))
+        parent = self._parent(call, wire.as_object(wire.required(body, "parent", "body"), "body.parent"))
+        wire.required(body, "properties", "body")
         editor = self._editor(call)
         database_id = editor.mint("database", within=parent.id or call.workspace)
         schema: dict[str, wire.Json] = {}
@@ -744,8 +768,8 @@ class NotionApi:
         query = self._query(request)
         raw = self._one(query, "block_id")
         if raw is None:
-            raise wire.invalid("block_id should be given in the query.")
-        page = self._page(call, wire.canonical_id(raw, "block_id"))
+            raise wire.failed("query.block_id", "defined")  # https://github.com/brekkylab/backlot/issues/393
+        page = self._page(call, wire.canonical_id(raw, "query.block_id"))
         comments = self._world.comments(page.id)
         comments.sort(key=lambda c: c.created_time)
         self._world.saw(page_ref(page), Operation.READ)
@@ -754,7 +778,7 @@ class NotionApi:
             [self.render_comment(c) for c in comments],
             [c.id for c in comments],
             self._one(query, "start_cursor"),
-            wire.page_size(self._one(query, "page_size")),
+            wire.page_size(self._one(query, "page_size"), refuses_range=True),
             "comment",
         )
 
@@ -762,21 +786,18 @@ class NotionApi:
         body = await self._body(request)
         wire.only_keys(body, ["parent", "discussion_id", "rich_text"], "body")
         if ("parent" in body) == ("discussion_id" in body):
-            raise wire.invalid("body should give either parent or discussion_id.")
+            raise wire.undocumented("a comment giving both a parent and a discussion_id, or neither")
         editor = self._editor(call)
-        if "rich_text" not in body:
-            raise wire.invalid("body.rich_text should be defined.")
-        text = wire.rich_text(body["rich_text"], "body.rich_text", editor)
+        text = wire.rich_text(wire.required(body, "rich_text", "body"), "body.rich_text", editor)
         if "parent" in body:
             parent = wire.as_object(body["parent"], "body.parent")
-            if "page_id" not in parent:
-                raise wire.invalid("body.parent.page_id should be defined.")
-            page = self._page(
-                call, wire.canonical_id(wire.as_text(parent["page_id"], "page_id"), "body.parent.page_id")
-            )
+            given = wire.as_text(wire.required(parent, "page_id", "body.parent"), "body.parent.page_id")
+            page = self._page(call, wire.canonical_id(given, "body.parent.page_id"))
             discussion = None
         else:
-            discussion = wire.canonical_id(wire.as_text(body["discussion_id"], "discussion_id"), "body.discussion_id")
+            discussion = wire.canonical_id(
+                wire.as_text(body["discussion_id"], "body.discussion_id"), "body.discussion_id"
+            )
             page = self._discussion_page(call, discussion)
         return _answer(self.render_comment(editor.comment(page.id, discussion, text, by=call.bot)))
 
