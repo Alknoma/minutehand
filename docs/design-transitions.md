@@ -232,3 +232,5 @@ host nobody declared as a service with no description; the separate stand-in (`a
   an edited ask to its person again, as a run does. An invitation's answer carries its comment as `text`.
 - **Not built.** GitHub pull request reviews (the fake serves none) and Drive or Docs comment replies (the fake
   serves no `comments.replies`): a person cannot answer where the service does not, and nothing is invented for it.
+  In Notion and SharePoint nothing waits on a person in the fakes (no assignment or mention is modelled), so what
+  people do there stays a provider happening.
