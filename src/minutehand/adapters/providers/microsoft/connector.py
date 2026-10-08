@@ -153,7 +153,7 @@ class Connector:
         try:
             return wire.read(wire.SentActivity, request_body)
         except wire.Unreadable as e:
-            raise ConnectorRefusal(400, "BadArgument", f"The activity could not be read: {e.message}.") from e
+            raise ConnectorRefusal(400, "Bad Argument", f"The activity could not be read: {e.message}.") from e
 
     # ------------------------------------------------------------------ send, reply
 
@@ -173,9 +173,11 @@ class Connector:
         self, app: AppRecord, conversation: ConversationRecord, sent: wire.SentActivity, *, reply_to: str | None
     ) -> wire.Activity:
         if sent.type != wire.ActivityType.MESSAGE.value:
-            raise ConnectorRefusal(400, "BadArgument", f"Activity type '{sent.type}' cannot be sent to a conversation.")
+            raise ConnectorRefusal(
+                400, "Bad Argument", f"Activity type '{sent.type}' cannot be sent to a conversation."
+            )
         if not sent.text and not sent.attachments:
-            raise ConnectorRefusal(400, "BadArgument", "Activity must have text or attachments.")
+            raise ConnectorRefusal(400, "Bad Argument", "Activity must have text or attachments.")
         thread: str | None = None
         if reply_to is not None:
             found = self._world.message(reply_to)
@@ -279,22 +281,24 @@ class Connector:
         try:
             asked = wire.read(wire.SentConversation, await request.body())
         except wire.Unreadable as e:
-            raise ConnectorRefusal(400, "BadArgument", f"The conversation could not be read: {e.message}.") from e
+            raise ConnectorRefusal(400, "Bad Argument", f"The conversation could not be read: {e.message}.") from e
         tenant = asked.channelData.tenant.id if asked.channelData and asked.channelData.tenant else asked.tenantId
         if not tenant:
-            raise ConnectorRefusal(400, "BadArgument", "Tenant id is required to create a conversation in Teams.")
+            raise ConnectorRefusal(400, "Bad Argument", "Tenant id is required to create a conversation in Teams.")
         if asked.bot is not None and asked.bot.id not in (app.app_id, bot_mri(app.app_id)):
             raise NotImplementedError(
                 "a conversation created naming another bot than the caller: the connector's answer is not documented"
             )
         if asked.isGroup or len(asked.members) != 1:
             raise ConnectorRefusal(
-                400, "BadArgument", "Only a 1:1 conversation with exactly one member can be created by a bot."
+                400, "Bad Argument", "Only a 1:1 conversation with exactly one member can be created by a bot."
             )
         member = asked.members[0].id
         user = self._world.user_by_mri(member) or self._world.user(member)
         if user is None or user.tenant_id != tenant or app.tenant_id != tenant:
-            raise ConnectorRefusal(404, "MemberNotFound", "The member was not found in the tenant.")
+            raise NotImplementedError(
+                "a conversation with someone who is no user of the tenant: the connector's answer is not documented"
+            )
         conversation = self._world.personal_with(user.user.id, tenant)
         if user.user.accountEnabled is False:
             raise ConnectorRefusal(403, "BotNotInConversationRoster", "The bot is not part of the conversation roster.")
@@ -339,7 +343,7 @@ class Connector:
         if token:
             position = next((i for i, m in enumerate(everyone) if m.aadObjectId == token), None)
             if position is None:
-                raise ConnectorRefusal(400, "BadArgument", "The continuation token is not valid.")
+                raise NotImplementedError("a continuationToken the connector never gave: its answer is not documented")
             start = position
         page = everyone[start : start + size]
         following = everyone[start + size].aadObjectId if start + size < len(everyone) else None
@@ -355,7 +359,9 @@ class Connector:
         wanted = request.path_params["member"]
         found = next((m for m in self._members(conversation) if wanted in (m.id, m.aadObjectId)), None)
         if found is None:
-            raise ConnectorRefusal(404, "MemberNotFound", "The member was not found in the conversation.")
+            raise NotImplementedError(
+                "a member the conversation does not hold: the connector's answer is not documented"
+            )
         self._world.saw(conversation_ref(conversation.id), Operation.READ)
         return Response(wire.dump(found), media_type=JSON)
 

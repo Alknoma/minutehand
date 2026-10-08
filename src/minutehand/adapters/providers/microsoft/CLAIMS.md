@@ -1,7 +1,9 @@
 # Microsoft provider — where its behaviour comes from
 
-Every behaviour this provider keeps is Microsoft's: **documented** means the cited page says it; **observed** would
-mean a recorded answer of the real service committed under `tests/data/`, and no row here is observed today. Each
+Every behaviour this provider keeps is Microsoft's: **documented** means the cited page (or Microsoft's published
+API description or example answer) says it; **observed** means a recorded answer of the real service, cited where
+it is public (a Microsoft-published sample recorded from Exchange Online, or an issue thread quoting the service's
+own answer). Each
 row is pinned by the test it names, in `tests/providers/microsoft/`. What Microsoft does not document, and no
 recording shows, is not answered as fact: it is refused by name (501 `not_implemented`, naming the method and path
 and why), listed under "Refused by name" below.
@@ -71,7 +73,9 @@ conversations it is installed in.
 | Reply to Activity in a channel threads under the activity it names | documented | `test_a_reply_to_an_activity_in_a_channel_threads_under_it` | https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-api-reference |
 | Reply to Activity where there are no nested replies (a personal chat) behaves like a send | documented | `test_a_reply_to_an_activity_in_a_personal_chat_is_delivered_like_a_send` | https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-api-reference |
 | Update Activity replaces the activity and answers its id, a card alone included | documented | `test_an_update_replaces_the_activitys_text`, `test_an_update_carrying_only_a_card_is_accepted` | https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages |
-| Delete Activity removes the activity and answers no body | documented | `test_a_deleted_activity_is_gone_from_the_conversation` | https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-api-reference |
+| Delete Activity removes the activity and answers 200 with no body ("The operation succeeded, there is no response.") | documented | `test_a_deleted_activity_is_gone_from_the_conversation` | https://github.com/microsoft/botbuilder-dotnet/blob/8efdbd723f0ceaa9ece353ca359ae4a44576794b/libraries/Swagger/ConnectorAPI.json |
+| A payload the connector cannot use (no text or attachments, an unreadable body, a create without its tenant or for a group) is 400 with the code spelled `Bad Argument`, as Teams' table spells it | documented | `test_a_payload_the_connector_cannot_use_is_bad_argument_as_teams_spells_it` | https://learn.microsoft.com/en-us/microsoftteams/platform/bots/build-conversational-capability |
+| A member the conversation does not hold, or a proactive create naming someone who is no user of the tenant, has no code in Teams' table: refused by name | documented | `test_a_member_the_conversation_does_not_hold_is_refused_by_name` | https://learn.microsoft.com/en-us/microsoftteams/platform/bots/build-conversational-capability |
 | Reply, update or delete naming an activity the conversation does not hold is 404 `ActivityNotFoundInConversation` | documented | `test_an_activity_that_is_not_in_the_conversation_is_refused_activity_not_found_in_conversation` | https://learn.microsoft.com/en-us/microsoftteams/platform/bots/build-conversational-capability |
 | Updating or deleting a person's message is 403 `NotEnoughPermissions`; the message is unchanged | documented | `test_changing_a_persons_message_is_refused_not_enough_permissions` | https://learn.microsoft.com/en-us/microsoftteams/platform/bots/build-conversational-capability |
 | A proactive create to someone without the bot in personal scope is 403 `ForbiddenOperationException` | documented | `test_a_proactive_conversation_with_a_person_who_never_installed_the_bot_is_refused` | https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages |
@@ -108,35 +112,54 @@ conversations it is installed in.
 
 ## Graph mail and calendars (`graph.microsoft.com`)
 
-Exchange's response codes are documented on one page, https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/responsecode
-("RESPONSE_CODES" below); its HTTP status for each is the meaning Graph's error table gives
-(https://learn.microsoft.com/en-us/graph/errors: 400 malformed or incorrect, 403 access denied, 404 not found).
+Each Exchange error code answered here is answered with the status and message the real service was recorded
+answering it with; a code with no Graph recording (Exchange's `ErrorFolderNotFound`, `ErrorCalendar…`,
+`ErrorMailRecipientNotFound`) is not answered, and its condition is refused by name instead.
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
 | `sendMail` answers 202 Accepted with no body, and saves the message in Sent Items | documented | `test_a_sent_email_is_one_copy_per_mailbox_and_the_senders_copy_asks_each_recipient` | https://learn.microsoft.com/en-us/graph/api/user-sendmail |
 | A reply goes to the message's `replyTo` when it names any, else to its sender; so a reply from Sent Items goes to the mailbox itself | documented | `test_a_reply_goes_to_the_messages_reply_to_and_else_to_its_sender` | https://learn.microsoft.com/en-us/graph/api/message-reply |
 | Reply-all goes to the sender (or `replyTo`) and every recipient of the message | documented | `test_a_reply_to_all_goes_to_the_sender_and_every_recipient` | https://learn.microsoft.com/en-us/graph/api/message-replyall |
-| A comment and the message's body together are 400, nothing sent (the code is not documented and not pinned) | documented | `test_a_comment_and_a_body_together_are_refused_400` | https://learn.microsoft.com/en-us/graph/api/message-reply |
+| A comment and the message's body together are 400, nothing sent; the page gives no code, so the error carries none | documented | `test_a_comment_and_a_body_together_are_refused_400` | https://learn.microsoft.com/en-us/graph/api/message-reply |
 | `reply` answers 202 and the reply is in the message's conversation | documented | `test_a_persons_reply_lands_in_the_senders_inbox_in_the_conversation_and_is_notified` | https://learn.microsoft.com/en-us/graph/api/message-reply |
-| A body is stored as sent and read as HTML unless `Prefer: outlook.body-content-type="text"` asks for text, which `Preference-Applied` confirms | documented | `test_a_reply_body_is_kept_as_sent`, `test_an_events_body_and_attendees_are_kept_as_sent`, `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask` | https://learn.microsoft.com/en-us/graph/api/user-list-calendarview |
+| A body is stored as sent and read as HTML unless `Prefer: outlook.body-content-type="text"` asks for text, which `Preference-Applied` confirms | documented | `test_an_events_body_and_attendees_are_kept_as_sent`, `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask` | https://learn.microsoft.com/en-us/graph/api/user-list-calendarview |
+| A reply's `body` and `bodyPreview` are left out: Graph composes them from what is written and the quoted original ("the reply message in HTML that this API creates"), and no page or recording shows how | documented | `test_a_replys_body_graph_composes_is_left_out_and_the_run_records_what_was_written` | https://learn.microsoft.com/en-us/graph/api/message-reply |
 | A message or event property the provider would not keep (`attachments`, `categories`, `isOnlineMeeting`, …) is refused by name and nothing is sent or made | documented | `test_message_properties_that_would_be_dropped_are_refused_by_name_and_nothing_is_sent`, `test_event_properties_that_would_be_dropped_are_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/resources/message |
 | A message and an event carry `changeKey` and `@odata.etag` W/"changeKey", both renewed with every change | documented | `test_outlook_items_carry_their_change_key_as_a_weak_etag_and_both_change_with_them` | https://learn.microsoft.com/en-us/graph/api/message-get |
 | Messages page 10 by default, `$top` 1 to 1000, the next page by `@odata.nextLink` | documented | `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask` | https://learn.microsoft.com/en-us/graph/api/user-list-messages |
-| With `$filter` and `$orderby` together, the `$orderby` properties must open the `$filter` in order, else `InefficientFilter` | documented | `test_an_orderby_that_does_not_lead_the_filter_is_refused_inefficient_filter` | https://learn.microsoft.com/en-us/graph/api/user-list-messages |
+| With `$filter` and `$orderby` together, the `$orderby` properties must open the `$filter` in order, else `InefficientFilter` "The restriction or sort order is too complex for this operation." | documented | `test_an_orderby_that_does_not_lead_the_filter_is_refused_inefficient_filter` | https://learn.microsoft.com/en-us/graph/api/user-list-messages |
+| `InefficientFilter` is a 400 | observed | `test_an_orderby_that_does_not_lead_the_filter_is_refused_inefficient_filter` | https://github.com/mpalermiti/outlook-mcp/issues/31 |
+| A list of messages or events without `$orderby` that would hold more than one is refused by name: neither page documents an order | documented | `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask`, `test_an_event_list_without_orderby_holding_more_than_one_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/user-list-messages and https://learn.microsoft.com/en-us/graph/api/user-list-events |
+| A reply's subject is `RE: ` before the original's; an acceptance's is `Accepted: ` before the event's; a tentative or declining answer's is left out (no source shows it) | observed | `test_a_reply_goes_to_the_messages_reply_to_and_else_to_its_sender`, `test_only_an_acceptance_carries_a_subject_a_recording_shows` | https://github.com/microsoftgraph/dataconnect-solutions/blob/e6b679831b424c6a6a0a68d8246e0b3be38140d9/Datasets/data-connect-dataset-sentitems.md |
+| A mailbox's folders are named "Deleted Items", "Drafts", "Inbox", "Sent Items" and listed in that order | documented | `test_mail_folders_list_by_display_name_as_graphs_example_answer_does` | https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders |
+| `internetMessageId` is left out (Exchange assigns it from its own hosts) and a `$filter` on it is refused by name | documented | `test_internet_message_id_is_left_out_and_filtering_on_it_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/resources/message |
+| A message or event that is not in the mailbox is 404 `ErrorItemNotFound` "The specified object was not found in the store." | observed | `test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_change` | https://github.com/microsoftgraph/msgraph-sdk-java/issues/1171 |
 | A folder's message `delta` pages to a `@odata.deltaLink`, and from it lists what changed, a removal as `@removed` | documented | `test_delta_lists_the_folder_then_only_what_arrived_and_what_left` | https://learn.microsoft.com/en-us/graph/api/message-delta |
-| A well-known folder this provider does not hold (`junkemail`, …) is refused by name; an unknown folder is 404 `ErrorFolderNotFound` | documented | `test_a_well_known_folder_not_held_is_refused_by_name_and_an_unknown_one_is_not_found` | https://learn.microsoft.com/en-us/graph/api/resources/mailfolder and RESPONSE_CODES |
-| A send with no recipient, or a recipient whose address is none, is 400 `ErrorInvalidRecipients` | documented | `test_a_send_with_no_recipient_or_a_bad_address_is_refused_invalid_recipients` | https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/responsecode |
-| An event whose end is before its start is 400 `ErrorCalendarEndDateIsEarlierThanStartDate`; the organizer answering their own meeting is `ErrorCalendarIsOrganizerForAccept`, `…ForTentative`, `…ForDecline` | documented | `test_an_end_before_the_start_and_an_organizer_answering_are_refused_with_exchanges_codes` | https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/responsecode |
-| A user's token reaching another user's mailbox or calendar is 403 `ErrorAccessDenied` (whose mailbox it is is the world's) | documented | `test_a_users_token_reaching_another_mailbox_is_refused_access_denied`, `test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_change` | https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/responsecode |
+| A well-known folder this provider does not hold (`junkemail`, …), or any folder the mailbox does not hold, is refused by name | documented | `test_a_folder_the_mailbox_does_not_hold_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/resources/mailfolder |
+| A send with no recipient, or a recipient or attendee whose address is none, is 400 `ErrorInvalidRecipients` "At least one recipient isn't valid." | observed | `test_a_send_with_no_recipient_or_a_bad_address_is_refused_invalid_recipients` | https://github.com/microsoftgraph/php-connect-sample/issues/13 and https://github.com/microsoftgraph/msgraph-sdk-php/issues/280 |
+| An event whose end is before its start, and the organizer answering their own meeting, are refused by name (Exchange's EWS codes exist; no Graph answer is recorded) | documented | `test_an_end_before_the_start_and_an_organizer_answering_are_refused_by_name` | https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/responsecode |
+| A user's token reaching another user's mailbox or calendar is 403 `ErrorAccessDenied` "Access is denied. Check credentials and try again." (whose mailbox it is is the world's) | observed | `test_a_users_token_reaching_another_mailbox_is_refused_access_denied`, `test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_change` | https://github.com/microsoftgraph/microsoft-graph-explorer-v4/issues/2620 and https://github.com/hashicorp/terraform-provider-azuread/issues/1929 |
+| An unreadable request body to mail, calendars or subscriptions is refused by name (Graph's table gives 400 for a malformed request, no code); to files it is 400 `invalidRequest`, as OneDrive's error page lists | documented | `test_a_body_that_cannot_be_read_is_refused_by_name_where_graph_records_no_answer` | https://learn.microsoft.com/en-us/graph/errors and https://learn.microsoft.com/en-us/onedrive/developer/rest-api/concepts/errors |
 | `Prefer: outlook.timezone` other than UTC, and `IdType="ImmutableId"`, are refused by name; without them times are UTC | documented | `test_a_preference_that_would_change_the_answer_unserved_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/user-list-calendarview |
-| An Outlook message subscription lasts at most 10,080 minutes | documented | `test_a_mail_subscription_past_seven_days_or_on_a_folder_that_is_none_is_refused` | https://learn.microsoft.com/en-us/graph/api/resources/subscription |
+| An Outlook message subscription lasts at most 10,080 minutes; asking for longer, whose answer is not documented, is refused by name | documented | `test_a_mail_subscription_past_seven_days_or_on_a_folder_that_is_none_is_refused` | https://learn.microsoft.com/en-us/graph/api/resources/subscription |
+| A subscription whose notification URL fails validation is 400, with no code (the page gives none) | documented | `test_a_subscription_unvalidated_or_repeated_is_refused_and_one_too_long_or_unwatchable_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/subscription-post-subscriptions |
+| A second subscription with the same `changeType` and `resource` is 409 "Subscription Id <id> already exists for the requested combination", with no code | documented | `test_a_subscription_unvalidated_or_repeated_is_refused_and_one_too_long_or_unwatchable_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/subscription-post-subscriptions |
+| Renewing a subscription that expired or was deleted is 404, with no code; reading or deleting one, and every other subscription refusal, is refused by name | documented | `test_a_subscription_expires_on_the_runs_clock_and_notifies_nothing_after` | https://learn.microsoft.com/en-us/graph/api/subscription-update |
 | An event made with attendees sends them an invitation carrying the event's body; an attendee's response is in `attendees[].status` | documented | `test_an_invitation_asks_each_attendee_and_their_accept_lands_as_their_change` | https://learn.microsoft.com/en-us/graph/api/user-post-events |
 | An event's attendees are kept as sent, address and name | documented | `test_an_events_body_and_attendees_are_kept_as_sent` | https://learn.microsoft.com/en-us/graph/api/resources/attendee |
 | `calendarView` without `startDateTime` and `endDateTime` (both required, no answer documented) is refused by name | documented | `test_a_calendar_view_without_a_window_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/user-list-calendarview |
 | A POST repeated with the same `transactionId` makes the event once | documented | `test_an_event_retried_with_its_transaction_id_is_made_once` | https://learn.microsoft.com/en-us/graph/api/resources/event |
-| `getSchedule`'s `availabilityView` is one digit an interval: 0 free, 1 tentative, 2 busy, 3 out of office; an address that is no mailbox answers `ErrorMailRecipientNotFound` in its schedule | documented | `test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answers` | https://learn.microsoft.com/en-us/graph/api/calendar-getschedule and RESPONSE_CODES |
+| `getSchedule`'s `availabilityView` is one digit an interval: 0 free, 1 tentative, 2 busy, 3 out of office; an address that is no mailbox of the tenant is refused by name (no answer for it is documented or recorded) | documented | `test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answers` | https://learn.microsoft.com/en-us/graph/api/calendar-getschedule |
 | A person's automatic reply is the reason the scenario gives, as written | documented | `test_a_person_away_shows_out_of_office_while_it_lasts_and_available_after` | https://learn.microsoft.com/en-us/graph/api/resources/automaticrepliessetting |
+
+## Graph Teams messages
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| A channel's messages list newest first by the last change to their whole reply chain | documented | `test_channel_messages_list_by_their_reply_chains_last_change` | https://learn.microsoft.com/en-us/graph/api/channel-list-messages |
+| A chat's messages list by `lastModifiedDateTime`, newest first, the documented default | documented | `test_channel_messages_list_by_their_reply_chains_last_change` | https://learn.microsoft.com/en-us/graph/api/chat-list-messages |
+| A message's replies list newest first, as the page's example answer lists them | documented | `test_channel_messages_list_by_their_reply_chains_last_change` | https://learn.microsoft.com/en-us/graph/api/chatmessage-list-replies |
 
 ## Refused by name
 
@@ -150,23 +173,12 @@ it and no recording of the real service shows one:
 - Graph: `/me` with no signed-in user; `GET /chats` with no signed-in user; a mailbox of someone who is no user of
   the tenant; `$top` past a page's documented bounds; a `$filter`, `$orderby`, `$expand`, `$search` or `$count`
   not served; a body content type other than text or html; an event without start and end; a `dateTime` that
-  cannot be read; `getSchedule` with its end not after its start or an interval outside 5 to 1440; `sendMail`
-  without a message; the content of a folder; listing sites without `?search=`; delta on a folder that is not the
-  drive's root.
-
-## Answered, not yet sourced
-
-These are still answered as they are; no page says them and no recording shows them. Each is to be replaced by a
-recorded answer of the real service or refused by name:
-
-- the connector's Delete Activity answers 200 (its page says only "an HTTP status code" with no body), and its
-  400 refusals spell their code `BadArgument` (Teams' table spells it `Bad Argument`);
-- a reply's body is the comment alone, where Outlook also quotes the original; a response to an invitation is
-  subjected "Accepted:", "Tentative:" or "Declined:" with the event's subject;
-- messages and events list newest-received and soonest-starting first when no `$orderby` is sent;
-- a mailbox's well-known folders' display names, an Outlook item's `internetMessageId`, and the subscriptions
-  surface's refusal codes (`InvalidRequest`, `ExtensionError`, `ResourceNotFound`);
-- an unreadable request body is 400 `invalidRequest`.
+  cannot be read; `getSchedule` with its end not after its start, an interval outside 5 to 1440, or an address
+  with no mailbox in the tenant; `sendMail` without a message; the content of a folder; listing sites without
+  `?search=`; delta on a folder that is not the drive's root; a list of messages or events without `$orderby` that
+  would hold more than one; a folder the mailbox does not hold; an event ending before it starts; an organizer
+  answering their own meeting; a request body that cannot be read (outside files); and every subscription refusal
+  but the three documented above.
 
 ## Not carried over
 

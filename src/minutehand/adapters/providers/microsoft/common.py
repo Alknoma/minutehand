@@ -32,7 +32,8 @@ def bearer(request: Request) -> str | None:
 class GraphRefusal(ServiceRefusal):
     """Graph answered an error: `status`, Graph's `code` and a message of this provider's own wording."""
 
-    def __init__(self, status: int, code: str, message: str, *, retry_after: int | None = None) -> None:
+    def __init__(self, status: int, code: str | None, message: str, *, retry_after: int | None = None) -> None:
+        """`code` None: Microsoft documents the status of this refusal but not its code, so none is answered."""
         super().__init__(message)
         self.status = status
         self.code = code

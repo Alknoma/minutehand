@@ -393,7 +393,9 @@ class InnerError(Aliased):
 
 
 class GraphErrorBody(Aliased):
-    code: str
+    code: str | None = Field(
+        default=None, description="Left out where Microsoft documents the status of a refusal but not its code"
+    )
     message: str
     innerError: InnerError | None = Field(
         default=None, description="Every refusal of Graph's carries one; Minutehand's own errors, none"
@@ -971,9 +973,10 @@ class MailMessage(Aliased):
     receivedDateTime: str
     sentDateTime: str
     hasAttachments: bool = False
-    internetMessageId: str
-    subject: str
-    bodyPreview: str
+    subject: str | None = Field(
+        default=None, description="Left out where Outlook composes it and no source says how (a declined invitation)"
+    )
+    bodyPreview: str | None = Field(default=None, description="Left out with the body")
     importance: Literal["low", "normal", "high"] = "normal"
     parentFolderId: str
     conversationId: str
@@ -982,7 +985,11 @@ class MailMessage(Aliased):
     isDraft: bool = False
     webLink: str
     inferenceClassification: Literal["focused", "other"] = "focused"
-    body: ItemBody
+    body: ItemBody | None = Field(
+        default=None,
+        description="Left out of a reply: Graph composes it from the comment and the quoted original, and no source "
+        "says how",
+    )
     sender: Recipient
     from_: Recipient = Field(validation_alias=AliasChoices("from_", "from"), serialization_alias="from")
     toRecipients: list[Recipient]

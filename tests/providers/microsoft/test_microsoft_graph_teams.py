@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -144,3 +145,37 @@ async def test_a_team_unknown_is_refused_in_graphs_shape(graph: Graph) -> None:
     assert set(answered.json()["error"]) == {"code", "message", "innerError"}
     no_token = await graph.http.get(f"{GRAPH}/users")
     assert no_token.status_code == 200 and no_token.json()["value"]
+
+
+async def test_channel_messages_list_by_their_reply_chains_last_change(graph: Graph, bot: Bot) -> None:
+    """channel-list-messages: messages are sorted by the last modified date of the whole reply chain, so an older
+    post someone has just replied to lists first; replies list newest first, as chatmessage-list-replies' example."""
+    team = graph.tenant.directory.team_id
+    general = graph.tenant.directory.general_channel_id
+    url = f"{CONNECTOR}v3/conversations/{general}/activities"
+    first = (await graph.http.post(url, json={"type": "message", "text": "first"}, headers=graph.connector)).json()
+    graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+    await graph.http.post(url, json={"type": "message", "text": "second"}, headers=graph.connector)
+    graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+    await graph.http.post(f"{url}/{first['id']}", json={"type": "message", "text": "reply"}, headers=graph.connector)
+    listed = (await graph.http.get(f"{GRAPH}/teams/{team}/channels/{general}/messages", headers=graph.auth)).json()
+    assert [m["body"]["content"] for m in listed["value"]] == ["first", "second"]
+    graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+    await graph.http.post(f"{url}/{first['id']}", json={"type": "message", "text": "later"}, headers=graph.connector)
+    replies = await graph.http.get(
+        f"{GRAPH}/teams/{team}/channels/{general}/messages/{first['id']}/replies", headers=graph.auth
+    )
+    assert [r["body"]["content"] for r in replies.json()["value"]] == ["later", "reply"]
+    sofia = graph.tenant.world.person("sofia")
+    assert sofia is not None
+    chat = graph.tenant.world.personal_with(sofia.user.id, graph.tenant.directory.tenant_id)
+    assert chat is not None
+    for text in ("one", "two"):
+        graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+        await graph.http.post(
+            f"{CONNECTOR}v3/conversations/{chat.id}/activities",
+            json={"type": "message", "text": text},
+            headers=graph.connector,
+        )
+    in_chat = (await graph.http.get(f"{GRAPH}/chats/{chat.graph_id}/messages", headers=graph.auth)).json()["value"]
+    assert [m["body"]["content"] for m in in_chat] == ["two", "one"], "chat-list-messages: lastModifiedDateTime desc"

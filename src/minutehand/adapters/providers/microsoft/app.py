@@ -93,13 +93,15 @@ class GraphApp:
         if key is None:
             found = next((s for s in self._world.subscriptions() if s.subscription.resource == resource), None)
             if found is None:
-                raise GraphRefusal(404, "ResourceNotFound", "The subscription's resource is no longer known.")
+                raise NotImplementedError(
+                    "a subscription whose resource is no longer known: Graph's answer is not recorded"
+                )
             return found.watches
         user = self._world.user_by(key)
         if user is None:
-            raise GraphRefusal(404, "ResourceNotFound", f"The resource '{resource}' could not be found.")
+            raise NotImplementedError(f"a subscription to {resource!r}, which the world does not hold: not recorded")
         if claims is not None and claims.oid is not None and claims.oid != user.user.id:
-            raise GraphRefusal(403, "ExtensionError", "Access is denied to another user's mailbox.")
+            raise NotImplementedError("a user's subscription to another user's mailbox: Graph's answer is not recorded")
         if rest[-1] == "events":
             return calendar_watch(user.user.id)
         if rest == ["messages"]:  # enum-lint: exempt Graph's path segment
@@ -116,14 +118,18 @@ class GraphApp:
             if drive_parts[0] == "me" and claims is None:
                 found = next((s for s in self._world.subscriptions() if s.subscription.resource == resource), None)
                 if found is None:
-                    raise GraphRefusal(404, "ResourceNotFound", "The subscription's resource is no longer known.")
+                    raise NotImplementedError(
+                        "a subscription whose resource is no longer known: Graph's answer is not recorded"
+                    )
                 return found.watches, DRIVE_LIMIT
             if claims is not None:
                 address = self.files.address(Caller(claims), drive_parts)
             else:
                 drive = self._world.drive(drive_parts[1]) if drive_parts[0] == "drives" else None
                 if drive is None:
-                    raise GraphRefusal(404, "ResourceNotFound", "The subscription's resource is no longer known.")
+                    raise NotImplementedError(
+                        "a subscription whose resource is no longer known: Graph's answer is not recorded"
+                    )
                 return drive_watch(drive.drive.id), DRIVE_LIMIT
             return drive_watch(address.drive.drive.id), DRIVE_LIMIT
         if parts[-1:] == ["messages"]:
@@ -135,8 +141,8 @@ class GraphApp:
                 channel = self._world.conversation(parts[3])
                 if channel is not None and channel.team_id == parts[1]:
                     return conversation_watch(channel.id), MESSAGES_LIMIT
-            raise GraphRefusal(404, "ResourceNotFound", f"The resource '{resource}' could not be found.")
-        raise GraphRefusal(400, "ExtensionError", f"Subscriptions to '{resource}' are not supported.")
+            raise NotImplementedError(f"a subscription to {resource!r}, which the world does not hold: not recorded")
+        raise NotImplementedError(f"a subscription to {resource!r}: not a resource this provider watches")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         request = Request(scope, receive)
@@ -176,7 +182,7 @@ class GraphApp:
             return await self._teams.chats(request, parts)
         if head == "communications":
             return await self._teams.communications(request, parts)
-        raise GraphRefusal(400, "BadRequest", f"Resource not found for the segment '{head}'.")
+        raise NotImplementedError(f"the segment {head!r}")
 
     async def _subscription(self, request: Request, parts: list[str]) -> Response:
         method = request.method

@@ -14,7 +14,8 @@ import httpx
 import pytest
 
 from minutehand.adapters.providers.microsoft.wire import Mention
-from tests.providers.microsoft.outlook import AGENT, OUTLOOK, signed_in
+from minutehand.domain.world import MessageSnapshot
+from tests.providers.microsoft.outlook import AGENT, OUTLOOK, sent_by_agent, signed_in
 from tests.providers.microsoft.tenant import CONNECTOR, GRAPH, Intercepted, Tenant, bearer, seeded, token
 
 REPLY = "https://learn.microsoft.com/en-us/graph/api/message-reply"
@@ -38,14 +39,18 @@ class Outlook:
     async def sent(self, owner: str, subject: str) -> dict[str, Any]:
         """The one message in `owner`'s Sent Items with `subject`."""
         listed = await self.http.get(
-            f"{GRAPH}/users/{owner}/mailFolders/sentitems/messages", params={"$top": "100"}, headers=self.app
+            f"{GRAPH}/users/{owner}/mailFolders/sentitems/messages",
+            params={"$top": "100", "$orderby": "receivedDateTime desc"},
+            headers=self.app,
         )
         [found] = [m for m in listed.json()["value"] if m["subject"] == subject]
         return found
 
     async def inbox(self, owner: str, subject: str) -> dict[str, Any]:
         listed = await self.http.get(
-            f"{GRAPH}/users/{owner}/mailFolders/inbox/messages", params={"$top": "100"}, headers=self.app
+            f"{GRAPH}/users/{owner}/mailFolders/inbox/messages",
+            params={"$top": "100", "$orderby": "receivedDateTime desc"},
+            headers=self.app,
         )
         [found] = [m for m in listed.json()["value"] if m["subject"] == subject]
         return found
@@ -123,20 +128,28 @@ async def test_a_reply_to_all_goes_to_the_sender_and_every_recipient(outlook: Ou
 
 async def test_a_comment_and_a_body_together_are_refused_400(outlook: Outlook) -> None:
     """Documented (REPLY): specifying both a comment and the message's body returns 400 Bad Request; nothing is
-    sent. Its error code is not documented and not pinned here."""
+    sent. The page gives no error code, so none is answered."""
     lunch = await outlook.inbox(AGENT, "Lunch")
     refused = await outlook.http.post(
         f"{GRAPH}/me/messages/{lunch['id']}/reply",
         json={"comment": "Yes", "message": {"body": {"contentType": "html", "content": "<p>Yes</p>"}}},
         headers=outlook.me,
     )
-    assert refused.status_code == 400
-    listed = (await outlook.http.get(f"{GRAPH}/me/mailFolders/sentitems/messages", headers=outlook.me)).json()
+    assert refused.status_code == 400 and "code" not in refused.json()["error"]
+    listed = (
+        await outlook.http.get(
+            f"{GRAPH}/me/mailFolders/sentitems/messages", params={"$orderby": "sentDateTime"}, headers=outlook.me
+        )
+    ).json()
     assert "RE: Lunch" not in [m["subject"] for m in listed["value"]]
 
 
-async def test_a_reply_body_is_kept_as_sent(outlook: Outlook) -> None:
-    """Data stays as sent: a reply whose message carries an HTML body is that body, not a text rewrite of it."""
+async def test_a_replys_body_graph_composes_is_left_out_and_the_run_records_what_was_written(
+    outlook: Outlook, tenant: Tenant
+) -> None:
+    """Graph composes a reply's body from what is written and the quoted original, and no page or recording says
+    how, so the reply's `body` and `bodyPreview` are left out rather than invented; the run records what the agent
+    wrote."""
     lunch = await outlook.inbox(AGENT, "Lunch")
     html = '<p>Yes, <b>Tuesday</b> at <a href="https://example.com/room">Room 4</a>.</p>'
     answered = await outlook.http.post(
@@ -145,7 +158,10 @@ async def test_a_reply_body_is_kept_as_sent(outlook: Outlook) -> None:
         headers=outlook.me,
     )
     assert answered.status_code == 202, answered.text
-    assert (await outlook.sent(AGENT, "RE: Lunch"))["body"] == {"contentType": "html", "content": html}
+    reply = await outlook.sent(AGENT, "RE: Lunch")
+    assert "body" not in reply and "bodyPreview" not in reply
+    asked = sent_by_agent(tenant)[-1].after
+    assert isinstance(asked, MessageSnapshot) and asked.text == "RE: Lunch\n\nYes, Tuesday at Room 4."
 
 
 async def test_message_properties_that_would_be_dropped_are_refused_by_name_and_nothing_is_sent(
@@ -166,7 +182,11 @@ async def test_message_properties_that_would_be_dropped_are_refused_by_name_and_
     )
     assert refused.status_code == 501
     assert "attachments, categories" in refused.json()["error"]["message"]
-    listed = (await outlook.http.get(f"{GRAPH}/me/mailFolders/sentitems/messages", headers=outlook.me)).json()
+    listed = (
+        await outlook.http.get(
+            f"{GRAPH}/me/mailFolders/sentitems/messages", params={"$orderby": "sentDateTime"}, headers=outlook.me
+        )
+    ).json()
     assert "Brief" not in [m["subject"] for m in listed["value"]]
 
 
@@ -208,26 +228,22 @@ async def test_event_properties_that_would_be_dropped_are_refused_by_name(outloo
     assert categories.status_code == 501 and "categories" in categories.json()["error"]["message"]
     online = await outlook.http.post(f"{GRAPH}/me/events", json={**EVENT, "isOnlineMeeting": True}, headers=outlook.me)
     assert online.status_code == 501 and "isOnlineMeeting" in online.json()["error"]["message"]
-    listed = (await outlook.http.get(f"{GRAPH}/me/events", headers=outlook.me)).json()["value"]
+    listed = (
+        await outlook.http.get(f"{GRAPH}/me/events", params={"$orderby": "start/dateTime"}, headers=outlook.me)
+    ).json()["value"]
     assert "Planning" not in [e["subject"] for e in listed]
 
 
-async def test_an_end_before_the_start_and_an_organizer_answering_are_refused_with_exchanges_codes(
-    outlook: Outlook,
-) -> None:
-    """Documented (RESPONSE_CODES): ErrorCalendarEndDateIsEarlierThanStartDate, and ErrorCalendarIsOrganizerFor*
-    for the organizer answering their own meeting."""
+async def test_an_end_before_the_start_and_an_organizer_answering_are_refused_by_name(outlook: Outlook) -> None:
+    """Exchange's EWS codes for these exist, but no Graph page or recording shows Graph's answer, so each is refused
+    by name rather than answered with a guessed status and code."""
     backwards = {**EVENT, "end": {"dateTime": "2026-09-16T09:00:00", "timeZone": "UTC"}}
     refused = await outlook.http.post(f"{GRAPH}/me/events", json=backwards, headers=outlook.me)
-    assert refused.json()["error"]["code"] == "ErrorCalendarEndDateIsEarlierThanStartDate"
+    assert refused.status_code == 501 and "end is before its start" in refused.json()["error"]["message"]
     made = (await outlook.http.post(f"{GRAPH}/me/events", json=EVENT, headers=outlook.me)).json()
-    for action, code in (
-        ("accept", "ErrorCalendarIsOrganizerForAccept"),
-        ("tentativelyAccept", "ErrorCalendarIsOrganizerForTentative"),
-        ("decline", "ErrorCalendarIsOrganizerForDecline"),
-    ):
+    for action in ("accept", "tentativelyAccept", "decline"):
         answered = await outlook.http.post(f"{GRAPH}/me/events/{made['id']}/{action}", json={}, headers=outlook.me)
-        assert answered.json()["error"]["code"] == code
+        assert answered.status_code == 501 and "organizer" in answered.json()["error"]["message"]
 
 
 async def test_outlook_items_carry_their_change_key_as_a_weak_etag_and_both_change_with_them(outlook: Outlook) -> None:
@@ -242,13 +258,13 @@ async def test_outlook_items_carry_their_change_key_as_a_weak_etag_and_both_chan
     assert event["@odata.etag"] == f'W/"{event["changeKey"]}"'
 
 
-async def test_a_well_known_folder_not_held_is_refused_by_name_and_an_unknown_one_is_not_found(
+async def test_a_folder_the_mailbox_does_not_hold_is_refused_by_name(
     outlook: Outlook,
 ) -> None:
     junk = await outlook.http.get(f"{GRAPH}/me/mailFolders/junkemail/messages", headers=outlook.me)
     assert junk.status_code == 501 and "junkemail" in junk.json()["error"]["message"]
     unknown = await outlook.http.get(f"{GRAPH}/me/mailFolders/AAMkANOSUCHFOLDER/messages", headers=outlook.me)
-    assert (unknown.status_code, unknown.json()["error"]["code"]) == (404, "ErrorFolderNotFound")
+    assert unknown.status_code == 501 and "does not hold" in unknown.json()["error"]["message"]
 
 
 async def test_a_stale_if_match_is_refused_412_and_the_item_is_unchanged(outlook: Outlook) -> None:
@@ -325,3 +341,76 @@ async def test_a_preference_that_would_change_the_answer_unserved_is_refused_by_
     assert immutable.status_code == 501 and "ImmutableId" in immutable.json()["error"]["message"]
     utc = await outlook.http.get(url, headers={**outlook.me, "Prefer": 'outlook.timezone="UTC"'})
     assert utc.status_code == 200
+
+
+async def test_an_event_list_without_orderby_holding_more_than_one_is_refused_by_name(outlook: Outlook) -> None:
+    """Graph documents no order for a list of events (or messages) sent without `$orderby`, so a list that would
+    hold more than one is refused by name; with `$orderby` it is served."""
+    for when in ("2026-09-16", "2026-09-17"):
+        made = {**EVENT, "start": {"dateTime": f"{when}T10:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": f"{when}T11:00:00", "timeZone": "UTC"}}  # fmt: skip
+        assert (await outlook.http.post(f"{GRAPH}/me/events", json=made, headers=outlook.me)).status_code == 201
+    unordered = await outlook.http.get(f"{GRAPH}/me/events", headers=outlook.me)
+    assert unordered.status_code == 501 and "without $orderby" in unordered.json()["error"]["message"]
+    ordered = await outlook.http.get(f"{GRAPH}/me/events", params={"$orderby": "start/dateTime"}, headers=outlook.me)
+    assert ordered.status_code == 200 and len(ordered.json()["value"]) == 2
+
+
+async def test_internet_message_id_is_left_out_and_filtering_on_it_is_refused_by_name(outlook: Outlook) -> None:
+    """Exchange assigns `internetMessageId` from its own hosts; any value made up here would be invented, so the
+    property is left out, and a `$filter` on it is refused by name."""
+    lunch = await outlook.inbox(AGENT, "Lunch")
+    assert "internetMessageId" not in lunch
+    refused = await outlook.http.get(
+        f"{GRAPH}/me/messages", params={"$filter": "internetMessageId eq '<x@y>'"}, headers=outlook.me
+    )
+    assert refused.status_code == 501
+
+
+async def test_mail_folders_list_by_display_name_as_graphs_example_answer_does(outlook: Outlook) -> None:
+    """user-list-mailfolders' example answer names the well-known folders "Deleted Items", "Drafts", "Inbox",
+    "Sent Items", in that order."""
+    listed = (await outlook.http.get(f"{GRAPH}/me/mailFolders", headers=outlook.me)).json()["value"]
+    assert [f["displayName"] for f in listed] == ["Deleted Items", "Drafts", "Inbox", "Sent Items"]
+
+
+async def test_only_an_acceptance_carries_a_subject_a_recording_shows(outlook: Outlook) -> None:
+    """Microsoft's recorded sample of sent items shows "Accepted: <subject>"; no source shows what a tentative or
+    declining answer is subjected, so theirs is left out."""
+    planning = next(
+        e
+        for e in (
+            await outlook.http.get(
+                f"{GRAPH}/users/sofia@example.com/events", params={"$orderby": "start/dateTime"}, headers=outlook.app
+            )
+        ).json()["value"]
+        if e["subject"] == "Planning"
+    )
+    for action in ("tentativelyAccept", "accept"):
+        answered = await outlook.http.post(
+            f"{GRAPH}/users/sofia@example.com/events/{planning['id']}/{action}", json={}, headers=outlook.app
+        )
+        assert answered.status_code == 202, answered.text
+    sent = (
+        await outlook.http.get(
+            f"{GRAPH}/users/sofia@example.com/mailFolders/sentitems/messages",
+            params={"$orderby": "sentDateTime"},
+            headers=outlook.app,
+        )
+    ).json()["value"]
+    responses = [m for m in sent if m.get("meetingMessageType") in ("meetingTentativelyAccepted", "meetingAccepted")]
+    assert [(m["meetingMessageType"], m.get("subject")) for m in responses] == [
+        ("meetingTentativelyAccepted", None),
+        ("meetingAccepted", "Accepted: Planning"),
+    ]
+
+
+async def test_a_body_that_cannot_be_read_is_refused_by_name_where_graph_records_no_answer(outlook: Outlook) -> None:
+    """Graph's error table gives 400 for a malformed request but no Outlook page or recording gives its code, so an
+    unreadable body to mail, calendars or subscriptions is refused by name; OneDrive's error page documents
+    `invalidRequest` for files, which keep it."""
+    for url in (f"{GRAPH}/me/sendMail", f"{GRAPH}/me/events", f"{GRAPH}/subscriptions"):
+        refused = await outlook.http.post(
+            url, content=b"{not json", headers={**outlook.me, "Content-Type": "application/json"}
+        )
+        assert refused.status_code == 501 and "cannot be read" in refused.json()["error"]["message"], url

@@ -211,11 +211,11 @@ async def test_an_update_carrying_only_a_card_is_accepted(caller: Caller) -> Non
 
 
 async def test_a_deleted_activity_is_gone_from_the_conversation(caller: Caller) -> None:
-    """Documented: Delete Activity removes the activity and answers a status with no body. Class (a), REST. The exact
-    success status is not pinned: the old emulator answered 204, this provider 200; `CLAIMS.md` records it."""
+    """Documented: Delete Activity removes the activity and answers 200 with no body, the success Microsoft's
+    Bot Connector Swagger (ConnectorAPI.json) names "The operation succeeded, there is no response."""
     sent = (await caller.send(caller.general, {"type": "message", "text": "Posted by mistake"})).json()["id"]
     answered = await caller.http.delete(f"{caller.activities(caller.general)}/{sent}", headers=caller.auth)
-    assert answered.is_success and answered.content == b""
+    assert answered.status_code == 200 and answered.content == b"", "ConnectorAPI.json: 200, no response"
     assert caller.tenant.world.message(sent) is None
 
 
@@ -290,7 +290,7 @@ async def test_a_proactive_create_without_a_tenant_is_refused_400(caller: Caller
     body = _create(caller, user.mri)
     del body["channelData"]
     answered = await caller.http.post(f"{CONNECTOR}v3/conversations", json=body, headers=caller.auth)
-    assert refusal(answered, 400) == "BadArgument"
+    assert refusal(answered, 400) == "Bad Argument"
 
 
 async def test_a_proactive_create_of_a_group_chat_is_refused_400(caller: Caller) -> None:
@@ -299,7 +299,7 @@ async def test_a_proactive_create_of_a_group_chat_is_refused_400(caller: Caller)
     answered = await caller.http.post(
         f"{CONNECTOR}v3/conversations", json=_create(caller, user.mri, isGroup=True), headers=caller.auth
     )
-    assert refusal(answered, 400) == "BadArgument"
+    assert refusal(answered, 400) == "Bad Argument"
 
 
 async def test_a_proactive_create_naming_another_bot_is_refused_by_name(caller: Caller) -> None:

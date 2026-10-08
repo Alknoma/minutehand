@@ -122,7 +122,11 @@ async def test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answe
 ) -> None:
     async with microsoft.http() as http:
         auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
-        window = {"startDateTime": "2026-09-14T00:00:00Z", "endDateTime": "2026-09-16T00:00:00Z"}
+        window = {
+            "startDateTime": "2026-09-14T00:00:00Z",
+            "endDateTime": "2026-09-16T00:00:00Z",
+            "$orderby": "start/dateTime",
+        }
         dania = (await http.get(f"{GRAPH}/users/dania@example.com/calendarView", params=window, headers=auth)).json()
         assert [(e["subject"], e["isOrganizer"]) for e in dania["value"]] == [
             ("Budget sync", False),
@@ -134,7 +138,7 @@ async def test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answe
         schedule = await http.post(
             f"{GRAPH}/users/{AGENT}/calendar/getSchedule",
             json={
-                "schedules": ["sofia@example.com", "dania@example.com", "owen@example.com", "nobody@example.com"],
+                "schedules": ["sofia@example.com", "dania@example.com", "owen@example.com"],
                 "startTime": {"dateTime": "2026-09-14T10:00:00", "timeZone": "UTC"},
                 "endTime": {"dateTime": "2026-09-14T12:00:00", "timeZone": "UTC"},
                 "availabilityViewInterval": 30,
@@ -146,7 +150,16 @@ async def test_the_calendar_view_and_free_busy_read_every_calendar_and_its_answe
         assert views["sofia@example.com"]["availabilityView"] == "0220", "Budget sync, 10:30 to 11:30, hers"
         assert views["dania@example.com"]["availabilityView"] == "0220", "she accepted it"
         assert views["owen@example.com"]["availabilityView"] == "0000", "he declined it"
-        assert views["nobody@example.com"]["error"]["responseCode"] == "ErrorMailRecipientNotFound"
+        nobody = await http.post(
+            f"{GRAPH}/users/{AGENT}/calendar/getSchedule",
+            json={
+                "schedules": ["nobody@example.com"],
+                "startTime": {"dateTime": "2026-09-14T10:00:00", "timeZone": "UTC"},
+                "endTime": {"dateTime": "2026-09-14T12:00:00", "timeZone": "UTC"},
+            },
+            headers=auth,
+        )
+        assert nobody.status_code == 501, "no Graph page or recording shows the answer for an unknown address"
 
 
 async def test_a_calendar_view_without_a_window_is_refused_by_name(tenant: Tenant, microsoft: Intercepted) -> None:

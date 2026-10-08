@@ -57,10 +57,14 @@ class Surface:
     ids: dict[str, str]
     chat_message: str
     channel_message: str
+    attended: str
+    webhook: str
 
     def concrete(self, template: str) -> str:
         """The template with the world's ids in place of its parameters."""
         path = template
+        if template.endswith(("/accept", "/tentativelyAccept", "/decline")):
+            path = path.replace("{event-id}", quote(self.attended, safe=":@,!"))
         message = self.channel_message if "/channels/" in template else self.chat_message
         path = path.replace("{chatMessage-id}", message).replace("{chatMessage-id1}", message)
         for name, value in self.ids.items():
@@ -99,9 +103,13 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 headers=app,
             )
         ).json()["value"][0]["id"]
-        sent = (await http.get(f"{GRAPH}/me/mailFolders/sentitems/messages", headers=me, params={"$top": "1"})).json()[
-            "value"
-        ][0]["id"]
+        sent = (
+            await http.get(
+                f"{GRAPH}/me/mailFolders/sentitems/messages",
+                headers=me,
+                params={"$top": "1", "$orderby": "receivedDateTime desc"},
+            )
+        ).json()["value"][0]["id"]
         event = (
             await http.post(
                 f"{GRAPH}/me/events",
@@ -113,6 +121,8 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 headers=me,
             )
         ).json()["id"]
+        listed = await http.get(f"{GRAPH}/me/events", params={"$orderby": "start/dateTime"}, headers=me)
+        attended = next(e["id"] for e in listed.json()["value"] if not e["isOrganizer"])
         expires = (tenant.clock.now() + timedelta(minutes=30)).isoformat()
         subscription = (
             await http.post(
@@ -149,6 +159,8 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
             },
             chat_message=chat_message,
             channel_message=channel_message,
+            attended=attended,
+            webhook=webhook.url,
         )
 
 
@@ -168,6 +180,12 @@ BODIES: dict[str, object] = {
         "start": {"dateTime": "2026-09-16T10:00:00", "timeZone": "UTC"},
         "end": {"dateTime": "2026-09-16T11:00:00", "timeZone": "UTC"},
     },
+    "/getPresencesByUserId": {"ids": ["00000000-0000-0000-0000-000000000000"]},
+    "/getSchedule": {
+        "schedules": ["owen@example.com"],
+        "startTime": {"dateTime": "2026-09-14T10:00:00", "timeZone": "UTC"},
+        "endTime": {"dateTime": "2026-09-14T12:00:00", "timeZone": "UTC"},
+    },
 }
 """A served create sent with what its page names required, where an empty body is refused by name."""
 
@@ -186,13 +204,29 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
     if template.endswith(("/delta()", "/children")) and template.startswith("/drives/"):
         path = path.replace(f"/items/{surface.ids['driveItem-id']}/", "/items/root/")
     if template.endswith("calendarView"):
-        path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z"
+        path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z&$orderby=start/dateTime"
+    elif method == "GET" and template.endswith("/events"):
+        path += "?$orderby=start/dateTime"
+    elif method == "GET" and template.endswith("/messages") and template.startswith(("/me", "/users")):
+        path += "?$orderby=receivedDateTime desc"
     if template == "/sites" and method == "GET":
         path += "?search=*"
     headers = surface.me if template.startswith("/me") or template == "/chats" else surface.app
     content: bytes | None = None
     if method in ("POST", "PATCH", "PUT"):
         sent = next((body for end, body in BODIES.items() if method == "POST" and template.endswith(end)), {})
+        if template.startswith("/subscriptions"):
+            later = "2026-09-14T09:00:00Z"
+            sent = (
+                {"expirationDateTime": later}
+                if method == "PATCH"
+                else {
+                    "changeType": "updated",
+                    "notificationUrl": surface.webhook,
+                    "resource": f"/drives/{surface.ids['drive-id']}/root",
+                    "expirationDateTime": later,
+                }
+            )
         content = b"x" if template.endswith("/content") else json.dumps(sent).encode()
         headers = {**headers, "Content-Type": "text/plain" if content == b"x" else "application/json"}
     answered = await surface.http.request(method, f"{GRAPH}{path}", content=content, headers=headers)

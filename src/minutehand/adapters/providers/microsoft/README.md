@@ -59,8 +59,10 @@ manifest, and because the tenant, its bot and its users are one directory every 
   of subject and text, its recipients by their scenario email, its conversation as the channel, so an email is an
   ask of each person and a reply in the same conversation is a follow-up of the same ask. Lists take `$top` (10 by
   default), `$skip`, `$select`, `$filter` on `isRead`, the date properties, `from`/`sender` address,
-  `conversationId`, `subject`, `id`, `internetMessageId`, `importance`, joined by `and`, and `$orderby` on the
-  dates and `subject`; with both, an `$orderby` that does not open the `$filter` is 400 `InefficientFilter`.
+  `conversationId`, `subject`, `id`, `importance`, joined by `and`, and `$orderby` on the
+  dates and `subject`; with both, an `$orderby` that does not open the `$filter` is 400 `InefficientFilter`. A list
+  without `$orderby` that would hold more than one message (or event) is 501: Graph documents no default order.
+  `internetMessageId` is left out (Exchange assigns it from its own hosts).
   `Prefer: outlook.body-content-type="text"` answers bodies as text; otherwise a body is HTML; a body is stored as
   sent either way. A message and an event carry `changeKey` and `@odata.etag` W/"changeKey". A folder's
   `messages/delta` lists the folder, then what changed in it and, as `@removed`, what left it. A user's token
@@ -145,8 +147,9 @@ every pushed activity is.
   `lastModifiedDateTime` and `size` and what mail and events list above, `$search`, `$count`, `ConsistencyLevel`,
   an unread `$filter` clause or an `or` are 501 too.
 - Mail has no categories or flags (a `PATCH` of anything but `isRead` is 501), and `sendMail` always saves to Sent
-  Items. A message deleted from Deleted Items is gone, and `delta` does not list it as removed. A reply's text is
-  its comment, with no quoted original. Deletions notify no subscription.
+  Items. A message deleted from Deleted Items is gone, and `delta` does not list it as removed. A reply's `body` is
+  left out (Graph composes it with the quoted original, and no source says how); the run records what was written.
+  A tentative or declining answer to an invitation carries no subject (only "Accepted: …" is recorded). Deletions notify no subscription.
 - Calendars have no recurrence, no online meetings, no `findMeetingTimes`, no working hours in `getSchedule`, no
   `Prefer: outlook.timezone` other than UTC and no Windows time zone names (501). An attendee's copy of an event
   is the organizer's one item, so an attendee cannot change or delete it (501); deleting an event sends no

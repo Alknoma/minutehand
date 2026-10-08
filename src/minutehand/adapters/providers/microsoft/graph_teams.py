@@ -293,7 +293,9 @@ class TeamsGraph:
             try:
                 asked = wire.read(wire.PresencesByUserId, await request.body())
             except wire.Unreadable as e:
-                raise bad_request(e.message) from e
+                raise NotImplementedError(
+                    f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+                ) from e
             found = [self.presence(self._user(i)) for i in asked.ids]
             return self._page(request, found, f"{GRAPH}/$metadata#Collection(microsoft.graph.presence)")
         raise NotImplementedError(f"the segment '{'/'.join(parts)}'")
@@ -442,8 +444,22 @@ class TeamsGraph:
         every = self._world.messages(conversation.id)
         roots = [m for m in every if not channel or m.replyToId is None]
 
+        def modified(m: wire.Activity) -> str:
+            return m.localTimestamp or m.timestamp
+
         def replies_of(root: str) -> list[wire.ChatMessage]:
-            return [chat_message(self._world, conversation, m) for m in every if m.replyToId == root]
+            """Newest first, as the documented example answer of chatmessage-list-replies lists them."""
+            replies = sorted(
+                reversed([m for m in every if m.replyToId == root]), key=lambda m: m.timestamp, reverse=True
+            )
+            return [chat_message(self._world, conversation, m) for m in replies]
+
+        def latest(m: wire.Activity) -> str:
+            """A channel message by its whole reply chain's last change (channel-list-messages), a chat's by its own
+            `lastModifiedDateTime`, the default chat-list-messages documents; newest first either way."""
+            if not channel:
+                return modified(m)
+            return max([modified(m), *(modified(r) for r in every if r.replyToId == m.id)])
 
         if not rest:
             self._refuse_options(request, {"$expand"} if channel else set())
@@ -451,7 +467,7 @@ class TeamsGraph:
             if expand is not None and expand != "replies":
                 raise NotImplementedError(f"$expand={expand}")
             found = []
-            for m in reversed(roots):
+            for m in sorted(reversed(roots), key=latest, reverse=True):
                 message = chat_message(self._world, conversation, m)
                 if expand == "replies":
                     message = message.model_copy(
@@ -474,9 +490,7 @@ class TeamsGraph:
         if rest[1:] == ["replies"] and channel:
             self._refuse_options(request, set())
             self._world.saw(conversation_ref(conversation.id), Operation.READ)
-            return self._page(
-                request, list(reversed(replies_of(root.id))), f"{GRAPH}/$metadata#{context}('{root.id}')/replies"
-            )
+            return self._page(request, replies_of(root.id), f"{GRAPH}/$metadata#{context}('{root.id}')/replies")
         raise NotImplementedError(f"the segment '{'/'.join(rest[1:])}'")
 
 

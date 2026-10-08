@@ -218,3 +218,19 @@ async def test_connector_operations_not_served_are_refused_by_name(connector: Bo
         answered = await connector.http.request(method, url, json={}, headers=connector.auth)
         assert error_code(answered, 501) == "not_implemented"
         assert f"{method} /teams/v3/conversations" in answered.json()["error"]["message"]
+
+
+async def test_a_member_the_conversation_does_not_hold_is_refused_by_name(connector: Bot) -> None:
+    """Teams' status-code table has no code for a member that is not there, so the call is refused by name."""
+    answered = await connector.http.get(
+        f"{CONNECTOR}v3/conversations/{connector.general}/members/29:nobody", headers=connector.auth
+    )
+    assert error_code(answered, 501) == "not_implemented"
+
+
+async def test_a_payload_the_connector_cannot_use_is_bad_argument_as_teams_spells_it(connector: Bot) -> None:
+    """Teams' status-code table spells the 400 code `Bad Argument`, with its space."""
+    answered = await connector.http.post(
+        f"{CONNECTOR}v3/conversations/{connector.general}/activities", json={"type": "message"}, headers=connector.auth
+    )
+    assert error_code(answered, 400) == "Bad Argument"

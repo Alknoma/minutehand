@@ -32,8 +32,9 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from minutehand.adapters.providers.microsoft import wire
-from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, bad_request, graph_caller, query
+from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, graph_caller, query
 from minutehand.adapters.providers.microsoft.graph_mail import (
+    RECIPIENTS_INVALID,
     Composed,
     Mail,
     address_of,
@@ -77,19 +78,13 @@ NEVER = "0001-01-01T00:00:00Z"
 
 ANSWERS = {
     "accept": (wire.ResponseKind.ACCEPTED, wire.MeetingMessageType.ACCEPTED, "Accepted"),
-    "tentativelyAccept": (wire.ResponseKind.TENTATIVE, wire.MeetingMessageType.TENTATIVE, "Tentative"),
-    "decline": (wire.ResponseKind.DECLINED, wire.MeetingMessageType.DECLINED, "Declined"),
+    "tentativelyAccept": (wire.ResponseKind.TENTATIVE, wire.MeetingMessageType.TENTATIVE, None),
+    "decline": (wire.ResponseKind.DECLINED, wire.MeetingMessageType.DECLINED, None),
 }
 """Each answer to an invitation, by the action Graph names it with: the attendee's response, the message the
-organizer is sent, and the word its subject opens with."""
-
-ORGANIZER_ANSWERS = {
-    "accept": "ErrorCalendarIsOrganizerForAccept",
-    "tentativelyAccept": "ErrorCalendarIsOrganizerForTentative",
-    "decline": "ErrorCalendarIsOrganizerForDecline",
-}
-"""Exchange's code for an organizer answering their own meeting, by the answer
-(https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/responsecode)."""
+organizer is sent, and the word its subject opens with where a recording shows it: "Accepted: <subject>" is in
+Microsoft's recorded sample of sent items (`graph_mail.DATA_CONNECT_SENT_ITEMS`); no source shows the subject of a
+tentative or declining answer, so theirs is left out."""
 
 REQUEST_ACTIONS = [
     MessageAction(action_id="accept", label="Accept"),
@@ -202,10 +197,12 @@ class Calendar:
                 try:
                     asked = wire.read(wire.EventResponseRequest, await request.body())
                 except wire.Unreadable as e:
-                    raise bad_request(e.message) from e
+                    raise NotImplementedError(
+                        f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+                    ) from e
                 if stored.organizer_id == owner.user.id:
-                    raise GraphRefusal(
-                        400, ORGANIZER_ANSWERS[rest[2]], "The organizer cannot answer their own meeting."
+                    raise NotImplementedError(
+                        f"{rest[2]} by the organizer of the meeting: Graph's answer is not documented or recorded"
                     )
                 await self.respond(
                     stored, owner, rest[2], actor=Actor.AGENT, send=asked.sendResponse, comment=asked.comment
@@ -261,8 +258,12 @@ class Calendar:
             if option in request.query_params:
                 raise NotImplementedError(f"{option} on events")
         found = self._filtered(events, query(request, "$filter"))
-        order = (query(request, "$orderby") or "start/dateTime").strip()
-        side, _, direction = order.partition(" ")
+        order = (query(request, "$orderby") or "").strip()
+        if not order and len(found) > 1:
+            raise NotImplementedError(
+                "listing events without $orderby: Graph documents no order for them (user-list-events)"
+            )
+        side, _, direction = (order or "start/dateTime").partition(" ")
         if side not in ("start/dateTime", "end/dateTime") or direction.lower() not in ("", "asc", "desc"):
             raise NotImplementedError(f"$orderby on events: {order}")
         found = sorted(
@@ -318,7 +319,7 @@ class Calendar:
         for a in sent:
             address = a.emailAddress.address
             if not address or "@" not in address:
-                raise GraphRefusal(400, "ErrorInvalidRecipients", f"An attendee's address is not valid: '{address}'.")
+                raise GraphRefusal(400, "ErrorInvalidRecipients", RECIPIENTS_INVALID)
             found.append(
                 wire.Attendee(
                     type=a.type,
@@ -341,7 +342,9 @@ class Calendar:
         try:
             asked = wire.read(wire.EventRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+            ) from e
         unread = sorted(str(n) for n in (asked.model_extra or {}))
         if unread or asked.isOnlineMeeting:
             raise NotImplementedError(
@@ -363,8 +366,8 @@ class Calendar:
             raise NotImplementedError("an event without both start and end: Graph documents no answer to it")
         starts, ends = moment(asked.start), moment(asked.end)
         if ends < starts:
-            raise GraphRefusal(
-                400, "ErrorCalendarEndDateIsEarlierThanStartDate", "The end date occurs before the start date."
+            raise NotImplementedError(
+                "an event whose end is before its start: Graph's answer is not documented or recorded"
             )
         stored = self.make(
             owner,
@@ -458,7 +461,9 @@ class Calendar:
         try:
             asked = wire.read(wire.EventRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+            ) from e
         extra = sorted(asked.model_extra or {})
         if extra or asked.transactionId is not None:
             raise NotImplementedError(
@@ -471,8 +476,8 @@ class Calendar:
         starts = moment(asked.start) if asked.start is not None else stored.starts
         ends = moment(asked.end) if asked.end is not None else stored.ends
         if ends < starts:
-            raise GraphRefusal(
-                400, "ErrorCalendarEndDateIsEarlierThanStartDate", "The end date occurs before the start date."
+            raise NotImplementedError(
+                "an event whose end is before its start: Graph's answer is not documented or recorded"
             )
         event = stored.event
         subject = asked.subject if asked.subject is not None else event.subject
@@ -595,8 +600,9 @@ class Calendar:
             await self._mail.send(
                 Composed(
                     sender=user,
-                    subject=f"{word}: {stored.event.subject}",
-                    body=wire.ItemBody(contentType="text", content=comment),
+                    subject=f"{word}: {stored.event.subject}" if word is not None else None,
+                    body=None,
+                    said=comment,
                     to=[recipient_of(organizer)],
                     conversation=stored.conversation,
                     meeting=meeting,
@@ -676,7 +682,9 @@ class Calendar:
         try:
             asked = wire.read(wire.ScheduleRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+            ) from e
         start, end = moment(asked.startTime), moment(asked.endTime)
         if end <= start:
             raise NotImplementedError("getSchedule whose endTime is not after its startTime: Graph documents no answer")
@@ -690,16 +698,9 @@ class Calendar:
         for address in asked.schedules:
             user = self._world.user_by(address)
             if user is None:
-                found.append(
-                    wire.ScheduleInformation(
-                        scheduleId=address,
-                        error=wire.FreeBusyError(
-                            message="The specified recipient could not be found.",
-                            responseCode="ErrorMailRecipientNotFound",
-                        ),
-                    )
+                raise NotImplementedError(
+                    f"getSchedule for {address!r}, who has no mailbox in the tenant: Graph's answer is not recorded"
                 )
-                continue
             items = self._busy(user, start, end)
             view = ""
             slot = start
