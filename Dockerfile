@@ -44,10 +44,14 @@ EXPOSE 8080 8081 4318
 ENTRYPOINT ["minutehand"]
 CMD ["serve", "--host", "0.0.0.0"]
 
-# -- example: the base image plus the one library examples/follow_up/agent.py needs -----------------------
+# -- example: the base image plus what examples/follow_up/agent.py imports: slack_sdk, and `minutehand.agent` (the
+# store and the wake marker, standard library only), so the package goes in without its dependencies -------------
 FROM base AS example
 USER root
-RUN pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore slack_sdk==3.45.0
+COPY --from=build /dist/*.whl /tmp/
+RUN pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore slack_sdk==3.45.0 \
+ && pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore --no-deps /tmp/minutehand-*.whl \
+ && rm /tmp/*.whl
 USER minutehand
 
 # -- runtime: the image a user runs. Last, so a plain `docker build` builds it ------------------------------
