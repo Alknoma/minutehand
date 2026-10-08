@@ -121,7 +121,8 @@ def is_user_identifier(value: str) -> bool:
 
 
 def stamp(moment: datetime) -> str:
-    """Asana's timestamp: UTC, milliseconds, `Z`."""
+    """Asana's timestamp, returned for every date-time it answers: `YYYY-MM-DDTHH:mm:ss.fffZ`, in UTC
+    (https://developers.asana.com/docs/dates-and-times)."""
     at = moment.astimezone(UTC)
     return at.strftime("%Y-%m-%dT%H:%M:%S.") + f"{at.microsecond // 1000:03d}Z"
 
@@ -442,8 +443,11 @@ def _due(fields: Fields) -> tuple[str | None, str | None]:
         raise bad("You may only provide one of due_on or due_at!")  # https://forum.asana.com/t/808508
     if due_on is not None and not is_date(due_on):
         raise bad("due_on: Invalid date")
-    if due_at is not None and parse_stamp(due_at) is None:
-        raise bad("due_at: Invalid datetime")
+    if due_at is not None:
+        parsed = parse_stamp(due_at)
+        if parsed is None:
+            raise bad("due_at: Invalid datetime")
+        due_at = stamp(parsed)
     return due_on, due_at
 
 
@@ -756,7 +760,7 @@ def _date_value(value: AsanaFieldValue, sent: JsonValue, where: str) -> AsanaFie
         moment = parse_stamp(at) if isinstance(at, str) else None
         if moment is None:
             raise bad(f"{where}.date_time: Invalid datetime")
-        return value.model_copy(update={"date": moment.astimezone(UTC).date().isoformat(), "date_time": at})
+        return value.model_copy(update={"date": moment.astimezone(UTC).date().isoformat(), "date_time": stamp(moment)})
     on = sent["date"] if "date" in sent else None
     if on is None:
         return value

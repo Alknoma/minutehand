@@ -196,7 +196,7 @@ async def test_a_client_holding_only_a_token_discovers_its_workspace_and_runs_a_
     assert values["Priority"]["enum_value"]["name"] == "High"
     assert values["Status"]["enum_value"]["name"] == "In Progress", "completing moves neither the field nor the section"
     assert task["memberships"][0]["section"]["name"] == "In Review"
-    assert (task["due_on"], task["due_at"]) == ("2026-08-28", "2026-08-28T17:00:00+00:00")
+    assert (task["due_on"], task["due_at"]) == ("2026-08-28", "2026-08-28T17:00:00.000Z")
     assert task["permalink_url"] == f"https://app.asana.com/0/{project['gid']}/{gid}"
 
     changes = [e for e in through.store.events() if e.entity.external_id == gid and isinstance(e.after, TicketSnapshot)]

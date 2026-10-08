@@ -21,20 +21,32 @@ async def test_a_task_comes_back_with_its_words_as_they_were_sent(agent: httpx.A
         "name": "  Fix  the\tlogin  ",
         "notes": "Line one\n\n  <b>not markup</b> & more\n",
         "projects": [BACKEND],
-        "due_at": "2026-09-02T15:00:00+02:00",
         "custom_fields": {POINTS: 5, LAUNCH: {"date_time": "2026-09-03T09:30:00+02:00"}},
     }
     made = got(await agent.post("/tasks", json={"data": sent}), 201)
     read = got(
         await agent.get(
             f"/tasks/{made['gid']}",
-            params={"opt_fields": "name,notes,due_at,custom_fields.number_value,custom_fields.date_value"},
+            params={"opt_fields": "name,notes,custom_fields.number_value,custom_fields.date_value"},
         )
     )
     values = {f["gid"]: f for f in read["custom_fields"]}
-    assert (read["name"], read["notes"], read["due_at"]) == (sent["name"], sent["notes"], sent["due_at"])
+    assert (read["name"], read["notes"]) == (sent["name"], sent["notes"])
     assert values[POINTS]["number_value"] == 5 and isinstance(values[POINTS]["number_value"], int)
-    assert values[LAUNCH]["date_value"] == {"date": "2026-09-03", "date_time": "2026-09-03T09:30:00+02:00"}
+    assert values[LAUNCH]["date_value"] == {"date": "2026-09-03", "date_time": "2026-09-03T07:30:00.000Z"}
+
+
+async def test_a_date_time_is_answered_in_asanas_documented_form(agent: httpx.AsyncClient) -> None:
+    """https://developers.asana.com/docs/dates-and-times: "The ISO 8601 format `YYYY-MM-DDTHH:mm:ss:fffZ` is used for
+    fields that return or accept date and time values", in UTC; a moment sent in another offset is the same moment."""
+    made = got(
+        await agent.post(
+            "/tasks", json={"data": {"name": "x", "projects": [BACKEND], "due_at": "2026-09-02T15:00:00+02:00"}}
+        ),
+        201,
+    )
+    read = got(await agent.get(f"/tasks/{made['gid']}", params={"opt_fields": "due_at,due_on"}))
+    assert (read["due_at"], read["due_on"]) == ("2026-09-02T13:00:00.000Z", "2026-09-02")
 
 
 async def test_opt_fields_answers_exactly_what_it_names_and_the_gid(agent: httpx.AsyncClient) -> None:

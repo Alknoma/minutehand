@@ -140,7 +140,7 @@ async def test_update_changes_only_what_was_sent(client: httpx.AsyncClient) -> N
     unassigned = data(await client.put(f"/tasks/{made['gid']}", json={"data": {"assignee": None}}))
 
     assert (changed["name"], changed["notes"], changed["due_on"]) == ("Final", "keep me", "2026-09-01")
-    assert (timed["due_at"], timed["due_on"]) == ("2026-09-02T15:00:00Z", "2026-09-02")
+    assert (timed["due_at"], timed["due_on"]) == ("2026-09-02T15:00:00.000Z", "2026-09-02")
     assert unassigned["assignee"] is None
 
 
