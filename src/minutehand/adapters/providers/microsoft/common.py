@@ -6,6 +6,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from minutehand.adapters.providers.microsoft import tokens, wire
+from minutehand.adapters.providers.microsoft.state import MicrosoftWorld
 from minutehand.adapters.providers.microsoft.wire import TokenUse
 from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
 from minutehand.ports.clock import Clock
@@ -31,7 +32,8 @@ def bearer(request: Request) -> str | None:
 class GraphRefusal(ServiceRefusal):
     """Graph answered an error: `status`, Graph's `code` and a message of this provider's own wording."""
 
-    def __init__(self, status: int, code: str, message: str, *, retry_after: int | None = None) -> None:
+    def __init__(self, status: int, code: str | None, message: str, *, retry_after: int | None = None) -> None:
+        """`code` None: Microsoft documents the status of this refusal but not its code, so none is answered."""
         super().__init__(message)
         self.status = status
         self.code = code
@@ -88,16 +90,30 @@ def bad_request(message: str) -> GraphRefusal:
     return GraphRefusal(400, "invalidRequest", message)
 
 
-def graph_caller(request: Request) -> wire.Claims:
-    """The claims of the Graph access token the call carries; refused in Graph's shape when there is none."""
-    token = bearer(request)
-    if token is None:
-        raise GraphRefusal(401, "InvalidAuthenticationToken", "Access token is empty.")
-    try:
-        claims = tokens.decode(token, use=TokenUse.ACCESS)
-    except tokens.TokenRefused as e:
-        code = "InvalidAuthenticationToken"
-        raise GraphRefusal(401, code, f"Access token validation failure: {e.reason}.") from e
-    if claims.aud != tokens.GRAPH_AUDIENCE:
-        raise GraphRefusal(401, "InvalidAuthenticationToken", "Access token validation failure. Invalid audience.")
-    return claims
+def graph_caller(request: Request, world: MicrosoftWorld) -> wire.Claims:
+    """Who a Graph call is from: the tenant, app and user its bearer token names. Minutehand does not enforce
+    credentials: a missing, unreadable, expired or foreign token is never refused, and one that names nobody is the
+    tenant's own application calling (app-only)."""
+    claims = tokens.presented(bearer(request))
+    return claims if claims is not None else application(world, tokens.GRAPH_AUDIENCE)
+
+
+def application(world: MicrosoftWorld, audience: str) -> wire.Claims:
+    """The claims of the tenant's application calling with no user: what a call presenting no readable token is."""
+    tenant = next(iter(world.tenants()), None)
+    app = next(iter(world.apps()), None)
+    app_id = app.app_id if app is not None else ""
+    return wire.Claims(
+        iss=tokens.issuer_for(tenant.id if tenant is not None else ""),
+        aud=audience,
+        iat=0,
+        nbf=0,
+        exp=0,
+        tid=tenant.id if tenant is not None else None,
+        appid=app_id,
+        azp=app_id,
+        sub=app_id,
+        ver="2.0",
+        uti="",
+        minutehand_use=TokenUse.ACCESS,
+    )

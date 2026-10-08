@@ -48,30 +48,18 @@ async def test_a_registered_app_gets_a_bearer_token_for_the_bot_framework_and_fo
             assert isinstance(body["expires_in"], int) and body["expires_in"] > 0
 
 
-async def test_a_wrong_client_secret_is_refused_invalid_client(tenant: Tenant, microsoft: Intercepted) -> None:
-    """Documented: a secret that is not the app's is AADSTS7000215, error `invalid_client`, and no token. Class (a),
-    ERROR_CODES. The HTTP status is not pinned here: the old emulator answered 400 where this provider answers 401
-    (RFC 6749 section 5.2 allows 401 for `invalid_client`); `CLAIMS.md` records the disagreement."""
-    async with microsoft.http() as http:
-        answered = await _ask(http, tenant, _form(tenant, BOT_SCOPE, client_secret="not-this-apps-secret"))
-    body = answered.json()
-    assert answered.status_code in (400, 401)
-    assert body["error"] == "invalid_client" and "access_token" not in body
-    assert body["error_description"].startswith("AADSTS7000215")
-
-
-async def test_an_app_the_directory_has_never_seen_is_refused_unauthorized_client_400(
+async def test_a_wrong_client_secret_and_an_unknown_app_still_get_a_token(
     tenant: Tenant, microsoft: Intercepted
 ) -> None:
-    """Documented: an application id not found in the directory is AADSTS700016, `unauthorized_client`, a 400.
-    Class (a), ERROR_CODES. Asserted for both scopes the old emulators each claimed it for."""
+    """Minutehand does not enforce credentials (`CLAIMS.md`): the identity platform refuses these (AADSTS7000215,
+    AADSTS700016, ERROR_CODES); this provider answers each with a token, for both scopes."""
     async with microsoft.http() as http:
         for scope in (BOT_SCOPE, GRAPH_SCOPE):
-            answered = await _ask(http, tenant, _form(tenant, scope, client_id="an-app-registered-nowhere"))
-            assert answered.status_code == 400
-            body = answered.json()
-            assert body["error"] == "unauthorized_client"
-            assert body["error_description"].startswith("AADSTS700016")
+            wrong = await _ask(http, tenant, _form(tenant, scope, client_secret="not-this-apps-secret"))
+            unknown = await _ask(http, tenant, _form(tenant, scope, client_id="an-app-registered-nowhere"))
+            for answered in (wrong, unknown):
+                assert answered.status_code == 200, answered.text
+                assert answered.json()["access_token"]
 
 
 async def test_a_refresh_token_the_platform_issued_answers_a_fresh_access_token(
@@ -118,11 +106,9 @@ async def test_a_refresh_token_the_platform_issued_answers_a_fresh_access_token(
     assert refreshed.json()["access_token"] != first.json()["access_token"]
 
 
-async def test_a_refresh_token_the_platform_never_issued_is_refused_invalid_grant(
-    tenant: Tenant, microsoft: Intercepted
-) -> None:
-    """Documented: a refresh token that is not valid is refused `invalid_grant`, a 400. Class (a), REFRESH. The old
-    emulator issued a token for any string here; `CLAIMS.md` lists that as contradicted."""
+async def test_a_refresh_token_naming_no_user_is_refused_as_not_served(tenant: Tenant, microsoft: Intercepted) -> None:
+    """A refresh token is read only for the user it names; a string that names nobody cannot be answered with a
+    user's token, so it is not served, by name (501), rather than refused as a credential."""
     d = tenant.directory
     async with microsoft.http() as http:
         refused = await _ask(
@@ -136,5 +122,5 @@ async def test_a_refresh_token_the_platform_never_issued_is_refused_invalid_gran
                 "scope": "https://graph.microsoft.com/Files.ReadWrite.All offline_access",
             },
         )
-    assert refused.status_code == 400
-    assert refused.json()["error"] == "invalid_grant" and "access_token" not in refused.json()
+    assert refused.status_code == 501
+    assert "names no user" in refused.text

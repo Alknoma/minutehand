@@ -64,9 +64,13 @@ def parse_time(text: str) -> datetime:
     try:
         found = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as e:
-        raise GraphRefusal(400, "InvalidRequest", f"'{text}' is not a valid expirationDateTime.") from e
+        raise NotImplementedError(
+            f"the expirationDateTime {text!r}: Graph's answer is not documented or recorded"
+        ) from e
     if found.tzinfo is None:
-        raise GraphRefusal(400, "InvalidRequest", "expirationDateTime must carry a time zone.")
+        raise NotImplementedError(
+            "an expirationDateTime without a time zone: Graph's answer is not documented or recorded"
+        )
     return found
 
 
@@ -129,18 +133,26 @@ class Subscriptions:
         sub = record.subscription.model_copy(update={"odata_context": f"{GRAPH}/$metadata#subscriptions/$entity"})
         return Response(wire.dump(sub), status_code=status, media_type=GRAPH_JSON)
 
-    def _found(self, sub: str) -> SubscriptionRecord:
+    def _found(self, sub: str, *, renewing: bool = False) -> SubscriptionRecord:
+        """A live subscription. Renewing one that expired or was deleted is 404 (subscription-update documents the
+        status, not the code, so none is answered); reading or deleting one is not documented."""
         record = self._world.subscription(sub)
         if record is None or not live(record, self._clock.now()):
-            raise GraphRefusal(404, "ResourceNotFound", f"The object was not found: subscription '{sub}'.")
+            if renewing:
+                raise GraphRefusal(404, None, f"The subscription '{sub}' no longer exists.")
+            raise NotImplementedError(
+                "a subscription that does not exist or has expired: Graph's answer is not documented or recorded"
+            )
         return record
 
     async def create(self, request: Request) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         try:
             asked = wire.read(wire.SubscriptionRequest, await request.body())
         except wire.Unreadable as e:
-            raise GraphRefusal(400, "BadRequest", e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented or recorded"
+            ) from e
         for name, value in (
             ("changeType", asked.changeType),
             ("notificationUrl", asked.notificationUrl),
@@ -148,24 +160,41 @@ class Subscriptions:
             ("expirationDateTime", asked.expirationDateTime),
         ):
             if not value:
-                raise GraphRefusal(400, "InvalidRequest", f"The '{name}' property is required.")
+                raise NotImplementedError(
+                    f"a subscription without {name}: Graph's answer is not documented or recorded"
+                )
         kinds = asked.changeType.split(",")
         if not set(kinds) <= {"created", "updated", "deleted"}:
-            raise GraphRefusal(400, "InvalidRequest", f"'{asked.changeType}' is not a valid changeType.")
+            raise NotImplementedError(
+                f"the changeType {asked.changeType!r}: Graph's answer is not documented or recorded"
+            )
         if not asked.notificationUrl.lower().startswith("https://") and not asked.notificationUrl.lower().startswith(
             "http://"
         ):
-            raise GraphRefusal(400, "InvalidRequest", "The notificationUrl must be an HTTPS URL.")
+            raise NotImplementedError(
+                f"the notificationUrl {asked.notificationUrl!r}: Graph's answer is not documented or recorded"
+            )
         watches, limit = self._resolve(asked.resource, claims)
         expires = parse_time(asked.expirationDateTime)
         now = self._clock.now()
-        if expires <= now:
-            raise GraphRefusal(400, "InvalidRequest", "Subscription expiration can only be in the future.")
-        if expires > now + limit:
+        if expires <= now or expires > now + limit:
+            raise NotImplementedError(
+                f"an expirationDateTime outside now to {int(limit.total_seconds() // 60)} minutes ahead, the most the "
+                f"resource allows: Graph's answer is not documented or recorded"
+            )
+        taken = next(
+            (
+                r
+                for r in self._world.subscriptions()
+                if live(r, now)
+                and r.subscription.changeType == asked.changeType
+                and r.subscription.resource == asked.resource
+            ),
+            None,
+        )
+        if taken is not None:
             raise GraphRefusal(
-                400,
-                "InvalidRequest",
-                f"Subscription expiration can only be {int(limit.total_seconds() // 60)} minutes in the future.",
+                409, None, f"Subscription Id {taken.subscription.id} already exists for the requested combination"
             )
         for url in [
             asked.notificationUrl,
@@ -174,7 +203,7 @@ class Subscriptions:
             if not await _validate(url):
                 raise GraphRefusal(
                     400,
-                    "InvalidRequest",
+                    None,
                     "Subscription validation request failed. Notification endpoint must respond with 200 OK to "
                     "validation request.",
                 )
@@ -209,13 +238,12 @@ class Subscriptions:
         )
 
     async def get(self, request: Request) -> Response:
-        graph_caller(request)
         record = self._found(request.path_params["sub"])
         self._world.saw(subscription_ref(record.subscription.id), Operation.READ)
         return self._answer(record)
 
     async def list(self, request: Request) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
         now = self._clock.now()
         found = [
             r.subscription
@@ -226,17 +254,20 @@ class Subscriptions:
         return Response(wire.dump(page), media_type=GRAPH_JSON)
 
     async def renew(self, request: Request) -> Response:
-        graph_caller(request)
-        record = self._found(request.path_params["sub"])
+        record = self._found(request.path_params["sub"], renewing=True)
         try:
             asked = wire.read(wire.SubscriptionPatch, await request.body())
         except wire.Unreadable as e:
-            raise GraphRefusal(400, "BadRequest", e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented or recorded"
+            ) from e
         expires = parse_time(asked.expirationDateTime)
         _, limit = self._resolve(record.subscription.resource, None)
         now = self._clock.now()
         if expires <= now or expires > now + limit:
-            raise GraphRefusal(400, "InvalidRequest", "The expirationDateTime is outside what this resource allows.")
+            raise NotImplementedError(
+                "renewing to an expirationDateTime outside what the resource allows: Graph's answer is not documented or recorded"
+            )
         renewed = record.model_copy(
             update={"subscription": record.subscription.model_copy(update={"expirationDateTime": graph_time(expires)})}
         )
@@ -244,7 +275,6 @@ class Subscriptions:
         return self._answer(renewed)
 
     async def delete(self, request: Request) -> Response:
-        graph_caller(request)
         record = self._found(request.path_params["sub"])
         self._world.remove(subscription_ref(record.subscription.id), actor=Actor.AGENT, parent=SUBSCRIPTIONS)
         return Response(status_code=204)

@@ -14,7 +14,7 @@ Every user of the tenant has a mailbox with four well-known folders (`inbox`, `s
   notified of it.
 - **Query options** on a list: `$top` (1 to 1000, 10 by default), `$skip`, `$select`; `$filter` on `isRead`,
   `hasAttachments`, `isDraft`, the four date properties (compared to a date and time), `from/emailAddress/address`,
-  `sender/emailAddress/address`, `conversationId`, `subject`, `id`, `internetMessageId` and `importance`, joined
+  `sender/emailAddress/address`, `conversationId`, `subject`, `id` and `importance`, joined
   by `and`; `$orderby` on the four date properties and `subject`. With both, every `$orderby` property must open
   the `$filter` in the same order, or the call is refused 400 `InefficientFilter`, as Exchange refuses it. Any
   other clause or option is not served (501). `Prefer: outlook.body-content-type="text"` answers bodies as text;
@@ -37,6 +37,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote, urlencode
 
+from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -90,6 +91,50 @@ def outlook_id(*parts: str) -> str:
     return "AAMkA" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+RECIPIENTS_INVALID = "At least one recipient isn't valid."
+"""Graph's 400 `ErrorInvalidRecipients` message, as recorded from the real service for `sendMail`
+(https://github.com/microsoftgraph/php-connect-sample/issues/13) and for an event's attendees
+(https://github.com/microsoftgraph/msgraph-sdk-php/issues/280)."""
+
+
+def weak_etag(change_key: str) -> str:
+    """An Outlook item's `@odata.etag`: its `changeKey` as a weak entity tag, as every example answer of Graph's
+    message and event pages shows the two (https://learn.microsoft.com/en-us/graph/api/message-get)."""
+    return f'W/"{change_key}"'
+
+
+def versioned(message: wire.MailMessage, now: str, **changed: object) -> wire.MailMessage:
+    """`message` with `changed` written over it: a new `lastModifiedDateTime`, `changeKey` and `@odata.etag`."""
+    change_key = outlook_id(message.id, now, *sorted(f"{k}={v}" for k, v in changed.items()))
+    return message.model_copy(
+        update={**changed, "lastModifiedDateTime": now, "changeKey": change_key, "odata_etag": weak_etag(change_key)}
+    )
+
+
+WELL_KNOWN_FOLDERS = frozenset(
+    {
+        "archive",
+        "clutter",
+        "conflicts",
+        "conversationhistory",
+        "deleteditems",
+        "drafts",
+        "inbox",
+        "junkemail",
+        "localfailures",
+        "msgfolderroot",
+        "outbox",
+        "recoverableitemsdeletions",
+        "scheduled",
+        "searchfolders",
+        "sentitems",
+        "serverfailures",
+        "syncissues",
+    }
+)
+"""Graph's well-known folder names (https://learn.microsoft.com/en-us/graph/api/resources/mailfolder)."""
+
+
 def folder_id(user: str, folder: wire.MailFolderName) -> str:
     return outlook_id(user, "folder", folder.value)
 
@@ -118,8 +163,56 @@ def as_html(body: wire.ItemBody) -> wire.ItemBody:
     return wire.ItemBody(contentType="html", content=f"<html><body>{escaped}</body></html>")
 
 
-def re_subject(subject: str) -> str:
+def _text_preferred(request: Request) -> bool:
+    prefer = request.headers["prefer"] if "prefer" in request.headers else ""
+    return _TEXT_PREFERRED.search(prefer) is not None
+
+
+_TIME_ZONE_PREFERRED = re.compile(r'outlook\.timezone\s*=\s*"?([^",;]+)"?', re.IGNORECASE)
+_IMMUTABLE_IDS = re.compile(r'IdType\s*=\s*"?ImmutableId"?', re.IGNORECASE)
+
+
+def refuse_unserved_preferences(request: Request) -> None:
+    """Refuse by name a `Prefer` that would change the answer in a way not served: times in a zone other than UTC
+    (`outlook.timezone`, https://learn.microsoft.com/en-us/graph/api/user-list-events) and immutable ids
+    (`IdType="ImmutableId"`, https://learn.microsoft.com/en-us/graph/outlook-immutable-id). Answering as though they
+    were not asked would hand back what the caller did not ask for."""
+    prefer = request.headers["prefer"] if "prefer" in request.headers else ""
+    zone = _TIME_ZONE_PREFERRED.search(prefer)
+    if zone is not None and zone.group(1).strip().lower() not in ("utc", "etc/utc"):
+        raise NotImplementedError(f"Prefer: outlook.timezone={zone.group(1).strip()!r}: answers are in UTC only")
+    if _IMMUTABLE_IDS.search(prefer) is not None:
+        raise NotImplementedError('Prefer: IdType="ImmutableId"')
+
+
+def preference_applied(request: Request) -> dict[str, str] | None:
+    """`Preference-Applied` when the caller asked for text bodies (message-get, user-list-calendarview)."""
+    return {"Preference-Applied": 'outlook.body-content-type="text"'} if _text_preferred(request) else None
+
+
+def body_as_asked(request: Request, body: wire.ItemBody | None) -> wire.ItemBody | None:
+    """A stored body as the caller reads it: text when `Prefer: outlook.body-content-type="text"` asks, else HTML,
+    as Graph answers either (message-get, user-list-calendarview). The body stays stored as it was sent."""
+    if body is None:
+        return None
+    if _text_preferred(request):
+        return wire.ItemBody(contentType="text", content=plain(body))
+    return as_html(body)
+
+
+def re_subject(subject: str | None) -> str | None:
+    """A reply's subject: `RE: ` before the original's, as Outlook's own sent replies are recorded in Microsoft's
+    sample of sent items (DATA_CONNECT_SENT_ITEMS); none when the original has none to answer."""
+    if subject is None:
+        return None
     return subject if subject.lower().startswith("re:") else f"RE: {subject}"
+
+
+DATA_CONNECT_SENT_ITEMS = (
+    "https://github.com/microsoftgraph/dataconnect-solutions/blob/e6b679831b424c6a6a0a68d8246e0b3be38140d9/"
+    "Datasets/data-connect-dataset-sentitems.md"
+)
+"""Microsoft's published sample of a tenant's Sent Items, recorded from Exchange Online (Graph Data Connect)."""
 
 
 def split_segments(parts: list[str]) -> list[str]:
@@ -136,13 +229,13 @@ def mailbox_owner(world: MicrosoftWorld, claims: wire.Claims, parts: list[str]) 
     user's token reaches only their own; an application's reaches every user's."""
     if parts[0] == "me":
         if claims.oid is None:
-            raise bad_request("/me request is only valid with delegated authentication flow.")
+            raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
         key, rest = claims.oid, parts[1:]
     else:
         key, rest = parts[1], parts[2:]
     user = world.user_by(key)
     if user is None:
-        raise GraphRefusal(404, "ErrorInvalidUser", f"The requested user '{key}' is invalid.")
+        raise NotImplementedError(f"the mailbox of {key!r}, who is no user of the tenant: Graph documents no answer")
     if claims.oid is not None and claims.oid != user.user.id:
         raise GraphRefusal(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.")
     return user, split_segments(rest)
@@ -166,12 +259,16 @@ class Composed(Model):
     """One message as its sender wrote it, before it is put in each mailbox."""
 
     sender: UserRecord
-    subject: str
-    body: wire.ItemBody
+    subject: str | None
+    body: wire.ItemBody | None
+    said: str | None = Field(
+        default=None, description="What the sender wrote, for the run's record, where the body itself is left out"
+    )
     to: list[wire.Recipient]
     cc: list[wire.Recipient] = []
     bcc: list[wire.Recipient] = []
     conversation: str
+    reply_to: list[wire.Recipient] = []
     importance: Literal["low", "normal", "high"] = "normal"
     meeting: wire.MeetingMessageType | None = None
     event: str | None = None
@@ -203,8 +300,11 @@ class Mail:
         now = graph_time(self._clock.now())
         made = ("seeded mail", seeded) if seeded is not None else ("mail", str(self._world.next_seq()))
         message_id = outlook_id(owner, *made)
-        text = plain(composed.body)
+        text = plain(composed.body) if composed.body is not None else None
+        change_key = outlook_id(message_id, now)
         return wire.MailMessage(
+            odata_etag=weak_etag(change_key),
+            changeKey=change_key,
             odata_type=(REQUEST_TYPE if composed.meeting is wire.MeetingMessageType.REQUEST else RESPONSE_TYPE)
             if composed.meeting is not None
             else None,
@@ -213,9 +313,8 @@ class Mail:
             lastModifiedDateTime=now,
             receivedDateTime=now,
             sentDateTime=now,
-            internetMessageId=f"<{derived_uuid(composed.conversation, now, message_id)}@outlook.example>",
             subject=composed.subject,
-            bodyPreview=text[:255],
+            bodyPreview=text[:255] if text is not None else None,
             importance=composed.importance,
             parentFolderId=folder_id(owner, folder),
             conversationId=composed.conversation,
@@ -227,6 +326,7 @@ class Mail:
             toRecipients=composed.to,
             ccRecipients=composed.cc,
             bccRecipients=composed.bcc if owner == composed.sender.user.id else [],
+            replyTo=composed.reply_to,
             meetingMessageType=composed.meeting,
         )
 
@@ -253,7 +353,7 @@ class Mail:
             folder=wire.MailFolderName.SENT,
             event=composed.event,
         )
-        text = plain(composed.body)
+        text = plain(composed.body) if composed.body is not None else (composed.said or "")
         snapshot = MessageSnapshot(
             text=f"{composed.subject}\n\n{text}".strip() if composed.subject else text,
             channel=composed.conversation,
@@ -336,7 +436,8 @@ class Mail:
     # ------------------------------------------------------------------ Graph
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
-        claims = graph_caller(request)
+        claims = graph_caller(request, self._world)
+        refuse_unserved_preferences(request)
         owner, rest = mailbox_owner(self._world, claims, parts)
         method = request.method
         if rest == ["sendMail"] and method == "POST":
@@ -355,9 +456,13 @@ class Mail:
             rest = rest[2:]
         if rest == ["messages"] and method == "GET":  # enum-lint: exempt Graph's path segment
             return self._list(request, owner, folder)
-        if rest == ["messages", "delta"] and method == "GET":  # enum-lint: exempt Graph's path segment
+        if (
+            rest in (["messages", "delta"], ["messages", "delta()"]) and method == "GET"
+        ):  # enum-lint: exempt Graph's path segment
             if folder is None:
-                raise bad_request("Delta is answered for one folder's messages: mailFolders/{id}/messages/delta.")
+                raise NotImplementedError(
+                    "delta over every folder's messages: only one folder's, mailFolders/{id}/messages/delta"
+                )
             return self._delta(request, owner, folder)
         if len(rest) >= 2 and rest[0] == "messages":
             stored = self._found(owner, rest[1], folder)
@@ -381,20 +486,11 @@ class Mail:
             wire.select(wire.with_context(body, context), fields), media_type=GRAPH_JSON, headers=self._applied(request)
         )
 
-    @staticmethod
-    def _text_preferred(request: Request) -> bool:
-        prefer = request.headers["prefer"] if "prefer" in request.headers else ""
-        return _TEXT_PREFERRED.search(prefer) is not None
-
     def _applied(self, request: Request) -> dict[str, str] | None:
-        return {"Preference-Applied": 'outlook.body-content-type="text"'} if self._text_preferred(request) else None
+        return preference_applied(request)
 
     def _shown(self, request: Request, message: wire.MailMessage) -> wire.MailMessage:
-        if self._text_preferred(request):
-            body = wire.ItemBody(contentType="text", content=plain(message.body))
-        else:
-            body = as_html(message.body)
-        return message.model_copy(update={"body": body})
+        return message.model_copy(update={"body": body_as_asked(request, message.body)})
 
     # ------------------------------------------------------------------ folders
 
@@ -403,7 +499,13 @@ class Mail:
         for name in wire.MailFolderName:
             if wanted == name.value or key == folder_id(owner.user.id, name):
                 return name
-        raise GraphRefusal(404, "ErrorItemNotFound", "The specified object was not found in the store.")
+        if wanted in WELL_KNOWN_FOLDERS:
+            raise NotImplementedError(
+                f"the mail folder {key!r}: only Inbox, Sent Items, Drafts and Deleted Items are held"
+            )
+        raise NotImplementedError(
+            f"the mail folder {key!r}, which the mailbox does not hold: Graph's answer is not recorded"
+        )
 
     def _folder_of(self, owner: UserRecord, folder: wire.MailFolderName) -> wire.MailFolder:
         held = [m for m in self._world.mails(owner.user.id) if m.folder is folder]
@@ -418,7 +520,7 @@ class Mail:
     def _folders(self, request: Request, owner: UserRecord) -> Response:
         page = wire.Page[wire.MailFolder](
             context=f"{GRAPH}/$metadata#users('{owner.user.id}')/mailFolders",
-            value=[self._folder_of(owner, f) for f in wire.MailFolderName],
+            value=sorted((self._folder_of(owner, f) for f in wire.MailFolderName), key=lambda f: f.displayName),
         )
         return Response(wire.dump(page), media_type=GRAPH_JSON)
 
@@ -439,9 +541,7 @@ class Mail:
             flag = re.fullmatch(r"\s*(isRead|hasAttachments|isDraft)\s+(eq|ne)\s+(true|false)\s*", part)
             date = re.fullmatch(rf"\s*({'|'.join(_DATES)})\s+(eq|ne|gt|ge|lt|le)\s+('?[0-9][0-9TZ:.+\-]*'?)\s*", part)
             address = re.fullmatch(r"\s*((?:from|sender)/emailAddress/address)\s+(eq|ne)\s+'((?:[^']|'')*)'\s*", part)
-            text_eq = re.fullmatch(
-                r"\s*(conversationId|subject|id|internetMessageId|importance)\s+(eq|ne)\s+'((?:[^']|'')*)'\s*", part
-            )
+            text_eq = re.fullmatch(r"\s*(conversationId|subject|id|importance)\s+(eq|ne)\s+'((?:[^']|'')*)'\s*", part)
             match = flag or date or address or text_eq
             if match is None:
                 raise NotServed(f"$filter clause on messages: {part.strip()}")
@@ -487,14 +587,20 @@ class Mail:
             for m in self._world.mails(owner.user.id)
             if (folder is None or m.folder is folder) and all(self._holds(c, m.message) for c in clauses)
         ]
-        for prop, descending in reversed(order or [("receivedDateTime", True)]):
-            messages.sort(key=lambda m, prop=prop: getattr(m, prop), reverse=descending)
+        if not order and len(messages) > 1:
+            raise NotImplementedError(
+                "listing messages without $orderby: Graph documents no order for them (user-list-messages)"
+            )
+        for prop, descending in reversed(order):
+            messages.sort(key=lambda m, prop=prop: getattr(m, prop) or "", reverse=descending)
         top = query(request, "$top")
         skip = query(request, "$skip")
         if (top is not None and (not top.isdigit() or not 1 <= int(top) <= PAGE_MAX)) or (
             skip is not None and not skip.isdigit()
         ):
-            raise bad_request(f"Invalid paging: $top must be 1 to {PAGE_MAX} and $skip a whole number.")
+            raise NotImplementedError(
+                f"$top={top} $skip={skip}: the page names $top 1 to {PAGE_MAX}, and no answer to more"
+            )
         size, offset = int(top) if top else PAGE_DEFAULT, int(skip) if skip else 0
         page = [self._shown(request, m) for m in messages[offset : offset + size]]
         where = f"mailFolders('{folder.value}')/messages" if folder is not None else "messages"
@@ -582,14 +688,14 @@ class Mail:
         try:
             asked = wire.read(wire.MessagePatch, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+            ) from e
         if asked.model_extra:
             raise NotServed(f"PATCH of {', '.join(sorted(asked.model_extra))} on a message")
         changed = stored
         if asked.isRead is not None and asked.isRead != stored.message.isRead:
-            message = stored.message.model_copy(
-                update={"isRead": asked.isRead, "lastModifiedDateTime": graph_time(self._clock.now())}
-            )
+            message = versioned(stored.message, graph_time(self._clock.now()), isRead=asked.isRead)
             changed = stored.model_copy(update={"message": message})
             self._rewrite(owner.user.id, changed, actor=Actor.AGENT)
             await self.notify(owner.user.id, changed, "updated")
@@ -602,11 +708,10 @@ class Mail:
                 message_ref(stored.message.id), actor=Actor.AGENT, parent=MAILBOX.format(user=owner.user.id)
             )
             return Response(status_code=204)
-        message = stored.message.model_copy(
-            update={
-                "parentFolderId": folder_id(owner.user.id, wire.MailFolderName.DELETED),
-                "lastModifiedDateTime": graph_time(self._clock.now()),
-            }
+        message = versioned(
+            stored.message,
+            graph_time(self._clock.now()),
+            parentFolderId=folder_id(owner.user.id, wire.MailFolderName.DELETED),
         )
         moved = stored.model_copy(update={"message": message, "folder": wire.MailFolderName.DELETED})
         self._rewrite(owner.user.id, moved, actor=Actor.AGENT)
@@ -616,11 +721,7 @@ class Mail:
         found: list[wire.Recipient] = []
         for r in sent:
             if not r.emailAddress.address or "@" not in r.emailAddress.address:
-                raise GraphRefusal(
-                    400,
-                    "ErrorInvalidRecipients",
-                    f"At least one recipient isn't valid: '{r.emailAddress.address}' in {field} is not an address.",
-                )
+                raise GraphRefusal(400, "ErrorInvalidRecipients", RECIPIENTS_INVALID)
             found.append(
                 wire.Recipient(emailAddress=wire.EmailAddress(name=r.emailAddress.name, address=r.emailAddress.address))
             )
@@ -632,16 +733,28 @@ class Mail:
             return wire.ItemBody(contentType="text", content="")
         kind = sent.contentType.lower()
         if kind not in ("text", "html"):
-            raise bad_request(f"'{sent.contentType}' is not a body content type: text or html.")
+            raise NotImplementedError(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
         return wire.ItemBody(contentType=kind, content=sent.content)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _unread(sent: wire.SentMessage | None, asked: wire.SendMailRequest | wire.ReplyRequest) -> None:
+        """Refuse by name every property of the request or its message this provider would otherwise drop."""
+        names: list[str] = sorted(
+            {str(n) for n in (asked.model_extra or {})} | {str(n) for n in ((sent.model_extra or {}) if sent else {})}
+        )
+        if names:
+            raise NotImplementedError(f"the message properties {', '.join(names)}: they would not be kept as sent")
 
     async def _send_mail(self, request: Request, owner: UserRecord) -> Response:
         try:
             asked = wire.read(wire.SendMailRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+            ) from e
         if asked.message is None:
-            raise GraphRefusal(400, "ErrorInvalidRequest", "The 'message' property is required.")
+            raise NotImplementedError("sendMail without a message: the page names it required and no answer without it")
+        self._unread(asked.message, asked)
         if not asked.saveToSentItems:
             raise NotServed("sendMail with saveToSentItems false: the sent copy is the message a run reads")
         sent = asked.message
@@ -651,9 +764,7 @@ class Mail:
             self._recipients(sent.bccRecipients, "bccRecipients"),
         )
         if not (to or cc or bcc):
-            raise GraphRefusal(
-                400, "ErrorInvalidRecipients", "At least one recipient is required, but none were found."
-            )
+            raise GraphRefusal(400, "ErrorInvalidRecipients", RECIPIENTS_INVALID)
         await self.send(
             Composed(
                 sender=owner,
@@ -662,6 +773,7 @@ class Mail:
                 to=to,
                 cc=cc,
                 bcc=bcc,
+                reply_to=self._recipients(sent.replyTo, "replyTo"),
                 conversation=outlook_id(owner.user.id, "conversation", str(self._world.next_seq())),
                 importance=sent.importance,
             ),
@@ -670,41 +782,42 @@ class Mail:
         return Response(status_code=202)
 
     async def _reply(self, request: Request, owner: UserRecord, stored: wire.StoredMail, *, everyone: bool) -> Response:
-        """A reply goes to whoever sent the message; to the message's own recipients when its owner sent it, as
-        Outlook replies from Sent Items. A reply to all adds every other recipient, never the mailbox's owner."""
+        """A reply goes to the message's `replyTo` when it names any, else to its sender; a reply to all also to
+        every recipient of the message (message-reply, message-replyall). `message` properties replace the reply's
+        own; specifying both a comment and the message's body is 400."""
         try:
             asked = wire.read(wire.ReplyRequest, await request.body())
         except wire.Unreadable as e:
-            raise bad_request(e.message) from e
+            raise NotImplementedError(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
+            ) from e
+        written = asked.message
+        self._unread(written, asked)
+        if asked.comment is not None and written is not None and written.body is not None:
+            raise GraphRefusal(400, None, "Specify either a comment or the body of the message, not both.")
         original = stored.message
-        me = address_of(owner).lower()
-        mine = original.from_.emailAddress.address.lower() == me
-        if asked.message is not None and asked.message.toRecipients:
-            to = self._recipients(asked.message.toRecipients, "toRecipients")
-        elif mine:
-            to = list(original.toRecipients)
-        else:
-            to = [original.from_]
+        to = list(original.replyTo) or [original.from_]
         cc: list[wire.Recipient] = []
         if everyone:
-            seen = {r.emailAddress.address.lower() for r in to} | {me}
-            for r in [*original.toRecipients, *original.ccRecipients]:
-                if r.emailAddress.address.lower() not in seen:
-                    seen.add(r.emailAddress.address.lower())
-                    cc.append(r)
-        if asked.message is not None and asked.message.ccRecipients:
-            cc = self._recipients(asked.message.ccRecipients, "ccRecipients")
-        comment = asked.comment or (
-            plain(self._body(asked.message.body)) if asked.message is not None and asked.message.body else ""
-        )
+            to = [*to, *original.toRecipients]
+            cc = list(original.ccRecipients)
+        if written is not None and written.toRecipients:
+            to = self._recipients(written.toRecipients, "toRecipients")
+        if written is not None and written.ccRecipients:
+            cc = self._recipients(written.ccRecipients, "ccRecipients")
+        said = plain(self._body(written.body)) if written is not None and written.body is not None else asked.comment
         await self.send(
             Composed(
                 sender=owner,
-                subject=re_subject(original.subject),
-                body=wire.ItemBody(contentType="text", content=comment),
+                subject=written.subject if written is not None and written.subject else re_subject(original.subject),
+                body=None,
+                said=said or "",
                 to=to,
                 cc=cc,
+                bcc=self._recipients(written.bccRecipients, "bccRecipients") if written is not None else [],
+                reply_to=self._recipients(written.replyTo, "replyTo") if written is not None else [],
                 conversation=original.conversationId,
+                importance=written.importance if written is not None else "normal",
             ),
             actor=Actor.AGENT,
         )

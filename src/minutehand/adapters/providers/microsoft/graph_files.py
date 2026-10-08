@@ -16,8 +16,8 @@ What Graph does and this does too:
   `nextExpectedRanges` until the last, then the item.
 - `copy` answers 202 with a monitor URL; the copy is made at once and the monitor reports it completed.
 - `delta` lists every change since its token, with Graph's `deleted` facet for what was removed, paged by
-  `@odata.nextLink` and closed by `@odata.deltaLink`. A token older than `DELTA_TOKEN_LIFETIME` on the run's clock
-  is refused 410 `resyncRequired` (this fake's lifetime; Graph does not publish one).
+  `@odata.nextLink` and closed by `@odata.deltaLink`. A token never expires with age: Graph publishes no lifetime,
+  so none is invented; a scenario that wants `resyncRequired` declares it as a fault (`MicrosoftSeed.faults`).
 - A file a person holds open (a `MicrosoftSeed.holds` fault, `StoredHold`) refuses every write 423 while held.
 - A user's token reaching another user's OneDrive is refused 403 `accessDenied`; an application token reaches all.
 """
@@ -30,7 +30,7 @@ import hashlib
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from urllib.parse import quote
 
 from starlette.requests import Request
@@ -74,7 +74,6 @@ from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 200
 PAGE_MAX = 999
-DELTA_TOKEN_LIFETIME = timedelta(days=30)
 MAX_SIMPLE_UPLOAD = 250 * 1024 * 1024
 DOWNLOAD_LIFETIME = 3600
 DRIVE_ITEM_TYPE = "#Microsoft.Graph.DriveItem"
@@ -94,6 +93,13 @@ def seeded_item_id(drive: str, parent: str, name: str) -> str:
     as no minted item's is, so a seeded item never takes a minted id and lists before every minted one."""
     digest = base64.b32encode(hashlib.sha256(f"seeded\x1f{drive}\x1f{parent}\x1f{name}".encode()).digest()).decode()
     return f"01{0:08d}{digest[:24]}"
+
+
+def refuse_unread(asked: wire.SentItem | wire.CopyRequest | wire.MoveRequest) -> None:
+    """Refuse by name every property of a driveItem body this provider would otherwise drop."""
+    names = sorted(str(n) for n in (asked.model_extra or {}))
+    if names:
+        raise NotImplementedError(f"the driveItem properties {', '.join(names)}: they would not be kept as sent")
 
 
 def mime_of(name: str) -> str:
@@ -164,7 +170,7 @@ class Files:
         head = parts[0]
         if head == "me" and len(parts) >= 2 and parts[1] == "drive":
             if not caller.is_user:
-                raise GraphRefusal(400, "BadRequest", "/me request is only valid with delegated authentication flow.")
+                raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
             drive, rest = self._drive_for_user(caller.claims.oid or ""), parts[2:]
         elif head == "users" and len(parts) >= 3 and parts[2] == "drive":
             drive, rest = self._drive_for_user(parts[1]), parts[3:]
@@ -180,7 +186,7 @@ class Files:
                 raise GraphRefusal(404, "itemNotFound", "The drive could not be found.")
             drive, rest = found, parts[2:]
         else:
-            raise bad_request("Invalid request")
+            raise NotImplementedError("a drive reached this way")
         if caller.is_user and drive.owner_id is not None and drive.owner_id != caller.claims.oid:
             raise GraphRefusal(403, "accessDenied", "Access denied: the drive belongs to another user.")
         return self._below(drive, "/".join(rest))
@@ -191,7 +197,7 @@ class Files:
             return Address(drive, None, None, None, None)
         match = re.fullmatch(r"(root|items/([^/:]+))(?::(/[^:]*):?)?(?:/(.*))?", rest)
         if match is None:
-            raise bad_request(f"Invalid request: '{rest}' names no item.")
+            raise NotImplementedError(f"'{rest}' in a drive")
         named = match.group(2)
         # Graph takes `root` as an item id too: `/items/root` is the drive's root.
         item = drive.root_id if match.group(1) == "root" or named == "root" else named
@@ -205,8 +211,9 @@ class Files:
                 suffix, argument = "search", search.group(1).replace("''", "'")
             else:
                 name, _, after = tail.partition("/")
+                name = "delta" if name == "delta()" else name  # Graph reads a function with or without its ()
                 if name not in _SUFFIXES or (after and name != "permissions"):
-                    raise bad_request(f"Unsupported segment '{tail}'.")
+                    raise NotImplementedError(f"the segment '{tail}'")
                 suffix, argument = name, after or None
         return Address(drive, item, path, suffix, argument)
 
@@ -537,7 +544,7 @@ class Files:
     # ================================================================== the routes
 
     async def answer(self, request: Request, parts: list[str]) -> Response:
-        caller = Caller(graph_caller(request))
+        caller = Caller(graph_caller(request, self._world))
         method = request.method
         if parts[0] == "sites":
             return await self._sites(request, caller, parts)
@@ -545,14 +552,14 @@ class Files:
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
         if address.item is None:
             if method != "GET":
-                raise GraphRefusal(405, "methodNotAllowed", "The method is not allowed on a drive.")
+                raise NotImplementedError(f"{method} on a drive")
             self._world.saw(drive_ref(address.drive.drive.id), Operation.READ)
             body = wire.with_context(wire.dump(address.drive.drive), f"{GRAPH}/$metadata#drives/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
         handlers = self._handlers()
         handler = handlers[(method, address.suffix)] if (method, address.suffix) in handlers else None
         if handler is None:
-            raise GraphRefusal(405, "methodNotAllowed", f"{method} is not allowed here.")
+            raise NotImplementedError(f"{method} here")
         return await handler(request, caller, address, fields)
 
     Handler = Callable[[Request, Caller, Address, list[str] | None], Awaitable[Response]]
@@ -581,12 +588,26 @@ class Files:
         self._world.saw(item_ref(stored.item.id), Operation.READ)
         return self._entity(stored, address.drive, fields)
 
+    @staticmethod
+    def _precondition(request: Request, stored: wire.StoredItem) -> None:
+        """`if-match` naming neither the item's eTag nor its cTag is 412, and nothing changes (driveitem-update,
+        driveitem-delete); its code is OneDrive's for an eTag mismatch, `resourceModified`
+        (https://learn.microsoft.com/en-us/onedrive/developer/rest-api/concepts/errors)."""
+        wanted = header(request, "if-match")
+        if wanted is None or wanted.strip() == "*":
+            return
+        presented = set(re.findall(r'(?:W/)?"[^"]*"', wanted))
+        if not presented & {stored.item.eTag, stored.item.cTag}:
+            raise GraphRefusal(412, "resourceModified", "ETag does not match the current item's value.")
+
     async def _patch(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         stored = self._item(address)
+        self._precondition(request, stored)
         try:
             asked = wire.read(wire.MoveRequest, await request.body())
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
+        refuse_unread(asked)
         parent = asked.parentReference.id if asked.parentReference is not None else None
         updated = self.move(
             address.drive, stored, name=asked.name, parent=parent, by=caller.identity, actor=Actor.AGENT
@@ -596,6 +617,7 @@ class Files:
 
     async def _delete(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         stored = self._item(address)
+        self._precondition(request, stored)
         self.delete(stored, by=caller.identity, actor=Actor.AGENT)
         await self.notify(address.drive, stored)
         return Response(status_code=204)
@@ -638,7 +660,7 @@ class Files:
         if order:
             key, _, direction = order.partition(" ")
             if key not in ("name", "lastModifiedDateTime", "size"):  # enum-lint: exempt Graph's $orderby property name
-                raise bad_request(f"Ordering by '{key}' is not supported.")
+                raise NotImplementedError(f"$orderby={order}")
             by_name = key == "name"  # enum-lint: exempt Graph's $orderby property name
             children.sort(key=lambda i: str(getattr(i, key)).lower() if by_name else getattr(i, key))
             if direction.lower() == "desc":
@@ -658,6 +680,7 @@ class Files:
             asked = wire.read(wire.SentItem, await request.body())
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
+        refuse_unread(asked)
         if not asked.name:
             raise bad_request("The name of the item is required.")
         if asked.folder is None:
@@ -677,7 +700,7 @@ class Files:
     async def _content(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         stored = self._item(address)
         if stored.item.file is None:
-            raise bad_request("A folder has no content to download.")
+            raise NotImplementedError("the content of a folder: Graph documents no answer to it")
         return RedirectResponse(self.download_url(stored, address.drive), status_code=302)
 
     async def _put_content(
@@ -719,21 +742,14 @@ class Files:
     def _since(self, token: str) -> int:
         try:
             seq_text, _, stamp_text = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode().partition(".")
-            seq, stamp = int(seq_text), int(stamp_text)
+            seq, _ = int(seq_text), int(stamp_text)
         except (binascii.Error, ValueError) as e:
             raise bad_request("The delta token is not valid.") from e
-        issued = datetime.fromtimestamp(stamp, tz=self._clock.now().tzinfo)
-        if self._clock.now() - issued > DELTA_TOKEN_LIFETIME:
-            raise GraphRefusal(
-                410,
-                "resyncRequired",
-                "The delta token has expired. Start again without a token and replace what you hold with what is listed.",
-            )
         return seq
 
     async def _delta(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         if address.item != address.drive.root_id or address.path:
-            raise bad_request("Delta is answered for the root of a drive.")
+            raise NotImplementedError("delta on a folder other than the drive's root")
         token = query(request, "token")
         since = self._since(token) if token else 0
         changed: list[tuple[int, wire.DriveItem]] = []
@@ -918,6 +934,7 @@ class Files:
             asked = wire.read(wire.CopyRequest, await request.body())
         except wire.Unreadable as e:
             raise bad_request(e.message) from e
+        refuse_unread(asked)
         target_id = (
             asked.parentReference.id
             if asked.parentReference and asked.parentReference.id
@@ -1068,7 +1085,7 @@ class Files:
         if len(parts) == 1:
             search = query(request, "search")
             if search is None:
-                raise bad_request("Listing sites needs a search: /sites?search=")
+                raise NotImplementedError("listing sites without ?search=")
             wanted = search.lower().strip("*")
             found = [s.site for s in self._world.sites() if not wanted or wanted in s.site.displayName.lower()]
             body = wire.dump(wire.Page[wire.Site](context=f"{GRAPH}/$metadata#sites", value=found))
@@ -1087,12 +1104,12 @@ class Files:
             body = wire.with_context(wire.dump(site.site), f"{GRAPH}/$metadata#sites/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
         if request.method != "GET":
-            raise GraphRefusal(405, "methodNotAllowed", "Sites are read only here.")
+            raise NotImplementedError(f"{request.method} on a site")
         if rest == ["drives"]:
             drives = [d.drive for d in self._world.drives() if d.site_id == site.site.id]
             body = wire.dump(wire.Page[wire.Drive](context=f"{GRAPH}/$metadata#drives", value=drives))
             return Response(wire.select_page(body, fields), media_type=GRAPH_JSON)
-        raise bad_request(f"Unsupported segment '{'/'.join(rest)}'.")
+        raise NotImplementedError(f"the segment '{'/'.join(rest)}'")
 
 
 GRAPH_ROLES = {"read": AccessRole.READER, "write": AccessRole.WRITER, "owner": AccessRole.ORGANIZER}

@@ -7,8 +7,11 @@ tell from a bearer token which tenant, app and user a call is for.
 
 **Times are real time.** `iat`, `nbf` and `exp` are the machine's clock, not the run's: a caller checks a token's
 lifetime against its own clock (PyJWT reads `time.time()`), and MSAL decides when to refresh from `expires_in`
-on its own clock. A token stamped in simulated time days away from the real one would be refused by the caller,
-or held by MSAL after the fake had stopped accepting it. Graph and the connector check `exp` the same way.
+on its own clock. A token stamped in simulated time days away from the real one would be refused by the caller.
+
+**Nothing presented is checked.** Graph, the connector and the identity platform read a presented token only for
+the tenant, app and user it names (`presented`); its signature, lifetime, audience and use are never checked, and
+a token that cannot be read at all is the tenant's application calling.
 """
 
 from __future__ import annotations
@@ -27,7 +30,6 @@ from minutehand.adapters.providers.microsoft.wire import TokenUse
 
 LIFETIME_SECONDS = 3599
 REFRESH_LIFETIME_SECONDS = 90 * 24 * 3600
-SKEW_SECONDS = 300
 
 AAD = "https://login.microsoftonline.com"
 BOT_FRAMEWORK_ISSUER = "https://api.botframework.com"
@@ -53,40 +55,21 @@ def encode(claims: wire.Claims) -> str:
     return f"{signing_input}.{keys.sign(signing_input.encode())}"
 
 
-class TokenRefused(Exception):
-    """A presented token is not one this provider issued, or is no longer good. `reason` says which."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
+def presented(token: str | None) -> wire.Claims | None:
+    """The claims a presented token carries, read without checking its signature, lifetime, audience or use: None
+    when it is not a JWT this provider can read. Minutehand does not enforce credentials (CLAIMS.md), so nothing a
+    caller presents is refused; a token is read only for whom it names."""
+    parts = (token or "").split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return wire.Claims.model_validate_json(_unpadded(parts[1]))
+    except (binascii.Error, ValueError, ValidationError):
+        return None
 
 
 def _unpadded(part: str) -> bytes:
     return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
-
-
-def decode(token: str, *, use: TokenUse) -> wire.Claims:
-    """The claims of a token this provider issued for `use`, its signature and lifetime checked; else refused."""
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise TokenRefused("the token is not a JWT")
-    try:
-        header = wire.JoseHeader.model_validate_json(_unpadded(parts[0]))
-        claims = wire.Claims.model_validate_json(_unpadded(parts[1]))
-    except (binascii.Error, ValueError, ValidationError) as e:
-        raise TokenRefused("the token's header or claims are not readable") from e
-    if header.alg != "RS256" or header.kid != keys.key_id():
-        raise TokenRefused("the token was not signed with a key this service publishes")
-    if keys.sign(f"{parts[0]}.{parts[1]}".encode()) != parts[2]:
-        raise TokenRefused("the token's signature does not verify")
-    if claims.minutehand_use is not use:
-        raise TokenRefused(f"the token is a {claims.minutehand_use.value} token, not a {use.value} token")
-    now = now_seconds()
-    if claims.exp + SKEW_SECONDS < now:
-        raise TokenRefused("the token has expired")
-    if claims.nbf - SKEW_SECONDS > now:
-        raise TokenRefused("the token is not valid yet")
-    return claims
 
 
 def issued(

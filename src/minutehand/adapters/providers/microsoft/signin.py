@@ -14,7 +14,13 @@
 `botframework.com`, the multi-tenant bot's authority, which knows every bot registered in the world.
 
 **Authorize has no browser.** A real sign-in shows a page; this one answers at once for the user named in
-`login_hint`, as though they signed in and consented, and refuses a request without one.
+`login_hint`, as though they signed in and consented, and does not serve a request without one (501).
+
+**Minutehand does not enforce credentials.** Any client id and any secret are answered with a token: the client id
+is the token's `appid` as sent, a tenant the world does not hold is the world's own, and a code or refresh token is
+read only for the user it names (never its signature, lifetime, app or redirect URI). Tokens carry no `roles`, and no
+scope is checked anywhere. What still refuses a sign-in is the world itself: a user an administrator disabled
+(AADSTS50057) or removed (AADSTS50034).
 """
 
 from __future__ import annotations
@@ -27,8 +33,8 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route, Router
 
 from minutehand.adapters.providers.microsoft import keys, tokens, wire
+from minutehand.adapters.providers.microsoft.connector import EVERY_METHOD, not_served
 from minutehand.adapters.providers.microsoft.state import (
-    AppRecord,
     MicrosoftWorld,
     TenantRecord,
     UserRecord,
@@ -54,16 +60,6 @@ RESOURCES = {
 }
 """The resources a `.default` scope may name, and the audience a token for each carries."""
 OPENID_SCOPES = frozenset({"openid", "profile", "email", "offline_access"})
-APPLICATION_ROLES = [
-    "Sites.ReadWrite.All",
-    "Files.ReadWrite.All",
-    "User.Read.All",
-    "ChannelMessage.Read.All",
-    "Chat.Read.All",
-    "Mail.ReadWrite",
-    "Mail.Send",
-    "Calendars.ReadWrite",
-]
 
 
 class SignInRefused(ServiceRefusal):
@@ -110,40 +106,22 @@ class SignIn:
     # ------------------------------------------------------------------ lookups
 
     def _tenant(self, authority: str) -> TenantRecord | None:
-        """The tenant a path names; None for an authority that is not one tenant (`common`, `botframework.com`)."""
+        """The tenant a path names; None for an authority that is not one tenant (`common`, `botframework.com`). A
+        tenant the world does not hold is the world's own: Minutehand does not enforce credentials."""
         if authority in USER_ONLY_AUTHORITIES or authority == BOT_FRAMEWORK_AUTHORITY:
             return None
         wanted = authority.lower()
-        found = next((t for t in self._world.tenants() if wanted in (t.id, t.domain.lower())), None)
-        if found is None:
-            raise SignInRefused(
-                400,
-                "invalid_request",
-                90002,
-                f"Tenant '{authority}' not found. Check to make sure you have the correct tenant ID and are signing "
-                "into the correct cloud.",
-            )
-        return found
+        tenants = self._world.tenants()
+        found = next((t for t in tenants if wanted in (t.id, t.domain.lower())), None)
+        return found if found is not None else next(iter(tenants), None)
 
-    def _app(self, request: wire.TokenRequest, tenant: TenantRecord | None) -> AppRecord:
-        app = self._world.app(request.client_id) if request.client_id else None
-        if app is None:
-            where = tenant.domain if tenant is not None else "the directory"
-            raise SignInRefused(
-                400,
-                "unauthorized_client",
-                700016,
-                f"Application with identifier '{request.client_id}' was not found in the directory '{where}'.",
-            )
-        if request.client_secret != app.secret:
-            raise SignInRefused(
-                401,
-                "invalid_client",
-                7000215,
-                "Invalid client secret provided. Ensure the secret being sent in the request is the client secret "
-                f"value, not the client secret ID, for a secret added to app '{app.app_id}'.",
-            )
-        return app
+    def _app_id(self, client_id: str) -> str:
+        """The app a token is issued to: the `client_id` as sent, whatever its secret; the world's own app when none
+        is sent. Minutehand does not enforce credentials, so no client is refused."""
+        if client_id:
+            return client_id
+        app = next(iter(self._world.apps()), None)
+        return app.app_id if app is not None else ""
 
     @staticmethod
     def _resource(scope: str) -> str:
@@ -158,14 +136,7 @@ class SignIn:
                 "with /.default suffixed to the resource identifier (application ID URI).",
             )
         resource = names[0].removesuffix("/.default")
-        if resource not in RESOURCES:
-            raise SignInRefused(
-                400,
-                "invalid_resource",
-                500011,
-                f"The resource principal named {resource} was not found in the tenant.",
-            )
-        return RESOURCES[resource]
+        return RESOURCES[resource] if resource in RESOURCES else resource
 
     @staticmethod
     def _delegated(scope: str) -> tuple[str, str]:
@@ -175,12 +146,8 @@ class SignIn:
         granted: list[str] = []
         for name in names:
             resource, _, permission = name.rpartition("/")
-            if resource and resource not in RESOURCES:
-                raise SignInRefused(
-                    400, "invalid_resource", 500011, f"The resource principal named {resource} was not found."
-                )
             if resource:
-                audience = RESOURCES[resource]
+                audience = RESOURCES[resource] if resource in RESOURCES else resource
             granted.append("User.Read" if permission == ".default" else permission)
         return audience, " ".join(granted or ["User.Read"])
 
@@ -194,9 +161,9 @@ class SignIn:
             if asked.grant_type == "client_credentials":
                 answer = self._client_credentials(asked, tenant, authority)
             elif asked.grant_type == "authorization_code":
-                answer = self._code(asked, tenant)
+                answer = self._code(asked)
             elif asked.grant_type == "refresh_token":
-                answer = self._refresh(asked, tenant)
+                answer = self._refresh(asked)
             else:
                 raise SignInRefused(
                     400,
@@ -218,27 +185,24 @@ class SignIn:
                 1002013,
                 "The client credentials flow cannot use the /common or /organizations endpoint; name a tenant.",
             )
-        app = self._app(asked, tenant)
+        app_id = self._app_id(asked.client_id)
         audience = self._resource(asked.scope)
-        if tenant is not None and app.tenant_id != tenant.id:
-            raise SignInRefused(
-                400,
-                "unauthorized_client",
-                700016,
-                f"Application with identifier '{app.app_id}' was not found in the directory '{tenant.domain}'.",
-            )
-        tid = tokens.BOT_FRAMEWORK_TENANT if tenant is None else tenant.id
-        issuer = f"https://sts.windows.net/{tokens.BOT_FRAMEWORK_TENANT}/" if tenant is None else tokens.issuer_for(tid)
+        app = self._world.app(app_id)
+        home = tenant.id if tenant is not None else app.tenant_id if app is not None else None
+        issuer = (
+            f"https://sts.windows.net/{tokens.BOT_FRAMEWORK_TENANT}/"
+            if tenant is None
+            else tokens.issuer_for(home or "")
+        )
         token, _ = tokens.issued(
             use=TokenUse.ACCESS,
             issuer=issuer,
             audience=audience,
-            tenant=app.tenant_id if tenant is None else tid,
-            app_id=app.app_id,
+            tenant=home,
+            app_id=app_id,
             user=None,
-            roles=APPLICATION_ROLES,
         )
-        self._world.saw(app_ref(app.app_id), Operation.READ)
+        self._world.saw(app_ref(app_id), Operation.READ)
         return wire.TokenAnswer(
             scope=asked.scope,
             expires_in=tokens.LIFETIME_SECONDS,
@@ -246,59 +210,43 @@ class SignIn:
             access_token=token,
         )
 
-    def _code(self, asked: wire.TokenRequest, tenant: TenantRecord | None) -> wire.TokenAnswer:
-        app = self._app(asked, tenant)
-        try:
-            granted = tokens.decode(asked.code or "", use=TokenUse.CODE)
-        except tokens.TokenRefused as e:
-            raise SignInRefused(
-                400, "invalid_grant", 9002313, f"Invalid request. Request is malformed or invalid: {e.reason}."
-            ) from e
-        if granted.appid != app.app_id or granted.redirect_uri != asked.redirect_uri:
-            raise SignInRefused(
-                400,
-                "invalid_grant",
-                50148,
-                "The code_verifier, client or redirect_uri does not match the one used in the authorization request.",
-            )
-        return self._for_user(app, granted, asked.scope or granted.scp or "")
+    def _code(self, asked: wire.TokenRequest) -> wire.TokenAnswer:
+        return self._for_user(self._app_id(asked.client_id), self._granted(asked.code, "authorization code"), asked)
 
-    def _refresh(self, asked: wire.TokenRequest, tenant: TenantRecord | None) -> wire.TokenAnswer:
-        app = self._app(asked, tenant)
-        try:
-            granted = tokens.decode(asked.refresh_token or "", use=TokenUse.REFRESH)
-        except tokens.TokenRefused as e:
-            raise SignInRefused(
-                400, "invalid_grant", 9002313, f"Invalid request. Request is malformed or invalid: {e.reason}."
-            ) from e
-        if granted.appid != app.app_id:
-            raise SignInRefused(
-                400, "invalid_grant", 70000, "Provided grant is invalid or malformed: it was issued to another app."
-            )
-        return self._for_user(app, granted, asked.scope or granted.scp or "")
+    def _refresh(self, asked: wire.TokenRequest) -> wire.TokenAnswer:
+        return self._for_user(self._app_id(asked.client_id), self._granted(asked.refresh_token, "refresh token"), asked)
 
-    def _for_user(self, app: AppRecord, granted: wire.Claims, scope: str) -> wire.TokenAnswer:
+    @staticmethod
+    def _granted(presented: str | None, what: str) -> wire.Claims:
+        """Whom a code or refresh token names. Nothing about it is checked (not its signature, its lifetime, its
+        app or its redirect URI); one that names no user cannot be answered with that user's token."""
+        granted = tokens.presented(presented)
+        if granted is None or granted.oid is None or granted.tid is None:
+            raise NotImplementedError(f"an {what} that names no user: Minutehand reads the user from the one it issued")
+        return granted
+
+    def _for_user(self, app_id: str, granted: wire.Claims, asked: wire.TokenRequest) -> wire.TokenAnswer:
         user = self._world.user(granted.oid or "")
         if user is None or granted.tid is None:
             raise SignInRefused(400, "invalid_grant", 50034, "The user account does not exist in the directory.")
         _refuse_disabled(user)
-        audience, scopes = self._delegated(scope)
+        audience, scopes = self._delegated(asked.scope or granted.scp or "")
         issuer = tokens.issuer_for(granted.tid)
         access, _ = tokens.issued(
             use=TokenUse.ACCESS,
             issuer=issuer,
             audience=audience,
             tenant=granted.tid,
-            app_id=app.app_id,
+            app_id=app_id,
             user=user.user.id,
             scopes=scopes,
         )
         refresh, _ = tokens.issued(
             use=TokenUse.REFRESH,
             issuer=issuer,
-            audience=app.app_id,
+            audience=app_id,
             tenant=granted.tid,
-            app_id=app.app_id,
+            app_id=app_id,
             user=user.user.id,
             scopes=scopes,
             lifetime=tokens.REFRESH_LIFETIME_SECONDS,
@@ -306,9 +254,9 @@ class SignIn:
         identity, _ = tokens.issued(
             use=TokenUse.ACCESS,
             issuer=issuer,
-            audience=app.app_id,
+            audience=app_id,
             tenant=granted.tid,
-            app_id=app.app_id,
+            app_id=app_id,
             user=user.user.id,
             nonce=granted.nonce,
             identity=user.user,
@@ -327,35 +275,27 @@ class SignIn:
 
     async def authorize(self, request: Request) -> Response:
         query = request.query_params
+        client = query["client_id"] if "client_id" in query else ""
+        redirect = query["redirect_uri"] if "redirect_uri" in query else ""
+        hint = query["login_hint"] if "login_hint" in query else ""
+        if not redirect or not hint:
+            raise NotImplementedError(
+                "authorize without login_hint and redirect_uri: this sign-in has no browser to ask who signs in"
+            )
+        user = self._world.user_by(hint)
         try:
-            tenant = self._tenant(request.path_params["tenant"])
-            client = query["client_id"] if "client_id" in query else ""
-            app = self._world.app(client)
-            if app is None:
-                raise SignInRefused(
-                    400, "unauthorized_client", 700016, f"Application with identifier '{client}' was not found."
-                )
-            redirect = query["redirect_uri"] if "redirect_uri" in query else ""
-            hint = query["login_hint"] if "login_hint" in query else ""
-            user = self._world.user_by(hint) if hint else None
-            if not redirect or user is None:
-                raise SignInRefused(
-                    400,
-                    "invalid_request",
-                    900144,
-                    "This sign-in has no browser: name the user who signs in with login_hint, and a redirect_uri.",
-                )
-            if tenant is not None and user.tenant_id != tenant.id:
-                raise SignInRefused(400, "invalid_request", 50020, f"User account '{hint}' does not exist in tenant.")
+            if user is None:
+                raise SignInRefused(400, "invalid_grant", 50034, "The user account does not exist in the directory.")
             _refuse_disabled(user)
         except SignInRefused as refusal:
             return _refused(refusal, self._clock)
+        app_id = self._app_id(client)
         code, _ = tokens.issued(
             use=TokenUse.CODE,
             issuer=tokens.issuer_for(user.tenant_id),
-            audience=app.app_id,
+            audience=app_id,
             tenant=user.tenant_id,
-            app_id=app.app_id,
+            app_id=app_id,
             user=user.user.id,
             scopes=query["scope"] if "scope" in query else "User.Read",
             lifetime=600,
@@ -372,10 +312,7 @@ class SignIn:
 
     async def openid_configuration(self, request: Request) -> Response:
         authority = request.path_params["tenant"]
-        try:
-            tenant = self._tenant(authority)
-        except SignInRefused as refusal:
-            return _refused(refusal, self._clock)
+        tenant = self._tenant(authority)
         named = tenant.id if tenant is not None else "{tenantid}"
         base = f"{tokens.AAD}/{authority}"
         answer = wire.OpenIdConfiguration(
@@ -433,6 +370,7 @@ def login_router(store: Store, clock: Clock) -> Router:
             Route("/{tenant}/v2.0/.well-known/openid-configuration", sign_in.openid_configuration, methods=["GET"]),
             Route("/{tenant}/discovery/v2.0/keys", sign_in.keys, methods=["GET"]),
             Route("/discovery/v2.0/keys", sign_in.keys, methods=["GET"]),
+            Route("/{rest:path}", not_served, methods=EVERY_METHOD),
         ]
     )
 
@@ -442,5 +380,6 @@ def bot_framework_router() -> Router:
         routes=[
             Route("/v1/.well-known/openidconfiguration", bot_framework_metadata, methods=["GET"]),
             Route("/v1/.well-known/keys", bot_framework_keys, methods=["GET"]),
+            Route("/{rest:path}", not_served, methods=EVERY_METHOD),
         ]
     )

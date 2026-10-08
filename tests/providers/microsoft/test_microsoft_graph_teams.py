@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -46,9 +47,9 @@ async def test_users_by_id_principal_name_and_filter_with_select(graph: Graph) -
     )
     assert [u["id"] for u in filtered.json()["value"]] == [sofia.user.id]
     unknown = await graph.http.get(f"{GRAPH}/users", params={"$filter": "jobTitle ne 'x'"}, headers=graph.auth)
-    assert unknown.status_code == 400 and unknown.json()["error"]["code"] == "invalidRequest"
+    assert unknown.status_code == 501 and unknown.json()["error"]["code"] == "not_implemented"
     me = await graph.http.get(f"{GRAPH}/me", headers=graph.auth)
-    assert me.status_code == 400
+    assert me.status_code == 501 and "no signed-in user" in me.json()["error"]["message"]
 
 
 async def test_channels_by_name_and_their_messages_paged_with_replies(graph: Graph, bot: Bot) -> None:
@@ -92,7 +93,7 @@ async def test_channels_by_name_and_their_messages_paged_with_replies(graph: Gra
     replies = (await graph.http.get(f"{url}/{root_id}/replies", params={"$top": "50"}, headers=graph.auth)).json()
     assert [r["replyToId"] for r in replies["value"]] == [root_id]
     too_many = await graph.http.get(url, params={"$top": "51"}, headers=graph.auth)
-    assert too_many.status_code == 400
+    assert too_many.status_code == 501, "past the documented most of 50, whose answer Graph does not document"
 
 
 async def test_a_post_in_a_channel_reaches_the_bot_only_when_it_is_mentioned(graph: Graph, bot: Bot) -> None:
@@ -133,7 +134,9 @@ async def test_chats_their_messages_and_members(graph: Graph) -> None:
     members = (await graph.http.get(f"{GRAPH}/chats/{chat.graph_id}/members", headers=graph.auth)).json()
     assert [m["userId"] for m in members["value"]] == [sofia.user.id]
     every = await graph.http.get(f"{GRAPH}/chats", headers=graph.auth)
-    assert every.status_code == 403
+    assert every.status_code == 501 and "no signed-in user" in every.json()["error"]["message"]
+    sent = await graph.http.post(f"{GRAPH}/chats/{chat.graph_id}/messages", json={}, headers=graph.auth)
+    assert sent.status_code == 501 and sent.json()["error"]["code"] == "not_implemented"
 
 
 async def test_a_team_unknown_is_refused_in_graphs_shape(graph: Graph) -> None:
@@ -141,4 +144,38 @@ async def test_a_team_unknown_is_refused_in_graphs_shape(graph: Graph) -> None:
     assert answered.status_code == 404
     assert set(answered.json()["error"]) == {"code", "message", "innerError"}
     no_token = await graph.http.get(f"{GRAPH}/users")
-    assert no_token.status_code == 401 and no_token.json()["error"]["code"] == "InvalidAuthenticationToken"
+    assert no_token.status_code == 200 and no_token.json()["value"]
+
+
+async def test_channel_messages_list_by_their_reply_chains_last_change(graph: Graph, bot: Bot) -> None:
+    """channel-list-messages: messages are sorted by the last modified date of the whole reply chain, so an older
+    post someone has just replied to lists first; replies list newest first, as chatmessage-list-replies' example."""
+    team = graph.tenant.directory.team_id
+    general = graph.tenant.directory.general_channel_id
+    url = f"{CONNECTOR}v3/conversations/{general}/activities"
+    first = (await graph.http.post(url, json={"type": "message", "text": "first"}, headers=graph.connector)).json()
+    graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+    await graph.http.post(url, json={"type": "message", "text": "second"}, headers=graph.connector)
+    graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+    await graph.http.post(f"{url}/{first['id']}", json={"type": "message", "text": "reply"}, headers=graph.connector)
+    listed = (await graph.http.get(f"{GRAPH}/teams/{team}/channels/{general}/messages", headers=graph.auth)).json()
+    assert [m["body"]["content"] for m in listed["value"]] == ["first", "second"]
+    graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+    await graph.http.post(f"{url}/{first['id']}", json={"type": "message", "text": "later"}, headers=graph.connector)
+    replies = await graph.http.get(
+        f"{GRAPH}/teams/{team}/channels/{general}/messages/{first['id']}/replies", headers=graph.auth
+    )
+    assert [r["body"]["content"] for r in replies.json()["value"]] == ["later", "reply"]
+    sofia = graph.tenant.world.person("sofia")
+    assert sofia is not None
+    chat = graph.tenant.world.personal_with(sofia.user.id, graph.tenant.directory.tenant_id)
+    assert chat is not None
+    for text in ("one", "two"):
+        graph.tenant.clock.jump(graph.tenant.clock.now() + timedelta(minutes=1))
+        await graph.http.post(
+            f"{CONNECTOR}v3/conversations/{chat.id}/activities",
+            json={"type": "message", "text": text},
+            headers=graph.connector,
+        )
+    in_chat = (await graph.http.get(f"{GRAPH}/chats/{chat.graph_id}/messages", headers=graph.auth)).json()["value"]
+    assert [m["body"]["content"] for m in in_chat] == ["two", "one"], "chat-list-messages: lastModifiedDateTime desc"
