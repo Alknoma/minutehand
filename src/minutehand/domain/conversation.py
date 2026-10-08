@@ -48,6 +48,9 @@ class Wrote(StrEnum):
     DECISION = "decision"  # their decision on an item in the agent's own product, and what they give with it
     SUMMARY = "summary"  # what they saw before the turns they are shown word for word
     TRANSITION = "transition"  # the transition they take on an item pending on them, and what it carries
+    SERVICE_MACHINE = "service_machine"  # the states and transitions of a declared service's items, proposed once
+    SERVICE_ROUTE = "service_route"  # what a route of a declared service means, read once
+    SERVICE_ANSWER = "service_answer"  # what a declared service answers a call, or pushes, from its state and log
 
 
 class PersonCall(Model):
@@ -55,7 +58,8 @@ class PersonCall(Model):
     with the same context (`key`) replays its answer and calls nothing, and a failure is on the record."""
 
     key: str = Field(description="SHA-256 of everything the model was asked: model, prompt version, system, messages")
-    person: str = Field(description="Person.key")
+    person: str | None = Field(description="Person.key; None for what no person says (a service's answer)")
+    service: str | None = Field(default=None, description="The declared service it was for, by its name")
     wrote: Wrote
     asked: EntityRef | None = Field(
         default=None, description="The message or item answered, or moved; None for a summary"

@@ -144,7 +144,7 @@ The world's log, every row of it in order: each change and read by the agent, a 
 | `wake` | INTEGER | The wake it happened in; 0 is setup |
 | `at` | TEXT | Simulated time; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
 | `wall_time` | TEXT | Real time it was written |
-| `actor` | TEXT | agent, person or scenario |
+| `actor` | TEXT | agent, person, scenario, or a declared service's system or timer |
 | `operation` | TEXT | create, update, delete, read or search |
 | `provider` | TEXT | The provider (slack, asana, ...), memory, minutehand (the run loop) or a declared host |
 | `entity_kind` | TEXT | message, ticket, document, memory, stored, due, record, ... |
@@ -232,7 +232,7 @@ Every HTTP, gRPC and WebSocket exchange the proxy saw, bodies decoded: the provi
 | `status` | INTEGER | The HTTP status answered |
 | `outcome` | TEXT | answered, refused, not_implemented, internal_error, injected_fault or unavailable; NULL unclassified |
 | `answered_by` | TEXT | provider, declaration, recording, pass_through (the real host), emulator, model, tunnel (relayed unopened), refused (nobody: 502) or minutehand (Minutehand acting as a person) |
-| `capture_mode` | TEXT | For a host no provider claims: acknowledge, pass_through, replay, store, forward, discovered or modeled |
+| `capture_mode` | TEXT | For a host no provider claims: acknowledge, pass_through, replay, store, forward, discovered or service |
 | `declared_as` | TEXT | The declaration's host pattern that captured it |
 | `is_agent` | INTEGER | 1 for the agent's own call; 0 for one Minutehand made as a person |
 | `request_body` | TEXT | The request body as text, decoded; NULL when none or not text |
@@ -365,7 +365,7 @@ Every transition of an item's state, by anyone: the agent through a provider's A
 | `name` | TEXT | The provider's own name for it: 'Start work', 'accepted' |
 | `from_state` | TEXT | The state it left; NULL when it created the item |
 | `to_state` | TEXT | The state it reached |
-| `actor` | TEXT | agent, person or scenario |
+| `actor` | TEXT | agent, person, scenario, or a declared service's system or timer |
 | `who` | TEXT | people.key of the person who made it; NULL for the agent |
 | `content` | TEXT | What it carried, as a JSON object: a comment, the reasons |
 | `call_id` | INTEGER | The HTTP call that made it (calls.call_id); NULL when no call did |
@@ -416,7 +416,7 @@ Model calls: the agent's, from the telemetry it exported or the wire with --reco
 | `cost` | REAL | From the prices the user declared for this model (--prices); NULL when none was declared |
 | `currency` | TEXT | The declared price's currency |
 | `trace_id` | TEXT | The agent's trace |
-| `wrote` | TEXT | For a person's: reply, decision, transition or summary |
+| `wrote` | TEXT | For a person's: reply, decision, transition or summary; for a declared service's: service_machine, service_route or service_answer |
 | `wrote_seqs` | TEXT | JSON array of the agent messages it is joined to (agent) or of the message it answered (person) |
 | `replayed` | INTEGER | 1 for a person's call answered from the record: no model was called |
 | `failure` | TEXT | Why a person's call failed |

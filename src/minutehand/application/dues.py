@@ -21,6 +21,7 @@ from minutehand.application.checkpoint import (
     PendingHappening,
     PendingMachine,
     PendingReply,
+    PendingService,
     PendingTimer,
     PendingTransition,
     PendingWake,
@@ -50,6 +51,8 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.TIMER
     if isinstance(pending, PendingTransition):
         return DueSource.TRANSITION
+    if isinstance(pending, PendingService):
+        return DueSource.SERVICE
     assert isinstance(pending, PendingDirection)
     return DueSource.DIRECTION
 

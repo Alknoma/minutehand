@@ -86,6 +86,18 @@ class PendingDirection(Model):
     text: str
 
 
+class PendingService(Model):
+    """A declared service's own move on one of its items (`application.services`): a timer's, or a system actor's,
+    at its moment. It fires only if the item is still in the state it was booked from."""
+
+    kind: Literal["service"] = "service"
+    due: Due
+    service: ProviderKey
+    item: str
+    entered: int = Field(description="The WorldEvent.seq of the item's version that entered the state")
+    transition: str = Field(description="The machine's timer or system transition, by name")
+
+
 class PendingBooking(Model):
     """A wake the agent booked with a scheduler provider."""
 
@@ -109,7 +121,8 @@ Pending = Annotated[
     | PendingBooking
     | PendingMachine
     | PendingTimer
-    | PendingTransition,
+    | PendingTransition
+    | PendingService,
     Field(discriminator="kind"),
 ]
 

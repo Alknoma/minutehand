@@ -68,7 +68,12 @@ _THING = {
     EntityKind.STORED: Thing.STORED,
 }
 
-_MOVER = {Actor.AGENT: Mover.AGENT, Actor.PERSON: Mover.PERSON}
+_MOVER = {
+    Actor.AGENT: Mover.AGENT,
+    Actor.PERSON: Mover.PERSON,
+    Actor.SYSTEM: Mover.SYSTEM,
+    Actor.TIMER: Mover.TIMER,
+}
 _OPERATION = {Write.CREATE: Operation.CREATE, Write.UPDATE: Operation.UPDATE, Write.DELETE: Operation.DELETE}
 _STATUS = {
     CommitmentState.OPEN: CommitmentStatus.OPEN,

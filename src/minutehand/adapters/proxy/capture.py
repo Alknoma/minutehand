@@ -43,6 +43,7 @@ from minutehand.domain.outbound import (
 )
 from minutehand.domain.scenario import Person
 from minutehand.domain.world import AnsweredBy, Body, BodyKept, Recipient, RecordedCall
+from minutehand.ports.services import AnswersServices
 
 Declaration = Acknowledge | PassThrough | Replay | Forward | DeclaredStore
 
@@ -603,6 +604,7 @@ class Capturing:
         replaying: Mapping[str, Replaying] | None = None,
         people: Sequence[Person] = (),
         emulators: Mapping[str, EmulatorRoute] | None = None,
+        services: AnswersServices | None = None,
     ) -> None:
         self.declared = list(declared)
         self._patterns = [(HostPattern(d.host), d) for d in self.declared]
@@ -613,15 +615,26 @@ class Capturing:
         self.replaying = dict(replaying or {})
         self.people = list(people)
         self.emulators: Mapping[str, EmulatorRoute] = emulators if emulators is not None else {}
+        self.services = services
+        """The services the world's scenario declares (`docs/services.md`), answered before any declaration."""
 
     def find(self, host: str) -> Declaration | None:
         return next((d for pattern, d in self._patterns if pattern.matches(host)), None)
 
     def for_people(self, people: Sequence[Person]) -> Capturing:
-        return Capturing(self.declared, replaying=self.replaying, people=people, emulators=self.emulators)
+        return Capturing(
+            self.declared, replaying=self.replaying, people=people, emulators=self.emulators, services=self.services
+        )
+
+    def with_services(self, services: AnswersServices | None) -> Capturing:
+        return Capturing(
+            self.declared, replaying=self.replaying, people=self.people, emulators=self.emulators, services=services
+        )
 
     def with_emulators(self, emulators: Mapping[str, EmulatorRoute]) -> Capturing:
-        return Capturing(self.declared, replaying=self.replaying, people=self.people, emulators=emulators)
+        return Capturing(
+            self.declared, replaying=self.replaying, people=self.people, emulators=emulators, services=self.services
+        )
 
 
 def refuse_claimed(declared: Sequence[Declaration], registry: Registry, model_hosts: Sequence[str]) -> None:

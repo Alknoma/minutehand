@@ -10,8 +10,8 @@ import pytest
 from minutehand.application.files import load_agent
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage
+from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.people import InboundTarget
-from minutehand.domain.scenario import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.session import signing_for
 
 URL = "http://127.0.0.1:9/slack/events"

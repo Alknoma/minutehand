@@ -55,9 +55,8 @@ from minutehand.domain.world import (
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.model import ModelFailed
-from minutehand.ports.provider import Provider
 from minutehand.ports.store import Store
-from minutehand.ports.transitions import ProvidesTransitions
+from minutehand.ports.transitions import ProvidesTransitions, SteersPeople
 
 TRANSITION_PROMPT_VERSION = "person-transition/1"
 """Changes whenever TRANSITION_PROMPT or what the person is shown changes a word."""
@@ -133,7 +132,7 @@ class Held:
 def needs_model(scenario: Scenario) -> list[str]:
     """Each person on a provider the engine plays whose moves a model writes, and why: refused before anything runs
     when no model is configured."""
-    if not scenario.transitions_on:
+    if not scenario.played():
         return []
     found: list[str] = []
     for person in scenario.people:
@@ -143,9 +142,8 @@ def needs_model(scenario: Scenario) -> list[str]:
             continue
         if not _picks(person):
             continue
-        unpinned = [
-            p for p in scenario.transitions_on if not any(t.provider == p and t.nth is None for t in person.takes)
-        ]
+        plays = [*scenario.transitions_on, *(s.key for s in scenario.services if person.key in s.responders)]
+        unpinned = [p for p in plays if not any(t.provider == p and t.nth is None for t in person.takes)]
         if unpinned:
             found.append(f"{person.key} (a model picks what they do on {', '.join(unpinned)})")
     return found
@@ -167,7 +165,7 @@ class People:
     or when a provider it plays cannot be."""
 
     def __init__(
-        self, scenario: Scenario, provider: Callable[[ProviderKey], Provider], model: LanguageModel | None
+        self, scenario: Scenario, provider: Callable[[ProviderKey], object], model: LanguageModel | None
     ) -> None:
         needing = needs_model(scenario)
         if needing and model is None:
@@ -177,7 +175,7 @@ class People:
         self._model = model
         self._replier = PeopleReplier(scenario, model) if model is not None else None
         self._people = {p.key: p for p in scenario.people}
-        for key in scenario.transitions_on:
+        for key in scenario.played():
             self.port(key)
 
     @property
@@ -212,7 +210,7 @@ class People:
         booked; each held one that no longer waits on them, gone."""
         booked: list[Booking] = []
         gone: list[EntityRef] = []
-        for key in self._scenario.transitions_on:
+        for key in self._scenario.played():
             port = self.port(key)
             for person in self._scenario.people:
                 waiting = port.items_for(person, world)
@@ -238,6 +236,8 @@ class People:
         items = list(dict.fromkeys(h.pending.item for h in held))
         nth = items.index(item.item) + 1 if item.item in items else len(items) + 1
         take = pinned_take(person, item.item.provider, nth)
+        port = self.port(item.item.provider)
+        within = port.within(item.item, world) if isinstance(port, SteersPeople) else None
         now = clock.now()
         drawn: Drawn | None = None
         if take is not None and take.after is not None:
@@ -252,7 +252,7 @@ class People:
                 item.item,
                 now,
                 first_asked=sent[0].sim_time if sent else now,
-                within=None,
+                within=within,
                 delay=behaviour.delay,
             )
         pending = PendingSnapshot(
@@ -300,6 +300,7 @@ class People:
             self._close(world, held, PendingStatus.GONE)
             return Acted(transition=None)
         take = pinned_take(person, snap.item.provider, snap.nth)
+        steers = port if isinstance(port, SteersPeople) else None
         failure: str | None = None
         for _ in range(2):
             offers = port.legal(snap.item, Actor.PERSON, person, world)
@@ -307,7 +308,9 @@ class People:
                 self._close(world, held, PendingStatus.GONE, failure="nothing could be done to it")
                 return Acted(transition=None)
             try:
-                offer, content = await self._choose(person, waiting, offers, take, world, clock)
+                drawn = steers.drawn(snap.item, offers, world) if steers is not None and take is None else None
+                leaning = steers.leaning(snap.item, world) if steers is not None else None
+                offer, content = await self._choose(person, waiting, offers, take, drawn, leaning, world, clock)
             except ModelFailed as e:
                 failure = str(e)
                 break
@@ -331,11 +334,14 @@ class People:
         waiting: Waiting,
         offers: list[Offer],
         take: Take | None,
+        drawn: Offer | None,
+        leaning: str | None,
         world: Store,
         clock: Clock,
     ) -> tuple[Offer, str]:
-        """The offer the person takes and what it carries, as a JSON object."""
-        pinned: Offer | None = None
+        """The offer the person takes and what it carries, as a JSON object: a pinned one, one the provider's own
+        odds drew (its words a model's), or the model's pick."""
+        pinned: Offer | None = drawn
         if take is not None:
             pinned = _matching(take.take, offers)
             if pinned is None:
@@ -350,7 +356,7 @@ class People:
                 return pinned, json.dumps({text.name: take.verbatim})
             if not take.facts:
                 return pinned, "{}"
-        return await self._written(person, waiting, offers, take, pinned, world, clock)
+        return await self._written(person, waiting, offers, take, pinned, leaning, world, clock)
 
     async def _written(
         self,
@@ -359,6 +365,7 @@ class People:
         offers: list[Offer],
         take: Take | None,
         pinned: Offer | None,
+        leaning: str | None,
         world: Store,
         clock: Clock,
     ) -> tuple[Offer, str]:
@@ -367,7 +374,7 @@ class People:
         behaviour = person.reply
         assert isinstance(behaviour, Answers | Scripted)
         history = world.events()
-        system = transition_prompt(person, behaviour, take, clock.now(), self._scenario.starts_at)
+        system = transition_prompt(person, behaviour, take, pinned, leaning, clock.now(), self._scenario.starts_at)
         shown = asked_to_move(waiting, offers)
         context = (
             await self._replier.context(person, behaviour, history[-1], history, world, clock, answers=False)
@@ -478,14 +485,20 @@ def last_turn(world: Store, item: EntityRef, person: str) -> int:
 
 
 def transition_prompt(
-    person: Person, behaviour: Answers | Scripted, take: Take | None, today: datetime, starts_at: datetime
+    person: Person,
+    behaviour: Answers | Scripted,
+    take: Take | None,
+    pinned: Offer | None,
+    leaning: str | None,
+    today: datetime,
+    starts_at: datetime,
 ) -> str:
     facts, stale = person.knows_at(today, starts_at)
     believed = believed_part(behaviour, stale)
-    decided = ""
-    if take is not None:
-        why = bulleted(take.facts) if take.facts else "- what you know"
-        decided = f'\nYou have decided: "{take.take}", and what you write with it says:\n{why}\nPick that.\n'
+    decided = f"\nHow people tend to act here: {leaning}\n" if leaning else ""
+    if pinned is not None:
+        why = bulleted(take.facts) if take is not None and take.facts else "- what you know"
+        decided += f'\nYou have decided: "{pinned.name}", and what you write with it says:\n{why}\nPick that.\n'
     return TRANSITION_PROMPT.format(
         who=who_is(person),
         known=bulleted(facts),

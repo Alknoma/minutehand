@@ -131,7 +131,7 @@ reads a rule once per transition (`each: transition`, anchor `transition`). The 
 | Slack and Teams buttons, `form`, `inputs`, `picks` | Offers of the message's controls; content fills the form | Script keys kept as pins |
 | `acknowledge` + `replies` (an email API) | A conversation provider over the captured host | Kept; its delivery is the provider's `apply` |
 | The `store` kind | Unchanged for what nobody responds to; a declared service when someone does | Kept |
-| `--capture-unknown model` | A declared service whose machine and answers the model proposes | Kept as discovery; folded into services later (open question 4) |
+| `--capture-unknown model` | A declared service whose machine and answers the model proposes | Folded into services (decision 5) |
 | Provider happenings (`posts`, `moves`, `commented`, ...) | Person transitions with no pending item, from the dispatch table | Kept as YAML, one code path |
 | The services prototype draft | The declared-service provider of this port | Its YAML stays; its engine is the people engine |
 
@@ -188,3 +188,15 @@ with `transitions_on`, and pins a person's move with `Person.takes` (`take`, `nt
   `GET /v1/worlds/{id}/transitions` (`docs/serve.md`).
 - **Old paths**: a scenario without `transitions_on` plays as before. With it, the replier is not asked about an
   item the engine holds, and ticket fates beside an engine-played ticket provider are refused.
+
+**Phase 2.** Declared services (`docs/services.md`): `domain/services.py` (the declaration and its machine),
+`domain/shapes.py` (a route's fixed shape), `application/services.py` (`ServiceDesk`: the state, the routes'
+meanings, rendered answers and refusals, timers and system actors, pushes; `ServiceItems`: one service as a provider
+of the port), `ports/services.py`, `adapters/pushing.py`, the proxy's answer for a service's host. Every move is a
+`Transition` (`EntityKind.TRANSITION`, items `EntityKind.SERVICE_ITEM`); the actors gain `system` and `timer`. A
+service's responders act through the people engine (`Scenario.played()` is `transitions_on` and every service), a
+provider steering them through `SteersPeople` (its `within`, `bias`, `odds`). A service's timer or system move is a
+`PendingService` in the run loop's table. A rendered answer is kept with the state it was rendered in
+(`ServiceRecordKind.ANSWER`), so polling an unchanged service calls no model. `--capture-unknown model` answers a
+host nobody declared as a service with no description; the separate stand-in (`adapters/proxy/modeled.py`,
+`CaptureMode.MODELED`) is gone.

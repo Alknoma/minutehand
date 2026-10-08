@@ -27,6 +27,12 @@ class EntityKind(StrEnum):
     STORED = "stored"  # an item the agent wrote to an outbound host the agent file declares `store`
     TRANSITION = "transition"  # one move of an item's state, by anyone (`domain.transitions.Transition`)
     PENDING = "pending"  # an item pending on a person, as the people engine holds it (`application.people`)
+    SERVICE_RECORD = (
+        "service_record"  # what a declared service is, fixed once per run: its machine, a route, its errors
+    )
+    SERVICE_ITEM = "service_item"  # an item filed with a declared service, as its state stood after each transition
+    SERVICE_EVENT = "service_event"  # a write to a declared service that moves no item: an update, a subscription
+    PUSH = "push"  # a call a declared service pushed to an address the agent gave it
 
 
 class Operation(StrEnum):
@@ -41,6 +47,8 @@ class Actor(StrEnum):
     AGENT = "agent"
     PERSON = "person"
     SCENARIO = "scenario"
+    SYSTEM = "system"  # a declared service's own actor moving an item: a warehouse, a payment processor
+    TIMER = "timer"  # a declared service moving an item when its time in a state runs out
 
 
 class EntityRef(Model):
@@ -57,7 +65,8 @@ class CaptureMode(StrEnum):
     REPLAY = "replay"
     DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
     FORWARD = "forward"  # sent to an external emulator the agent file or world declares (`domain.emulator`)
-    MODELED = "modeled"  # declared by nobody; answered by a model standing in for the service (`UnknownHosts.MODEL`)
+    SERVICE = "service"  # a service (`domain.services`), declared or, under `--capture-unknown model`, a host nobody
+    # declared: its items' state held, its answers rendered from it
     STORE = "store"  # kept and read back as sent, by the declaration's collections (`domain.outbound.DeclaredStore`)
 
 
@@ -532,6 +541,71 @@ class PendingSnapshot(Model):
     failure: str | None = Field(default=None, description="Why their last try to act did not land")
 
 
+class ServiceRecordKind(StrEnum):
+    MACHINE = "machine"  # the states and transitions of the service's items (`domain.services.Machine`)
+    ROUTE = "route"  # what a route means and the shape of its answers (`domain.services.RouteMeaning`)
+    ERRORS = "errors"  # the shape of the service's refusals, as a JSON Schema
+    ANSWER = "answer"  # an answer rendered for a call in a state of the service, answered again while it holds
+
+
+class RecordSource(StrEnum):
+    """Where a declared service's record came from."""
+
+    DECLARED = "declared"  # the scenario's declaration
+    OPENAPI = "openapi"  # the service's OpenAPI document, read by the model where it says no more
+    MODEL = "model"  # the model's proposal, or the first answer the model rendered
+
+
+class ServiceRecordSnapshot(Model):
+    """Something a declared service is, fixed the first time a run needs it and kept for the run and its forks:
+    shown so a team can pin it in the scenario."""
+
+    kind: Literal["service_record"] = "service_record"
+    service: ProviderKey
+    record: ServiceRecordKind
+    route: str | None = Field(default=None, description="For a route or an answer: `GET /v1/requests/{id}`")
+    text: str = Field(description="The record as JSON: a machine, a route's meaning and shape, an error shape")
+    source: RecordSource
+
+
+class ServiceItemSnapshot(Model):
+    """An item filed with a declared service, and the state it is in."""
+
+    kind: Literal["service_item"] = "service_item"
+    service: ProviderKey
+    item: str = Field(description="The id the service gave it")
+    state: str
+
+
+class ServiceEventKind(StrEnum):
+    UPDATE = "update"  # the agent changed what an item says, not its state
+    SUBSCRIBE = "subscribe"  # the agent gave the service an address to push to
+    OTHER = "other"  # the agent wrote something the machine holds nothing of
+
+
+class ServiceEventSnapshot(Model):
+    """A write of the agent's to a declared service that moves no item (a move is a `TransitionSnapshot`)."""
+
+    kind: Literal["service_event"] = "service_event"
+    service: ProviderKey
+    event: ServiceEventKind
+    item: str | None = Field(default=None, description="The item it concerns; None for a write about none")
+    content: str = Field(description="What it carried, as JSON: the agent's body")
+    route: str | None = Field(default=None, description="The agent's call it came from, as its route")
+
+
+class PushSnapshot(Model):
+    """A call a declared service pushed to an address the agent gave it, and how the address answered."""
+
+    kind: Literal["push"] = "push"
+    service: ProviderKey
+    item: str
+    url: str
+    body: str = Field(description="What was sent, as JSON")
+    status: int | None = Field(default=None, description="The answer's status; None when none came")
+    failure: str | None = Field(default=None, description="Why it was not delivered")
+
+
 class NextWakeSnapshot(Model):
     """The moment the agent asked to be woken next (`minutehand.agent.wake`), or none."""
 
@@ -542,6 +616,10 @@ class NextWakeSnapshot(Model):
 Snapshot = Annotated[
     TransitionSnapshot
     | PendingSnapshot
+    | ServiceRecordSnapshot
+    | ServiceItemSnapshot
+    | ServiceEventSnapshot
+    | PushSnapshot
     | MemorySnapshot
     | StoredSnapshot
     | NextWakeSnapshot

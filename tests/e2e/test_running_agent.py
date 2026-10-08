@@ -22,8 +22,8 @@ import pytest
 from minutehand import session
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import AgentUnderTest
+from minutehand.domain.common import SecretFromEnvironment
 from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import SecretFromEnvironment
 from minutehand.domain.world import Actor
 from tests.e2e.support import (
     ANSWER,

@@ -21,35 +21,14 @@ from typing import Annotated, Literal, Self
 from pydantic import AwareDatetime, Field, TypeAdapter, field_validator, model_validator
 
 from minutehand.domain.assessments import Rule, refuse_repeated_rules, refuse_unknown_people
+from minutehand.domain.common import (
+    ProviderKey,
+    SigningSecret,
+    Window,
+)
 from minutehand.domain.memory import SeededMemory
 from minutehand.domain.model import Model
-
-ProviderKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
-"""A provider's registry key ("slack", "asana"). Open, because the set of providers
-is whatever is installed; it is checked against the registry when a scenario loads."""
-
-
-VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
-
-
-class GeneratedSecret(Model):
-    """A fresh secret made for every run and handed to the agent's command in the variable `env`.
-
-    Only a command Minutehand starts receives it; an agent already running has a secret of its own."""
-
-    kind: Literal["generated"] = "generated"
-    env: VariableName = Field(description="The variable the agent reads its signing secret from")
-
-
-class SecretFromEnvironment(Model):
-    """The agent's own secret, configured where it already runs: Minutehand reads the same value from its own
-    variable `env` when the run starts, and refuses the run when it is not set."""
-
-    kind: Literal["from_env"] = "from_env"
-    env: VariableName = Field(description="The variable in Minutehand's own environment that holds the secret")
-
-
-SigningSecret = Annotated[GeneratedSecret | SecretFromEnvironment, Field(discriminator="kind")]
+from minutehand.domain.services import Service, refuse_unknown_responders
 
 
 class AbsenceTrigger(StrEnum):
@@ -78,21 +57,6 @@ class DelayRange(Model):
     def _ordered(self) -> DelayRange:
         if self.longest < self.shortest:
             raise ValueError("longest is shorter than shortest")
-        return self
-
-
-class Window(Model):
-    """When a person's answer lands: a moment drawn uniformly between `min` and `max` of the person's AVAILABLE
-    time after the ask, the time inside their working hours and outside their absences. Two hours of available
-    time asked at 16:00 on a Friday, of a person working 9 to 17 on weekdays, is 10:00 on Monday."""
-
-    min: timedelta = Field(ge=timedelta(0))
-    max: timedelta
-
-    @model_validator(mode="after")
-    def _ordered(self) -> Window:
-        if self.max < self.min:
-            raise ValueError(f"a window's max ({self.max}) is before its min ({self.min})")
         return self
 
 
@@ -1087,6 +1051,11 @@ class _ScenarioBody(Model):
         description="Providers whose people the people engine plays (docs/design-transitions.md): what waits on a "
         "person there is pending on them, and at their moment they take one of its legal transitions",
     )
+    services: list[Service] = Field(
+        default=[],
+        description="Hosts no provider fakes that the agent files things with and people respond through: each "
+        "item's state held and moved along a machine, what the agent is answered rendered from it (docs/services.md)",
+    )
     directions: list[Direction] = []
     channels: list[SeededChannel] = Field(default=[], description="Conversations that exist when the run starts")
     happenings: list[Happening] = Field(
@@ -1188,20 +1157,26 @@ class _ScenarioBody(Model):
             self._refuse_tell(relayed)
         refuse_repeated_rules(self.assess)
         refuse_unknown_people(self.assess, keys)
+        refuse_unknown_responders(self.services, keys)
         self._takes_resolve()
         return self
 
+    def played(self) -> list[ProviderKey]:
+        """Every provider the people engine plays: those `transitions_on` names, and every declared service."""
+        return [*self.transitions_on, *(s.key for s in self.services)]
+
     def _takes_resolve(self) -> None:
         """A pinned transition is on a provider the engine plays, and names one item, or every one, once."""
-        if len(self.transitions_on) != len(set(self.transitions_on)):
-            raise ValueError("transitions_on names a provider twice")
+        played = self.played()
+        if len(played) != len(set(played)):
+            raise ValueError("transitions_on names a provider twice, or one a declared service is named")
         for person in self.people:
             said: list[tuple[str, int | None]] = []
             for take in person.takes:
-                if take.provider not in self.transitions_on:
+                if take.provider not in played:
                     raise ValueError(
                         f"{person.key} takes {take.take!r} on {take.provider}, which the people engine does not play: "
-                        f"add it to `transitions_on`"
+                        f"add it to `transitions_on`, or declare it under `services`"
                     )
                 said.append((take.provider, take.nth))
             twice = sorted({f"{p} {n or 'every'}" for p, n in said if said.count((p, n)) > 1})

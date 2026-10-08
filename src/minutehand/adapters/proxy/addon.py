@@ -44,7 +44,7 @@ from mitmproxy.proxy.layers import modes
 
 from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, grpc_outcome, kind_of
 from minutehand.adapters.emulator import answers
-from minutehand.adapters.proxy import capture, connect, credentials, mcp, modeled, redact, stored
+from minutehand.adapters.proxy import capture, connect, credentials, mcp, redact, stored
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
 from minutehand.adapters.proxy.hosts import loopback_name
@@ -56,6 +56,7 @@ from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.adapters.telemetry.receiver import grpc_installed
 from minutehand.application.traffic import SeenCall
+from minutehand.domain.common import ProviderKey
 from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
 from minutehand.domain.outbound import (
     BODY_LIMIT,
@@ -69,7 +70,8 @@ from minutehand.domain.outbound import (
     UnknownHosts,
 )
 from minutehand.domain.provider import Manifest, world_keys
-from minutehand.domain.scenario import ProviderKey, Scenario
+from minutehand.domain.scenario import Scenario
+from minutehand.domain.services import Service
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
     GRPC_NUMBERS,
@@ -90,14 +92,15 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     Recipient,
+    RecordedCall,
     SocketFrame,
+    StoredSnapshot,
     Tunnelled,
     TunnelRoute,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.model import ModelFailed
 from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope, ServesGrpc, ServesSockets
+from minutehand.ports.services import AnswersServices, Call
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -119,6 +122,15 @@ def strip_prefix(path: str, prefix: str) -> str:
 def _json_response(status: int, message: str, host: str) -> http.Response:
     return http.Response.make(
         status, json.dumps({"error": message, "host": host}).encode(), {"content-type": "application/json"}
+    )
+
+
+def _answered_as_service(calls: list[RecordedCall], host: str) -> bool:
+    """Whether a call to `host` was answered as a service nobody declared (`--capture-unknown model`): from then on
+    its reads are the service's too, not passed through to the real host."""
+    return any(
+        c.exchange.host == host and c.exchange.captured is not None and c.exchange.captured.mode is CaptureMode.SERVICE
+        for c in calls
     )
 
 
@@ -264,12 +276,10 @@ class ProxyAddon:
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
         capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
-        model: LanguageModel | None = None,
     ) -> None:
         self.routing = routing
         self.capturing = capturing or Capturing()
         self.capture_unknown = capture_unknown
-        self._model = model
         self.worlds: Worlds = one_run(
             store, clock, {}, scenario=None, provider=routing.registry.provider, capturing=self.capturing
         )
@@ -595,15 +605,20 @@ class ProxyAddon:
                     await self._capture(flow, host, world, declared)
             return
         held = world or self.worlds.lobby
+        desk = held.capturing.services
+        service = desk.declared(host) if desk is not None and manifest is None else None
+        if desk is not None and service is not None:
+            await self._service(flow, host, held, desk, service)
+            return
         declaration = held.capturing.find(host) if manifest is None else None
         if (
             declaration is None
             and manifest is None
-            and self.capture_unknown is UnknownHosts.MODEL
-            and self._model is not None
-            and (request.method.upper() not in READ_METHODS or modeled.earlier(held.store.calls(), host))
+            and desk is not None
+            and desk.answers_undeclared
+            and (request.method.upper() not in READ_METHODS or _answered_as_service(held.store.calls(), host))
         ):
-            await self._modeled(flow, host, held, self._model)
+            await self._service(flow, host, held, desk, desk.undeclared(host))
             return
         if declaration is not None or (manifest is None and self.capture_unknown.captures(request.method)):
             await self._capture(flow, host, held, declaration)
@@ -1000,31 +1015,6 @@ class ProxyAddon:
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
 
-    async def _modeled(self, flow: http.HTTPFlow, host: str, world: Mounted, model: LanguageModel) -> None:
-        """Answer a write to a host nobody declared, and every call to it after, as a model standing in for the
-        service says, from what it answered for that host before: never sent anywhere. A model that fails is
-        answered 502, naming it."""
-        request = flow.request
-        content_type = _first_header(request, "content-type")
-        shown = capture.keep(request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=[])
-        try:
-            found = await modeled.answer(
-                model,
-                host,
-                request.method,
-                redact.path(request.path),
-                shown.text,
-                modeled.earlier(world.store.calls(), host),
-            )
-        except ModelFailed as e:
-            flow.response = _json_response(502, f"the model standing in for this host failed: {e}", host)
-            await self._keep(flow, host, world, None, CaptureMode.MODELED, AnsweredBy.REFUSAL, note=str(e))
-            return
-        flow.response = http.Response.make(found.status, found.body.encode(), {"content-type": found.content_type})
-        await self._keep(
-            flow, host, world, None, CaptureMode.MODELED, AnsweredBy.MODEL, note=f"answered by {model.model_id}"
-        )
-
     async def _forward(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Forward) -> None:
         """Send the call to its external emulator through the emulator's relay, unchanged but for the headers
         `domain.emulator.ADDED_HEADERS` names, `traceparent` (the agent's trace, Minutehand's span of the call as the
@@ -1148,6 +1138,57 @@ class ProxyAddon:
                 note=kept.refused if kept is not None else None,
                 first=first,
                 locked=True,
+            )
+
+    async def _service(
+        self, flow: http.HTTPFlow, host: str, world: Mounted, desk: AnswersServices, service: Service
+    ) -> None:
+        """Answer a call to a service (`docs/services.md`), one the scenario declares or, under `--capture-unknown
+        model`, a host nobody declared: a route under its `collections` exactly as the `store` kind answers it,
+        anything else from the service's state and log, rendered. An item filed through a collection enters the
+        service's machine. A call to a host nobody declared is kept as declared by nobody."""
+        request = flow.request
+        kept_as: Acknowledge | DeclaredStore = (
+            DeclaredStore(host=service.host, name=service.key, collections=service.collections)
+            if service.collections
+            else Acknowledge(host=service.host, name=service.key)
+        )
+        async with world.lock:
+            first = world.store.head() + 1
+            raw = request.get_content(strict=False) or b""
+            call = Call(method=request.method, path=request.path, body=raw.decode("utf-8", errors="replace") or None)
+            kept = None
+            if isinstance(kept_as, DeclaredStore):
+                found = stored.find(kept_as, request.path)
+                if found is not None:
+                    kept = stored.answer(
+                        kept_as,
+                        found,
+                        request.method,
+                        request.path,
+                        call.body,
+                        store=world.store,
+                        clock=world.clock,
+                        seq=first,
+                    )
+            if kept is not None:
+                flow.response = http.Response.make(kept.answer.status, kept.answer.body, kept.answer.headers)
+                if kept.change is not None:
+                    world.store.apply(kept.change)
+                    after = kept.change.after
+                    if kept.change.operation is Operation.CREATE and isinstance(after, StoredSnapshot):
+                        route = f"{request.method.upper()} {after.path}"
+                        await desk.filed(service, after.id, call, route, world.store, world.clock)
+                answered_by, note = AnsweredBy.DECLARATION, kept.refused
+            else:
+                answered = await desk.answer(service, call, world.store, world.clock)
+                flow.response = http.Response.make(
+                    answered.status, answered.body.encode("utf-8"), {"content-type": "application/json"}
+                )
+                answered_by, note = answered.answered_by, answered.note
+            declared = kept_as if desk.declared(host) is not None else None
+            await self._keep(
+                flow, host, world, declared, CaptureMode.SERVICE, answered_by, note=note, first=first, locked=True
             )
 
     @staticmethod

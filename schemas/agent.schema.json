@@ -1589,7 +1589,9 @@
       "description": "Who made a transition, as a rule names it (`domain.world.Actor`).",
       "enum": [
         "agent",
-        "person"
+        "person",
+        "system",
+        "timer"
       ],
       "title": "Mover",
       "type": "string"

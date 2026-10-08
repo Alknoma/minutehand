@@ -8,8 +8,10 @@ model's pick from what the person can see) and applies it. The provider does the
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
+from minutehand.domain.common import Window
 from minutehand.domain.scenario import Person
 from minutehand.domain.transitions import Offer, Transition, Waiting
 from minutehand.domain.world import Actor, EntityRef
@@ -44,4 +46,24 @@ class ProvidesTransitions(Protocol):
         """Whether the service tells the agent when a person moves this item, by a push the agent asked for (a live
         watch on the calendar it is on): that push is a wake, as a pushed reply's is. False: the agent finds the move
         on its next read."""
+        ...
+
+
+@runtime_checkable
+class SteersPeople(Protocol):
+    """A provider that says more of how its people act than the scenario's people do (a declared service's
+    `within`, `bias` and `odds`)."""
+
+    def within(self, item: EntityRef, world: Store) -> Window | None:
+        """When a person acts on the item: this much of their available time after it began to wait on them; None:
+        as their own answers are drawn."""
+        ...
+
+    def leaning(self, item: EntityRef, world: Store) -> str | None:
+        """How people tend to act here, in plain words, shown to the model that picks for them; None: nothing."""
+        ...
+
+    def drawn(self, item: EntityRef, offers: Sequence[Offer], world: Store) -> Offer | None:
+        """The offer drawn for the item from the provider's own odds, seeded: the model then writes only what it
+        carries; None: the model picks."""
         ...
