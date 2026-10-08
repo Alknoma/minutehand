@@ -425,6 +425,17 @@ async def test_a_project_in_a_plain_workspace_needs_no_team_and_has_none(plain: 
     assert got(made, 201) == {"gid": got(made, 201)["gid"], "name": "Buoy Moorings", "team": None}
 
 
+async def test_an_assignee_naming_nobody_in_a_plain_workspace_is_refused_in_asanas_words(plain: Proxied) -> None:
+    """OBSERVED: "assignee: Not a user in Workspace: <workspace gid>" (https://forum.asana.com/t/852848)."""
+    before = plain.store.head()
+    made = await plain.http.post(
+        "/tasks", json={"data": {"workspace": WS, "name": "x", "assignee": "nobody@x.example"}}
+    )
+
+    assert refused(made, 400) == f"assignee: Not a user in Workspace: {WS}"
+    assert plain.store.head() == before
+
+
 # ---------------------------------------------------------------------------------------------- too large
 
 CROWDED = SCENARIO.model_copy(
