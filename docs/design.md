@@ -48,7 +48,8 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Inboxes in the agent's own product: `domain/inboxes.py`, `application/inboxes.py`, `adapters/agent/inboxes.py`, `adapters/agent/openapi.py` | What waits on a person in the agent's own product (an approval, a question on its page), read and decided as that person; an item is an ask, a decision its answer; templates or OpenAPI operations; `docs/inboxes.md` | Built and tested | 41 (`tests/inboxes/` 33, `tests/architecture/test_approvals.py` 7, `tests/web/test_viewer_decisions.py` 1), and 2 driven in `tests/architecture/test_driven_approvals.py` | HTTP only; MCP is a designed second `kind`. An item raised and withdrawn between two readings is missed. |
 | Scenario library: `src/minutehand/library/`, `domain/library.py`, `application/library.py` | Eleven ready-made scenarios with the team's goal, owner, person asked and answer as `{team.*}` placeholders; `minutehand scenarios`, `scenarios show`, `scenarios new`; see `docs/scenarios.md` | Built and tested | 22 functions, 113 cases (`tests/test_library.py` 18 functions, 51 cases; `tests/architecture/test_library.py` 4 functions, 62 cases, 60 of them one run each of a scenario against an example agent's behaviour) | Not graded and no pass mark. Conflicting answers are not in it. Three scenarios' main check never fires against either example agent. |
 | The agent contract: `agent_api.py`, `schemas/`, `minutehand schema`, `minutehand validate` | One page of every touch point (`docs/agent-contract.md`), JSON Schemas of the files, an OpenAPI document of what an agent may implement, a file validated without a run | Built and tested | 5 functions, 7 cases (`tests/test_schemas.py`) | The older placeholders and dotted paths are listed as debt, not changed. |
-| MCP tools: `adapters/mcp/`, `minutehand mcp` | Seven tools over stdio (`list_scenarios`, `run_scenario`, `list_findings`, `show_evidence`, `rerun_from`, `list_outbound_calls`, `list_runs`) reading and writing the state directory through `session`, as the command line does; see "What a coding agent calls" | Built and tested | 14 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | One run at a time per process: a second `run_scenario` or `rerun_from` while one plays is refused, not queued. |
+| MCP tools: `adapters/mcp/`, `minutehand mcp` | Eleven tools over stdio (`list_scenarios`, `run_scenario`, `list_findings`, `show_evidence`, `rerun_from`, `list_outbound_calls`, `list_runs`, and over the read model `schema`, `query_run`, `trace`, `explain`) reading and writing the state directory through `session`, as the command line does; see "What a coding agent calls" | Built and tested | 14 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | One run at a time per process: a second `run_scenario` or `rerun_from` while one plays is refused, not queued. |
+| Read model: `adapters/query/`, `minutehand query`, `trace`, `explain` | A run's (or a fork's) record as documented, versioned views over one SQLite database built on demand from the store's own readers, every body decoded: `actions`, `messages` with what the ledger knows of each, `recipients` in their working hours, `calls` with their bodies, `wakes` with their reasons, `dispatch`, `memory` over time, `stored`, `replies`, `model_calls` with tokens and declared prices, `findings`, `evidence`, `spans`; read-only SQL, a trace of the agent's acts and an explanation of one event, on the command line and over MCP; see `docs/querying.md` | Built and tested | 49 functions, 74 cases (`tests/query/`), on a run written by hand and its fork; 12 functions, 43 cases on real runs of the follow-up example and the reference agent through the installed command (`tests/architecture/test_read_model_on_real_runs.py`) | Built per process on first read and kept while the run's files are unchanged; a run with very many events is built in full before the first row. A message's sender among people is known only when a reply of theirs landed as it. |
 | Run viewer: `adapters/web/`, `minutehand view` | A read-only JSON API over a state directory (runs and the fork tree, wakes, events, calls, obligations, findings, scorecard, messages, model calls and traffic, steps and spans) and the one page that draws it, its libraries vendored under `static/` | Built and tested | 20 (`tests/web/`) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. |
 | Container image, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
@@ -1605,6 +1606,10 @@ Built and tested (`adapters/mcp/server.py`, `minutehand mcp`, `tests/mcp/`): ser
 | `rerun_from(run_id, at_seq, changes, command, samples)` | a new `run_id` started from that checkpoint with the overrides applied |
 | `list_outbound_calls(run_id)` | per declared outbound host its use, and every captured call with the events it wrote |
 | `list_runs()` | every run in the state directory, forks saying what they changed |
+| `schema()` | the read model's views and columns, and its version (`docs/querying.md`) |
+| `query_run(run_id, sql, limit, offset, prices)` | one read-only SELECT over a run's read model, a page of at most 1,000 rows |
+| `trace(run_id, person, provider, kind, since, until, wake)` | the agent's acts in order (`actions`) |
+| `explain(run_id, seq)` | one event: its wake and what woke it, what the agent read first, what it answers, the model call and HTTP call behind it, and the replies, follow-ups and findings after it |
 
 The command line (`cli.py`) does the same:
 
@@ -1613,6 +1618,9 @@ minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] 
 minutehand findings <run_id> [--state DIR] [--json]
 minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--json] [-- <command...>]
 minutehand runs [--state DIR]
+minutehand query <run> "SELECT ..." [--format table|json|csv] [--prices FILE] [--export FILE] | --schema
+minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--json]
+minutehand explain <run> <seq> [--json]
 minutehand env --agent <agent.yaml> --proxy-port N [--format shell|compose] [--service NAME...] [--ca-path PATH]
 minutehand scenarios [show <name> | new <name>...|--all --goal TEXT --owner 'Name <email>' --ask 'Name <email>' ...]
 ```
@@ -1868,6 +1876,7 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 ## References
 
 - `docs/lints.md`: the lints of this repo, each with its five tests.
+- `docs/querying.md`: reading a run with SQL: the read model's views, how bodies are decoded, the stability guarantee, ready-made queries.
 - `docs/capture.md`: hosts no provider claims, captured by declaration: the three modes, discovery, replay, forks.
 - `docs/patterns/`: one page per pattern.
 - `docs/ci.md`: the branches, the gate, and what CI runs.

@@ -14,6 +14,12 @@
     minutehand checkpoints <run_id> [--state DIR]
                                                  a run's checkpoints, and whether a fork can start at each
     minutehand gc [--state DIR]                  remove stored bodies nothing refers to
+    minutehand query <run> "SELECT ..." [--format table|json|csv] [--prices FILE] [--export FILE] [--state DIR]
+    minutehand query --schema                    read-only SQL over a run's read model, and its views (docs/querying.md)
+    minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--json]
+                                                 the agent's actions in order
+    minutehand explain <run> <seq> [--json]      one event: the wake, what woke it, what the agent read first, what
+                                                 it answers, and what followed
     minutehand rm <run_id>... [--state DIR]      remove runs with their forks
     minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--agent-host H] [--no-proxy H]... [--json] -- <command...>
                                                  which HTTP clients in the agent's interpreter would go around the
@@ -94,9 +100,24 @@ from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
+from minutehand.adapters.query import reader as read_model
+from minutehand.adapters.query.reader import Format as QueryFormat
+from minutehand.adapters.query.reader import QueryRefused
+from minutehand.adapters.query.schema import described as read_model_schema
+from minutehand.adapters.query.trace import KINDS, TraceFilter, explain, explanation, trace
+from minutehand.adapters.query.trace import described as traced_lines
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NotRestorable, Remembered
-from minutehand.application.files import FileKind, FileRefused, load_agent, load_fork, load_scenario, problems, schema
+from minutehand.application.files import (
+    FileKind,
+    FileRefused,
+    load_agent,
+    load_fork,
+    load_prices,
+    load_scenario,
+    problems,
+    schema,
+)
 from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
 from minutehand.application.library import NotInLibrary, entries, entry, write
@@ -337,6 +358,46 @@ def _parser() -> argparse.ArgumentParser:
     swept = commands.add_parser("gc", help="remove stored bodies nothing refers to")
     state(swept)
 
+    def priced(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument(
+            "--prices",
+            type=Path,
+            default=None,
+            metavar="FILE",
+            help="what each model costs per million tokens (docs/querying.md); without it no cost is given",
+        )
+
+    asked = commands.add_parser(
+        "query", help="read-only SQL over a run's read model (docs/querying.md); --schema lists its views"
+    )
+    asked.add_argument("run", nargs="?", help="a run's or a fork's id, or the start of one")
+    asked.add_argument("sql", nargs="?", help="one SELECT (or WITH ... SELECT)")
+    asked.add_argument("--format", choices=[f.value for f in QueryFormat], default=QueryFormat.TABLE.value)
+    asked.add_argument("--schema", action="store_true", help="every view with its columns, and stop")
+    asked.add_argument(
+        "--export", type=Path, default=None, metavar="FILE", help="write the read model to a new SQLite file"
+    )
+    priced(asked)
+    state(asked)
+
+    traced = commands.add_parser("trace", help="the agent's actions in a run, in order")
+    traced.add_argument("run", help="a run's or a fork's id, or the start of one")
+    traced.add_argument("--person", default=None, help="only messages to this person (their key)")
+    traced.add_argument("--provider", default=None)
+    traced.add_argument("--kind", default=None, choices=KINDS)
+    traced.add_argument("--from", dest="since", default=None, metavar="TIME", help="simulated time, ISO 8601")
+    traced.add_argument("--to", dest="until", default=None, metavar="TIME", help="simulated time, ISO 8601")
+    traced.add_argument("--wake", type=int, default=None)
+    traced.add_argument("--json", action="store_true")
+    priced(traced)
+    state(traced)
+
+    told = commands.add_parser("explain", help="one event: what led to it and what followed")
+    told.add_argument("run", help="a run's or a fork's id, or the start of one")
+    told.add_argument("seq", type=int)
+    told.add_argument("--json", action="store_true")
+    state(told)
+
     removing = commands.add_parser("rm", help="remove runs with every fork of each")
     removing.add_argument("run_ids", nargs="+", metavar="run_id")
     state(removing)
@@ -536,6 +597,8 @@ def _main(args_in: list[str]) -> int:
             return _checkpoints(state, args.run_id)
         if args.command == "gc":
             return _gc(state)
+        if args.command in ("query", "trace", "explain"):
+            return _read(args, state)
         if args.command == "rm":
             return _rm(state, args.run_ids)
         return _runs(state)
@@ -974,6 +1037,54 @@ def _rm(state: Path, run_ids: list[str]) -> int:
     collected = session.remove(state, run_ids)
     print(f"removed {len(collected.removed)} runs ({_size(collected.removed_bytes)}): {', '.join(collected.removed)}")
     return 0
+
+
+def _read(args: argparse.Namespace, state: Path) -> int:
+    """`query`, `trace` and `explain`: each reads the run's read model, never the run itself (docs/querying.md)."""
+    if args.command == "query" and args.schema:
+        print(read_model_schema(), end="")
+        return 0
+    if args.command == "query" and args.run is None:
+        print("minutehand query: give a run (and a SELECT, or --export FILE), or --schema", file=sys.stderr)
+        return 2
+    try:
+        prices = load_prices(args.prices) if args.command != "explain" and args.prices is not None else None
+        run_id = read_model.resolve(state, args.run)
+        db = read_model.open_model(state, run_id, prices)
+        try:
+            if args.command == "trace":
+                wanted = TraceFilter(
+                    person=args.person,
+                    provider=args.provider,
+                    kind=args.kind,
+                    since=args.since,
+                    until=args.until,
+                    wake=args.wake,
+                )
+                found = trace(db, run_id, wanted)
+                print(
+                    found.model_dump_json(indent=2) if args.json else traced_lines(found), end="\n" if args.json else ""
+                )
+                return 0
+            if args.command == "explain":
+                why = explain(db, run_id, args.seq)
+                print(why.model_dump_json(indent=2) if args.json else explanation(why), end="\n" if args.json else "")
+                return 0
+            if args.export is not None:
+                read_model.export(db, args.export)
+                print(f"wrote the read model of run {run_id} to {args.export}")
+                if args.sql is None:
+                    return 0
+            if args.sql is None:
+                print("minutehand query: give a SELECT after the run", file=sys.stderr)
+                return 2
+            print(read_model.formatted(read_model.query(db, args.sql), QueryFormat(args.format)), end="")
+            return 0
+        finally:
+            db.close()
+    except QueryRefused as e:
+        print(f"minutehand {args.command}: {e}", file=sys.stderr)
+        return 2
 
 
 def _restorable_summary(points: list[ForkPoint]) -> str:

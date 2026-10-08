@@ -835,6 +835,7 @@ class Orchestrator:
             WakeRecord(
                 index=wake,
                 sim_time=self._clock.now(),
+                reason=reason.value,
                 world_changes=sum(
                     1 for e in mine if e.operation not in _NOT_CHANGES and e.entity.kind not in _NOT_THE_WORLD
                 ),

@@ -10,7 +10,9 @@ time: a second `run_scenario` or `rerun_from` while one plays is refused, not qu
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import sqlite3
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -28,13 +30,22 @@ from minutehand.adapters.mcp.results import (
     OutboundCall,
     OutboundCalls,
     PlayedRun,
+    QueryAnswer,
+    ReadModelSchema,
     RecordedHttp,
     RunListing,
     RunsPlayed,
     ScenarioFile,
     ScenarioListing,
 )
-from minutehand.application.files import FileRefused, load_agent, load_scenario
+from minutehand.adapters.query import reader as read_model
+from minutehand.adapters.query.reader import QueryRefused
+from minutehand.adapters.query.schema import VERSION as READ_MODEL_VERSION
+from minutehand.adapters.query.schema import VIEWS
+from minutehand.adapters.query.trace import Explained, Traced, TraceFilter
+from minutehand.adapters.query.trace import explain as explained
+from minutehand.adapters.query.trace import trace as traced
+from minutehand.application.files import FileRefused, load_agent, load_prices, load_scenario
 from minutehand.application.model_calls import EventTrace, caller_of, trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.checks.patterns import pattern
@@ -55,6 +66,10 @@ starts the agent; list_findings for what went wrong; show_evidence for one findi
 and the design pattern that fixes it; list_outbound_calls for what it called beyond the fakes (an email API, a
 search), and what to declare for a host it was refused; change the agent's code; rerun_from a checkpoint (or run_scenario again)
 to see whether the finding is gone. list_runs shows every run and which were forked from which.
+
+To see everything the agent did, not only what a finding cites: trace lists its acts in order (messages, reads,
+memory, calls, model calls); explain takes one event's seq and gives the chain around it; query_run runs your own
+read-only SQL over the run's views, which schema lists with every column.
 """
 
 
@@ -279,7 +294,99 @@ def build(state: Path) -> FastMCP:
             ]
         )
 
+    @server.tool(
+        description=(
+            "The views of a run's read model, each with every column, its type and what it holds, and the read model's "
+            "version. Read it before writing SQL for query_run. The views: run (the run read; a fork sees its parent's "
+            "record up to its checkpoint), people, events (the whole log), actions (every act of the agent in order), "
+            "messages (with is_ask, is_follow_up, ask_seq, answers_seq from the ledger of waits), recipients (each "
+            "person a message reached, in their local time and working hours), calls (every HTTP/gRPC/WebSocket "
+            "exchange, bodies decoded), wakes, dispatch (what fell due and how it left), memory (the agent's store over "
+            "time), stored, replies (what people said and decided, and how it was written), model_calls (tokens, cost "
+            "only from declared prices), findings and evidence, spans (the agent's telemetry)."
+        )
+    )
+    def schema() -> ReadModelSchema:
+        return ReadModelSchema(version=READ_MODEL_VERSION, views=list(VIEWS))
+
+    @server.tool(
+        description=(
+            "Run one read-only SQL SELECT (or WITH ... SELECT) over a run's read model and answer its rows. `run_id` "
+            "is a run's or a fork's id (or the start of one). Every time is UTC text like 2026-08-24T10:00:00.000Z, "
+            "so compare as text or with julianday(); JSON columns read with json_each() and json_extract(). At most "
+            "`limit` rows (1 to 1000, default 100) after `offset`; `more` says rows follow, and `next_offset` is the "
+            "offset to ask for next. A write, a PRAGMA or more than one statement is refused. `prices` is a path to a "
+            "prices file, for model_calls.cost. Call schema for the views and columns."
+        )
+    )
+    def query_run(run_id: str, sql: str, limit: int = 100, offset: int = 0, prices: str | None = None) -> QueryAnswer:
+        with _model(state, run_id, prices) as (found, db):
+            page = read_model.query(db, sql, limit=limit, offset=offset)
+        return QueryAnswer(
+            run_id=found,
+            columns=page.columns,
+            rows=page.rows,
+            offset=page.offset,
+            more=page.more,
+            next_offset=page.offset + len(page.rows) if page.more else None,
+        )
+
+    @server.tool(
+        description=(
+            "Everything the agent under test did in a run, in the order it did it: each message it sent (to whom, the "
+            "words), each read, each write to the world, its memory gets and puts, items it stored, the next wake it "
+            "marked, calls that wrote nothing (a refused host, a declared hook) and its model calls with tokens. "
+            "Rows of the `actions` view. Narrow with `person` (a people key: messages to them), `provider`, `kind` "
+            "(message, write, read, memory, stored, next_wake, call, model_call), `since` and `until` (simulated "
+            "time, ISO 8601, inclusive) and `wake`. Each row's seq, call_id or span_id leads to the whole of it: "
+            "explain(seq), or query_run over messages, calls, model_calls."
+        )
+    )
+    def trace(
+        run_id: str,
+        person: str | None = None,
+        provider: str | None = None,
+        kind: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        wake: int | None = None,
+        prices: str | None = None,
+    ) -> Traced:
+        wanted = TraceFilter(person=person, provider=provider, kind=kind, since=since, until=until, wake=wake)
+        with _model(state, run_id, prices) as (found, db):
+            return traced(db, found, wanted)
+
+    @server.tool(
+        description=(
+            "Why one event happened and what came of it, by its seq (from trace, show_evidence or a finding's "
+            "evidence). Before it: the wake it happened in, why that wake began (reason, and what fell due), the "
+            "people's replies that landed as it began, what the agent read in that wake first (reads, memory gets, "
+            "GET calls), the earlier message it answers (the agent's ask a person's reply answers, the ask a follow-up "
+            "chases, or the last person's message in the same conversation), the model call that wrote it and the "
+            "HTTP call that made it. After it: replies people gave to it, the agent's follow-ups on it, findings "
+            "citing it, and the agent's next acts in the same wake. Every part is a row of a view schema lists."
+        )
+    )
+    def explain(run_id: str, seq: int) -> Explained:
+        with _model(state, run_id, None) as (found, db):
+            return explained(db, found, seq)
+
     return server
+
+
+@contextmanager
+def _model(state: Path, run: str, prices: str | None) -> Iterator[tuple[str, sqlite3.Connection]]:
+    try:
+        run_id = read_model.resolve(state, run)
+        db = read_model.open_model(state, run_id, load_prices(Path(prices)) if prices is not None else None)
+    except (RunRefused, FileRefused) as e:
+        raise ToolError(f"{e}; list_runs shows the runs") from e
+    try:
+        yield run_id, db
+    except QueryRefused as e:
+        raise ToolError(str(e)) from e
+    finally:
+        db.close()
 
 
 def _load(state: Path, run_id: str) -> Outcome:

@@ -18,6 +18,7 @@ from pydantic import BaseModel, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
+from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Seed, WrittenScenario
 
 _M = TypeVar("_M", bound=BaseModel)
@@ -126,6 +127,11 @@ def _validate(path: Path, raw: object, model: type[_M], *, called: str | None = 
         return model.model_validate(raw)
     except ValidationError as e:
         raise FileRefused(f"{path}: not a valid {called or model.__name__}:\n{e}") from e
+
+
+def load_prices(path: Path) -> Prices:
+    """A prices file: what each named model costs per million tokens, for `model_calls.cost`."""
+    return _load(path, Prices, called="prices")
 
 
 def load_seed(path: Path) -> Seed:
