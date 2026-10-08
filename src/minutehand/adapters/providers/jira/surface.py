@@ -4,7 +4,7 @@ The resources are those `tests/data/vendor_surface/jira.json` holds: the platfor
 (https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json) and the Agile one
 (https://developer.atlassian.com/cloud/jira/software/swagger.v3.json), cut to issues, comments, search and JQL,
 users, projects, worklogs, attachments, issue links, the site objects served, boards and sprints, as fetched on
-2026-10-08. Each operation below is refused by name: the app raises `NotImplementedError`, which the proxy answers
+2026-10-08. Each operation below is refused by name: the app raises `NotServed`, which the proxy answers
 501 in Jira's error body naming the method and this path. Any other operation of the subset has a handler in
 `app.py`; `tests/providers/jira/test_jira_surface.py` holds the two lists to the subset, and the subset to the
 spec it was cut from.

@@ -536,6 +536,7 @@ def _json(answer: Model, request: Request, model: type[Model], status: int = 200
 
 
 def _refused(refusal: wire.Refusal, request: Request) -> Response:
+    wire.noted(refusal)
     body = _pretty(request, wire.error_body(refusal))
     return Response(body, status_code=refusal.code, media_type=JSON, headers=refusal.headers)
 

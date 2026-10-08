@@ -68,6 +68,7 @@ from minutehand.adapters.providers.microsoft.state import (
     upload_ref,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
+from minutehand.domain.errors import NotServed
 from minutehand.domain.scenario import AccessRole
 from minutehand.domain.world import Actor, EntityKind, GrantSnapshot, Operation
 from minutehand.ports.clock import Clock
@@ -99,7 +100,7 @@ def refuse_unread(asked: wire.SentItem | wire.CopyRequest | wire.MoveRequest) ->
     """Refuse by name every property of a driveItem body this provider would otherwise drop."""
     names = sorted(str(n) for n in (asked.model_extra or {}))
     if names:
-        raise NotImplementedError(f"the driveItem properties {', '.join(names)}: they would not be kept as sent")
+        raise NotServed(f"the driveItem properties {', '.join(names)}: they would not be kept as sent")
 
 
 def mime_of(name: str) -> str:
@@ -170,7 +171,7 @@ class Files:
         head = parts[0]
         if head == "me" and len(parts) >= 2 and parts[1] == "drive":
             if not caller.is_user:
-                raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
+                raise NotServed("/me with no signed-in user: Graph documents no answer to an application")
             drive, rest = self._drive_for_user(caller.claims.oid or ""), parts[2:]
         elif head == "users" and len(parts) >= 3 and parts[2] == "drive":
             drive, rest = self._drive_for_user(parts[1]), parts[3:]
@@ -186,7 +187,7 @@ class Files:
                 raise GraphRefusal(404, "itemNotFound", "The drive could not be found.")
             drive, rest = found, parts[2:]
         else:
-            raise NotImplementedError("a drive reached this way")
+            raise NotServed("a drive reached this way")
         if caller.is_user and drive.owner_id is not None and drive.owner_id != caller.claims.oid:
             raise GraphRefusal(403, "accessDenied", "Access denied: the drive belongs to another user.")
         return self._below(drive, "/".join(rest))
@@ -197,7 +198,7 @@ class Files:
             return Address(drive, None, None, None, None)
         match = re.fullmatch(r"(root|items/([^/:]+))(?::(/[^:]*):?)?(?:/(.*))?", rest)
         if match is None:
-            raise NotImplementedError(f"'{rest}' in a drive")
+            raise NotServed(f"'{rest}' in a drive")
         named = match.group(2)
         # Graph takes `root` as an item id too: `/items/root` is the drive's root.
         item = drive.root_id if match.group(1) == "root" or named == "root" else named
@@ -213,7 +214,7 @@ class Files:
                 name, _, after = tail.partition("/")
                 name = "delta" if name == "delta()" else name  # Graph reads a function with or without its ()
                 if name not in _SUFFIXES or (after and name != "permissions"):
-                    raise NotImplementedError(f"the segment '{tail}'")
+                    raise NotServed(f"the segment '{tail}'")
                 suffix, argument = name, after or None
         return Address(drive, item, path, suffix, argument)
 
@@ -552,14 +553,14 @@ class Files:
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
         if address.item is None:
             if method != "GET":
-                raise NotImplementedError(f"{method} on a drive")
+                raise NotServed(f"{method} on a drive")
             self._world.saw(drive_ref(address.drive.drive.id), Operation.READ)
             body = wire.with_context(wire.dump(address.drive.drive), f"{GRAPH}/$metadata#drives/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
         handlers = self._handlers()
         handler = handlers[(method, address.suffix)] if (method, address.suffix) in handlers else None
         if handler is None:
-            raise NotImplementedError(f"{method} here")
+            raise NotServed(f"{method} here")
         return await handler(request, caller, address, fields)
 
     Handler = Callable[[Request, Caller, Address, list[str] | None], Awaitable[Response]]
@@ -660,7 +661,7 @@ class Files:
         if order:
             key, _, direction = order.partition(" ")
             if key not in ("name", "lastModifiedDateTime", "size"):  # enum-lint: exempt Graph's $orderby property name
-                raise NotImplementedError(f"$orderby={order}")
+                raise NotServed(f"$orderby={order}")
             by_name = key == "name"  # enum-lint: exempt Graph's $orderby property name
             children.sort(key=lambda i: str(getattr(i, key)).lower() if by_name else getattr(i, key))
             if direction.lower() == "desc":
@@ -700,7 +701,7 @@ class Files:
     async def _content(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         stored = self._item(address)
         if stored.item.file is None:
-            raise NotImplementedError("the content of a folder: Graph documents no answer to it")
+            raise NotServed("the content of a folder: Graph documents no answer to it")
         return RedirectResponse(self.download_url(stored, address.drive), status_code=302)
 
     async def _put_content(
@@ -749,7 +750,7 @@ class Files:
 
     async def _delta(self, request: Request, caller: Caller, address: Address, fields: list[str] | None) -> Response:
         if address.item != address.drive.root_id or address.path:
-            raise NotImplementedError("delta on a folder other than the drive's root")
+            raise NotServed("delta on a folder other than the drive's root")
         token = query(request, "token")
         since = self._since(token) if token else 0
         changed: list[tuple[int, wire.DriveItem]] = []
@@ -1085,7 +1086,7 @@ class Files:
         if len(parts) == 1:
             search = query(request, "search")
             if search is None:
-                raise NotImplementedError("listing sites without ?search=")
+                raise NotServed("listing sites without ?search=")
             wanted = search.lower().strip("*")
             found = [s.site for s in self._world.sites() if not wanted or wanted in s.site.displayName.lower()]
             body = wire.dump(wire.Page[wire.Site](context=f"{GRAPH}/$metadata#sites", value=found))
@@ -1104,12 +1105,12 @@ class Files:
             body = wire.with_context(wire.dump(site.site), f"{GRAPH}/$metadata#sites/$entity")
             return Response(wire.select(body, fields), media_type=GRAPH_JSON)
         if request.method != "GET":
-            raise NotImplementedError(f"{request.method} on a site")
+            raise NotServed(f"{request.method} on a site")
         if rest == ["drives"]:
             drives = [d.drive for d in self._world.drives() if d.site_id == site.site.id]
             body = wire.dump(wire.Page[wire.Drive](context=f"{GRAPH}/$metadata#drives", value=drives))
             return Response(wire.select_page(body, fields), media_type=GRAPH_JSON)
-        raise NotImplementedError(f"the segment '{'/'.join(rest)}'")
+        raise NotServed(f"the segment '{'/'.join(rest)}'")
 
 
 GRAPH_ROLES = {"read": AccessRole.READER, "write": AccessRole.WRITER, "owner": AccessRole.ORGANIZER}

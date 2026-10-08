@@ -41,6 +41,7 @@ from minutehand.adapters.providers.microsoft.state import (
     team_ref,
     user_ref,
 )
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
 
@@ -129,10 +130,10 @@ class TeamsGraph:
     def _bounds(request: Request, default: int, most: int) -> tuple[int, int]:
         top = query(request, "$top")
         if top is not None and (not top.isdigit() or int(top) < 1):
-            raise NotImplementedError(f"$top={top}: the page names 1 and up, and no answer to anything else")
+            raise NotServed(f"$top={top}: the page names 1 and up, and no answer to anything else")
         size = min(int(top), most) if top else default
         if top and int(top) > most:
-            raise NotImplementedError(f"$top={top}: past the documented most of {most}, whose answer is not documented")
+            raise NotServed(f"$top={top}: past the documented most of {most}, whose answer is not documented")
         skip = query(request, "$skiptoken")
         offset = 0
         if skip:
@@ -178,7 +179,7 @@ class TeamsGraph:
     def _refuse_options(request: Request, allowed: set[str]) -> None:
         for option in ("$filter", "$orderby", "$search", "$expand", "$count"):
             if option in request.query_params and option not in allowed:
-                raise NotImplementedError(f"the query option {option} here")
+                raise NotServed(f"the query option {option} here")
 
     # ------------------------------------------------------------------ users
 
@@ -204,16 +205,16 @@ class TeamsGraph:
         if starts is not None:
             field, value = starts.group(1), _quoted(starts.group(2)).lower()
             return [u for u in users if (getattr(u.user, field) or "").lower().startswith(value)]
-        raise NotImplementedError(f"the $filter clause {clause!r}")
+        raise NotServed(f"the $filter clause {clause!r}")
 
     async def users(self, request: Request, parts: list[str]) -> Response:
         claims = graph_caller(request, self._world)
         if parts[0] == "me":
             if claims.oid is None:
-                raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
+                raise NotServed("/me with no signed-in user: Graph documents no answer to an application")
             parts = ["users", claims.oid, *parts[1:]]
         if request.method != "GET":
-            raise NotImplementedError(f"{request.method} on a user")
+            raise NotServed(f"{request.method} on a user")
         if len(parts) == 1:
             self._refuse_options(request, {"$filter", "$count"})
             clause = query(request, "$filter")
@@ -247,7 +248,7 @@ class TeamsGraph:
                 if c.type is not wire.ConversationType.CHANNEL and user.user.id in c.members
             ]
             return self._page(request, chats, f"{GRAPH}/$metadata#users('{user.user.id}')/chats")
-        raise NotImplementedError(f"the segment '{'/'.join(parts[2:])}'")
+        raise NotServed(f"the segment '{'/'.join(parts[2:])}'")
 
     # ------------------------------------------------------------------ presence and automatic replies
 
@@ -293,12 +294,12 @@ class TeamsGraph:
             try:
                 asked = wire.read(wire.PresencesByUserId, await request.body())
             except wire.Unreadable as e:
-                raise NotImplementedError(
+                raise NotServed(
                     f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
                 ) from e
             found = [self.presence(self._user(i)) for i in asked.ids]
             return self._page(request, found, f"{GRAPH}/$metadata#Collection(microsoft.graph.presence)")
-        raise NotImplementedError(f"the segment '{'/'.join(parts)}'")
+        raise NotServed(f"the segment '{'/'.join(parts)}'")
 
     # ------------------------------------------------------------------ teams and channels
 
@@ -325,7 +326,7 @@ class TeamsGraph:
 
     async def teams(self, request: Request, parts: list[str]) -> Response:
         if len(parts) < 2:
-            raise NotImplementedError("listing teams")
+            raise NotServed("listing teams")
         team = self._team(parts[1])
         rest = parts[2:]
         if not rest and request.method == "GET":
@@ -340,7 +341,7 @@ class TeamsGraph:
         if rest == ["members"]:
             return self._members(request, team.members, team.tenant_id, f"teams('{team.id}')/members")
         if rest[:1] != ["channels"]:
-            raise NotImplementedError(f"the segment '{'/'.join(rest)}'")
+            raise NotServed(f"the segment '{'/'.join(rest)}'")
         if len(rest) == 1:
             self._refuse_options(request, {"$filter"})
             channels = self._world.channels_of(team.id)
@@ -348,7 +349,7 @@ class TeamsGraph:
             if clause:
                 equal = re.fullmatch(r"\s*displayName\s+eq\s+'((?:[^']|'')*)'\s*", clause)
                 if equal is None:
-                    raise NotImplementedError(f"the $filter clause {clause!r}")
+                    raise NotServed(f"the $filter clause {clause!r}")
                 channels = [c for c in channels if (c.display_name or "General") == _quoted(equal.group(1))]
             self._world.saw(team_ref(team.id), Operation.SEARCH)
             return self._page(
@@ -375,7 +376,7 @@ class TeamsGraph:
             return await self._messages(
                 request, channel, rest[3:], f"teams('{team.id}')/channels('{channel.graph_id}')/messages"
             )
-        raise NotImplementedError(f"the segment '{'/'.join(rest[2:])}'")
+        raise NotServed(f"the segment '{'/'.join(rest[2:])}'")
 
     def _members(self, request: Request, members: list[str], tenant: str, context: str) -> Response:
         found: list[wire.ConversationMember] = []
@@ -412,7 +413,7 @@ class TeamsGraph:
         claims = graph_caller(request, self._world)
         if len(parts) == 1:
             if claims.oid is None:
-                raise NotImplementedError(
+                raise NotServed(
                     "GET /chats with no signed-in user: Graph lists a signed-in user's chats, and does not document "
                     "its answer to an application"
                 )
@@ -433,7 +434,7 @@ class TeamsGraph:
             return self._members(request, chat.members, chat.tenant_id, f"chats('{chat.graph_id}')/members")
         if rest[0] == "messages":
             return await self._messages(request, chat, rest[1:], f"chats('{chat.graph_id}')/messages")
-        raise NotImplementedError(f"the segment '{'/'.join(rest)}'")
+        raise NotServed(f"the segment '{'/'.join(rest)}'")
 
     # ------------------------------------------------------------------ messages
 
@@ -465,7 +466,7 @@ class TeamsGraph:
             self._refuse_options(request, {"$expand"} if channel else set())
             expand = query(request, "$expand")
             if expand is not None and expand != "replies":
-                raise NotImplementedError(f"$expand={expand}")
+                raise NotServed(f"$expand={expand}")
             found = []
             for m in sorted(reversed(roots), key=latest, reverse=True):
                 message = chat_message(self._world, conversation, m)
@@ -491,7 +492,7 @@ class TeamsGraph:
             self._refuse_options(request, set())
             self._world.saw(conversation_ref(conversation.id), Operation.READ)
             return self._page(request, replies_of(root.id), f"{GRAPH}/$metadata#{context}('{root.id}')/replies")
-        raise NotImplementedError(f"the segment '{'/'.join(rest[1:])}'")
+        raise NotServed(f"the segment '{'/'.join(rest[1:])}'")
 
 
 def _mailbox_time(at: datetime) -> str:

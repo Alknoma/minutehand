@@ -22,7 +22,7 @@ from typing import Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 PAGE_DEFAULT = 42
@@ -154,11 +154,11 @@ def invalid_query(value: str, field: str) -> Refusal:
     )
 
 
-def unparsed_query(text: str, why: str) -> NotImplementedError:
+def unparsed_query(text: str, why: str) -> NotServed:
     """A search this fake cannot read. JetBrains' public instance reads parentheses and an attribute it does not
     know (as text) without complaint (`tests/providers/youtrack/data/observed/query_parentheses.http`,
     `query_attribute_unknown.http`), so such a query is refused by name, never with an error this fake invents."""
-    return NotImplementedError(f"the search query {text!r}: {why}; this fake does not read it")
+    return NotServed(f"the search query {text!r}: {why}; this fake does not read it")
 
 
 def sort_field_expected() -> Refusal:
@@ -591,26 +591,24 @@ Body = TypeVar(
 def read_body(model: type[Body], raw: bytes) -> Body:
     """A request body, held to the properties the entity has."""
     if not raw.strip():
-        raise NotImplementedError("an empty body: what YouTrack answers is not recorded")
+        raise NotServed("an empty body: what YouTrack answers is not recorded")
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise NotImplementedError("a body that is not JSON: what YouTrack answers is not recorded") from error
+        raise NotServed("a body that is not JSON: what YouTrack answers is not recorded") from error
     if not isinstance(decoded, dict):
-        raise NotImplementedError("a body that is not an entity: what YouTrack answers is not recorded")
+        raise NotServed("a body that is not an entity: what YouTrack answers is not recorded")
     try:
         return model.model_validate(decoded)
     except ValidationError as error:
         first = error.errors()[0]
         where = ".".join(str(part) for part in first["loc"])
         if first["type"] == "extra_forbidden":
-            raise NotImplementedError(
+            raise NotServed(
                 f"the body property '{where}': {model.__name__} has not got it, and what YouTrack answers for a "
                 "property its entity lacks is not documented"
             ) from error
-        raise NotImplementedError(
-            f"the body property {where} of that type: what YouTrack answers is not recorded"
-        ) from error
+        raise NotServed(f"the body property {where} of that type: what YouTrack answers is not recorded") from error
 
 
 # --------------------------------------------------------------------------- fields= and paging
@@ -719,7 +717,7 @@ def select(value: JsonValue, spec: Spec | None) -> JsonValue:
     if isinstance(kind, str) and kind in UNCOMPUTED:
         for name in spec:
             if name in UNCOMPUTED[kind]:
-                raise NotImplementedError(f"{kind}.{name}: {UNCOMPUTED[kind][name]}")
+                raise NotServed(f"{kind}.{name}: {UNCOMPUTED[kind][name]}")
     narrowed: dict[str, JsonValue] = {}
     for name, inner in spec.items():
         if name in value:
@@ -742,10 +740,10 @@ def page_bounds(
     except ValueError as error:
         if recorded:
             raise Refusal(500, "server_error", "HTTP 404 Not Found") from error
-        raise NotImplementedError(f"$skip={skip} $top={top}: what YouTrack answers is not recorded") from error
+        raise NotServed(f"$skip={skip} $top={top}: what YouTrack answers is not recorded") from error
     if start < 0 or limit < 0:
         if not recorded:
-            raise NotImplementedError(f"$skip={skip} $top={top}: what YouTrack answers is not recorded")
+            raise NotServed(f"$skip={skip} $top={top}: what YouTrack answers is not recorded")
         if limit < 0:
             raise Refusal(400, "Bad Request", "This resource does not allow requesting all entities, max limit is 3500")
         start = 0

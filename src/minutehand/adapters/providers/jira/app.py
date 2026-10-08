@@ -14,7 +14,7 @@ account's email acts as that account, and anything else acts as the agent's acco
 world's data and stays: an issue or project in which the caller holds no role answers 404.
 
 Every operation of the vendor's reference for the resources this fake claims is either served by a handler below
-or refused by name (`surface.UNSERVED`, raised as `NotImplementedError`, which the proxy answers 501 in Jira's
+or refused by name (`surface.UNSERVED`, raised as `NotServed`, which the proxy answers 501 in Jira's
 error body); so is a documented query parameter or body property a served operation does not act on. Every
 refusal is Jira's `{"errorMessages": [...], "errors": {...}}` with its status; the OAuth endpoints answer in
 OAuth's own `{"error": ..., "error_description": ...}`.
@@ -42,6 +42,7 @@ from minutehand.adapters import answering
 from minutehand.adapters.providers.jira import jql, search, state, wire
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.surface import UNSERVED
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -156,7 +157,7 @@ def _page(request: Request, default: int, *, most: int | None = None) -> tuple[i
     start = _int(request, "startAt", 0)
     size = _int(request, "maxResults", default)
     if start < 0 or size < 0:
-        raise NotImplementedError("a negative startAt or maxResults: Jira's reference does not say what it answers")
+        raise NotServed("a negative startAt or maxResults: Jira's reference does not say what it answers")
     return start, size if most is None else min(size, most)
 
 
@@ -189,15 +190,13 @@ class JiraApi:
             root, rest = _split(path)
             if root in _CLAIMED and rest.split("/")[0] in _CLAIMED[root]:
                 raise wire.Problem(404, "Not Found", f"No endpoint {method} {path}.", path)
-            raise NotImplementedError(f"{method} {path} is outside the resources this fake serves")
+            raise NotServed(f"{method} {path} is outside the resources this fake serves")
         template, shape = max(matched, key=lambda pair: pair[0].literals)
         served = self._served.get((method, template.text))
         if served is not None:
             return served, shape.groupdict()
         if (method, template.text) in self._unserved:
-            raise NotImplementedError(
-                f"{method} {template.text} is in Jira Cloud's reference; this fake does not serve it"
-            )
+            raise NotServed(f"{method} {template.text} is in Jira Cloud's reference; this fake does not serve it")
         raise wire.Problem(405, "Method Not Allowed", f"Method '{method}' is not supported.", path)
 
     async def answer(self, request: Request) -> Response:
@@ -224,7 +223,7 @@ class JiraApi:
             served, params = self.resolve(request.method, path)
             refused = sorted(served.refuses & set(request.query_params))
             if refused:
-                raise NotImplementedError(f"the '{refused[0]}' parameter of {served.method} {served.path}")
+                raise NotServed(f"the '{refused[0]}' parameter of {served.method} {served.path}")
             self._throttle(request.method, path)
             call = Call(request, await request.body(), path, params, self._caller(request), base)
             status, tree = served.handler(call)
@@ -299,7 +298,7 @@ class JiraApi:
         A seeded grant's refresh token rotates it, so its new access token still acts as its account; any other
         grant's tokens act as the agent, as any unseeded token does."""
         if path != "/oauth/token" or request.method != "POST":
-            raise NotImplementedError(f"{request.method} {path} at {AUTH_HOST}: only POST /oauth/token is served")
+            raise NotServed(f"{request.method} {path} at {AUTH_HOST}: only POST /oauth/token is served")
         raw = await request.body()
         content_type = request.headers["content-type"] if "content-type" in request.headers else ""
         if content_type.split(";")[0].strip().lower() == "application/x-www-form-urlencoded":
@@ -641,7 +640,7 @@ class JiraApi:
     def user_get(self, call: Call) -> Answer:
         account = _param(call.request, "accountId")
         if not account:
-            raise NotImplementedError("GET /rest/api/3/user without accountId: what Jira answers is not recorded")
+            raise NotServed("GET /rest/api/3/user without accountId: what Jira answers is not recorded")
         found = self._world.user(account)
         if found is None:
             raise wire.no_user()
@@ -793,7 +792,7 @@ class JiraApi:
             case "name":
                 found.sort(key=lambda p: p.name.lower())
             case "owner" | "category" | "issueCount" | "lastIssueUpdatedTime" | "archivedDate" | "deletedDate":
-                raise NotImplementedError(f"orderBy={order} on GET /rest/api/3/project/search")
+                raise NotServed(f"orderBy={order} on GET /rest/api/3/project/search")
             case other:
                 raise wire.bad(
                     "The field to order by should be one of [name, key, owner, category, issueCount, "
@@ -1000,7 +999,7 @@ class JiraApi:
                 fieldsByKeys=(_param(call.request, "fieldsByKeys") or "false").lower() == "true",
             )
         if body.fieldsByKeys:
-            raise NotImplementedError("fieldsByKeys=true: fields are named by id here")
+            raise NotServed("fieldsByKeys=true: fields are named by id here")
         most = body.maxResults if body.maxResults is not None else SEARCH_DEFAULT
         if not 1 <= most <= SEARCH_MOST:
             raise wire.bad("The max results parameter has to be between 1 and 5,000.")
@@ -1032,7 +1031,7 @@ class JiraApi:
         — every field unless `fields` says otherwise, which may be given more than once."""
         issue, _ = self._issue(call)
         if (_param(call.request, "fieldsByKeys") or "false").lower() == "true":
-            raise NotImplementedError("fieldsByKeys=true: fields are named by id here")
+            raise NotServed("fieldsByKeys=true: fields are named by id here")
         expand = _expand(_param(call.request, "expand"), served={"names", "changelog"}, documented=_ISSUE_EXPANDS)
         self._world.saw(state.issue_ref(issue.id), Operation.READ)
         return 200, self.issue_out(call, issue, _listed(call.request, "fields"), expand, default="*all")
@@ -1085,10 +1084,10 @@ class JiraApi:
         """The `update` block: `labels` take add, remove and set; any other field takes set."""
         for name, operations in update.items():
             if not isinstance(operations, list):
-                raise NotImplementedError(f"an update of '{name}' that is not a list of operations")
+                raise NotServed(f"an update of '{name}' that is not a list of operations")
             for operation in operations:
                 if not isinstance(operation, dict) or len(operation) != 1:
-                    raise NotImplementedError(f"an update operation on '{name}' that is not one verb and its value")
+                    raise NotServed(f"an update operation on '{name}' that is not one verb and its value")
                 verb, value = next(iter(operation.items()))
                 labels_op = verb in ("add", "remove") and isinstance(value, str)
                 if name == "labels" and labels_op:  # enum-lint: exempt Jira's own field id
@@ -1099,7 +1098,7 @@ class JiraApi:
                 elif verb == "set":
                     issue = self._desk.apply_fields(issue, project, {name: value}, creating=False)
                 else:
-                    raise NotImplementedError(f"the update operation '{verb}' on '{name}': only set, and add or "
+                    raise NotServed(f"the update operation '{verb}' on '{name}': only set, and add or "
                                               "remove of a label, are served")  # fmt: skip
         return issue
 
@@ -1109,7 +1108,7 @@ class JiraApi:
         if (_param(call.request, "overrideScreenSecurity") or "false").lower() == "true" or (
             _param(call.request, "overrideEditableFlag") or "false"
         ).lower() == "true":
-            raise NotImplementedError("overrideScreenSecurity and overrideEditableFlag: screens hold here")
+            raise NotServed("overrideScreenSecurity and overrideEditableFlag: screens hold here")
         changed = self._desk.apply_fields(issue, project, body.fields, creating=False)
         changed = self._update_ops(changed, project, body.update)
         written = self._desk.write(issue, changed, by=call.account, at=self._now(), actor=Actor.AGENT)
@@ -1517,7 +1516,7 @@ def _expand(text: str | None, *, served: set[str], documented: set[str]) -> set[
     one the reference does not document is ignored, as Jira ignores it."""
     asked = {e.strip() for e in (text or "").split(",") if e.strip()}
     for name in sorted(asked & (documented - served)):
-        raise NotImplementedError(f"expand={name}")
+        raise NotServed(f"expand={name}")
     return asked & served
 
 

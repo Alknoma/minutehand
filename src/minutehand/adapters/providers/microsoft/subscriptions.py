@@ -33,6 +33,7 @@ from minutehand.adapters.providers.microsoft.state import (
     graph_time,
     subscription_ref,
 )
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
 
@@ -64,13 +65,9 @@ def parse_time(text: str) -> datetime:
     try:
         found = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as e:
-        raise NotImplementedError(
-            f"the expirationDateTime {text!r}: Graph's answer is not documented or recorded"
-        ) from e
+        raise NotServed(f"the expirationDateTime {text!r}: Graph's answer is not documented or recorded") from e
     if found.tzinfo is None:
-        raise NotImplementedError(
-            "an expirationDateTime without a time zone: Graph's answer is not documented or recorded"
-        )
+        raise NotServed("an expirationDateTime without a time zone: Graph's answer is not documented or recorded")
     return found
 
 
@@ -140,7 +137,7 @@ class Subscriptions:
         if record is None or not live(record, self._clock.now()):
             if renewing:
                 raise GraphRefusal(404, None, f"The subscription '{sub}' no longer exists.")
-            raise NotImplementedError(
+            raise NotServed(
                 "a subscription that does not exist or has expired: Graph's answer is not documented or recorded"
             )
         return record
@@ -150,7 +147,7 @@ class Subscriptions:
         try:
             asked = wire.read(wire.SubscriptionRequest, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
+            raise NotServed(
                 f"a request body that cannot be read ({e.message}): Graph's answer is not documented or recorded"
             ) from e
         for name, value in (
@@ -160,25 +157,21 @@ class Subscriptions:
             ("expirationDateTime", asked.expirationDateTime),
         ):
             if not value:
-                raise NotImplementedError(
-                    f"a subscription without {name}: Graph's answer is not documented or recorded"
-                )
+                raise NotServed(f"a subscription without {name}: Graph's answer is not documented or recorded")
         kinds = asked.changeType.split(",")
         if not set(kinds) <= {"created", "updated", "deleted"}:
-            raise NotImplementedError(
-                f"the changeType {asked.changeType!r}: Graph's answer is not documented or recorded"
-            )
+            raise NotServed(f"the changeType {asked.changeType!r}: Graph's answer is not documented or recorded")
         if not asked.notificationUrl.lower().startswith("https://") and not asked.notificationUrl.lower().startswith(
             "http://"
         ):
-            raise NotImplementedError(
+            raise NotServed(
                 f"the notificationUrl {asked.notificationUrl!r}: Graph's answer is not documented or recorded"
             )
         watches, limit = self._resolve(asked.resource, claims)
         expires = parse_time(asked.expirationDateTime)
         now = self._clock.now()
         if expires <= now or expires > now + limit:
-            raise NotImplementedError(
+            raise NotServed(
                 f"an expirationDateTime outside now to {int(limit.total_seconds() // 60)} minutes ahead, the most the "
                 f"resource allows: Graph's answer is not documented or recorded"
             )
@@ -258,14 +251,14 @@ class Subscriptions:
         try:
             asked = wire.read(wire.SubscriptionPatch, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
+            raise NotServed(
                 f"a request body that cannot be read ({e.message}): Graph's answer is not documented or recorded"
             ) from e
         expires = parse_time(asked.expirationDateTime)
         _, limit = self._resolve(record.subscription.resource, None)
         now = self._clock.now()
         if expires <= now or expires > now + limit:
-            raise NotImplementedError(
+            raise NotServed(
                 "renewing to an expirationDateTime outside what the resource allows: Graph's answer is not documented or recorded"
             )
         renewed = record.model_copy(

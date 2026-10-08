@@ -29,7 +29,7 @@ from urllib.parse import parse_qsl
 
 from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, TypeAdapter, model_serializer
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 API_BASE = "https://app.asana.com/api/1.0"
@@ -103,14 +103,14 @@ SETTINGS_ARE_PREMIUM = "Custom Field Settings are not available for free users."
 """Reported of the real service, 402: https://forum.asana.com/t/100330."""
 
 
-def unsupported(name: str) -> NotImplementedError:
+def unsupported(name: str) -> NotServed:
     """Something real Asana has, or a case whose answer Asana does not document, that this provider does not serve:
     the shared not-served refusal (`domain.errors`), answered 501 in Asana's envelope naming the call and `name`, and
     recorded as not implemented. Never ignored in silence."""
-    return NotImplementedError(name)
+    return NotServed(name)
 
 
-def undocumented(case: str) -> NotImplementedError:
+def undocumented(case: str) -> NotServed:
     """A request Asana answers in words no page, recording or report gives: refused by name, never answered with
     invented ones."""
     return unsupported(f"{case} (Asana's answer to it is not documented)")

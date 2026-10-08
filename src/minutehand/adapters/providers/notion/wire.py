@@ -28,7 +28,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 API_VERSION = "2022-06-28"
@@ -163,16 +163,16 @@ def reported(message: str) -> Refusal:
     return Refusal(ErrorCode.VALIDATION_ERROR, message)
 
 
-def undocumented(case: str) -> NotImplementedError:
+def undocumented(case: str) -> NotServed:
     """A request Notion answers in words no page, recording or report gives: not answered with invented ones."""
     return unserved(f"{case} (Notion's answer to it is not documented)")
 
 
-def unserved(name: str) -> NotImplementedError:
+def unserved(name: str) -> NotServed:
     """Something Notion has, or a case whose answer Notion does not document, that this provider does not serve: the
     shared not-served refusal (`domain.errors`), answered 501 `invalid_request` naming the call and `name`
     (`error_answer`), and recorded as not implemented. Never answered as if Notion refused it."""
-    return NotImplementedError(name)
+    return NotServed(name)
 
 
 MISSING_VERSION = (

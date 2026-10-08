@@ -25,7 +25,7 @@ from typing import ClassVar, Literal, TypeVar
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model, TicketState
 
 Json = dict[str, JsonValue]
@@ -869,10 +869,10 @@ Body = TypeVar(
 def read_body(model: type[Body], raw: bytes, *, missing: Refusal | None = None) -> Body:
     """A request body as the model; Jira's own refusal for a body that is not JSON or not that shape, a 400 naming a
     property a closed schema has not got, and a property the reference documents that this fake does not act on
-    refused by name (`NotImplementedError`)."""
+    refused by name (`NotServed`)."""
     if not raw.strip():
         if missing is None:
-            raise NotImplementedError(f"an empty {model.__name__} body: what Jira answers is not recorded")
+            raise NotServed(f"an empty {model.__name__} body: what Jira answers is not recorded")
         raise missing
     try:
         decoded = json.loads(raw)
@@ -892,7 +892,7 @@ def read_body(model: type[Body], raw: bytes, *, missing: Refusal | None = None) 
 def _refuse_unserved(model: type[Request], decoded: dict[str, JsonValue]) -> None:
     for name, value in decoded.items():
         if name in model.UNSERVED and value not in (None, False, "", [], {}):
-            raise NotImplementedError(f"the '{name}' property of a {model.__name__} body")
+            raise NotServed(f"the '{name}' property of a {model.__name__} body")
     if model.CLOSED:
         known = {f.alias or n for n, f in model.model_fields.items()} | set(model.UNSERVED)
         for name in decoded:

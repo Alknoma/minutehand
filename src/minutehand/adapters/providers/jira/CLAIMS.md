@@ -31,7 +31,7 @@ client library was involved. Each such row is now cited to the reference, or its
 ## Coverage
 
 Of the 212 operations in the subset, 45 are served and 167 are refused by name: the app raises
-`NotImplementedError`, answered 501 in Jira's error body naming the method and the reference's path template
+`NotServed`, answered 501 in Jira's error body naming the method and the reference's path template
 (`surface.UNSERVED`). A path outside the claimed resources (another API, `/rest/api/2`, `/dashboard`) is refused
 the same way, naming the path; a path inside them that the reference does not name is Jira's 404. For each served
 operation, every query parameter and body property the reference documents is either acted on or refused by name

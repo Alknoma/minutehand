@@ -22,6 +22,7 @@ from urllib.parse import parse_qs
 from pydantic import ValidationError
 
 from minutehand.adapters.providers.youtrack import state, wire
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation
 
 if TYPE_CHECKING:
@@ -95,7 +96,7 @@ class Hub:
         is no instance-wide group names nothing here."""
         group = call.path("group")
         if any(group == known for known, _ in _GLOBAL_GROUPS):
-            raise NotImplementedError(f"POST /usergroups/{group}/users: membership of Hub's instance-wide groups")
+            raise NotServed(f"POST /usergroups/{group}/users: membership of Hub's instance-wide groups")
         raise wire.not_found(group)
 
     def me(self, call: Call) -> Answered:
@@ -127,7 +128,7 @@ class Hub:
                 {k: v[0] for k, v in parse_qs(call.raw.decode("utf-8", "replace")).items()}
             )
         except ValidationError as error:
-            raise NotImplementedError(
+            raise NotServed(
                 "a token request with a parameter this fake does not read: what Hub answers is not recorded"
             ) from error
         client_id = form.client_id
@@ -139,9 +140,9 @@ class Hub:
                 client_id = None
         grant = form.grant_type
         if grant is None:
-            raise NotImplementedError("a token request without grant_type: what Hub answers is not recorded")
+            raise NotServed("a token request without grant_type: what Hub answers is not recorded")
         if grant != "client_credentials":
-            raise NotImplementedError(f"the grant {grant}: only client_credentials is served")
+            raise NotServed(f"the grant {grant}: only client_credentials is served")
         service = None if client_id is None else self._world.service(client_id)
         user = self._world.agent().id if service is None else service.user
         issued = f"1.{uuid.uuid5(_TOKENS, f'{client_id}:{self._world.head()}')}"

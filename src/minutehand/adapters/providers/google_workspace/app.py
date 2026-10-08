@@ -39,6 +39,7 @@ from starlette.responses import Response
 from starlette.routing import Route, Router
 from starlette.types import Receive, Scope, Send
 
+from minutehand.adapters import answering
 from minutehand.adapters.providers.google_workspace import docs, slides, state, wire
 from minutehand.adapters.providers.google_workspace import query as drive_query
 from minutehand.adapters.providers.google_workspace.access import Caller, bearer, due_fault, signed_in
@@ -46,6 +47,7 @@ from minutehand.adapters.providers.google_workspace.calendars import CalendarApi
 from minutehand.adapters.providers.google_workspace.channels import DRIVE_LIFETIME, Channels
 from minutehand.adapters.providers.google_workspace.gmail import GMAIL_HOST, GmailApi
 from minutehand.adapters.providers.google_workspace.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
+from minutehand.domain.errors import NotServed
 from minutehand.domain.scenario import Commented, DocumentHappening, Edited, FieldSet, Model, Moved, Renamed, Shared
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
@@ -105,6 +107,7 @@ def _json(answer: Model, mask: wire.Mask | None = None, status: int = 200) -> Re
 
 
 def _refused(refusal: wire.Refusal) -> Response:
+    wire.noted(refusal)
     return Response(wire.error_body(refusal), status_code=refusal.code, media_type=JSON, headers=refusal.headers)
 
 
@@ -220,10 +223,15 @@ class DriveApi:
                     self._fault(operation, api, request)
                     return await handler(request, call, caller)
                 except docs.Refused as refused:
+                    if isinstance(refused, NotServed):
+                        answering.unimplemented(refused, refused.message)
                     raise _status_refusal(refused.code, refused.status, refused.message) from refused
                 except slides.Refused as refused:
+                    if isinstance(refused, NotServed):
+                        answering.unimplemented(refused, refused.message)
                     raise _status_refusal(refused.code, refused.status, refused.message) from refused
             except wire.Refusal as refusal:
+                wire.noted(refusal)
                 if api in (Api.DOCS, Api.SLIDES, Api.USERINFO) and refusal.answer.error.status is None:
                     refusal = _status_refusal(refusal.code, _STATUS[refusal.code], refusal.answer.error.message)
                 return _refused(refusal)

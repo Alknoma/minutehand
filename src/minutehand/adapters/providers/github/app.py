@@ -31,6 +31,7 @@ from starlette.routing import Route
 from minutehand.adapters import answering
 from minutehand.adapters.providers.github import content, graphql, search, state, wire
 from minutehand.adapters.providers.github.state import GitHubWorld
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -144,7 +145,7 @@ class GitHubApi:
             owed = False
             try:
                 if version in wire.UNSERVED_API_VERSIONS:
-                    raise NotImplementedError(f"API version {version}: only {', '.join(wire.API_VERSIONS)} is served")
+                    raise NotServed(f"API version {version}: only {', '.join(wire.API_VERSIONS)} is served")
                 if version is not None and version not in wire.API_VERSIONS:
                     raise wire.unsupported_version(version)
                 caller = self._authenticate(request)
@@ -884,7 +885,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
     async def unserved(request: Request) -> Response:
         """Every other method and path of api.github.com: refused by name (501, "minutehand's github fake does
         not implement <METHOD> <path>"), never a 404 a client would read as GitHub's answer."""
-        raise NotImplementedError("it is not among the calls this provider serves (its README's table)")
+        raise NotServed("it is not among the calls this provider serves (its README's table)")
 
     routes.append(Route("/{anything:path}", unserved, methods=list(EVERY_METHOD)))
     return Starlette(routes=routes)

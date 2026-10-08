@@ -33,6 +33,7 @@ from minutehand.adapters.providers.youtrack.search import Matcher
 from minutehand.adapters.providers.youtrack.seed import new_project
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
 from minutehand.adapters.providers.youtrack.surface import UNSERVED
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -166,7 +167,7 @@ class YouTrackApi:
         """Every user, paged. YouTrack's description of `GET /users` takes no `query`, so a filter is refused by
         name rather than guessed; Hub's `/users?query=` is the documented search."""
         if (call.param("query") or "").strip():
-            raise NotImplementedError("GET /users takes no query parameter in YouTrack's API description")
+            raise NotServed("GET /users takes no query parameter in YouTrack's API description")
         present = self.presenter()
         page: list[wire.Answer] = [present.user(u) for u in self.page(call, self.world.users())]
         self.world.saw(state.instance_ref(), Operation.SEARCH)
@@ -199,7 +200,7 @@ class YouTrackApi:
     def project_create(self, call: Call) -> Answered:
         template = call.param("template")
         if template not in fields.TEMPLATES:
-            raise NotImplementedError(
+            raise NotServed(
                 f"POST /admin/projects?template={template}: the reference lists scrum and kanban; a custom project "
                 "template is not served"
             )
@@ -1030,7 +1031,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         status = error.status_code if isinstance(error, HTTPException) else 500
         path = request.url.path
         if status == 404 and any(path == p or path.startswith(p + "/") for p in (*PREFIXES, HUB)):
-            raise NotImplementedError(f"{request.method} {path} is outside the resources this fake serves")
+            raise NotServed(f"{request.method} {path} is outside the resources this fake serves")
         if status == 405:
             return Response(
                 wire.error_body(wire.Refusal(405, "Method Not Allowed", "HTTP 405 Method Not Allowed")),
@@ -1046,7 +1047,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
 
 def _unserved(method: str, path: str) -> Callable[[Request], Awaitable[Response]]:
     async def route(request: Request) -> Response:
-        raise NotImplementedError(f"{method} {path} is an operation of YouTrack's API that this fake does not serve")
+        raise NotServed(f"{method} {path} is an operation of YouTrack's API that this fake does not serve")
 
     return route
 
@@ -1065,7 +1066,7 @@ def _dispatch(answers: dict[str, Callable[[Request], Awaitable[Response]]]) -> C
     return route
 
 
-def _undocumented(what: str) -> NotImplementedError:
+def _undocumented(what: str) -> NotServed:
     """A request whose answer neither YouTrack's documentation nor a recording of the real service gives: refused
     by name, never answered with an error this fake would have to invent."""
-    return NotImplementedError(f"{what}: what YouTrack answers is neither documented nor recorded")
+    return NotServed(f"{what}: what YouTrack answers is neither documented nor recorded")

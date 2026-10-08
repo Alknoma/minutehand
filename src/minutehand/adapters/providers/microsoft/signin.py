@@ -42,7 +42,7 @@ from minutehand.adapters.providers.microsoft.state import (
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.wire import TokenUse
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -222,7 +222,7 @@ class SignIn:
         app or its redirect URI); one that names no user cannot be answered with that user's token."""
         granted = tokens.presented(presented)
         if granted is None or granted.oid is None or granted.tid is None:
-            raise NotImplementedError(f"an {what} that names no user: Minutehand reads the user from the one it issued")
+            raise NotServed(f"an {what} that names no user: Minutehand reads the user from the one it issued")
         return granted
 
     def _for_user(self, app_id: str, granted: wire.Claims, asked: wire.TokenRequest) -> wire.TokenAnswer:
@@ -279,7 +279,7 @@ class SignIn:
         redirect = query["redirect_uri"] if "redirect_uri" in query else ""
         hint = query["login_hint"] if "login_hint" in query else ""
         if not redirect or not hint:
-            raise NotImplementedError(
+            raise NotServed(
                 "authorize without login_hint and redirect_uri: this sign-in has no browser to ask who signs in"
             )
         user = self._world.user_by(hint)

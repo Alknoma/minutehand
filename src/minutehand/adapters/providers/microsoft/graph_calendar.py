@@ -110,9 +110,7 @@ def moment(sent: wire.SentDateTime) -> datetime:
     try:
         found = datetime.fromisoformat(sent.dateTime.replace("Z", "+00:00"))
     except ValueError as e:
-        raise NotImplementedError(
-            f"the dateTime {sent.dateTime!r}: Graph documents no answer to one it cannot read"
-        ) from e
+        raise NotServed(f"the dateTime {sent.dateTime!r}: Graph documents no answer to one it cannot read") from e
     if found.tzinfo is not None:
         return found.astimezone(UTC)
     zone = sent.timeZone or "UTC"
@@ -198,11 +196,11 @@ class Calendar:
                 try:
                     asked = wire.read(wire.EventResponseRequest, await request.body())
                 except wire.Unreadable as e:
-                    raise NotImplementedError(
+                    raise NotServed(
                         f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
                     ) from e
                 if stored.organizer_id == owner.user.id:
-                    raise NotImplementedError(
+                    raise NotServed(
                         f"{rest[2]} by the organizer of the meeting: Graph's answer is not documented or recorded"
                     )
                 await self.respond(
@@ -261,9 +259,7 @@ class Calendar:
         found = self._filtered(events, query(request, "$filter"))
         order = (query(request, "$orderby") or "").strip()
         if not order and len(found) > 1:
-            raise NotImplementedError(
-                "listing events without $orderby: Graph documents no order for them (user-list-events)"
-            )
+            raise NotServed("listing events without $orderby: Graph documents no order for them (user-list-events)")
         side, _, direction = (order or "start/dateTime").partition(" ")
         if side not in ("start/dateTime", "end/dateTime") or direction.lower() not in ("", "asc", "desc"):
             raise NotServed(f"$orderby on events: {order}")
@@ -274,9 +270,7 @@ class Calendar:
         if (top is not None and (not top.isdigit() or not 1 <= int(top) <= PAGE_MAX)) or (
             skip is not None and not skip.isdigit()
         ):
-            raise NotImplementedError(
-                f"$top={top} $skip={skip}: the page names $top 1 to {PAGE_MAX}, and no answer to more"
-            )
+            raise NotServed(f"$top={top} $skip={skip}: the page names $top 1 to {PAGE_MAX}, and no answer to more")
         size, offset = int(top) if top else PAGE_DEFAULT, int(skip) if skip else 0
         page = [self.seen_by(e, owner, request) for e in found[offset : offset + size]]
         following = None
@@ -300,7 +294,7 @@ class Calendar:
 
     def _window(self, start: str | None, end: str | None) -> tuple[datetime, datetime]:
         if not start or not end:
-            raise NotImplementedError(
+            raise NotServed(
                 "calendarView without startDateTime and endDateTime: the page names both required and documents no "
                 "answer without them"
             )
@@ -336,19 +330,17 @@ class Calendar:
             return wire.ItemBody(contentType="html", content="")
         kind = sent.contentType.lower()
         if kind not in ("text", "html"):
-            raise NotImplementedError(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
+            raise NotServed(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
         return wire.ItemBody(contentType=kind, content=sent.content)  # type: ignore[arg-type]
 
     async def _create(self, request: Request, owner: UserRecord) -> Response:
         try:
             asked = wire.read(wire.EventRequest, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
-                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
-            ) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         unread = sorted(str(n) for n in (asked.model_extra or {}))
         if unread or asked.isOnlineMeeting:
-            raise NotImplementedError(
+            raise NotServed(
                 f"the event properties {', '.join([*unread, *(['isOnlineMeeting'] if asked.isOnlineMeeting else [])])}"
                 ": they would not be kept or acted on as sent"
             )
@@ -364,12 +356,10 @@ class Calendar:
             if again is not None:
                 return self._one(request, owner, again, 201)
         if asked.start is None or asked.end is None:
-            raise NotImplementedError("an event without both start and end: Graph documents no answer to it")
+            raise NotServed("an event without both start and end: Graph documents no answer to it")
         starts, ends = moment(asked.start), moment(asked.end)
         if ends < starts:
-            raise NotImplementedError(
-                "an event whose end is before its start: Graph's answer is not documented or recorded"
-            )
+            raise NotServed("an event whose end is before its start: Graph's answer is not documented or recorded")
         stored = self.make(
             owner,
             subject=asked.subject or "",
@@ -462,9 +452,7 @@ class Calendar:
         try:
             asked = wire.read(wire.EventRequest, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
-                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
-            ) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         extra = sorted(asked.model_extra or {})
         if extra or asked.transactionId is not None:
             raise NotServed(
@@ -475,9 +463,7 @@ class Calendar:
         starts = moment(asked.start) if asked.start is not None else stored.starts
         ends = moment(asked.end) if asked.end is not None else stored.ends
         if ends < starts:
-            raise NotImplementedError(
-                "an event whose end is before its start: Graph's answer is not documented or recorded"
-            )
+            raise NotServed("an event whose end is before its start: Graph's answer is not documented or recorded")
         event = stored.event
         subject = asked.subject if asked.subject is not None else event.subject
         place = asked.location.displayName if asked.location is not None else event.location.displayName
@@ -681,14 +667,12 @@ class Calendar:
         try:
             asked = wire.read(wire.ScheduleRequest, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
-                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
-            ) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         start, end = moment(asked.startTime), moment(asked.endTime)
         if end <= start:
-            raise NotImplementedError("getSchedule whose endTime is not after its startTime: Graph documents no answer")
+            raise NotServed("getSchedule whose endTime is not after its startTime: Graph documents no answer")
         if not 5 <= asked.availabilityViewInterval <= 1440:
-            raise NotImplementedError(
+            raise NotServed(
                 f"availabilityViewInterval {asked.availabilityViewInterval}: the page names 5 to 1440, and no answer to"
                 " another"
             )
@@ -697,7 +681,7 @@ class Calendar:
         for address in asked.schedules:
             user = self._world.user_by(address)
             if user is None:
-                raise NotImplementedError(
+                raise NotServed(
                     f"getSchedule for {address!r}, who has no mailbox in the tenant: Graph's answer is not recorded"
                 )
             items = self._busy(user, start, end)

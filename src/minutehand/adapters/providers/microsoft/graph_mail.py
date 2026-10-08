@@ -180,9 +180,9 @@ def refuse_unserved_preferences(request: Request) -> None:
     prefer = request.headers["prefer"] if "prefer" in request.headers else ""
     zone = _TIME_ZONE_PREFERRED.search(prefer)
     if zone is not None and zone.group(1).strip().lower() not in ("utc", "etc/utc"):
-        raise NotImplementedError(f"Prefer: outlook.timezone={zone.group(1).strip()!r}: answers are in UTC only")
+        raise NotServed(f"Prefer: outlook.timezone={zone.group(1).strip()!r}: answers are in UTC only")
     if _IMMUTABLE_IDS.search(prefer) is not None:
-        raise NotImplementedError('Prefer: IdType="ImmutableId"')
+        raise NotServed('Prefer: IdType="ImmutableId"')
 
 
 def preference_applied(request: Request) -> dict[str, str] | None:
@@ -229,13 +229,13 @@ def mailbox_owner(world: MicrosoftWorld, claims: wire.Claims, parts: list[str]) 
     user's token reaches only their own; an application's reaches every user's."""
     if parts[0] == "me":
         if claims.oid is None:
-            raise NotImplementedError("/me with no signed-in user: Graph documents no answer to an application")
+            raise NotServed("/me with no signed-in user: Graph documents no answer to an application")
         key, rest = claims.oid, parts[1:]
     else:
         key, rest = parts[1], parts[2:]
     user = world.user_by(key)
     if user is None:
-        raise NotImplementedError(f"the mailbox of {key!r}, who is no user of the tenant: Graph documents no answer")
+        raise NotServed(f"the mailbox of {key!r}, who is no user of the tenant: Graph documents no answer")
     if claims.oid is not None and claims.oid != user.user.id:
         raise GraphRefusal(403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.")
     return user, split_segments(rest)
@@ -460,7 +460,7 @@ class Mail:
             rest in (["messages", "delta"], ["messages", "delta()"]) and method == "GET"
         ):  # enum-lint: exempt Graph's path segment
             if folder is None:
-                raise NotImplementedError(
+                raise NotServed(
                     "delta over every folder's messages: only one folder's, mailFolders/{id}/messages/delta"
                 )
             return self._delta(request, owner, folder)
@@ -500,12 +500,8 @@ class Mail:
             if wanted == name.value or key == folder_id(owner.user.id, name):
                 return name
         if wanted in WELL_KNOWN_FOLDERS:
-            raise NotImplementedError(
-                f"the mail folder {key!r}: only Inbox, Sent Items, Drafts and Deleted Items are held"
-            )
-        raise NotImplementedError(
-            f"the mail folder {key!r}, which the mailbox does not hold: Graph's answer is not recorded"
-        )
+            raise NotServed(f"the mail folder {key!r}: only Inbox, Sent Items, Drafts and Deleted Items are held")
+        raise NotServed(f"the mail folder {key!r}, which the mailbox does not hold: Graph's answer is not recorded")
 
     def _folder_of(self, owner: UserRecord, folder: wire.MailFolderName) -> wire.MailFolder:
         held = [m for m in self._world.mails(owner.user.id) if m.folder is folder]
@@ -588,9 +584,7 @@ class Mail:
             if (folder is None or m.folder is folder) and all(self._holds(c, m.message) for c in clauses)
         ]
         if not order and len(messages) > 1:
-            raise NotImplementedError(
-                "listing messages without $orderby: Graph documents no order for them (user-list-messages)"
-            )
+            raise NotServed("listing messages without $orderby: Graph documents no order for them (user-list-messages)")
         for prop, descending in reversed(order):
             messages.sort(key=lambda m, prop=prop: getattr(m, prop) or "", reverse=descending)
         top = query(request, "$top")
@@ -598,9 +592,7 @@ class Mail:
         if (top is not None and (not top.isdigit() or not 1 <= int(top) <= PAGE_MAX)) or (
             skip is not None and not skip.isdigit()
         ):
-            raise NotImplementedError(
-                f"$top={top} $skip={skip}: the page names $top 1 to {PAGE_MAX}, and no answer to more"
-            )
+            raise NotServed(f"$top={top} $skip={skip}: the page names $top 1 to {PAGE_MAX}, and no answer to more")
         size, offset = int(top) if top else PAGE_DEFAULT, int(skip) if skip else 0
         page = [self._shown(request, m) for m in messages[offset : offset + size]]
         where = f"mailFolders('{folder.value}')/messages" if folder is not None else "messages"
@@ -688,9 +680,7 @@ class Mail:
         try:
             asked = wire.read(wire.MessagePatch, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
-                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
-            ) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         if asked.model_extra:
             raise NotServed(f"PATCH of {', '.join(sorted(asked.model_extra))} on a message")
         changed = stored
@@ -733,7 +723,7 @@ class Mail:
             return wire.ItemBody(contentType="text", content="")
         kind = sent.contentType.lower()
         if kind not in ("text", "html"):
-            raise NotImplementedError(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
+            raise NotServed(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
         return wire.ItemBody(contentType=kind, content=sent.content)  # type: ignore[arg-type]
 
     @staticmethod
@@ -743,17 +733,15 @@ class Mail:
             {str(n) for n in (asked.model_extra or {})} | {str(n) for n in ((sent.model_extra or {}) if sent else {})}
         )
         if names:
-            raise NotImplementedError(f"the message properties {', '.join(names)}: they would not be kept as sent")
+            raise NotServed(f"the message properties {', '.join(names)}: they would not be kept as sent")
 
     async def _send_mail(self, request: Request, owner: UserRecord) -> Response:
         try:
             asked = wire.read(wire.SendMailRequest, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
-                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
-            ) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         if asked.message is None:
-            raise NotImplementedError("sendMail without a message: the page names it required and no answer without it")
+            raise NotServed("sendMail without a message: the page names it required and no answer without it")
         self._unread(asked.message, asked)
         if not asked.saveToSentItems:
             raise NotServed("sendMail with saveToSentItems false: the sent copy is the message a run reads")
@@ -788,9 +776,7 @@ class Mail:
         try:
             asked = wire.read(wire.ReplyRequest, await request.body())
         except wire.Unreadable as e:
-            raise NotImplementedError(
-                f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
-            ) from e
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         written = asked.message
         self._unread(written, asked)
         if asked.comment is not None and written is not None and written.body is not None:

@@ -24,7 +24,7 @@ from typing import Literal, NamedTuple
 
 from pydantic import Field, ValidationError
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 EMU_PER_PT = 12700
@@ -498,6 +498,13 @@ class Refused(ServiceRefusal):
             content_type="application/json; charset=UTF-8",
             body=json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode(),
         )
+
+
+class NotBuilt(Refused, NotServed):
+    """A request real Slides takes that this fake does not build: 501 `UNIMPLEMENTED`, naming it."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(501, "UNIMPLEMENTED", message)
 
 
 def _invalid(message: str) -> Refused:
@@ -994,9 +1001,7 @@ def read_batch(raw: bytes) -> BatchUpdate:
         for problem in error.errors():
             location = [str(part) for part in problem["loc"]]
             if len(location) >= 3 and location[0] == "requests" and location[2] in NOT_BUILT:
-                raise Refused(
-                    501, "UNIMPLEMENTED", f"this simulation does not build the Slides request {location[2]}"
-                ) from error
+                raise NotBuilt(f"this simulation does not build the Slides request {location[2]}") from error
         where = ".".join(str(part) for part in error.errors()[0]["loc"])
         raise _invalid(f"Invalid JSON payload received. Unknown name or bad value at '{where}'") from error
 
@@ -1005,7 +1010,7 @@ def update(
     presentation_id: str, deck: Deck, asked: BatchUpdate, *, image_readable: Callable[[str], bool]
 ) -> tuple[Deck, list[Reply]]:
     if asked.writeControl is not None:
-        raise Refused(501, "UNIMPLEMENTED", "this simulation does not take writeControl on a Slides batchUpdate")
+        raise NotBuilt("this simulation does not take writeControl on a Slides batchUpdate")
     editor = Editor(presentation_id, deck, image_readable=image_readable)
     replies = [editor.apply(request, position) for position, request in enumerate(asked.requests)]
     return editor.result(), replies

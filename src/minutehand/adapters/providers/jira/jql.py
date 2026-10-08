@@ -13,7 +13,7 @@ A field is a word, a quoted name, or `cf[10016]`. A value is a word or a quoted 
 (`-7d`, `2w`, `-1h`) is a word. Keywords are read in any case. Anything else is a 400 naming where it broke:
 a query this fake cannot read is never answered with everything. The `WAS` and `CHANGED` operators, which Atlassian's
 JQL reference documents (https://support.atlassian.com/jira-software-cloud/docs/jql-operators/), are refused by
-name (`NotImplementedError`).
+name (`NotServed`).
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from minutehand.adapters.providers.jira.wire import jql_error
+from minutehand.domain.errors import NotServed
 from minutehand.domain.scenario import Model
 
 
@@ -342,7 +343,7 @@ def _operator(reader: _Reader) -> Op:
     if reader.keyword("is"):
         return Op.IS
     if token.kind is TokenKind.WORD and token.text.lower() in ("was", "changed"):
-        raise NotImplementedError(f"the JQL operator {token.text.upper()}: history is not searched here")
+        raise NotServed(f"the JQL operator {token.text.upper()}: history is not searched here")
     raise reader.expected("an operator", token)
 
 

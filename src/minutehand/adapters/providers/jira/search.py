@@ -14,7 +14,7 @@ says (https://support.atlassian.com/jira-software-cloud/docs/jql-functions/).
 As in Jira, `!=` and `NOT IN` never match an issue whose field is empty, and a query naming something the site has
 not got (a field, a value, a function, an operator the field does not take, a date it cannot read) matches no
 issue (`jql.Unmatched`), as a public Jira Cloud site answers one; an unknown `ORDER BY` field is passed over. A field or function Atlassian's JQL reference documents that this fake does
-not serve (`_FIELDS_UNSERVED`, `_FUNCTIONS_UNSERVED`) is refused by name (`NotImplementedError`), never answered
+not serve (`_FIELDS_UNSERVED`, `_FUNCTIONS_UNSERVED`) is refused by name (`NotServed`), never answered
 as if the query were wrong.
 """
 
@@ -39,6 +39,7 @@ from minutehand.adapters.providers.jira.jql import (
     ValueKind,
 )
 from minutehand.adapters.providers.jira.moves import Desk
+from minutehand.domain.errors import NotServed
 
 _RELATIVE = re.compile(r"^([+-]?)(\d+)([yMwdhm])$")
 _DATE = re.compile(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?$")
@@ -79,7 +80,7 @@ def _function(value: Value, field: str, allowed: set[str]) -> str:
     if name in allowed:
         return name
     if name in _FUNCTIONS_UNSERVED:
-        raise NotImplementedError(f"the JQL function {value.text}()")
+        raise NotServed(f"the JQL function {value.text}()")
     if name in _FUNCTIONS_SERVED:
         raise Unmatched(f"The function '{value.text}()' cannot be used with the field '{field}'.")
     raise Unmatched(f"Unable to find JQL function '{value.text}()'.")
@@ -135,7 +136,7 @@ def _compile(node: Node, context: Context) -> Test:
 
 def _unknown_field(name: str) -> Unmatched:
     if name.lower() in _FIELDS_UNSERVED:
-        raise NotImplementedError(f"the JQL field '{name}'")
+        raise NotServed(f"the JQL field '{name}'")
     return Unmatched(f"no field '{name}'")
 
 
@@ -604,7 +605,7 @@ def _sort_key(name: str, context: Context) -> Callable[[wire.StoredIssue], Scala
     field = _custom(name, site)
     if field is None:
         if lowered in _FIELDS_UNSERVED:
-            raise NotImplementedError(f"ordering by the JQL field '{name}'")
+            raise NotServed(f"ordering by the JQL field '{name}'")
         raise Unmatched(f"Field '{name}' does not exist, or you cannot order by it.")
 
     def custom(issue: wire.StoredIssue) -> Scalar:

@@ -37,7 +37,7 @@ from minutehand.adapters.providers.microsoft.state import (
     graph_time,
     message_ref,
 )
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -128,7 +128,7 @@ class Connector:
         if app is None:
             app = next(iter(self._world.apps()), None)
         if app is None:
-            raise NotImplementedError("a connector call in a world with no bot registered")
+            raise NotServed("a connector call in a world with no bot registered")
         return app
 
     def _conversation(self, conversation: str, app: AppRecord) -> ConversationRecord:
@@ -232,7 +232,7 @@ class Connector:
         if current.sender.id != bot_mri(app.app_id):
             raise ConnectorRefusal(403, "NotEnoughPermissions", "A bot can update only the activities it sent.")
         if sent.text and sent.attachments:
-            raise NotImplementedError(
+            raise NotServed(
                 "an update carrying both text and an attachment: the connector's answer to it is not documented"
             )
         updated = current.model_copy(
@@ -286,7 +286,7 @@ class Connector:
         if not tenant:
             raise ConnectorRefusal(400, "Bad Argument", "Tenant id is required to create a conversation in Teams.")
         if asked.bot is not None and asked.bot.id not in (app.app_id, bot_mri(app.app_id)):
-            raise NotImplementedError(
+            raise NotServed(
                 "a conversation created naming another bot than the caller: the connector's answer is not documented"
             )
         if asked.isGroup or len(asked.members) != 1:
@@ -296,7 +296,7 @@ class Connector:
         member = asked.members[0].id
         user = self._world.user_by_mri(member) or self._world.user(member)
         if user is None or user.tenant_id != tenant or app.tenant_id != tenant:
-            raise NotImplementedError(
+            raise NotServed(
                 "a conversation with someone who is no user of the tenant: the connector's answer is not documented"
             )
         conversation = self._world.personal_with(user.user.id, tenant)
@@ -343,7 +343,7 @@ class Connector:
         if token:
             position = next((i for i, m in enumerate(everyone) if m.aadObjectId == token), None)
             if position is None:
-                raise NotImplementedError("a continuationToken the connector never gave: its answer is not documented")
+                raise NotServed("a continuationToken the connector never gave: its answer is not documented")
             start = position
         page = everyone[start : start + size]
         following = everyone[start + size].aadObjectId if start + size < len(everyone) else None
@@ -359,9 +359,7 @@ class Connector:
         wanted = request.path_params["member"]
         found = next((m for m in self._members(conversation) if wanted in (m.id, m.aadObjectId)), None)
         if found is None:
-            raise NotImplementedError(
-                "a member the conversation does not hold: the connector's answer is not documented"
-            )
+            raise NotServed("a member the conversation does not hold: the connector's answer is not documented")
         self._world.saw(conversation_ref(conversation.id), Operation.READ)
         return Response(wire.dump(found), media_type=JSON)
 
@@ -374,9 +372,7 @@ class Connector:
         thread = request.path_params["team"]
         team = self._world.team_by_thread(thread) or self._world.team(thread)
         if team is None:
-            raise NotImplementedError(
-                f"a team the world does not hold ({thread}): the connector's answer is not documented"
-            )
+            raise NotServed(f"a team the world does not hold ({thread}): the connector's answer is not documented")
         general = self._conversation(team.general_channel_id, app)
         return team.id, general
 
@@ -441,4 +437,4 @@ EVERY_METHOD = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
 async def not_served(request: Request) -> Response:
     """Every other call on the host is refused by name (501), never answered with a bare 404 or 405."""
-    raise NotImplementedError("not an operation this provider serves on this host")
+    raise NotServed("not an operation this provider serves on this host")

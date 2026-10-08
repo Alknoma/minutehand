@@ -107,7 +107,12 @@ def convert(error: Exception, renders: RendersErrors, *, provider: str, asked: A
     if isinstance(error, ServiceRefusal):
         rendered = error.render(asked)
         logger.debug("%s refused %s: %s", provider, where, rendered.status)
-        _note(CallOutcome.REFUSED)
+        if isinstance(error, NotServed):
+            unimplemented(
+                error, f"minutehand's {provider} fake does not implement {asked.method} {asked.path}: {error}"
+            )
+        else:
+            _note(CallOutcome.REFUSED)
         return rendered
     if isinstance(error, NotImplementedError):
         said = f": {error}" if str(error) else ""

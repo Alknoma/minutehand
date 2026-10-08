@@ -305,6 +305,7 @@ def _json(answer: Model, request: Request, model: type[Model]) -> Response:
 
 
 def _refused(refusal: wire.Refusal) -> Response:
+    wire.noted(refusal)
     return Response(wire.error_body(refusal), status_code=refusal.code, media_type=JSON, headers=refusal.headers)
 
 

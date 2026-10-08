@@ -31,7 +31,7 @@ from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, ValidationError
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 # --------------------------------------------------------------------------- styles, as Docs spells them
@@ -614,6 +614,13 @@ class Refused(ServiceRefusal):
         )
 
 
+class NotBuilt(Refused, NotServed):
+    """A request real Docs takes that this fake does not build: 501 `UNIMPLEMENTED`, naming it."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(501, "UNIMPLEMENTED", message)
+
+
 def _invalid(message: str) -> Refused:
     return Refused(400, "INVALID_ARGUMENT", message)
 
@@ -767,7 +774,7 @@ class Editor:
 
     def _check_segment(self, segment_id: str | None, tab_id: str | None) -> None:
         if segment_id:
-            raise Refused(501, "UNIMPLEMENTED", f"{self._where}: this simulation has no headers, footers or footnotes")
+            raise NotBuilt(f"{self._where}: this simulation has no headers, footers or footnotes")
         if tab_id and tab_id != FIRST_TAB:
             raise _invalid(f"{self._where}: The tab with ID {tab_id} was not found.")
 
@@ -1018,7 +1025,7 @@ class Editor:
         index = self._insertion(asked.location, asked.endOfSegmentLocation)
         spot = self._paragraph_spot(index)
         if spot.in_table:
-            raise Refused(501, "UNIMPLEMENTED", f"{self._where}: this simulation does not nest a table in a table")
+            raise NotBuilt(f"{self._where}: this simulation does not nest a table in a table")
         closing = self._closing(spot.segment, spot.position)
         style = self._inherited(spot.segment, spot.position)
         cell_newline = Unit(
@@ -1055,7 +1062,7 @@ class Editor:
         if not needle:
             raise _invalid(f"{self._where}: The search text must not be empty.")
         if asked.containsText.searchByRegex:
-            raise Refused(501, "UNIMPLEMENTED", f"{self._where}: this simulation does not search by regular expression")
+            raise NotBuilt(f"{self._where}: this simulation does not search by regular expression")
         changed = 0
         for segment, base in list(self._segments()):
             changed += self._replace_in(segment, base, needle, asked.replaceText, asked.containsText.matchCase)
@@ -1234,9 +1241,7 @@ def read_batch(raw: bytes) -> BatchUpdate:
         for problem in error.errors():
             location = [str(part) for part in problem["loc"]]
             if len(location) >= 3 and location[0] == "requests" and location[2] in NOT_BUILT:
-                raise Refused(
-                    501, "UNIMPLEMENTED", f"this simulation does not build the Docs request {location[2]}"
-                ) from error
+                raise NotBuilt(f"this simulation does not build the Docs request {location[2]}") from error
         first = error.errors()[0]
         where = ".".join(str(part) for part in first["loc"])
         raise _invalid(f"Invalid JSON payload received. Unknown name or bad value at '{where}'") from error

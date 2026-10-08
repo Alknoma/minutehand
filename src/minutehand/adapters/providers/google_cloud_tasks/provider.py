@@ -485,7 +485,7 @@ class CloudTasksProvider:
         def paging(request: Request) -> wire.Parented:
             query = request.query_params
             if "filter" in query or "readMask" in query:
-                raise NotImplementedError("queues.list with a filter or a readMask is not served")
+                raise NotServed("queues.list with a filter or a readMask is not served")
             size = query.get("pageSize")
             return wire.Parented(
                 parent=located(request),
@@ -531,9 +531,7 @@ class CloudTasksProvider:
         async def unserved(request: Request) -> Response:
             called = wire.rest_method(request.method, request.url.path)
             if called is None:
-                raise NotServed(
-                    f"no method of Cloud Tasks v2 has the route {request.method} {request.url.path}"
-                )
+                raise NotServed(f"no method of Cloud Tasks v2 has the route {request.method} {request.url.path}")
             raise NotServed(f"{called}: {wire.REST_REFUSED[called]}")
 
         return Router(
@@ -584,7 +582,7 @@ class CloudTasksProvider:
 
         def queues_listed(asked: wire.Parented) -> ProtoMessage:
             if asked.filter or asked.readMask:
-                raise NotImplementedError("ListQueues with a filter or a read_mask is not served")
+                raise NotServed("ListQueues with a filter or a read_mask is not served")
             found, following = api.list_queues(_located(asked.parent), asked.pageSize, asked.pageToken)
             listed = [_queue_wire(q) for q in found]
             return json_format.Parse(
@@ -593,7 +591,7 @@ class CloudTasksProvider:
 
         def refused(name: str, request: type[ProtoMessage]) -> GrpcMethod:
             async def answered(message: ProtoMessage) -> ProtoMessage:
-                raise NotImplementedError(f"google.cloud.tasks.v2.CloudTasks/{name}: {wire.GRPC_REFUSED[name]}")
+                raise NotServed(f"google.cloud.tasks.v2.CloudTasks/{name}: {wire.GRPC_REFUSED[name]}")
 
             return GrpcMethod(path=f"{SERVICE}/{name}", request=request, answer=answered)
 
@@ -751,7 +749,7 @@ class _Api:
         if stored is not None:
             deleted = QueueRecord.model_validate_json(stored.body).gone_at
             if deleted is not None and self._clock.now() - deleted < wire.QUEUE_TOMBSTONE:
-                raise NotImplementedError(
+                raise NotServed(
                     f"creating {given.name} within 3 days of deleting it: the reference says only that queues.create "
                     "may appear to recreate the queue during this tombstone window"
                 )
