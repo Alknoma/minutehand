@@ -105,7 +105,7 @@ async def test_slackbot_is_listed_and_answered_as_slack_serves_it(sdk: tuple[Asy
     client, _ = sdk
     slackbot = (await _members(client))["slackbot"]
     assert slackbot["id"] == state.SLACKBOT_ID and slackbot["is_bot"] is False and slackbot["deleted"] is False
-    assert "email" not in slackbot["profile"] and slackbot["real_name"] == "Slackbot"
+    assert "email" not in slackbot["profile"] and slackbot["real_name"] == "slackbot"
     info = data(await client.users_info(user="USLACKBOT"))["user"]
     assert info["id"] == "USLACKBOT" and info["is_bot"] is False
 

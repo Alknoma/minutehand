@@ -36,8 +36,9 @@ MAX_UPDATE_CHARS = 4_000
 MAX_EPHEMERAL_CHARS = 40_000
 """`chat.postEphemeral` lists `msg_too_long` without naming a figure; the post's own ceiling stands in for one."""
 MAX_BLOCKS = 50
-PAGE_DEFAULT = 100
 PAGE_MAX = 1000
+"""Pagination's ceiling where a method's page names none: "The `limit` parameter maximum is `1000`"
+(https://docs.slack.dev/apis/web-api/pagination)."""
 
 
 JSON = "application/json; charset=utf-8"
@@ -129,6 +130,7 @@ class SlackChannel(Model):
     topic: SlackTopic | None = None
     purpose: SlackTopic | None = None
     is_member: bool | None = Field(default=None, description="Whether the calling app is in it; set when served")
+    num_members: int | None = Field(default=None, description="Its member count; set when `include_num_members` asks")
 
 
 class SlackMembership(Model):
@@ -209,6 +211,9 @@ class SlackMessage(Model):
     edited: SlackEdited | None = None
     reactions: list[SlackReaction] | None = None
     subtype: Literal["file_share", "thread_broadcast"] | None = None
+    root: SlackMessage | None = Field(
+        default=None, description="A broadcast reply's thread parent, as Slack serves it beside the broadcast"
+    )
     client_msg_id: str | None = None
     bot_profile: BotProfile | None = None
     files: list[SlackFile] | None = None
@@ -222,6 +227,9 @@ class SlackMessage(Model):
     reply_users: list[str] | None = None
     reply_users_count: int | None = None
     latest_reply: str | None = None
+    parent_user_id: str | None = Field(
+        default=None, description="A reply's thread parent's author; computed when served"
+    )
 
 
 class SlackPostKey(Model):
@@ -264,6 +272,7 @@ class SlackView(Model):
     hash: str
     clear_on_close: bool = False
     notify_on_close: bool = False
+    submit_disabled: bool = False
     previous_view_id: str | None = None
     root_view_id: str
     app_id: str
@@ -305,12 +314,6 @@ class SlackHook(Model):
     used: int = 0
 
 
-class SlackSignIn(Model):
-    """Minutehand's own: a token the scenario declares, and the member it signs in as (None: the app's bot)."""
-
-    user: str | None = None
-
-
 class SlackInstall(Model):
     """Minutehand's own: who installed the agent's app, the OAuth codes already exchanged, and the bot tokens the
     exchanges minted, which authenticate in this workspace from then on."""
@@ -330,7 +333,9 @@ class SlackWorkspace(Model):
     bot_id: str
     app_id: str
     bot_name: str
-    tokens: list[str] = Field(default=[], description="The bot tokens it accepts; none: any xoxb- or xoxp- token")
+    tokens: list[str] = Field(
+        default=[], description="The tokens that select it; any other token is answered in the first workspace"
+    )
     oauth_code: str | None = Field(default=None, description="The install code `oauth.v2.access` answers it for")
     position: int = Field(default=0, description="Its place among the world's workspaces; the first is 0")
 
@@ -437,6 +442,10 @@ class ChannelArgs(Model):
     channel: str = ""
 
 
+class ChannelInfoArgs(ChannelArgs):
+    include_num_members: bool = False
+
+
 class ConversationsOpenArgs(Model):
     users: str = ""
     channel: str = ""
@@ -470,6 +479,7 @@ class PostMessageArgs(Model):
     channel: str = ""
     text: str = ""
     thread_ts: str | None = None
+    reply_broadcast: bool = False
     blocks: list[JsonValue] | None = None
     attachments: list[JsonValue] | None = None
     as_user: bool = False
@@ -591,18 +601,10 @@ def check_view(view: ViewSpec) -> None:
 Args = TypeVar("Args", bound=Model)
 
 
-class OAuthClient(Model):
-    """Who presented an `oauth.v2.access` call: the app's id and secret, from HTTP Basic or the arguments."""
-
-    client_id: str
-    client_secret: str
-
-
 class Presented(Model):
     """What one call to the Web API presented: its arguments as Slack reads them, and its token."""
 
     token: str | None
-    client: OAuthClient | None = Field(default=None, description="HTTP Basic credentials, when presented")
     arguments: dict[str, JsonValue] = Field(description="Every argument from the query, form or JSON body")
 
     @property
@@ -617,7 +619,8 @@ class Presented(Model):
 def read_call(query: str, content_type: str, body: bytes, authorization: str | None) -> Presented:
     """Merge the query string with the body the way Slack does, and find the token.
 
-    Slack reads a bearer token from `Authorization`, or a `token` argument.
+    Slack reads a bearer token from `Authorization`, or a `token` argument. The token only picks the workspace
+    (`SlackWorld.for_token`); nothing refuses it.
     """
     merged: dict[str, JsonValue] = dict(parse_qsl(query, keep_blank_values=True))
     media = content_type.split(";", 1)[0].strip().lower()
@@ -632,20 +635,12 @@ def read_call(query: str, content_type: str, body: bytes, authorization: str | N
     elif body:
         merged.update(parse_qsl(body.decode("utf-8"), keep_blank_values=True))
     token: str | None = None
-    client: OAuthClient | None = None
     if authorization is not None and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip() or None
-    elif authorization is not None and authorization.lower().startswith("basic "):
-        try:
-            pair = base64.b64decode(authorization[6:].strip()).decode()
-        except (binascii.Error, UnicodeDecodeError) as error:
-            raise Refusal("invalid_client_id") from error
-        client_id, _, client_secret = pair.partition(":")
-        client = OAuthClient(client_id=client_id, client_secret=client_secret)
     presented = merged.pop("token", None)
     if token is None and isinstance(presented, str) and presented:
         token = presented
-    return Presented(token=token, client=client, arguments=merged)
+    return Presented(token=token, arguments=merged)
 
 
 def read_args(model: type[Args], presented: Presented) -> Args:
@@ -657,8 +652,12 @@ def read_args(model: type[Args], presented: Presented) -> Args:
         raise Refusal("invalid_arguments") from error
 
 
-def page_size(limit: int) -> int:
-    return PAGE_DEFAULT if limit <= 0 else min(limit, PAGE_MAX)
+def page_size(limit: int, *, default: int | None, most: int = PAGE_MAX) -> int | None:
+    """A method's page size: its documented default when `limit` is not given, its documented maximum past that.
+    Slack adjusts an out-of-range limit rather than refusing it: "Invalid `limit` values are currently magically
+    adjusted to something sensible" (https://docs.slack.dev/apis/web-api/pagination). None: every item, as
+    `users.list` answers with no limit."""
+    return default if limit <= 0 else min(limit, most)
 
 
 def encode_cursor(position: str) -> str:
@@ -915,6 +914,14 @@ class Failed(Model):
     error: str
 
 
+class UnknownMethod(Failed):
+    """What Slack answers a method name it has none for, the name echoed in `req_method` (observed:
+    `tests/providers/slack/data/observed/unknown_method.http`)."""
+
+    error: str = "unknown_method"
+    req_method: str
+
+
 class ResponseMetadata(Model):
     next_cursor: str = ""
 
@@ -949,8 +956,8 @@ class Presence(Ok):
 
 class DndInfo(Ok):
     dnd_enabled: bool
-    next_dnd_start_ts: int
-    next_dnd_end_ts: int
+    next_dnd_start_ts: int | None = None
+    next_dnd_end_ts: int | None = None
     snooze_enabled: bool | None = None
     snooze_endtime: int | None = None
     snooze_remaining: int | None = None
@@ -1212,7 +1219,6 @@ class SocketEnvelope(Model):
     type: Literal["events_api"] = "events_api"
     accepts_response_payload: bool = False
     retry_attempt: int = 0
-    retry_reason: str = ""
 
 
 def envelope_body(envelope: SocketEnvelope) -> str:

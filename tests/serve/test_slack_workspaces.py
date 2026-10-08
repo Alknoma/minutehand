@@ -94,13 +94,13 @@ def test_two_worlds_with_their_own_teams_and_tokens_are_separate_when_hit_at_onc
         served.client.close_world(beta.world_id)
 
 
-def test_a_token_no_workspace_of_the_world_declares_is_refused(served: Served) -> None:
+def test_a_token_no_workspace_of_the_world_declares_is_answered_in_its_first_workspace(served: Served) -> None:
+    """Minutehand never refuses a credential: a token the world routes here and no workspace names is the app's in
+    the first workspace."""
     world = _open(served, _seed(_people("owen"), {"workspaces": [
         _workspace("TGAMMA", "UGAMMABOT", "xoxb-gamma-1", "gamma")]}), ["xoxb-gamma-1", "xoxb-gamma-stranger"])  # fmt: skip
     try:
-        with pytest.raises(SlackApiError) as refused:
-            served.slack("xoxb-gamma-stranger").auth_test()
-        assert refused.value.response["error"] == "invalid_auth"
+        assert answer(served.slack("xoxb-gamma-stranger").auth_test())["team_id"] == "TGAMMA"
     finally:
         served.client.close_world(world.world_id)
 
@@ -208,7 +208,7 @@ def test_an_absence_shows_as_status_presence_and_do_not_disturb_only_while_it_la
         assert _status(served, "xoxb-away", sofia) == ("away", "Off-site training", True)
         info = answer(served.slack("xoxb-away").users_info(user=sofia))["user"]["profile"]
         ends = int((START + timedelta(hours=2, days=1)).timestamp())
-        assert (info["status_emoji"], info["status_expiration"]) == (":palm_tree:", ends)
+        assert ("status_emoji" in info, info["status_expiration"]) == (False, ends), "only the scenario's reason"
         world.advance(by=timedelta(days=1))
         assert _status(served, "xoxb-away", sofia) == ("active", None, False)
     finally:
@@ -224,7 +224,7 @@ def test_an_absence_that_starts_on_the_first_ask_shows_once_the_agent_asks(serve
         alba = answer(slack.users_lookupByEmail(email="alba@example.com"))["user"]["id"]
         assert _status(served, "xoxb-first-ask", alba)[0] == "active"
         answer(slack.chat_postMessage(channel=dm(served, "xoxb-first-ask", "alba@example.com"), text="Can you?"))
-        assert _status(served, "xoxb-first-ask", alba) == ("away", "Away", True)
+        assert _status(served, "xoxb-first-ask", alba) == ("away", None, True), "no reason given, no status written"
         assert any(e.entity.kind is EntityKind.MESSAGE for e in world.events(provider="slack", actor=Actor.AGENT))
     finally:
         served.client.close_world(world.world_id)

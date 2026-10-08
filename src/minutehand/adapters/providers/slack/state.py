@@ -18,7 +18,6 @@
 | a fault     | RECORD   | `fault.<position>`          | `faults` |
 | a workspace the app is in | RECORD | `workspace.<team>` | `workspaces` |
 | a person's absences | RECORD | `away.<user>`            | `away` |
-| a declared sign-in | RECORD | `sign_in.<digest of the token>` | `sign_ins` |
 | the email of a member whose profile shows none | RECORD | `email.<user>` | `emails` |
 
 A world holds one workspace or several (`SlackSeed.workspaces`). Users, channels and files are listed under their
@@ -182,14 +181,6 @@ def unlisted_email_ref(user: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"email.{user}")
 
 
-def sign_in_ref(token: str) -> EntityRef:
-    """Where a token the scenario declares is kept: under its digest, never the token itself."""
-    return _ref(EntityKind.RECORD, "sign_in." + hashlib.sha256(f"token|{token}".encode()).hexdigest())
-
-
-SIGN_INS = "sign_ins"
-
-
 FILES = "files"
 EMAILS = "emails"
 POSTS = "posts"
@@ -212,25 +203,25 @@ DEFAULT_WORKSPACE = wire.SlackWorkspace(
     app_id=APP_ID,
     bot_name=BOT_NAME,
 )
-"""The workspace a world is when its seed names none: any xoxb- or xoxp- token is its bot."""
-TOKEN_KINDS = ("xoxb-", "xoxp-")
+"""The workspace a world is when its seed names none: any token, or none, is its bot."""
 
 SLACKBOT_ID = "USLACKBOT"
 SLACKBOT_TZ = "America/Los_Angeles"
 
 
 def slackbot(team: str, at: datetime) -> wire.SlackUser:
-    """Slackbot, as `users.list` and `users.info` serve it in every workspace: the same id everywhere, not a bot
-    (`is_bot` is false for it), and no email. Nobody seeds it and it is never stored: every workspace has it."""
+    """Slackbot, as `users.list` and `users.info` serve it in every workspace: the same id everywhere, named
+    `slackbot`, not a bot (`is_bot` is false for it), and no email, as Slack's own `users.list` example lists it
+    (https://docs.slack.dev/apis/web-api/pagination). Nobody seeds it and it is never stored: every workspace has it."""
     offset = ZoneInfo(SLACKBOT_TZ).utcoffset(at)
     return wire.SlackUser(
         id=SLACKBOT_ID,
         team_id=team,
         name="slackbot",
-        real_name="Slackbot",
+        real_name="slackbot",
         tz=SLACKBOT_TZ,
         tz_offset=int(offset.total_seconds()) if offset is not None else 0,
-        profile=wire.SlackProfile(real_name="Slackbot", display_name="Slackbot"),
+        profile=wire.SlackProfile(real_name="slackbot", display_name=""),
     )
 
 
@@ -320,18 +311,16 @@ class SlackWorld:
         found = next((w for w in self.workspaces() if w.id == team_id), None)
         return None if found is None else self.as_team(found)
 
-    def for_token(self, token: str) -> SlackWorld | None:
-        """The workspace a bot or user token is for: one that declares it or minted it, else the first that declares
-        no tokens and so takes any token of Slack's shape."""
+    def for_token(self, token: str | None) -> SlackWorld:
+        """The workspace a call is answered in. A token decides it only by naming a workspace: one the workspace
+        declares or its install minted. Any other token, or none, is the app's in the first workspace that declares
+        no tokens, else the first workspace: Minutehand never refuses a credential."""
         every = self.workspaces()
         for workspace in every:
             install = self.body(install_ref(workspace.id), wire.SlackInstall)
-            if token in workspace.tokens or (install is not None and token in install.tokens):
+            if token is not None and (token in workspace.tokens or (install is not None and token in install.tokens)):
                 return self.as_team(workspace)
-        if not token.startswith(TOKEN_KINDS):
-            return None
-        open_to_any = next((w for w in every if not w.tokens), None)
-        return None if open_to_any is None else self.as_team(open_to_any)
+        return self.as_team(next((w for w in every if not w.tokens), every[0]))
 
     def channel_team(self, channel: str) -> SlackWorld | None:
         """The workspace a channel is in."""
@@ -362,8 +351,8 @@ class SlackWorld:
         page = self._store.children(MANIFEST.key, EntityKind.RECORD, self.team.id, after=after, limit=limit)
         return [wire.parse(wire.SlackUser, s.body) for s in page]
 
-    def every_user(self) -> Iterator[wire.SlackUser]:
-        for stored in self._pages(EntityKind.RECORD, self.team.id):
+    def every_user(self, after: str | None = None) -> Iterator[wire.SlackUser]:
+        for stored in self._pages(EntityKind.RECORD, self.team.id, after):
             yield wire.parse(wire.SlackUser, stored.body)
 
     def channel(self, channel: str) -> wire.SlackChannel | None:
@@ -491,13 +480,6 @@ class SlackWorld:
 
     def post(self, key: str) -> wire.SlackPostKey | None:
         return self.body(post_ref(key), wire.SlackPostKey)
-
-    def knows_token(self, token: str) -> bool:
-        """Whether the workspace issued this token: any token when the scenario declares no Slack sign-in, and
-        once it declares one, only the tokens it names."""
-        if self._store.get(sign_in_ref(token)) is not None:
-            return True
-        return not self._store.children(MANIFEST.key, EntityKind.RECORD, SIGN_INS, after=None, limit=1)
 
     def file(self, file: str) -> wire.SlackFile | None:
         stored = self._store.get(file_ref(file))
