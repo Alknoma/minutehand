@@ -77,7 +77,7 @@ async def test_put_and_delete_of_an_unknown_task_are_refused_404(
     assert workspace.store.head() == before
 
 
-@pytest.mark.parametrize("sent", [{"name": "bare"}, {"data": "not an object"}, ["data"]])
+@pytest.mark.parametrize("sent", [{}, {"data": "not an object"}, ["data"]])
 async def test_a_write_without_its_data_wrapper_is_refused(
     workspace: Workspace, client: httpx.AsyncClient, sent: object
 ) -> None:
@@ -100,8 +100,8 @@ async def test_a_task_needs_a_workspace_or_a_project_is_refused_without(client: 
     [
         ("jsmith", "assignee: Not a Recognized ID"),
         (42, "assignee: Not a Recognized ID"),
-        ("nobody@example.com", "assignee: Unknown object: nobody@example.com"),
-        (UNKNOWN, f"assignee: Unknown object: {UNKNOWN}"),
+        ("nobody@example.com", "assignee: Not a user in Organization: nobody@example.com"),
+        (UNKNOWN, f"assignee: Not a user in Organization: {UNKNOWN}"),
     ],
 )
 async def test_an_unknown_assignee_is_refused(
@@ -131,7 +131,7 @@ async def test_an_unknown_assignee_is_refused(
         ({"workspace": WS, "due_at": "soon"}, "due_at: Invalid datetime"),
         (
             {"workspace": WS, "due_on": "2026-09-01", "due_at": "2026-09-01T10:00:00Z"},
-            "Cannot specify both due_on and due_at",
+            "You may only provide one of due_on or due_at!",
         ),
     ],
 )

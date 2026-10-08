@@ -60,8 +60,8 @@ def test_every_operation_of_the_claimed_resources_is_served_or_refused_by_name(w
     refused = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) in REFUSED]
     neither = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) not in routes]
     assert not neither, f"answered 404 as if Asana had no such route: {neither}"
-    assert len(served) + len(refused) == len(OPERATIONS) == 112
-    assert (len(served), len(refused)) == (51, 61)
+    assert len(served) + len(refused) == len(OPERATIONS) == 122
+    assert (len(served), len(refused)) == (51, 71)
 
 
 def test_nothing_is_refused_by_name_that_the_document_does_not_hold() -> None:

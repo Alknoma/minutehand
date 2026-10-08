@@ -42,7 +42,6 @@ TASK_FIELDS = ",".join(
         "custom_fields.number_value",
         "custom_fields.display_value",
         "parent.gid",
-        "subtasks.name",
         "tags.name",
     ]
 )
@@ -366,8 +365,8 @@ async def test_set_parent_makes_a_subtask_and_unsets_it(agent: httpx.AsyncClient
     assert got(parented)["parent"] == {"gid": INCIDENT, "name": "API timeout in production"}
     subtasks = got(await agent.get(f"/tasks/{INCIDENT}/subtasks", params={"opt_fields": "name"}))
     assert [s["name"] for s in subtasks] == ["Raise the pool size", "Write the runbook"]
-    read = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "subtasks.name,num_subtasks"}))
-    assert read["num_subtasks"] == 2
+    read = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "num_subtasks"}))
+    assert read == {"gid": INCIDENT, "num_subtasks": 2}
     unset = await agent.post(f"/tasks/{made['gid']}/setParent", json={"data": {"parent": None}})
     assert got(unset)["parent"] is None
 
@@ -415,14 +414,15 @@ async def test_workspace_custom_fields_list_the_definitions(agent: httpx.AsyncCl
     assert (one["name"], one["precision"], "enum_options" in one) == ("Story Points", 1, False)
 
 
-async def test_html_notes_are_read_as_the_text_they_show(agent: httpx.AsyncClient) -> None:
-    made = got(
-        await agent.post(
-            "/tasks",
-            json={
-                "data": {"name": "x", "projects": [BACKEND], "html_notes": "<body>Call <b>Bob</b> &amp; Alice</body>"}
-            },
-        ),
-        201,
-    )
-    assert got(await agent.get(f"/tasks/{made['gid']}", params={"opt_fields": "notes"}))["notes"] == "Call Bob & Alice"
+async def test_html_notes_are_refused_by_name_written_or_read(rich: Workspace, agent: httpx.AsyncClient) -> None:
+    """Asana keeps `notes` and `html_notes` as one text and documents neither conversion
+    (https://developers.asana.com/docs/rich-text): neither can be answered for the other, so neither is served."""
+    before = rich.store.head()
+    sent = {"name": "x", "projects": [BACKEND], "html_notes": "<body>Call <b>Bob</b> &amp; Alice</body>"}
+    created = await agent.post("/tasks", json={"data": sent})
+    assert error(created, 501) == "html_notes: Not supported by this simulation of Asana"
+    updated = await agent.put(f"/tasks/{INCIDENT}", json={"data": {"html_notes": "<body>x</body>"}})
+    assert error(updated, 501) == "html_notes: Not supported by this simulation of Asana"
+    assert rich.store.head() == before
+    read = await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "name,html_notes"})
+    assert error(read, 501) == "opt_fields=html_notes: Not supported by this simulation of Asana"

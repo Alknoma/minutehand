@@ -10,6 +10,17 @@
      "type": "boolean"
     }
    },
+   "attachment_path_gid": {
+    "description": "Globally unique identifier for the attachment.",
+    "example": "12345",
+    "in": "path",
+    "name": "attachment_gid",
+    "required": true,
+    "schema": {
+     "type": "string"
+    },
+    "x-env-variable": "attachment"
+   },
    "completed_since": {
     "description": "Only return tasks that are either incomplete or that have been completed since this time. Accepts a date-time string or the keyword *now*.\n",
     "example": "2012-02-22T02:06:58.158Z",
@@ -73,6 +84,17 @@
      "minimum": 1,
      "type": "integer"
     }
+   },
+   "membership_path_gid": {
+    "description": "Globally unique identifier for the membership.",
+    "example": "12345",
+    "in": "path",
+    "name": "membership_gid",
+    "required": true,
+    "schema": {
+     "type": "string"
+    },
+    "x-env-variable": "membership"
    },
    "offset": {
     "description": "Offset token.\nAn offset to the next page returned by the API. A pagination request will return an offset token, which can be used as an input parameter to the next request. If an offset is not passed in, the API will return the first page of results.\n*Note: You can only pass in an offset that was returned to you via a previously paginated request.*",
@@ -294,6 +316,16 @@
    }
   },
   "responses": {
+   "BadGateway": {
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/ErrorResponse"
+      }
+     }
+    },
+    "description": "There is an issue between the load balancers and Asana's API."
+   },
    "BadRequest": {
     "content": {
      "application/json": {
@@ -313,6 +345,16 @@
      }
     },
     "description": "The authentication and request syntax was valid but the server is refusing to complete the request. This can happen if you try to read or write to objects or properties that the user does not have access to."
+   },
+   "GatewayTimeout": {
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/ErrorResponse"
+      }
+     }
+    },
+    "description": "This request took too long to complete."
    },
    "InternalServerError": {
     "content": {
@@ -343,6 +385,26 @@
      }
     },
     "description": "The request was valid, but the queried object or object mutation specified in the request is above your current premium level."
+   },
+   "ServiceUnavailable": {
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/ErrorResponse"
+      }
+     }
+    },
+    "description": "Either the upstream service is unavailable to the API, or the API has been intentionally shut off."
+   },
+   "TooManyRequests": {
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/ErrorResponse"
+      }
+     }
+    },
+    "description": "You have exceeded one of the enforced rate limits in the API. See the [documentation on rate limiting](https://developers.asana.com/docs/#rate-limits) for more information."
    },
    "Unauthorized": {
     "content": {
@@ -461,6 +523,187 @@
      }
     },
     "type": "object"
+   },
+   "AttachmentBase": {
+    "$ref": "#/components/schemas/AttachmentCompact"
+   },
+   "AttachmentCompact": {
+    "description": "An *attachment* object represents any file attached to a task in Asana, whether it's an uploaded file or one associated via a third-party service such as Dropbox or Google Drive.",
+    "properties": {
+     "gid": {
+      "description": "Globally unique identifier of the resource, as a string.",
+      "example": "12345",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": false
+     },
+     "name": {
+      "description": "The name of the file.",
+      "example": "Screenshot.png",
+      "readOnly": true,
+      "type": "string"
+     },
+     "resource_subtype": {
+      "description": "The service hosting the attachment. Valid values are `asana`, `dropbox`, `gdrive`, `onedrive`, `box`, `vimeo`, and `external`.",
+      "example": "dropbox",
+      "type": "string"
+     },
+     "resource_type": {
+      "description": "The base type of this resource.",
+      "example": "attachment",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": "gid"
+     }
+    },
+    "type": "object"
+   },
+   "AttachmentRequest": {
+    "properties": {
+     "connect_to_app": {
+      "description": "*Optional*. Only relevant for external attachments with a parent task.\nA boolean indicating whether the current app should be connected with\nthe attachment for the purposes of showing an app components widget.\nRequires the app to have been added to a project the parent task is in.\nThis property can only be set if an OAuth token is used to authenticate the request.\n\nCriteria for displaying app widget:\n1. An OAuth token must be used to authenticate the request\n2. The app needs to have its `widget_metadata_url` configured in the developer console\n3. The task the attachment is being attached to must be in a project with the app installed",
+      "type": "boolean"
+     },
+     "file": {
+      "description": "Required for `asana` attachments.\n",
+      "format": "binary",
+      "type": "string"
+     },
+     "name": {
+      "description": "The name of the external resource being attached. Required for attachments of type `external`.\n",
+      "type": "string"
+     },
+     "parent": {
+      "description": "Required identifier of the parent task, project, or project_brief, as a string.\n",
+      "type": "string"
+     },
+     "resource_subtype": {
+      "description": "The type of the attachment. Must be one of the given values. If not specified, a file attachment of type `asana` will be assumed. Note that if the value of `resource_subtype` is `external`, a `parent`, `name`, and `url` must also be provided.\n",
+      "enum": [
+       "asana",
+       "external"
+      ],
+      "example": "external",
+      "type": "string"
+     },
+     "url": {
+      "description": "The URL of the external resource being attached. Required for attachments of type `external`.\n",
+      "type": "string"
+     }
+    },
+    "required": [
+     "parent"
+    ],
+    "type": "object"
+   },
+   "AttachmentResponse": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/AttachmentBase"
+     },
+     {
+      "properties": {
+       "connected_to_app": {
+        "description": "Whether the attachment is connected to the app making the request for the purposes of showing an app components widget. Only present when the `resource_subtype` is `external` or `gdrive`.",
+        "readOnly": true,
+        "type": "boolean"
+       },
+       "created_at": {
+        "description": "The time at which this resource was created.",
+        "example": "2012-02-22T02:06:58.147Z",
+        "format": "date-time",
+        "readOnly": true,
+        "type": "string"
+       },
+       "download_url": {
+        "description": "The URL containing the content of the attachment.\n*Note:* May be null if the attachment is hosted by [Box](https://www.box.com/) and will be null if the attachment is a Video Message hosted by [Vimeo](https://vimeo.com/). If present, this URL may only be valid for two minutes from the time of retrieval. You should avoid persisting this URL somewhere and just refresh it on demand to ensure you do not keep stale URLs.",
+        "example": "https://s3.amazonaws.com/assets/1234/Screenshot.png",
+        "format": "uri",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string"
+       },
+       "host": {
+        "description": "The service hosting the attachment. Valid values are `asana`, `dropbox`, `gdrive`, `onedrive`, `box`, `vimeo`, and `external`.",
+        "example": "dropbox",
+        "readOnly": true,
+        "type": "string"
+       },
+       "parent": {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/TaskCompact"
+         },
+         {
+          "description": "The task this attachment is attached to.",
+          "nullable": true,
+          "properties": {
+           "resource_subtype": {
+            "description": "The resource subtype of the parent resource that the filter applies to.",
+            "example": "default_task",
+            "nullable": true,
+            "type": "string"
+           }
+          },
+          "readOnly": true,
+          "type": "object"
+         }
+        ]
+       },
+       "permanent_url": {
+        "description": "A stable URL for accessing the attachment through the Asana web application. This URL redirects to the file download location (e.g., an S3 link) if the user is authenticated and authorized to view the parent object (e.g., a task). Unauthorized users will receive a `403 Forbidden` response. This link is persistent and does not expire, but requires an active session to resolve.",
+        "example": "https://app.asana.com/app/asana/-/get_asset?asset_id=1234567890",
+        "format": "uri",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string"
+       },
+       "size": {
+        "description": "The size of the attachment in bytes. Only present when the `resource_subtype` is `asana`.",
+        "example": 12345,
+        "readOnly": true,
+        "type": "integer"
+       },
+       "view_url": {
+        "description": "The URL where the attachment can be viewed, which may be friendlier to users in a browser than just directing them to a raw file. May be null if no view URL exists for the service.",
+        "example": "https://www.dropbox.com/s/123/Screenshot.png",
+        "format": "uri",
+        "nullable": true,
+        "readOnly": true,
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    ]
+   },
+   "CreateMembershipRequest": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/MembershipRequest"
+     },
+     {
+      "properties": {
+       "member": {
+        "description": "The gid of the user or team.",
+        "example": 12345,
+        "type": "string"
+       },
+       "parent": {
+        "description": "The gid of the `goal`, `project`, or `portfolio` to add the member to.",
+        "example": "987654",
+        "type": "string"
+       },
+       "role": {
+        "deprecated": true,
+        "description": "*Deprecated: new integrations should use access_level* The role given to the member. Optional argument, will default to `commenter` for goals and the default project role for projects. Can be `editor` or `commenter` for goals. Can be `admin`,`editor` or `commenter` for projects.",
+        "example": "editor",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    ]
    },
    "CustomFieldBase": {
     "allOf": [
@@ -864,6 +1107,56 @@
      }
     ]
    },
+   "CustomFieldMembershipBase": {
+    "$ref": "#/components/schemas/CustomFieldMembershipCompact"
+   },
+   "CustomFieldMembershipCompact": {
+    "description": "This object describes a user or team's membership to a custom field including their level of access (Admin, Editor, or User).",
+    "properties": {
+     "access_level": {
+      "description": "Whether the member has admin, editor, or user access to the custom field.",
+      "enum": [
+       "admin",
+       "editor",
+       "user"
+      ],
+      "example": "admin",
+      "readOnly": true,
+      "type": "string"
+     },
+     "gid": {
+      "description": "Globally unique identifier of the resource, as a string.",
+      "example": "12345",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": false
+     },
+     "member": {
+      "$ref": "#/components/schemas/MemberCompact",
+      "description": "Member can be a user or a team."
+     },
+     "parent": {
+      "$ref": "#/components/schemas/CustomFieldCompact",
+      "description": "The custom field the user or team is a member of."
+     },
+     "resource_subtype": {
+      "description": "Type of the membership.",
+      "example": "custom_field_membership",
+      "type": "string"
+     },
+     "resource_type": {
+      "description": "The base type of this resource.",
+      "example": "custom_field_membership",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": "gid"
+     }
+    },
+    "type": "object"
+   },
+   "CustomFieldMembershipResponse": {
+    "$ref": "#/components/schemas/CustomFieldMembershipBase"
+   },
    "CustomFieldRequest": {
     "allOf": [
      {
@@ -1154,6 +1447,57 @@
     },
     "type": "object"
    },
+   "CustomTypeMembershipBase": {
+    "$ref": "#/components/schemas/CustomTypeMembershipCompact"
+   },
+   "CustomTypeMembershipCompact": {
+    "description": "This object describes a user or team's membership to a custom type including their level of access (Admin, Editor, User, or Viewer).",
+    "properties": {
+     "access_level": {
+      "description": "Whether the member has admin, editor, user, or viewer access to the custom type.",
+      "enum": [
+       "admin",
+       "editor",
+       "user",
+       "viewer"
+      ],
+      "example": "admin",
+      "readOnly": true,
+      "type": "string"
+     },
+     "gid": {
+      "description": "Globally unique identifier of the resource, as a string.",
+      "example": "12345",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": false
+     },
+     "member": {
+      "$ref": "#/components/schemas/MemberCompact",
+      "description": "Member can be a user or a team."
+     },
+     "parent": {
+      "$ref": "#/components/schemas/CustomTypeCompact",
+      "description": "The custom type the user or team is a member of."
+     },
+     "resource_subtype": {
+      "description": "Type of the membership.",
+      "example": "custom_type_membership",
+      "type": "string"
+     },
+     "resource_type": {
+      "description": "The base type of this resource.",
+      "example": "custom_type_membership",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": "gid"
+     }
+    },
+    "type": "object"
+   },
+   "CustomTypeMembershipResponse": {
+    "$ref": "#/components/schemas/CustomTypeMembershipBase"
+   },
    "CustomTypeStatusOptionCompact": {
     "description": "<p><strong style={{ color: \"#4573D2\" }}>Full object requires scope: </strong><code>custom_types:read</code></p>\n\nA generic Asana Resource, containing a globally unique identifier.",
     "properties": {
@@ -1414,6 +1758,178 @@
     },
     "type": "object"
    },
+   "GoalCompact": {
+    "description": "A generic Asana Resource, containing a globally unique identifier.",
+    "properties": {
+     "gid": {
+      "description": "Globally unique identifier of the resource, as a string.",
+      "example": "12345",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": false
+     },
+     "name": {
+      "description": "The name of the goal.",
+      "example": "Grow web traffic by 30%",
+      "type": "string"
+     },
+     "owner": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/UserCompact"
+       },
+       {
+        "nullable": true,
+        "type": "object"
+       }
+      ]
+     },
+     "resource_type": {
+      "description": "The base type of this resource.",
+      "example": "goal",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": "gid"
+     }
+    },
+    "type": "object"
+   },
+   "GoalMembershipBase": {
+    "description": "This object represents a user's connection to a goal.",
+    "properties": {
+     "access_level": {
+      "description": "\"Describes the membership access level for the goal. This is preferred over role.\"",
+      "enum": [
+       "viewer",
+       "commenter",
+       "editor",
+       "admin"
+      ],
+      "example": "editor",
+      "type": "string"
+     },
+     "gid": {
+      "description": "Globally unique identifier of the resource, as a string.",
+      "example": "12345",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": false
+     },
+     "goal": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/GoalCompact"
+       },
+       {
+        "deprecated": true,
+        "description": "*Deprecated: new integrations should prefer the `parent` field.* A *Goal* is an object in the goal-tracking system that helps your organization drive measurable results.",
+        "readOnly": true,
+        "type": "object"
+       }
+      ]
+     },
+     "member": {
+      "$ref": "#/components/schemas/MemberCompact"
+     },
+     "parent": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/GoalCompact"
+       },
+       {
+        "readOnly": true,
+        "type": "object"
+       }
+      ]
+     },
+     "resource_subtype": {
+      "description": "The type of membership.",
+      "example": "goal_membership",
+      "readOnly": true,
+      "type": "string"
+     },
+     "resource_type": {
+      "description": "The base type of this resource.",
+      "example": "membership",
+      "type": "string"
+     },
+     "role": {
+      "deprecated": true,
+      "description": "*Deprecated: Describes if the member is a commenter or editor in goal.*",
+      "enum": [
+       "commenter",
+       "editor"
+      ],
+      "example": "editor",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "GoalMembershipCompact": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/GoalMembershipBase"
+     },
+     {
+      "properties": {
+       "is_commenter": {
+        "deprecated": true,
+        "description": "*Deprecated: new integrations should prefer the `access_level` field.* Describes if the member is comment only in goal. This field is deprecated and will always be null.",
+        "example": false,
+        "readOnly": true,
+        "type": "boolean"
+       },
+       "is_editor": {
+        "deprecated": true,
+        "description": "*Deprecated: new integrations should prefer the `access_level` field.* Describes if the member is editor in goal. This field is deprecated and will always be null.",
+        "example": false,
+        "readOnly": true,
+        "type": "boolean"
+       }
+      },
+      "type": "object"
+     }
+    ]
+   },
+   "GoalMembershipResponse": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/GoalMembershipBase"
+     },
+     {
+      "properties": {
+       "user": {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/UserCompact"
+         },
+         {
+          "deprecated": true,
+          "description": "*Deprecated: new integrations should prefer the `member` field.* A *user* object represents an account in Asana that can be given access to various workspaces, projects, and tasks.",
+          "readOnly": true,
+          "type": "object"
+         }
+        ]
+       },
+       "workspace": {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/WorkspaceCompact"
+         },
+         {
+          "deprecated": true,
+          "description": "*Deprecated:* A *workspace* is the highest-level organizational unit in Asana. All projects and tasks have an associated workspace.",
+          "readOnly": true,
+          "type": "object"
+         }
+        ]
+       }
+      },
+      "type": "object"
+     }
+    ]
+   },
    "GraphExportCompact": {
     "description": "A *graph_export* object represents a request to export the data starting from a parent object",
     "properties": {
@@ -1585,6 +2101,54 @@
     },
     "type": "object"
    },
+   "MembershipCompact": {
+    "anyOf": [
+     {
+      "$ref": "#/components/schemas/GoalMembershipCompact"
+     },
+     {
+      "$ref": "#/components/schemas/ProjectMembershipCompactResponse"
+     },
+     {
+      "$ref": "#/components/schemas/PortfolioMembershipCompactResponse"
+     },
+     {
+      "$ref": "#/components/schemas/CustomFieldMembershipCompact"
+     },
+     {
+      "$ref": "#/components/schemas/CustomTypeMembershipCompact"
+     }
+    ]
+   },
+   "MembershipRequest": {
+    "properties": {
+     "access_level": {
+      "description": "Sets the access level for the member. Goals can have access levels `viewer`, `commenter`, `editor` or `admin`. Projects can have access levels `admin`, `editor` or `commenter`. Portfolios can have access levels `admin`, `editor` or `viewer`. Custom Fields can have access levels `admin`, `editor` or `user`.",
+      "example": "editor",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "MembershipResponse": {
+    "anyOf": [
+     {
+      "$ref": "#/components/schemas/GoalMembershipResponse"
+     },
+     {
+      "$ref": "#/components/schemas/ProjectMembershipCompactResponse"
+     },
+     {
+      "$ref": "#/components/schemas/PortfolioMembershipResponse"
+     },
+     {
+      "$ref": "#/components/schemas/CustomFieldMembershipResponse"
+     },
+     {
+      "$ref": "#/components/schemas/CustomTypeMembershipResponse"
+     }
+    ]
+   },
    "ModifyDependenciesRequest": {
     "example": {
      "dependencies": [
@@ -1681,6 +2245,73 @@
      }
     },
     "type": "object"
+   },
+   "PortfolioMembershipBase": {
+    "$ref": "#/components/schemas/PortfolioMembershipCompact"
+   },
+   "PortfolioMembershipCompact": {
+    "description": "This object determines if a user is a member of a portfolio.",
+    "properties": {
+     "access_level": {
+      "description": "Whether the member has admin, editor, or viewer access to the portfolio. Portfolios do not support commenter access yet.",
+      "enum": [
+       "admin",
+       "editor",
+       "viewer"
+      ],
+      "example": "admin",
+      "readOnly": true,
+      "type": "string"
+     },
+     "gid": {
+      "description": "Globally unique identifier of the resource, as a string.",
+      "example": "12345",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": false
+     },
+     "member": {
+      "$ref": "#/components/schemas/MemberCompact",
+      "description": "Member can be a user or a team."
+     },
+     "parent": {
+      "$ref": "#/components/schemas/PortfolioCompact",
+      "description": "The portfolio the user is a member of."
+     },
+     "resource_type": {
+      "description": "The base type of this resource.",
+      "example": "portfolio_membership",
+      "readOnly": true,
+      "type": "string",
+      "x-insert-after": "gid"
+     }
+    },
+    "type": "object"
+   },
+   "PortfolioMembershipCompactResponse": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/PortfolioMembershipCompact"
+     },
+     {
+      "properties": {
+       "resource_subtype": {
+        "description": "Type of the membership.",
+        "example": "portfolio_membership",
+        "type": "string"
+       },
+       "resource_type": {
+        "description": "The base type of this resource.",
+        "example": "membership",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    ]
+   },
+   "PortfolioMembershipResponse": {
+    "$ref": "#/components/schemas/PortfolioMembershipBase"
    },
    "Preview": {
     "description": "A collection of rich text that will be displayed as a preview to another app.\n\nThis is read-only except for a small group of whitelisted apps.",
@@ -2093,6 +2724,28 @@
      }
     },
     "type": "object"
+   },
+   "ProjectMembershipCompactResponse": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/ProjectMembershipCompact"
+     },
+     {
+      "properties": {
+       "resource_subtype": {
+        "description": "Type of the membership.",
+        "example": "project_membership",
+        "type": "string"
+       },
+       "resource_type": {
+        "description": "The base type of this resource.",
+        "example": "membership",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    ]
    },
    "ProjectMembershipNormalResponse": {
     "allOf": [
@@ -5095,6 +5748,414 @@
  },
  "openapi": "3.0.0",
  "paths": {
+  "/attachments": {
+   "get": {
+    "description": "<b>Required scope: </b><code>attachments:read</code>\n\nReturns the compact records for all attachments on the object.\nThere are three possible `parent` values for this request: `project`, `project_brief`, and `task`. For a project, an attachment refers to a file uploaded to the \"Key resources\" section in the project Overview. For a project brief, an attachment refers to inline files in the project brief itself. For a task, an attachment refers to a file directly associated to that task.\n\nNote that within the Asana app, inline images in the task description do not appear in the index of image thumbnails nor as stories in the task. However, requests made to `GET /attachments` for a task will return all of the images in the task, including inline images.",
+    "operationId": "getAttachmentsForObject",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/limit"
+     },
+     {
+      "$ref": "#/components/parameters/offset"
+     },
+     {
+      "description": "Globally unique identifier for the object to fetch attachments from. Must be a GID for a `project`, `project_brief`, or `task`.",
+      "example": "159874",
+      "in": "query",
+      "name": "parent",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "This endpoint returns a resource which excludes some properties by default. To include those optional properties, set this query parameter to a comma-separated list of the properties you wish to include. Properties can include nested fields. To learn more, see the [input/output options guide](/docs/inputoutput-options#selecting-nested-fields).",
+      "example": [
+       "connected_to_app",
+       "created_at",
+       "download_url",
+       "host",
+       "name",
+       "offset",
+       "parent",
+       "parent.created_by",
+       "parent.name",
+       "parent.resource_subtype",
+       "path",
+       "permanent_url",
+       "resource_subtype",
+       "size",
+       "uri",
+       "view_url"
+      ],
+      "explode": false,
+      "in": "query",
+      "name": "opt_fields",
+      "required": false,
+      "schema": {
+       "items": {
+        "enum": [
+         "connected_to_app",
+         "created_at",
+         "download_url",
+         "host",
+         "name",
+         "offset",
+         "parent",
+         "parent.created_by",
+         "parent.name",
+         "parent.resource_subtype",
+         "path",
+         "permanent_url",
+         "resource_subtype",
+         "size",
+         "uri",
+         "view_url"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form"
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "items": {
+            "$ref": "#/components/schemas/AttachmentCompact"
+           },
+           "type": "array"
+          },
+          "next_page": {
+           "$ref": "#/components/schemas/NextPage"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully retrieved the specified object's attachments."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": [
+       "attachments:read"
+      ]
+     }
+    ],
+    "summary": "Get attachments from an object",
+    "tags": [
+     "Attachments"
+    ]
+   },
+   "parameters": [
+    {
+     "$ref": "#/components/parameters/pretty"
+    }
+   ],
+   "post": {
+    "description": "<b>Required scope: </b><code>attachments:write</code>\n\nUpload an attachment.\n\nThis method uploads an attachment on an object and returns the compact\nrecord for the created attachment object. This is possible by either:\n\n- Providing the URL of the external resource being attached, or\n- Downloading the file content first and then uploading it as any other attachment. Note that it is not possible to attach\nfiles from third party services such as Dropbox, Box, Vimeo & Google Drive via the API\n\nThe 100MB size limit on attachments in Asana is enforced on this endpoint.\n\nThis endpoint expects a multipart/form-data encoded request containing the full contents of the file to be uploaded.\n\nRequests made should follow the HTTP/1.1 specification that line\nterminators are of the form `CRLF` or `\\r\\n` outlined\n[here](http://www.w3.org/Protocols/HTTP/1.1/draft-ietf-http-v11-spec-01#Basic-Rules) in order for the server to reliably and properly handle the request.\n\nFor file names that contain non-ASCII characters, the file name should be URL-encoded. For example, a file named `résumé.pdf` should be encoded as\n`r%C3%A9sum%C3%A9.pdf` and the `filename` parameter in the `Content-Disposition` header should be set to the encoded file name.\n\nBelow is an example of a cURL request with the `Content-Disposition` header:\n\n```\nexport ASANA_PAT=\"<YOUR_ASANA_PERSONAL_ACCESS_TOKEN>\"\nexport PARENT_ID=\"<PARENT_GID>\"\nexport ENCODED_NAME=\"r%C3%A9sum%C3%A9.pdf\"\ncurl --location 'https://app.asana.com/api/1.0/attachments' \\\n  --header 'Content-Type: multipart/form-data' \\\n  --header 'Accept: application/json' \\\n  --header \"Authorization: Bearer $ASANA_PAT\" \\\n  --form \"parent=$PARENT_ID\" \\\n  --form \"file=@/Users/exampleUser/Downloads/résumé.pdf;headers=\\\"Content-Disposition: form-data; name=\"file\"; filename=\"$ENCODED_NAME.pdf\"; filename*=UTF-8''$ENCODED_NAME.pdf\\\"\"\n```",
+    "operationId": "createAttachmentForObject",
+    "parameters": [
+     {
+      "description": "This endpoint returns a resource which excludes some properties by default. To include those optional properties, set this query parameter to a comma-separated list of the properties you wish to include. Properties can include nested fields. To learn more, see the [input/output options guide](/docs/inputoutput-options#selecting-nested-fields).",
+      "example": [
+       "connected_to_app",
+       "created_at",
+       "download_url",
+       "host",
+       "name",
+       "parent",
+       "parent.created_by",
+       "parent.name",
+       "parent.resource_subtype",
+       "permanent_url",
+       "resource_subtype",
+       "size",
+       "view_url"
+      ],
+      "explode": false,
+      "in": "query",
+      "name": "opt_fields",
+      "required": false,
+      "schema": {
+       "items": {
+        "enum": [
+         "connected_to_app",
+         "created_at",
+         "download_url",
+         "host",
+         "name",
+         "parent",
+         "parent.created_by",
+         "parent.name",
+         "parent.resource_subtype",
+         "permanent_url",
+         "resource_subtype",
+         "size",
+         "view_url"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form"
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "multipart/form-data": {
+       "schema": {
+        "$ref": "#/components/schemas/AttachmentRequest"
+       }
+      }
+     },
+     "description": "The file you want to upload.\n\n*Note when using curl:*\n\nBe sure to add an `‘@’` before the file path, and use the `--form`\noption instead of the `-d` option.\n\nWhen uploading PDFs with curl, force the content-type to be pdf by\nappending the content type to the file path: `--form\n\"file=@file.pdf;type=application/pdf\"`."
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/AttachmentResponse"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully uploaded the attachment to the parent object."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": [
+       "attachments:write"
+      ]
+     }
+    ],
+    "summary": "Upload an attachment",
+    "tags": [
+     "Attachments"
+    ]
+   }
+  },
+  "/attachments/{attachment_gid}": {
+   "delete": {
+    "description": "<b>Required scope: </b><code>attachments:delete</code>\n\nDeletes a specific, existing attachment.\n\nReturns an empty data record.",
+    "operationId": "deleteAttachment",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/EmptyResponse"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully deleted the specified attachment."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": [
+       "attachments:delete"
+      ]
+     }
+    ],
+    "summary": "Delete an attachment",
+    "tags": [
+     "Attachments"
+    ]
+   },
+   "get": {
+    "description": "<b>Required scope: </b><code>attachments:read</code>\n\nGet the full record for a single attachment.",
+    "operationId": "getAttachment",
+    "parameters": [
+     {
+      "description": "This endpoint returns a resource which excludes some properties by default. To include those optional properties, set this query parameter to a comma-separated list of the properties you wish to include. Properties can include nested fields. To learn more, see the [input/output options guide](/docs/inputoutput-options#selecting-nested-fields).",
+      "example": [
+       "connected_to_app",
+       "created_at",
+       "download_url",
+       "host",
+       "name",
+       "parent",
+       "parent.created_by",
+       "parent.name",
+       "parent.resource_subtype",
+       "permanent_url",
+       "resource_subtype",
+       "size",
+       "view_url"
+      ],
+      "explode": false,
+      "in": "query",
+      "name": "opt_fields",
+      "required": false,
+      "schema": {
+       "items": {
+        "enum": [
+         "connected_to_app",
+         "created_at",
+         "download_url",
+         "host",
+         "name",
+         "parent",
+         "parent.created_by",
+         "parent.name",
+         "parent.resource_subtype",
+         "permanent_url",
+         "resource_subtype",
+         "size",
+         "view_url"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form"
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/AttachmentResponse"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully retrieved the record for a single attachment."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "402": {
+      "$ref": "#/components/responses/PaymentRequired"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "424": {
+      "$ref": "#/components/responses/TooManyRequests"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     },
+     "501": {
+      "$ref": "#/components/responses/BadGateway"
+     },
+     "503": {
+      "$ref": "#/components/responses/ServiceUnavailable"
+     },
+     "504": {
+      "$ref": "#/components/responses/GatewayTimeout"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": [
+       "attachments:read"
+      ]
+     }
+    ],
+    "summary": "Get an attachment",
+    "tags": [
+     "Attachments"
+    ]
+   },
+   "parameters": [
+    {
+     "$ref": "#/components/parameters/attachment_path_gid"
+    },
+    {
+     "$ref": "#/components/parameters/pretty"
+    }
+   ]
+  },
   "/custom_fields": {
    "parameters": [
     {
@@ -5980,6 +7041,177 @@
      "Custom fields"
     ]
    }
+  },
+  "/events": {
+   "get": {
+    "description": "Returns the full record for all events that have occurred since the sync\ntoken was created.\n\nA `GET` request to the endpoint `/[path_to_resource]/events` can be made in\nlieu of including the resource ID in the data for the request.\n\nAsana limits a single sync token to 100 events. If more than 100 events exist\nfor a given resource, `has_more: true` will be returned in the response, indicating\nthat there are more events to pull.\n\n*Note: The resource returned will be the resource that triggered the\nevent. This may be different from the one that the events were requested\nfor. For example, a subscription to a project will contain events for\ntasks contained within the project.*",
+    "operationId": "getEvents",
+    "parameters": [
+     {
+      "description": "This endpoint returns a resource which excludes some properties by default. To include those optional properties, set this query parameter to a comma-separated list of the properties you wish to include. Properties can include nested fields. To learn more, see the [input/output options guide](/docs/inputoutput-options#selecting-nested-fields).",
+      "example": [
+       "action",
+       "change",
+       "change.action",
+       "change.added_value",
+       "change.field",
+       "change.new_value",
+       "change.removed_value",
+       "created_at",
+       "parent",
+       "parent.name",
+       "resource",
+       "resource.name",
+       "type",
+       "user",
+       "user.name"
+      ],
+      "explode": false,
+      "in": "query",
+      "name": "opt_fields",
+      "required": false,
+      "schema": {
+       "items": {
+        "enum": [
+         "action",
+         "change",
+         "change.action",
+         "change.added_value",
+         "change.field",
+         "change.new_value",
+         "change.removed_value",
+         "created_at",
+         "parent",
+         "parent.name",
+         "resource",
+         "resource.name",
+         "type",
+         "user",
+         "user.name"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form"
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "description": "The full record for all events that have occurred since the sync token was created.",
+         "properties": {
+          "data": {
+           "items": {
+            "$ref": "#/components/schemas/EventResponse"
+           },
+           "type": "array"
+          },
+          "has_more": {
+           "description": "Indicates whether there are more events to pull.",
+           "example": true,
+           "type": "boolean"
+          },
+          "sync": {
+           "description": "A sync token to be used with the next call to the /events endpoint.",
+           "example": "de4774f6915eae04714ca93bb2f5ee81",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully retrieved events."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "errors": {
+           "items": {
+            "properties": {
+             "message": {
+              "description": "Message providing more detail about the error that occurred, if available.",
+              "example": "Sync token invalid or too old. If you are attempting to keep resources in sync, you must fetch the full dataset for this query now and use the new sync token for the next sync.",
+              "readOnly": true,
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "type": "array"
+          },
+          "sync": {
+           "description": "A sync token to be used with the next call to the /events endpoint.",
+           "example": "de4774f6915eae04714ca93bb2f5ee81",
+           "readOnly": true,
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "The request is missing or has an expired sync token."
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": []
+     }
+    ],
+    "summary": "Get events on a resource",
+    "tags": [
+     "Events"
+    ]
+   },
+   "parameters": [
+    {
+     "description": "A resource ID to subscribe to. The resource can be a task, project, or goal.",
+     "example": "12345",
+     "in": "query",
+     "name": "resource",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    },
+    {
+     "description": "A sync token received from the last request, or none on first sync. Events will be returned from the point in time that the sync token was generated.\n*Note: On your first request, omit the sync token. The response will be the same as for an expired sync token, and will include a new valid sync token.If the sync token is too old (which may happen from time to time) the API will return a `412 Precondition Failed` error, and include a fresh sync token in the response.*",
+     "example": "de4774f6915eae04714ca93bb2f5ee81",
+     "in": "query",
+     "name": "sync",
+     "required": false,
+     "schema": {
+      "type": "string"
+     }
+    },
+    {
+     "$ref": "#/components/parameters/pretty"
+    }
+   ]
   },
   "/goals/{goal_gid}/custom_field_settings": {
    "get": {
@@ -6939,6 +8171,365 @@
     "summary": "Create a story on a goal",
     "tags": [
      "Stories"
+    ]
+   }
+  },
+  "/memberships": {
+   "get": {
+    "description": "Returns compact `goal_membership`, `project_membership`, `portfolio_membership`, `custom_type_membership`, or `custom_field_membership` records. The possible types for `parent` in this request are `goal`, `project`, `portfolio`, `custom_type`, or `custom_field`. An additional member (user GID or team GID) can be passed in to filter to a specific membership.\n\nAlternatively, when `parent` is absent, you can use the `member` and `resource_subtype` parameters together to fetch all memberships of a specific type for a given member. For example, passing `member` as a team GID and `resource_subtype` as `project_membership` will return all project memberships for that team.",
+    "operationId": "getMemberships",
+    "parameters": [
+     {
+      "description": "Globally unique identifier for `goal`, `project`, `portfolio`, `custom_type`, or `custom_field`. This parameter is optional when `resource_subtype` is provided along with `member` of type `team`.",
+      "example": "159874",
+      "in": "query",
+      "name": "parent",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Globally unique identifier for `team` or `user`. When used with `resource_subtype` and without `parent`, `member` must be of type `team`. For user-type memberships `parent` parameter is required to disambiguate the workspace from which memberships should be retrieved.",
+      "example": "1061493",
+      "in": "query",
+      "name": "member",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "The type of membership to return. Required when `parent` is absent. Currently supported value is `project_membership` (when `member` is a team GID, returns all project memberships for that team).",
+      "example": "project_membership",
+      "in": "query",
+      "name": "resource_subtype",
+      "schema": {
+       "enum": [
+        "project_membership"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "$ref": "#/components/parameters/limit"
+     },
+     {
+      "$ref": "#/components/parameters/offset"
+     },
+     {
+      "description": "This endpoint returns a resource which excludes some properties by default. To include those optional properties, set this query parameter to a comma-separated list of the properties you wish to include. Properties can include nested fields. To learn more, see the [input/output options guide](/docs/inputoutput-options#selecting-nested-fields).",
+      "example": [
+       "offset",
+       "path",
+       "uri"
+      ],
+      "explode": false,
+      "in": "query",
+      "name": "opt_fields",
+      "required": false,
+      "schema": {
+       "items": {
+        "enum": [
+         "offset",
+         "path",
+         "uri"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form"
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "items": {
+            "$ref": "#/components/schemas/MembershipCompact"
+           },
+           "type": "array"
+          },
+          "next_page": {
+           "$ref": "#/components/schemas/NextPage"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully retrieved the requested membership."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": []
+     }
+    ],
+    "summary": "Get multiple memberships",
+    "tags": [
+     "Memberships"
+    ]
+   },
+   "parameters": [
+    {
+     "$ref": "#/components/parameters/pretty"
+    }
+   ],
+   "post": {
+    "description": "Creates a new membership in a `goal`, `project`, `portfolio`, `custom_type`, or `custom_field`, where members can be Teams or Users.\n\nReturns the full record of the newly created membership.",
+    "operationId": "createMembership",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "properties": {
+         "data": {
+          "$ref": "#/components/schemas/CreateMembershipRequest"
+         }
+        },
+        "type": "object"
+       }
+      }
+     },
+     "description": "The updated fields for the membership.",
+     "required": false
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/MembershipResponse",
+           "type": "object"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully created the requested membership."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": []
+     }
+    ],
+    "summary": "Create a membership",
+    "tags": [
+     "Memberships"
+    ]
+   }
+  },
+  "/memberships/{membership_gid}": {
+   "delete": {
+    "description": "A specific, existing membership for a `goal`, `project`, `portfolio`, `custom_type`, or `custom_field` can be deleted by making a `DELETE` request\non the URL for that membership.\n\nReturns an empty data record.",
+    "operationId": "deleteMembership",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/EmptyResponse"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully deleted the requested membership."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": []
+     }
+    ],
+    "summary": "Delete a membership",
+    "tags": [
+     "Memberships"
+    ]
+   },
+   "get": {
+    "description": "Returns a `project_membership`, `goal_membership`, `portfolio_membership`, `custom_type_membership`, or `custom_field_membership` record for a membership id.",
+    "operationId": "getMembership",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/MembershipResponse",
+           "type": "object"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully retrieved the record for a single membership."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": []
+     }
+    ],
+    "summary": "Get a membership",
+    "tags": [
+     "Memberships"
+    ]
+   },
+   "parameters": [
+    {
+     "$ref": "#/components/parameters/membership_path_gid"
+    },
+    {
+     "$ref": "#/components/parameters/pretty"
+    }
+   ],
+   "put": {
+    "description": "An existing membership can be updated by making a `PUT` request on the membership. Only the fields provided in the `data` block will be updated;\nany unspecified fields will remain unchanged. Memberships on `goals`, `projects`, `portfolios`, `custom_types`, and `custom_fields` can be updated.\n\nReturns the full record of the updated membership.",
+    "operationId": "updateMembership",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "properties": {
+         "data": {
+          "$ref": "#/components/schemas/MembershipRequest"
+         }
+        },
+        "type": "object"
+       }
+      }
+     },
+     "description": "The membership to update.",
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/MembershipResponse"
+          }
+         },
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successfully updated the requested membership."
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalServerError"
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": []
+     }
+    ],
+    "summary": "Update a membership",
+    "tags": [
+     "Memberships"
     ]
    }
   },
@@ -27615,7 +29206,7 @@
  ],
  "x-minutehand-subset": {
   "commit": "4cf6c7c629ad6c6649a517c46d9feada5357d542",
-  "kept": "Every operation whose first tag is one of `tags`, with the components they reference; x-readme code samples dropped.",
+  "kept": "Every operation whose first tag is one of tags, with the components they reference; x-readme code samples dropped.",
   "retrieved": "2026-10-08",
   "source": "https://github.com/Asana/openapi/blob/4cf6c7c629ad6c6649a517c46d9feada5357d542/defs/asana_oas.yaml",
   "tags": [
@@ -27631,7 +29222,10 @@
    "Custom field settings",
    "Project memberships",
    "Typeahead",
-   "Webhooks"
+   "Webhooks",
+   "Events",
+   "Memberships",
+   "Attachments"
   ]
  }
 }

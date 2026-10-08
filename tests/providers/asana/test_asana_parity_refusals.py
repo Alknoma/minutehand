@@ -226,7 +226,10 @@ async def test_every_call_is_answered_429_with_retry_after_while_throttled(
     rich.clock.jump(rich.clock.now() + THROTTLED_AFTER + timedelta(seconds=30))
     before = rich.store.head()
     throttled = await agent.get(f"/tasks/{INCIDENT}")
-    assert error(throttled, 429) == "You have made too many requests recently. Please, be chill."
+    assert (
+        error(throttled, 429)
+        == "You've made too many requests and hit a rate limit. Please retry after the given amount of time."
+    )
     assert throttled.headers["Retry-After"] == str(int(THROTTLED_FOR.total_seconds()) - 30)
     assert rich.store.head() == before
     rich.clock.jump(rich.clock.now() + THROTTLED_FOR)

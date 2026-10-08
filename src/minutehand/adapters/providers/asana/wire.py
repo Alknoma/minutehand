@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import html
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -43,11 +42,11 @@ UNPAGINATED_MAX = 1000
 SEARCH_DEFAULT = 20
 TYPEAHEAD_DEFAULT = 20
 TOKEN_LIFETIME_SECONDS = 3600
-RATE_LIMITED = "You have made too many requests recently. Please, be chill."
+RATE_LIMITED = "You've made too many requests and hit a rate limit. Please retry after the given amount of time."
+"""https://developers.asana.com/docs/rate-limits gives this body for every limiter."""
 
 _GID = re.compile(r"^[0-9]+$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_TAG = re.compile(r"<[^>]+>")
 
 
 JSON = "application/json; charset=UTF-8"
@@ -292,7 +291,7 @@ class AsanaFieldValue(Model):
     option: str | None = None
     options: list[str] = []
     text: str | None = None
-    number: float | None = None
+    number: int | float | None = None
     date: str | None = None
     date_time: str | None = None
     people: list[str] = []
@@ -354,6 +353,7 @@ def dump(entity: Model) -> str:
 Fields = dict[str, JsonValue]
 
 _TASK_UNSUPPORTED = (
+    "html_notes",
     "followers",
     "start_on",
     "start_at",
@@ -371,9 +371,22 @@ def envelope(body: bytes) -> Fields:
         decoded = json.loads(body) if body else None
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise bad("Could not parse request data, invalid JSON") from error
+    if isinstance(decoded, dict):
+        stray = [k for k in decoded if k not in ("data", "options")]
+        if stray:
+            raise bad(unwrapped(stray[0]))
     if not isinstance(decoded, dict) or "data" not in decoded or not isinstance(decoded["data"], dict):
         raise bad("Missing input: data")
     return decoded["data"]
+
+
+def unwrapped(field: str) -> str:
+    """What Asana answers a body with a field outside `data`, as reported from the real service
+    (https://forum.asana.com/t/238695)."""
+    return (
+        f"Unrecognized request field {field} . The only allowed keys at the top level are: data, options. "
+        "Is it possible you did not wrap object properties in a data object?"
+    )
 
 
 def _string(fields: Fields, name: str) -> str | None:
@@ -424,14 +437,11 @@ def _due(fields: Fields) -> tuple[str | None, str | None]:
     due_on = _string(fields, "due_on")
     due_at = _string(fields, "due_at")
     if due_on is not None and due_at is not None:
-        raise bad("Cannot specify both due_on and due_at")
+        raise bad("You may only provide one of due_on or due_at!")  # https://forum.asana.com/t/808508
     if due_on is not None and not is_date(due_on):
         raise bad("due_on: Invalid date")
-    if due_at is not None:
-        parsed = parse_stamp(due_at)
-        if parsed is None:
-            raise bad("due_at: Invalid datetime")
-        due_at = stamp(parsed)
+    if due_at is not None and parse_stamp(due_at) is None:
+        raise bad("due_at: Invalid datetime")
     return due_on, due_at
 
 
@@ -445,14 +455,9 @@ def _assignee(fields: Fields) -> str | None:
 
 
 def _notes(fields: Fields) -> str | None:
-    """`notes`, or `html_notes` as the text it shows; Asana refuses both at once. None when neither was sent."""
-    if "notes" in fields and "html_notes" in fields:
-        raise bad("Cannot specify both notes and html_notes")
-    if "html_notes" in fields:
-        marked = _string(fields, "html_notes") or ""
-        if "<body>" not in marked:
-            raise bad("html_notes: Invalid HTML: must be enclosed in <body> tags")
-        return html.unescape(plain(marked))
+    """`notes` as sent; None when it was not sent. `html_notes` is not served: Asana keeps the two as one text and
+    documents neither how it reads the plain text out of the HTML nor how it marks plain text up
+    (https://developers.asana.com/docs/rich-text), so neither can be answered for the other."""
     if "notes" in fields:
         return _string(fields, "notes") or ""
     return None
@@ -724,7 +729,7 @@ def custom_field_value(definition: AsanaCustomField, sent: JsonValue, users: Map
         case "number":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             if isinstance(sent, bool) or not isinstance(sent, int | float):
                 raise bad(f"{where}: Not a number")
-            return value.model_copy(update={"number": float(sent)})
+            return value.model_copy(update={"number": sent})
         case "date":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
             return _date_value(value, sent, where)
         case "people":  # enum-lint: exempt Asana's custom field resource_subtype, its wire vocabulary
@@ -749,7 +754,7 @@ def _date_value(value: AsanaFieldValue, sent: JsonValue, where: str) -> AsanaFie
         moment = parse_stamp(at) if isinstance(at, str) else None
         if moment is None:
             raise bad(f"{where}.date_time: Invalid datetime")
-        return value.model_copy(update={"date": moment.astimezone(UTC).date().isoformat(), "date_time": stamp(moment)})
+        return value.model_copy(update={"date": moment.astimezone(UTC).date().isoformat(), "date_time": at})
     on = sent["date"] if "date" in sent else None
     if on is None:
         return value
@@ -809,14 +814,6 @@ def token_answer(access_token: str, user: AsanaUser) -> bytes:
             "data": {"id": int(user.gid), "gid": user.gid, "name": user.name, "email": user.email},
         }
     ).encode()
-
-
-def html_notes(notes: str) -> str:
-    return "<body>" + html.escape(notes, quote=False) + "</body>"
-
-
-def plain(text: str) -> str:
-    return _TAG.sub("", text)
 
 
 def display_number(number: float, precision: int) -> str:
@@ -978,7 +975,6 @@ class CustomFieldOut(Model):
     precision: int | None
     enabled: bool = True
     is_global_to_workspace: bool = True
-    has_notifications_enabled: bool = False
     is_formula_field: bool = False
 
     @model_serializer(mode="wrap")
@@ -1005,7 +1001,7 @@ class CustomFieldValueOut(Model):
     enum_options: list[EnumOptionOut] | None = None
     enum_value: EnumOptionOut | None = None
     multi_enum_values: list[EnumOptionOut] | None = None
-    number_value: float | None = None
+    number_value: int | float | None = None
     precision: int | None = None
     text_value: str | None = None
     date_value: DateValueOut | None = None
@@ -1032,8 +1028,6 @@ class ProjectMembershipOut(Model):
     member: UserOut
     project: ProjectOut
     parent: ProjectOut
-    write_access: Literal["full_write"] = "full_write"
-    access_level: Literal["editor"] = "editor"
 
 
 class TagOut(Model):
@@ -1072,7 +1066,6 @@ class TaskOut(Model):
     resource_subtype: Literal["default_task"] = "default_task"
     name: str
     notes: str
-    html_notes: str
     completed: bool
     completed_at: str | None
     due_on: str | None
@@ -1082,7 +1075,6 @@ class TaskOut(Model):
     assignee: UserOut | None
     created_by: UserOut
     parent: TaskRefOut | None
-    subtasks: list[TaskRefOut]
     num_subtasks: int
     memberships: list[MembershipOut]
     projects: list[ProjectOut]
@@ -1098,7 +1090,6 @@ class StoryOut(Model):
     resource_subtype: Literal["comment_added"] = "comment_added"
     type: Literal["comment"] = "comment"
     text: str
-    html_text: str
     created_at: str
     created_by: UserOut
     target: Compact
@@ -1132,7 +1123,6 @@ COMPACT: Mapping[str, tuple[str, ...]] = {
         "gid",
         "resource_type",
         "name",
-        "resource_subtype",
         "type",
         "enum_options",
         "enum_value",
@@ -1140,31 +1130,77 @@ COMPACT: Mapping[str, tuple[str, ...]] = {
         "number_value",
         "text_value",
         "date_value",
-        "people_value",
         "display_value",
         "enabled",
         "is_formula_field",
-        "precision",
     ),
     "custom_field_setting": ("gid", "resource_type"),
-    "project_membership": ("gid", "resource_type", "user", "parent", "access_level"),
+    "project_membership": ("gid", "resource_type", "member"),
 }
+"""Each resource's compact record: the fields of its `...Compact` schema in Asana's OpenAPI document that this provider
+serves, less those marked [Opt In] (https://developers.asana.com/docs/inputoutput-options)."""
+
+OPT_IN: Mapping[str, frozenset[str]] = {
+    "task": frozenset({"num_subtasks"}),
+    "team": frozenset({"description"}),
+    "project_membership": frozenset({"parent", "project"}),
+}
+"""Fields Asana's OpenAPI document marks [Opt In]: answered only when `opt_fields` names them, never in a full record."""
 
 FieldTree = dict[str, "FieldTree"]
 
+_GROUP = re.compile(r"\(([^()]*)\)")
+
+
+def _expanded(path: str) -> list[str]:
+    """One `opt_fields` path with its groups spread out: `(followers|assignee).name` is two paths
+    (https://developers.asana.com/docs/inputoutput-options)."""
+    found = _GROUP.search(path)
+    if found is None:
+        return [path]
+    return [
+        expanded
+        for term in found.group(1).split("|")
+        for expanded in _expanded(path[: found.start()] + term + path[found.end() :])
+    ]
+
 
 def field_tree(query: Query) -> FieldTree | None:
-    """`opt_fields=name,assignee.email` as a nested selection; None when the caller named none."""
+    """`opt_fields=name,assignee.email` as a nested selection; None when the caller named none. A path may start
+    with `this.` and may group terms, `(a|b)`, as Asana's input/output options page writes them."""
     raw = query.text("opt_fields")
     if raw is None:
         return None
     tree: FieldTree = {}
-    for path in raw.split(","):
-        node = tree
-        for part in path.strip().split("."):
-            if part:
+    for written in raw.split(","):
+        for path in _expanded(written.strip()):
+            node = tree
+            parts = [p for p in path.split(".") if p]
+            for part in parts[1:] if parts[:1] == ["this"] else parts:
                 node = node.setdefault(part, {})
     return tree
+
+
+def _known(model: type[Model]) -> frozenset[str]:
+    return frozenset(model.model_fields)
+
+
+KNOWN: Mapping[str, frozenset[str]] = {
+    "task": _known(TaskOut) | _known(TaskRefOut),
+    "user": _known(UserOut),
+    "workspace": _known(WorkspaceOut),
+    "team": _known(TeamOut),
+    "project": _known(ProjectOut),
+    "section": _known(SectionOut),
+    "story": _known(StoryOut),
+    "custom_field": _known(CustomFieldOut) | _known(CustomFieldValueOut),
+    "custom_field_setting": _known(CustomFieldSettingOut),
+    "project_membership": _known(ProjectMembershipOut),
+    "tag": _known(TagOut),
+    "enum_option": _known(EnumOptionOut),
+}
+"""Every field each resource is ever answered with here. A field `opt_fields` names that is not one is refused by name:
+answering without it would say Asana has no such field, or that it is empty."""
 
 
 def _reference(value: JsonValue) -> JsonValue:
@@ -1177,24 +1213,33 @@ def _reference(value: JsonValue) -> JsonValue:
         return [_reference(item) for item in value]
     if not isinstance(value, dict):
         return value
-    if value.get("resource_type") == "custom_field":
+    if "resource_type" in value and value["resource_type"] == "custom_field":
         return _compact(value)
     if "gid" in value:
         return {k: value[k] for k in ("gid", "resource_type") if k in value}
     return {k: _reference(v) for k, v in value.items()}
 
 
-def _narrow(value: JsonValue, tree: FieldTree) -> JsonValue:
+def _narrow(value: JsonValue, tree: FieldTree, at: str) -> JsonValue:
+    """Exactly the fields `tree` names, and `gid`. A field this resource is never answered with, or a path into
+    something that is not an object, is refused naming the path."""
     if not tree:
         return _reference(value)
     if isinstance(value, list):
-        return [_narrow(item, tree) for item in value]
+        return [_narrow(item, tree, at) for item in value]
+    if value is None:
+        return None
     if not isinstance(value, dict):
-        return value
+        raise unsupported(f"opt_fields={at}.{next(iter(tree))}")
+    kind = value["resource_type"] if "resource_type" in value else None
+    known = KNOWN[kind] if isinstance(kind, str) and kind in KNOWN else frozenset(value)
     out: dict[str, JsonValue] = {"gid": value["gid"]} if "gid" in value else {}
     for key, sub in tree.items():
+        path = f"{at}.{key}" if at else key
+        if key not in known:
+            raise unsupported(f"opt_fields={path}")
         if key in value:
-            out[key] = _narrow(value[key], sub)
+            out[key] = _narrow(value[key], sub, path)
     return out
 
 
@@ -1210,17 +1255,43 @@ def _compact(value: JsonValue) -> JsonValue:
     return {k: _compact(v) for k, v in value.items()}
 
 
+NESTED_FULL: frozenset[tuple[str, str]] = frozenset(
+    {("task", "custom_fields"), ("custom_field_setting", "custom_field")}
+)
+"""The fields of a full record that Asana's OpenAPI document gives as another resource's full record
+(`TaskResponse.custom_fields` is `[CustomFieldResponse]`, `CustomFieldSettingResponse.custom_field` a
+`CustomFieldResponse`); every other resource a full record names is compact."""
+
+
+def _full(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    kind = value["resource_type"] if "resource_type" in value else None
+    hidden = OPT_IN[kind] if isinstance(kind, str) and kind in OPT_IN else frozenset()
+    out: dict[str, JsonValue] = {}
+    for key, held in value.items():
+        if key in hidden:
+            continue
+        if isinstance(kind, str) and (kind, key) in NESTED_FULL:
+            if isinstance(held, list):
+                out[key] = [_full(i) if isinstance(i, dict) else i for i in held]
+            else:
+                out[key] = _full(held) if isinstance(held, dict) else held
+            continue
+        out[key] = _compact(held)
+    return out
+
+
 def shape(item: Representation, tree: FieldTree | None, *, full: bool) -> JsonValue:
     """One resource as Asana answers it: narrowed by opt_fields, else full (one resource) or compact (a list).
 
-    A full record holds the resources it names compact.
+    A full record leaves out what is [Opt In] and holds the resources it names compact, but where Asana's document
+    gives them full (`NESTED_FULL`).
     """
     value: JsonValue = item.model_dump(mode="json")
     if tree is not None:
-        return _narrow(value, tree)
+        return _narrow(value, tree, "")
     if not full or not isinstance(value, dict):
         return _compact(value)
-    return {k: _compact(v) for k, v in value.items()}
+    return _full(value)
 
 
 class NextPage(Model):

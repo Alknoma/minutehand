@@ -504,7 +504,7 @@ class AsanaDriver(Driver):
                 trigger=_raised,
                 typed=ApiException,  # pyright: ignore[reportUnknownArgumentType]
                 status=429,
-                holds="You have made too many requests recently",
+                holds="You've made too many requests and hit a rate limit",
                 expires_after=timedelta(minutes=1),
                 then=then,
             )

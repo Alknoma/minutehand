@@ -62,8 +62,6 @@ TICKET_OPT_FIELDS = ",".join(
         "memberships.section.gid",
         "parent.gid",
         "parent.name",
-        "subtasks.gid",
-        "subtasks.name",
         "tags.name",
         "tags.gid",
         "custom_fields.name",
@@ -198,7 +196,7 @@ async def test_a_client_holding_only_a_token_discovers_its_workspace_and_runs_a_
     assert values["Priority"]["enum_value"]["name"] == "High"
     assert values["Status"]["enum_value"]["name"] == "In Progress", "completing moves neither the field nor the section"
     assert task["memberships"][0]["section"]["name"] == "In Review"
-    assert (task["due_on"], task["due_at"]) == ("2026-08-28", "2026-08-28T17:00:00.000Z")
+    assert (task["due_on"], task["due_at"]) == ("2026-08-28", "2026-08-28T17:00:00+00:00")
     assert task["permalink_url"] == f"https://app.asana.com/0/{project['gid']}/{gid}"
 
     changes = [e for e in through.store.events() if e.entity.external_id == gid and isinstance(e.after, TicketSnapshot)]
@@ -370,10 +368,9 @@ async def test_the_official_sdk_walks_the_same_surface(through: Through) -> None
     await off_loop(lambda: tasks.set_parent_for_task({"data": {"parent": None}}, made["gid"], {}))
     child = await off_loop(lambda: tasks.create_subtask_for_task({"data": {"name": "List them"}}, made["gid"], {}))
     await off_loop(lambda: stories.create_story_for_task({"data": {"text": "Started"}}, made["gid"], {}))
-    read = await off_loop(
-        lambda: tasks.get_task(made["gid"], {"opt_fields": "tags.name,subtasks.name,memberships.section.name"})
-    )
-    assert ([t["name"] for t in read["tags"]], [s["name"] for s in read["subtasks"]]) == (["security"], ["List them"])
+    read = await off_loop(lambda: tasks.get_task(made["gid"], {"opt_fields": "tags.name,memberships.section.name"}))
+    under = await off_loop(lambda: list(tasks.get_subtasks_for_task(made["gid"], {"opt_fields": "name"})))
+    assert ([t["name"] for t in read["tags"]], [s["name"] for s in under]) == (["security"], ["List them"])
     assert read["memberships"][0]["section"]["name"] == "Cancelled"
     await off_loop(lambda: tasks.remove_tag_for_task({"data": {"tag": label["gid"]}}, made["gid"]))
     project = await off_loop(

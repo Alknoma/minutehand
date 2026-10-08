@@ -104,12 +104,22 @@ _NOT_ORGANIZATION = "organization: Not an organization"
 
 
 UNSERVED: tuple[tuple[str, str, str], ...] = (
+    ("GET", "/attachments", "getAttachmentsForObject"),
+    ("POST", "/attachments", "createAttachmentForObject"),
+    ("DELETE", "/attachments/{attachment_gid}", "deleteAttachment"),
+    ("GET", "/attachments/{attachment_gid}", "getAttachment"),
     ("POST", "/custom_fields", "createCustomField"),
     ("DELETE", "/custom_fields/{custom_field_gid}", "deleteCustomField"),
     ("PUT", "/custom_fields/{custom_field_gid}", "updateCustomField"),
     ("POST", "/custom_fields/{custom_field_gid}/enum_options", "createEnumOptionForCustomField"),
     ("POST", "/custom_fields/{custom_field_gid}/enum_options/insert", "insertEnumOptionForCustomField"),
     ("PUT", "/enum_options/{enum_option_gid}", "updateEnumOption"),
+    ("GET", "/events", "getEvents"),
+    ("GET", "/memberships", "getMemberships"),
+    ("POST", "/memberships", "createMembership"),
+    ("DELETE", "/memberships/{membership_gid}", "deleteMembership"),
+    ("GET", "/memberships/{membership_gid}", "getMembership"),
+    ("PUT", "/memberships/{membership_gid}", "updateMembership"),
     ("GET", "/goals/{goal_gid}/custom_field_settings", "getCustomFieldSettingsForGoal"),
     ("GET", "/goals/{goal_gid}/stories", "getStoriesForGoal"),
     ("POST", "/goals/{goal_gid}/stories", "createStoryForGoal"),
@@ -243,6 +253,9 @@ class View:
             raise wire.bad(f"{field}: Not a Recognized ID")
         found = self.world.resolve_user(identifier, me=self.caller.gid)
         if found is None or found.removed:
+            if field == "assignee" and self.world.home().is_organization:
+                # As reported from the real service: https://forum.asana.com/t/60069
+                raise wire.bad(f"assignee: Not a user in Organization: {identifier}")
             raise wire.unknown(field, identifier, status=status)
         return found
 
@@ -455,7 +468,6 @@ class View:
             gid=task.gid,
             name=task.name,
             notes=task.notes,
-            html_notes=wire.html_notes(task.notes),
             completed=task.completed,
             completed_at=task.completed_at,
             due_on=task.due_on,
@@ -465,7 +477,6 @@ class View:
             assignee=self.user_of(task.assignee) if task.assignee is not None else None,
             created_by=self.user_of(task.created_by),
             parent=self._ref_out(parent) if parent is not None else None,
-            subtasks=[self._ref_out(t) for t in subtasks],
             num_subtasks=len(subtasks),
             memberships=[
                 wire.MembershipOut(
@@ -486,7 +497,6 @@ class View:
         return wire.StoryOut(
             gid=story.gid,
             text=story.text,
-            html_text=wire.html_notes(story.text),
             created_at=story.created_at,
             created_by=self.user_of(story.created_by),
             target=wire.Compact(gid=story.task, resource_type="task", name=task.name if task is not None else ""),

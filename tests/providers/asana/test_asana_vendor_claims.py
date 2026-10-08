@@ -183,15 +183,18 @@ async def test_a_write_with_no_token_is_answered_as_the_agent(asana: Proxied) ->
         (f"/projects/{TIDES}/addCustomFieldSetting", {"custom_field": DEPTH}),
     ],
 )
-async def test_a_write_not_wrapped_in_data_is_refused_missing_input_data(
+async def test_a_write_not_wrapped_in_data_is_refused_naming_the_stray_field(
     asana: Proxied, path: str, unwrapped: dict[str, object]
 ) -> None:
-    """OBSERVED: every write body sits inside a top-level `data` object, and one that does not is refused
-    400 "Missing input: data" without a write. Asana's options guide places options beside `data`
-    (https://developers.asana.com/docs/inputoutput-options) but does not state the refusal or its words."""
+    """OBSERVED: a body with a field outside `data` is refused naming it, in the words reported from the real service
+    (https://forum.asana.com/t/238695), without a write."""
     before = asana.store.head()
 
-    assert refused(await asana.http.post(path, json=unwrapped), 400) == "Missing input: data"
+    first = next(iter(unwrapped))
+    assert refused(await asana.http.post(path, json=unwrapped), 400) == (
+        f"Unrecognized request field {first} . The only allowed keys at the top level are: data, options. "
+        "Is it possible you did not wrap object properties in a data object?"
+    )
     assert asana.store.head() == before
 
 
@@ -224,20 +227,6 @@ async def test_an_update_whose_completed_is_not_a_json_boolean_is_refused(asana:
     message = refused(await asana.http.put(f"/tasks/{CHANNEL}", json={"data": {"completed": sent}}), 400)
 
     assert message == "completed: Not a boolean"
-    assert asana.store.head() == before
-
-
-async def test_html_notes_not_enclosed_in_body_is_refused(asana: Proxied) -> None:
-    """DOCUMENTED: rich text must be wrapped in a `<body>` element and invalid rich text is a 400
-    (https://developers.asana.com/docs/rich-text)."""
-    before = asana.store.head()
-    created = await asana.http.post(
-        "/tasks", json={"data": {"name": "Mark the wreck", "projects": [HARBOUR], "html_notes": "near <b>pier 3</b>"}}
-    )
-    updated = await asana.http.put(f"/tasks/{CHANNEL}", json={"data": {"html_notes": "plain words"}})
-
-    assert "<body>" in refused(created, 400)
-    assert "<body>" in refused(updated, 400)
     assert asana.store.head() == before
 
 
