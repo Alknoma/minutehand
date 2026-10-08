@@ -26,6 +26,21 @@ A case (standing worlds opened under one case label) is one run here: its worlds
 listed on their own, and a standing world no call reached (a probe) is not listed.
     GET /api/runs/{run_id}/traces/{trace_id}   the agent's spans of one trace, as the run received them
 
+What the page reads to draw a run of any length (`reading.py`):
+    GET /api/runs/{run_id}/timeline         every mark of the run, compact and sorted, in lanes, with the findings
+                                            placed where they happened: the page bins them itself
+    GET /api/runs/{run_id}/events/{seq}     one event whole: the version before it, its call, its thread, its writer
+    GET /api/runs/{run_id}/call-rows        every HTTP call without its bodies, and who answered it
+    GET /api/runs/{run_id}/calls/{index}    one call whole, with the events it produced
+    GET /api/runs/{run_id}/dispatch         the run loop's table of what was due: windows, draws and faults
+    GET /api/runs/{run_id}/memory           the agent's memory: every write with the value it replaced, each key
+    GET /api/runs/{run_id}/stored           every item kept for a host declared `store`, with the one it replaced
+    GET /api/runs/{run_id}/people           per person: the conversation, their replies (how each was written and
+                                            drawn) and the model calls that wrote them, with tokens
+    GET /api/runs/{run_id}/assessments      each of the team's rules: passed or failed, how often read, its findings
+    GET /api/runs/{run_id}/spans/{span_id}  one span of the agent's telemetry, with its attributes
+    GET /api/batches                        every `run-all` batch: pass rate per scenario, each sample's seed and run
+
 Every world file is opened read-only (`session.reading`), so a run another process is still writing is
 read as of its last commit, and the viewer can never change or lock a run.
 """
@@ -38,20 +53,24 @@ from pathlib import Path
 
 import uvicorn
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from minutehand import session
+from minutehand.adapters.web import reading
 from minutehand.adapters.web.responses import (
+    AssessmentsResponse,
+    BatchesResponse,
+    CallRowsResponse,
     CallsResponse,
     DrawnWait,
     EventsResponse,
     FindingsResponse,
     HostTraffic,
-    MessageChange,
-    MessageLine,
     MessagesResponse,
     ModelCallResponse,
     ModelCallsResponse,
@@ -63,13 +82,14 @@ from minutehand.adapters.web.responses import (
     RunsResponse,
     ScorecardResponse,
     SpanBar,
+    SpanResponse,
     StepActivity,
     StepSpansResponse,
     StepsResponse,
+    TimelineResponse,
     TraceResponse,
     TrafficCall,
     WakesResponse,
-    WrittenBy,
     explained,
 )
 from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
@@ -77,28 +97,19 @@ from minutehand.application.forks import summary
 from minutehand.application.model_calls import JoinedBy, is_model_call, model_call, trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.application.steps import STEP
-from minutehand.checks.runner import view_of
+from minutehand.checks.runner import RunResult, view_of
 from minutehand.domain.checks import FindingKind
-from minutehand.domain.inboxes import item_words
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import SpanSource
-from minutehand.domain.world import (
-    Actor,
-    EntityKind,
-    EntityRef,
-    InboxItemSnapshot,
-    ItemStatus,
-    MessageSnapshot,
-    Operation,
-    WorldEvent,
-)
+from minutehand.domain.world import Actor, EntityKind, MessageSnapshot
 from minutehand.ports.store import Store
 from minutehand.session import Logged
 
 PAGE = Path(__file__).with_name("viewer.html")
 STATIC = Path(__file__).with_name("static")
-WRITES = frozenset({Operation.CREATE, Operation.UPDATE, Operation.DELETE})
 HOST = "127.0.0.1"
+KEEP = 8
+"""Timelines of finished runs kept built, the latest read first: a finished run's log no longer changes."""
 
 
 def _json(model: Model, status: int = 200) -> Response:
@@ -181,7 +192,21 @@ def create_app(state: Path) -> Starlette:
                 world.replies(),
                 withdrawn=last.withdrawn if last is not None else [],
             )
-        return _json(ObligationsResponse(obligations=[DrawnWait(obligation=o) for o in view.obligations]))
+            sim_of = {e.seq: e.sim_time for e in world.events()}
+        return _json(
+            ObligationsResponse(
+                obligations=[
+                    DrawnWait(
+                        obligation=o,
+                        touched_at=[sim_of[s] for s in o.agent_touches if s in sim_of],
+                        came_back_at=sim_of[o.first_touch_after_settled]
+                        if o.first_touch_after_settled is not None and o.first_touch_after_settled in sim_of
+                        else None,
+                    )
+                    for o in view.obligations
+                ]
+            )
+        )
 
     def findings(run_id: str) -> Response:
         if not session.find(state, run_id).finished:
@@ -219,48 +244,8 @@ def create_app(state: Path) -> Starlette:
 
     def messages(run_id: str) -> Response:
         scenario = session.scenario_of(state, run_id)
-        names = {p.email: p.name for p in scenario.people}
         with session.reading(state, run_id) as world:
-            said: dict[EntityRef, str] = {}
-            lines: list[MessageLine] = []
-            for event in world.events():
-                after = event.after
-                if isinstance(after, InboxItemSnapshot):
-                    lines.append(_item_line(event, after, names))
-                    continue
-                if not isinstance(after, MessageSnapshot) or event.operation not in WRITES:
-                    continue
-                before = said.get(event.entity)
-                said[event.entity] = after.text
-                if event.operation is Operation.UPDATE and before == after.text:
-                    continue  # a change that left the text as it was: a reaction, a button redrawn
-                change = (
-                    MessageChange.DELETED
-                    if event.operation is Operation.DELETE
-                    else MessageChange.EDITED
-                    if event.operation is Operation.UPDATE
-                    else MessageChange.SENT
-                )
-                joined = trace_of(event, world) if event.actor is Actor.AGENT else None
-                lines.append(
-                    MessageLine(
-                        seq=event.seq,
-                        at=event.sim_time,
-                        wake=event.wake,
-                        actor=event.actor,
-                        change=change,
-                        to=[names[e] if e in names else e for e in after.recipient_emails],
-                        text=after.text,
-                        before=before if change is MessageChange.EDITED else None,
-                        thread=after.thread_of is not None,
-                        written_by=WrittenBy(
-                            span_id=joined.model_call.span_id, model=joined.model_call.model, joined_by=joined.joined_by
-                        )
-                        if joined is not None and joined.model_call is not None and joined.joined_by is not None
-                        else None,
-                    )
-                )
-        return _json(MessagesResponse(messages=lines))
+            return _json(MessagesResponse(messages=reading.message_lines(world.events(), scenario, world)))
 
     def model_traffic(run_id: str) -> Response:
         with session.reading(state, run_id) as world:
@@ -385,6 +370,91 @@ def create_app(state: Path) -> Starlette:
         except RunRefused as e:
             return _json(Refusal(error=str(e)), status=404)
 
+    built: dict[tuple[str, int], TimelineResponse] = {}
+
+    def result_of(run_id: str) -> RunResult | None:
+        return session.load(state, run_id).result if session.find(state, run_id).finished else None
+
+    def timeline(run_id: str) -> Response:
+        result = result_of(run_id)
+        with session.reading(state, run_id) as world:
+            key = (run_id, world.head())
+            if result is not None and key in built:
+                return _json(built[key])
+            drawn = reading.timeline(state, run_id, world, result)
+        if result is not None:
+            built[key] = drawn
+            while len(built) > KEEP:
+                del built[next(iter(built))]
+        return _json(drawn)
+
+    def one_event(request: Request) -> Response:
+        run_id, seq = request.path_params["run_id"], request.path_params["seq"]
+        assert isinstance(run_id, str) and isinstance(seq, int)
+        try:
+            scenario = session.scenario_of(state, run_id)
+            result = result_of(run_id)
+            with session.reading(state, run_id) as world:
+                found = reading.event_detail(world, seq, scenario, result)
+        except RunRefused as e:
+            return _json(Refusal(error=str(e)), status=404)
+        if found is None:
+            return _json(Refusal(error=f"run {run_id} holds no event {seq}"), status=404)
+        return _json(found)
+
+    def call_rows(run_id: str) -> Response:
+        with session.reading(state, run_id) as world:
+            return _json(CallRowsResponse(calls=reading.call_rows(world)))
+
+    def one_call(request: Request) -> Response:
+        run_id, index = request.path_params["run_id"], request.path_params["index"]
+        assert isinstance(run_id, str) and isinstance(index, int)
+        try:
+            with session.reading(state, run_id) as world:
+                found = reading.call_detail(world, index)
+        except RunRefused as e:
+            return _json(Refusal(error=str(e)), status=404)
+        if found is None:
+            return _json(Refusal(error=f"run {run_id} holds no call {index}"), status=404)
+        return _json(found)
+
+    def dispatch(run_id: str) -> Response:
+        with session.reading(state, run_id) as world:
+            return _json(reading.dispatch(world))
+
+    def memory(run_id: str) -> Response:
+        with session.reading(state, run_id) as world:
+            return _json(reading.memory(world))
+
+    def stored(run_id: str) -> Response:
+        with session.reading(state, run_id) as world:
+            return _json(reading.stored(world))
+
+    def people(run_id: str) -> Response:
+        scenario = session.scenario_of(state, run_id)
+        with session.reading(state, run_id) as world:
+            return _json(reading.people(world, scenario))
+
+    def assessments(run_id: str) -> Response:
+        answer: AssessmentsResponse = reading.assessments(state, run_id)
+        return _json(answer)
+
+    def one_span(request: Request) -> Response:
+        run_id, span_id = request.path_params["run_id"], request.path_params["span_id"]
+        assert isinstance(run_id, str) and isinstance(span_id, str)
+        try:
+            with session.reading(state, run_id) as world:
+                found = next((s for s in world.spans() if s.span.span_id == span_id.lower()), None)
+        except RunRefused as e:
+            return _json(Refusal(error=str(e)), status=404)
+        if found is None:
+            return _json(Refusal(error=f"run {run_id} holds no span {span_id}"), status=404)
+        return _json(SpanResponse(span=found))
+
+    def batches(_: Request) -> Response:
+        answer: BatchesResponse = reading.batches(state)
+        return _json(answer)
+
     def one_run(handler: Callable[[str], Response]) -> Callable[[Request], Response]:
         def endpoint(request: Request) -> Response:
             run_id = request.path_params["run_id"]
@@ -414,8 +484,20 @@ def create_app(state: Path) -> Starlette:
             Route("/api/runs/{run_id}/steps", one_run(steps)),
             Route("/api/runs/{run_id}/steps/{step:int}/spans", step_spans),
             Route("/api/runs/{run_id}/traces/{trace_id}", trace),
+            Route("/api/runs/{run_id}/timeline", one_run(timeline)),
+            Route("/api/runs/{run_id}/events/{seq:int}", one_event),
+            Route("/api/runs/{run_id}/call-rows", one_run(call_rows)),
+            Route("/api/runs/{run_id}/calls/{index:int}", one_call),
+            Route("/api/runs/{run_id}/dispatch", one_run(dispatch)),
+            Route("/api/runs/{run_id}/memory", one_run(memory)),
+            Route("/api/runs/{run_id}/stored", one_run(stored)),
+            Route("/api/runs/{run_id}/people", one_run(people)),
+            Route("/api/runs/{run_id}/assessments", one_run(assessments)),
+            Route("/api/runs/{run_id}/spans/{span_id}", one_span),
+            Route("/api/batches", batches),
             Mount("/static", StaticFiles(directory=STATIC), name="static"),
-        ]
+        ],
+        middleware=[Middleware(GZipMiddleware, minimum_size=2048)],
     )
 
 
@@ -470,25 +552,3 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
 def serve(state: Path, *, port: int) -> None:
     """Serve the viewer on 127.0.0.1 until interrupted."""
     uvicorn.run(create_app(state), host=HOST, port=port, log_level="warning")
-
-
-def _item_line(event: WorldEvent, item: InboxItemSnapshot, names: dict[str, str]) -> MessageLine:
-    """An item in the agent's own product as a line of what was said: the ask, the decision, a refusal of it, or the
-    agent taking it back."""
-    who = names[item.waits_on] if item.waits_on in names else item.waits_on
-    if event.actor is Actor.PERSON:
-        change = MessageChange.DECIDED if item.status is ItemStatus.DECIDED else MessageChange.REFUSED
-    else:
-        change = MessageChange.WITHDRAWN if item.status is ItemStatus.WITHDRAWN else MessageChange.ASKED
-    return MessageLine(
-        seq=event.seq,
-        at=event.sim_time,
-        wake=event.wake,
-        actor=event.actor,
-        change=change,
-        to=[who],
-        text=item.summary,
-        before=None,
-        thread=False,
-        words=item_words(item, event.actor, who),
-    )

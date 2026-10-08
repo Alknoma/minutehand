@@ -91,6 +91,7 @@ dev = [
     "python-docx==1.2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
     "pytest-split>=0.10",
+    "playwright==1.55.0",
 ]
 recipes = [
     "anthropic>=1.11.0",
@@ -136,10 +137,11 @@ asyncio_mode = "auto"
 pythonpath = ["src", "."]
 # A test that reaches a real service is a broken test: only this machine is reachable.
 # A test that hangs fails at 60 seconds. Tests run in a random order every time.
-addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not benchmark and not docker and not recipes'"
+addopts = "--strict-markers --strict-config --disable-socket --allow-hosts=127.0.0.1,::1,localhost --allow-unix-socket --timeout=60 -m 'not packaging and not benchmark and not docker and not recipes and not browser'"
 markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
+    "browser: drives the viewer's page in headless Chromium (Playwright) on fixture runs; needs `uv run playwright install chromium` (or a Chrome on this machine); run with -m browser",
     "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
     "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
     "own_ca: the proxy CA this test's proxy makes is its own, never a copy of the worker's (tests/conftest.py); for a test about the CA itself",
