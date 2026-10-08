@@ -115,13 +115,6 @@ FOLLOW_UP_CELLS: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
 }
 """(scenario, AGENT_BEHAVIOUR) -> (exit code, failed rules). The approval scenarios need an agent with an inbox."""
 
-UNFORKED = {"settle_limit": "PT15S", "quiet": "PT0.2S"}
-"""Nothing here forks, so no cell depends on a checkpoint, only on the run going on past it, and a checkpoint's
-settling is real time on every wake. The reference agent reports WORKING while any job is queued or running, so a
-shorter quiet takes no wake on before its work is done. A checkpoint that cannot settle waits out the limit: the proxy
-can read a model call answered in the same read as the TLS 1.3 session tickets as still awaiting its answer
-(`adapters/proxy/tunnel.py`), and the default two minutes was the longest wait in the suite."""
-
 
 def failed(state: Path, run_id: str) -> frozenset[str]:
     return frozenset(f.check for f in session.load(state, run_id).result.findings if f.kind is FindingKind.FAIL)
@@ -141,9 +134,7 @@ def test_the_reference_agent_against_the_library(rig: Rig, name: str, behaviour:
     env = {"REFERENCE_BEHAVIOUR": behaviour}
     if name in APPROVALS:
         env["REFERENCE_APPROVER"] = REFERENCE_TEAM.other.email
-    done = rig.run(
-        str(path), env=env, inbox=name in APPROVALS, policy=False, state=UNFORKED
-    )  # the scenario's rules alone
+    done = rig.run(str(path), env=env, inbox=name in APPROVALS, policy=False)  # the scenario's rules alone
 
     code, checks = REFERENCE[(name, behaviour)]
     assert (done.code, failed(rig.state, done.run_id)) == (code, checks), done.out + done.err[-3000:]
@@ -181,9 +172,7 @@ def test_a_late_scheduler_turns_a_plan_timed_to_the_due_moment_into_a_late_follo
     ran = {}
     for name in ("person_goes_quiet", "planned_wake_late"):
         rig = Rig(tmp_path / name, outside.model, outside.search, str(outside.ca))  # type: ignore[attr-defined]
-        done = rig.run(
-            str(write(entry(name), REFERENCE_TEAM, rig.base, replace=False)), env=sixty, policy=False, state=UNFORKED
-        )
+        done = rig.run(str(write(entry(name), REFERENCE_TEAM, rig.base, replace=False)), env=sixty, policy=False)
         ran[name] = (done.code, failed(rig.state, done.run_id), done.out)
 
     assert ran["person_goes_quiet"][:2] == (3, NONE), ran["person_goes_quiet"][2]
