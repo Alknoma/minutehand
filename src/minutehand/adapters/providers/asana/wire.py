@@ -104,6 +104,12 @@ def unsupported(name: str) -> NotImplementedError:
     return NotImplementedError(name)
 
 
+def undocumented(case: str) -> NotImplementedError:
+    """A request Asana answers in words no page, recording or report gives: refused by name, never answered with
+    invented ones."""
+    return unsupported(f"{case} (Asana's answer to it is not documented)")
+
+
 def is_gid(value: str) -> bool:
     """Asana gids are strings of digits; anything else names no object."""
     return bool(_GID.match(value))
@@ -379,7 +385,7 @@ def envelope(body: bytes) -> Fields:
         if stray:
             raise bad(unwrapped(stray[0]))
     if not isinstance(decoded, dict) or "data" not in decoded or not isinstance(decoded["data"], dict):
-        raise bad("Missing input: data")
+        raise undocumented("a write body without a `data` object")
     return decoded["data"]
 
 
@@ -440,7 +446,8 @@ def _due(fields: Fields) -> tuple[str | None, str | None]:
     due_on = _string(fields, "due_on")
     due_at = _string(fields, "due_at")
     if due_on is not None and due_at is not None:
-        raise bad("You may only provide one of due_on or due_at!")  # https://forum.asana.com/t/808508
+        # Reported: https://forum.asana.com/t/808508
+        raise bad("You may only provide one of due_on or due_at!")
     if due_on is not None and not is_date(due_on):
         raise bad("due_on: Invalid date")
     if due_at is not None:
@@ -700,8 +707,10 @@ class StoryCreate(Model):
 def story_create(fields: Fields) -> StoryCreate:
     _refuse_unsupported(fields, ("html_text", "is_pinned", "sticker_name"))
     text = _string(fields, "text")
-    if text is None or not text.strip():
-        raise bad("Missing input: text")
+    if text is None:
+        raise bad("text: Missing input")  # the documented form: https://developers.asana.com/docs/errors
+    if not text.strip():
+        raise undocumented("a comment of nothing but spaces")
     return StoryCreate(text=text)
 
 

@@ -406,13 +406,13 @@ async def plain(tmp_path: Path) -> AsyncIterator[Proxied]:
         yield found
 
 
-async def test_a_plain_workspace_refuses_to_list_my_teams_not_an_organization(plain: Proxied) -> None:
-    """OBSERVED: teams exist only in organizations, so asking for the caller's teams in a workspace that is not
-    one is refused, not answered with an empty list. That `organization` is required is documented
-    (https://developers.asana.com/reference/getteamsforuser); this refusal and its words are not."""
+async def test_my_teams_in_a_plain_workspace_are_refused_by_name(plain: Proxied) -> None:
+    """That `organization` is required is documented (https://developers.asana.com/reference/getteamsforuser);
+    what Asana answers when it names a workspace that is not an organization is not, so it is refused by name."""
     teams = await plain.http.get("/users/me/teams", params={"organization": WS})
 
-    assert refused(teams, 400) == "organization: Not an organization"
+    assert teams.status_code == 501
+    assert "a workspace that is not an organization" in refused(teams, 501)
 
 
 async def test_a_project_in_a_plain_workspace_needs_no_team_and_has_none(plain: Proxied) -> None:

@@ -345,14 +345,19 @@ async def test_add_task_moves_it_to_the_section_and_status_is_read_from_the_fiel
     assert [t["gid"] for t in listed] == [INCIDENT], "the done ticket says Done in its Status field, not its section"
 
 
-async def test_a_task_in_a_section_of_another_project_joins_that_project(agent: httpx.AsyncClient) -> None:
+async def test_a_task_put_in_a_section_of_another_project_is_refused_by_name(
+    rich: Workspace, agent: httpx.AsyncClient
+) -> None:
+    """addTaskForSection documents moving a task within its project; what it does to a task not in the section's
+    project is not documented, so it is refused by name and nothing is written."""
     other = got(
         await agent.post("/projects", json={"data": {"name": "Ops", "workspace": WS, "team": ENGINEERING}}), 201
     )
     untitled = got(await agent.get(f"/projects/{other['gid']}/sections"))[0]["gid"]
-    await agent.post(f"/sections/{untitled}/addTask", json={"data": {"task": INCIDENT}})
-    read = got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "projects.name"}))
-    assert [p["name"] for p in read["projects"]] == ["Backend Services", "Ops"]
+    head = rich.store.head()
+    answered = await agent.post(f"/sections/{untitled}/addTask", json={"data": {"task": INCIDENT}})
+    assert unserved(answered).startswith("adding a task to a section of a project it is not in")
+    assert rich.store.head() == head
 
 
 async def test_set_parent_makes_a_subtask_and_unsets_it(agent: httpx.AsyncClient) -> None:

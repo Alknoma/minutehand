@@ -98,10 +98,9 @@ _CUSTOM_FIELD_SEARCH = "custom_fields."
 _SORTS = ("modified_at", "created_at")
 _TYPEAHEAD = ("task", "user", "project", "tag")
 _NEEDS_FILTER = "Must specify exactly one of project, tag, section, user task list, or assignee + workspace"
-_NEEDS_TEAM = (
+_NEEDS_TEAM = (  # the OpenAPI document's createProject description, word for word
     "If the workspace for your project is an organization, you must also supply a team to share the project with."
 )
-_NOT_ORGANIZATION = "organization: Not an organization"
 
 
 SERVED: tuple[tuple[str, str, str], ...] = (
@@ -209,7 +208,7 @@ class View:
             raise wire.bad("organization: Missing input")
         found = self.workspace(gid, status=400, field="organization")
         if not found.is_organization:
-            raise wire.bad(_NOT_ORGANIZATION)
+            raise wire.undocumented("an organization parameter naming a workspace that is not an organization")
         return found
 
     def visible(self, project: wire.AsanaProject) -> bool:
@@ -676,7 +675,7 @@ class AsanaApi:
         view = self._view(caller)
         workspace = view.workspace(request.path_params["gid"])
         if not workspace.is_organization:
-            raise wire.bad(_NOT_ORGANIZATION)
+            raise wire.undocumented("the teams of a workspace that is not an organization")
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return self._listed(request, [view.team_out(t) for t in self._world.teams() if t.workspace == workspace.gid])
 
@@ -741,7 +740,7 @@ class AsanaApi:
             raise wire.bad("workspace: Missing input")
         home = view.workspace(workspace_gid, status=400)
         if chosen_team is not None and chosen_team.workspace != home.gid:
-            raise wire.bad("team: Must be in the same workspace as the project")
+            raise wire.undocumented("a project's team in another workspace than the project")
         if home.is_organization and chosen_team is None:
             raise wire.bad(_NEEDS_TEAM)
         if chosen_team is not None and caller.gid not in chosen_team.members:
@@ -850,7 +849,7 @@ class AsanaApi:
             raise wire.premium(wire.FIELDS_ARE_PREMIUM)
         field = view.custom_field(gid, status=400)
         if field.gid in project.custom_fields:
-            raise wire.bad(f"custom_field: Custom field {field.gid} is already applied to this project")
+            raise wire.undocumented("a custom field setting for a field already on the project")
         changed = project.model_copy(update={"custom_fields": [*project.custom_fields, field.gid]})
         self._world.put_record(changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE)
         return _one(request, view.setting_out(changed, field))
@@ -860,7 +859,7 @@ class AsanaApi:
         project = view.project(request.path_params["gid"])
         field = view.custom_field(wire.one_gid(wire.envelope(await request.body()), "custom_field"), status=400)
         if field.gid not in project.custom_fields:
-            raise wire.bad(f"custom_field: Custom field {field.gid} is not on this project")
+            raise wire.undocumented("removing a custom field setting the project does not have")
         changed = project.model_copy(update={"custom_fields": [f for f in project.custom_fields if f != field.gid]})
         self._world.put_record(changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE)
         return _answer(wire.empty())
@@ -881,15 +880,16 @@ class AsanaApi:
         return self._listed(request, [view.task_out(t) for t in _completed_since(_query(request), found)])
 
     async def add_task_to_section(self, request: Request, caller: wire.AsanaUser) -> Response:
-        """Move the task to the section within the section's project; a task not in that project joins it."""
+        """Move the task to the section within the section's project: "This will remove the task from other sections
+        of the project" (the OpenAPI document's addTaskForSection). What Asana does with a task not in that project is
+        not documented, and is refused by name."""
         view = self._view(caller)
         section = view.section(request.path_params["gid"])
         task = view.task(wire.one_gid(wire.envelope(await request.body()), "task"), status=400)
         placed = wire.AsanaMembership(project=section.project, section=section.gid)
-        if any(m.project == section.project for m in task.memberships):
-            memberships = [placed if m.project == section.project else m for m in task.memberships]
-        else:
-            memberships = [*task.memberships, placed]
+        if not any(m.project == section.project for m in task.memberships):
+            raise wire.undocumented("adding a task to a section of a project it is not in")
+        memberships = [placed if m.project == section.project else m for m in task.memberships]
         moved = task.model_copy(update={"memberships": memberships, "modified_at": self._now()})
         self._world.put_task(moved, operation=Operation.UPDATE, actor=Actor.AGENT)
         return _answer(wire.empty())
@@ -1152,7 +1152,7 @@ class AsanaApi:
             ancestor: wire.AsanaTask | None = parent
             while ancestor is not None:
                 if ancestor.gid == task.gid:
-                    raise wire.bad("parent: A task cannot be a subtask of itself or of its own subtask")
+                    raise wire.undocumented("a parent that is the task itself or one of its subtasks")
                 ancestor = self._world.task(ancestor.parent) if ancestor.parent is not None else None
         changed = task.model_copy(update={"parent": sent.parent, "modified_at": self._now()})
         self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT)

@@ -178,7 +178,7 @@ async def test_a_field_already_on_a_project_or_unknown_is_refused_400(agent: htt
     again = await agent.post(
         f"/projects/{BACKEND}/addCustomFieldSetting", json={"data": {"custom_field": STATUS_FIELD}}
     )
-    assert error(again, 400) == f"custom_field: Custom field {STATUS_FIELD} is already applied to this project"
+    assert unserved(again).startswith("a custom field setting for a field already on the project")
     nothing = await agent.post(
         f"/projects/{BACKEND}/addCustomFieldSetting", json={"data": {"custom_field": "1999999999999999"}}
     )
@@ -199,13 +199,11 @@ async def test_a_tag_or_parent_that_names_nothing_is_refused(agent: httpx.AsyncC
     )
     assert error(await agent.post("/tags", json={"data": {"name": "x"}}), 400) == "workspace: Missing input"
     assert error(await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {}}), 400) == "parent: Missing input"
-    assert error(await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {"parent": INCIDENT}}), 400) == (
-        "parent: A task cannot be a subtask of itself or of its own subtask"
-    )
+    itself = await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {"parent": INCIDENT}})
+    assert unserved(itself).startswith("a parent that is the task itself or one of its subtasks")
     sub = state.task_gid(1)
-    assert error(await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {"parent": sub}}), 400) == (
-        "parent: A task cannot be a subtask of itself or of its own subtask"
-    ), "a task cannot go under its own subtask"
+    under = await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {"parent": sub}})
+    assert unserved(under).startswith("a parent that is the task itself or one of its subtasks")
     assert error(await agent.put(f"/tasks/{INCIDENT}", json={"data": {"parent": sub}}), 400) == (
         "parent: Cannot write this property"
     )

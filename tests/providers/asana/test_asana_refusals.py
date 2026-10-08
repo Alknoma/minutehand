@@ -82,7 +82,7 @@ async def test_a_write_without_its_data_wrapper_is_refused(
     workspace: Workspace, client: httpx.AsyncClient, sent: object
 ) -> None:
     before = workspace.store.head()
-    assert error(await client.post("/tasks", json=sent), 400) == "Missing input: data"
+    assert unserved(await client.post("/tasks", json=sent)).startswith("a write body without a `data` object")
     assert workspace.store.head() == before
 
 
@@ -160,8 +160,10 @@ async def test_a_field_this_simulation_does_not_serve_is_refused_by_name(client:
 
 async def test_a_comment_with_nothing_to_say_is_refused(client: httpx.AsyncClient) -> None:
     made = await create(client, name="x", workspace=WS)
-    for sent in ({"data": {}}, {"data": {"text": "   "}}):
-        assert error(await client.post(f"/tasks/{made['gid']}/stories", json=sent), 400) == "Missing input: text"
+    missing = await client.post(f"/tasks/{made['gid']}/stories", json={"data": {}})
+    blank = await client.post(f"/tasks/{made['gid']}/stories", json={"data": {"text": "   "}})
+    assert error(missing, 400) == "text: Missing input"
+    assert unserved(blank).startswith("a comment of nothing but spaces")
     assert error(await client.post(f"/tasks/{UNKNOWN}/stories", json={"data": {"text": "hi"}}), 404) == (
         f"task: Unknown object: {UNKNOWN}"
     )
