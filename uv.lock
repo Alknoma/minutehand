@@ -2020,7 +2020,7 @@ wheels = [
 
 [[package]]
 name = "minutehand"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "asgiref" },
@@ -2154,7 +2154,7 @@ recipes = [
 
 [[package]]
 name = "minutehand-agent"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "packages/minutehand-agent" }
 
 [[package]]

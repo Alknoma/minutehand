@@ -4,7 +4,7 @@ name = "minutehand"
 # installed package's metadata; a release's tag is `v` and this (docs/releasing.md). `minutehand-agent` is released
 # with it: packages/minutehand-agent/pyproject.toml and the pin below repeat it, and tests/test_version.py and the
 # release workflow refuse any difference.
-version = "0.0.1"
+version = "0.0.2"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -32,7 +32,7 @@ classifiers = [
 dependencies = [
     # What the agent imports (`minutehand_agent`), released with this at the same version; this package reads the
     # names of the variables it hands the agent from it. From the workspace in development ([tool.uv.sources]).
-    "minutehand-agent==0.0.1",
+    "minutehand-agent==0.0.2",
     "pydantic>=2.9",
     "mitmproxy>=12,<13",
     "asgiref>=3.8",
