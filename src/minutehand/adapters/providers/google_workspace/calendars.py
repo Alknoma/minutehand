@@ -30,6 +30,7 @@ from minutehand.adapters.providers.google_workspace import calendar_wire as cal
 from minutehand.adapters.providers.google_workspace import gmail_wire as mail
 from minutehand.adapters.providers.google_workspace import wire
 from minutehand.adapters.providers.google_workspace.access import Caller, bearer, due_fault, signed_in
+from minutehand.adapters.providers.google_workspace.channels import CALENDAR_LIFETIME, Channels
 from minutehand.adapters.providers.google_workspace.gmail import EVERY_METHOD
 from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.adapters.providers.google_workspace.state import DriveWorld
@@ -65,6 +66,8 @@ OPERATIONS = frozenset(
         "events.update",
         "events.delete",
         "freebusy.query",
+        "events.watch",
+        "channels.stop",
     }
 )
 """Every Calendar call a fault may name, by Google's own method name."""
@@ -93,6 +96,11 @@ def event_id(seq: int) -> str:
     """An id Calendar would mint: base32hex, from the event that made it."""
     digest = hashlib.sha256(f"event\x1f{seq}".encode()).digest()[:15]
     return base64.b32hexencode(digest).decode().lower().rstrip("=")
+
+
+def calendars_of(*events: cal.StoredEvent) -> set[str]:
+    """Every calendar the events are on: their organizers' and their guests'."""
+    return {a for e in events for a in (e.organizer.email, *(g.email for g in e.attendees or []))}
 
 
 def html_link(event: str, calendar: str) -> str:
@@ -224,19 +232,20 @@ class CalendarWorld:
             )
         )
 
-    def land(self, reply: PersonReply, clock: Clock) -> None:
+    def land(self, reply: PersonReply, clock: Clock) -> set[str]:
         """A guest answers an invitation: a press sets their `responseStatus`, written text their response comment.
-        An event deleted since, or a guest no longer on it, is left alone."""
+        An event deleted since, or a guest no longer on it, is left alone. Answers the calendars the event changed
+        on, none when it was left alone."""
         found = self.event(reply.in_reply_to.external_id)
         person = self._drive.person(reply.person)
         if found is None or person is None or person.emailAddress is None:
-            return
+            return set()
         event, _ = found
         address = person.emailAddress.lower()
         attendees = list(event.attendees or [])
         place = next((n for n, a in enumerate(attendees) if a.email.lower() == address), None)
         if place is None:
-            return
+            return set()
         if reply.press is not None and reply.press.action_id not in cal.ANSWERS:
             raise ValueError(
                 f"{reply.person} presses {reply.press.label!r} on an invitation, which offers "
@@ -280,6 +289,7 @@ class CalendarWorld:
                 after=after,
             )
         )
+        return calendars_of(answered)
 
     def saw(self, ref: EntityRef, operation: Operation) -> None:
         self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
@@ -308,10 +318,11 @@ def _not_found() -> wire.Refusal:
 
 
 class CalendarApi:
-    def __init__(self, store: Store, clock: Clock) -> None:
+    def __init__(self, store: Store, clock: Clock, channels: Channels) -> None:
         self._calendars = CalendarWorld(store)
         self._drive = DriveWorld(store)
         self._clock = clock
+        self._channels = channels
 
     @property
     def calendars(self) -> CalendarWorld:
@@ -473,6 +484,7 @@ class CalendarApi:
             guestsCanModify=asked.guestsCanModify,
         )
         self._calendars.write(event, operation=Operation.CREATE, actor=Actor.AGENT, snapshot=True)
+        self._channels.tell_calendars_later(calendars_of(event))
         return _json(self._served(event, calendar.id, caller), request, cal.StoredEvent)
 
     async def events_get(self, request: Request, caller: Caller) -> Response:
@@ -528,6 +540,7 @@ class CalendarApi:
             )
         changed = event.model_copy(update=update)
         self._calendars.write(changed, operation=Operation.UPDATE, actor=Actor.AGENT, snapshot=True)
+        self._channels.tell_calendars_later(calendars_of(event, changed))
         return _json(self._served(changed, calendar.id, caller), request, cal.StoredEvent)
 
     async def events_delete(self, request: Request, caller: Caller) -> Response:
@@ -539,6 +552,30 @@ class CalendarApi:
                 403, "forbiddenForNonOrganizer", "Shared properties can only be changed by the organizer of the event."
             )
         self._calendars.delete(event, actor=Actor.AGENT)
+        self._channels.tell_calendars_later(calendars_of(event))
+        return Response(status_code=204)
+
+    async def events_watch(self, request: Request, caller: Caller) -> Response:
+        """A channel on the calendar's events: told `sync` once opened, then `exists` whenever an event on it is
+        created, changed or deleted, by the agent or by anyone else."""
+        calendar = self._own(request, caller)
+        asked, expires = self._channels.asked(await request.body(), CALENDAR_LIFETIME)
+        spelled = request.path_params["calendar_id"]
+        channel = wire.CalendarChannel(
+            id=asked.id,
+            resourceId=hashlib.sha256(f"calendar events\x1f{calendar.id.lower()}".encode()).hexdigest()[:27],
+            resourceUri=f"https://www.googleapis.com/calendar/v3/calendars/{spelled}/events?alt=json",
+            address=asked.address,
+            expiration=wire.rfc3339(expires),
+            token=asked.token,
+            email=caller.email,
+            calendar=calendar.id,
+        )
+        return _json(self._channels.open(channel), request, wire.ChannelAnswer)
+
+    async def channels_stop(self, request: Request, caller: Caller) -> Response:
+        asked = wire.read_body(wire.ChannelStop, wire.read_object(await request.body()))
+        self._channels.stop(asked, wire.CalendarChannel)
         return Response(status_code=204)
 
     async def events_list(self, request: Request, caller: Caller) -> Response:
@@ -730,5 +767,7 @@ class CalendarApi:
             Route(f"{events}/{{event_id}}", call(self.events_update, "events.update"), methods=["PUT"]),
             Route(f"{events}/{{event_id}}", call(self.events_delete, "events.delete"), methods=["DELETE"]),
             Route("/calendar/v3/freeBusy", call(self.freebusy, "freebusy.query"), methods=["POST"]),
+            Route(f"{events}/watch", call(self.events_watch, "events.watch"), methods=["POST"]),
+            Route("/calendar/v3/channels/stop", call(self.channels_stop, "channels.stop"), methods=["POST"]),
             Route("/calendar/v3/{rest:path}", self.not_built, methods=EVERY_METHOD),
         ]

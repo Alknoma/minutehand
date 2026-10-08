@@ -24,17 +24,15 @@ Slides), never a made-up success. A fault Drive's own seed declares answers its 
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import hashlib
 import html
 import io
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import timedelta
 from enum import StrEnum
 from urllib.parse import parse_qs, urlparse
 
-import httpx
 from pydantic import JsonValue, ValidationError
 from starlette.requests import Request
 from starlette.responses import Response
@@ -45,6 +43,7 @@ from minutehand.adapters.providers.google_workspace import docs, slides, state, 
 from minutehand.adapters.providers.google_workspace import query as drive_query
 from minutehand.adapters.providers.google_workspace.access import Caller, bearer, due_fault, signed_in
 from minutehand.adapters.providers.google_workspace.calendars import CalendarApi
+from minutehand.adapters.providers.google_workspace.channels import DRIVE_LIFETIME, Channels
 from minutehand.adapters.providers.google_workspace.gmail import GMAIL_HOST, GmailApi
 from minutehand.adapters.providers.google_workspace.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
 from minutehand.domain.scenario import Commented, DocumentHappening, Edited, FieldSet, Model, Moved, Renamed, Shared
@@ -86,11 +85,6 @@ ORDER_KEYS = frozenset({"name", "createdTime", "modifiedTime", "folder", "starre
 ORDER_KEYS_NOT_BUILT = frozenset(
     {"name_natural", "quotaBytesUsed", "recency", "sharedWithMeTime", "viewedByMeTime", "modifiedByMeTime"}
 )
-CHANNEL_DEFAULT = timedelta(hours=1)
-CHANNEL_LONGEST = timedelta(days=7)
-"""A `changes.watch` channel lives an hour unless it asks for longer, and a week at most. An expiration already
-past on the run's clock (an agent that reads the machine's clock in a run set earlier or later) is taken as
-none asked for, and a later one is cut to the week."""
 
 
 class Api(StrEnum):
@@ -189,14 +183,14 @@ OPERATIONS = frozenset(
 
 
 class DriveApi:
-    def __init__(self, store: Store, clock: Clock) -> None:
+    def __init__(self, store: Store, clock: Clock, channels: Channels) -> None:
         self._drive = DriveWorld(store)
         self._clock = clock
-        self._background: set[asyncio.Task[bool]] = set()
+        self._channels = channels
 
-    def delivering(self) -> int:
-        """Notifications pushed to a channel's address that have not had its answer yet."""
-        return len(self._background)
+    @property
+    def channels(self) -> Channels:
+        return self._channels
 
     @property
     def drive(self) -> DriveWorld:
@@ -1102,38 +1096,12 @@ class DriveApi:
         token = self._page_token(call.pageToken)
         if call.driveId is not None:
             self._member(call.driveId, caller)
-        asked = wire.read_body(wire.ChannelWrite, wire.read_object(await request.body()))
-        if not asked.id:
-            raise wire.required("channel.id", "Required: channel.id")
-        if asked.type not in ("web_hook", "webhook"):
-            raise wire.drive_refusal(
-                400, "push.channelTypeNotSupported", f"Channel type '{asked.type}' is not supported.", domain="push"
-            )
-        if not asked.address.startswith(("https://", "http://")):
-            raise wire.drive_refusal(
-                400,
-                "push.webhookUrlUnauthorized",
-                f"Unauthorized WebHook callback channel: {asked.address}",
-                domain="push",
-            )
-        if self._drive.channel(asked.id) is not None:
-            raise wire.drive_refusal(400, "channelIdNotUnique", f"Channel id {asked.id} not unique", domain="push")
-        now = self._clock.now()
-        if asked.expiration is not None and not asked.expiration.isdigit():
-            raise wire.invalid("channel.expiration")
-        wanted = (
-            datetime.fromtimestamp(int(asked.expiration) / 1000, tz=now.tzinfo)
-            if asked.expiration is not None
-            else now + CHANNEL_DEFAULT
-        )
-        if wanted <= now:
-            wanted = now + CHANNEL_DEFAULT
-        expires = min(wanted, now + CHANNEL_LONGEST)
+        asked, expires = self._channels.asked(await request.body(), DRIVE_LIFETIME)
         resource_id = hashlib.sha256(f"resource\x1f{asked.id}\x1f{token}".encode()).hexdigest()[:27]
         uri = f"https://{DRIVE_HOST}/drive/v3/changes?alt=json&pageToken={token}"
         if call.driveId is not None:
             uri += f"&driveId={call.driveId}&includeItemsFromAllDrives=true&supportsAllDrives=true"
-        channel = wire.Channel(
+        channel = wire.DriveChannel(
             id=asked.id,
             resourceId=resource_id,
             resourceUri=uri,
@@ -1144,32 +1112,14 @@ class DriveApi:
             driveId=call.driveId,
             told_after=token - 1,
         )
-        self._drive.keep_channel(channel, operation=Operation.CREATE)
-        sync = asyncio.create_task(self._push(channel, "sync", 1))
-        self._background.add(sync)
-        sync.add_done_callback(self._background.discard)
-        answer = wire.ChannelAnswer(
-            id=channel.id,
-            resourceId=resource_id,
-            resourceUri=uri,
-            expiration=str(int(expires.timestamp() * 1000)),
-            token=asked.token,
-        )
-        return _json(answer)
+        return _json(self._channels.open(channel))
 
     async def channels_stop(self, request: Request, call: wire.CallQuery, caller: Caller) -> Response:
-        asked = wire.read_body(wire.ChannelStop, wire.read_object(await request.body()))
-        channel = self._drive.channel(asked.id)
-        if channel is None or channel.resourceId != asked.resourceId or channel.stopped:
-            raise wire.drive_refusal(
-                404, "notFound", f"Channel '{asked.id}' not found for project 'minutehand'", domain="global"
-            )
-        self._drive.keep_channel(channel.model_copy(update={"stopped": True}))
+        self._channels.stop(wire.read_body(wire.ChannelStop, wire.read_object(await request.body())), wire.DriveChannel)
         return Response(status_code=204)
 
-    def watching(self) -> list[wire.Channel]:
-        now = self._clock.now()
-        return [c for c in self._drive.channels() if not c.stopped and wire.moment(c.expiration) > now]
+    def watching(self) -> list[wire.DriveChannel]:
+        return self._channels.drive()
 
     async def notify(self) -> None:
         """Tell every live channel's address of the changes its user has not been told of, as Drive does: an
@@ -1177,38 +1127,8 @@ class DriveApi:
         head = self._drive.store.head()
         for channel in self.watching():
             changed = self.feed(channel.email, channel.driveId, after=channel.told_after, include_all_drives=True)
-            if not changed:
-                continue
-            number = channel.messages + 1
-            delivered = await self._push(channel, "change", number)
-            self._drive.keep_channel(
-                channel.model_copy(
-                    update={
-                        "told_after": head,
-                        "messages": number,
-                        "undelivered": channel.undelivered + (0 if delivered else 1),
-                    }
-                )
-            )
-
-    async def _push(self, channel: wire.Channel, resource_state: str, number: int) -> bool:
-        headers = {
-            "X-Goog-Channel-ID": channel.id,
-            "X-Goog-Channel-Expiration": wire.rfc1123(wire.moment(channel.expiration)),
-            "X-Goog-Resource-State": resource_state,
-            "X-Goog-Message-Number": str(number),
-            "X-Goog-Resource-ID": channel.resourceId,
-            "X-Goog-Resource-URI": channel.resourceUri,
-            "Content-Length": "0",
-        }
-        if channel.token is not None:
-            headers["X-Goog-Channel-Token"] = channel.token
-        try:
-            async with httpx.AsyncClient(trust_env=False, timeout=30) as client:
-                answered = await client.post(channel.address, headers=headers)
-        except httpx.HTTPError:
-            return False
-        return answered.is_success
+            if changed:
+                await self._channels.tell(channel, "change", update={"told_after": head})
 
     # ------------------------------------------------------------------ what people do without the agent
 
@@ -1631,13 +1551,17 @@ class HostRouter:
     """Send each request to its host's routes, or to every route when the host is not one of Google's.
     `DeliversInBackground`: a channel's notifications are pushed after the call that set them off is answered."""
 
-    def __init__(self, by_host: dict[str, Router], every: Router, api: DriveApi) -> None:
+    def __init__(self, by_host: dict[str, Router], every: Router, channels: Channels) -> None:
         self._by_host = by_host
         self._every = every
-        self._api = api
+        self._channels = channels
 
     def delivering(self) -> int:
-        return self._api.delivering()
+        return self._channels.delivering()
+
+    async def settled(self) -> None:
+        """Wait for every notification already pushed to have its answer."""
+        await self._channels.settled()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         headers: list[tuple[bytes, bytes]] = scope["headers"] if "headers" in scope else []
@@ -1738,5 +1662,5 @@ def build_app(api: DriveApi, gmail: GmailApi, calendar: CalendarApi) -> HostRout
             IAM_HOST: Router(routes=iam),
         },
         Router(routes=[*routes, *calendars, *mail, *oauth, *documents, *presentations, *iam]),
-        api,
+        api.channels,
     )
