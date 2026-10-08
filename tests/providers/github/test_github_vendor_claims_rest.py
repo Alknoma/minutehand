@@ -8,7 +8,9 @@ import base64
 
 import pytest
 
+from minutehand.adapters.providers.github import wire
 from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, SeedRepository
+from minutehand.domain.world import Actor
 from tests.providers.github.github_world import (
     APP,
     CONFIG,
@@ -46,23 +48,9 @@ async def test_without_any_credential_the_user_is_refused_requires_authenticatio
     https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api
     https://docs.github.com/en/rest/users/users#get-the-authenticated-user"""
     async with hub.client(None) as http:
-        refusal(await http.get("/user"), 401, "Requires authentication")
+        refused = refusal(await http.get("/user"), 401, "Requires authentication")
         assert body(await http.get("/repos/iris-calder/notes"))["full_name"] == "iris-calder/notes"
-
-
-async def test_basic_authentication_with_a_password_is_refused_401(hub: Hub) -> None:
-    """Documented: username and password are not accepted.
-    https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api"""
-    secret = base64.b64encode(b"iris-calder:hunter22").decode()
-    async with hub.client(None, Authorization=f"Basic {secret}") as http:
-        refusal(await http.get("/repos/lanternworks/ledger"), 401, "Bad credentials")
-
-
-async def test_a_bearer_scheme_with_no_token_after_it_is_refused_401(hub: Hub) -> None:
-    """Observed: the `Bearer` scheme with no token after it names no token, and is refused as a bad credential
-    rather than served as an anonymous call."""
-    async with hub.client(None, Authorization="Bearer") as http:
-        refusal(await http.get("/user"), 401, "Bad credentials")
+    assert refused["documentation_url"] == "https://docs.github.com/rest"  # observed 2026-10-08
 
 
 async def test_a_bearer_token_is_served_as_its_user(hub: Hub) -> None:
@@ -130,12 +118,13 @@ async def test_an_unknown_repository_is_not_found_on_every_route(hub: Hub, path:
         refusal(await http.get(path), 404, "Not Found")
 
 
-async def test_user_repos_lists_only_what_the_token_can_see_with_its_permissions(hub: Hub) -> None:
+async def test_user_repos_lists_only_what_the_user_can_reach_with_its_permissions(hub: Hub) -> None:
     """Documented: the list is the repositories the authenticated user can reach, each with the caller's
-    `permissions`. https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user"""
+    `permissions`. https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user
+    What the user reaches is world data (collaborators); the token's own selection is not enforced."""
     async with hub.client("github_pat_tomas_selects_only_the_ledger_0000000000000000") as http:
         repos = listing(await http.get("/user/repos", params={"per_page": 30, "sort": "updated"}))
-    assert [r["full_name"] for r in repos] == ["lanternworks/ledger"]
+    assert [r["full_name"] for r in repos] == ["lanternworks/plans", "lanternworks/ledger-small", "lanternworks/ledger"]
     permissions = repos[0]["permissions"]
     assert isinstance(permissions, dict) and permissions["pull"] is True
 
@@ -165,14 +154,16 @@ async def test_branches_list_each_branch_with_its_commit(hub: Hub) -> None:
 
 
 async def test_contents_at_a_ref_that_names_no_commit_is_refused_404(hub: Hub) -> None:
-    """Observed: the 404 says no commit was found for the ref.
+    """Observed 2026-10-08 (`observed/api.github.com.2026-10-08.json`): the 404 says no commit was found for the
+    ref, and points at the reference's old address.
     https://docs.github.com/en/rest/repos/contents#get-repository-content (404 listed)"""
     async with hub.client() as http:
-        refusal(
+        refused = refusal(
             await http.get("/repos/lanternworks/ledger/contents/README.md", params={"ref": "no-such-branch"}),
             404,
             "No commit found for the ref no-such-branch",
         )
+    assert refused["documentation_url"] == "https://docs.github.com/v3/repos/contents/"
 
 
 async def test_contents_takes_a_branch_or_a_commit_sha_as_its_ref(hub: Hub) -> None:
@@ -219,14 +210,15 @@ async def test_a_directory_listing_stops_at_a_thousand_entries_and_says_nothing(
 
 
 async def test_commits_from_a_sha_that_names_no_commit_are_refused_404(hub: Hub) -> None:
-    """Observed: the 404 says no commit was found for the SHA.
+    """Observed 2026-10-08 (`observed/api.github.com.2026-10-08.json`): a plain 404 "Not Found" pointing at
+    list-commits, for a name and for a 40-character sha alike.
     https://docs.github.com/en/rest/commits/commits#list-commits (404 listed)"""
     async with hub.client() as http:
-        refusal(
-            await http.get("/repos/lanternworks/ledger/commits", params={"sha": "0badc0de"}),
-            404,
-            "No commit found for SHA: 0badc0de",
-        )
+        for sha in ("0badc0de", "0" * 40):
+            refused = refusal(
+                await http.get("/repos/lanternworks/ledger/commits", params={"sha": sha}), 404, "Not Found"
+            )
+            assert refused["documentation_url"] == "https://docs.github.com/rest/commits/commits#list-commits"
 
 
 async def test_commits_filter_by_path(hub: Hub) -> None:
@@ -293,3 +285,86 @@ async def test_a_tree_past_its_entry_limit_is_answered_partial_and_marked_trunca
         tree = body(await http.get("/repos/lanternworks/ledger-small/git/trees/main", params={"recursive": "1"}))
     assert tree["truncated"] is True
     assert len(tree["tree"]) == 4  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------- conditional requests
+
+
+async def test_a_get_carries_an_etag_and_sent_back_in_if_none_match_is_a_304_that_spends_nothing(hub: Hub) -> None:
+    """Documented: an answer carries an `ETag`; the same request with it in `If-None-Match` is 304 Not Modified, and
+    a 304 to a call made with an `Authorization` header does not count against the primary rate limit.
+    https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate"""
+    async with hub.client() as http:
+        first = await http.get("/repos/lanternworks/ledger/commits")
+        tag = first.headers["ETag"]
+        unchanged = await http.get("/repos/lanternworks/ledger/commits", headers={"If-None-Match": tag})
+        other = await http.get("/repos/lanternworks/ledger/branches", headers={"If-None-Match": tag})
+    assert first.status_code == 200 and tag.startswith('W/"')
+    assert (unchanged.status_code, unchanged.content, unchanged.headers["ETag"]) == (304, b"", tag)
+    assert unchanged.headers["X-RateLimit-Used"] == first.headers["X-RateLimit-Used"] == "1"
+    assert other.status_code == 200 and other.headers["X-RateLimit-Used"] == "2"
+
+
+async def test_a_304_without_a_credential_still_spends_the_addresss_budget(hub: Hub) -> None:
+    """Documented: only a correctly authorized conditional request is free.
+    https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate"""
+    async with hub.client(None) as http:
+        first = await http.get("/repos/iris-calder/notes")
+        again = await http.get("/repos/iris-calder/notes", headers={"If-None-Match": first.headers["ETag"]})
+    assert again.status_code == 304
+    assert again.headers["X-RateLimit-Used"] == "2"
+
+
+# ---------------------------------------------------------------- installation tokens
+
+
+async def test_an_installation_token_is_issued_for_any_app_jwt_and_works_as_any_credential(hub: Hub) -> None:
+    """Documented: `POST /app/installations/{installation_id}/access_tokens` answers 201 with `token` and
+    `expires_at`, an hour on; `permissions` as asked.
+    https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
+    https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
+    Minutehand does not check the app's JWT or the installation, so the exchange always succeeds."""
+    before = hub.store.head()
+    asked = {"permissions": {"contents": "read", "metadata": "read"}}
+    async with hub.client("eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiI0MiJ9.c2lnbmVk") as http:
+        first = body(await http.post("/app/installations/31337/access_tokens", json=asked), 201)
+        second = body(await http.post("/app/installations/31337/access_tokens"), 201)
+    token = first["token"]
+    assert isinstance(token, str) and token.startswith("ghs_") and len(token) == 40
+    assert first["expires_at"] == "2026-08-24T11:50:03Z"
+    assert first["permissions"] == asked["permissions"]
+    assert "permissions" not in second and second["token"] != token
+    async with hub.client(token) as http:
+        assert body(await http.get("/repos/lanternworks/ledger"))["full_name"] == "lanternworks/ledger"
+    issued = [e for e in hub.store.events(since=before) if e.actor is Actor.AGENT]
+    assert [e.entity.external_id for e in issued] == [
+        "installation/31337/token/000000",
+        "installation/31337/token/000001",
+        "repo/lanternworks/ledger",
+    ]
+    kept = [hub.store.get(e.entity) for e in issued[:2]]
+    assert all(k is not None and k.body is not None and token not in k.body for k in kept)
+
+
+# ---------------------------------------------------------------- ids
+
+
+@pytest.mark.parametrize(
+    "seeded",
+    [
+        github_seed(
+            repositories=[
+                ledger(),
+                ledger(name="other", license=wire.License(key="isc", name="ISC License", spdx_id="ISC")),
+            ]
+        )
+    ],
+)
+async def test_two_licenses_have_two_node_ids(hub: Hub, seeded: GitHubSeed) -> None:
+    """A node id names one object (https://docs.github.com/en/graphql/guides/using-global-node-ids): MIT and ISC,
+    whose keys are the same length, are not one license."""
+    async with hub.client() as http:
+        mit = body(await http.get("/repos/lanternworks/ledger"))["license"]
+        isc = body(await http.get("/repos/lanternworks/other"))["license"]
+    assert isinstance(mit, dict) and isinstance(isc, dict)
+    assert mit["node_id"] != isc["node_id"]

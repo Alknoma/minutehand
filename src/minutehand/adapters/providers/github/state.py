@@ -4,6 +4,8 @@
 |---|---|---|---|
 | user or organization | RECORD | `account/<login, lower case>` | `accounts` |
 | personal access token | RECORD | `token/<sha-256 of the token>` | `tokens` |
+| who a credential the world does not hold acts as | RECORD | `stand-in` | `tokens` |
+| installation access token issued | RECORD | `installation/<installation id>/token/<n>` | `installation/<installation id>` |
 | repository | RECORD | `repo/<owner>/<name>`, lower case | `repositories` |
 | file | RECORD | `file/<owner>/<name>/<path>` | the repository's external id |
 | armed fault | RECORD | `fault/<n>` | `faults` |
@@ -58,6 +60,21 @@ def file_ref(repository: wire.StoredRepository, path: str) -> EntityRef:
     return _ref(f"file/{repository.owner.lower()}/{repository.name.lower()}/{path}")
 
 
+STAND_IN = "stand-in"
+
+
+def stand_in_ref() -> EntityRef:
+    return _ref(STAND_IN)
+
+
+def installation_id(installation: int) -> str:
+    return f"installation/{installation}"
+
+
+def installation_token_ref(installation: int, number: int) -> EntityRef:
+    return _ref(f"{installation_id(installation)}/token/{number:06d}")
+
+
 def fault_ref(number: int) -> EntityRef:
     return _ref(f"fault/{number:06d}")
 
@@ -98,6 +115,13 @@ class GitHubWorld:
         stored = self._store.get(token_ref(presented))
         return None if stored is None else wire.parse(wire.StoredToken, stored.body)
 
+    def stand_in(self) -> wire.StoredStandIn | None:
+        stored = self._store.get(stand_in_ref())
+        return None if stored is None else wire.parse(wire.StoredStandIn, stored.body)
+
+    def installation_tokens(self, installation: int) -> list[wire.StoredInstallationToken]:
+        return [wire.parse(wire.StoredInstallationToken, s.body) for s in self._all(installation_id(installation))]
+
     def repository(self, owner: str, name: str) -> wire.StoredRepository | None:
         stored = self._store.get(repository_ref(owner, name))
         return None if stored is None else wire.parse(wire.StoredRepository, stored.body)
@@ -136,6 +160,18 @@ class GitHubWorld:
 
     def write_token(self, token: str, stored: wire.StoredToken) -> WorldEvent:
         return self._write(token_ref(token), stored, TOKENS, Operation.CREATE, Actor.SCENARIO)
+
+    def write_stand_in(self, stand_in: wire.StoredStandIn) -> WorldEvent:
+        operation = Operation.CREATE if self._store.get(stand_in_ref()) is None else Operation.UPDATE
+        return self._write(stand_in_ref(), stand_in, TOKENS, operation, Actor.SCENARIO)
+
+    def issue_installation_token(self, issued: wire.StoredInstallationToken) -> int:
+        """Record a token the agent's exchange was issued, as the agent's act; its number among the installation's
+        tokens, from 0."""
+        number = len(self.installation_tokens(issued.installation_id))
+        ref = installation_token_ref(issued.installation_id, number)
+        self._write(ref, issued, installation_id(issued.installation_id), Operation.CREATE, Actor.AGENT)
+        return number
 
     def write_repository(self, repository: wire.StoredRepository) -> WorldEvent:
         ref = repository_ref(repository.owner, repository.name)

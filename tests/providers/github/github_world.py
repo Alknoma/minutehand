@@ -38,6 +38,7 @@ API = "https://api.github.com"
 IRIS = "ghp_iris0000000000000000000000000000000000"
 NO_SCOPES = "ghp_irisnoscope00000000000000000000000000"
 TOMAS = "github_pat_tomas_selects_only_the_ledger_0000000000000000"
+"""A fine-grained token its issuer limited to one repository: a limit Minutehand does not enforce."""
 OUTSIDER = "ghp_outsider000000000000000000000000000000"
 
 HEADERS = {"Accept": "application/vnd.github.v3+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -131,12 +132,7 @@ def github_seed(**changes: object) -> GitHubSeed:
         tokens=[
             SeedToken(token=IRIS, kind=wire.TokenKind.CLASSIC, login="iris-calder"),
             SeedToken(token=NO_SCOPES, kind=wire.TokenKind.CLASSIC, login="iris-calder", scopes=[]),
-            SeedToken(
-                token=TOMAS,
-                kind=wire.TokenKind.FINE_GRAINED,
-                login="tomas-b",
-                repositories=["lanternworks/ledger"],
-            ),
+            SeedToken(token=TOMAS, kind=wire.TokenKind.FINE_GRAINED, login="tomas-b"),
             SeedToken(token=OUTSIDER, kind=wire.TokenKind.CLASSIC, login="outsider"),
         ],
         repositories=[

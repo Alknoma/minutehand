@@ -85,7 +85,9 @@ async def test_a_spent_fault_is_the_world_s_doing_in_the_log(hub: Hub) -> None:
     assert spent.entity.external_id == "fault/000000"
 
 
-async def test_a_bad_credential_is_refused_before_any_fault(hub: Hub) -> None:
+async def test_a_credential_the_world_does_not_hold_meets_the_armed_fault_as_any_call_does(hub: Hub) -> None:
+    """Nothing refuses a credential, so no credential is refused ahead of a fault: an unknown token's call is
+    answered by the first fault armed for its budget, as a known token's is."""
     async with hub.client("ghp_nobodyissuedthis000000000000000000000") as http:
-        refused = await http.get("/search/code", params={"q": "retry repo:lanternworks/ledger"})
-    assert refused.status_code == 401
+        limited = await http.get("/search/code", params={"q": "retry repo:lanternworks/ledger"})
+    assert limited.status_code == 403 and "rate limit" in limited.text

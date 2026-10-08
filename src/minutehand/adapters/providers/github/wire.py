@@ -32,7 +32,10 @@ DOCS = "https://docs.github.com/rest"
 
 JSON = "application/json; charset=utf-8"
 API_VERSIONS = ("2022-11-28",)
-"""The `X-GitHub-Api-Version` values answered. Any other is refused with 400, as GitHub refuses an unknown one."""
+"""The `X-GitHub-Api-Version` values answered."""
+UNSERVED_API_VERSIONS = ("2026-03-10",)
+"""Versions GitHub answers (observed 2026-10-08, `tests/providers/github/observed/`) and this provider does not:
+refused by name (501). Any other is GitHub's 400."""
 
 
 class Wire(Model):
@@ -153,13 +156,14 @@ class Refusal(ServiceRefusal):
         message: str,
         *,
         section: str = "",
-        errors: list[FieldError] | None = None,
+        errors: list[FieldError] | str | None = None,
         headers: dict[str, str] | None = None,
+        documentation_url: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
-        self.section = section
+        self.documentation_url = DOCS + section if documentation_url is None else documentation_url
         self.errors = errors
         self.headers = headers or {}
 
@@ -171,8 +175,11 @@ class Refusal(ServiceRefusal):
 
 
 class ErrorOut(Wire):
+    """GitHub's REST error body. `errors` is a list of field errors on a 422 and, observed, a sentence on the 400
+    for an unsupported API version."""
+
     message: str
-    errors: list[FieldError] | None = None
+    errors: list[FieldError] | str | None = None
     documentation_url: str
     status: str
 
@@ -181,7 +188,7 @@ def error_body(refusal: Refusal) -> bytes:
     answer = ErrorOut(
         message=refusal.message,
         errors=refusal.errors,
-        documentation_url=DOCS + refusal.section,
+        documentation_url=refusal.documentation_url,
         status=str(refusal.status),
     )
     return answer.model_dump_json(exclude_none=True).encode()
@@ -199,12 +206,21 @@ def not_found(section: str = "") -> Refusal:
     return Refusal(404, "Not Found", section=section)
 
 
-def bad_credentials() -> Refusal:
-    return Refusal(401, "Bad credentials", section="/authentication")
-
-
 def requires_authentication() -> Refusal:
-    return Refusal(401, "Requires authentication", section="/authentication")
+    """Observed 2026-10-08 on `GET /user` with no credential: its `documentation_url` is the reference's root."""
+    return Refusal(401, "Requires authentication")
+
+
+def unsupported_version(version: str) -> Refusal:
+    """Observed 2026-10-08: 400 "Bad Request", the reason in `errors` as a sentence naming the versions GitHub
+    answers, the reference's root as `documentation_url`."""
+    answered = " and ".join([f'"{v}" (most recent)' for v in UNSERVED_API_VERSIONS] + [f'"{v}"' for v in API_VERSIONS])
+    return Refusal(
+        400,
+        "Bad Request",
+        errors=f'The version you specified in the "X-GitHub-API-Version" request header, "{version}", is not a '
+        f"supported version. The following versions are currently supported: {answered}.",
+    )
 
 
 def validation_failed(section: str, *errors: FieldError) -> Refusal:
@@ -262,14 +278,28 @@ class StoredAccount(Wire):
 
 
 class StoredToken(Wire):
-    """A personal access token, kept under a digest of itself: the token's own text is never written down."""
+    """A personal access token, kept under a digest of itself: the token's own text is never written down. Who it
+    acts as is world data; what it was issued for is not enforced (README, "Credentials")."""
 
     kind: TokenKind
     login: str
-    scopes: list[str] = Field(default=[], description="A classic token's OAuth scopes")
-    repositories: list[str] | None = Field(
-        default=None, description="A fine-grained token's selected repositories (owner/name); None is all"
-    )
+    scopes: list[str] = Field(default=[], description="A classic token's OAuth scopes, echoed in `X-OAuth-Scopes`")
+
+
+class StoredStandIn(Wire):
+    """Who a credential the world does not hold acts as: Minutehand accepts every credential (README,
+    "Credentials"), and the world names the account an unknown one, a JWT or an installation token stands for."""
+
+    login: str
+
+
+class StoredInstallationToken(Wire):
+    """An installation access token GitHub issued on `POST /app/installations/{installation_id}/access_tokens`,
+    kept as the exchange left it: the token's own text is never written down, only what the answer carried."""
+
+    installation_id: int
+    expires_at: str
+    permissions: dict[str, str] | None = Field(description="The permissions the request asked for, as sent")
 
 
 class Collaborator(Wire):
@@ -309,6 +339,8 @@ class StoredRepository(Wire):
     commits: list[StoredCommit] = Field(description="Newest first; every branch points at the first")
     stargazers_count: int
     forks_count: int
+    network_count: int
+    subscribers_count: int
     tree_entry_limit: int
     directory_entry_limit: int = 1000
     created_at: str
@@ -331,7 +363,15 @@ class StoredFault(Wire):
 
 
 StoredModel = TypeVar(
-    "StoredModel", StoredAccount, StoredToken, StoredRepository, StoredFile, StoredFault, StoredBudget
+    "StoredModel",
+    StoredAccount,
+    StoredToken,
+    StoredStandIn,
+    StoredInstallationToken,
+    StoredRepository,
+    StoredFile,
+    StoredFault,
+    StoredBudget,
 )
 
 
@@ -370,7 +410,8 @@ def node_id(kind: str, number: int) -> str:
 
 
 class AccountOut(Wire):
-    """An account as it appears inside another resource: an owner, an author."""
+    """An account as it appears inside another resource (an owner, an author): the description's `simple-user`,
+    every URL GitHub assigns from the login."""
 
     login: str
     id: int
@@ -379,21 +420,58 @@ class AccountOut(Wire):
     gravatar_id: str = ""
     url: str
     html_url: str
+    followers_url: str
+    following_url: str
+    gists_url: str
+    starred_url: str
+    subscriptions_url: str
+    organizations_url: str
     repos_url: str
+    events_url: str
+    received_events_url: str
     type: AccountType
     site_admin: bool = False
 
+    @classmethod
+    def of(cls, account: StoredAccount) -> AccountOut:
+        at = f"{API}/users/{account.login}"
+        return cls(
+            login=account.login,
+            id=account.id,
+            node_id=node_id("U" if account.type is AccountType.USER else "O", account.id),
+            avatar_url=f"https://avatars.githubusercontent.com/u/{account.id}?v=4",
+            url=at,
+            html_url=f"{WEB}/{account.login}",
+            followers_url=f"{at}/followers",
+            following_url=f"{at}/following{{/other_user}}",
+            gists_url=f"{at}/gists{{/gist_id}}",
+            starred_url=f"{at}/starred{{/owner}}{{/repo}}",
+            subscriptions_url=f"{at}/subscriptions",
+            organizations_url=f"{at}/orgs",
+            repos_url=f"{at}/repos",
+            events_url=f"{at}/events{{/privacy}}",
+            received_events_url=f"{at}/received_events",
+            type=account.type,
+        )
+
 
 class UserOut(AccountOut):
-    """`GET /user`: the account a credential acts as."""
+    """`GET /user`: the account a credential acts as, in the description's `public-user` view: the private view's
+    extra fields (disk usage, two-factor, private gists) are nothing the world holds. Counts are the world's: no
+    follows and no gists are in it."""
 
+    user_view_type: Literal["public"] = "public"
     name: str | None
     company: str | None = None
     blog: str = ""
     location: str | None = None
     email: str | None
+    hireable: bool | None = None
     bio: str | None = None
     public_repos: int
+    public_gists: int = 0
+    followers: int = 0
+    following: int = 0
     created_at: str
     updated_at: str
 
@@ -414,21 +492,116 @@ class LicenseOut(Wire):
     node_id: str
 
 
-class RepositoryOut(Wire):
+class RepositoryLinksOut(Wire):
+    """The URLs GitHub assigns a repository from its full name."""
+
+    html_url: str
+    url: str
+    archive_url: str
+    assignees_url: str
+    blobs_url: str
+    branches_url: str
+    collaborators_url: str
+    comments_url: str
+    commits_url: str
+    compare_url: str
+    contents_url: str
+    contributors_url: str
+    deployments_url: str
+    downloads_url: str
+    events_url: str
+    forks_url: str
+    git_commits_url: str
+    git_refs_url: str
+    git_tags_url: str
+    hooks_url: str
+    issue_comment_url: str
+    issue_events_url: str
+    issues_url: str
+    keys_url: str
+    labels_url: str
+    languages_url: str
+    merges_url: str
+    milestones_url: str
+    notifications_url: str
+    pulls_url: str
+    releases_url: str
+    stargazers_url: str
+    statuses_url: str
+    subscribers_url: str
+    subscription_url: str
+    tags_url: str
+    teams_url: str
+    trees_url: str
+
+    @classmethod
+    def of(cls, full_name: str) -> RepositoryLinksOut:
+        at = f"{API}/repos/{full_name}"
+        return cls(
+            html_url=f"{WEB}/{full_name}",
+            url=at,
+            archive_url=f"{at}/{{archive_format}}{{/ref}}",
+            assignees_url=f"{at}/assignees{{/user}}",
+            blobs_url=f"{at}/git/blobs{{/sha}}",
+            branches_url=f"{at}/branches{{/branch}}",
+            collaborators_url=f"{at}/collaborators{{/collaborator}}",
+            comments_url=f"{at}/comments{{/number}}",
+            commits_url=f"{at}/commits{{/sha}}",
+            compare_url=f"{at}/compare/{{base}}...{{head}}",
+            contents_url=f"{at}/contents/{{+path}}",
+            contributors_url=f"{at}/contributors",
+            deployments_url=f"{at}/deployments",
+            downloads_url=f"{at}/downloads",
+            events_url=f"{at}/events",
+            forks_url=f"{at}/forks",
+            git_commits_url=f"{at}/git/commits{{/sha}}",
+            git_refs_url=f"{at}/git/refs{{/sha}}",
+            git_tags_url=f"{at}/git/tags{{/sha}}",
+            hooks_url=f"{at}/hooks",
+            issue_comment_url=f"{at}/issues/comments{{/number}}",
+            issue_events_url=f"{at}/issues/events{{/number}}",
+            issues_url=f"{at}/issues{{/number}}",
+            keys_url=f"{at}/keys{{/key_id}}",
+            labels_url=f"{at}/labels{{/name}}",
+            languages_url=f"{at}/languages",
+            merges_url=f"{at}/merges",
+            milestones_url=f"{at}/milestones{{/number}}",
+            notifications_url=f"{at}/notifications{{?since,all,participating}}",
+            pulls_url=f"{at}/pulls{{/number}}",
+            releases_url=f"{at}/releases{{/id}}",
+            stargazers_url=f"{at}/stargazers",
+            statuses_url=f"{at}/statuses/{{sha}}",
+            subscribers_url=f"{at}/subscribers",
+            subscription_url=f"{at}/subscription",
+            tags_url=f"{at}/tags",
+            teams_url=f"{at}/teams",
+            trees_url=f"{at}/git/trees{{/sha}}",
+        )
+
+
+class MinimalRepositoryOut(RepositoryLinksOut):
+    """A repository inside another answer (a search hit): the description's `minimal-repository`."""
+
     id: int
     node_id: str
     name: str
     full_name: str
     private: bool
     owner: AccountOut
-    html_url: str
     description: str | None
     fork: bool = False
-    url: str
-    contents_url: str
-    commits_url: str
-    trees_url: str
-    languages_url: str
+
+
+class RepositoryOut(MinimalRepositoryOut):
+    """`GET /repos/{owner}/{repo}` and each of `/user/repos`: the description's `full-repository`. The features a
+    repository has on (`has_issues` and the rest) are GitHub's defaults for a new repository, which nothing in the
+    world changes. https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user"""
+
+    git_url: str
+    ssh_url: str
+    clone_url: str
+    svn_url: str
+    mirror_url: str | None = None
     homepage: str | None
     size: int
     stargazers_count: int
@@ -445,6 +618,14 @@ class RepositoryOut(Wire):
     open_issues: int = 0
     watchers: int
     default_branch: str
+    has_issues: bool = True
+    has_projects: bool = True
+    has_wiki: bool = True
+    has_pages: bool = False
+    has_downloads: bool = True
+    has_discussions: bool = False
+    network_count: int
+    subscribers_count: int
     permissions: PermissionsOut | None
     created_at: str
     updated_at: str
@@ -541,19 +722,6 @@ class CommitOut(Wire):
     parents: list[ParentOut]
 
 
-class SearchRepositoryOut(Wire):
-    id: int
-    node_id: str
-    name: str
-    full_name: str
-    owner: AccountOut
-    private: bool
-    html_url: str
-    description: str | None
-    fork: bool = False
-    url: str
-
-
 class CodeItemOut(Wire):
     name: str
     path: str
@@ -561,7 +729,7 @@ class CodeItemOut(Wire):
     url: str
     git_url: str
     html_url: str
-    repository: SearchRepositoryOut
+    repository: MinimalRepositoryOut
     score: float
 
 
@@ -621,6 +789,27 @@ class GraphError(Wire):
 
 class GraphErrorsOut(Wire):
     errors: list[GraphError]
+
+
+class InstallationTokenIn(Wire):
+    """`POST /app/installations/{installation_id}/access_tokens`: what the token may reach. Every field is
+    optional and the body may be absent; a key the reference does not name is let by, never refused.
+    https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app"""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    permissions: dict[str, str] | None = None
+    repositories: list[str] | None = None
+    repository_ids: list[int] | None = None
+
+
+class InstallationTokenOut(Wire):
+    """The installation token: `token` and `expires_at` are all the schema requires; `permissions` is carried
+    when the request named them, as it named them."""
+
+    token: str
+    expires_at: str
+    permissions: dict[str, str] | None = None
 
 
 class GraphQLIn(Wire):
