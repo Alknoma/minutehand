@@ -1,9 +1,8 @@
-"""The provider's surface is Asana's: every operation of Asana's published OpenAPI document under a resource it
-claims is served, or refused naming it, and nothing else.
-
-The subset of the document (`tests/data/asana_rest_1_0/openapi-subset-2026-10-08.json`, from
-https://github.com/Asana/openapi at the commit it names) is the list: an operation it holds that the app answers 404
-"No matching route for request" would tell an agent Asana has no such route.
+"""The provider's surface is Asana's: every operation of Asana's published OpenAPI document (`surface.OPERATIONS`,
+from https://github.com/Asana/openapi at 4cf6c7c) is served, or refused naming it with the shared not-served refusal,
+and nothing else. An operation answered 404 "No matching route for request" would tell an agent Asana has no such
+route. The subset of the document for the resources the provider claims, with their schemas, is test data
+(`tests/data/asana_rest_1_0/openapi-subset-2026-10-08.json`).
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.routing import Route
 
+from minutehand.adapters.providers.asana import surface
 from minutehand.adapters.providers.asana.app import UNSERVED
 from tests.providers.asana.asana_workspace import Workspace, unserved
 
@@ -38,7 +38,8 @@ def _operations() -> list[tuple[str, str, str]]:
     ]
 
 
-OPERATIONS = _operations()
+DOCUMENTED = _operations()
+OPERATIONS = list(surface.OPERATIONS)
 REFUSED = {(method, _shape(path)) for method, path, _ in UNSERVED}
 
 
@@ -54,14 +55,25 @@ def _routes(workspace: Workspace) -> set[tuple[str, str]]:
     return found
 
 
-def test_every_operation_of_the_claimed_resources_is_served_or_refused_by_name(workspace: Workspace) -> None:
+def test_every_operation_of_the_vendors_document_is_served_or_refused_by_name(workspace: Workspace) -> None:
     routes = _routes(workspace)
     served = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) in routes and (m, _shape(p)) not in REFUSED]
     refused = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) in REFUSED]
     neither = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) not in routes]
     assert not neither, f"answered 404 as if Asana had no such route: {neither}"
-    assert len(served) + len(refused) == len(OPERATIONS) == 122
-    assert (len(served), len(refused)) == (51, 71)
+    assert len(served) + len(refused) == len(OPERATIONS) == 251
+    assert (len(served), len(refused)) == (51, 200)
+    claimed = {(m, _shape(p)) for m, p, _ in DOCUMENTED}
+    assert (
+        sum((m, _shape(p)) in claimed for m, p, _ in served),
+        sum((m, _shape(p)) in claimed for m, p, _ in refused),
+    ) == (51, 71)
+
+
+def test_the_committed_subset_is_part_of_the_surface_the_provider_holds() -> None:
+    held = {(m, _shape(p)): o for m, p, o in OPERATIONS}
+    for method, path, operation in DOCUMENTED:
+        assert held.get((method, _shape(path))) == operation, (method, path, operation)
 
 
 def test_nothing_is_refused_by_name_that_the_document_does_not_hold() -> None:

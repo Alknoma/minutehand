@@ -15,6 +15,7 @@ and what they create is theirs.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 
@@ -25,7 +26,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.asana import state, wire
+from minutehand.adapters.providers.asana import state, surface, wire
 from minutehand.adapters.providers.asana.state import AGENT_GID, AsanaWorld
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
@@ -103,83 +104,75 @@ _NEEDS_TEAM = (
 _NOT_ORGANIZATION = "organization: Not an organization"
 
 
-UNSERVED: tuple[tuple[str, str, str], ...] = (
-    ("GET", "/attachments", "getAttachmentsForObject"),
-    ("POST", "/attachments", "createAttachmentForObject"),
-    ("DELETE", "/attachments/{attachment_gid}", "deleteAttachment"),
-    ("GET", "/attachments/{attachment_gid}", "getAttachment"),
-    ("POST", "/custom_fields", "createCustomField"),
-    ("DELETE", "/custom_fields/{custom_field_gid}", "deleteCustomField"),
-    ("PUT", "/custom_fields/{custom_field_gid}", "updateCustomField"),
-    ("POST", "/custom_fields/{custom_field_gid}/enum_options", "createEnumOptionForCustomField"),
-    ("POST", "/custom_fields/{custom_field_gid}/enum_options/insert", "insertEnumOptionForCustomField"),
-    ("PUT", "/enum_options/{enum_option_gid}", "updateEnumOption"),
-    ("GET", "/events", "getEvents"),
-    ("GET", "/memberships", "getMemberships"),
-    ("POST", "/memberships", "createMembership"),
-    ("DELETE", "/memberships/{membership_gid}", "deleteMembership"),
-    ("GET", "/memberships/{membership_gid}", "getMembership"),
-    ("PUT", "/memberships/{membership_gid}", "updateMembership"),
-    ("GET", "/goals/{goal_gid}/custom_field_settings", "getCustomFieldSettingsForGoal"),
-    ("GET", "/goals/{goal_gid}/stories", "getStoriesForGoal"),
-    ("POST", "/goals/{goal_gid}/stories", "createStoryForGoal"),
-    ("GET", "/portfolios/{portfolio_gid}/custom_field_settings", "getCustomFieldSettingsForPortfolio"),
-    ("GET", "/project_memberships/{project_membership_gid}", "getProjectMembership"),
-    ("DELETE", "/projects/{project_gid}", "deleteProject"),
-    ("PUT", "/projects/{project_gid}", "updateProject"),
-    ("POST", "/projects/{project_gid}/addFollowers", "addFollowersForProject"),
-    ("POST", "/projects/{project_gid}/duplicate", "duplicateProject"),
-    ("POST", "/projects/{project_gid}/removeFollowers", "removeFollowersForProject"),
-    ("POST", "/projects/{project_gid}/rollup", "rollupProject"),
-    ("POST", "/projects/{project_gid}/saveAsTemplate", "projectSaveAsTemplate"),
-    ("POST", "/projects/{project_gid}/sections/insert", "insertSectionForProject"),
-    ("GET", "/projects/{project_gid}/task_counts", "getTaskCountsForProject"),
-    ("DELETE", "/sections/{section_gid}", "deleteSection"),
-    ("PUT", "/sections/{section_gid}", "updateSection"),
-    ("DELETE", "/stories/{story_gid}", "deleteStory"),
-    ("GET", "/stories/{story_gid}", "getStory"),
-    ("PUT", "/stories/{story_gid}", "updateStory"),
-    ("DELETE", "/tags/{tag_gid}", "deleteTag"),
-    ("PUT", "/tags/{tag_gid}", "updateTag"),
-    ("POST", "/tasks/{task_gid}/addDependencies", "addDependenciesForTask"),
-    ("POST", "/tasks/{task_gid}/addDependents", "addDependentsForTask"),
-    ("POST", "/tasks/{task_gid}/addFollowers", "addFollowersForTask"),
-    ("POST", "/tasks/{task_gid}/addProject", "addProjectForTask"),
-    ("GET", "/tasks/{task_gid}/dependencies", "getDependenciesForTask"),
-    ("GET", "/tasks/{task_gid}/dependents", "getDependentsForTask"),
-    ("POST", "/tasks/{task_gid}/duplicate", "duplicateTask"),
-    ("GET", "/tasks/{task_gid}/projects", "getProjectsForTask"),
-    ("POST", "/tasks/{task_gid}/removeDependencies", "removeDependenciesForTask"),
-    ("POST", "/tasks/{task_gid}/removeDependents", "removeDependentsForTask"),
-    ("POST", "/tasks/{task_gid}/removeFollowers", "removeFollowerForTask"),
-    ("POST", "/tasks/{task_gid}/removeProject", "removeProjectForTask"),
-    ("POST", "/tasks/{task_gid}/rollup", "rollupTask"),
-    ("POST", "/teams", "createTeam"),
-    ("PUT", "/teams/{team_gid}", "updateTeam"),
-    ("POST", "/teams/{team_gid}/addUser", "addUserForTeam"),
-    ("GET", "/teams/{team_gid}/custom_field_settings", "getCustomFieldSettingsForTeam"),
-    ("POST", "/teams/{team_gid}/removeUser", "removeUserForTeam"),
-    ("GET", "/user_task_lists/{user_task_list_gid}/tasks", "getTasksForUserTaskList"),
-    ("PUT", "/users/{user_gid}", "updateUser"),
-    ("GET", "/users/{user_gid}/favorites", "getFavoritesForUser"),
-    ("GET", "/webhooks", "getWebhooks"),
-    ("POST", "/webhooks", "createWebhook"),
-    ("DELETE", "/webhooks/{webhook_gid}", "deleteWebhook"),
-    ("GET", "/webhooks/{webhook_gid}", "getWebhook"),
-    ("PUT", "/webhooks/{webhook_gid}", "updateWebhook"),
-    ("PUT", "/workspaces/{workspace_gid}", "updateWorkspace"),
-    ("POST", "/workspaces/{workspace_gid}/addUser", "addUserForWorkspace"),
-    ("GET", "/workspaces/{workspace_gid}/events", "getWorkspaceEvents"),
-    ("GET", "/workspaces/{workspace_gid}/projects/search", "searchProjectsForWorkspace"),
-    ("POST", "/workspaces/{workspace_gid}/removeUser", "removeUserForWorkspace"),
-    ("GET", "/workspaces/{workspace_gid}/tasks/custom_id/{custom_id}", "getTaskForCustomID"),
-    ("GET", "/workspaces/{workspace_gid}/users/{user_gid}", "getUserForWorkspace"),
-    ("PUT", "/workspaces/{workspace_gid}/users/{user_gid}", "updateUserForWorkspace"),
+SERVED: tuple[tuple[str, str, str], ...] = (
+    ("GET", "/users/me", "me"),
+    ("GET", "/users", "users"),
+    ("GET", "/users/{gid}", "user"),
+    ("GET", "/users/{gid}/teams", "user_teams"),
+    ("GET", "/workspaces", "workspaces"),
+    ("GET", "/workspaces/{gid}", "workspace"),
+    ("GET", "/workspaces/{gid}/users", "workspace_users"),
+    ("GET", "/workspaces/{gid}/teams", "workspace_teams"),
+    ("GET", "/workspaces/{gid}/projects", "workspace_projects"),
+    ("POST", "/workspaces/{gid}/projects", "create_workspace_project"),
+    ("GET", "/workspaces/{gid}/custom_fields", "workspace_custom_fields"),
+    ("GET", "/workspaces/{gid}/tags", "workspace_tags"),
+    ("POST", "/workspaces/{gid}/tags", "create_workspace_tag"),
+    ("GET", "/workspaces/{gid}/tasks/search", "search"),
+    ("GET", "/workspaces/{gid}/typeahead", "typeahead"),
+    ("GET", "/teams/{gid}", "team"),
+    ("GET", "/teams/{gid}/users", "team_users"),
+    ("GET", "/teams/{gid}/projects", "team_projects"),
+    ("POST", "/teams/{gid}/projects", "create_team_project"),
+    ("GET", "/projects", "projects"),
+    ("POST", "/projects", "create_project"),
+    ("GET", "/projects/{gid}", "project"),
+    ("GET", "/projects/{gid}/sections", "project_sections"),
+    ("POST", "/projects/{gid}/sections", "create_section"),
+    ("GET", "/projects/{gid}/tasks", "project_tasks"),
+    ("GET", "/projects/{gid}/project_memberships", "project_memberships"),
+    ("POST", "/projects/{gid}/addMembers", "add_members"),
+    ("POST", "/projects/{gid}/removeMembers", "remove_members"),
+    ("GET", "/projects/{gid}/custom_field_settings", "custom_field_settings"),
+    ("POST", "/projects/{gid}/addCustomFieldSetting", "add_custom_field_setting"),
+    ("POST", "/projects/{gid}/removeCustomFieldSetting", "remove_custom_field_setting"),
+    ("GET", "/sections/{gid}", "section"),
+    ("GET", "/sections/{gid}/tasks", "section_tasks"),
+    ("POST", "/sections/{gid}/addTask", "add_task_to_section"),
+    ("GET", "/custom_fields/{gid}", "custom_field"),
+    ("GET", "/tags", "tags"),
+    ("POST", "/tags", "create_tag"),
+    ("GET", "/tags/{gid}", "tag"),
+    ("GET", "/tags/{gid}/tasks", "tag_tasks"),
+    ("GET", "/tasks", "list_tasks"),
+    ("POST", "/tasks", "create_task"),
+    ("GET", "/tasks/{gid}", "get_task"),
+    ("PUT", "/tasks/{gid}", "update_task"),
+    ("DELETE", "/tasks/{gid}", "delete_task"),
+    ("GET", "/tasks/{gid}/subtasks", "subtasks"),
+    ("POST", "/tasks/{gid}/subtasks", "create_subtask"),
+    ("POST", "/tasks/{gid}/setParent", "set_parent"),
+    ("GET", "/tasks/{gid}/tags", "task_tags"),
+    ("POST", "/tasks/{gid}/addTag", "add_tag"),
+    ("POST", "/tasks/{gid}/removeTag", "remove_tag"),
+    ("GET", "/tasks/{gid}/stories", "stories"),
+    ("POST", "/tasks/{gid}/stories", "create_story"),
 )
-"""Every operation of Asana's published OpenAPI document (https://github.com/Asana/openapi, `defs/asana_oas.yaml`)
-under a resource this provider serves that it does not serve itself: method, path and operationId. Each is answered
-501, naming it, never 404 as if Asana had no such route (`tests/data/asana_rest_1_0/openapi-subset-2026-10-08.json`
-holds the document's subset, and `test_asana_surface.py` holds every operation in it to served or named here)."""
+"""Method, path and `AsanaApi` handler of every operation this provider serves (`/-/oauth_token` aside, which is outside
+the API's prefix)."""
+
+
+def _shape(path: str) -> str:
+    return re.sub(r"\{[^}]+\}", "{}", path)
+
+
+UNSERVED: tuple[tuple[str, str, str], ...] = tuple(
+    (method, path, operation)
+    for method, path, operation in surface.OPERATIONS
+    if (method, _shape(path)) not in {(m, _shape(p)) for m, p, _ in SERVED}
+)
+"""Every operation of Asana's published OpenAPI document (`surface.OPERATIONS`) that this provider does not serve:
+method, path and operationId. Each raises the shared not-served refusal, answered 501 naming it, never 404 as if Asana had no such route (`test_asana_surface.py`)."""
 
 
 def _answer(body: bytes, status: int = 200, headers: dict[str, str] | None = None) -> Response:
@@ -1292,58 +1285,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
     return Starlette(
         routes=[
             Route("/-/oauth_token", api.oauth_token, methods=["POST"]),
-            Route("/users/me", g(api.me), methods=["GET"]),
-            Route("/users", g(api.users), methods=["GET"]),
-            Route("/users/{gid}", g(api.user), methods=["GET"]),
-            Route("/users/{gid}/teams", g(api.user_teams), methods=["GET"]),
-            Route("/workspaces", g(api.workspaces), methods=["GET"]),
-            Route("/workspaces/{gid}", g(api.workspace), methods=["GET"]),
-            Route("/workspaces/{gid}/users", g(api.workspace_users), methods=["GET"]),
-            Route("/workspaces/{gid}/teams", g(api.workspace_teams), methods=["GET"]),
-            Route("/workspaces/{gid}/projects", g(api.workspace_projects), methods=["GET"]),
-            Route("/workspaces/{gid}/projects", g(api.create_workspace_project), methods=["POST"]),
-            Route("/workspaces/{gid}/custom_fields", g(api.workspace_custom_fields), methods=["GET"]),
-            Route("/workspaces/{gid}/tags", g(api.workspace_tags), methods=["GET"]),
-            Route("/workspaces/{gid}/tags", g(api.create_workspace_tag), methods=["POST"]),
-            Route("/workspaces/{gid}/tasks/search", g(api.search), methods=["GET"]),
-            Route("/workspaces/{gid}/typeahead", g(api.typeahead), methods=["GET"]),
-            Route("/teams/{gid}", g(api.team), methods=["GET"]),
-            Route("/teams/{gid}/users", g(api.team_users), methods=["GET"]),
-            Route("/teams/{gid}/projects", g(api.team_projects), methods=["GET"]),
-            Route("/teams/{gid}/projects", g(api.create_team_project), methods=["POST"]),
-            Route("/projects", g(api.projects), methods=["GET"]),
-            Route("/projects", g(api.create_project), methods=["POST"]),
-            Route("/projects/{gid}", g(api.project), methods=["GET"]),
-            Route("/projects/{gid}/sections", g(api.project_sections), methods=["GET"]),
-            Route("/projects/{gid}/sections", g(api.create_section), methods=["POST"]),
-            Route("/projects/{gid}/tasks", g(api.project_tasks), methods=["GET"]),
-            Route("/projects/{gid}/project_memberships", g(api.project_memberships), methods=["GET"]),
-            Route("/projects/{gid}/addMembers", g(api.add_members), methods=["POST"]),
-            Route("/projects/{gid}/removeMembers", g(api.remove_members), methods=["POST"]),
-            Route("/projects/{gid}/custom_field_settings", g(api.custom_field_settings), methods=["GET"]),
-            Route("/projects/{gid}/addCustomFieldSetting", g(api.add_custom_field_setting), methods=["POST"]),
-            Route("/projects/{gid}/removeCustomFieldSetting", g(api.remove_custom_field_setting), methods=["POST"]),
-            Route("/sections/{gid}", g(api.section), methods=["GET"]),
-            Route("/sections/{gid}/tasks", g(api.section_tasks), methods=["GET"]),
-            Route("/sections/{gid}/addTask", g(api.add_task_to_section), methods=["POST"]),
-            Route("/custom_fields/{gid}", g(api.custom_field), methods=["GET"]),
-            Route("/tags", g(api.tags), methods=["GET"]),
-            Route("/tags", g(api.create_tag), methods=["POST"]),
-            Route("/tags/{gid}", g(api.tag), methods=["GET"]),
-            Route("/tags/{gid}/tasks", g(api.tag_tasks), methods=["GET"]),
-            Route("/tasks", g(api.list_tasks), methods=["GET"]),
-            Route("/tasks", g(api.create_task), methods=["POST"]),
-            Route("/tasks/{gid}", g(api.get_task), methods=["GET"]),
-            Route("/tasks/{gid}", g(api.update_task), methods=["PUT"]),
-            Route("/tasks/{gid}", g(api.delete_task), methods=["DELETE"]),
-            Route("/tasks/{gid}/subtasks", g(api.subtasks), methods=["GET"]),
-            Route("/tasks/{gid}/subtasks", g(api.create_subtask), methods=["POST"]),
-            Route("/tasks/{gid}/setParent", g(api.set_parent), methods=["POST"]),
-            Route("/tasks/{gid}/tags", g(api.task_tags), methods=["GET"]),
-            Route("/tasks/{gid}/addTag", g(api.add_tag), methods=["POST"]),
-            Route("/tasks/{gid}/removeTag", g(api.remove_tag), methods=["POST"]),
-            Route("/tasks/{gid}/stories", g(api.stories), methods=["GET"]),
-            Route("/tasks/{gid}/stories", g(api.create_story), methods=["POST"]),
+            *(Route(path, g(getattr(api, handler)), methods=[method]) for method, path, handler in SERVED),
             *(
                 Route(path, g(api.unserved(method, path, operation)), methods=[method])
                 for method, path, operation in UNSERVED

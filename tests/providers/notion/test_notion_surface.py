@@ -1,10 +1,8 @@
-"""The provider's surface is Notion's: every operation Notion documents under a resource this provider claims is
-served, or refused naming it, and nothing else.
-
-The list is the subset of Notion's OpenAPI document (`tests/data/notion_api/openapi-subset-2026-10-08.json`, from
-https://developers.notion.com/openapi.json, which describes 2026-03-11) with the one operation of 2022-06-28 it no
-longer lists (`version-2022-06-28.json`). An operation it holds that the app answered `invalid_request_url` would
-tell an agent Notion has no such endpoint.
+"""The provider's surface is Notion's: every operation of Notion's published OpenAPI document, with the one operation of
+2022-06-28 it no longer lists (`surface.OPERATIONS`), is served, or refused naming it with the shared not-served
+refusal, and nothing else. An operation answered `invalid_request_url` would tell an agent Notion has no such
+endpoint. The subset for the resources the provider claims, with their schemas, is test data
+(`tests/data/notion_api/`).
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from minutehand.adapters.providers.notion import surface
 from minutehand.adapters.providers.notion.app import UNSERVED, NotionApp
 from tests.providers.notion.notion_world import World, unserved
 
@@ -38,7 +37,8 @@ def _operations() -> list[tuple[str, str, str]]:
     return found
 
 
-OPERATIONS = _operations()
+DOCUMENTED = _operations()
+OPERATIONS = list(surface.OPERATIONS)
 REFUSED = {(method, _shape(path)) for method, path, _ in UNSERVED}
 
 
@@ -48,14 +48,25 @@ def _routes(world: World) -> set[tuple[str, str]]:
     return {(m, _shape(r.path)) for r in app.routes for m in r.methods or () if m != "HEAD"}
 
 
-def test_every_operation_of_the_claimed_resources_is_served_or_refused_by_name(world: World) -> None:
+def test_every_operation_of_the_vendors_document_is_served_or_refused_by_name(world: World) -> None:
     routes = _routes(world)
     served = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) in routes and (m, _shape(p)) not in REFUSED]
     refused = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) in REFUSED]
     neither = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) not in routes]
     assert not neither, f"answered invalid_request_url as if Notion had no such endpoint: {neither}"
-    assert len(served) + len(refused) == len(OPERATIONS) == 33
-    assert (len(served), len(refused)) == (20, 13)
+    assert len(served) + len(refused) == len(OPERATIONS) == 65
+    assert (len(served), len(refused)) == (20, 45)
+    claimed = {(m, _shape(p)) for m, p, _ in DOCUMENTED}
+    assert (
+        sum((m, _shape(p)) in claimed for m, p, _ in served),
+        sum((m, _shape(p)) in claimed for m, p, _ in refused),
+    ) == (20, 13)
+
+
+def test_the_committed_subset_is_part_of_the_surface_the_provider_holds() -> None:
+    held = {(m, _shape(p)): o for m, p, o in OPERATIONS}
+    for method, path, operation in DOCUMENTED:
+        assert held.get((method, _shape(path))) == operation, (method, path, operation)
 
 
 def test_nothing_is_refused_by_name_that_notion_does_not_document() -> None:

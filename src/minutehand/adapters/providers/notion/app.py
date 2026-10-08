@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from urllib.parse import parse_qs, unquote
@@ -37,7 +38,7 @@ from starlette.types import Receive, Scope, Send
 
 from minutehand.adapters import answering
 from minutehand.adapters.providers.notion import query as notion_query
-from minutehand.adapters.providers.notion import webhooks, wire
+from minutehand.adapters.providers.notion import surface, webhooks, wire
 from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row, page_ref, record_ref, title_of
 from minutehand.domain.world import Actor, Operation
@@ -47,25 +48,42 @@ from minutehand.ports.store import Store
 JSON = "application/json; charset=utf-8"
 EDITS_BLOCKS = ("PATCH", "DELETE")
 
-UNSERVED: tuple[tuple[str, str, str], ...] = (
-    ("DELETE", "/v1/comments/{comment_id}", "delete-a-comment"),
-    ("GET", "/v1/comments/{comment_id}", "retrieve-comment"),
-    ("PATCH", "/v1/comments/{comment_id}", "update-a-comment"),
-    ("POST", "/v1/data_sources", "create-a-database"),
-    ("GET", "/v1/data_sources/{data_source_id}", "retrieve-a-data-source"),
-    ("PATCH", "/v1/data_sources/{data_source_id}", "update-a-data-source"),
-    ("POST", "/v1/data_sources/{data_source_id}/query", "post-database-query"),
-    ("GET", "/v1/data_sources/{data_source_id}/templates", "list-data-source-templates"),
-    ("POST", "/v1/oauth/introspect", "introspect-token"),
-    ("POST", "/v1/oauth/revoke", "revoke-token"),
-    ("GET", "/v1/pages/{page_id}/markdown", "retrieve-page-markdown"),
-    ("PATCH", "/v1/pages/{page_id}/markdown", "update-page-markdown"),
-    ("POST", "/v1/pages/{page_id}/move", "move-page"),
+SERVED: tuple[tuple[str, str, str], ...] = (
+    ("POST", "/v1/search", "search"),
+    ("POST", "/v1/pages", "page_create"),
+    ("GET", "/v1/pages/{page_id}", "page_get"),
+    ("PATCH", "/v1/pages/{page_id}", "page_update"),
+    ("GET", "/v1/pages/{page_id}/properties/{property_id}", "page_property"),
+    ("GET", "/v1/blocks/{block_id}", "block_get"),
+    ("PATCH", "/v1/blocks/{block_id}", "block_update"),
+    ("DELETE", "/v1/blocks/{block_id}", "block_delete"),
+    ("GET", "/v1/blocks/{block_id}/children", "children_list"),
+    ("PATCH", "/v1/blocks/{block_id}/children", "children_append"),
+    ("POST", "/v1/databases", "database_create"),
+    ("GET", "/v1/databases/{database_id}", "database_get"),
+    ("PATCH", "/v1/databases/{database_id}", "database_update"),
+    ("POST", "/v1/databases/{database_id}/query", "database_query"),
+    ("GET", "/v1/users", "users_list"),
+    ("GET", "/v1/users/me", "users_me"),
+    ("GET", "/v1/users/{user_id}", "user_get"),
+    ("GET", "/v1/comments", "comments_list"),
+    ("POST", "/v1/comments", "comments_create"),
 )
-"""Every operation of Notion's OpenAPI document (https://developers.notion.com/openapi.json) under a resource this
-provider serves that it does not serve itself: method, path and operationId. Each is answered 501 `invalid_request`,
-naming it, never `invalid_request_url` as if Notion had no such endpoint (`tests/data/notion_api/` holds the
-document's subset, and `test_notion_surface.py` holds every operation in it to served or named here)."""
+"""Method, path and `NotionApi` handler of every operation this provider serves (`/v1/oauth/token` aside)."""
+
+
+def _shape(path: str) -> str:
+    return re.sub(r"\{[^}]+\}", "{}", path)
+
+
+UNSERVED: tuple[tuple[str, str, str], ...] = tuple(
+    (method, path, operation)
+    for method, path, operation in surface.OPERATIONS
+    if (method, _shape(path)) not in {(m, _shape(p)) for m, p, _ in SERVED} | {("POST", "/v1/oauth/token")}
+)
+"""Every operation of Notion's published OpenAPI document and of 2022-06-28 (`surface.OPERATIONS`) that this provider
+does not serve: method, path and operationId. Each raises the shared not-served refusal, answered 501 naming it,
+never `invalid_request_url` as if Notion had no such endpoint (`test_notion_surface.py`)."""
 
 
 @dataclass
@@ -901,25 +919,7 @@ def build_app(store: Store, clock: Clock) -> NotionApp:
         return Route(path, api.guarded(handler), methods=[method])
 
     routes = [
-        route("/v1/search", "POST", api.search),
-        route("/v1/pages", "POST", api.page_create),
-        route("/v1/pages/{page_id}", "GET", api.page_get),
-        route("/v1/pages/{page_id}", "PATCH", api.page_update),
-        route("/v1/pages/{page_id}/properties/{property_id}", "GET", api.page_property),
-        route("/v1/blocks/{block_id}", "GET", api.block_get),
-        route("/v1/blocks/{block_id}", "PATCH", api.block_update),
-        route("/v1/blocks/{block_id}", "DELETE", api.block_delete),
-        route("/v1/blocks/{block_id}/children", "GET", api.children_list),
-        route("/v1/blocks/{block_id}/children", "PATCH", api.children_append),
-        route("/v1/databases", "POST", api.database_create),
-        route("/v1/databases/{database_id}", "GET", api.database_get),
-        route("/v1/databases/{database_id}", "PATCH", api.database_update),
-        route("/v1/databases/{database_id}/query", "POST", api.database_query),
-        route("/v1/users", "GET", api.users_list),
-        route("/v1/users/me", "GET", api.users_me),
-        route("/v1/users/{user_id}", "GET", api.user_get),
-        route("/v1/comments", "GET", api.comments_list),
-        route("/v1/comments", "POST", api.comments_create),
+        *(route(path, method, getattr(api, handler)) for method, path, handler in SERVED),
         Route("/v1/oauth/token", api.token, methods=["POST"]),
         *(route(path, method, api.unserved(method, path, operation)) for method, path, operation in UNSERVED),
     ]
