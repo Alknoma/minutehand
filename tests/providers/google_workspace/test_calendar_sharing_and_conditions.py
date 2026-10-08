@@ -174,6 +174,7 @@ say(
     hidden=[e["id"] for e in events.list(**window).execute()["items"]],
     since=[e["id"] for e in events.list(showDeleted=True, updatedMin="2026-09-14T08:00:00Z", **window).execute()["items"]],
     before=[e["id"] for e in events.list(showDeleted=True, updatedMin="2026-09-14T09:00:00Z", **window).execute()["items"]],
+    regardless=[e["id"] for e in events.list(updatedMin="2026-09-14T09:00:00Z", **window).execute()["items"]],
     got=events.get(calendarId="primary", eventId=inside["id"]).execute(),
     again=refused(lambda: events.delete(calendarId="primary", eventId=inside["id"]).execute()),
     inside=inside["id"], kept=kept["id"],
@@ -195,6 +196,7 @@ say(
     assert seen["hidden"] == [kept], "without showDeleted it is left out"
     assert seen["since"] == [kept, inside], "updatedMin before every change"
     assert seen["before"] == [inside], "only the deletion is after this updatedMin"
+    assert seen["regardless"] == [inside], "with updatedMin a deletion is included regardless of showDeleted"
     got = seen["got"]
     assert isinstance(got, dict) and got["status"] == "cancelled" and got["id"] == inside
     assert seen["again"] == [410, "deleted"]
@@ -262,3 +264,51 @@ say(
     assert seen["rosa_list"] == [404, "notFound"] and seen["rosa_get"] == [404, "notFound"]
     assert seen["rosa_add"] == [404, "notFound"] and seen["rosa_write"] == [404, "notFound"]
     assert seen["reader"] == [501, "notImplemented"]
+
+
+async def test_what_an_event_is_written_with_comes_back_as_written(tmp_path: Path) -> None:
+    """The fields Calendar keeps as sent are answered as sent, through insert, get and a full update of what get
+    answered (read-only fields in it ignored); a field not served yet is refused by name."""
+    written = {
+        "summary": "Planning call",
+        "description": "<b>Agenda</b>",
+        "location": "Room 4",
+        "colorId": "5",
+        "transparency": "transparent",
+        "visibility": "private",
+        "guestsCanModify": True,
+        "guestsCanInviteOthers": False,
+        "guestsCanSeeOtherGuests": False,
+        "privateCopy": False,
+        "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 15}]},
+        "extendedProperties": {"private": {"ticket": "OPS-12"}, "shared": {"room": "4"}},
+        "source": {"url": "https://tracker.example/OPS-12", "title": "OPS-12"},
+        "start": {"dateTime": "2026-09-15T10:00:00.250Z", "timeZone": "America/Los_Angeles"},
+        "end": {"dateTime": "2026-09-15T12:30:00+02:00"},
+        "attendees": [{"email": "dov@example.com", "optional": True, "resource": False, "comment": "maybe"}],
+    }
+    async with serving(tmp_path, SCENARIO) as google:
+        client = await google.client(
+            CALENDAR
+            + AS
+            + f"""
+made = calendar.events().insert(calendarId="primary", body={written!r}).execute()
+got = calendar.events().get(calendarId="primary", eventId=made["id"]).execute()
+again = calendar.events().update(calendarId="primary", eventId=made["id"], body=got).execute()
+say(made=made, got=got, again=again, meet=refused(lambda: calendar.events().insert(calendarId="primary", body={{
+    **SLOT, "conferenceData": {{"createRequest": {{"requestId": "r1"}}}}}}).execute()))
+"""
+        )
+        seen = await client.heard()
+        await client.finished()
+    for key in ("made", "got", "again"):
+        event = seen[key]
+        assert isinstance(event, dict)
+        for name, value in written.items():
+            if name == "attendees":
+                assert [
+                    {k: a[k] for k in ("email", "optional", "resource", "comment")} for a in event["attendees"]
+                ] == value, key
+            else:
+                assert event[name] == value, (key, name)
+    assert seen["meet"] == [501, "notImplemented"]
