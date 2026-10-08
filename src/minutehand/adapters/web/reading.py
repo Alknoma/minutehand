@@ -164,11 +164,12 @@ def memory(db: sqlite3.Connection) -> MemoryResponse:
     for r in _rows(db, "SELECT seq, at, wake, actor, op, collection, key, value FROM memory ORDER BY seq"):
         collection, key, op = str(r["collection"]), str(r["key"]), r["op"]
         had = keys[(collection, key)] if (collection, key) in keys else None
-        if op in ("put", "delete"):
+        if op in ("put", "delete"):  # enum-lint: exempt the read model's memory.op text (docs/querying.md)
             value = str(r["value"]) if op == "put" and r["value"] is not None else None
             changes.append(
                 MemoryChange.model_validate(
-                    {k: v for k, v in r.items() if k != "op"} | {"value": value, "before": had.value if had else None}
+                    {k: v for k, v in r.items() if k != "op"}  # enum-lint: exempt a column name of the read model
+                    | {"value": value, "before": had.value if had else None}
                 )
             )
             keys[(collection, key)] = MemoryKey(
@@ -198,7 +199,7 @@ def stored(db: sqlite3.Connection) -> StoredResponse:
         item = (str(r["host"]), str(r["collection"]), str(r["item_id"]))
         changes.append(
             StoredChange.model_validate(
-                {k: v for k, v in r.items() if k not in ("op", "item_id")}
+                {k: v for k, v in r.items() if k not in ("op", "item_id")}  # enum-lint: exempt read model columns
                 | {"operation": r["op"], "id": r["item_id"], "before": held[item] if item in held else None}
             )
         )
