@@ -19,6 +19,7 @@ import pytest
 
 from examples.recipes import fake_model
 from minutehand import session
+from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.application.files import load_agent, load_scenario
 from minutehand.application.memory import memory_of
 from minutehand.domain.agent import AgentUnderTest
@@ -82,6 +83,9 @@ async def play(recipe: Recipe, scenario: str, tmp_path: Path, monkeypatch: pytes
             agent,
             state=tmp_path / "state",
             command=[recipe.program, str(folder / recipe.agent_file)],
+            model=OpenAICompatible(
+                base_url=f"http://127.0.0.1:{server.server_port}/v1", api_key="offline", model_id="people"
+            ),
             listen=session.Listen(receive_telemetry=False),
         )
     finally:
@@ -95,7 +99,8 @@ async def play(recipe: Recipe, scenario: str, tmp_path: Path, monkeypatch: pytes
         remembered = memory_of(world.events())
     verdict = outcome.result.verdict
     failed = [f.check for f in outcome.result.findings if f.kind is FindingKind.FAIL]
-    return Played(verdict.kind, verdict.words, failed, said, [path for path, _ in served.received], remembered)
+    agents = [path for path, body in served.received if fake_model.people_schema(body) is None]
+    return Played(verdict.kind, verdict.words, failed, said, agents, remembered)
 
 
 def assert_late_answer_passes(played: Played, recipe: Recipe) -> None:

@@ -157,8 +157,8 @@ real email API would hand back, and `thread` reads it back from the answer as st
 handed to the agent's command in its variable, as for an inbound target.
 
 Then a send to a scenario person is answerable (`MessageSnapshot.answerable`): it is one of their asks for the
-scripted replier (`to_ask: 1` is their first email, or their first Slack message, whichever came first), a
-model-written person reads it, and an answer is decided as for any message. When it falls due, the answer is
+person's script (`to_ask: 1` is their first email, or their first Slack message, whichever came first), the model
+that writes their words reads it, and an answer is decided as for any message. When it falls due, the answer is
 written into the world as the person's message, threaded under the send, and then delivered; an answer other
 than 2xx from the agent stops the run `AGENT_FAILED`, saying which. The ledger, the expectations (`person_asked`,
 `relayed`), the follow-up checks and the scorecard read it exactly as a chat message
