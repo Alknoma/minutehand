@@ -1,7 +1,7 @@
 """Forks of an agent that works in the background in two processes, with no hooks: its memory is the run's.
 
 The reference agent answers its wake at once and does the work in a worker, both keeping everything they know in
-`minutehand_agent.store`. Under Minutehand that memory is the run's log, so a fork from a middle checkpoint starts
+`minutehand.agent.store`. Under Minutehand that memory is the run's log, so a fork from a middle checkpoint starts
 from exactly the memory the parent had there, and its start is proven by the agent's report. Before, the agent's
 SQLite file was snapshotted and restored by hooks it had to write (snapshot, restore, busy, fingerprint).
 """

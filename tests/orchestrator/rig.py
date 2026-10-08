@@ -7,11 +7,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from minutehand_agent._wire import ON, URL
-
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, Receiver
+from minutehand.agent._wire import ON, URL
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.replier_scripted import ScriptedReplier
 from minutehand.application.run_clock import RunClock
@@ -106,7 +105,7 @@ class Rig:
 
     def env(self, **more: str) -> dict[str, str]:
         """What the test agents are handed: the test providers, where a file of their own goes, and the run's memory
-        (`minutehand_agent.store`), as `minutehand run` hands it."""
+        (`minutehand.agent.store`), as `minutehand run` hands it."""
         return {
             "MH_BASE": self.base,
             "AGENT_STATE": str(self.tmp / "agent"),

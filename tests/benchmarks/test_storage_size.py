@@ -7,7 +7,7 @@ Not in the default run: `uv run pytest -q -m benchmark tests/benchmarks -s` prin
 - B, a document agent: 50 uploads of a 4 MiB file to Drive through the proxy, with 10 distinct contents, each
   read back 5 times (`alt=media`).
 - C, a long run of an agent's memory: 300 keys of about 100 kB each written at the start, then 200 wakes, each
-  writing 3 of them anew through `minutehand_agent.store`'s run side and ending in a checkpoint.
+  writing 3 of them anew through `minutehand.agent.store`'s run side and ending in a checkpoint.
 
 The numbers asserted on are facts of the record (calls kept, bodies read back), never a duration.
 """

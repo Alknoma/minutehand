@@ -52,7 +52,7 @@ def report():  # GET /report, after every wake
 
 ## What it remembers
 
-The goal and the waits are kept in `minutehand_agent.store`, the one import that ties the agent to Minutehand:
+The goal and the waits are kept in `minutehand.agent.store`, the one import that ties the agent to Minutehand:
 `recall()` reads them into `Memory` before every wake, Slack event and report, and `keep()` writes them back, in one
 batch, after every wake and event (the `@remembering` handlers). In production the store passes to the backend
 `store.configure` names (`MemoryBackend()` here; `SqliteBackend(path)` keeps it across restarts). Under Minutehand it
@@ -101,5 +101,5 @@ uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml --
 # exits 0: one follow-up two days in, then Owen is told Rosa never answered; no follows_up_when_due finding
 ```
 
-Outside this checkout: `pip install openai-agents slack_sdk minutehand-agent` in the agent's Python, and Minutehand installed on its
+Outside this checkout: `pip install openai-agents slack_sdk minutehand` in the agent's Python, and Minutehand installed on its
 own (`uv tool install .` from a checkout); then `minutehand run …` without `uv run`.

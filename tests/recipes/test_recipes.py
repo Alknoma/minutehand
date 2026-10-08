@@ -134,7 +134,7 @@ async def test_a_python_recipe_follows_up_once_on_silence_and_then_tells_the_own
 async def test_a_python_recipe_forked_after_its_first_wake_starts_from_what_it_remembered_there(
     recipe: Recipe, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The recipe keeps its waits in `minutehand_agent.store`, so a fork from the end of its first wake (Rosa asked,
+    """The recipe keeps its waits in `minutehand.agent.store`, so a fork from the end of its first wake (Rosa asked,
     not yet followed up) starts from that memory, with no hooks: its report there is the parent's, and it goes on to
     follow up once and tell Owen, as the parent did from the same moment."""
     folder = RECIPES / recipe.folder

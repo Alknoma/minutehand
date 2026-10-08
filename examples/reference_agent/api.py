@@ -16,7 +16,7 @@
 
 On the first wake it thanks the owner by email itself, with `requests`, before it answers.
 
-Everything it knows is in its memory (`store.py`, over `minutehand_agent.store`), shared with the worker; a webhook
+Everything it knows is in its memory (`store.py`, over `minutehand.agent.store`), shared with the worker; a webhook
 delivered twice is taken once because the memory already holds the reply.
 
 REFERENCE_REPORT=naive answers WORKING only until the worker has picked the wake's job up, and IDLE from then on,

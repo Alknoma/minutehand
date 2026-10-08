@@ -1,23 +1,18 @@
 # Releasing
 
-Minutehand ships as three things built from one commit:
+Minutehand ships as two things built from one commit:
 
 | What | Where | For |
 |---|---|---|
 | The package | PyPI, `minutehand` | `pip install minutehand`, `uvx minutehand serve`, and the pytest plugin |
-| The agent's package | PyPI, `minutehand-agent` (`packages/minutehand-agent/`) | `pip install minutehand-agent` in the agent's own environment: `minutehand_agent`, its memory and its next wake, the standard library only |
 | The image | `ghcr.io/alknoma/minutehand` | an agent in any other language: it is driven by proxy variables and the control API, never imported |
 
-`.github/workflows/release.yml` builds and publishes all three. It runs when a GitHub Release is **published** and on
+`.github/workflows/release.yml` builds and publishes both. It runs when a GitHub Release is **published** and on
 nothing else, so a pushed tag on its own publishes nothing.
 
 ## The version
 
 `pyproject.toml` writes it, once (`[project] version`). Everything else reads it from there:
-
-- `minutehand-agent` is released at the same version: `packages/minutehand-agent/pyproject.toml` repeats it and
-  `minutehand` requires exactly it (`minutehand-agent==<version>` in its dependencies). `tests/test_version.py`
-  fails when the three differ, and the release workflow refuses to build.
 
 - `minutehand --version` and `minutehand.__version__` read the installed package's metadata
   (`importlib.metadata`), so they cannot disagree with what `pip` installed. `tests/test_version.py` holds both to
@@ -35,24 +30,20 @@ asked with `--pre`.
 
 ## Cutting a release
 
-1. On a branch from `integration-main`, set `version` in `pyproject.toml`, in `packages/minutehand-agent/pyproject.toml`
-   and in the `minutehand-agent==` pin of `pyproject.toml`'s dependencies, run `uv lock` (the lock records the
+1. On a branch from `integration-main`, set `version` in `pyproject.toml`, run `uv lock` (the lock records the
    project's version), and open the pull request. CI's `build` job installs the wheel and runs the example.
 2. After it merges, promote `integration-main` to `main` as usual.
 3. On GitHub, draft a Release: tag `v<version>` on `main`'s head, created by the Release itself; notes saying
    what changed for a user. Publish it.
 4. `release.yml` runs:
-   - **build** — checks the tag against `pyproject.toml` and minutehand-agent's version against it; `uv build`
-     for each distribution (the sdist, then the wheel built from it); `twine check --strict` on all four; `pytest -m packaging tests/packaging/test_installed_package.py`, which
+   - **build** — checks the tag against `pyproject.toml`; `uv build` (the sdist, then the wheel built from
+     it); `twine check --strict` on both; `pytest -m packaging tests/packaging/test_installed_package.py`, which
      installs the wheel into a clean environment and runs the example, `--version`, and a pytest suite using the
      plugin, and checks the sdist holds only tracked files and builds the identical wheel.
-   - **pypi-agent** — uploads minutehand-agent's files `build` checked, by Trusted Publishing from the `pypi`
-     environment. No API token exists to leak. Add required reviewers to that environment and this job waits for
-     one. First, because `minutehand` requires that exact version.
-   - **pypi** — uploads minutehand's files the same way, after `pypi-agent`.
+   - **pypi** — uploads exactly the files `build` checked, by Trusted Publishing from the `pypi` environment.
+     No API token exists to leak. Add required reviewers to that environment and this job waits for one.
    - **image** — builds the `runtime` target of `Dockerfile` for `linux/amd64` and `linux/arm64` and pushes it.
 5. Check: `pip install minutehand==<version>` in a fresh environment and `minutehand --version`;
-   `pip install minutehand-agent==<version>` in another and `python -c "import minutehand_agent"`;
    `docker run --rm ghcr.io/alknoma/minutehand:<version> --version`.
 
 A failed run publishes nothing after the job that failed. PyPI never accepts the same version twice, so a
@@ -61,10 +52,8 @@ broken package is fixed by a new version, and the bad one yanked on PyPI.
 
 ## What is set up once, outside this repository
 
-- **PyPI**: a trusted publisher for project `minutehand` and another for project `minutehand-agent` (each a
-  "pending" publisher before its first upload) naming this repository (owner `Alknoma`, repository
-  `minutehand`), workflow `release.yml`, and environment `pypi`. Without the one for `minutehand-agent`, the
-  `pypi-agent` job fails and nothing is published.
+- **PyPI**: a trusted publisher for project `minutehand` (a "pending" publisher before the first upload) naming
+  this repository, workflow `release.yml`, and environment `pypi`.
 - **GitHub**: an environment named `pypi` on this repository, ideally with required reviewers.
 - **GHCR**: the first push creates the package `minutehand` under the organisation, private. Its visibility is
   set by hand in the package's settings; the `org.opencontainers.image.source` label links it to this

@@ -62,11 +62,3 @@ def test_the_image_passes_the_example_and_fails_the_forgetful_agent(image: str) 
     found = out[out.index("\nfail (1)") : out.index("\nscorecard")]
     assert "follows_up_when_due: rosa's answer was due and no follow-up came by an hour later" in found
     assert "pattern expiry_on_every_wait: An expiry on every wait." in found
-
-
-def test_the_example_image_runs_the_agent_with_minutehand_agent_and_without_minutehand(image: str) -> None:
-    """The agent starts in the base image's own Python, which holds slack_sdk and minutehand-agent from the wheel
-    the image built, as an agent's environment does, and never Minutehand: that lives in /opt/minutehand."""
-    probe = "import minutehand_agent, slack_sdk\ntry:\n    import minutehand\nexcept ModuleNotFoundError:\n    print('apart')\n"
-    ran = checked(tool("docker"), "run", "--rm", "--entrypoint", "python", f"{image}-example", "-c", probe)
-    assert ran.stdout == "apart\n", ran.stdout

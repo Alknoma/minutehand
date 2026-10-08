@@ -1,4 +1,4 @@
-"""The agent's memory, held by the run: `minutehand_agent.store`'s calls answered from the world's log, and what a
+"""The agent's memory, held by the run: `minutehand.agent.store`'s calls answered from the world's log, and what a
 run can say about it (`domain.memory`).
 
 A write is an entity version (`EntityKind.MEMORY`, actor AGENT) and a read an event with none, both in the wake and
@@ -46,7 +46,7 @@ from minutehand.ports.store import Store
 PAGE = 500
 
 NEXT_WAKE = EntityRef(provider=MEMORY_PROVIDER, kind=EntityKind.NEXT_WAKE, external_id="next_wake")
-"""The one entity `minutehand_agent.wake` writes: the agent's next wake as it last said it."""
+"""The one entity `minutehand.agent.wake` writes: the agent's next wake as it last said it."""
 
 
 def ref(collection: str, key: str) -> EntityRef:
@@ -157,7 +157,7 @@ def remember(store: Store, call: MemoryWrite) -> Written:
 
 
 def mark(store: Store, said: WakeMark) -> WorldEvent:
-    """The agent's next wake as it said it (`minutehand_agent.wake`), recorded as its own."""
+    """The agent's next wake as it said it (`minutehand.agent.wake`), recorded as its own."""
     return store.apply(
         Change(
             entity=NEXT_WAKE,

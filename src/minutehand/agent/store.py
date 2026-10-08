@@ -1,6 +1,6 @@
 """What the agent remembers: JSON values under string keys, in named collections.
 
-    from minutehand_agent import store
+    from minutehand.agent import store
 
     store.configure(store.SqliteBackend("agent.db"))       # once, at start: where the memory lives in production
 
@@ -37,7 +37,7 @@ fork refused when the agent's report after it is not the one recorded at its che
 
 from __future__ import annotations
 
-from minutehand_agent._store import (
+from minutehand.agent._store import (
     DEFAULT,
     Backend,
     Batch,
@@ -50,7 +50,7 @@ from minutehand_agent._store import (
     Write,
     configure,
 )
-from minutehand_agent._wire import MinutehandRefused, MinutehandUnreachable
+from minutehand.agent._wire import MinutehandRefused, MinutehandUnreachable
 
 __all__ = [
     "DEFAULT",
