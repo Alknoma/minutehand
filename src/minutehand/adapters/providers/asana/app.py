@@ -7,8 +7,9 @@ is outside that prefix and arrives as it is. Every answer is Asana's envelope:
 answered in full, a collection compact, and `opt_fields` narrows either.
 
 Who calls is the user the bearer token maps to: a token the scenario seeded or the
-token endpoint minted; any bearer token acts as the agent when the scenario seeded
-none. `me` is that user, and what they create is theirs.
+token endpoint minted. Any other token, or none, acts as the agent: Minutehand does
+not enforce credentials, so no call is ever refused for its token. `me` is that user,
+and what they create is theirs.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from datetime import datetime, timedelta
 
 from pydantic import JsonValue
 from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
@@ -33,7 +33,6 @@ from minutehand.ports.store import Store
 
 Handler = Callable[[Request, wire.AsanaUser], Awaitable[Response]]
 
-_JSON = "application/json; charset=utf-8"
 _SEARCH = (
     "text",
     "completed",
@@ -104,8 +103,77 @@ _NEEDS_TEAM = (
 _NOT_ORGANIZATION = "organization: Not an organization"
 
 
+UNSERVED: tuple[tuple[str, str, str], ...] = (
+    ("POST", "/custom_fields", "createCustomField"),
+    ("DELETE", "/custom_fields/{custom_field_gid}", "deleteCustomField"),
+    ("PUT", "/custom_fields/{custom_field_gid}", "updateCustomField"),
+    ("POST", "/custom_fields/{custom_field_gid}/enum_options", "createEnumOptionForCustomField"),
+    ("POST", "/custom_fields/{custom_field_gid}/enum_options/insert", "insertEnumOptionForCustomField"),
+    ("PUT", "/enum_options/{enum_option_gid}", "updateEnumOption"),
+    ("GET", "/goals/{goal_gid}/custom_field_settings", "getCustomFieldSettingsForGoal"),
+    ("GET", "/goals/{goal_gid}/stories", "getStoriesForGoal"),
+    ("POST", "/goals/{goal_gid}/stories", "createStoryForGoal"),
+    ("GET", "/portfolios/{portfolio_gid}/custom_field_settings", "getCustomFieldSettingsForPortfolio"),
+    ("GET", "/project_memberships/{project_membership_gid}", "getProjectMembership"),
+    ("DELETE", "/projects/{project_gid}", "deleteProject"),
+    ("PUT", "/projects/{project_gid}", "updateProject"),
+    ("POST", "/projects/{project_gid}/addFollowers", "addFollowersForProject"),
+    ("POST", "/projects/{project_gid}/duplicate", "duplicateProject"),
+    ("POST", "/projects/{project_gid}/removeFollowers", "removeFollowersForProject"),
+    ("POST", "/projects/{project_gid}/rollup", "rollupProject"),
+    ("POST", "/projects/{project_gid}/saveAsTemplate", "projectSaveAsTemplate"),
+    ("POST", "/projects/{project_gid}/sections/insert", "insertSectionForProject"),
+    ("GET", "/projects/{project_gid}/task_counts", "getTaskCountsForProject"),
+    ("DELETE", "/sections/{section_gid}", "deleteSection"),
+    ("PUT", "/sections/{section_gid}", "updateSection"),
+    ("DELETE", "/stories/{story_gid}", "deleteStory"),
+    ("GET", "/stories/{story_gid}", "getStory"),
+    ("PUT", "/stories/{story_gid}", "updateStory"),
+    ("DELETE", "/tags/{tag_gid}", "deleteTag"),
+    ("PUT", "/tags/{tag_gid}", "updateTag"),
+    ("POST", "/tasks/{task_gid}/addDependencies", "addDependenciesForTask"),
+    ("POST", "/tasks/{task_gid}/addDependents", "addDependentsForTask"),
+    ("POST", "/tasks/{task_gid}/addFollowers", "addFollowersForTask"),
+    ("POST", "/tasks/{task_gid}/addProject", "addProjectForTask"),
+    ("GET", "/tasks/{task_gid}/dependencies", "getDependenciesForTask"),
+    ("GET", "/tasks/{task_gid}/dependents", "getDependentsForTask"),
+    ("POST", "/tasks/{task_gid}/duplicate", "duplicateTask"),
+    ("GET", "/tasks/{task_gid}/projects", "getProjectsForTask"),
+    ("POST", "/tasks/{task_gid}/removeDependencies", "removeDependenciesForTask"),
+    ("POST", "/tasks/{task_gid}/removeDependents", "removeDependentsForTask"),
+    ("POST", "/tasks/{task_gid}/removeFollowers", "removeFollowerForTask"),
+    ("POST", "/tasks/{task_gid}/removeProject", "removeProjectForTask"),
+    ("POST", "/tasks/{task_gid}/rollup", "rollupTask"),
+    ("POST", "/teams", "createTeam"),
+    ("PUT", "/teams/{team_gid}", "updateTeam"),
+    ("POST", "/teams/{team_gid}/addUser", "addUserForTeam"),
+    ("GET", "/teams/{team_gid}/custom_field_settings", "getCustomFieldSettingsForTeam"),
+    ("POST", "/teams/{team_gid}/removeUser", "removeUserForTeam"),
+    ("GET", "/user_task_lists/{user_task_list_gid}/tasks", "getTasksForUserTaskList"),
+    ("PUT", "/users/{user_gid}", "updateUser"),
+    ("GET", "/users/{user_gid}/favorites", "getFavoritesForUser"),
+    ("GET", "/webhooks", "getWebhooks"),
+    ("POST", "/webhooks", "createWebhook"),
+    ("DELETE", "/webhooks/{webhook_gid}", "deleteWebhook"),
+    ("GET", "/webhooks/{webhook_gid}", "getWebhook"),
+    ("PUT", "/webhooks/{webhook_gid}", "updateWebhook"),
+    ("PUT", "/workspaces/{workspace_gid}", "updateWorkspace"),
+    ("POST", "/workspaces/{workspace_gid}/addUser", "addUserForWorkspace"),
+    ("GET", "/workspaces/{workspace_gid}/events", "getWorkspaceEvents"),
+    ("GET", "/workspaces/{workspace_gid}/projects/search", "searchProjectsForWorkspace"),
+    ("POST", "/workspaces/{workspace_gid}/removeUser", "removeUserForWorkspace"),
+    ("GET", "/workspaces/{workspace_gid}/tasks/custom_id/{custom_id}", "getTaskForCustomID"),
+    ("GET", "/workspaces/{workspace_gid}/users/{user_gid}", "getUserForWorkspace"),
+    ("PUT", "/workspaces/{workspace_gid}/users/{user_gid}", "updateUserForWorkspace"),
+)
+"""Every operation of Asana's published OpenAPI document (https://github.com/Asana/openapi, `defs/asana_oas.yaml`)
+under a resource this provider serves that it does not serve itself: method, path and operationId. Each is answered
+501, naming it, never 404 as if Asana had no such route (`tests/data/asana_rest_1_0/openapi-subset-2026-10-08.json`
+holds the document's subset, and `test_asana_surface.py` holds every operation in it to served or named here)."""
+
+
 def _answer(body: bytes, status: int = 200, headers: dict[str, str] | None = None) -> Response:
-    return Response(body, status_code=status, media_type=_JSON, headers=headers)
+    return Response(body, status_code=status, media_type=wire.JSON, headers=headers)
 
 
 def _at(value: str) -> datetime:
@@ -477,25 +545,14 @@ class AsanaApi:
         return wire.stamp(self._clock.now())
 
     def _caller(self, request: Request) -> wire.AsanaUser:
+        """The user a seeded or minted token names; any other token, or none, is the agent. Minutehand does not
+        enforce credentials: no token is ever refused, whatever it is, whoever it names, however old."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
-        scheme, _, token = authorization.partition(" ")
-        token = token.strip()
-        if scheme.lower() != "bearer" or not token:
-            raise wire.Refusal(401, "Not Authorized")
-        home = self._world.home()
-        credential = self._world.credential(token)
+        _, _, token = authorization.partition(" ")
+        credential = self._world.credential(token.strip()) if token.strip() else None
         if credential is None or credential.kind is not wire.CredentialKind.ACCESS:
-            if home.strict_tokens:
-                raise wire.Refusal(401, "Not Authorized")
             return _held(self._world.user(AGENT_GID), AGENT_GID)
-        if credential.expires_at is not None and self._clock.now() >= _at(credential.expires_at):
-            raise wire.Refusal(
-                401, "The bearer token has expired. If you have a refresh token, use it to get a new one."
-            )
-        user = _held(self._world.user(credential.user), credential.user)
-        if user.removed:
-            raise wire.Refusal(401, "Not Authorized")
-        return user
+        return _held(self._world.user(credential.user), credential.user)
 
     def _listed[Out: wire.Representation](self, request: Request, items: list[Out]) -> Response:
         """One page of a collection, by the workspace's own threshold for a read without `limit`."""
@@ -532,29 +589,23 @@ class AsanaApi:
     # ------------------------------------------------------------------ sign-in
 
     async def oauth_token(self, request: Request) -> Response:
-        """A refresh: the refresh token the scenario seeded buys a new access token for its user, valid for an
-        hour of the run's time. The code grant needs a browser and is not served."""
+        """A refresh: a refresh token the scenario seeded buys a new access token for its user, and any other buys
+        one for the agent (Minutehand does not enforce credentials). The code grant needs a browser and is not
+        served."""
         try:
             grant = wire.token_grant(await request.body())
             if grant.grant_type != "refresh_token":
                 raise wire.OAuthRefusal(
                     "unsupported_grant_type", f"The grant type {grant.grant_type} is not served by this simulation."
                 )
-            refresh = self._world.credential(grant.refresh_token or "")
-            if refresh is None or refresh.kind is not wire.CredentialKind.REFRESH:
-                raise wire.OAuthRefusal("invalid_grant", "The refresh token is invalid or has been revoked.")
         except wire.OAuthRefusal as refusal:
             return _answer(wire.oauth_failed(refusal), 400)
-        user = _held(self._world.user(refresh.user), refresh.user)
+        refresh = self._world.credential(grant.refresh_token or "")
+        whose = refresh.user if refresh is not None and refresh.kind is wire.CredentialKind.REFRESH else AGENT_GID
+        user = _held(self._world.user(whose), whose)
         token = f"1/{user.gid}:{self._world.next_gid()}"
-        expires = self._clock.now() + timedelta(seconds=wire.TOKEN_LIFETIME_SECONDS)
         self._world.put_record(
-            wire.AsanaCredential(
-                gid=state.credential_gid(token),
-                kind=wire.CredentialKind.ACCESS,
-                user=user.gid,
-                expires_at=wire.stamp(expires),
-            ),
+            wire.AsanaCredential(gid=state.credential_gid(token), kind=wire.CredentialKind.ACCESS, user=user.gid),
             parent=state.CREDENTIALS,
             actor=Actor.AGENT,
         )
@@ -1209,9 +1260,13 @@ class AsanaApi:
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return _answer(wire.unpaged(found[:count], wire.field_tree(query)))
 
-    async def webhooks(self, request: Request, caller: wire.AsanaUser) -> Response:
-        """Asana's webhooks: the `X-Hook-Secret` handshake and event delivery are not served. Said, not ignored."""
-        raise wire.unsupported("webhooks")
+    def unserved(self, method: str, path: str, operation: str) -> Handler:
+        """An operation Asana has and this provider does not serve, refused by name."""
+
+        async def refuse(request: Request, caller: wire.AsanaUser) -> Response:
+            raise wire.unsupported(f"{method} {path} ({operation})")
+
+        return refuse
 
 
 def build_app(store: Store, clock: Clock) -> Starlette:
@@ -1219,8 +1274,9 @@ def build_app(store: Store, clock: Clock) -> Starlette:
     g = api.guarded
 
     async def no_route(request: Request, exc: Exception) -> Response:
-        if isinstance(exc, HTTPException) and exc.status_code == 405:
-            return _answer(wire.failed("Method not allowed"), 405)
+        """Asana answers a path it has no route for, and a method a path does not take, 404 "No matching route for
+        request" (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`)."""
+        del request, exc
         return _answer(wire.failed("No matching route for request"), 404)
 
     return Starlette(
@@ -1278,7 +1334,10 @@ def build_app(store: Store, clock: Clock) -> Starlette:
             Route("/tasks/{gid}/removeTag", g(api.remove_tag), methods=["POST"]),
             Route("/tasks/{gid}/stories", g(api.stories), methods=["GET"]),
             Route("/tasks/{gid}/stories", g(api.create_story), methods=["POST"]),
-            Route("/webhooks", g(api.webhooks), methods=["GET", "POST"]),
+            *(
+                Route(path, g(api.unserved(method, path, operation)), methods=[method])
+                for method, path, operation in UNSERVED
+            ),
         ],
         exception_handlers={404: no_route, 405: no_route},
     )

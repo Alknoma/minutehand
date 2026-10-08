@@ -50,8 +50,9 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TAG = re.compile(r"<[^>]+>")
 
 
-JSON = "application/json; charset=utf-8"
-"""The content type of every answer, refusals included."""
+JSON = "application/json; charset=UTF-8"
+"""The content type of every answer, refusals included, spelled as Asana spells it
+(`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`)."""
 
 
 class Refusal(ServiceRefusal):
@@ -193,7 +194,6 @@ class AsanaWorkspace(Model):
     is_organization: bool = True
     email_domains: list[str] = []
     premium: bool = True
-    strict_tokens: bool = Field(default=False, description="Only a seeded or minted token is accepted")
     status: StatusRule = SectionStatus()
     rate_limits: list[RateWindow] = []
     unpaginated_limit: int = Field(
@@ -208,8 +208,8 @@ class AsanaUser(Model):
     email: str
     removed: bool = Field(
         default=False,
-        description="Removed from the workspace by an administrator: unlisted, unassignable, its tokens refused; "
-        "what it did before still names it",
+        description="Removed from the workspace by an administrator: unlisted and unassignable; what it did before "
+        "still names it",
     )
 
 
@@ -271,13 +271,13 @@ class AsanaTag(Model):
 
 
 class AsanaCredential(Model):
-    """A token the workspace accepts. The gid is derived from the token itself, which is never stored."""
+    """A token that names a user. The gid is derived from the token itself, which is never stored. Nothing about it
+    is checked: a token that names no one acts as the agent."""
 
     resource_type: Literal["credential"] = "credential"
     gid: str
     kind: CredentialKind
     user: str
-    expires_at: str | None = None
 
 
 class AsanaMembership(Model):

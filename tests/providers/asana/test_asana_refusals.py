@@ -3,7 +3,7 @@
 Ported from the refusal suite of the emulator this provider replaces. Each case
 there was a leniency that hid a real defect: an assignee spelled as a handle
 accepted, a write without its `data` wrapper stored. The cases about project
-creation, custom fields, tags, teams, the free-workspace 402, tokens and throttling
+creation, custom fields, tags, teams, the free-workspace 402 and throttling
 are in `test_asana_parity_refusals.py`.
 """
 
@@ -18,17 +18,18 @@ from tests.providers.asana.asana_workspace import VENUE, WS, Workspace, create, 
 UNKNOWN = "1999999999999999"
 
 
-async def test_a_request_with_no_token_is_refused_not_authorized(
-    workspace: Workspace, client: httpx.AsyncClient
-) -> None:
-    before = workspace.store.head()
-    for headers in ({"Authorization": ""}, {"Authorization": "Basic abc"}, {"Authorization": "Bearer "}):
-        assert error(await client.get("/users/me", headers=headers), 401) == "Not Authorized"
-    assert workspace.store.head() == before
-
-
-async def test_any_bearer_token_is_accepted(client: httpx.AsyncClient) -> None:
-    assert (await client.get("/users/me", headers={"Authorization": "Bearer anything-at-all"})).status_code == 200
+async def test_a_call_with_no_token_or_any_token_acts_as_the_agent(client: httpx.AsyncClient) -> None:
+    """Minutehand does not enforce credentials: no Authorization, a Basic one, an empty bearer or any bearer token
+    is answered, as the agent."""
+    for headers in (
+        {"Authorization": ""},
+        {"Authorization": "Basic abc"},
+        {"Authorization": "Bearer "},
+        {"Authorization": "Bearer anything-at-all"},
+    ):
+        answered = await client.get("/users/me", headers=headers)
+        assert answered.status_code == 200, (headers, answered.text)
+        assert answered.json()["data"]["gid"] == state.AGENT_GID
 
 
 @pytest.mark.parametrize(
@@ -178,7 +179,7 @@ async def test_listing_tasks_without_a_filter_is_refused(client: httpx.AsyncClie
 
 async def test_search_rejects_what_it_does_not_know_and_its_limit(client: httpx.AsyncClient) -> None:
     search = f"/workspaces/{WS}/tasks/search"
-    assert (await client.post(search, json={"data": {}})).status_code == 405
+    assert error(await client.post(search, json={"data": {}}), 404) == "No matching route for request"
     assert error(await client.get(search, params={"jql": "x"}), 400) == "jql: Unrecognized parameter"
     assert error(await client.get(search, params={"limit": "101"}), 400) == "limit: Must be between 1 and 100"
     assert error(await client.get(search, params={"assignee.any": "jsmith"}), 400) == (
@@ -211,6 +212,11 @@ async def test_a_bad_page_is_refused(client: httpx.AsyncClient, params: dict[str
     assert error(await client.get(f"/projects/{VENUE}/tasks", params=params), 400) == message
 
 
-async def test_an_unknown_route_and_method_answer_in_asanas_envelope(client: httpx.AsyncClient) -> None:
-    assert error(await client.get("/portfolios"), 404) == "No matching route for request"
-    assert error(await client.patch(f"/tasks/{UNKNOWN}", json={}), 405) == "Method not allowed"
+async def test_an_unknown_route_and_a_method_a_path_does_not_take_are_refused_no_matching_route(
+    client: httpx.AsyncClient,
+) -> None:
+    """OBSERVED: Asana answers both 404 "No matching route for request", never 405
+    (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`)."""
+    assert error(await client.get("/nothing/here"), 404) == "No matching route for request"
+    assert error(await client.patch(f"/tasks/{UNKNOWN}", json={}), 404) == "No matching route for request"
+    assert error(await client.delete("/workspaces"), 404) == "No matching route for request"

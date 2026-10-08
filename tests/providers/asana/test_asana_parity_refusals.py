@@ -1,6 +1,6 @@
-"""The refusals a client's tests rely on: a token nobody seeded, a project the token cannot see, a free plan,
-throttling, an expired token, and custom fields and options that do not exist. Each with Asana's status and
-message, and none of them recording anything."""
+"""The refusals a client's tests rely on: a project the caller cannot see, a free plan, throttling, and custom fields
+and options that do not exist, each with Asana's status and message and none of them recording anything; and the
+credentials that are never refused, because Minutehand does not enforce them."""
 
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from tests.providers.asana.rich_workspace import (
     PRIORITY,
     REFRESH_TOKEN,
     ROADMAP,
-    SHORT_TOKEN,
     STATUS_FIELD,
     THROTTLED_AFTER,
     THROTTLED_FOR,
@@ -44,18 +43,23 @@ from tests.providers.asana.rich_workspace import (
 __all__ = ["agent", "rich"]
 
 
-async def test_a_token_nobody_seeded_is_refused_not_authorized(rich: Workspace) -> None:
-    before = rich.store.head()
+async def test_a_token_nobody_seeded_acts_as_the_agent(rich: Workspace) -> None:
+    """Minutehand does not enforce credentials: a token the scenario never seeded is answered, as the agent."""
     async with client_as(rich, "pat-guessed") as stranger:
-        assert error(await stranger.get("/users/me"), 401) == "Not Authorized"
-    assert rich.store.head() == before
+        assert got(await stranger.get("/users/me"))["gid"] == state.AGENT_GID
 
 
-async def test_an_expired_token_is_refused_and_a_refresh_mints_one_that_works(rich: Workspace) -> None:
-    async with client_as(rich, SHORT_TOKEN) as short:
-        assert (await short.get("/users/me")).status_code == 200
-        rich.clock.jump(rich.clock.now() + timedelta(hours=1))
-        assert error(await short.get("/users/me"), 401).startswith("The bearer token has expired")
+async def test_a_seeded_token_acts_as_its_person_for_as_long_as_the_run_lasts(rich: Workspace) -> None:
+    """A token names its person whatever time it is; nothing expires, because nothing is enforced."""
+    async with client_as(rich, ALICE_TOKEN) as alice:
+        before = got(await alice.get("/users/me"))["gid"]
+        rich.clock.jump(rich.clock.now() + timedelta(days=30))
+        assert got(await alice.get("/users/me"))["gid"] == before == state.user_gid("alice")
+
+
+async def test_a_refresh_mints_a_token_for_the_seeded_person_and_any_other_refresh_for_the_agent(
+    rich: Workspace,
+) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=rich.provider.app(rich.store, rich.clock)), base_url="https://app.asana.com"
     ) as oauth:
@@ -70,15 +74,27 @@ async def test_an_expired_token_is_refused_and_a_refresh_mints_one_that_works(ri
         )
         assert refreshed.status_code == 200, refreshed.text
         token = refreshed.json()
-        assert (token["token_type"], token["expires_in"], token["data"]["gid"]) == ("bearer", 3600, state.AGENT_GID)
-        refused = await oauth.post("/-/oauth_token", data={"grant_type": "refresh_token", "refresh_token": "stolen"})
-        assert (refused.status_code, refused.json()["error"]) == (400, "invalid_grant")
-        code = await oauth.post("/-/oauth_token", data={"grant_type": "authorization_code", "code": "x"})
-        assert (code.status_code, code.json()["error"]) == (400, "unsupported_grant_type")
+        assert (token["token_type"], token["expires_in"], token["data"]["gid"]) == (
+            "bearer",
+            3600,
+            state.user_gid("alice"),
+        )
+        guessed = await oauth.post("/-/oauth_token", data={"grant_type": "refresh_token", "refresh_token": "guessed"})
+        assert guessed.status_code == 200, guessed.text
+        assert guessed.json()["data"]["gid"] == state.AGENT_GID
     async with client_as(rich, token["access_token"]) as fresh:
-        assert got(await fresh.get("/users/me"))["gid"] == state.AGENT_GID
-        rich.clock.jump(rich.clock.now() + timedelta(hours=1))
-        assert error(await fresh.get("/users/me"), 401).startswith("The bearer token has expired")
+        assert got(await fresh.get("/users/me"))["gid"] == state.user_gid("alice")
+        rich.clock.jump(rich.clock.now() + timedelta(hours=2))
+        assert got(await fresh.get("/users/me"))["gid"] == state.user_gid("alice")
+
+
+async def test_the_code_grant_is_refused_by_name(rich: Workspace) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=rich.provider.app(rich.store, rich.clock)), base_url="https://app.asana.com"
+    ) as oauth:
+        code = await oauth.post("/-/oauth_token", data={"grant_type": "authorization_code", "code": "x"})
+    assert (code.status_code, code.json()["error"]) == (400, "unsupported_grant_type")
+    assert "authorization_code" in code.json()["error_description"]
 
 
 async def test_a_private_project_is_refused_403_and_hidden_from_listings(
@@ -221,7 +237,7 @@ async def test_webhooks_are_said_to_be_unserved(agent: httpx.AsyncClient) -> Non
     refused = await agent.post(
         "/webhooks", json={"data": {"resource": INCIDENT, "target": "https://agent.example/hook"}}
     )
-    assert error(refused, 501) == "webhooks: Not supported by this simulation of Asana"
+    assert error(refused, 501) == "POST /webhooks (createWebhook): Not supported by this simulation of Asana"
 
 
 @pytest.fixture

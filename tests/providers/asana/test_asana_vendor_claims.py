@@ -157,19 +157,16 @@ def refused(response: httpx.Response, status: int) -> str:
 # ---------------------------------------------------------------------------------------------- authentication
 
 
-async def test_a_write_with_no_token_is_refused_not_authorized_and_writes_nothing(asana: Proxied) -> None:
-    """DOCUMENTED: a request without a valid token is a 401 (https://developers.asana.com/docs/errors), on a
-    write as on a read."""
-    before = asana.store.head()
+async def test_a_write_with_no_token_is_answered_as_the_agent(asana: Proxied) -> None:
+    """Minutehand does not enforce credentials (CLAIMS.md): Asana answers a write with no token 401 "Not Authorized"
+    (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`), and this fake writes it, as the
+    agent."""
     bare = {"Authorization": ""}
     project = await asana.http.post(
         "/projects", headers=bare, json={"data": {"workspace": WS, "team": SURVEY, "name": "Buoy Moorings"}}
     )
-    task = await asana.http.post("/tasks", headers=bare, json={"data": {"workspace": WS, "name": "Check buoy 4"}})
-
-    assert refused(project, 401) == "Not Authorized"
-    assert refused(task, 401) == "Not Authorized"
-    assert asana.store.head() == before
+    assert project.status_code == 201, project.text
+    assert [m["gid"] for m in project.json()["data"]["members"]] == [state.AGENT_GID]
 
 
 # ---------------------------------------------------------------------------------------------- the data envelope

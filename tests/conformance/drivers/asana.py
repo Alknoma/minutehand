@@ -1,7 +1,7 @@
 """Asana, through its REST API at `https://app.asana.com/api/1.0` (https://developers.asana.com/reference).
 
 Every caller holds a personal access token sent as `Authorization: Bearer`: the agent's, and one per seeded person
-(`AsanaSeed.tokens`, each naming its person), so a world seeded with tokens refuses any other. Every write is
+(`AsanaSeed.tokens`, each naming its person), so any other token acts as the agent (Minutehand does not enforce credentials). Every write is
 wrapped in `{"data": ...}`, every answer is `{"data": ...}` (with `next_page` on a paged collection), and a list
 is compact until `opt_fields` names what to bring.
 

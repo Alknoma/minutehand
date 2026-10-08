@@ -12,7 +12,7 @@ From the scenario's Asana seed (`AsanaSeed`, the scenario's `ProviderSeed` for
 organization, teams, custom fields defined at workspace level, tags, projects with
 their team, privacy, members, sections and the custom fields settled on them, a
 seeded ticket's section, custom field values, tags, due date, parent and comments,
-the tokens the workspace accepts, and stretches of time in which Asana throttles
+who each token acts as, and stretches of time in which Asana throttles
 every call. `status` says which fact about a task is its state for the scenario's
 checks (see `wire.StatusRule`); a scenario with no Asana seed reads it from the
 section, as `To do`, `Done` and `Cancelled` say.
@@ -171,7 +171,6 @@ class SeedToken(Model, Keyed):
     IDENTITY: ClassVar[tuple[str, ...]] = ("token",)
     token: str = Field(min_length=1)
     person: str | None = Field(default=None, description="Person.key it acts as; None: the agent")
-    expires_after: timedelta | None = Field(default=None, description="None: it never expires")
 
 
 class SeedRefreshToken(Model):
@@ -216,7 +215,9 @@ class AsanaSeed(Model):
     projects: list[SeedProject] = Field(default=[], description="Projects the asana tickets name are added if absent")
     tasks: list[SeedTask] = []
     status: SeedStatus = SeedBySection()
-    tokens: list[SeedToken] = Field(default=[], description="None declared: any bearer token acts as the agent")
+    tokens: list[SeedToken] = Field(
+        default=[], description="Who each token acts as; any other token, or none, acts as the agent"
+    )
     refresh_tokens: list[SeedRefreshToken] = []
     rate_limits: list[SeedRateLimit] = []
     limits: SeedLimits | None = Field(
@@ -301,7 +302,6 @@ class _Seeding:
 
     def _workspace(self) -> None:
         start = self.scenario.starts_at
-        strict = bool(self.seed.tokens or self.seed.refresh_tokens)
         self.asana.put_record(
             limited(
                 wire.AsanaWorkspace(
@@ -311,7 +311,6 @@ class _Seeding:
                     email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people}),
                     premium=self.seed.workspace.premium,
                     unpaginated_limit=self.seed.workspace.unpaginated_limit,
-                    strict_tokens=strict,
                     status=self._status(),
                     rate_limits=[
                         wire.RateWindow(start=wire.stamp(start + r.after), end=wire.stamp(start + r.after + r.lasts))
@@ -356,13 +355,9 @@ class _Seeding:
                 actor=Actor.SCENARIO,
             )
         for token in self.seed.tokens:
-            expires = self.scenario.starts_at + token.expires_after if token.expires_after is not None else None
             self.asana.put_record(
                 wire.AsanaCredential(
-                    gid=state.credential_gid(token.token),
-                    kind=wire.CredentialKind.ACCESS,
-                    user=self.user(token.person),
-                    expires_at=wire.stamp(expires) if expires is not None else None,
+                    gid=state.credential_gid(token.token), kind=wire.CredentialKind.ACCESS, user=self.user(token.person)
                 ),
                 parent=state.CREDENTIALS,
                 actor=Actor.SCENARIO,
