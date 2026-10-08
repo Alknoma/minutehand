@@ -265,7 +265,8 @@ class GitHubDriver(Driver):
         "people": 1,
     }
     # https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api: an invalid token is
-    # 401 "Bad credentials" (README, "Credentials").
+    # 401 "Bad credentials". The provider deliberately does not enforce credentials (its README, "Credentials"), so
+    # once a world claims a call it answers it; an unclaimed one never reaches it.
     unknown_refusal = (401, "Bad credentials")
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
@@ -294,6 +295,14 @@ class GitHubDriver(Driver):
                     "owner": ORGANIZATION,
                     "name": REPOSITORY,
                     "files": [{"path": "README.md", "text": "Launch notes\n"}],
+                    "commits": [
+                        {
+                            "message": "Start the launch notes",
+                            "author": AGENT_LOGIN,
+                            "before": "P1D",
+                            "paths": ["README.md"],
+                        }
+                    ],
                     "collaborators": [
                         {"login": AGENT_LOGIN, "permission": "admin"},
                         *({"login": login[k], "permission": "push"} for k in keys),

@@ -12,10 +12,11 @@ from tests.providers.github.test_github_graphql import BRANCHES, FILE_BATCH, OVE
 async def test_a_token_is_validated_and_a_question_answered_from_the_repository(hub: Hub) -> None:
     before = hub.store.head()
     async with hub.client(TOMAS) as http:
-        # validate-token: who the token is, and which of the named repositories it reaches
+        # validate-token: who the token is, and which of the named repositories its user reaches (the token's own
+        # selection of repositories is not enforced: README, "Credentials")
         assert body(await http.get("/user"))["login"] == "tomas-b"
         reached = [await http.get(f"/repos/{name}") for name in ("lanternworks/ledger", "lanternworks/plans")]
-        assert [r.status_code for r in reached] == [200, 404]
+        assert [r.status_code for r in reached] == [200, 200]
 
         # the question
         overview = body(
@@ -66,4 +67,4 @@ async def test_a_token_is_validated_and_a_question_answered_from_the_repository(
     }
     assert {e.actor for e in kept} == {Actor.SCENARIO}
     calls = hub.store.calls()
-    assert [c.exchange.status for c in calls] == [200, 200, 404, 200, 200, 200, 200, 200, 200, 200, 200]
+    assert [c.exchange.status for c in calls] == [200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200]

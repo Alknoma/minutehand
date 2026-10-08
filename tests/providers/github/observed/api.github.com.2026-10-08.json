@@ -1,0 +1,292 @@
+{
+ "recorded": "2026-10-08",
+ "service": "https://api.github.com",
+ "how": "httpx, no credential, headers Accept: application/vnd.github+json and X-GitHub-Api-Version: 2022-11-28 unless `sent` says otherwise, against the public repository octocat/Hello-World; long bodies cut to the fields a claim rests on ('…' marks a field left out)",
+ "exchanges": [
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/contents/README?ref=no-such-ref-anywhere",
+   "sent": {},
+   "status": 404,
+   "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-github-api-version-selected": "2022-11-28",
+    "x-github-media-type": "github.v3; format=json",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-resource": "core"
+   },
+   "body": {
+    "message": "No commit found for the ref no-such-ref-anywhere",
+    "documentation_url": "https://docs.github.com/v3/repos/contents/",
+    "status": "404"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/commits?sha=no-such-ref-anywhere",
+   "sent": {},
+   "status": 404,
+   "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-github-media-type": "github.v3; format=json",
+    "x-github-api-version-selected": "2022-11-28",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-resource": "core"
+   },
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/commits/commits#list-commits",
+    "status": "404"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/commits?per_page=1",
+   "sent": {},
+   "status": 200,
+   "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "etag": "W/\"a320077428857591b2d2db1598fe8d74986b8c54154e7d5e229fbdf40cf0b10a\"",
+    "last-modified": "Tue, 06 Mar 2012 23:06:50 GMT",
+    "x-github-media-type": "github.v3; format=json",
+    "link": "<https://api.github.com/repositories/1296269/commits?per_page=1&page=2>; rel=\"next\", <https://api.github.com/repositories/1296269/commits?per_page=1&page=3>; rel=\"last\"",
+    "x-github-api-version-selected": "2022-11-28",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-resource": "core"
+   },
+   "body": [
+    {
+     "sha": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+     "node_id": "…",
+     "commit": {
+      "author": {
+       "name": "The Octocat",
+       "email": "octocat@nowhere.com",
+       "date": "2012-03-06T23:06:50Z"
+      },
+      "committer": "…",
+      "message": "…",
+      "tree": "…",
+      "url": "…",
+      "comment_count": "…",
+      "verification": "…"
+     },
+     "url": "https://api.github.com/repos/octocat/Hello-World/commits/7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+     "html_url": "https://github.com/octocat/Hello-World/commit/7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+     "comments_url": "…",
+     "author": "…",
+     "committer": "…",
+     "parents": "…"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World",
+   "sent": {},
+   "status": 200,
+   "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "etag": "W/\"d52bde28873ea1148f140a95b6d0d1863f0422f02b52eeff9232006c8af5823d\"",
+    "last-modified": "Thu, 08 Oct 2026 03:31:21 GMT",
+    "x-github-media-type": "github.v3; format=json",
+    "x-github-api-version-selected": "2022-11-28",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-resource": "core"
+   },
+   "body": {
+    "archive_url": "https://api.github.com/repos/octocat/Hello-World/{archive_format}{/ref}",
+    "clone_url": "https://github.com/octocat/Hello-World.git",
+    "compare_url": "https://api.github.com/repos/octocat/Hello-World/compare/{base}...{head}",
+    "full_name": "octocat/Hello-World",
+    "git_url": "git://github.com/octocat/Hello-World.git",
+    "has_discussions": false,
+    "has_downloads": false,
+    "has_issues": true,
+    "has_pages": false,
+    "has_projects": true,
+    "has_wiki": true,
+    "id": 1296269,
+    "mirror_url": null,
+    "network_count": 7018,
+    "notifications_url": "https://api.github.com/repos/octocat/Hello-World/notifications{?since,all,participating}",
+    "ssh_url": "git@github.com:octocat/Hello-World.git",
+    "subscribers_count": 1738,
+    "svn_url": "https://github.com/octocat/Hello-World"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/no-such-repository-here",
+   "sent": {},
+   "status": 404,
+   "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-github-media-type": "github.v3; format=json",
+    "x-github-api-version-selected": "2022-11-28",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-resource": "core"
+   },
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/repos/repos#get-a-repository",
+    "status": "404"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/user",
+   "sent": {},
+   "status": 401,
+   "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-github-media-type": "github.v3; format=json",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-resource": "core"
+   },
+   "body": {
+    "message": "Requires authentication",
+    "documentation_url": "https://docs.github.com/rest",
+    "status": "401"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/branches",
+   "sent": {
+    "X-GitHub-Api-Version": "2019-01-01"
+   },
+   "status": 400,
+   "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-github-media-type": "github.v3; format=json",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-resource": "core"
+   },
+   "body": {
+    "message": "Bad Request",
+    "errors": "The version you specified in the \"X-GitHub-API-Version\" request header, \"2019-01-01\", is not a supported version. The following versions are currently supported: \"2026-03-10\" (most recent) and \"2022-11-28\".",
+    "documentation_url": "https://docs.github.com/rest",
+    "status": "400"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World",
+   "sent": {
+    "If-None-Match": "W/\"d52bde28873ea1148f140a95b6d0d1863f0422f02b52eeff9232006c8af5823d\""
+   },
+   "status": 304,
+   "headers": {
+    "etag": "W/\"d52bde28873ea1148f140a95b6d0d1863f0422f02b52eeff9232006c8af5823d\"",
+    "x-ratelimit-remaining": "49",
+    "x-ratelimit-used": "11"
+   },
+   "body": null
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/commits?sha=0000000000000000000000000000000000000000",
+   "status": 404,
+   "link": null,
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/commits/commits#list-commits",
+    "status": "404"
+   },
+   "remaining": "48"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/commits?sha=7fd1a60",
+   "status": 200,
+   "link": null,
+   "body": "200 (list)",
+   "remaining": "47"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/git/trees/no-such-branch",
+   "status": 404,
+   "link": null,
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/git/trees#get-a-tree",
+    "status": "404"
+   },
+   "remaining": "46"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/git/blobs/xyz",
+   "status": 422,
+   "link": null,
+   "body": {
+    "message": "The sha parameter must be exactly 40 characters and contain only [0-9a-f].",
+    "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+    "status": "422"
+   },
+   "remaining": "45"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/git/blobs/0000000000000000000000000000000000000000",
+   "status": 404,
+   "link": null,
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+    "status": "404"
+   },
+   "remaining": "44"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/contents/no/such/path.py",
+   "status": 404,
+   "link": null,
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/repos/contents#get-repository-content",
+    "status": "404"
+   },
+   "remaining": "43"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/999999999",
+   "status": 404,
+   "link": null,
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/pulls/pulls#get-a-pull-request",
+    "status": "404"
+   },
+   "remaining": "42"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/branches?per_page=1&page=2",
+   "status": 200,
+   "link": "<https://api.github.com/repositories/1296269/branches?per_page=1&page=1>; rel=\"prev\", <https://api.github.com/repositories/1296269/branches?per_page=1&page=3>; rel=\"next\", <https://api.github.com/repositories/1296269/branches?per_page=1&page=3>; rel=\"last\", <https://api.github.com/repositories/1296269/branches?per_page=1&page=1>; rel=\"first\"",
+   "body": "200 (list)",
+   "remaining": "41"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/contents/README?ref=HEAD",
+   "status": 200,
+   "link": null,
+   "body": "200 (dict)",
+   "remaining": "40"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/commits?sha=HEAD&per_page=1",
+   "status": 200,
+   "link": "<https://api.github.com/repositories/1296269/commits?sha=HEAD&per_page=1&page=2>; rel=\"next\", <https://api.github.com/repositories/1296269/commits?sha=HEAD&per_page=1&page=3>; rel=\"last\"",
+   "body": "200 (list)",
+   "remaining": "39"
+  }
+ ]
+}

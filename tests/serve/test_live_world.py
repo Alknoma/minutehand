@@ -66,7 +66,16 @@ FRAGMENTS = [
         {
             "users": [{"login": "octo", "name": "Octo Cat"}],
             "tokens": [{"token": "ghp_seedfragment", "kind": "classic", "login": "octo"}],
-            "repositories": [{"owner": "octo", "name": "notes", "files": [{"path": "README.md", "text": "hi"}]}],
+            "repositories": [
+                {
+                    "owner": "octo",
+                    "name": "notes",
+                    "files": [{"path": "README.md", "text": "hi"}],
+                    "commits": [
+                        {"message": "Add the notes", "author": "octo", "before": "P1D", "paths": ["README.md"]}
+                    ],
+                }
+            ],
         },
         Claims(tokens=["ghp_seedfragment"]),
         ("GET", "https://api.github.com/repos/octo/notes", {"Authorization": "Bearer ghp_seedfragment"}),
