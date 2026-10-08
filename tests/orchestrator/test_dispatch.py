@@ -46,6 +46,9 @@ async def test_a_reported_wake_made_late_is_held_back_and_delivered_late_in_its_
     record, store, _ = await rig.run(scn, rig.agent("keep_waking"))
 
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(minutes=90), T0 + timedelta(minutes=150)]
+    assert [w.reason for w in record.wakes] == [WakeReason.START, WakeReason.DUE, WakeReason.DUE], (
+        "each wake keeps the reason it carried"
+    )
     first, late = [e for e in due_entries(store) if e.source is DueSource.REPORTED][:2]
     assert (first.due.at, first.closed, first.fault) == (T0 + timedelta(hours=1), DueClosed.DELAYED, DispatchFault.LATE)
     assert (late.due.at, late.asked_for, late.closed) == (
