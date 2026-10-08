@@ -11,6 +11,7 @@ fork and rerun of that run starts at the same instant.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime, time, timedelta
@@ -67,7 +68,8 @@ class Absence(Model):
 
 
 class DelayRange(Model):
-    """How long a person takes to answer, in simulated time."""
+    """How long a person takes to answer, in simulated time, when they declare no `reply_within`: a delay drawn
+    from this range, then pushed past their absences and outside their working hours."""
 
     shortest: timedelta = timedelta(hours=6)
     longest: timedelta = timedelta(hours=66)
@@ -77,6 +79,28 @@ class DelayRange(Model):
         if self.longest < self.shortest:
             raise ValueError("longest is shorter than shortest")
         return self
+
+
+class Window(Model):
+    """When a person's answer lands: a moment drawn uniformly between `min` and `max` of the person's AVAILABLE
+    time after the ask, the time inside their working hours and outside their absences. Two hours of available
+    time asked at 16:00 on a Friday, of a person working 9 to 17 on weekdays, is 10:00 on Monday."""
+
+    min: timedelta = Field(ge=timedelta(0))
+    max: timedelta
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Window:
+        if self.max < self.min:
+            raise ValueError(f"a window's max ({self.max}) is before its min ({self.min})")
+        return self
+
+
+class Reminded(Model):
+    """What a follow-up does to an answer this person owes: a moment is drawn again from `sooner_within`, of their
+    available time after the follow-up, and the answer moves there when that is sooner. Never later."""
+
+    sooner_within: Window
 
 
 class FormInput(Model):
@@ -98,27 +122,57 @@ class ScriptedPress(Model):
     form: list[FormInput] = []
 
 
+class Intent(StrEnum):
+    """What a person does with the message a step of their script answers. The words are the model's, written from
+    the step's facts, the person's own facts, voice and helpfulness."""
+
+    ANSWER = "answer"  # answers it, from the step's facts
+    DECLINE = "decline"  # says it is not theirs to answer, and does not answer it
+    ASK_BACK = "ask_back"  # asks a question of their own before they will answer
+    DEFER = "defer"  # says they will come back to it, with what the step's facts say about when or why
+
+
 class ScriptedReply(Model):
-    """One fixed answer, given to the nth question this person receives: text written back, or a control used."""
+    """One step of a person's script: what they know, decide or do in answer to the nth message they receive.
+
+    By default the words are a model's, written from `facts` (what this reply carries) and `intent`, in the
+    person's voice; the step fixes what is said, never how. `verbatim` is the rare exact string, for a test that
+    needs those words and no others. `press` uses a control on the message instead of writing back."""
 
     to_ask: int = Field(ge=1)
-    text: str = ""
+    facts: list[str] = Field(
+        default=[], description="What this reply carries, as facts the model writes from; empty: their own facts"
+    )
+    intent: Intent = Intent.ANSWER
+    verbatim: str | None = Field(
+        default=None, min_length=1, description="These exact words and no model: the rare opt-in"
+    )
     press: ScriptedPress | None = None
+    within: Window | None = Field(
+        default=None, description="When this reply lands, in place of the person's own `reply_within` or delay"
+    )
 
     @model_validator(mode="after")
-    def _says_something(self) -> ScriptedReply:
-        if not self.text and self.press is None:
-            raise ValueError("a scripted reply writes text or presses something")
-        if self.text and self.press is not None:
-            raise ValueError("a scripted reply either writes text or presses something, not both")
+    def _one_way(self) -> ScriptedReply:
+        if self.press is not None and (self.facts or self.verbatim is not None or self.intent is not Intent.ANSWER):
+            raise ValueError("a scripted step that presses a control writes nothing: no facts, verbatim or intent")
+        if self.verbatim is not None and (self.facts or self.intent is not Intent.ANSWER):
+            raise ValueError("a verbatim step says exactly its words: no facts or intent beside them")
         return self
 
     @property
-    def said(self) -> str:
-        """Everything this reply puts into the world in the person's words: the text, or what they type in the form."""
-        if self.press is None:
-            return self.text
-        return "\n".join(f.value for f in self.press.form)
+    def written(self) -> bool:
+        """Whether a model writes this step's words."""
+        return self.press is None and self.verbatim is None
+
+    @property
+    def said(self) -> list[str]:
+        """Everything this step puts into the world in the person's words, or the facts the model writes it from."""
+        if self.press is not None:
+            return [f.value for f in self.press.form]
+        if self.verbatim is not None:
+            return [self.verbatim]
+        return list(self.facts)
 
 
 class Helpfulness(StrEnum):
@@ -131,45 +185,80 @@ class Helpfulness(StrEnum):
     MISTAKEN = "mistaken"  # answers confidently from an out-of-date fact
 
 
-class Answers(Model):
-    """Replies are written by a model from this person's facts.
+HISTORY_TURNS = 30
+"""The messages a model is shown word for word when a person declares no `history_turns`."""
 
-    The first reply to each ask is stored with the run; a rerun replays it, so
-    only a new ask costs a model call.
-    """
 
-    kind: Literal["answers"] = "answers"
+class Speaks(Model):
+    """How a person's words are written, by a model, whatever plan they follow: what they do with a question, how
+    they write, and which model writes it. Their facts and stale facts are the person's own (`Person`)."""
+
     delay: DelayRange = DelayRange()
     helpfulness: Helpfulness = Helpfulness.FULL
     voice: str | None = Field(default=None, description="How they write: terse, formal, chatty")
     model: str | None = Field(default=None, description="None uses the run's default model")
     temperature: float = Field(default=0.6, ge=0, le=2)
+    history_turns: int = Field(
+        default=HISTORY_TURNS,
+        ge=1,
+        description="How many messages of what they can see the model is shown word for word, the newest; older ones "
+        "reach it as one summary, written by a model once and kept",
+    )
+
+
+class Answers(Speaks):
+    """No plan: every message is answered by a model from this person's facts, or left unanswered when the model
+    reads it as needing no answer.
+
+    Each reply is stored with the world the first time it is written; a rerun or a fork replays it, so only a new
+    ask costs a model call."""
+
+    kind: Literal["answers"] = "answers"
 
 
 class ScriptedDecision(Model):
     """What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth
     such item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins
-    over one for every item. `inputs` fill what the decision asks for (a reason, an answer)."""
+    over one for every item. What they give with it (a reason, an answer) is written by a model from `facts`,
+    unless `inputs` fixes the words."""
 
     to_item: int | None = Field(default=None, ge=1, description="The nth item waiting on them, from 1; None: every one")
     inbox: ProviderKey | None = Field(
         default=None, description="The inbox's `name`; None: any. With one, `to_item` counts that inbox's items only"
     )
     decision: str = Field(pattern=r"^[a-z][a-z0-9_]*$", description="The name of one of the inbox's decisions")
-    inputs: dict[str, str] = Field(default={}, description="Each input the decision takes, by its name")
+    facts: list[str] = Field(default=[], description="Why they decide so, as facts the model writes each input from")
+    inputs: dict[str, str] = Field(
+        default={}, description="Each input the decision takes, by its name, in exact words: no model for those"
+    )
+    within: Window | None = Field(
+        default=None, description="When this decision is made, in place of the person's own `reply_within` or delay"
+    )
 
 
-class Scripted(Model):
-    """Replies are fixed text. No model call, fully repeatable."""
+class AfterScript(StrEnum):
+    """What a scripted person does once every step of their script is used."""
+
+    ANSWERS = "answers"  # goes on conversing: a model answers from their facts, as for `Answers`
+    SILENT = "silent"  # says nothing more, by the author's word
+
+
+class Scripted(Speaks):
+    """A plan of what this person knows, decides and does, step by step, in answer to the agent's messages. The
+    words are a model's, written from each step's facts in the person's voice, unless a step is `verbatim`.
+
+    A message whose number has no step, before the last step, gets no answer: the script says so. Once the steps
+    are used, the person keeps conversing (`then: answers`, the default), a model writing from their facts, until
+    the run ends; `then: silent` is the author's word that they say nothing more."""
 
     kind: Literal["scripted"] = "scripted"
-    delay: DelayRange = DelayRange()
-    replies: list[ScriptedReply]
+    replies: list[ScriptedReply] = []
+    then: AfterScript = AfterScript.ANSWERS
     decisions: list[ScriptedDecision] | None = Field(
         default=None,
         description="What they decide on items waiting on them in the agent's own product, after their delay like "
-        "a reply. None says nothing, and a run whose agent declares an inbox they can receive items in is refused: "
-        "there is no default decision. `[]` leaves every item pending",
+        "a reply. None says nothing: with `then: answers` a model decides every item, and with `then: silent` a run "
+        "whose agent declares an inbox they can receive items in is refused. `[]` leaves every item to `then`",
     )
     presses_every: ScriptedPress | None = Field(
         default=None,
@@ -177,6 +266,28 @@ class Scripted(Model):
         "card's Approve), they press it after their delay, however many there are; a scripted reply to that ask "
         "is used instead when there is one",
     )
+
+    @model_validator(mode="after")
+    def _steps_once(self) -> Scripted:
+        asks = [r.to_ask for r in self.replies]
+        twice = sorted({n for n in asks if asks.count(n) > 1})
+        if twice:
+            raise ValueError(f"two scripted steps answer ask {', '.join(str(n) for n in twice)}")
+        return self
+
+    @property
+    def last_ask(self) -> int:
+        """The number of the last ask the script has a step for; 0 with none."""
+        return max((r.to_ask for r in self.replies), default=0)
+
+
+class FactChange(Model):
+    """What a person knows from a moment on, by the author's word: their facts (and stale facts, when given) are
+    these from `after` the scenario's start. Nothing else changes what they know; what they said before stays said."""
+
+    after: timedelta = Field(gt=timedelta(0), description="Offset from the scenario's start")
+    facts: list[str] = Field(description="Every fact they hold from then on")
+    stale_facts: list[str] | None = Field(default=None, description="Their stale facts from then on; None: unchanged")
 
 
 class Silent(Model):
@@ -215,6 +326,18 @@ class Person(Model):
     facts: list[str] = Field(default=[], description="What this person knows; all a model reply may draw on")
     stale_facts: list[str] = Field(default=[], description="What they believe that is no longer true")
     reply: ReplyBehaviour = Answers()
+    reply_within: Window | None = Field(
+        default=None,
+        description="When their answers land: drawn within this much of their available time after each ask; "
+        "None: their reply's `delay`. A scripted step or decision's own `within` wins",
+    )
+    fact_changes: list[FactChange] = Field(
+        default=[], description="What they know from later moments on, replacing `facts` (and `stale_facts`) then"
+    )
+    reminded: Reminded | None = Field(
+        default=None,
+        description="What a follow-up does to an answer they owe; None: nothing, the answer lands when it was drawn",
+    )
     working_hours: WorkingHours | None = None
     absences: list[Absence] = []
     early_follow_ups: int = Field(
@@ -229,6 +352,16 @@ class Person(Model):
         "and decide it (`AgentUnderTest.inboxes`, `{credential}` in `as_person`): generated per run and handed to the "
         "agent's command in its variable, or read from Minutehand's own environment. Never stored",
     )
+
+    def knows_at(self, at: datetime, starts_at: datetime) -> tuple[list[str], list[str]]:
+        """Their facts and stale facts at `at`: the latest `fact_changes` reached by then, else their own."""
+        facts, stale = list(self.facts), list(self.stale_facts)
+        for change in sorted(self.fact_changes, key=lambda c: c.after):
+            if starts_at + change.after <= at:
+                facts = list(change.facts)
+                if change.stale_facts is not None:
+                    stale = list(change.stale_facts)
+        return facts, stale
 
 
 class TicketState(StrEnum):
@@ -673,19 +806,27 @@ class TicketInState(Bound):
 
 
 class Relayed(Bound):
-    """The agent passed on what a person said: a message from the agent to `to` carries the `tell`, a phrase the
-    scenario's author picks from what `said_by` will say, matched in any case.
+    """The agent passed on what a person told it: a message from the agent to `to` holds every value of `holding`,
+    a fact the scenario's author gave `said_by` to say, matched in any case.
 
-    The tell is what makes this mechanical rather than a guess at meaning. A scenario is refused when its goal, a
-    direction, a seeded ticket or document, or anyone else's scripted reply or facts holds the tell, and when
-    `said_by` could never say it: silent, or none of their scripted replies (or, written by a model, none of their
-    facts) holds it. In a run, the first thing in the world to hold the tell must be `said_by`'s own reply; an
-    agent message that held it before means the agent did not hear it from them, and no message counts."""
+    The values are facts, not the person's wording: a model writes the person's words, and the check reads whether
+    the fact reached `to`. A scenario is refused when its goal, a direction, a seeded ticket or document, or anyone
+    else's script or facts holds a value, and when `said_by` could never say it: silent, or none of their script's
+    steps or facts holds it. In a run, the agent's message must come after a reply of `said_by`'s that carries the
+    value (in its words, or in the facts its step was written from); an agent message that held it before means the
+    agent did not hear it from them, and no message counts."""
 
     kind: Literal["relayed"] = "relayed"
-    said_by: str = Field(description="Person.key of whoever says the tell")
+    said_by: str = Field(description="Person.key of whoever says it")
     to: str = Field(description="Person.key the agent must pass it on to")
-    tell: str = Field(min_length=1, description="A phrase only `said_by`'s answer holds")
+    holding: list[str] = Field(min_length=1, description="Fact values only `said_by`'s answer carries")
+
+    @field_validator("holding")
+    @classmethod
+    def _not_blank(cls, values: list[str]) -> list[str]:
+        if any(not v.strip() for v in values):
+            raise ValueError("a relayed value is a phrase, not blank")
+        return values
 
 
 class DocumentCreated(Bound):
@@ -810,6 +951,83 @@ class ExpectedOutcome(StrEnum):
     NOT_JUDGED = "not_judged"
 
 
+_RATE = re.compile(r"^\s*(?P<op>>=|<=|==|>|<)\s*(?P<value>[0-9]*\.?[0-9]+)\s*$")
+
+
+class Comparison(StrEnum):
+    AT_LEAST = ">="
+    MORE_THAN = ">"
+    AT_MOST = "<="
+    LESS_THAN = "<"
+    EXACTLY = "=="
+
+
+class Rate(Model):
+    """A share of a scenario's samples, compared: `>= 0.9` is at least nine in ten."""
+
+    op: Comparison
+    value: float = Field(ge=0, le=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _written(cls, said: object) -> object:
+        if not isinstance(said, str):
+            return said
+        found = _RATE.match(said)
+        if found is None:
+            raise ValueError(f'{said!r} is not a rate: write a comparison and a share, e.g. ">= 0.9"')
+        return {"op": found["op"], "value": float(found["value"])}
+
+    def met(self, share: float) -> bool:
+        match self.op:
+            case Comparison.AT_LEAST:
+                return share >= self.value
+            case Comparison.MORE_THAN:
+                return share > self.value
+            case Comparison.AT_MOST:
+                return share <= self.value
+            case Comparison.LESS_THAN:
+                return share < self.value
+            case Comparison.EXACTLY:
+                return share == self.value
+
+    def __str__(self) -> str:
+        return f"{self.op.value} {self.value:g}"
+
+
+class OutcomeRate(Model):
+    """The share of a scenario's samples (`minutehand run-all --samples N`) that must reach one verdict:
+    `{passed: ">= 0.9"}`. Exactly one verdict is named."""
+
+    passed: Rate | None = None
+    failed: Rate | None = None
+    unfinished: Rate | None = None
+    not_judged: Rate | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> Self:
+        if len(self.named()) != 1:
+            raise ValueError("an outcome rate names exactly one verdict: passed, failed, unfinished or not_judged")
+        return self
+
+    def named(self) -> list[tuple[ExpectedOutcome, Rate]]:
+        said = [
+            (ExpectedOutcome.PASSED, self.passed),
+            (ExpectedOutcome.FAILED, self.failed),
+            (ExpectedOutcome.UNFINISHED, self.unfinished),
+            (ExpectedOutcome.NOT_JUDGED, self.not_judged),
+        ]
+        return [(outcome, rate) for outcome, rate in said if rate is not None]
+
+    @property
+    def outcome(self) -> ExpectedOutcome:
+        return self.named()[0][0]
+
+    @property
+    def rate(self) -> Rate:
+        return self.named()[0][1]
+
+
 class _ScenarioBody(Model):
     """Everything a scenario says but when it starts."""
 
@@ -823,7 +1041,6 @@ class _ScenarioBody(Model):
         description="The most wakes a run plays before it stops; absent, sized from the deadline and the agent's "
         "rhythm (`domain.run.wake_limit`)",
     )
-    seed: int = 17
     protected_names: list[str] = Field(default=[], description="Names the agent must spell exactly as given")
     people: list[Person]
     tickets: list[SeededTicket] = []
@@ -848,9 +1065,10 @@ class _ScenarioBody(Model):
     assess_off: list[str] = Field(
         default=[], description="Ids of the agent file's rules this scenario does not judge by"
     )
-    expect_outcome: ExpectedOutcome = Field(
+    expect_outcome: ExpectedOutcome | OutcomeRate = Field(
         default=ExpectedOutcome.PASSED,
-        description="The verdict this scenario is written to reach; `minutehand run-all` exits 1 when a run's differs",
+        description="The verdict this scenario is written to reach: every sample's, or, as a rate, the share of its "
+        'samples that must (`{passed: ">= 0.9"}`); `minutehand run-all` exits 1 when it is missed',
     )
     machine: list[MachineCommand] = Field(
         default=[], description="What happens to the agent's own machine, at moments the scenario sets"
@@ -1018,10 +1236,9 @@ class _ScenarioBody(Model):
             self.happening_document(happening)
 
     def _refuse_tell(self, relayed: Relayed) -> None:
-        """A tell the agent could write without hearing it from `said_by`, or that `said_by` can never say."""
-        tell = relayed.tell.casefold()
+        """A value the agent could write without hearing it from `said_by`, or that `said_by` can never say."""
         if relayed.said_by == relayed.to:
-            raise ValueError(f"a relayed tell goes from one person to another; {relayed.said_by} is both")
+            raise ValueError(f"a relayed fact goes from one person to another; {relayed.said_by} is both")
         elsewhere = [("the goal", self.goal)]
         elsewhere += [(f"direction {i + 1}", d.text) for i, d in enumerate(self.directions)]
         elsewhere += [(f"seeded ticket {t.title!r}", f"{t.title} {t.body}") for t in self.tickets]
@@ -1054,22 +1271,32 @@ class _ScenarioBody(Model):
         for person in self.people:
             if person.key == relayed.said_by:
                 continue
-            said = [r.said for r in person.reply.replies] if isinstance(person.reply, Scripted) else []
-            elsewhere += [(f"what {person.key} says or knows", text) for text in [*said, *person.facts]]
-        for where, text in elsewhere:
-            if tell in text.casefold():
-                raise ValueError(
-                    f"the tell {relayed.tell!r} appears in {where}, so the agent could write it without hearing "
-                    f"it from {relayed.said_by}"
-                )
+            elsewhere += [(f"what {person.key} says or knows", text) for text in _knowable(person)]
         speaker = next(p for p in self.people if p.key == relayed.said_by)
-        reply = speaker.reply
-        if isinstance(reply, Silent):
-            raise ValueError(f"{relayed.said_by} is silent and can never say the tell {relayed.tell!r}")
-        own = [r.said for r in reply.replies] if isinstance(reply, Scripted) else speaker.facts
-        if not any(tell in text.casefold() for text in own):
-            source = "scripted reply" if isinstance(reply, Scripted) else "fact"
-            raise ValueError(f"no {source} of {relayed.said_by} holds the tell {relayed.tell!r}")
+        for value in relayed.holding:
+            told = value.casefold()
+            for where, text in elsewhere:
+                if told in text.casefold():
+                    raise ValueError(
+                        f"the relayed fact {value!r} appears in {where}, so the agent could write it without hearing "
+                        f"it from {relayed.said_by}"
+                    )
+            if isinstance(speaker.reply, Silent):
+                raise ValueError(f"{relayed.said_by} is silent and can never say {value!r}")
+            if not any(told in text.casefold() for text in _knowable(speaker)):
+                raise ValueError(f"no step of {relayed.said_by}'s script and none of their facts holds {value!r}")
+
+
+def _knowable(person: Person) -> list[str]:
+    """Everything a person may say: their script's words and step facts, their facts at any moment, their stale
+    facts, and the inputs and reasons of their scripted decisions."""
+    said: list[str] = [*person.facts, *person.stale_facts]
+    said += [f for c in person.fact_changes for f in [*c.facts, *(c.stale_facts or [])]]
+    if isinstance(person.reply, Scripted):
+        said += [text for r in person.reply.replies for text in r.said]
+        for d in person.reply.decisions or []:
+            said += [*d.facts, *d.inputs.values()]
+    return said
 
 
 def _every_post(posts: list[SeededPost]) -> list[SeededPost]:
@@ -1081,6 +1308,11 @@ class WrittenScenario(_ScenarioBody):
     """A scenario as its file states it. With no `starts_at` it starts at the moment the run does."""
 
     starts_at: AwareDatetime | None = Field(default=None, description="None: the moment the run starts")
+    seed: int | None = Field(
+        default=None,
+        description="Where every draw of the run comes from (each person's reply moments); None: one derived from the "
+        "scenario's name. `minutehand run --seed` overrides it, and the run records the one it played",
+    )
 
     @model_validator(mode="after")
     def _dates_read(self) -> Self:
@@ -1166,10 +1398,31 @@ class Seed(WrittenScenario):
         return written
 
 
+def derived_seed(name: str) -> int:
+    """The seed of a scenario that declares none: fixed by its name, so every run of it draws alike."""
+    return int.from_bytes(hashlib.sha256(name.encode()).digest()[:4], "big")
+
+
 class Scenario(_ScenarioBody):
-    """A scenario as a run plays it and records it: its start is an instant."""
+    """A scenario as a run plays it and records it: its start is an instant, and its seed a number."""
 
     starts_at: AwareDatetime = Field(description="Simulated; every other moment is an offset from it")
+    seed: int = Field(
+        default=0, description="Where every draw of the run comes from; given none, one derived from the name"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _seeded(cls, written: object) -> object:
+        if not isinstance(written, dict) or "name" not in written or not isinstance(written["name"], str):
+            return written
+        if "seed" not in written or written["seed"] is None:
+            return {**written, "seed": derived_seed(written["name"])}
+        return written
+
+    def seeded(self, seed: int | None) -> Scenario:
+        """This scenario under another seed; itself when `seed` is None."""
+        return self if seed is None else self.model_copy(update={"seed": seed})
 
     def starting(self, now: datetime) -> Scenario:
         """Itself: its start is already an instant."""

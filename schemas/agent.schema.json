@@ -419,6 +419,17 @@
           ],
           "default": null
         },
+        "replies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Replies"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "since": {
           "anyOf": [
             {
@@ -1943,6 +1954,33 @@
       "title": "Replay",
       "type": "object"
     },
+    "Replies": {
+      "additionalProperties": false,
+      "description": "What people said back to the agent: each reply or decision that landed, counted at the moment it landed.",
+      "properties": {
+        "by": {
+          "default": [],
+          "description": "By any of these people; empty: by anyone",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "written": {
+          "default": [],
+          "description": "Whose words, any of these; empty: any",
+          "items": {
+            "$ref": "#/$defs/Written"
+          },
+          "title": "Written",
+          "type": "array"
+        }
+      },
+      "title": "Replies",
+      "type": "object"
+    },
     "ReplyDelivery": {
       "additionalProperties": false,
       "description": "How a person's answer to a captured send reaches the agent: the request its own inbound webhook expects.\n\n`body` is the JSON (or, with `form`, the form fields) the agent's endpoint reads, as structure; each string in\nit may name the reply's fields as `{name}` (`REPLY_FIELDS`). `thread` is a path into the acknowledged send's\nown answer (its `{message_id}`, as the email API answered it), giving `{in_reply_to}`; without it,\n`{in_reply_to}` is the id of the message in the run.",
@@ -2646,6 +2684,18 @@
       },
       "title": "Writes",
       "type": "object"
+    },
+    "Written": {
+      "description": "Where a person's words came from (`domain.people.Writing`), as a rule names it.",
+      "enum": [
+        "script",
+        "verbatim",
+        "conversing",
+        "automatic",
+        "by_hand"
+      ],
+      "title": "Written",
+      "type": "string"
     }
   },
   "$id": "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json",

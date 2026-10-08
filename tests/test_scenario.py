@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
-from minutehand.domain.scenario import Scenario, Seed, WrittenScenario
+from minutehand.domain.scenario import Scenario, Scripted, Seed, WrittenScenario
 
 BASE = {
     "name": "partner_pipeline",
@@ -165,10 +165,10 @@ def test_a_tell_a_seeded_comment_or_a_commenting_person_holds_is_rejected() -> N
         "key": "rosa",
         "name": "Rosa",
         "email": "rosa@example.com",
-        "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": "Lakeside Hall it is."}]},
+        "reply": {"kind": "scripted", "then": "silent", "replies": [{"to_ask": 1, "verbatim": "Lakeside Hall it is."}]},
     }
     people = [{"key": "owner", "name": "Owner", "email": "owner@example.com"}, rosa]
-    relayed = {"kind": "relayed", "said_by": "rosa", "to": "owner", "tell": "lakeside hall"}
+    relayed = {"kind": "relayed", "said_by": "rosa", "to": "owner", "holding": ["lakeside hall"]}
     commented = {**LEGAL, "comments": [{"by": "owner", "text": "Maybe Lakeside Hall?"}]}
     with pytest.raises(ValidationError, match="a comment on 'Legal review'"):
         Scenario.model_validate({**BASE, "people": people, "tickets": [commented], "expect": [relayed]})
@@ -185,13 +185,18 @@ def test_a_tell_a_seeded_comment_or_a_commenting_person_holds_is_rejected() -> N
         )
 
 
-def test_a_scripted_reply_that_neither_writes_nor_presses_is_rejected() -> None:
+def test_a_scripted_step_that_mixes_its_ways_of_answering_is_rejected() -> None:
     from minutehand.domain.scenario import ScriptedReply
 
-    with pytest.raises(ValidationError, match="writes text or presses"):
-        ScriptedReply(to_ask=1)
-    with pytest.raises(ValidationError, match="not both"):
-        ScriptedReply.model_validate({"to_ask": 1, "text": "ok", "press": {"label": "Accept"}})
+    assert ScriptedReply(to_ask=1).written, "a step with no facts is written from the person's own"
+    with pytest.raises(ValidationError, match="presses a control writes nothing"):
+        ScriptedReply.model_validate({"to_ask": 1, "verbatim": "ok", "press": {"label": "Accept"}})
+    with pytest.raises(ValidationError, match="presses a control writes nothing"):
+        ScriptedReply.model_validate({"to_ask": 1, "facts": ["ok"], "press": {"label": "Accept"}})
+    with pytest.raises(ValidationError, match="verbatim step says exactly its words"):
+        ScriptedReply.model_validate({"to_ask": 1, "verbatim": "ok", "facts": ["ok"]})
+    with pytest.raises(ValidationError, match="two scripted steps answer ask 1"):
+        Scripted.model_validate({"replies": [{"to_ask": 1}, {"to_ask": 1, "verbatim": "x"}]})
 
 
 def test_a_reason_typed_into_a_form_is_what_the_person_says_for_a_relayed_tell() -> None:
@@ -201,6 +206,7 @@ def test_a_reason_typed_into_a_form_is_what_the_person_says_for_a_relayed_tell()
         "email": "nadia@example.com",
         "reply": {
             "kind": "scripted",
+            "then": "silent",
             "replies": [{"to_ask": 1, "press": {"label": "Reject", "form": [{"value": "budget is frozen"}]}}],
         },
     }
@@ -208,7 +214,7 @@ def test_a_reason_typed_into_a_form_is_what_the_person_says_for_a_relayed_tell()
         {
             **BASE,
             "people": [*BASE["people"], nadia],
-            "expect": [{"kind": "relayed", "said_by": "nadia", "to": "owner", "tell": "budget is frozen"}],
+            "expect": [{"kind": "relayed", "said_by": "nadia", "to": "owner", "holding": ["budget is frozen"]}],
         }
     )
     assert scenario.expect[0].kind == "relayed"
@@ -219,7 +225,11 @@ def test_a_picker_that_picks_nobody_real_is_rejected() -> None:
         "key": "nadia",
         "name": "Nadia",
         "email": "nadia@example.com",
-        "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "press": {"label": "Assign to", "picks": "ghost"}}]},
+        "reply": {
+            "kind": "scripted",
+            "then": "silent",
+            "replies": [{"to_ask": 1, "press": {"label": "Assign to", "picks": "ghost"}}],
+        },
     }
     with pytest.raises(ValidationError, match="no such person: ghost"):
         Scenario.model_validate({**BASE, "people": [*BASE["people"], picker]})
@@ -301,7 +311,11 @@ def test_a_tell_a_person_edits_into_a_document_is_refused() -> None:
                         "key": "rosa",
                         "name": "Rosa",
                         "email": "rosa@example.com",
-                        "reply": {"kind": "scripted", "replies": [{"to_ask": 1, "text": "Lakeside hall."}]},
+                        "reply": {
+                            "kind": "scripted",
+                            "then": "silent",
+                            "replies": [{"to_ask": 1, "verbatim": "Lakeside hall."}],
+                        },
                     },
                 ],
                 "documents": [DOC],
@@ -314,7 +328,7 @@ def test_a_tell_a_person_edits_into_a_document_is_refused() -> None:
                         "action": {"kind": "edited", "append": "Venue: lakeside hall"},
                     }
                 ],
-                "expect": [{"kind": "relayed", "said_by": "rosa", "to": "owner", "tell": "lakeside hall"}],
+                "expect": [{"kind": "relayed", "said_by": "rosa", "to": "owner", "holding": ["lakeside hall"]}],
             }
         )
 

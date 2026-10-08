@@ -15,7 +15,7 @@ scenario:
     - key: "{team.owner_key}"
       name: "{team.owner_name}"
       email: "{team.owner_email}"
-      reply: {kind: scripted, replies: []}
+      reply: {kind: scripted, then: silent}
     - key: "{team.ask_key}"
       name: "{team.ask_name}"
       email: "{team.ask_email}"
@@ -23,10 +23,10 @@ scenario:
         kind: scripted
         delay: {shortest: PT2H, longest: PT6H}
         replies:
-          - {to_ask: 2, text: "{team.answer}"}   # nothing to the first message; the reminder is answered
+          - {to_ask: 2, facts: ["{team.answer}"]}   # nothing to the first message; the reminder is answered
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
-    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", tell: "{team.tell}"}
+    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", holding: ["{team.tell}"]}
   assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
     - id: comes_back_to_an_answer      # an answer is acted on within the hour
       each: ask

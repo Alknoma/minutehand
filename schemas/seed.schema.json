@@ -100,9 +100,18 @@
       "title": "Account",
       "type": "string"
     },
+    "AfterScript": {
+      "description": "What a scripted person does once every step of their script is used.",
+      "enum": [
+        "answers",
+        "silent"
+      ],
+      "title": "AfterScript",
+      "type": "string"
+    },
     "Answers": {
       "additionalProperties": false,
-      "description": "Replies are written by a model from this person's facts.\n\nThe first reply to each ask is stored with the run; a rerun replays it, so\nonly a new ask costs a model call.",
+      "description": "No plan: every message is answered by a model from this person's facts, or left unanswered when the model\nreads it as needing no answer.\n\nEach reply is stored with the world the first time it is written; a rerun or a fork replays it, so only a new\nask costs a model call.",
       "properties": {
         "delay": {
           "$ref": "#/$defs/DelayRange",
@@ -114,6 +123,13 @@
         "helpfulness": {
           "$ref": "#/$defs/Helpfulness",
           "default": "full"
+        },
+        "history_turns": {
+          "default": 30,
+          "description": "How many messages of what they can see the model is shown word for word, the newest; older ones reach it as one summary, written by a model once and kept",
+          "minimum": 1,
+          "title": "History Turns",
+          "type": "integer"
         },
         "kind": {
           "const": "answers",
@@ -269,6 +285,17 @@
       "title": "Commitments",
       "type": "object"
     },
+    "Comparison": {
+      "enum": [
+        ">=",
+        ">",
+        "<=",
+        "<",
+        "=="
+      ],
+      "title": "Comparison",
+      "type": "string"
+    },
     "Count": {
       "additionalProperties": false,
       "description": "Which facts a rule counts, and between which moments.",
@@ -332,6 +359,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/PlannedWakes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "replies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Replies"
             },
             {
               "type": "null"
@@ -404,7 +442,7 @@
     },
     "DelayRange": {
       "additionalProperties": false,
-      "description": "How long a person takes to answer, in simulated time.",
+      "description": "How long a person takes to answer, in simulated time, when they declare no `reply_within`: a delay drawn\nfrom this range, then pushed past their absences and outside their working hours.",
       "properties": {
         "longest": {
           "default": "P2DT18H",
@@ -816,6 +854,48 @@
       "title": "ExpectedOutcome",
       "type": "string"
     },
+    "FactChange": {
+      "additionalProperties": false,
+      "description": "What a person knows from a moment on, by the author's word: their facts (and stale facts, when given) are\nthese from `after` the scenario's start. Nothing else changes what they know; what they said before stays said.",
+      "properties": {
+        "after": {
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "facts": {
+          "description": "Every fact they hold from then on",
+          "items": {
+            "type": "string"
+          },
+          "title": "Facts",
+          "type": "array"
+        },
+        "stale_facts": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Their stale facts from then on; None: unchanged",
+          "title": "Stale Facts"
+        }
+      },
+      "required": [
+        "after",
+        "facts"
+      ],
+      "title": "FactChange",
+      "type": "object"
+    },
     "FieldSet": {
       "additionalProperties": false,
       "description": "The person sets one field of a record-shaped document (a database row's property) to a value, written as\ntext the provider reads by the field's type: an option's name, a number, a date, `true` or `false`, or\ncomma-separated names for a field that holds several.",
@@ -967,6 +1047,17 @@
         "mistaken"
       ],
       "title": "Helpfulness",
+      "type": "string"
+    },
+    "Intent": {
+      "description": "What a person does with the message a step of their script answers. The words are the model's, written from\nthe step's facts, the person's own facts, voice and helpfulness.",
+      "enum": [
+        "answer",
+        "decline",
+        "ask_back",
+        "defer"
+      ],
+      "title": "Intent",
       "type": "string"
     },
     "JsonValue": {},
@@ -1188,6 +1279,58 @@
       "title": "Moves",
       "type": "object"
     },
+    "OutcomeRate": {
+      "additionalProperties": false,
+      "description": "The share of a scenario's samples (`minutehand run-all --samples N`) that must reach one verdict:\n`{passed: \">= 0.9\"}`. Exactly one verdict is named.",
+      "properties": {
+        "failed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "not_judged": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "passed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "unfinished": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "OutcomeRate",
+      "type": "object"
+    },
     "Person": {
       "additionalProperties": false,
       "properties": {
@@ -1241,6 +1384,15 @@
           "title": "Email",
           "type": "string"
         },
+        "fact_changes": {
+          "default": [],
+          "description": "What they know from later moments on, replacing `facts` (and `stale_facts`) then",
+          "items": {
+            "$ref": "#/$defs/FactChange"
+          },
+          "title": "Fact Changes",
+          "type": "array"
+        },
         "facts": {
           "default": [],
           "description": "What this person knows; all a model reply may draw on",
@@ -1259,6 +1411,18 @@
           "title": "Name",
           "type": "string"
         },
+        "reminded": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reminded"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What a follow-up does to an answer they owe; None: nothing, the answer lands when it was drawn"
+        },
         "reply": {
           "default": {
             "delay": {
@@ -1266,6 +1430,7 @@
               "shortest": "PT6H"
             },
             "helpfulness": "full",
+            "history_turns": 30,
             "kind": "answers",
             "model": null,
             "temperature": 0.6,
@@ -1291,6 +1456,18 @@
             }
           ],
           "title": "Reply"
+        },
+        "reply_within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When their answers land: drawn within this much of their available time after each ask; None: their reply's `delay`. A scripted step or decision's own `within` wins"
         },
         "stale_facts": {
           "default": [],
@@ -1876,6 +2053,27 @@
       "title": "ProviderSeed",
       "type": "object"
     },
+    "Rate": {
+      "additionalProperties": false,
+      "description": "A share of a scenario's samples, compared: `>= 0.9` is at least nine in ten.",
+      "properties": {
+        "op": {
+          "$ref": "#/$defs/Comparison"
+        },
+        "value": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "op",
+        "value"
+      ],
+      "title": "Rate",
+      "type": "object"
+    },
     "Reassigns": {
       "additionalProperties": false,
       "description": "The person hands the ticket to someone else, or takes everyone off it.",
@@ -1907,7 +2105,7 @@
     },
     "Relayed": {
       "additionalProperties": false,
-      "description": "The agent passed on what a person said: a message from the agent to `to` carries the `tell`, a phrase the\nscenario's author picks from what `said_by` will say, matched in any case.\n\nThe tell is what makes this mechanical rather than a guess at meaning. A scenario is refused when its goal, a\ndirection, a seeded ticket or document, or anyone else's scripted reply or facts holds the tell, and when\n`said_by` could never say it: silent, or none of their scripted replies (or, written by a model, none of their\nfacts) holds it. In a run, the first thing in the world to hold the tell must be `said_by`'s own reply; an\nagent message that held it before means the agent did not hear it from them, and no message counts.",
+      "description": "The agent passed on what a person told it: a message from the agent to `to` holds every value of `holding`,\na fact the scenario's author gave `said_by` to say, matched in any case.\n\nThe values are facts, not the person's wording: a model writes the person's words, and the check reads whether\nthe fact reached `to`. A scenario is refused when its goal, a direction, a seeded ticket or document, or anyone\nelse's script or facts holds a value, and when `said_by` could never say it: silent, or none of their script's\nsteps or facts holds it. In a run, the agent's message must come after a reply of `said_by`'s that carries the\nvalue (in its words, or in the facts its step was written from); an agent message that held it before means the\nagent did not hear it from them, and no message counts.",
       "properties": {
         "at_least": {
           "default": 1,
@@ -1942,6 +2140,15 @@
           "description": "Offset from the scenario's start",
           "title": "By"
         },
+        "holding": {
+          "description": "Fact values only `said_by`'s answer carries",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Holding",
+          "type": "array"
+        },
         "kind": {
           "const": "relayed",
           "default": "relayed",
@@ -1949,14 +2156,8 @@
           "type": "string"
         },
         "said_by": {
-          "description": "Person.key of whoever says the tell",
+          "description": "Person.key of whoever says it",
           "title": "Said By",
-          "type": "string"
-        },
-        "tell": {
-          "description": "A phrase only `said_by`'s answer holds",
-          "minLength": 1,
-          "title": "Tell",
           "type": "string"
         },
         "to": {
@@ -1968,9 +2169,23 @@
       "required": [
         "said_by",
         "to",
-        "tell"
+        "holding"
       ],
       "title": "Relayed",
+      "type": "object"
+    },
+    "Reminded": {
+      "additionalProperties": false,
+      "description": "What a follow-up does to an answer this person owes: a moment is drawn again from `sooner_within`, of their\navailable time after the follow-up, and the answer moves there when that is sooner. Never later.",
+      "properties": {
+        "sooner_within": {
+          "$ref": "#/$defs/Window"
+        }
+      },
+      "required": [
+        "sooner_within"
+      ],
+      "title": "Reminded",
       "type": "object"
     },
     "Renamed": {
@@ -1992,6 +2207,33 @@
         "to"
       ],
       "title": "Renamed",
+      "type": "object"
+    },
+    "Replies": {
+      "additionalProperties": false,
+      "description": "What people said back to the agent: each reply or decision that landed, counted at the moment it landed.",
+      "properties": {
+        "by": {
+          "default": [],
+          "description": "By any of these people; empty: by anyone",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "written": {
+          "default": [],
+          "description": "Whose words, any of these; empty: any",
+          "items": {
+            "$ref": "#/$defs/Written"
+          },
+          "title": "Written",
+          "type": "array"
+        }
+      },
+      "title": "Replies",
       "type": "object"
     },
     "Rule": {
@@ -2128,7 +2370,7 @@
     },
     "Scripted": {
       "additionalProperties": false,
-      "description": "Replies are fixed text. No model call, fully repeatable.",
+      "description": "A plan of what this person knows, decides and does, step by step, in answer to the agent's messages. The\nwords are a model's, written from each step's facts in the person's voice, unless a step is `verbatim`.\n\nA message whose number has no step, before the last step, gets no answer: the script says so. Once the steps\nare used, the person keeps conversing (`then: answers`, the default), a model writing from their facts, until\nthe run ends; `then: silent` is the author's word that they say nothing more.",
       "properties": {
         "decisions": {
           "anyOf": [
@@ -2143,7 +2385,7 @@
             }
           ],
           "default": null,
-          "description": "What they decide on items waiting on them in the agent's own product, after their delay like a reply. None says nothing, and a run whose agent declares an inbox they can receive items in is refused: there is no default decision. `[]` leaves every item pending",
+          "description": "What they decide on items waiting on them in the agent's own product, after their delay like a reply. None says nothing: with `then: answers` a model decides every item, and with `then: silent` a run whose agent declares an inbox they can receive items in is refused. `[]` leaves every item to `then`",
           "title": "Decisions"
         },
         "delay": {
@@ -2153,11 +2395,35 @@
             "shortest": "PT6H"
           }
         },
+        "helpfulness": {
+          "$ref": "#/$defs/Helpfulness",
+          "default": "full"
+        },
+        "history_turns": {
+          "default": 30,
+          "description": "How many messages of what they can see the model is shown word for word, the newest; older ones reach it as one summary, written by a model once and kept",
+          "minimum": 1,
+          "title": "History Turns",
+          "type": "integer"
+        },
         "kind": {
           "const": "scripted",
           "default": "scripted",
           "title": "Kind",
           "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None uses the run's default model",
+          "title": "Model"
         },
         "presses_every": {
           "anyOf": [
@@ -2172,28 +2438,59 @@
           "description": "On every message the agent sends them that carries a control reading this label (an approval card's Approve), they press it after their delay, however many there are; a scripted reply to that ask is used instead when there is one"
         },
         "replies": {
+          "default": [],
           "items": {
             "$ref": "#/$defs/ScriptedReply"
           },
           "title": "Replies",
           "type": "array"
+        },
+        "temperature": {
+          "default": 0.6,
+          "maximum": 2,
+          "minimum": 0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "then": {
+          "$ref": "#/$defs/AfterScript",
+          "default": "answers"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How they write: terse, formal, chatty",
+          "title": "Voice"
         }
       },
-      "required": [
-        "replies"
-      ],
       "title": "Scripted",
       "type": "object"
     },
     "ScriptedDecision": {
       "additionalProperties": false,
-      "description": "What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth\nsuch item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins\nover one for every item. `inputs` fill what the decision asks for (a reason, an answer).",
+      "description": "What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth\nsuch item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins\nover one for every item. What they give with it (a reason, an answer) is written by a model from `facts`,\nunless `inputs` fixes the words.",
       "properties": {
         "decision": {
           "description": "The name of one of the inbox's decisions",
           "pattern": "^[a-z][a-z0-9_]*$",
           "title": "Decision",
           "type": "string"
+        },
+        "facts": {
+          "default": [],
+          "description": "Why they decide so, as facts the model writes each input from",
+          "items": {
+            "type": "string"
+          },
+          "title": "Facts",
+          "type": "array"
         },
         "inbox": {
           "anyOf": [
@@ -2214,7 +2511,7 @@
             "type": "string"
           },
           "default": {},
-          "description": "Each input the decision takes, by its name",
+          "description": "Each input the decision takes, by its name, in exact words: no model for those",
           "title": "Inputs",
           "type": "object"
         },
@@ -2231,6 +2528,18 @@
           "default": null,
           "description": "The nth item waiting on them, from 1; None: every one",
           "title": "To Item"
+        },
+        "within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When this decision is made, in place of the person's own `reply_within` or delay"
         }
       },
       "required": [
@@ -2278,8 +2587,21 @@
     },
     "ScriptedReply": {
       "additionalProperties": false,
-      "description": "One fixed answer, given to the nth question this person receives: text written back, or a control used.",
+      "description": "One step of a person's script: what they know, decide or do in answer to the nth message they receive.\n\nBy default the words are a model's, written from `facts` (what this reply carries) and `intent`, in the\nperson's voice; the step fixes what is said, never how. `verbatim` is the rare exact string, for a test that\nneeds those words and no others. `press` uses a control on the message instead of writing back.",
       "properties": {
+        "facts": {
+          "default": [],
+          "description": "What this reply carries, as facts the model writes from; empty: their own facts",
+          "items": {
+            "type": "string"
+          },
+          "title": "Facts",
+          "type": "array"
+        },
+        "intent": {
+          "$ref": "#/$defs/Intent",
+          "default": "answer"
+        },
         "press": {
           "anyOf": [
             {
@@ -2291,15 +2613,36 @@
           ],
           "default": null
         },
-        "text": {
-          "default": "",
-          "title": "Text",
-          "type": "string"
-        },
         "to_ask": {
           "minimum": 1,
           "title": "To Ask",
           "type": "integer"
+        },
+        "verbatim": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "These exact words and no model: the rare opt-in",
+          "title": "Verbatim"
+        },
+        "within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When this reply lands, in place of the person's own `reply_within` or delay"
         }
       },
       "required": [
@@ -3374,6 +3717,28 @@
       "title": "Where",
       "type": "object"
     },
+    "Window": {
+      "additionalProperties": false,
+      "description": "When a person's answer lands: a moment drawn uniformly between `min` and `max` of the person's AVAILABLE\ntime after the ask, the time inside their working hours and outside their absences. Two hours of available\ntime asked at 16:00 on a Friday, of a person working 9 to 17 on weekdays, is 10:00 on Monday.",
+      "properties": {
+        "max": {
+          "format": "duration",
+          "title": "Max",
+          "type": "string"
+        },
+        "min": {
+          "format": "duration",
+          "title": "Min",
+          "type": "string"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "title": "Window",
+      "type": "object"
+    },
     "WorkingHours": {
       "additionalProperties": false,
       "description": "Replies land only inside these hours, in this person's own timezone.",
@@ -3486,6 +3851,18 @@
       },
       "title": "Writes",
       "type": "object"
+    },
+    "Written": {
+      "description": "Where a person's words came from (`domain.people.Writing`), as a rule names it.",
+      "enum": [
+        "script",
+        "verbatim",
+        "conversing",
+        "automatic",
+        "by_hand"
+      ],
+      "title": "Written",
+      "type": "string"
     }
   },
   "$id": "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/seed.schema.json",
@@ -3610,9 +3987,17 @@
       "type": "array"
     },
     "expect_outcome": {
-      "$ref": "#/$defs/ExpectedOutcome",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExpectedOutcome"
+        },
+        {
+          "$ref": "#/$defs/OutcomeRate"
+        }
+      ],
       "default": "passed",
-      "description": "The verdict this scenario is written to reach; `minutehand run-all` exits 1 when a run's differs"
+      "description": "The verdict this scenario is written to reach: every sample's, or, as a rate, the share of its samples that must (`{passed: \">= 0.9\"}`); `minutehand run-all` exits 1 when it is missed",
+      "title": "Expect Outcome"
     },
     "goal": {
       "default": "",
@@ -3745,9 +4130,17 @@
       "type": "array"
     },
     "seed": {
-      "default": 17,
-      "title": "Seed",
-      "type": "integer"
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Where every draw of the run comes from (each person's reply moments); None: one derived from the scenario's name. `minutehand run --seed` overrides it, and the run records the one it played",
+      "title": "Seed"
     },
     "sign_ins": {
       "default": [],

@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
+from minutehand.domain.conversation import PersonCall
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
 from minutehand.domain.storage import Freed, RunUsage
@@ -86,6 +87,19 @@ class Store(Protocol):
         ...
 
     def replies(self) -> list[PersonReply]: ...
+
+    def record_person_call(self, call: PersonCall) -> None:
+        """Keep one call made to a model for a person, answered, replayed or failed."""
+        ...
+
+    def person_calls(self) -> list[PersonCall]:
+        """This run's calls for its people, in order; a fork's own, not its parent's."""
+        ...
+
+    def written(self, key: str) -> str | None:
+        """The answer a model gave to exactly this ask (`PersonCall.key`) in any run of this world's file, as its
+        JSON text; None when none was ever answered."""
+        ...
 
     def versions(self, entity: EntityRef) -> list[Stored]:
         """Every version of one entity this run can see, oldest first: the history `get` answers the end of.

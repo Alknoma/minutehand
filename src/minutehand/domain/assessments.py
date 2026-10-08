@@ -217,6 +217,23 @@ class Commitments(Model):
     waiting_on: list[Who] = Field(default=[], description="Waiting on any of these people; empty: on anyone or nothing")
 
 
+class Written(StrEnum):
+    """Where a person's words came from (`domain.people.Writing`), as a rule names it."""
+
+    SCRIPT = "script"  # a model, from a step of their script
+    VERBATIM = "verbatim"  # the step's exact words, or a control pressed
+    CONVERSING = "conversing"  # a model, from their own facts: no plan, or after the script was used
+    AUTOMATIC = "automatic"  # their automatic reply while away
+    BY_HAND = "by_hand"  # whoever drives a standing world, speaking for them
+
+
+class Replies(Model):
+    """What people said back to the agent: each reply or decision that landed, counted at the moment it landed."""
+
+    by: list[Who] = Field(default=[], description="By any of these people; empty: by anyone")
+    written: list[Written] = Field(default=[], description="Whose words, any of these; empty: any")
+
+
 class Asks(Model):
     """The run's asks: each wait for a person's answer, counted at the moment it was made."""
 
@@ -260,6 +277,7 @@ class Count(Model):
     commitments: Commitments | None = None
     asks: Asks | None = None
     memory: Memory | None = None
+    replies: Replies | None = None
     since: MomentText | None = Field(default=None, description="From this moment, inclusive; absent: the start")
     until: MomentText | None = Field(default=None, description="To this moment, inclusive; absent: the end")
 
@@ -281,6 +299,7 @@ class Count(Model):
             ("commitments", self.commitments),
             ("asks", self.asks),
             ("memory", self.memory),
+            ("replies", self.replies),
         ]
 
     @property
@@ -289,7 +308,18 @@ class Count(Model):
         return next(k for k, v in self._kinds() if v is not None)
 
 
-_COUNTED = ("follow_ups", "touches", "messages", "writes", "wakes", "planned_wakes", "commitments", "asks", "memory")
+_COUNTED = (
+    "follow_ups",
+    "touches",
+    "messages",
+    "writes",
+    "wakes",
+    "planned_wakes",
+    "commitments",
+    "asks",
+    "memory",
+    "replies",
+)
 _ON_AN_ASK = ("follow_ups", "touches")
 
 

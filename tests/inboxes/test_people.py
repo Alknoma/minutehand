@@ -17,7 +17,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import checkpoints
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier_model import DECISION_PROMPT_VERSION, PeopleReplier, WrittenDecision, WrittenInput
+from minutehand.application.replier import DECISION_PROMPT_VERSION, PeopleReplier, WrittenDecision, WrittenInput
 from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.traffic import SeenCall

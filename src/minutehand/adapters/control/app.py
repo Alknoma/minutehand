@@ -106,6 +106,7 @@ from minutehand.adapters.control.wire import (
     OwedView,
     PendingItemView,
     Permit,
+    PersonOwesView,
     PressControl,
     ProvidersView,
     Quiet,
@@ -198,6 +199,13 @@ def _view(world: World) -> WorldView:
         now=standing.clock.now(),
         head=world.store.head(),
         owed=[OwedView(at=at, what=what) for at, what in standing.owed()],
+        people_owe=[
+            PersonOwesView(
+                at=o.at, person=o.person, answers=o.answers, decision=o.decision, writing=o.writing, failed=o.failed
+            )
+            for o in standing.owed_by_people()
+        ],
+        person_calls=world.store.person_calls(),
         resets=world.resets,
         case_id=world.case.case_id if world.case is not None else None,
         case=world.case.name if world.case is not None else None,
@@ -545,14 +553,13 @@ def create_app(serving: Serving) -> Starlette:
         due = [
             DueDecisionView(
                 at=at,
-                inbox=reply.in_reply_to.provider,
-                item=reply.in_reply_to,
-                person=reply.person,
-                decision=reply.decides.decision,
-                inputs=reply.decides.inputs,
+                inbox=item.provider,
+                item=item,
+                person=person,
+                decision=decides.decision if decides is not None else None,
+                inputs=decides.inputs if decides is not None else {},
             )
-            for at, reply in live.due_decisions()
-            if reply.decides is not None
+            for at, person, item, decides in live.due_decisions()
         ]
         return _json(InboxesView(pending=pending, due=due, unread=looked.unread))
 

@@ -227,8 +227,8 @@ class Decision(Model):
     def said(self) -> str:
         return self.reads if self.reads is not None else f"decided {self.name}"
 
-    def refuse_inputs(self, given: dict[str, str], who: str) -> None:
-        """Inputs this decision does not take, or one it requires left out, refused naming `who` gave them."""
+    def refuse_unknown_inputs(self, given: dict[str, str], who: str) -> None:
+        """Inputs this decision does not take, refused naming `who` gave them."""
         known = {i.name for i in self.inputs}
         unknown = sorted(set(given) - known)
         if unknown:
@@ -236,6 +236,10 @@ class Decision(Model):
                 f"{who} gives decision {self.name!r} {', '.join(unknown)}; it takes "
                 + (", ".join(sorted(known)) or "nothing")
             )
+
+    def refuse_inputs(self, given: dict[str, str], who: str) -> None:
+        """Inputs this decision does not take, or one it requires left out, refused naming `who` gave them."""
+        self.refuse_unknown_inputs(given, who)
         missing = sorted(i.name for i in self.inputs if i.required and i.name not in given)
         if missing:
             raise ValueError(f"{who} makes decision {self.name!r} without {', '.join(missing)}, which it requires")

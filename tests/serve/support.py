@@ -77,8 +77,9 @@ def seed(*people: tuple[str, str], scripted: dict[str, str] | None = None, asses
                     "reply": (
                         {
                             "kind": "scripted",
+                            "then": "silent",
                             "delay": {"shortest": "PT1H", "longest": "PT1H"},
-                            "replies": [{"to_ask": 1, "text": replies[key]}],
+                            "replies": [{"to_ask": 1, "verbatim": replies[key]}],
                         }
                         if key in replies
                         else {"kind": "silent"}

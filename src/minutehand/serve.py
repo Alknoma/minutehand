@@ -57,6 +57,8 @@ from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import EmulatorRefused
+from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -71,6 +73,7 @@ from minutehand.application.emulators import record_health
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.refusals import RunRefused, refuse_unheld
+from minutehand.application.replier import unspoken
 from minutehand.application.run_clock import RunClock
 from minutehand.application.standing import (
     FIRST_WAKE,
@@ -93,6 +96,7 @@ from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scen
 from minutehand.domain.telemetry import ReceivedSpan
 from minutehand.domain.world import CallOutcome, Exchange, WorldEvent
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
     ASGIApp,
     ChangesPeople,
@@ -277,8 +281,17 @@ class _Closed:
 class Standing:
     """Every world the server holds, and which one each call belongs to: `adapters.proxy.worlds.Worlds`."""
 
-    def __init__(self, state: Path, registry: Registry, *, keep: int, routing: Routing | None = None) -> None:
+    def __init__(
+        self,
+        state: Path,
+        registry: Registry,
+        *,
+        keep: int,
+        routing: Routing | None = None,
+        model: LanguageModel | None = None,
+    ) -> None:
         self._state = state
+        self.model = model
         self._registry = registry
         self.routing = routing or Routing(registry)
         self._keep = keep
@@ -536,6 +549,15 @@ class Standing:
         """The world's store, seeded from `spec` as of `now`, with every provider its seed names seeded already; in
         the step its case is in, or, under no case label, stepped on its own."""
         scenario = spec.seed.starting(now)
+        inboxes = _inboxes(spec, scenario)
+        if spec.scripted_people and self.model is None:
+            needing = unspoken(scenario, spec.inboxes)
+            if needing:
+                raise WorldRefused(
+                    f"a model writes what {'; '.join(needing)} say, and this server has no model configured: start "
+                    f"it with {MODEL_VARIABLE} and {API_KEY_VARIABLE} set (and {BASE_URL_VARIABLE} for a service "
+                    "other than OpenAI's)"
+                )
         directory = run_dir(self._state, world_id)
         clock = RunClock(scenario.starts_at)
         store = SqliteStore(directory / WORLD, world_id, clock)
@@ -548,7 +570,8 @@ class Standing:
                 inbound=[i.to_target() for i in spec.inbound],
                 signing=signing,
                 scripted=spec.scripted_people,
-                inboxes=_inboxes(spec, scenario),
+                inboxes=inboxes,
+                model=self.model,
             )
             named = sorted(
                 {t.provider for t in scenario.tickets}
@@ -759,6 +782,7 @@ class Standing:
         world = self._open(
             world_id, old.spec, old.signing, old.capturing, old.standing.scenario.starts_at, case=old.case
         )
+        world.store.adopt_written(kept)  # what the people's model wrote before is replayed, not written again
         world.resets = old.resets + 1
         self.worlds[world_id] = world
         if old.case is not None:
@@ -1110,7 +1134,7 @@ async def serving(state: Path, options: ServeOptions) -> AsyncIterator[Serving]:
         routing = Routing(registry, model_hosts=list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *options.model_hosts])))
     except ProviderConflict as e:
         raise RunRefused(f"the model hosts {', '.join(options.model_hosts)}: {e}") from e
-    standing = Standing(state, registry, keep=options.keep, routing=routing)
+    standing = Standing(state, registry, keep=options.keep, routing=routing, model=model_from_environment(os.environ))
     lobby = standing.lobby
     try:
         async with Proxy(

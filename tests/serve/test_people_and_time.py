@@ -50,7 +50,7 @@ def test_advancing_the_clock_past_a_scripted_reply_delivers_it_and_not_before(se
             assert early.fired == [] and receiver.texts() == []
 
             late = world.advance(timedelta(minutes=2))
-            assert [f.what for f in late.fired] == ["sofia's scripted reply"]
+            assert [f.what for f in late.fired] == ["sofia's reply (verbatim)"]
             assert receiver.texts() == ["Yes, Thursday works."]
             replies = world.events(actor=Actor.PERSON, operation=Operation.CREATE)
             assert [e.seq for e in replies] == late.fired[0].events

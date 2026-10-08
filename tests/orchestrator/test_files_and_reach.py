@@ -29,7 +29,7 @@ people:
   - key: sofia
     name: Sofia Romano
     email: sofia@example.com
-    reply: {kind: scripted, delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, text: "Yes."}]}
+    reply: {kind: scripted, delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, verbatim: "Yes."}], then: silent}
     working_hours: {timezone: Europe/Rome, opens: 09:00, closes: 17:30}
 ticket_fates:
   - {assignee: sofia, becomes: done, after: P3D}
@@ -114,7 +114,7 @@ def test_a_fork_changes_file_loads_with_the_run_and_seq_given_beside_it(tmp_path
     path = tmp_path / "fork.yaml"
     path.write_text(
         "overrides:\n  - kind: person_change\n    person: sofia\n    reply: {kind: scripted, "
-        "delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, text: 'Yes.'}]}\n"
+        "delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, verbatim: 'Yes.'}], then: silent}\n"
     )
     fork = load_fork(path, parent_run="r1", at_seq=7)
     assert (fork.parent_run, fork.at_seq, fork.samples) == ("r1", 7, 1)

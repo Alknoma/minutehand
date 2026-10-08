@@ -16,6 +16,7 @@ import yaml
 from minutehand.domain.run import VerdictKind
 from minutehand.run_all import Batch, free_port
 from minutehand.session import Played
+from tests.support.people import people_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "follow_up"
@@ -40,7 +41,7 @@ def _folder(tmp_path: Path, *, silent_expects: str) -> Path:
 
 
 def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")} | people_environment()
     return subprocess.run([str(MINUTEHAND), *args], capture_output=True, text=True, env=env, timeout=300)
 
 
@@ -56,15 +57,15 @@ def test_run_all_plays_every_scenario_in_parallel_and_exits_0_when_each_verdict_
     batch = Batch.model_validate_json(ran.stdout)
     by_name = {p.scenario: p for p in batch.played}
     assert sorted(by_name) == ["offsite_venue", "offsite_venue_silent", "offsite_venue_strict"], "notes.yaml skipped"
-    assert [by_name[n].verdict for n in sorted(by_name)] == [
+    assert [by_name[n].samples[0].verdict for n in sorted(by_name)] == [
         VerdictKind.PASSED,
         VerdictKind.UNFINISHED,
         VerdictKind.FAILED,
     ]
     assert all(p.matched for p in batch.played)
-    rosa = next(t for t in by_name["offsite_venue"].timeline if t.person == "rosa")
+    rosa = next(t for t in by_name["offsite_venue"].samples[0].timeline if t.person == "rosa")
     assert [m.what.split(":")[0] for m in rosa.moments][:2] == ["agent", "they"]
-    logs = {Path(p.log).parent for p in batch.played}
+    logs = {Path(p.samples[0].log).parent for p in batch.played}
     assert len(logs) == 3, "each scenario ran in a folder of its own"
     assert not list(folder.glob(".agent.*")), "the filled agent files were removed"
 

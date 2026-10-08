@@ -27,6 +27,7 @@ from minutehand import session
 from minutehand.application.memory import memory_of
 from minutehand.ports.store import Store
 from tests.ports import free_port
+from tests.support.people import people_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENT_DIR = ROOT / "examples" / "reference_agent"
@@ -182,6 +183,7 @@ class Rig:
             "REFERENCE_MODEL_URL": self.model,
             "REFERENCE_SEARCH_URL": self.search,
             "REFERENCE_EXTRA_CA": self.ca,
+            **people_environment(),
             **more,
         }
 

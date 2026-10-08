@@ -12,12 +12,13 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, Receiver
 from minutehand.agent._wire import ON, URL
 from minutehand.application.orchestrator import Services, run_scenario
-from minutehand.application.replier_scripted import ScriptedReplier
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, Command, WakeSource
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import (
+    AfterScript,
     DelayRange,
     Person,
     ProviderKey,
@@ -32,6 +33,7 @@ from minutehand.ports.people import Replier
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
 from tests.orchestrator.world import CHAT, SECRET, Chat, RecordingClock, Scheduler, Switchboard, serving
+from tests.support.people import people_model
 
 AGENTS = Path(__file__).parent / "agents"
 T0 = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)  # a Monday
@@ -44,8 +46,9 @@ def person(key: str, reply: ReplyBehaviour) -> Person:
 def scripted(*texts: str, hours: float) -> Scripted:
     delay = timedelta(hours=hours)
     return Scripted(
+        then=AfterScript.SILENT,
         delay=DelayRange(shortest=delay, longest=delay),
-        replies=[ScriptedReply(to_ask=n + 1, text=t) for n, t in enumerate(texts)],
+        replies=[ScriptedReply(to_ask=n + 1, verbatim=t) for n, t in enumerate(texts)],
     )
 
 
@@ -144,7 +147,7 @@ class Rig:
             store=store,
             clock=clock,
             services=self.services(),
-            replier=replier or ScriptedReplier(scn),
+            replier=replier or PeopleReplier(scn, people_model()),
             mounts=self.mounts,
             signing={CHAT: SECRET},
             traffic=self.board,

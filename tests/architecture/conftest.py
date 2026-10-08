@@ -18,6 +18,7 @@ from tests.architecture.support import (
     free_port,
     outside_module,
 )
+from tests.support.people import people_environment
 
 
 @pytest.fixture(scope="session")
@@ -48,7 +49,7 @@ def minutehand(outside: object, tmp_path_factory: pytest.TempPathFactory) -> Ite
             "--upstream-ca",
             str(outside.ca),  # type: ignore[attr-defined]
         ],
-        env={**os.environ, APPROVER_TOKEN_VARIABLE: APPROVER_TOKEN},
+        env={**os.environ, APPROVER_TOKEN_VARIABLE: APPROVER_TOKEN, **people_environment()},
     )
     try:
         with MinutehandClient(f"http://127.0.0.1:{control}") as client:

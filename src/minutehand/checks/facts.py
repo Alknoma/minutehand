@@ -168,7 +168,7 @@ def messages(view: RunView) -> list[Sent]:
         if not isinstance(event.after, MessageSnapshot):
             continue
         to = [p.key for p in recipients(event, view.scenario)]
-        out = [k for k in to if any(a.person == k and a.covers(event.sim_time) for a in away)]
+        out = [k for k in to if any(a.person == k and a.away_when_written_to(event.sim_time) for a in away)]
         sent.append(Sent(event=event, to=to, to_away=out))
     return sent
 

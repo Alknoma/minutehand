@@ -133,6 +133,13 @@ class NotRestorable(Model):
 AgentState = Annotated[Remembered | NotRestorable, Field(discriminator="kind")]
 
 
+class Unwritten(Model):
+    """An answer a person owes whose words a model could not write yet: tried again on the run's next turn."""
+
+    person: str = Field(description="Person.key")
+    asked: int = Field(ge=1, description="WorldEvent.seq of the ask it answers")
+
+
 class Checkpoint(Model):
     wake: int = Field(ge=0, description="The wake that had just ended; 0 is setup")
     now: AwareDatetime
@@ -143,6 +150,9 @@ class Checkpoint(Model):
         "edited the message they answered: they never reached anyone and settle nothing",
     )
     fated: list[EntityRef] = Field(default=[], description="Tickets whose fate is already scheduled or landed")
+    unwritten: list[Unwritten] = Field(
+        default=[], description="Answers owed whose words the model failed to write, tried again on the next turn"
+    )
     commitments: list[Commitment] | None = None
     pending: list[Pending]
     agent: Remembered = Field(description="The agent's memory and report at this moment")

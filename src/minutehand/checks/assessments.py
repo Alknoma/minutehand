@@ -317,6 +317,15 @@ class _Reader:
             ]
         if count.memory is not None:
             return self._memory(rule, subject, at)
+        if count.replies is not None:
+            r = count.replies
+            by = {self._key(w, subject) for w in r.by}
+            how = {w.value for w in r.written}
+            return [
+                Fact(at=x.at)
+                for x in self.view.replies
+                if x.at <= self.end and (not by or x.person in by) and (not how or x.writing.value in how)
+            ]
         assert count.asks is not None
         a = count.asks
         of = {self._key(w, subject) for w in a.of}
