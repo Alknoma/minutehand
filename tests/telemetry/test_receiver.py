@@ -255,8 +255,9 @@ async def test_a_grpc_exporter_without_grpc_installed_is_said_once_and_not_left_
     store: SqliteStore, clock: RunClock
 ) -> None:
     async with Receiver(store, clock, grpc=False) as without:
-        await export("grpc", handed_out(without.port), clean=False)
-        await export("grpc", handed_out(without.port), clean=False)
+        refused = {**handed_out(without.port), "EXPORT_GIVE_UP_SECONDS": "1"}
+        await export("grpc", refused, clean=False)
+        await export("grpc", refused, clean=False)
         notices = without.notices
 
     assert len(notices) == 1 and "install `minutehand[grpc]`" in notices[0], notices

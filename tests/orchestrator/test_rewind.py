@@ -187,7 +187,7 @@ async def test_a_prompt_patch_with_nothing_on_the_wire_is_refused(rig: Rig) -> N
 async def test_a_fork_with_a_booking_pending_is_refused(rig: Rig) -> None:
     # Until this was refused, the fork shared the parent's schedule record and, on the AWS provider, raised
     # LookupError when it fired: the schedule's queue was in the parent's account, in the parent process's memory.
-    agent = rig.agent("book", extra=[Booked()])
+    agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))])
     scn = scenario(ticket_fates=[])
     parent, store, _ = await rig.run(scn, agent)
     after_start = checkpoint_seqs(store)[1]
@@ -197,7 +197,7 @@ async def test_a_fork_with_a_booking_pending_is_refused(rig: Rig) -> None:
 
 
 async def test_a_fork_after_the_booking_fired_is_not_refused(rig: Rig) -> None:
-    agent = rig.agent("book", extra=[Booked()])
+    agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))])
     scn = scenario(ticket_fates=[])
     parent, store, _ = await rig.run(scn, agent)
     last = checkpoint_seqs(store)[-1]
