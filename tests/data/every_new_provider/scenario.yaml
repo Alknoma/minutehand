@@ -19,6 +19,10 @@ tickets:
 documents:
   - {provider: notion, title: Launch notes, text: "Venue first."}
   - {provider: microsoft, title: Launch plan, text: "Book the venue."}
+provider_seeds:
+  # A Notion world is made as an integration, and its seed must declare one.
+  - provider: notion
+    body: {workspaces: [{key: workspace, name: Workspace, integrations: [{key: agent, name: Agent}]}]}
 happenings:
   - {kind: ticket, person: nadia, ticket: Book the venue, after: P1D, action: {kind: moves, to: done}}
   - {kind: document, person: nadia, document: Launch notes, after: P2D, action: {kind: edited, append: Venue booked.}}

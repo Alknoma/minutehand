@@ -12,11 +12,10 @@ every run.
 - Each `SeededDocument` for this provider is a page in the first workspace, under a
   top-level page named by its `folder` (made the first time a document names it) or at the
   top, shared with every integration of that workspace.
-- With no `NotionSeed`, there is one workspace with the scenario's people and documents and
-  one internal integration, the agent's (`AGENT_INTEGRATION`); a seed whose workspaces declare
-  no integration gets it in its first workspace. A call whose token names no integration is
-  made as the first integration the seed declares (`NotionWorld.agent`): Minutehand does
-  not enforce credentials.
+- Every Notion call is made as an integration, so a seed must declare at least one; one that
+  declares none (or no `NotionSeed` at all) is refused at seeding, saying so. A call whose
+  token names no integration is made as the first integration the seed declares
+  (`NotionWorld.agent`): Minutehand does not enforce credentials.
 
 Everything is written as actor SCENARIO, stamped with the scenario's start.
 """
@@ -248,8 +247,6 @@ def person_id(workspace: str, email: str) -> str:
 
 
 DEFAULT_WORKSPACE = SeedWorkspace(key="workspace", name="Workspace")
-AGENT_INTEGRATION = SeedIntegration(key="agent", name="Agent")
-"""The agent's integration in a world whose seed declares none."""
 
 
 def _block_json(block: SeedBlock) -> JsonValue:
@@ -305,7 +302,10 @@ def seed(scenario: Scenario, world: Store) -> None:
     found = read(scenario)
     workspaces = found.workspaces or [DEFAULT_WORKSPACE]
     if not any(w.integrations for w in workspaces):
-        workspaces = [workspaces[0].model_copy(update={"integrations": [AGENT_INTEGRATION]}), *workspaces[1:]]
+        raise ValueError(
+            "the Notion seed declares no integration: every Notion call is made as one, so declare the agent's in "
+            "workspaces[].integrations"
+        )
     now = scenario.starts_at
     owner = next(p for p in scenario.people if p.key == scenario.owner)
     people = {p.key: p for p in scenario.people}

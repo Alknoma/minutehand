@@ -50,6 +50,9 @@ HISTORY = [
     {"by": "owen", "text": "second", "ago": "PT1H"},
     {"by": "mila", "text": "third", "ago": "PT1H"},
 ]  # fmt: skip
+NOTION_AGENT = (
+    '{"workspaces": [{"key": "workspace", "name": "Workspace", "integrations": [{"key": "agent", "name": "Agent"}]}]}'
+)
 TRACKERS = ("jira", "youtrack", "asana")
 DOCUMENTS = ("google_workspace", "notion", "microsoft")
 MESSAGING = ("slack", "microsoft")
@@ -91,6 +94,9 @@ def base(provider: str) -> dict[str, object]:
                              "history": HISTORY}]  # fmt: skip
     if provider == "github":
         seed["provider_seeds"] = [{"provider": "github", "body": _github_seed()}]
+    if provider == "notion":
+        # A Notion world is made as an integration, and its seed must declare one.
+        seed["provider_seeds"] = [{"provider": "notion", "body": NOTION_AGENT}]
     return seed
 
 

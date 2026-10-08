@@ -31,6 +31,10 @@ FRAGMENTS = {
     "microsoft": ('{"faults": [{"answer": {"kind": "refused", "error": "generalException"}}]}', '{"not_installed_for": []}'),
 }  # fmt: skip
 
+NOTION_AGENT = (
+    '{"workspaces": [{"key": "workspace", "name": "Workspace", "integrations": [{"key": "agent", "name": "Agent"}]}]}'
+)
+
 SCENARIO = Scenario.model_validate(
     {
         "name": "declared",
@@ -38,6 +42,8 @@ SCENARIO = Scenario.model_validate(
         "owner": "owen",
         "starts_at": START,
         "people": [{"key": "owen", "name": "Owen Owner", "email": "owen@example.com"}],
+        # A Notion world is made as an integration, and a seed must declare one.
+        "provider_seeds": [{"provider": "notion", "body": NOTION_AGENT}],
     }
 )
 

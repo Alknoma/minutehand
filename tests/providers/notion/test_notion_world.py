@@ -118,9 +118,11 @@ def test_the_same_seed_mints_the_same_ids_in_every_run(tmp_path: Path) -> None:
     assert [e.entity for e in first.store.events()] == [e.entity for e in second.store.events()]
 
 
-def test_without_a_notion_seed_there_is_a_workspace_and_no_integration(tmp_path: Path) -> None:
-    world = seeded(tmp_path, scenario(notion={}))
-    assert {e.entity.kind for e in world.store.events()} == {EntityKind.RECORD}
+@pytest.mark.parametrize("notion", [{}, {"workspaces": [{"key": "ws", "name": "Workspace"}]}])
+def test_a_seed_that_declares_no_integration_is_refused_naming_it(tmp_path: Path, notion: dict[str, object]) -> None:
+    """Every Notion call is made as an integration; a world with none would need one invented, so it is refused."""
+    with pytest.raises(ValueError, match="declares no integration"):
+        seeded(tmp_path, scenario(notion=notion))
 
 
 # --------------------------------------------------------------------------- people acting
