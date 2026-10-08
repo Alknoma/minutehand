@@ -1,8 +1,8 @@
 """Asana, through its REST API at `https://app.asana.com/api/1.0` (https://developers.asana.com/reference).
 
 Every caller holds a personal access token sent as `Authorization: Bearer`: the agent's, and one per seeded person
-(`AsanaSeed.tokens`, each naming its person), so a world seeded with tokens refuses any other. Every write is
-wrapped in `{"data": ...}`, every answer is `{"data": ...}` (with `next_page` on a paged collection), and a list
+(`AsanaSeed.tokens`, each naming its person); any other token acts as the agent, since Minutehand does not enforce
+credentials. Every write is wrapped in `{"data": ...}`, every answer is `{"data": ...}` (with `next_page` on a paged collection), and a list
 is compact until `opt_fields` names what to bring.
 
 A task's state is where Asana's board puts it: the section it sits in (`To do`, `Done`, `Cancelled`, and an
@@ -504,7 +504,7 @@ class AsanaDriver(Driver):
                 trigger=_raised,
                 typed=ApiException,  # pyright: ignore[reportUnknownArgumentType]
                 status=429,
-                holds="You have made too many requests recently",
+                holds="You've made too many requests and hit a rate limit",
                 expires_after=timedelta(minutes=1),
                 then=then,
             )

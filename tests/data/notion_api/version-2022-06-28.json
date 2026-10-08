@@ -1,0 +1,17 @@
+{
+ "x-minutehand-subset": {
+  "source": "https://developers.notion.com/reference/post-database-query",
+  "retrieved": "2026-10-08",
+  "describes_version": "2022-06-28",
+  "kept": "The operations of Notion-Version 2022-06-28 that the latest OpenAPI document (openapi-subset-2026-10-08.json) no longer lists. The reference page says: \"Deprecated as of version 2025-09-03. This page describes the API for versions up to and including 2022-06-28.\" Every other 2022-06-28 operation is still listed there."
+ },
+ "paths": {
+  "/v1/databases/{database_id}/query": {
+   "post": {
+    "operationId": "post-database-query",
+    "summary": "Query a database",
+    "x-notion-docs-ref": "https://developers.notion.com/reference/post-database-query"
+   }
+  }
+ }
+}

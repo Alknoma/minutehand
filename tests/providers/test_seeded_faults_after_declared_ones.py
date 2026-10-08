@@ -23,6 +23,13 @@ from minutehand.ports.store import Store
 START = datetime(2026, 9, 1, 9, tzinfo=UTC)
 PEOPLE = [{"key": "owen", "name": "Owen Owner", "email": "owen@example.com", "reply": {"kind": "silent"}}]
 
+WITH: dict[str, dict[str, object]] = {
+    "notion": json.loads(
+        '{"workspaces": [{"key": "workspace", "name": "Workspace", "integrations": [{"key": "agent", "name": "Agent"}]}]}'
+    )
+}
+"""What a provider's seed needs beside its faults: a Notion world is made as an integration, which it must declare."""
+
 FAULTS: dict[str, tuple[str, list[dict[str, object]]]] = {
     "slack": ("faults", [{"call": "auth.test", "answer": {"kind": "refused", "error": "account_inactive"}},
                          {"call": "users.list", "answer": {"kind": "rate_limited"}}]),
@@ -54,7 +61,7 @@ def test_a_fragments_fault_lands_after_one_declared_at_runtime(provider: str, tm
     manifests = {m.key: m for m in registry.manifests}
     scenario = Seed.model_validate(
         {"starts_at": START.isoformat(), "people": PEOPLE,
-         "provider_seeds": [{"provider": provider, "body": json.dumps({field: [first]})}]}
+         "provider_seeds": [{"provider": provider, "body": json.dumps({field: [first], **WITH.get(provider, {})})}]}
     ).starting(START)  # fmt: skip
     clock = RunClock(scenario.starts_at)
     store = SqliteStore(tmp_path / "world.db", "world", clock)

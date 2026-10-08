@@ -48,14 +48,15 @@ async def _page(sdk: Sdk, title: str, children: list[dict[str, Any]]) -> str:
     return str(made["id"])
 
 
-async def test_a_call_with_no_bearer_token_is_refused_unauthorized(async_sdk: Sdk) -> None:
-    """Documented: https://developers.notion.com/reference/status-codes lists 401 `unauthorized` for a request
-    without a valid bearer token."""
+async def test_a_call_with_no_bearer_token_is_answered_as_the_agents_integration(async_sdk: Sdk) -> None:
+    """Minutehand does not enforce credentials (CLAIMS.md): Notion answers a call with no bearer token 401
+    `unauthorized` (`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`); this fake answers it as the
+    first integration the seed declares."""
     async with _bare(async_sdk, VERSION) as anonymous:
         response = await anonymous.post("/v1/search", json={})
 
-    assert response.status_code == 401
-    assert response.json()["code"] == "unauthorized"
+    assert response.status_code == 200, response.text
+    assert response.json()["object"] == "list"
 
 
 async def test_a_call_with_no_notion_version_header_is_refused_missing_version(async_sdk: Sdk) -> None:
@@ -136,10 +137,9 @@ async def test_a_toggle_created_with_children_reports_and_lists_them(async_sdk: 
     assert [_plain(b) for b in inside] == ["tucked"]
 
 
-async def test_an_append_after_a_grandchild_is_refused_validation_error(async_sdk: Sdk) -> None:
-    """Observed: the `after` block must be a direct child of the block being appended to. The endpoint's page
-    (https://developers.notion.com/reference/patch-block-children) says only that new blocks go after the named
-    one; a nested block as the anchor was seen refused, not silently appended at the end."""
+async def test_an_append_after_a_grandchild_is_refused_by_name(async_sdk: Sdk) -> None:
+    """The `after` block of an append must be one of the block's children; what Notion answers to a grandchild in its
+    place is neither documented nor reported, so it is the shared not-served refusal, and nothing is written."""
     page = await _page(
         async_sdk,
         "Anchors",
@@ -153,8 +153,8 @@ async def test_an_append_after_a_grandchild_is_refused_validation_error(async_sd
         async_sdk, lambda c: c.blocks.children.append(page, children=[_para("stray")], after=buried["id"])
     )
 
-    assert refusal.status == 400
-    assert "after" in str(refusal)
+    assert (refusal.status, refusal.code) == (501, "invalid_request")
+    assert "an `after` that names no child" in str(refusal)
     assert async_sdk.store.head() == head
 
 

@@ -11,12 +11,15 @@ from pathlib import Path
 import httpx
 import pytest
 
+from minutehand.adapters.answering import Guarded
 from minutehand.adapters.providers.asana import state
+from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.provider import AsanaProvider, build
 from minutehand.adapters.providers.asana.state import AsanaWorld
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, Scenario, SeededTicket, TicketState
+from minutehand.ports.provider import ASGIApp
 
 START = datetime(2026, 8, 24, 10, 50, 3, 250000, tzinfo=UTC)
 TOKEN = "simulated-personal-access-token"
@@ -68,9 +71,16 @@ def workspace(tmp_path: Path) -> Workspace:
     return Workspace(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
 
 
+def served(provider: AsanaProvider, store: SqliteStore, clock: RunClock) -> ASGIApp:
+    """The app as the proxy serves it: what it does not serve (`NotImplementedError`) answered 501 in Asana's shape."""
+    return Guarded(provider.app(store, clock), provider, provider=MANIFEST.key, clock=clock)
+
+
 def client_for(provider: AsanaProvider, store: SqliteStore, clock: RunClock) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=provider.app(store, clock)), base_url="https://app.asana.com", headers=AUTH
+        transport=httpx.ASGITransport(app=served(provider, store, clock)),
+        base_url="https://app.asana.com",
+        headers=AUTH,
     )
 
 
@@ -110,6 +120,14 @@ def error(response: httpx.Response, status: int) -> str:
     message = errors[0]["message"]
     assert isinstance(message, str)
     return message
+
+
+def unserved(response: httpx.Response) -> str:
+    """What a 501 says is not served, after checking it is the shared not-served refusal in Asana's envelope."""
+    message = error(response, 501)
+    prefix = "minutehand's asana fake does not implement "
+    assert message.startswith(prefix), message
+    return message[len(prefix) :].split(": ", 1)[1]
 
 
 async def create(client: httpx.AsyncClient, **fields: object) -> dict[str, object]:

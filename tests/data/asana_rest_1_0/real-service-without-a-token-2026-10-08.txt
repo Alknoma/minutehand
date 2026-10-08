@@ -1,0 +1,44 @@
+# Answers of the real Asana API (https://app.asana.com) recorded on 2026-10-08 with curl, with no token or with a
+# token that is not one ("0/bogus"): the routing, the error envelope and the OAuth error the service answers before
+# any credential is accepted. Only the status line, the content type and the body are kept.
+
+$ curl -sS -i https://app.asana.com/api/1.0/users/me
+HTTP/2 401 
+content-type: application/json; charset=UTF-8
+{"errors":[{"message":"Not Authorized","help":"For more information on API status codes and how to handle them, read the docs on errors: https://developers.asana.com/docs/errors"}]}
+
+$ curl -sS -i -H Authorization: Bearer 0/bogus https://app.asana.com/api/1.0/users/me
+HTTP/2 401 
+content-type: application/json; charset=UTF-8
+{"errors":[{"message":"Not Authorized","help":"For more information on API status codes and how to handle them, read the docs on errors: https://developers.asana.com/docs/errors"}]}
+
+$ curl -sS -i -X POST -H Authorization: Bearer 0/bogus -H Content-Type: application/json -d {"name":"x"} https://app.asana.com/api/1.0/tasks
+HTTP/2 401 
+content-type: application/json; charset=UTF-8
+{"errors":[{"message":"Not Authorized","help":"For more information on API status codes and how to handle them, read the docs on errors: https://developers.asana.com/docs/errors"}]}
+
+$ curl -sS -i -H Authorization: Bearer 0/bogus https://app.asana.com/api/1.0/nothing/here
+HTTP/2 404 
+content-type: application/json; charset=UTF-8
+{"errors":[{"message":"No matching route for request","help":"For more information on API status codes and how to handle them, read the docs on errors: https://developers.asana.com/docs/errors"}]}
+
+$ curl -sS -i https://app.asana.com/api/1.0/nothing/here
+HTTP/2 404 
+content-type: application/json; charset=UTF-8
+{"errors":[{"message":"No matching route for request","help":"For more information on API status codes and how to handle them, read the docs on errors: https://developers.asana.com/docs/errors"}]}
+
+$ curl -sS -i -X PATCH -H Authorization: Bearer 0/bogus https://app.asana.com/api/1.0/users/me
+HTTP/2 404 
+content-type: application/json; charset=UTF-8
+{"errors":[{"message":"No matching route for request","help":"For more information on API status codes and how to handle them, read the docs on errors: https://developers.asana.com/docs/errors"}]}
+
+$ curl -sS -i -X DELETE -H Authorization: Bearer 0/bogus https://app.asana.com/api/1.0/workspaces
+HTTP/2 404 
+content-type: application/json; charset=UTF-8
+{"errors":[{"message":"No matching route for request","help":"For more information on API status codes and how to handle them, read the docs on errors: https://developers.asana.com/docs/errors"}]}
+
+$ curl -sS -i -X POST -d grant_type=refresh_token&refresh_token=bogus&client_id=1&client_secret=x https://app.asana.com/-/oauth_token
+HTTP/2 400 
+content-type: application/json; charset=UTF-8
+{"error":"invalid_grant","error_uri":"https:\u002F\u002Fasana.com\u002Fdevelopers\u002Fdocumentation\u002Fgetting-started\u002Fauthentication","error_description":"The `refresh_token` provided was invalid."}
+

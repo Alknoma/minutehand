@@ -470,6 +470,11 @@ def test_a_press_goes_to_the_worlds_interactivity_url_when_it_declares_one(serve
             served.client.close_world(world.world_id)
 
 
+NOTION_AGENT = (
+    '{"workspaces": [{"key": "workspace", "name": "Workspace", "integrations": [{"key": "agent", "name": "Agent"}]}]}'
+)
+"""A Notion world is made as an integration, and its seed must declare one."""
+
 ADDITIONS = [
     ("youtrack", {"tickets": [{"provider": "youtrack", "project": "Launch", "title": "Second", "assignee": "owen"}]}),
     ("jira", {"tickets": [{"provider": "jira", "project": "Launch", "title": "Second", "assignee": "owen"}]}),
@@ -496,6 +501,7 @@ def test_an_addition_lands_beside_what_a_provider_seeded_and_moves_none_of_it(
                         for p in ("jira", "youtrack") if p == provider],
             "documents": [{"provider": p, "title": "Plan", "text": "hello"}
                           for p in ("google_workspace", "notion") if p == provider],
+            "provider_seeds": [{"provider": "notion", "body": NOTION_AGENT}] if provider == "notion" else [],
         }
     )  # fmt: skip
     world = OpenWorld(

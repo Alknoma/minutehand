@@ -21,12 +21,11 @@ from minutehand.adapters.providers.asana.seed import AsanaSeed
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, ProviderSeed, Scenario, SeededTicket, TicketState
-from tests.providers.asana.asana_workspace import START, Workspace
+from tests.providers.asana.asana_workspace import START, Workspace, served
 
 AGENT_TOKEN = "pat-agent"
 ALICE_TOKEN = "pat-alice"
-SHORT_TOKEN = "pat-short-lived"
-REFRESH_TOKEN = "refresh-agent"
+REFRESH_TOKEN = "refresh-alice"
 THROTTLED_AFTER = timedelta(days=2)
 THROTTLED_FOR = timedelta(seconds=90)
 
@@ -87,9 +86,8 @@ SEED = AsanaSeed.model_validate(
         "tokens": [
             {"token": AGENT_TOKEN},
             {"token": ALICE_TOKEN, "person": "alice"},
-            {"token": SHORT_TOKEN, "expires_after": "PT1H"},
         ],
-        "refresh_tokens": [{"refresh_token": REFRESH_TOKEN}],
+        "refresh_tokens": [{"refresh_token": REFRESH_TOKEN, "person": "alice"}],
         "rate_limits": [{"after": "P2D", "lasts": "PT90S"}],
     }
 )
@@ -147,7 +145,7 @@ def rich(tmp_path: Path) -> Workspace:
 
 def client_as(rich: Workspace, token: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=rich.provider.app(rich.store, rich.clock)),
+        transport=httpx.ASGITransport(app=served(rich.provider, rich.store, rich.clock)),
         base_url="https://app.asana.com",
         headers={"Authorization": f"Bearer {token}"},
     )

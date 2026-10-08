@@ -1,27 +1,83 @@
 # Notion: where the fake's behaviour comes from
 
-Each row is a fact about the Notion API that an earlier stand-in for it was built or tested to hold, and the test in
-`tests/providers/notion/test_notion_vendor_claims.py` that holds this fake to it. **Documented** facts cite the page
-they are read from; **observed** facts are what callers of the real service reported and no public page states.
+Each row is a fact about the Notion API that this fake holds, and the test that holds it. **Documented** facts cite
+the page they are read from; **observed** facts cite a recording of the real service under `tests/data/notion_api/`
+or a public report quoting its answer. A case no page, recording or report gives Notion's answer to is not answered:
+it raises the shared not-served refusal (501 `invalid_request`, naming the case and saying Notion's answer to it is not
+documented), as every operation, version and feature this fake does not serve does. `claims` is `tests/providers/notion/test_notion_vendor_claims.py`,
+`fidelity` is `test_notion_fidelity.py`, `refusals` is `test_notion_refusals.py`.
+
+The version answered is `2022-06-28`. Notion publishes an OpenAPI document only for its latest version
+(https://developers.notion.com/openapi.json, `2026-03-11`). Its 64 operations and the one 2022-06-28 operation it no
+longer lists are `surface.OPERATIONS`: 20 served, 45 raising the shared not-served refusal naming them
+(`app.UNSERVED`, `test_notion_surface.py`); only a path Notion does not document is `invalid_request_url`. The
+subset for the resources this fake claims, with their schemas, is under `tests/data/notion_api/` (33 operations, 20
+served, 13 refused).
+
+## Credentials
+
+Minutehand deliberately does not enforce credentials or scopes. Notion answers a call with no token, or a token that
+is not one, 401 `unauthorized` (`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`); this fake answers
+it, as the agent's integration: the first the seed declares. A seed that declares none is refused at seeding, saying
+an integration must be declared; none is invented. A token the seed holds or `/v1/oauth/token` minted acts as its integration. Removed and never refused:
+the 401 for a missing, unknown, used or non-access token; the 403 `restricted_resource` for a capability the
+integration lacks; and at the token endpoint the `invalid_client` for an unknown client id or wrong secret and the
+`invalid_grant` for an unknown, reused or another client's code or refresh token and another redirect URI. What the
+world holds still decides what a caller sees: a page not shared with the integration is `object_not_found`, and a
+person's email is answered only to an integration with the `read_users_with_email` capability
+(https://developers.notion.com/reference/capabilities).
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
-| No bearer token is a 401 `unauthorized` | documented | `test_a_call_with_no_bearer_token_is_refused_unauthorized` | https://developers.notion.com/reference/status-codes |
-| No `Notion-Version` header is a 400 `missing_version` | documented | `test_a_call_with_no_notion_version_header_is_refused_missing_version` | https://developers.notion.com/reference/status-codes |
-| A page created with 101 children is a 400 `validation_error`, and nothing is written | documented | `test_a_page_created_with_a_hundred_and_one_children_is_refused_validation_error` | https://developers.notion.com/reference/post-page, https://developers.notion.com/reference/request-limits |
-| A page created with exactly 100 children keeps all of them | documented | `test_a_page_created_with_exactly_a_hundred_children_keeps_them_all` | https://developers.notion.com/reference/post-page |
-| A `text.content` over 2000 characters is a 400 `validation_error` | documented | `test_a_text_run_over_two_thousand_characters_is_refused_validation_error` | https://developers.notion.com/reference/request-limits |
-| A `text.content` of exactly 2000 characters is kept whole | documented | `test_a_text_run_of_exactly_two_thousand_characters_is_kept_whole` | https://developers.notion.com/reference/request-limits |
-| A toggle created with children answers `has_children: true` and lists them as its own children | documented | `test_a_toggle_created_with_children_reports_and_lists_them` | https://developers.notion.com/reference/block |
-| An append whose `after` names a grandchild, not a direct child, is a 400 and writes nothing | observed | `test_an_append_after_a_grandchild_is_refused_validation_error` | |
-| An append whose `after` names a direct child lands right behind it, not at the end | documented | `test_an_append_after_a_direct_child_lands_right_behind_it` | https://developers.notion.com/reference/patch-block-children |
-| An update that carries another block type's body is a 400, and the block keeps its type | observed | `test_an_update_that_names_another_block_type_is_refused` | https://developers.notion.com/reference/update-a-block says only that a wrong type is a 400 |
-| A children listing stops at 100 with `has_more` and a `next_cursor` that fetches the rest | documented | `test_a_children_listing_stops_at_a_hundred_and_hands_a_cursor_for_the_rest` | https://developers.notion.com/reference/intro |
+| A call with no bearer token, or one that names no integration, is answered as the agent's integration | Minutehand's own: credentials are not enforced | `claims::test_a_call_with_no_bearer_token_is_answered_as_the_agents_integration`, `refusals::test_a_call_with_no_token_or_an_unknown_one_is_made_as_the_agents_integration` | `tests/data/notion_api/real-service-without-a-token-2026-10-08.txt` (what Notion answers instead) |
+| No capability refuses a call | Minutehand's own: scopes are not enforced | `refusals::test_an_integration_missing_a_capability_is_not_refused` | https://developers.notion.com/reference/capabilities (what Notion answers instead) |
+| No client secret, code, redirect URI or refresh token is refused at `/v1/oauth/token` | Minutehand's own: credentials are not enforced | `refusals::test_no_code_client_secret_redirect_or_refresh_token_is_refused` | `tests/data/notion_api/real-service-without-a-token-2026-10-08.txt` (`invalid_client`, what Notion answers instead) |
+| An error is `{"object": "error", "status", "code", "message", "request_id"}` | observed | `notion_world.refusal` (every refusal test) | `tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`, https://developers.notion.com/reference/status-codes |
+| A path or method with no endpoint is 400 `invalid_request_url` "Invalid request URL." | observed | `refusals::test_an_unknown_path_and_a_wrong_method_are_refused_invalid_request_url` | `tests/data/notion_api/real-service-without-a-token-2026-10-08.txt` |
+| A body that is not JSON is 400 `invalid_json` "Error parsing JSON body." | observed | `refusals::test_a_body_that_is_not_json_is_refused_invalid_json` | `tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`, https://developers.notion.com/reference/status-codes |
+| No `Notion-Version` header is a 400 `missing_version` with Notion's documented message | documented | `claims::test_a_call_with_no_notion_version_header_is_refused_missing_version`, `fidelity::test_a_missing_version_carries_notions_documented_message` | https://developers.notion.com/reference/status-codes |
+| A version other than 2022-06-28 is 501 `invalid_request` naming it | Minutehand's own: refused by name, never answered in another version's shapes | `refusals::test_a_version_this_fake_does_not_serve_is_refused_501_naming_it` | https://developers.notion.com/reference/changes-by-version |
+| Something Notion takes and this fake does not build (an operation, a version, a block type, a property type, a mention, an image not `external`, a date mention with a time or an end) is the shared not-served refusal, 501 `invalid_request` naming it | Minutehand's own: refused by name | `refusals::test_a_block_type_this_fake_does_not_build_is_refused_501_naming_it`, `fidelity::test_a_mention_notion_takes_and_this_fake_does_not_build_is_refused_501_naming_it`, `fidelity::test_an_image_that_is_not_external_is_refused_501_naming_it`, `fidelity::test_a_property_type_notion_takes_and_this_fake_does_not_build_is_refused_501_naming_it`, `fidelity::test_a_date_mention_with_an_end_or_a_time_is_refused_501_naming_it` | https://developers.notion.com/reference/status-codes, `blockObjectRequest`, `propertyConfigurationRequest`, `mentionRichTextItemRequest` in the OpenAPI subset |
+| Rich text and block content come back as sent, with only `plain_text`, `href` and default annotations filled in | documented | `fidelity::test_rich_text_and_block_content_come_back_as_they_were_sent` | https://developers.notion.com/reference/rich-text |
+| A code block takes every language Notion lists | documented | `fidelity::test_rich_text_and_block_content_come_back_as_they_were_sent` | `languageRequest` in the OpenAPI subset |
+| A page's `url` is `https://app.notion.com/p/<Title>-<id>`; a database's and a mention's `href` `https://app.notion.com/p/<id>` | documented | `fidelity::test_a_page_a_database_and_a_mention_link_to_app_notion_com` | https://developers.notion.com/reference/versioning, https://developers.notion.com/reference/page, https://developers.notion.com/reference/database, https://developers.notion.com/reference/rich-text |
+| A date mention reads as its date | documented | `fidelity::test_a_date_mention_reads_as_its_date` | https://developers.notion.com/reference/rich-text |
+| Something out of the integration's reach is `object_not_found` "Could not find page with ID: ... shared with your connection \"<name>\"." | documented | `fidelity::test_an_object_out_of_reach_is_refused_with_notions_documented_message` | https://developers.notion.com/reference/status-codes |
+| `rate_limited` and `conflict_error` carry Notion's documented messages | documented | `fidelity::test_a_rate_limit_and_a_conflict_carry_notions_documented_messages` | https://developers.notion.com/reference/status-codes |
+| `created_time` and `last_edited_time` are rounded down to the minute | documented | `test_notion_sdk.py` (every timestamp read) | https://developers.notion.com/guides/resources/historical-changelog (June 28, 2021) |
+| A list is `{"object": "list", "results", "next_cursor", "has_more", "type", "<type>": {}, "request_id"}` | documented | `claims::test_a_children_listing_stops_at_a_hundred_and_hands_a_cursor_for_the_rest` | https://developers.notion.com/reference/intro, https://developers.notion.com/reference/pagination |
+| A schema refusal is "<body\|query\|path> failed validation: <path> should be <expected>, instead was \`<value>\`." (an optional field's expectation ending "or \`undefined\`", a value cut at 55 characters) | documented (the form) and observed (each expectation) | `refusals::test_a_missing_field_and_a_stray_one_are_refused_in_notions_words`, `refusals::test_an_id_that_is_not_a_uuid_is_refused_in_notions_words`, `refusals::test_children_nested_three_deep_in_one_request_are_refused_in_notions_words` | https://developers.notion.com/reference/status-codes; https://github.com/selfboot/html2notion/issues/17 (defined), https://github.com/eval-sys/mcpmark/issues/269 (not present), https://github.com/malinkang/weread2notion-pro/issues/43 (a string), https://github.com/k1m0ch1/talentdb/issues/1 (an array), https://github.com/makenotion/notion-mcp-server/issues/249 (an object), https://github.com/zant/notion-cards-action/issues/21 (a valid uuid), https://github.com/tryfabric/martian/issues/15 (nesting), https://github.com/niklas-joh/plantScraper/issues/9 (a cut value) |
+| More than 100 children, or rich text items, in a request is "...length should be ≤ \`100\`, instead was \`N\`."; a `text.content` over 2000 characters "...content.length should be ≤ \`2000\`, ..." | observed | `refusals::test_more_than_a_hundred_children_is_refused_in_notions_words`, `refusals::test_rich_text_over_two_thousand_characters_is_refused_in_notions_words` | https://github.com/Suntory-N-Water/kindle-highlight-syncer/issues/2, https://github.com/Oligarchy-with-DeamoV/OctopusScraper/issues/73, https://github.com/trustmaster/gkeep2notion/issues/15, https://developers.notion.com/reference/request-limits |
+| An invalid code language is refused listing every language | observed | `wire.block_content` (the language check) | https://github.com/ALT-F4-LLC/notion.nvim/issues/16 |
+| An edit to an archived page or block is "Can't edit block that is archived. You must unarchive the block before editing." | observed | `refusals::test_an_edit_or_append_to_an_archived_page_is_refused_in_notions_words`, `refusals::test_an_edit_to_an_archived_block_is_refused_in_notions_words` | https://github.com/parkminhyun0/bible-mindmap/issues/322 |
+| A property the database does not have is "<name> is not a property that exists." | observed | `refusals::test_a_property_the_database_does_not_have_is_refused_in_notions_words` | https://github.com/bil0u/remarkable2-to-notion/issues/2 |
+| A filter on a property that is not there is "Could not find property with name or id: <key>"; of another type "The property type in the database does not match the property type of the filter provided: ..."; a sort on one that is not there "Could not find sort property with name or id: <key>" | observed | `refusals::test_a_filter_on_an_unknown_property_or_of_another_type_is_refused_in_notions_words`, `refusals::test_a_sort_on_an_unknown_property_is_refused_in_notions_words` | https://github.com/ikisuke/wagumi-sbt/issues/13, https://community.n8n.io/t/need-help-troubleshooting-an-issue-with-notion-node/10730, https://github.com/azu/bluenotiondb/issues/14 |
+| A block update naming another type than the block's is "Expected block type <type> in request body" | observed | `refusals::test_changing_a_blocks_type_is_refused_in_notions_words` | https://community.zapier.com/troubleshooting-99/error-expected-block-type-divider-in-request-body-17502 |
+| A select option with a comma is "Invalid select option, commas not allowed: <name>" | observed | `refusals::test_a_select_option_with_a_comma_is_refused_in_notions_words` | https://community.make.com/t/how-to-add-notion-select-value-containing-commas/18286 |
+| Search refuses a filter value other than `page`/`database`, a sort timestamp other than `last_edited_time` and an unknown direction in the recorded words; a cursor it did not issue is refused as recorded (users and database queries "The start_cursor provided is invalid: ..."; children, comments and search a non-uuid cursor as a validation failure); a page size of 0 is the default page, and comments refuse 0 and 101 | observed (recorded of the real service by a third party) | `refusals::test_a_search_filter_or_sort_notion_refuses_is_refused_in_notions_words`, `refusals::test_a_start_cursor_notion_did_not_issue_is_refused_as_reported`, `refusals::test_a_page_size_is_read_as_notion_is_reported_to_read_it` | https://github.com/brekkylab/backlot/issues/375 |
+| A seed that declares no integration is refused at seeding | Minutehand's own: a world's integration is never invented | `test_notion_world.py::test_a_seed_that_declares_no_integration_is_refused_naming_it` | |
+| A page created with 101 children is a 400 `validation_error`, and nothing is written | documented | `claims::test_a_page_created_with_a_hundred_and_one_children_is_refused_validation_error` | https://developers.notion.com/reference/post-page, https://developers.notion.com/reference/request-limits |
+| A page created with exactly 100 children keeps all of them | documented | `claims::test_a_page_created_with_exactly_a_hundred_children_keeps_them_all` | https://developers.notion.com/reference/post-page |
+| A `text.content` over 2000 characters is a 400 `validation_error` | documented | `claims::test_a_text_run_over_two_thousand_characters_is_refused_validation_error` | https://developers.notion.com/reference/request-limits |
+| A `text.content` of exactly 2000 characters is kept whole | documented | `claims::test_a_text_run_of_exactly_two_thousand_characters_is_kept_whole` | https://developers.notion.com/reference/request-limits |
+| A toggle created with children answers `has_children: true` and lists them as its own children | documented | `claims::test_a_toggle_created_with_children_reports_and_lists_them` | https://developers.notion.com/reference/block |
+| An append whose `after` names a direct child lands right behind it, not at the end | documented | `claims::test_an_append_after_a_direct_child_lands_right_behind_it` | https://developers.notion.com/reference/patch-block-children |
+| An update that carries another block type's body is a 400, and the block keeps its type | documented (the 400) | `claims::test_an_update_that_names_another_block_type_is_refused` | https://developers.notion.com/reference/update-a-block |
+| A children listing stops at 100 with `has_more` and a `next_cursor` that fetches the rest | documented | `claims::test_a_children_listing_stops_at_a_hundred_and_hands_a_cursor_for_the_rest` | https://developers.notion.com/reference/intro |
+| An append whose `after` names a grandchild, not a direct child, is refused by name, and nothing is written | Minutehand's own: Notion's answer is neither documented nor reported | `claims::test_an_append_after_a_grandchild_is_refused_by_name` | |
+| Every other refusal no page, recording or report gives words for (a boolean or required number of the wrong type, a status option that does not exist, a read-only property written, a value of another property type, a page at the workspace's top from an internal integration, most filter shapes, a page size over 100 or below 0 outside comments, a cursor that is a uuid Notion did not issue, a comment with both or neither of parent and discussion, ...) is refused by name | Minutehand's own: never an invented error or wording | `refusals::test_a_value_of_the_wrong_type_for_its_property_is_refused_by_name`, `refusals::test_a_status_option_the_property_does_not_have_is_refused_by_name`, `refusals::test_a_write_to_a_read_only_property_is_refused_by_name`, `refusals::test_a_database_query_filter_notion_gives_no_words_for_is_refused_by_name`, `refusals::test_appending_after_a_block_that_is_not_a_child_is_refused_by_name`, `refusals::test_a_workspace_top_page_from_an_internal_integration_is_refused_by_name` | |
 
 ## Not carried over
 
+- **Credential and scope enforcement** (see Credentials).
+- **An `Agent` integration added to a seed that declares none.** Invented; such a seed is now refused.
+- **Every validation message of the fake's own wording.** Replaced by Notion's documented or reported words, or a
+  refusal by name.
+- **`https://www.notion.so/...` links**: Notion's own links moved to `https://app.notion.com/p/...` on every version.
+- **A date mention's `plain_text` of `start → end`**: undocumented; refused by name.
+- **400 `validation_error` for what Notion takes and this fake does not build**, and `invalid_request` for a method a
+  path does not take: now 501 by name, and Notion's recorded `invalid_request_url`.
 - The stand-in's `/seed/page` route for making a parent page. It is not part of Notion's API; here parents come from
   the scenario's seed.
-- Three tests that drove the product's own Notion code against the stand-in: splitting a long document into
-  requests of at most 100 children, splitting a long paragraph into runs of at most 2000 characters, and following
-  a cursor to a second page. Their subject is the caller, not Notion; the limits they lean on are the rows above.
+- Three tests that drove the product's own Notion code against the stand-in. Their subject is the caller, not
+  Notion; the limits they lean on are the rows above.
