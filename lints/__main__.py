@@ -9,7 +9,7 @@ A module here that cannot be imported, lacks `run`, or raises did not RUN. That 
 reported apart from findings and fails the run: a lint that never looked must not
 read as a clean one.
 
-    python -m lints                # every lint over src/
+    python -m lints                # every lint over src/ and packages/minutehand-agent/src/
     python -m lints.<name> [root]  # one lint
 """
 
@@ -21,7 +21,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lints._core import SRC, Finding, base_for, report
+from lints._core import AGENT_SRC, SRC, Finding, base_for, report
 
 HERE = Path(__file__).resolve().parent
 
@@ -56,17 +56,18 @@ def run_one(name: str, root: Path = SRC) -> LintRun:
     return LintRun(name, findings=list(findings))
 
 
-def main(root: Path = SRC) -> int:
+def main(roots: tuple[Path, ...] = (SRC, AGENT_SRC)) -> int:
     runs: list[LintRun] = []
-    for name in discover():
-        print(f"=== {name} ===")
-        runs.append(run_one(name, root))
-        print()
+    for root in roots:
+        for name in discover():
+            print(f"=== {name} ({base_for(root)}) ===")
+            runs.append(run_one(name, root))
+            print()
     failed = [r.name for r in runs if not r.ok]
     if failed:
-        print(f"{len(failed)} of {len(runs)} lint(s) FAILED: {', '.join(failed)}")
+        print(f"{len(failed)} of {len(runs)} lint run(s) FAILED: {', '.join(failed)}")
         return 1
-    print(f"All {len(runs)} lint(s) clean.")
+    print(f"All {len(runs)} lint run(s) clean.")
     return 0
 
 

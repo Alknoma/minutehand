@@ -106,7 +106,7 @@ def test_an_agent_with_only_booked_wakes_that_takes_its_goal_by_message_has_no_d
 
 
 def test_an_agent_with_two_reporting_sources_is_refused() -> None:
-    with pytest.raises(RunRefused, match="2 Reported/Command"):
+    with pytest.raises(RunRefused, match="2 Reported, Marked or Command"):
         reach_for(AgentUnderTest(name="a", wakes=[Command(argv=["x"]), Command(argv=["y"])]))
 
 

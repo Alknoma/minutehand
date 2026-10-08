@@ -32,7 +32,7 @@ from minutehand.adapters.proxy.capture import Capturing
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.redirected import RedirectedMode
 from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
-from minutehand.application.restore import SeenCall
+from minutehand.application.traffic import SeenCall
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
@@ -121,11 +121,11 @@ class Proxy:
         self.addon.flush()
 
     def last_call(self) -> SeenCall | None:
-        """`application.restore.Traffic`: the agent's latest outbound call this proxy saw."""
+        """`application.traffic.Traffic`: the agent's latest outbound call this proxy saw."""
         return self.addon.last_seen
 
     def waiting(self) -> list[str]:
-        """`application.restore.Traffic`: calls sent on and not answered yet, and tunnels whose last bytes went
+        """`application.traffic.Traffic`: calls sent on and not answered yet, and tunnels whose last bytes went
         from the agent."""
         return self.addon.waiting()
 

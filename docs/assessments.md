@@ -95,6 +95,26 @@ rule went unread, so a rule never passes by being skipped unseen.
 | `planned_wakes` | a wake the agent asked for itself (reported, booked, its rhythm, its timer), at the moment it was due | none |
 | `commitments` | a commitment the agent reported as a wake ended | `status` (`open`, `met`, `dropped`), `waiting_on` (people) |
 | `asks` | an ask of the run, at the moment it was made | `of` (people), `open_at` (a moment) |
+| `memory` | a key of the agent's memory (`minutehand_agent.store`) holding a value at `until` (the run's end without it), counted at the moment that value was written; so `since` keeps only keys written from then on | `key` (exactly this key) or `prefix` (keys starting with it), either may hold `{person.key}`; `collection` (default `default`); `values` (each field of the value, a dotted path, equal to the one given: `{status: confirmed}`) |
+
+A `writes` count never includes the agent's memory: a key it writes is its own, not a change a person could see.
+`memory` reads what the agent remembers as a state at a moment, not as events:
+
+```yaml
+- id: remembers_the_answer          # an hour after Sam answered, the agent's memory says so
+  each: ask
+  where: {person: [sam]}
+  when: {answered: true}
+  count: {memory: {key: "asks/{person.key}", values: {status: confirmed}}, until: answer+PT1H}
+  exactly: 1
+  message: "{person.key} answered and an hour later the agent's memory did not say so"
+- id: forgets_nothing_it_asked      # at the end, nothing is left marked as asked
+  count: {memory: {prefix: asks/, values: {status: asked}}}
+  at_most: 0
+```
+
+Only a run Minutehand played with an agent that keeps its memory through the store has keys to count; anything the
+agent remembers elsewhere is not seen (`docs/agent-contract.md`, "The agent's memory and its next wake").
 
 ### Bounds
 

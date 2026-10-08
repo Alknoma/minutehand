@@ -188,7 +188,7 @@ class Written(Model):
     )
 
 
-_NOT_WRITES = frozenset({EntityKind.DUE, EntityKind.CHANNEL, EntityKind.DATABASE})
+_NOT_WRITES = frozenset({EntityKind.DUE, EntityKind.CHANNEL, EntityKind.MEMORY, EntityKind.NEXT_WAKE})
 _WORD = re.compile(r"\w+")
 
 

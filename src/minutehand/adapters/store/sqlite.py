@@ -10,21 +10,17 @@ the hash. Entity versions, event snapshots, request and response bodies and the 
 attributes all go through the same door (`_keep`), so the same bytes written by any of them, in any run of the
 file, are one row. Every read puts the text back exactly as it was written.
 
-The agent's snapshots are kept beside the file, in `<stem>.pool/`: each regular file once, compressed, named by the
-SHA-256 of its bytes, with the directory recorded as a manifest (`snapshot_file`) of path, hash, mode and size.
+The agent's memory (`minutehand_agent.store`) is entity versions like any other (`EntityKind.MEMORY`), so it needs
+nothing of its own here: a fork reads it as of its seq as it reads the world.
 """
 
 from __future__ import annotations
 
 import functools
 import hashlib
-import os
-import secrets
 import sqlite3
-import stat
 import threading
-from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -35,7 +31,7 @@ from pydantic import TypeAdapter
 
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
-from minutehand.domain.storage import AgentSnapshot, Freed, RunUsage
+from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.telemetry import (
     ArrayValue,
     AttributeValue,
@@ -78,13 +74,6 @@ class Codec(StrEnum):
     ZSTD = "zstd"
 
 
-class _Entry(StrEnum):
-    """One line of a snapshot's manifest."""
-
-    FILE = "file"
-    DIRECTORY = "directory"
-
-
 def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callable[Concatenate[SqliteStore, P], R]:
     """Run a store method under the store's lock, so it is safe from any thread; one that raises part way through
     a write leaves nothing of it, and no transaction open to be committed by the next write."""
@@ -102,14 +91,16 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 """Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at.
 5: an exchange may carry `captured` and a message `answerable`, which a reader of version 4 would refuse row by
 row; refused here as a whole file instead.
 6: a body of `INLINE_LIMIT` bytes or more is a hash into `content`, and the agent's snapshots are manifests into
 the pool beside the file; a version 5 file holds every body inline and its snapshots as plain directories.
 7: an exchange's body that is not UTF-8 text is kept as its bytes in `content` (`request_binary`,
-`response_binary`); a version 6 file has no such columns, and its calls with such a body were never recorded."""
+`response_binary`); a version 6 file has no such columns, and its calls with such a body were never recorded.
+8: the agent's snapshots and their pool are gone, with the state hooks that wrote them; a version 7 file's
+checkpoints name snapshots this version cannot restore."""
 
 _UNKEPT_IN_ROW = {"request_body", "response_body", "request_bytes", "response_bytes"}
 """Kept in columns of their own, not in an exchange's JSON. `inbox_call` is left out of it too when None, so a row
@@ -125,13 +116,8 @@ LOG_LIMIT = 1024 * 1024
 """Bytes the write-ahead log is cut back to after each checkpoint (`journal_size_limit`). Without it the log
 keeps the size of the largest transaction it ever held, e.g. one 64 MiB body, for as long as the file is open."""
 
-POOL_SUFFIX = ".pool"
-"""The directory beside the world file that holds snapshot files: `world.db` keeps them in `world.pool/`."""
-
-_CHUNK = 1024 * 1024
-_HASHERS = 8
 _BUSY_SECONDS = 60.0
-"""How long a connection waits for another's write lock. Keeping a large snapshot holds it while files are pooled."""
+"""How long a connection waits for another's write lock."""
 
 _REFERENCES = """
   SELECT run_id, body_ref AS hash FROM entity_version WHERE body_ref IS NOT NULL
@@ -179,14 +165,6 @@ CREATE TABLE IF NOT EXISTS wake_edge(
 CREATE INDEX IF NOT EXISTS span_trace ON span(trace_id);
 CREATE TABLE IF NOT EXISTS forward_failure(
   run_id TEXT NOT NULL, position INTEGER NOT NULL, failure TEXT NOT NULL, PRIMARY KEY (run_id, position));
-CREATE TABLE IF NOT EXISTS snapshot(
-  run_id TEXT NOT NULL, wake INTEGER NOT NULL, pinned INTEGER NOT NULL, pruned INTEGER NOT NULL,
-  PRIMARY KEY (run_id, wake));
-CREATE TABLE IF NOT EXISTS snapshot_file(
-  run_id TEXT NOT NULL, wake INTEGER NOT NULL, path TEXT NOT NULL, entry TEXT NOT NULL, hash BLOB,
-  mode INTEGER NOT NULL, size INTEGER NOT NULL,
-  PRIMARY KEY (run_id, wake, path));
-CREATE INDEX IF NOT EXISTS snapshot_file_hash ON snapshot_file(hash);
 """
 
 _RUN_TABLES = (
@@ -198,8 +176,6 @@ _RUN_TABLES = (
     "span_body",
     "wake_edge",
     "forward_failure",
-    "snapshot_file",
-    "snapshot",
 )
 """Every table whose rows belong to one run, which discarding the run empties of them; `run` itself last."""
 
@@ -216,7 +192,6 @@ _ROW_BYTES = {
     "span_body": "length(ref)+16",
     "wake_edge": "length(edge)+length(wall_time)+8",
     "forward_failure": "length(failure)+8",
-    "snapshot_file": "length(path)+length(entry)+COALESCE(length(hash),0)+24",
 }
 """What each of a run's rows holds, in bytes, for `usage`: the columns as stored, not SQLite's page overhead."""
 
@@ -248,7 +223,6 @@ class SqliteStore:
         self.run_id = run_id
         self._path = path
         self._clock = clock
-        self._pool = path.with_name(path.stem + POOL_SUFFIX)
         # One connection shared across threads behind one lock: a provider mounted as a
         # WSGI app is served from a worker thread, and a second writer would not help SQLite.
         self._lock = threading.RLock()
@@ -352,6 +326,18 @@ class SqliteStore:
 
     @_locked
     def apply(self, change: Change) -> WorldEvent:
+        event = self._write(change)
+        self._db.commit()
+        return event
+
+    @_locked
+    def apply_all(self, changes: Sequence[Change]) -> list[WorldEvent]:
+        events = [self._write(change) for change in changes]
+        self._db.commit()
+        return events
+
+    def _write(self, change: Change) -> WorldEvent:
+        """One change written in the open transaction, under the lock its caller holds."""
         seq = self.head() + 1
         sim = self._clock.now()
         wall = datetime.now(UTC)  # clock-lint: exempt wall_time is the one field that records the machine clock
@@ -390,7 +376,6 @@ class SqliteStore:
                     sim.isoformat(),
                 ),
             )
-        self._db.commit()
         return WorldEvent(
             seq=seq,
             run_id=self.run_id,
@@ -607,9 +592,6 @@ class SqliteStore:
             self._db.execute(f"DELETE FROM {table} WHERE run_id=?", (self.run_id,))
         self._sweep_content()
         self._db.commit()
-        # Then the snapshot files only its manifests named: a crash before this leaves them unreferenced, and
-        # the next sweep removes them.
-        self._sweep_pool()
 
     def _sweep_content(self) -> tuple[int, int]:
         """Delete every stored body no row refers to, inside the caller's transaction; answers how many and their
@@ -784,200 +766,11 @@ class SqliteStore:
         self._db.commit()
         return SqliteStore(self._path, run_id, clock)
 
-    # -- the agent's snapshots ----------------------------------------------------------------------------------
-
-    def _pooled(self, digest: bytes) -> Path:
-        name = digest.hex()
-        return self._pool / name[:2] / f"{name}.zst"
-
-    @_locked
-    def keep_snapshot(self, wake: int, directory: Path) -> AgentSnapshot:
-        entries = list(_walk(directory))
-        # Hashing reads every byte and is the cost of a snapshot; it needs no lock, and threads overlap the reads.
-        with ThreadPoolExecutor(max_workers=_HASHERS) as hashers:
-            hashed = list(
-                hashers.map(
-                    lambda found: _hash(directory / found[0]) if found[1] is _Entry.FILE else (None, 0), entries
-                )
-            )
-        # The write lock is held while missing files are pooled, so a sweep in another connection can never remove
-        # a file between the moment it is found already pooled and the moment the manifest naming it is committed.
-        self._db.execute("BEGIN IMMEDIATE")
-        try:
-            self._db.execute(
-                "INSERT INTO snapshot VALUES(?,?,0,0) ON CONFLICT(run_id, wake) DO UPDATE SET pruned=0",
-                (self.run_id, wake),
-            )
-            self._db.execute("DELETE FROM snapshot_file WHERE run_id=? AND wake=?", (self.run_id, wake))
-            for (relative, entry, mode), (digest, size) in zip(entries, hashed, strict=True):
-                if digest is not None:
-                    self._pool_file(directory / relative, digest)
-                self._db.execute(
-                    "INSERT INTO snapshot_file VALUES(?,?,?,?,?,?,?)",
-                    (self.run_id, wake, relative, entry.value, digest, mode, size),
-                )
-            self._db.commit()
-        except BaseException:
-            self._db.rollback()
-            raise
-        found = self._snapshot(self.run_id, wake)
-        assert found is not None
-        return found
-
-    def _pool_file(self, source: Path, digest: bytes) -> None:
-        """Store one file in the pool under `digest`, unless the pool holds those bytes already."""
-        target = self._pooled(digest)
-        if not target.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            partial = target.with_name(f"{target.name}.{secrets.token_hex(4)}.partial")
-            with source.open("rb") as read, partial.open("wb") as write:
-                self._pack.copy_stream(read, write)
-            os.replace(partial, target)
-
-    @_locked
-    def snapshot(self, run_id: str, wake: int) -> AgentSnapshot | None:
-        return self._snapshot(run_id, wake)
-
-    def _snapshot(self, run_id: str, wake: int) -> AgentSnapshot | None:
-        row = self._db.execute(
-            "SELECT pinned, pruned FROM snapshot WHERE run_id=? AND wake=?", (run_id, wake)
-        ).fetchone()
-        if row is None:
-            return None
-        files, size = self._db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM snapshot_file WHERE run_id=? AND wake=? AND entry=?",
-            (run_id, wake, _Entry.FILE.value),
-        ).fetchone()
-        alone = self._db.execute(
-            """SELECT DISTINCT f.hash FROM snapshot_file f WHERE f.run_id=? AND f.wake=? AND f.hash IS NOT NULL
-                 AND NOT EXISTS (SELECT 1 FROM snapshot_file o
-                                 WHERE o.hash=f.hash AND (o.run_id!=f.run_id OR o.wake!=f.wake))""",
-            (run_id, wake),
-        ).fetchall()
-        return AgentSnapshot(
-            run_id=run_id,
-            wake=wake,
-            files=files,
-            size=size,
-            held=sum(_size_of(self._pooled(r[0])) for r in alone),
-            pinned=bool(row[0]),
-            pruned=bool(row[1]),
-        )
-
-    @_locked
-    def snapshots(self) -> list[AgentSnapshot]:
-        where, args = self._spans_visible()
-        rows = self._db.execute(f"SELECT run_id, wake FROM snapshot WHERE {where} ORDER BY wake", args).fetchall()
-        depth = {run: d for d, (run, _, _, _) in enumerate(self._lineage)}
-        found = [self._snapshot(r[0], r[1]) for r in sorted(rows, key=lambda r: (-depth[r[0]], r[1]))]
-        return [s for s in found if s is not None]
-
-    @_locked
-    def materialise(self, run_id: str, wake: int, into: Path) -> None:
-        found = self._snapshot(run_id, wake)
-        if found is None:
-            raise LookupError(f"no snapshot of run {run_id} after wake {wake} is kept in {self._path}")
-        if found.pruned:
-            raise LookupError(f"the snapshot of run {run_id} after wake {wake} was pruned")
-        rows = self._db.execute(
-            "SELECT path, entry, hash, mode, size FROM snapshot_file WHERE run_id=? AND wake=? ORDER BY path",
-            (run_id, wake),
-        ).fetchall()
-        into.mkdir(parents=True, exist_ok=False)
-        directories: list[tuple[Path, int]] = []
-        for relative, entry, digest, mode, size in rows:
-            target = into / relative
-            if _Entry(entry) is _Entry.DIRECTORY:
-                target.mkdir(parents=True, exist_ok=True)
-                directories.append((target, mode))
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            check = hashlib.sha256()
-            written = 0
-            with self._pooled(digest).open("rb") as read, target.open("wb") as write:
-                for chunk in self._unpack.read_to_iter(read, write_size=_CHUNK):
-                    check.update(chunk)
-                    written += len(chunk)
-                    write.write(chunk)
-            if check.digest() != digest or written != size:
-                raise LookupError(
-                    f"the pooled copy of {relative} in {self._pool} does not hold the bytes it was kept as"
-                )
-            os.chmod(target, mode)
-        for directory, mode in reversed(directories):
-            os.chmod(directory, mode)
-
-    @_locked
-    def pin(self, run_id: str, wake: int, *, pinned: bool) -> AgentSnapshot:
-        found = self._snapshot(run_id, wake)
-        if found is None:
-            raise LookupError(f"no snapshot of run {run_id} after wake {wake} is kept in {self._path}")
-        if found.pruned:
-            raise ValueError(f"the snapshot of run {run_id} after wake {wake} was already pruned")
-        self._db.execute("UPDATE snapshot SET pinned=? WHERE run_id=? AND wake=?", (int(pinned), run_id, wake))
-        self._db.commit()
-        changed = self._snapshot(run_id, wake)
-        assert changed is not None
-        return changed
-
-    @_locked
-    def prune(self, keep: int) -> list[AgentSnapshot]:
-        if keep < 1:
-            raise ValueError(f"keep at least one snapshot, not {keep}")
-        rows = self._db.execute(
-            "SELECT wake, pinned FROM snapshot WHERE run_id=? AND pruned=0 ORDER BY wake DESC", (self.run_id,)
-        ).fetchall()
-        forked = self._forked_wakes()
-        going = [wake for wake, pinned in rows[keep:] if not pinned and wake != 0 and wake not in forked]
-        for wake in going:
-            self._db.execute("UPDATE snapshot SET pruned=1 WHERE run_id=? AND wake=?", (self.run_id, wake))
-            self._db.execute("DELETE FROM snapshot_file WHERE run_id=? AND wake=?", (self.run_id, wake))
-        self._db.commit()
-        self._sweep_pool()
-        pruned = [self._snapshot(self.run_id, wake) for wake in going]
-        return [s for s in pruned if s is not None]
-
-    def _forked_wakes(self) -> set[int]:
-        """The wakes a run descended from this one was forked after: a snapshot there may be restored from by a
-        fork, or a fork of that fork. Counted for every descendant, which can only keep more than is needed."""
-        runs = self._db.execute("SELECT run_id, parent, forked_wake FROM run").fetchall()
-        descendants: set[str] = set()
-        grew = True
-        while grew:
-            grew = False
-            for run, parent, _ in runs:
-                if parent is not None and run not in descendants and (parent == self.run_id or parent in descendants):
-                    descendants.add(run)
-                    grew = True
-        return {wake for run, _, wake in runs if run in descendants and wake is not None}
-
-    def _sweep_pool(self) -> tuple[int, int]:
-        """Remove every pooled file no manifest names, and any partial copy a crash left. Holds the write lock,
-        so no manifest naming a file can be committed while it is removed."""
-        if not self._pool.is_dir():
-            return 0, 0
-        self._db.execute("BEGIN IMMEDIATE")
-        try:
-            named = {
-                self._pooled(r[0]).name
-                for r in self._db.execute("SELECT DISTINCT hash FROM snapshot_file WHERE hash IS NOT NULL")
-            }
-            count = size = 0
-            for found in sorted(self._pool.rglob("*")):
-                if found.is_file() and found.name not in named:
-                    size += found.stat().st_size
-                    found.unlink()
-                    count += 1
-        finally:
-            self._db.commit()
-        return count, size
-
     @_locked
     def sweep(self) -> Freed:
         bodies, body_bytes = self._sweep_content()
         self._db.commit()
-        files, file_bytes = self._sweep_pool()
-        return Freed(bodies=bodies, body_bytes=body_bytes, files=files, file_bytes=file_bytes)
+        return Freed(bodies=bodies, body_bytes=body_bytes)
 
     @_locked
     def usage(self) -> RunUsage:
@@ -994,53 +787,7 @@ class SqliteStore:
                   AND hash NOT IN (SELECT hash FROM refs WHERE run_id!=?)""",
             (self.run_id, self.run_id),
         ).fetchone()[0]
-        alone = self._db.execute(
-            """SELECT DISTINCT hash FROM snapshot_file WHERE run_id=? AND hash IS NOT NULL
-                 AND hash NOT IN (SELECT hash FROM snapshot_file WHERE run_id!=? AND hash IS NOT NULL)""",
-            (self.run_id, self.run_id),
-        ).fetchall()
-        return RunUsage(
-            run_id=self.run_id,
-            rows=rows,
-            bodies=bodies,
-            snapshots=sum(_size_of(self._pooled(r[0])) for r in alone),
-        )
-
-
-def _hash(path: Path) -> tuple[bytes, int]:
-    """The SHA-256 of a file's bytes, and how many there are."""
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as read:
-        while chunk := read.read(_CHUNK):
-            digest.update(chunk)
-            size += len(chunk)
-    return digest.digest(), size
-
-
-def _size_of(path: Path) -> int:
-    return path.stat().st_size if path.is_file() else 0
-
-
-def _walk(directory: Path) -> Iterator[tuple[str, _Entry, int]]:
-    """Every directory and regular file under `directory`, by its path relative to it, with its mode. Anything
-    else (a link, a socket) is refused: a restore could not put it back as it was."""
-    for root, names, files in os.walk(directory):
-        names.sort()
-        here = Path(root)
-        for name in [*names, *sorted(files)]:
-            found = here / name
-            held = found.lstat()
-            relative = found.relative_to(directory).as_posix()
-            if stat.S_ISDIR(held.st_mode):
-                yield relative, _Entry.DIRECTORY, stat.S_IMODE(held.st_mode)
-            elif stat.S_ISREG(held.st_mode):
-                yield relative, _Entry.FILE, stat.S_IMODE(held.st_mode)
-            else:
-                raise ValueError(
-                    f"the snapshot holds {relative}, which is neither a regular file nor a directory: a restore "
-                    "could not put it back as it was"
-                )
+        return RunUsage(run_id=self.run_id, rows=rows, bodies=bodies)
 
 
 def _strings(span: ReceivedSpan, swap: Callable[[int, StringValue], StringValue]) -> ReceivedSpan:

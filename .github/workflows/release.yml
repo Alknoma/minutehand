@@ -5,11 +5,14 @@ name: release
 # Release is a deliberate act with notes a reader sees, and a draft is reviewed before it is published; a pushed
 # tag is one `git push --tags` away from publishing by accident.
 #
-#   build   the sdist and the wheel, `twine check`, and the wheel installed into a clean environment running
-#           the example and a pytest suite that uses the plugin
-#   pypi    those same files uploaded to PyPI by Trusted Publishing (OIDC): no token is stored anywhere; PyPI
-#           trusts this repository, this file and the `pypi` environment, and nothing else
-#   image   ghcr.io/alknoma/minutehand, built from the same commit, tagged with the version and the commit
+#   build        the sdist and the wheel of `minutehand` and of `minutehand-agent` (packages/minutehand-agent,
+#                released with it at the same version), `twine check`, and the wheels installed into clean
+#                environments running the example and a pytest suite that uses the plugin
+#   pypi-agent   minutehand-agent's files uploaded to PyPI by Trusted Publishing (OIDC): no token is stored
+#                anywhere; PyPI trusts this repository, this file and the `pypi` environment, and nothing else.
+#                First, because minutehand requires exactly this version of it
+#   pypi         minutehand's files, the same way, once minutehand-agent is on PyPI
+#   image        ghcr.io/alknoma/minutehand, built from the same commit, tagged with the version and the commit
 on:
   release:
     types: [published]
@@ -43,7 +46,7 @@ jobs:
           # No cache in a workflow that publishes: a cache another workflow wrote is not an input to a release.
           enable-cache: false
       - id: version
-        name: The tag names the version pyproject.toml writes
+        name: The tag names the version pyproject.toml writes, and minutehand-agent is released at it
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
@@ -52,23 +55,54 @@ jobs:
             echo "::error::the release's tag is '$TAG' and pyproject.toml writes version '$version'; the tag must be 'v$version'"
             exit 1
           fi
+          agent="$(python3 -c 'import tomllib; print(tomllib.load(open("packages/minutehand-agent/pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "$agent" != "$version" ]; then
+            echo "::error::packages/minutehand-agent/pyproject.toml writes version '$agent' and pyproject.toml '$version'; they are released together"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: uv sync
-      - name: Build the sdist, and the wheel from it
-        run: uv build
+      - name: Build each sdist, and each wheel from it, one folder per distribution
+        run: |
+          uv build --package minutehand --out-dir dist/
+          uv build --package minutehand-agent --out-dir dist-agent/
       - name: The metadata and README as PyPI will read them
-        run: uvx twine==7.0.0 check --strict dist/*
-      - name: The sdist and wheel as a user installs them, run from a clean environment
+        run: uvx twine==7.0.0 check --strict dist/* dist-agent/*
+      - name: The sdists and wheels as a user installs them, run from clean environments
         run: uv run pytest -q -m packaging tests/packaging/test_installed_package.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/
           if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-agent
+          path: dist-agent/
+          if-no-files-found: error
+
+  # Its own job and its own trusted publisher on PyPI (project minutehand-agent), before minutehand: a minutehand
+  # on PyPI requiring a minutehand-agent that is not would install nowhere.
+  pypi-agent:
+    name: Publish minutehand-agent to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/minutehand-agent/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write # the OIDC token PyPI exchanges for a short-lived upload token
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist-agent
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
   pypi:
-    name: Publish to PyPI
-    needs: build
+    name: Publish minutehand to PyPI
+    needs: [build, pypi-agent]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # The environment is where a human can be required to approve; PyPI's trusted publisher names it too.

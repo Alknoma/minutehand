@@ -6,8 +6,8 @@ Not in the default run: `uv run pytest -q -m benchmark tests/benchmarks -s` prin
   listing of about 20 kB, and 500 small `chat.postMessage` writes.
 - B, a document agent: 50 uploads of a 4 MiB file to Drive through the proxy, with 10 distinct contents, each
   read back 5 times (`alt=media`).
-- C, a long run: 200 wakes, each ending in a checkpoint whose agent-state snapshot is taken by a real snapshot
-  command copying a 30 MB directory of 300 files, 3 of which change every wake.
+- C, a long run of an agent's memory: 300 keys of about 100 kB each written at the start, then 200 wakes, each
+  writing 3 of them anew through `minutehand_agent.store`'s run side and ending in a checkpoint.
 
 The numbers asserted on are facts of the record (calls kept, bodies read back), never a duration.
 """
@@ -15,7 +15,6 @@ The numbers asserted on are facts of the record (calls kept, bodies read back), 
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import random
 import sqlite3
@@ -36,12 +35,12 @@ from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Restorable, write_checkpoint
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Remembered, write_checkpoint
+from minutehand.application.memory import memory_of, remember, store_digest
 from minutehand.application.run_clock import RunClock
-from minutehand.application.state_hooks import take_snapshot
-from minutehand.domain.agent import StateHooks
+from minutehand.domain.memory import MemoryPut, MemoryWrite
 from minutehand.domain.scenario import Person, Scenario, SignIn
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
+from minutehand.domain.world import EntityKind, EntityRef
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(3600)]
 
@@ -82,7 +81,7 @@ def tables(world: Path) -> dict[str, int]:
 
 
 def files(directory: Path) -> dict[str, int]:
-    """Bytes on disk under `directory`, by its top-level entries: the world file, its log, snapshot directories."""
+    """Bytes on disk under `directory`, by its top-level entries: the world file and its log."""
     found: dict[str, int] = {}
     for entry in sorted(directory.iterdir()):
         if entry.is_dir():
@@ -254,36 +253,21 @@ async def run_b(directory: Path) -> Measured:
 # -- C -----------------------------------------------------------------------------------------------------------
 
 
-def agent_state(directory: Path) -> None:
-    """300 files of 100 kB: what the agent keeps, which its snapshot command copies whole."""
-    directory.mkdir(parents=True)
-    for n in range(300):
-        (directory / f"part-{n:03d}.bin").write_bytes(os.urandom(100_000))
+def remembered(key: int) -> MemoryPut:
+    """About 100 kB of what an agent keeps under one key: notes it took, as text a model would read back."""
+    return MemoryPut(key=f"notes/{key:03d}", value={"text": os.urandom(50_000).hex()})
 
 
 async def run_c(directory: Path) -> Measured:
     clock = RunClock(START)
     store = SqliteStore(directory / "world.db", "c", clock)
-    agent = directory.parent / "agent-state"
-    agent_state(agent)
-    hooks = StateHooks(snapshot=["sh", "-c", f'cp -R "{agent}/." "$MINUTEHAND_SNAPSHOT_DIR"'], restore=["true"])
-    note = EntityRef(provider="slack", kind=EntityKind.MESSAGE, external_id="note")
+    remember(store, MemoryWrite(writes=[remembered(n) for n in range(300)]))
     mid_seq = 0
     began = time.perf_counter()
     for wake in range(1, 201):
         clock.begin_wake()
         clock.jump(clock.now() + timedelta(hours=1))
-        store.apply(
-            Change(
-                entity=note,
-                operation=Operation.CREATE if wake == 1 else Operation.UPDATE,
-                actor=Actor.AGENT,
-                body=json.dumps({"text": f"wake {wake}", "ts": wake}),
-            )
-        )
-        for n in range(3):
-            (agent / f"part-{(wake * 3 + n) % 300:03d}.bin").write_bytes(os.urandom(100_000))
-        await take_snapshot(hooks, store, directory.parent, wake)
+        remember(store, MemoryWrite(writes=[remembered((wake * 3 + n) % 300) for n in range(3)]))
         seq = write_checkpoint(
             store,
             Checkpoint(
@@ -291,7 +275,7 @@ async def run_c(directory: Path) -> Measured:
                 now=clock.now(),
                 replies=0,
                 pending=[],
-                agent=Restorable(snapshot_of=store.run_id, wake=wake, report=None),
+                agent=Remembered(report=None, memory=store_digest(store)),
             ),
         )
         if wake == 100:
@@ -299,10 +283,11 @@ async def run_c(directory: Path) -> Measured:
     written = time.perf_counter() - began
     seconds, _ = as_of(store, mid_seq, CHECKPOINT, clock)
     began = time.perf_counter()
-    store.materialise("c", 100, directory.parent / "restoring")
-    restoring = time.perf_counter() - began
+    held = memory_of(store.events(), until=mid_seq)
+    reading = time.perf_counter() - began
+    assert len(held) == 300
     wal = close(store, directory)
-    what = f"the checkpoint; its 30 MB snapshot written back out in {restoring * 1000:.0f} ms"
+    what = f"the checkpoint; the memory as of it, 300 keys, read in {reading * 1000:.0f} ms"
     return Measured("C", tables(directory / "world.db"), files(directory), written, seconds, what, wal)
 
 

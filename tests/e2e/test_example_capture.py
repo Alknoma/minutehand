@@ -11,6 +11,7 @@ import pytest
 
 from minutehand import session
 from minutehand.application.files import load_agent, load_scenario
+from minutehand.application.memory import memory_of
 from minutehand.domain.agent import Reported
 from minutehand.domain.outbound import Acknowledge, PassThrough
 from minutehand.domain.run import VerdictKind
@@ -41,6 +42,7 @@ async def test_the_example_emails_owen_what_rosa_said_and_looks_the_venue_up(
     found = Answer("application/json", [json.dumps({"summary": "on the lake, seats 80"}).encode()])
     async with model_api(authority, found, host="::1") as real:
         monkeypatch.setenv("PORT", str(port))
+        monkeypatch.setenv("AGENT_DB", str(tmp_path / "production.db"))
         monkeypatch.setenv("LOOKUP_URL", f"https://[::1]:{real.port}/v1/search?q=")
         [outcome] = await session.play(
             load_scenario(EXAMPLE / "scenario.yaml"),
@@ -58,6 +60,12 @@ async def test_the_example_emails_owen_what_rosa_said_and_looks_the_venue_up(
         ("api.mail.example", CaptureMode.ACKNOWLEDGE),
     ]
     with session.reading(tmp_path / "state", outcome.record.run_id) as world:
-        [emailed] = [e for e in world.events() if e.entity.provider == "api_mail_example"]
+        events = world.events()
+        [emailed] = [e for e in events if e.entity.provider == "api_mail_example"]
     assert isinstance(emailed.after, MessageSnapshot) and emailed.after.recipient_emails == ["owen@example.com"]
     assert emailed.after.text.startswith("Offsite venue\n\nThe offsite venue is confirmed: The lakeside hall")
+    # What the agent remembered is the run's memory, and its own database was never opened.
+    remembered = memory_of(events)
+    assert remembered[("default", "status")] == '"done"'
+    assert remembered[("default", "answer")] == '"The lakeside hall, booked for the 14th."'
+    assert not (tmp_path / "production.db").exists()

@@ -71,8 +71,7 @@ async def played(rig: Rig, drive: GoogleWorkspaceProvider) -> tuple[RunRecord, l
             schedulers={rig.sched.manifest.key: rig.sched},
         ),
         replier=ScriptedReplier(scn),
-        mounts=rig.board,
-        state_dir=rig.tmp / "state",
+        mounts=rig.mounts,
         signing={CHAT: SECRET},
         traffic=rig.board,
     )

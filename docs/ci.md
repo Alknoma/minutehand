@@ -8,7 +8,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor over workflows and `.github/actions`), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `promotion`, `gate` |
-| `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency), `firestore` (builds `examples/state/firestore_emulator`'s image and runs `pytest -m firestore`: a real rewind through Google's Firestore emulator; not a required check) |
+| `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency) |
 | `release.yml` | a GitHub Release being published, and nothing else | `build` (sdist and wheel, `twine check`, the installed-package tests), `pypi` (Trusted Publishing from the `pypi` environment), `image` (`ghcr.io/alknoma/minutehand`, amd64 and arm64). `docs/releasing.md` |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
@@ -109,7 +109,7 @@ and runs the installed `minutehand --help`, `examples/follow_up` and the built i
 | Tier | When | Required | State |
 |---|---|---|---|
 | **Gate**: types, lints, workflow lint, the whole test suite on three runners | Every pull request and merge-queue entry | Yes | On |
-| **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help` and both `examples/follow_up` scenarios (exit 0, and exit 1 with the scenario's rule `follows_up_when_due` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
+| **Build**: `uv build --all-packages` makes the sdist and the wheel of `minutehand` and of `minutehand-agent`; the wheels, installed into a fresh environment with none of the dev dependencies, run `minutehand --help` and both `examples/follow_up` scenarios, the agent started from an environment of its own holding only `slack_sdk` and the `minutehand-agent` wheel (exit 0, and exit 1 with the scenario's rule `follows_up_when_due` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
 | **Nightly**: repeat runs, newest dependencies | Nightly | No. A failure is a signal about tomorrow, not about the pull request in front of you. | On |
 | **Conformance**: each provider's answers validated against the service's published API description; recorded real traffic replayed against the fake | Nightly | No | Off. Not built. |
 | **Mutation**: a mutation tester over `domain/`, the store and the checks, reporting what survives | Weekly | No, reported as a trend | Off. Not built. Today "seen to fail" is a claim in the pull request, checked by the reviewer. |

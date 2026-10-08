@@ -1,5 +1,6 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json
-# The reference agent: an API and a worker over one database (store.py), started together by run.py.
+# The reference agent: an API and a worker over one memory (store.py, minutehand_agent.store), started together by
+# run.py. Under Minutehand the memory is the run's, so a fork needs no hooks.
 # From this folder, with the outside world running (python outside.py prints its addresses):
 #   REFERENCE_MODEL_URL=https://model.localhost:<port> REFERENCE_SEARCH_URL=https://search.localhost:<port> \
 #   REFERENCE_EXTRA_CA=.outside/ca.pem \
@@ -73,15 +74,6 @@ inboxes:
           url: "http://127.0.0.1:8790/approvals/{item.id}/decision"
           body: {decision: reject, reason: "{input.reason}"}
         inputs: [{name: reason, description: Why the booking is turned down}]
-
-state:
-  snapshot: [python, hooks.py, snapshot]
-  restore: [python, hooks.py, restore]
-  busy: [python, hooks.py, busy]                  # a job queued or running is work in flight
-  fingerprint: [python, hooks.py, fingerprint]    # the database, and what each process holds in memory
-  quiet: PT0.5S
-  settle_limit: PT30S
-  answer_limit: PT30S
 
 # The team's policy, which judges every run of this agent (docs/assessments.md). Nothing else judges how it behaves:
 # drop a rule here and nothing asks it; a scenario may replace one by its id or switch it off (`assess_off`).

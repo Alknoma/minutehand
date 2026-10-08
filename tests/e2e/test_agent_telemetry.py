@@ -99,7 +99,7 @@ async def test_a_run_that_received_nothing_says_so(tmp_path: Path, monkeypatch: 
 async def test_a_fork_sees_its_parents_spans_up_to_the_fork_and_not_after(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "diligent", hooks=True, tracing=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "diligent", tracing=True)
     state = tmp_path / "state"
     [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     parent_id = parent.record.run_id

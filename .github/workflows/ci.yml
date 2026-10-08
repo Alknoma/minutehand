@@ -142,38 +142,6 @@ jobs:
         env:
           RECIPES_NODE_REQUIRED: "1"
 
-  # The agent's database fronted by Minutehand's relay (tests/state/test_postgres_recipe.py): a run records the
-  # agent's committed writes, a fork puts the database back from the base and replays them. Against a real
-  # PostgreSQL in a service container; the default run skips these (`-m docker`).
-  postgres:
-    name: PostgreSQL relay (record, fork, replay)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: secret
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: "3.12"
-          enable-cache: true
-      - run: uv sync
-      - run: uv run pytest -q -m docker tests/state/test_postgres_recipe.py tests/state/test_postgres_drivers.py tests/state/test_postgres_replay.py tests/state/test_postgres_cli.py -s
-        env:
-          MINUTEHAND_TEST_POSTGRES: postgresql://postgres:secret@127.0.0.1:5432
-
   # Transparent capture (docs/containers.md): a client that ignores every proxy variable, in a Linux container whose
   # connections to ports 80 and 443 are sent to the proxy's redirected listener by `minutehand env --format redirect`'s
   # iptables script, is answered by the Slack fake. Needs Docker and alpine's package index; the default run skips it.
@@ -207,9 +175,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync
-      - name: Build the sdist and the wheel
-        run: uv build
-      - name: Install the wheel into a clean environment and run both examples with it
+      - name: Build the sdists and the wheels of minutehand and minutehand-agent
+        run: uv build --all-packages
+      - name: Install the wheels into clean environments (Minutehand in one, the agent's in another) and run both examples
         run: uv run pytest -q -m packaging tests/packaging/test_installed_package.py
       - name: Build the image and run both examples through it
         run: uv run pytest -q -m packaging tests/packaging/test_container_image.py
@@ -242,14 +210,17 @@ jobs:
           test "$COMMIT" = "$(git rev-parse HEAD)"
           test -n "$VERSION"
           "$RUNNER_TEMP/venv/bin/minutehand" --help
-      - name: The example, with the installed command
+      - name: The example, with the installed command and the agent in an environment of its own
         working-directory: examples/follow_up
         env:
           AGENT_BEHAVIOUR: diligent
+        # The agent's environment as its README makes it, minutehand-agent from this commit since it is not
+        # released with it yet: its Slack client and minutehand-agent, and not Minutehand.
         run: |
-          "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
+          python3 -m venv "$RUNNER_TEMP/agent"
+          "$RUNNER_TEMP/agent/bin/python" -m pip install --disable-pip-version-check slack_sdk ../../packages/minutehand-agent
           "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \
-            -- "$RUNNER_TEMP/venv/bin/python" agent.py
+            -- "$RUNNER_TEMP/agent/bin/python" agent.py
       - name: The image the action built
         run: docker run --rm minutehand:action --help
       # What a caller's runner holds: this commit's files, no .git, unpacked into a folder named by the
@@ -302,7 +273,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, postgres, transparent, build, action, promotion]
+    needs: [types, style, lints, workflows, tests, recipes, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

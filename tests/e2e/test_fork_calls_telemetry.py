@@ -32,7 +32,7 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     state = tmp_path / "state"
     [parent] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     assert parent.record.stop is StopReason.NOTHING_PENDING
@@ -65,7 +65,7 @@ async def test_a_fork_where_the_silent_person_answers_ends_differently_and_leave
     assert world(state, parent.record.run_id).events() == parent_events
     assert world(state, parent.record.run_id).calls() == parent_calls
     assert {p.name: p.read_bytes() for p in session.run_dir(state, parent.record.run_id).glob("*.json")} == parent_files
-    assert launched.state()["verified"] == [ANSWER]
+    assert launched.state(state, child.record.run_id, root=parent.record.run_id)["verified"] == [ANSWER]
 
 
 async def test_a_call_to_a_host_no_provider_claims_is_refused_recorded_and_found(
@@ -135,7 +135,7 @@ async def test_a_scenario_with_no_start_starts_when_the_run_does_and_its_samples
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    launched = agent_under_test(tmp_path, monkeypatch, "forgetful", hooks=True)
+    launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     state = tmp_path / "state"
     written = WrittenScenario.model_validate(
         {k: v for k, v in scenario(Silent()).model_dump().items() if k != "starts_at"}
