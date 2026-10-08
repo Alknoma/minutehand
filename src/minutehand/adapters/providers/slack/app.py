@@ -29,6 +29,7 @@ from minutehand.adapters import answering
 from minutehand.adapters.providers.slack import socket_mode, state, wire
 from minutehand.adapters.providers.slack.methods import UNSERVED
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import (
     Actor,
     ControlKind,
@@ -122,7 +123,7 @@ def _refuse_unserved_arguments(method: str, presented: wire.Presented) -> None:
         value = presented.arguments[name]
         said = "" if value is None else str(value).lower() if isinstance(value, bool | int | str) else "{}"
         if said not in served:
-            raise NotImplementedError(f"{method} with the argument {name}={value!r}, which this fake does not serve")
+            raise NotServed(f"{method} with the argument {name}={value!r}, which this fake does not serve")
 
 
 def _header(request: Request, name: str) -> str | None:
@@ -169,7 +170,7 @@ class SlackApi:
     async def endpoint(self, request: Request) -> Response:
         method = request.path_params["method"]
         if method in UNSERVED:
-            raise NotImplementedError(f"{method}, a Slack Web API method this fake does not serve")
+            raise NotServed(f"{method}, a Slack Web API method this fake does not serve")
         try:
             if method not in self._methods:
                 answer: wire.Response = wire.UnknownMethod(req_method=method)
@@ -308,9 +309,9 @@ class SlackApi:
             return None
         parent = self._world.message(channel, thread_ts)
         if parent is None:
-            raise NotImplementedError(f"a thread_ts ({thread_ts}) that names no message in {channel}")
+            raise NotServed(f"a thread_ts ({thread_ts}) that names no message in {channel}")
         if parent.thread_ts is not None and parent.thread_ts != parent.ts:
-            raise NotImplementedError(f"a thread_ts ({thread_ts}) that names a reply rather than its thread's parent")
+            raise NotServed(f"a thread_ts ({thread_ts}) that names a reply rather than its thread's parent")
         return parent.ts
 
     # ------------------------------------------------------------------ auth, users

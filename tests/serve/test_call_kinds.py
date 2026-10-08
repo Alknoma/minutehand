@@ -20,7 +20,7 @@ def test_each_call_is_recorded_answered_refused_or_injected_by_whoever_failed_it
         slack.retry_handlers.clear()
         slack.auth_test()
         with pytest.raises(SlackApiError):
-            slack.api_call("no.such.method")
+            slack.chat_postMessage(channel="C0NOSUCHCHANNEL", text="hello")
         world.arm(Fault(provider="slack", path="/api/users.list", status=503, body='{"ok": false}'))
         with pytest.raises(SlackApiError):
             slack.users_list()
@@ -33,7 +33,7 @@ def test_each_call_is_recorded_answered_refused_or_injected_by_whoever_failed_it
         recorded = [(c.exchange.path, c.exchange.status, c.exchange.outcome) for c in world.calls()]
         assert recorded == [
             ("/api/auth.test", 200, CallOutcome.ANSWERED),
-            ("/api/no.such.method", 200, CallOutcome.REFUSED),
+            ("/api/chat.postMessage", 200, CallOutcome.REFUSED),
             ("/api/users.list", 503, CallOutcome.INJECTED_FAULT),
             ("/api/conversations.list", 200, CallOutcome.INJECTED_FAULT),
         ]

@@ -352,6 +352,17 @@
           "description": "From this moment, inclusive; absent: the start",
           "title": "Since"
         },
+        "stored": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoredItems"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "touches": {
           "anyOf": [
             {
@@ -2859,6 +2870,65 @@
       "title": "StoppedBy",
       "type": "string"
     },
+    "StoredItems": {
+      "additionalProperties": false,
+      "description": "Items an outbound host declared `store` keeps (`domain.outbound.DeclaredStore`), as they stood at the count's\n`until` (the run's end without one): each item held there is one fact, counted at the moment its version there\nwas written, so `since` keeps only those written from then on.",
+      "properties": {
+        "collection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In the collection of this name; None: in any",
+          "title": "Collection"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Of the declaration of this host pattern; None: of any",
+          "title": "Host"
+        },
+        "values": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default": {},
+          "description": "Each field of the item (a dotted path into it, `address.city`) equal to this; an item that lacks the field does not match",
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "title": "StoredItems",
+      "type": "object"
+    },
     "Thing": {
       "description": "What the agent wrote, as the world records it.",
       "enum": [
@@ -2869,7 +2939,8 @@
         "record",
         "inbox_item",
         "file",
-        "tool_call"
+        "tool_call",
+        "stored"
       ],
       "title": "Thing",
       "type": "string"

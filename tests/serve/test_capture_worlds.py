@@ -5,10 +5,8 @@ from __future__ import annotations
 
 import requests
 
-from minutehand.adapters.control.wire import Claims
-from minutehand.domain.outbound import Acknowledge, Answer, MessageReading
-from minutehand.domain.world import CaptureMode, MessageSnapshot
-from minutehand.testing.client import Refused
+from minutehand.domain.outbound import Acknowledge, Answer, Collection, DeclaredStore, MessageReading
+from minutehand.domain.world import CaptureMode, MessageSnapshot, StoredSnapshot
 from minutehand.testing.world import OpenWorld
 from tests.serve.support import Served, spec
 
@@ -77,13 +75,26 @@ def test_a_world_that_declares_nothing_refuses_the_host_another_world_declares(s
         served.client.close_world(plain.world_id)
 
 
-def test_a_world_declaring_a_provider_host_is_refused_naming_both(served: Served) -> None:
-    asked = spec("mail-key-five").model_copy(update={"outbound": [Acknowledge(host="slack.com")]})
+def test_a_world_declaring_a_provider_host_keeps_what_the_provider_does_not_serve(served: Served) -> None:
+    """Slack's fake answers what it serves in the world; `reminders.add`, which it says it does not serve, falls
+    through to the world's own declaration for slack.com and is kept there, credentials unchecked."""
+    declared = DeclaredStore(host="slack.com", name="slack_extra", collections=[Collection(path="/api/reminders.add")])
+    world = OpenWorld(
+        served.client, served.client.create_world(spec("xoxb-six").model_copy(update={"outbound": [declared]}))
+    )
     try:
-        served.client.create_world(asked)
-    except Refused as refused:
-        assert refused.status == 409
-        assert "'slack.com' is declared acknowledge, and provider 'slack' claims 'slack.com'" in refused.error
-    else:
-        raise AssertionError("a world declaring slack.com was opened")
-    assert Claims(tokens=["mail-key-five"]) == asked.claims
+        slack = _mailer(served, "xoxb-six")
+        added = slack.post("https://slack.com/api/reminders.add", json={"text": "call Sofia", "time": "in 1 hour"})
+        served_here = slack.post("https://slack.com/api/auth.test")
+        assert added.status_code == 201
+        reminder = added.json()
+        assert {k: v for k, v in reminder.items() if k != "id"} == {"text": "call Sofia", "time": "in 1 hour"}
+        assert served_here.json()["ok"] is True
+        [kept] = world.captured_calls()
+        assert kept.exchange.captured is not None and kept.provider is None
+        assert (kept.exchange.captured.mode, kept.exchange.captured.not_served_by) == (CaptureMode.STORE, "slack")
+        [item] = world.events(provider="slack_extra")
+        assert isinstance(item.after, StoredSnapshot) and item.after.id == reminder["id"]
+        assert [c.provider for c in world.calls() if c.exchange.path == "/api/auth.test"] == ["slack"]
+    finally:
+        served.client.close_world(world.world_id)

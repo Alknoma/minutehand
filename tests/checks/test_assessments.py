@@ -885,3 +885,35 @@ def test_a_memory_count_naming_both_a_key_and_a_prefix_or_a_person_it_is_not_rea
         rules("- id: m\n  count: {memory: {key: 'asks/{person.key}'}}\n  at_most: 0\n")
     with pytest.raises(ValidationError, match=r"ask\.answer"):
         rules("- id: m\n  each: ask\n  count: {memory: {key: '{ask.answer}'}}\n  at_most: 0\n")
+
+
+# -- what the agent kept in a `store` host ----------------------------------------------------------------------------
+
+
+def test_stored_counts_the_items_a_collection_holds_at_a_moment_matching_a_field() -> None:
+    log = Log()
+    log.stored("contacts", "1", {"name": "Ana", "stage": "lead"}, 0)
+    log.stored("contacts", "2", {"name": "Ben", "stage": "lead"}, 1)
+    log.stored("deals", "9", {"name": "Ana's deal"}, 1)
+    log.stored("contacts", "1", {"name": "Ana", "stage": "customer"}, 3)
+    log.stored("contacts", "2", None, 4)
+    log.stored("contacts", "3", {"name": "Cy"}, 2, host="api.other.test")
+    world = view(scenario(OWNER, SOFIA), log)
+    at_the_end = "- id: e\n  count: {stored: {host: api.crm.test, collection: contacts}}\n  exactly: 2\n"
+    [one] = found(world, at_the_end)
+    assert one.message == "the run: 1 stored; expected exactly 2" and one.evidence == [4], "ben was deleted by the end"
+    before = "- id: b\n  count: {stored: {collection: contacts}, until: start+PT2H30M}\n  at_most: 0\n"
+    assert [f.evidence for f in found(world, before)] == [[1, 2, 6]], "cy is a contact on another host"
+    leads = (
+        "- id: l\n  count: {stored: {collection: contacts, values: {stage: lead}}, until: start+PT2H}\n  at_most: 0\n"
+    )
+    assert [f.evidence for f in found(world, leads)] == [[1, 2]]
+    customers = "- id: c\n  count: {stored: {values: {stage: customer}}}\n  exactly: 1\n"
+    assert found(world, customers) == []
+    written = "- id: w\n  count: {writes: {things: [stored], operations: [delete]}}\n  exactly: 1\n"
+    assert found(world, written) == [], "a stored item is a write to the world"
+
+
+def test_a_count_naming_stored_beside_another_fact_is_refused() -> None:
+    with pytest.raises(ValidationError, match="this names 2"):
+        rules("- id: s\n  count: {stored: {}, memory: {key: a}}\n  at_most: 0\n")

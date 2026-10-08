@@ -30,7 +30,7 @@ from minutehand.domain.assessments import (
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, ObligationKind, RunView, Severity
 from minutehand.domain.scenario import Person
 from minutehand.domain.templates import fill
-from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, WorldEvent
+from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, StoredSnapshot, WorldEvent
 
 _KIND = {Judged.FAIL: FindingKind.FAIL, Judged.REVIEW: FindingKind.REVIEW}
 _SEVERITY = {Judged.FAIL: Severity.ERROR, Judged.REVIEW: Severity.WARNING}
@@ -43,6 +43,7 @@ _THING = {
     EntityKind.INBOX_ITEM: Thing.INBOX_ITEM,
     EntityKind.FILE: Thing.FILE,
     EntityKind.TOOL_CALL: Thing.TOOL_CALL,
+    EntityKind.STORED: Thing.STORED,
 }
 
 _OPERATION = {Write.CREATE: Operation.CREATE, Write.UPDATE: Operation.UPDATE, Write.DELETE: Operation.DELETE}
@@ -317,6 +318,8 @@ class _Reader:
             ]
         if count.memory is not None:
             return self._memory(rule, subject, at)
+        if count.stored is not None:
+            return self._stored(rule, subject, at)
         assert count.asks is not None
         a = count.asks
         of = {self._key(w, subject) for w in a.of}
@@ -358,14 +361,43 @@ class _Reader:
             and _matches(event, m.values)
         ]
 
+    def _stored(self, rule: Rule, subject: _Subject, at: str | None) -> list[Fact]:
+        """Each item of a `store` host the rule picks, as it stood at the count's `until` (the end without one),
+        counted at the moment its version there was written."""
+        s = rule.count.stored
+        assert s is not None
+        until = self._when(rule.count.until, subject, at, past_end=True) if rule.count.until is not None else self.end
+        held: dict[tuple[str, str], WorldEvent] = {}
+        for event in self.view.events:
+            after = event.after
+            if (
+                event.entity.kind is not EntityKind.STORED
+                or not isinstance(after, StoredSnapshot)
+                or (s.host is not None and after.host != s.host)
+                or (s.collection is not None and after.collection != s.collection)
+                or event.sim_time > until
+            ):
+                continue
+            item = (event.entity.provider, event.entity.external_id)
+            if event.operation is Operation.DELETE:
+                held.pop(item, None)
+            elif event.operation in (Operation.CREATE, Operation.UPDATE) and after.item is not None:
+                held[item] = event
+        return [
+            Fact(at=event.sim_time, seqs=[event.seq]) for _, event in sorted(held.items()) if _matches(event, s.values)
+        ]
+
 
 def _matches(event: WorldEvent, wanted: dict[str, str | int | float | bool | None]) -> bool:
-    """Whether the value a memory write left has each field as the rule wants it."""
+    """Whether the value a memory write, or a stored item's write, left has each field as the rule wants it."""
     if not wanted:
         return True
     after = event.after
-    assert isinstance(after, MemorySnapshot) and after.value is not None
-    value: object = json.loads(after.value)
+    text = (
+        after.value if isinstance(after, MemorySnapshot) else after.item if isinstance(after, StoredSnapshot) else None
+    )
+    assert text is not None
+    value: object = json.loads(text)
     for path, expected in wanted.items():
         here = value
         for part in path.split("."):

@@ -4,7 +4,9 @@ A provider's request handler lets out three kinds of exception (`domain.errors`)
 
 - a `ServiceRefusal`: rendered as the real service renders it, logged at debug;
 - a `NotImplementedError`: 501 in the vendor's error shape (`ports.provider.RendersErrors`), its message saying the
-  fake does not implement the operation and naming the method and path, logged at info;
+  fake does not implement the operation and naming the method and path, logged at info; a `NotServed` (the
+  provider saying so by name) is also noted as not served (`Outcome.not_served`), so the proxy may hand the call to
+  the run's own declaration for the host instead (`domain.outbound`);
 - anything else: Minutehand's own bug, 500 in the vendor's error shape, its message beginning
   "minutehand internal error while answering <provider> <METHOD> <path>:", logged at error with its traceback,
   which is kept on the recorded call. Never raised on into the proxy.
@@ -29,7 +31,7 @@ from dataclasses import dataclass
 
 from starlette.requests import Request
 
-from minutehand.domain.errors import Asked, GrpcRefusal, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, GrpcRefusal, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.world import CallFailure, CallOutcome, GrpcCode
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope
@@ -47,6 +49,9 @@ class Outcome:
 
     kind: CallOutcome | None = None
     failure: CallFailure | None = None
+    not_served: bool = False
+    """The provider said by name that it does not serve the call (`NotServed`, or its own rendered 501 through
+    `unimplemented`): the proxy may answer it from the run's declaration for the host instead."""
 
 
 OUTCOME: ContextVar[Outcome | None] = ContextVar("minutehand_call_outcome", default=None)
@@ -75,6 +80,9 @@ def refused() -> None:
 def unimplemented(error: Exception, message: str) -> None:
     """The provider answered, in its own words, that it does not implement what the call asks (AWS's 501
     `NotImplemented`, rendered by the provider before it reaches anything)."""
+    outcome = OUTCOME.get()
+    if outcome is not None:
+        outcome.not_served = True
     _note(
         CallOutcome.NOT_IMPLEMENTED,
         CallFailure(kind=CallOutcome.NOT_IMPLEMENTED, message=message, exception_type=_qualified(error)),
@@ -109,6 +117,9 @@ def convert(error: Exception, renders: RendersErrors, *, provider: str, asked: A
             CallOutcome.NOT_IMPLEMENTED,
             CallFailure(kind=CallOutcome.NOT_IMPLEMENTED, message=message, exception_type=_qualified(error)),
         )
+        outcome = OUTCOME.get()
+        if outcome is not None:
+            outcome.not_served = isinstance(error, NotServed)
         return renders.error(501, NOT_IMPLEMENTED_CODE, message)
     message = f"{INTERNAL_PREFIX} {where}: {type(error).__name__}: {error}"
     logger.error("%s", message, exc_info=error)

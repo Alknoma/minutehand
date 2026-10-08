@@ -72,7 +72,7 @@ from minutehand.adapters.providers.aws.wire import (
 )
 from minutehand.adapters.providers.aws.wire import error as aws_error
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.errors import Rendered
+from minutehand.domain.errors import NotServed, Rendered
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import Model, Scenario
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, RecordSnapshot
@@ -139,7 +139,7 @@ class AwsProvider:
 
         async def serve(scope: Scope, receive: Receive, send: Send) -> None:
             if scope["type"] != "http":
-                raise NotImplementedError(f"the aws provider serves HTTP only, not {scope['type']}")
+                raise NotServed(f"the aws provider serves HTTP only, not {scope['type']}")
             body = await _read_body(receive)
             headers = _headers(scope)
             try:

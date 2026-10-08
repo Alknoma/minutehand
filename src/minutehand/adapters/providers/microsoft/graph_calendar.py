@@ -55,6 +55,7 @@ from minutehand.adapters.providers.microsoft.state import (
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.subscriptions import calendar_watch, notify
+from minutehand.domain.errors import NotServed
 from minutehand.domain.people import PersonReply
 from minutehand.domain.world import (
     Actor,
@@ -112,7 +113,7 @@ def moment(sent: wire.SentDateTime) -> datetime:
     try:
         return found.replace(tzinfo=ZoneInfo(zone)).astimezone(UTC)
     except (ZoneInfoNotFoundError, ValueError) as e:
-        raise NotImplementedError(f"the time zone {zone!r}: only UTC and IANA names are read") from e
+        raise NotServed(f"the time zone {zone!r}: only UTC and IANA names are read") from e
 
 
 def outlook_time(at: datetime) -> wire.DateTimeTimeZone:
@@ -206,7 +207,7 @@ class Calendar:
                     stored, owner, rest[2], actor=Actor.AGENT, send=asked.sendResponse, comment=asked.comment
                 )
                 return Response(status_code=202)
-        raise NotImplementedError(f"{method} /{'/'.join(parts)}")
+        raise NotServed(f"{method} /{'/'.join(parts)}")
 
     def _one(self, request: Request, owner: UserRecord, stored: wire.StoredEvent, status: int = 200) -> Response:
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
@@ -234,7 +235,7 @@ class Calendar:
         if not text:
             return events
         if re.search(r"\s+or\s+|\bnot\b", text, flags=re.IGNORECASE):
-            raise NotImplementedError(f"$filter with 'or' or 'not' on events: {text}")
+            raise NotServed(f"$filter with 'or' or 'not' on events: {text}")
         found = events
         for part in re.split(r"\s+and\s+(?=(?:[^']*'[^']*')*[^']*$)", text.strip(), flags=re.IGNORECASE):
             when = re.fullmatch(r"\s*(start|end)/dateTime\s+(eq|ne|gt|ge|lt|le)\s+'([^']+)'\s*", part)
@@ -248,18 +249,18 @@ class Calendar:
                 wanted = subject.group(1).replace("''", "'")
                 found = [e for e in found if e.event.subject == wanted]
             else:
-                raise NotImplementedError(f"$filter clause on events: {part.strip()}")
+                raise NotServed(f"$filter clause on events: {part.strip()}")
         return found
 
     def _listed(self, request: Request, owner: UserRecord, events: list[wire.StoredEvent], where: str) -> Response:
         for option in ("$search", "$expand", "$count", "$skiptoken"):
             if option in request.query_params:
-                raise NotImplementedError(f"{option} on events")
+                raise NotServed(f"{option} on events")
         found = self._filtered(events, query(request, "$filter"))
         order = (query(request, "$orderby") or "start/dateTime").strip()
         side, _, direction = order.partition(" ")
         if side not in ("start/dateTime", "end/dateTime") or direction.lower() not in ("", "asc", "desc"):
-            raise NotImplementedError(f"$orderby on events: {order}")
+            raise NotServed(f"$orderby on events: {order}")
         found = sorted(
             found, key=lambda e: e.starts if side == "start/dateTime" else e.ends, reverse=direction.lower() == "desc"
         )
@@ -457,13 +458,11 @@ class Calendar:
             raise bad_request(e.message) from e
         extra = sorted(asked.model_extra or {})
         if extra or asked.transactionId is not None:
-            raise NotImplementedError(
+            raise NotServed(
                 f"PATCH of {', '.join([*extra, *(['transactionId'] if asked.transactionId else [])])} on an event"
             )
         if stored.organizer_id != owner.user.id:
-            raise NotImplementedError(
-                "an attendee's own changes to an event: an event here is its organizer's one item"
-            )
+            raise NotServed("an attendee's own changes to an event: an event here is its organizer's one item")
         starts = moment(asked.start) if asked.start is not None else stored.starts
         ends = moment(asked.end) if asked.end is not None else stored.ends
         if ends < starts:
@@ -523,7 +522,7 @@ class Calendar:
 
     def _delete(self, owner: UserRecord, stored: wire.StoredEvent) -> Response:
         if stored.organizer_id != owner.user.id:
-            raise NotImplementedError(
+            raise NotServed(
                 "an attendee removing an event from their own calendar: an event here is its organizer's one item"
             )
         self._world.remove(

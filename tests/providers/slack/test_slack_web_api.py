@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import timedelta
 
 import httpx
+import pytest
 
 from minutehand.adapters.providers.slack import state
 from minutehand.adapters.providers.slack.provider import build
 from minutehand.adapters.providers.slack.state import BOT_USER_ID
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation
 from minutehand.ports.provider import Provider, PushesEvents
 from tests.providers.slack.slack_workspace import (
@@ -149,6 +151,13 @@ async def test_auth_test_names_the_app_and_its_workspace(client: httpx.AsyncClie
 async def test_a_token_in_the_form_body_is_accepted(client: httpx.AsyncClient) -> None:
     response = await client.post("/api/auth.test", data={"token": "xoxp-a-user-token"})
     assert response.json()["ok"] is True
+
+
+async def test_a_method_the_fake_does_not_serve_is_refused_as_not_served_by_name(client: httpx.AsyncClient) -> None:
+    """Slack has `views.push`; the fake leaves it out and says so, which the proxy answers 501 naming it, or hands
+    to the run's own declaration for slack.com (`tests/capture/test_store.py`)."""
+    with pytest.raises(NotServed, match=r"views\.push, a Slack Web API method this fake does not serve"):
+        await form(client, "views.push")
 
 
 async def test_lookup_by_email_finds_the_seeded_person(client: httpx.AsyncClient) -> None:

@@ -535,7 +535,7 @@ After LocalStack's `ServiceException` and moto's, a provider's request handler l
 | Raised | Answered | Logged | `Exchange.outcome` |
 |---|---|---|---|
 | a `ServiceRefusal` subclass (each provider's own refusal classes: Slack's, Asana's, Graph's, ...) | `render(asked)`: the bytes that provider's app answers it with | debug | `refused` |
-| `NotImplementedError` | 501 in the vendor's error shape (`RendersErrors.error`), "minutehand's <provider> fake does not implement <METHOD> <path>" | info | `not_implemented` |
+| `NotServed` (a provider saying by name what it leaves out), or any `NotImplementedError` | 501 in the vendor's error shape (`RendersErrors.error`), "minutehand's <provider> fake does not implement <METHOD> <path>"; a `NotServed` call on a host the run also declares outbound falls through to that declaration instead (`docs/capture.md`, "Hosts a provider claims") | info | `not_implemented` |
 | anything else | 500 in the vendor's error shape, "minutehand internal error while answering <provider> <METHOD> <path>: <Type>: <message>"; never raised on into mitmproxy | error, with the traceback | `internal_error` |
 
 ```python
@@ -617,12 +617,12 @@ The fake was brought to what a production Slack agent sends and expects, read ca
 |---|---|---|
 | `auth.test`, `users.list`, `users.info`, `users.lookupByEmail` | Yes | Users carry `is_restricted` (guest), `deleted` (deactivated), `is_bot`, `tz`, `tz_offset`, profile `email` and `title`. No `tz_label`, no profile images. |
 | `conversations.list`, `.info`, `.open`, `.members`, `.history`, `.replies` | Yes | Cursors, `has_more`, `inclusive`, thread summaries. `conversations.open` is idempotent and refuses a deactivated person (`user_disabled`) and a bot (`cannot_dm_bot`). |
-| `chat.postMessage`, `.postEphemeral`, `.update`, `.delete`; `reactions.add` | Yes | Blocks get a `block_id` and interactive elements an `action_id` when the agent leaves them out, as Slack does; an app's message carries `bot_profile`. `blocks=[]` on an update clears them. `text`, `blocks`, `attachments` and a reaction's `name` read back as sent. `reply_broadcast` is served; `username`, `icon_*`, `link_names`, `parse`, `mrkdwn: false`, `metadata`, `as_user: true` and `unfurl_links: true` are refused 501 by name (`app.UNSERVED_ARGUMENTS`). |
-| `views.open`, `views.update`, `views.publish` | Yes | A modal needs a `trigger_id` from a press or a command, once (`exchanged_trigger_id`), within three simulated seconds (`expired_trigger_id`); `hash` is checked (`hash_conflict`). `views.push` is refused 501 by name. |
+| `chat.postMessage`, `.postEphemeral`, `.update`, `.delete`; `reactions.add` | Yes | Blocks get a `block_id` and interactive elements an `action_id` when the agent leaves them out, as Slack does; an app's message carries `bot_profile`. `blocks=[]` on an update clears them. `text`, `blocks`, `attachments` and a reaction's `name` read back as sent. `reply_broadcast` is served; `username`, `icon_*`, `link_names`, `parse`, `mrkdwn: false`, `metadata`, `as_user: true` and `unfurl_links: true` are refused 501 by name (`NotServed`, `app.UNSERVED_ARGUMENTS`). |
+| `views.open`, `views.update`, `views.publish` | Yes | A modal needs a `trigger_id` from a press or a command, once (`exchanged_trigger_id`), within three simulated seconds (`expired_trigger_id`); `hash` is checked (`hash_conflict`). `views.push` is not served: 501 naming it (`NotServed`). |
 | `oauth.v2.access` | Yes | Every exchange passes, whatever client id, secret and code, any number of times; the installer is the scenario's owner. |
 | `response_url` POST (`hooks.slack.com/actions/…`, `/commands/…`) | Yes | New message (ephemeral by default, or `in_channel`), `replace_original`, `delete_original`; five uses within thirty minutes. Error answers (`used_url`, `expired_url`, `invalid_token`, 404) are not verified against Slack. |
 | `url_private`, `url_private_download` GET | Yes | Served to any request, with or without a token. |
-| Every other method Slack lists (370) | No | Refused 501 `not_implemented`, naming the method (`methods.UNSERVED`). |
+| Every other method Slack lists (370) | No | Refused 501 `not_implemented`, naming the method (`NotServed`, `methods.UNSERVED`), or answered by the run's own declaration for the host. A name Slack lists nowhere is Slack's `unknown_method`. |
 | Events: `message` (channel, group, IM, group DM, thread, `file_share` with `files`), `app_mention`, `message_changed`, `message_deleted`, `reaction_added`, `member_joined_channel`, `app_home_opened` (with the published Home view) | Yes | Sent only from conversations the agent's bot is in. A refused event is sent again three times with `X-Slack-Retry-Num` and `X-Slack-Retry-Reason`. |
 | `url_verification` | Yes, as `inbound.verify_url` | Nothing in a run sends it. |
 | `app_uninstalled`, `tokens_revoked`, `message` subtypes other than `file_share` | No | |
@@ -944,12 +944,17 @@ A host left to `REFUSE` is decided per world, by the declarations of the world t
 | `acknowledge` | Never leaves the machine: answered with the declared status, headers and body (or a route's); kept as an `Exchange` carrying `Captured`; with a `message` reading, also a world event, a message from the agent to the person the body names |
 | `pass_through` | Sent to the real host unchanged, upstream certificate verified; the answer reaches the agent chunk by chunk through the tee `RECORD` uses, and both sides are kept |
 | `replay` | Answered from an earlier run's `captured.jsonl`, marked `x-minutehand-replayed`; a miss is passed through and kept, or refused with 502, as declared |
+| `store` | Never leaves the machine: answered from the world by REST collections, each item kept as sent as a `STORED` entity under the declaration's name (`adapters/proxy/stored.py`); a fork sees the items as at its checkpoint |
 
-A declared host a provider claims, or a model host, is refused when the run or world is created, naming both.
+A declared model host is refused when the run or world is created, naming it. A declared host a provider claims is
+kept for what the provider does not serve: `ProxyAddon._answer` hands a call whose app raised `NotServed`
+(`Outcome.not_served`) to the declaration instead of answering 501, and the call is kept as captured with
+`Captured.not_served_by` (`docs/capture.md`, "Hosts a provider claims"). Credentials sent to a declared host are
+never checked.
 
 A model host that overlaps a provider's claim is refused when `Routing` is built. The model-host list is a `Routing` argument; the CLI uses the default. Upstream connections open only when a request is forwarded (`connection_strategy="lazy"`) and the certificate shown to the client is minted, not copied (`upstream_cert=False`); `test_claimed_host_is_answered_without_contacting_it` and `test_unclaimed_host_is_refused_and_recorded_without_contacting_it` watch a listener receive no connection.
 
-Capture of hosts no provider claims is built (above). Passing a host a provider claims through to the real service, to measure the provider against it, is not.
+Capture of hosts no provider claims is built (above), and so is a declaration taking what a provider does not serve. Passing every call to a host a provider claims through to the real service, to measure the provider against it, is not.
 
 ### gRPC and WebSockets
 

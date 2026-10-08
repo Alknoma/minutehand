@@ -6,13 +6,17 @@ Slack, a tracker, a document store are places the agent keeps state: it writes s
 back later, and a person acts on it. Those are providers, faked by Minutehand, and the world's log is theirs.
 An email API, a webhook, an SMS gateway, a web search, a page fetch are not: the agent sends something out, or
 asks something and uses the answer, and never reads its own writes back. Faking them buys nothing. They are
-**captured**, by declaration, with no provider code.
+**captured**, by declaration, with no provider code. An API the agent does write to and read back, which no
+provider fakes, is declared `store`: what it writes is kept as sent, in the run's world, and read back unchanged.
 
 Without a declaration, a host no provider claims is refused with 502, recorded, and reported by
 `unmatched_call`. Built and tested: `src/minutehand/domain/outbound.py`, `adapters/proxy/capture.py`,
-`tests/capture/`, `tests/e2e/test_capture_run.py`, `tests/serve/test_capture_worlds.py`.
+`adapters/proxy/stored.py`, `tests/capture/`, `tests/e2e/test_capture_run.py`, `tests/serve/test_capture_worlds.py`.
 
-## The three modes
+**Authentication always passes on a declared host.** Minutehand never reads, checks or keeps the credentials the
+agent sends a declared host: any key, or none, is let in, whatever the mode.
+
+## The modes
 
 One entry per host, or per `*.` wildcard, under `outbound` in the agent file:
 
@@ -48,15 +52,100 @@ outbound:
 | `acknowledge` | Never leaves the machine. Answered with the declared status, headers and JSON or text body, or a route's | The request, the declared answer | Sends: an email, a webhook, an SMS |
 | `pass_through` | Sent to the real host unchanged; the answer reaches the agent chunk by chunk as it arrives (the tee `--record-model-calls` uses) | The request and the real answer | Lookups: a search, a page fetch |
 | `replay` | Answered from an earlier run's recording of the same call, marked `x-minutehand-replayed: <source>` | The request and the replayed answer, with `replayed_from` | Lookups whose answers must not drift between runs |
+| `store` | Never leaves the machine. Kept in the run's world and answered from it, by REST collections (below) | The request, the answer, and each item as a world event | An API the agent writes to and reads back that no provider fakes: a CRM, a notes API |
 | `forward` | Sent to an external emulator the same file declares (`emulators:`), streamed, with `x-minutehand-world`, `x-minutehand-wake`, `x-minutehand-time` and a continued `traceparent` added to the forwarded copy only | The request and the emulator's answer, with the emulator, the operation and what the answer was (`Exchange.outcome`) | A service with a fake outside Minutehand: `docs/external-emulators.md` |
 
 `name` (default: the host with every other character an underscore, `api_mail_example`) is what a send's
-messages are recorded under. Two declarations of one host, or of overlapping hosts, are refused. **A host a
-provider claims, or a model API, cannot be declared:** the run is refused before it starts, naming both
-(`outbound host 'slack.com' is declared acknowledge, and provider 'slack' claims 'slack.com'`).
+messages, and a store's items, are recorded under; it may not be a provider's name. Two declarations of one host,
+or of overlapping hosts, are refused. **A model API cannot be declared:** the run is refused before it starts,
+naming it. A host a provider claims can be (below, "Hosts a provider claims").
 
 A path into a body is dotted keys, `[n]` for one list item and `[*]` for every item. A JSON body is read as
 JSON and a form body by its fields; anything else has no paths.
+
+## `store`: what the agent writes, kept as sent
+
+```yaml
+outbound:
+  - host: api.crm.example
+    kind: store
+    collections:
+      - path: /v1/contacts                    # GET lists, POST creates; /v1/contacts/{id}: GET, PUT, PATCH, DELETE
+        id: {at: id, format: uuid}            # uuid (default) | integer | prefixed (with prefix: "ct_") | sent
+        stamps:                               # optional: moments the API writes, from the run's clock
+          - {at: created_at}                  # on: create (default) | write; format: iso8601 | epoch_seconds | epoch_milliseconds
+          - {at: updated_at, on: write}
+        listing:                              # how a GET of the collection answers
+          items_at: results                   # absent: the bare JSON list
+          envelope: {object: list}            # fields answered beside the items, as given
+          limit_param: limit                  # a page of at most ?limit= items (default_limit: 100)
+          cursor_param: after                 # ?after=<the last id the agent has>
+          next_at: paging.next.after          # where the next page's cursor goes; absent on the last page
+        created_status: 201                   # the defaults
+        deleted_status: 204
+      - path: /v1/companies/{company}/notes   # a `{name}` segment: each company's notes are a collection of their own
+        name: notes                           # what an assessment counts it by; default: the last literal segment
+    routes:                                   # optional, as for acknowledge: answered first
+      - {method: POST, path: /v1/contacts/search, answer: {json_body: {results: []}}}
+    answer: {status: 404, json_body: {message: not found}}   # any other call; default: 200 {}
+```
+
+**Data stays as sent.** A POST to a collection stores the JSON object the agent sent, every field and value as
+sent, and answers it; Minutehand writes into it only what the collection declares the API assigns: the id at `id.at`
+and each of `stamps`. A GET of the item answers it exactly as stored; a GET of the collection lists the items in
+the order they were created, each as stored, in the declared envelope. PUT replaces the item with what it sends,
+PATCH merges the top-level fields it sends over the stored ones; either way the id and the `on: create` stamps stay
+as the API assigned them, and the `on: write` stamps move. DELETE removes it and answers the declared status with no
+body. An item no call created is 404; a body that is not a JSON object, a `sent` id missing from the body, an
+unknown cursor or a bad limit is 400; a second create of a `sent` id is 409; each says why in
+`{"error": ..., "host": ...}`. Any other method, and any path under no collection, is answered by the first route
+that matches, else by `answer`. The JSON's spacing is not kept, its fields and values are.
+
+An id is made from the event that creates the item: `integer` is its sequence number, `prefixed` the prefix and
+that number, `uuid` a UUID derived from the host, the collection's path and that number; so a fork, or a rerun,
+hands out the same ids. `sent` keeps the id the agent sent at `id.at`.
+
+**Secrets still never reach the store:** a field named as a credential (`redact.CREDENTIAL_KEYS`: `token`,
+`password`, `api_key`, ...) or listed in `redact` is stored, and read back, as `[redacted]`; this is the one way
+an item differs from what was sent.
+
+Each item is a world event: a `STORED` entity under the declaration's `name` (`StoredSnapshot`: the host, the
+collection, the path it is under, its id, and the item as stored), created, updated and deleted by the agent. So
+it is in the run's file and nowhere else, a fork sees the items as they stood at its checkpoint (and writes its
+own after it), `writes: {things: [stored]}` counts each write, and an assessment counts what a
+collection holds (`docs/assessments.md`):
+
+```yaml
+assess:
+  - id: one_contact_per_lead
+    count: {stored: {host: api.crm.example, collection: contacts, values: {stage: lead}}}
+    at_most: 1
+```
+
+`tests/capture/test_store.py`, and a whole run and its fork in `tests/e2e/test_capture_run.py`.
+
+## Hosts a provider claims
+
+A host a provider claims may also be declared, in any mode. The provider answers every call it serves, exactly as
+without the declaration. A call it says it does not serve (`domain.errors.NotServed`: a Slack Web API method the
+fake leaves out, a Graph `$filter` it does not read, a Cloud Tasks method; the 501 that names the method) goes to
+the declaration instead and is answered as the declaration says: kept by a `store`, acknowledged, passed through,
+replayed. Its record says so: no provider, captured as declared, and `Captured.not_served_by` naming the provider
+that did not serve it; the run's outbound summary counts them (`2 not served by slack, answered as declared`).
+Without a declaration for the host, the call is refused by name, 501 in the vendor's shape, as before. Only a
+`NotServed` falls through: a call a provider refuses as the real service would (a 404, Slack's `ok: false`) is
+the provider's answer, and a gRPC call or a socket is never handed on.
+
+```yaml
+outbound:
+  - host: slack.com
+    name: slack_extra                       # not `slack`, the provider's own name
+    kind: store
+    collections: [{path: /api/reminders.add}]   # reminders.add, which the Slack fake does not serve
+```
+
+`test_a_method_slack_does_not_serve_falls_through_to_the_declared_store_and_what_it_serves_does_not`,
+`test_a_method_slack_does_not_serve_without_a_declaration_is_refused_by_name`.
 
 A `forward` host's emulator that is down or does not answer is never bypassed: the call is answered 502 or 504
 naming it and kept `unavailable`, and the run's environment failed (exit 2). A fork after the run first used an
@@ -197,6 +286,7 @@ A fork shares its parent's log up to the checkpoint, and with it every call the 
 | Declared | In a fork | Why |
 |---|---|---|
 | `acknowledge` | Answered as declared | It never left the machine anyway |
+| `store` | Answered from the fork's world: the items as they stood at the checkpoint, then the fork's own writes | The items are world events, so the fork's log has them as it has everything else |
 | `pass_through`, `in_forks: replay` (**the default**) | Answered from the parent's recording of the same call, the parent's calls after the fork first; on a miss, sent to the real host and kept | A fork is a comparison: it should differ from its parent only by what it changed. A search that answers differently a day later would be a second change nobody asked for |
 | `pass_through`, `in_forks: pass_through` | Sent to the real host again | When the point of the fork is to see today's answer |
 | `replay` | From its own source, as declared | |

@@ -31,6 +31,7 @@ from minutehand.domain.outbound import (
     MESSAGE_ID,
     Acknowledge,
     Answer,
+    DeclaredStore,
     Forward,
     HtmlAt,
     InForks,
@@ -43,7 +44,7 @@ from minutehand.domain.outbound import (
 from minutehand.domain.scenario import Person
 from minutehand.domain.world import AnsweredBy, Body, BodyKept, Recipient, RecordedCall
 
-Declaration = Acknowledge | PassThrough | Replay | Forward
+Declaration = Acknowledge | PassThrough | Replay | Forward | DeclaredStore
 
 RECORDINGS = "captured.jsonl"
 """In a run's directory: every call the run captured, one `RecordedCall` a line, redacted as stored. A replay
@@ -281,18 +282,23 @@ class Canned:
     body: bytes
 
 
-def canned(declaration: Acknowledge, method: str, path: str, *, message_id: str) -> Canned:
-    """The answer the first matching route declares, else the host's own, with each `{message_id}` in its strings
-    replaced by `message_id`."""
+def routed(declaration: Acknowledge | DeclaredStore, method: str, path: str) -> Answer | None:
+    """The answer of the first route that matches the call, if one does."""
     route_path = urlsplit(path).path
-    answer: Answer = next(
+    return next(
         (
             r.answer
             for r in declaration.routes
             if (r.method is None or r.method.upper() == method.upper()) and fnmatchcase(route_path, r.path)
         ),
-        declaration.answer,
+        None,
     )
+
+
+def canned(declaration: Acknowledge | DeclaredStore, method: str, path: str, *, message_id: str) -> Canned:
+    """The answer the first matching route declares, else the host's own, with each `{message_id}` in its strings
+    replaced by `message_id`."""
+    answer = routed(declaration, method, path) or declaration.answer
     if answer.text is not None:
         body, kind = answer.text.replace(MESSAGE_ID, message_id).encode("utf-8"), TEXT
     else:
@@ -619,8 +625,9 @@ class Capturing:
 
 
 def refuse_claimed(declared: Sequence[Declaration], registry: Registry, model_hosts: Sequence[str]) -> None:
-    """A declared host a provider claims, or a model API or its vendor's infrastructure, would be answered by two
-    things: refused at load, naming both. So is a declaration recorded under a provider's own name."""
+    """A declared model API or its vendor's infrastructure would be answered by two things: refused at load, naming
+    both. So is a declaration recorded under a provider's own name. A host a provider claims may be declared: the
+    provider answers what it serves, and what it says it does not (`NotServed`) falls through to the declaration."""
     for declaration in declared:
         mine = HostPattern(declaration.host)
         for manifest in registry.manifests:
@@ -629,12 +636,6 @@ def refuse_claimed(declared: Sequence[Declaration], registry: Registry, model_ho
                     f"outbound host {declaration.host!r} is recorded as {declaration.key!r}, which is the name of "
                     f"provider {manifest.key!r}: give it another `name`"
                 )
-            for claimed in manifest.hosts:
-                if mine.overlaps(HostPattern(claimed)):
-                    raise ProviderConflict(
-                        f"outbound host {declaration.host!r} is declared {declaration.kind}, and provider "
-                        f"{manifest.key!r} claims {claimed!r}: a host is faked or captured, never both"
-                    )
         for model in dict.fromkeys([*model_hosts, *MODEL_INFRASTRUCTURE_HOSTS]):
             if mine.overlaps(HostPattern(model)):
                 raise ProviderConflict(
