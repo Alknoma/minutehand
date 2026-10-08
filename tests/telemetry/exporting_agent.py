@@ -70,7 +70,9 @@ def main() -> None:
     if mode == "grpc":
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as GrpcSpanExporter
 
-        exporter: SpanExporter = GrpcSpanExporter(insecure=True, timeout=5)
+        # How long it retries a server that does not answer gRPC; a test of that refusal shortens it.
+        give_up = float(os.environ.get("EXPORT_GIVE_UP_SECONDS", "5"))
+        exporter: SpanExporter = GrpcSpanExporter(insecure=True, timeout=give_up)
     else:
         exporter = OTLPSpanExporter() if mode == "protobuf" else JsonExporter()
     provider.add_span_processor(BatchSpanProcessor(exporter))

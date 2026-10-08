@@ -21,15 +21,21 @@ from mitmproxy import certs
 from mitmproxy.options import CONF_BASENAME
 
 CA_CERT = f"{CONF_BASENAME}-ca-cert.pem"
+CA_KEY = f"{CONF_BASENAME}-ca.pem"
+"""The CA's key and certificate in one file, the one mitmproxy loads; while it is missing there is no CA."""
 BUNDLE = "minutehand-ca-bundle.pem"
 KEY_SIZE = 2048
 """mitmproxy's own default, so a CA made here is the one the proxy would have made."""
 
 
 def authority(confdir: Path) -> Path:
-    """The proxy's CA certificate in `confdir`, made when it is not there yet."""
+    """The proxy's CA certificate in `confdir`, made when it is not there yet.
+
+    Made when mitmproxy's `CertStore.from_store` would make it (its key file is missing). One already there is not
+    loaded here: parsing and checking its RSA key is most of a proxy's start, and the proxy loads it itself."""
     confdir.mkdir(parents=True, exist_ok=True)
-    certs.CertStore.from_store(confdir, CONF_BASENAME, KEY_SIZE)
+    if not (confdir / CA_KEY).exists():
+        certs.CertStore.create_store(confdir, CONF_BASENAME, KEY_SIZE)
     return confdir / CA_CERT
 
 

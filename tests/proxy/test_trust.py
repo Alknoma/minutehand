@@ -22,6 +22,8 @@ from minutehand.application.run_clock import RunClock
 from tests.proxy.support import client
 from tests.proxy.upstream import Authority, make_authority, model_api
 
+pytestmark = pytest.mark.own_ca  # whether a CA is made, and kept, is what these show
+
 TUNNELLED = "localhost"
 
 

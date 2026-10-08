@@ -428,7 +428,7 @@ class _Collector(BaseHTTPRequestHandler):
 def collector() -> Iterator[tuple[str, list[str]]]:
     _Collector.paths = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_address[1]}", _Collector.paths
     server.shutdown()
