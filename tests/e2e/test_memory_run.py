@@ -1,5 +1,5 @@
 """The agent's memory through whole runs of a real agent process: it remembers across wakes through
-`minutehand_agent.store`, a fork from a middle checkpoint starts from exactly the memory the checkpoint holds with no
+`minutehand.agent.store`, a fork from a middle checkpoint starts from exactly the memory the checkpoint holds with no
 hooks, the agent's own database is never opened, and state kept outside the store is named where it shows."""
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ async def test_an_agent_that_keeps_state_outside_the_store_has_its_fork_refused_
     said = str(refused.value)
     assert f"the agent after the fork is not the agent at the checkpoint at seq {middle.seq}" in said
     assert f"next_wake: {(T0 + timedelta(days=2)).isoformat()} at the checkpoint, none after" in said
-    assert "state the agent keeps outside `minutehand_agent.store`" in said
+    assert "state the agent keeps outside `minutehand.agent.store`" in said
     assert [o.record.run_id for o in session.runs(state)] == [run_id], "the refused fork left no run behind"
 
 

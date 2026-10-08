@@ -131,7 +131,7 @@ def agent_file(
 ) -> Path:
     """The reference agent's file, on `port`; with `policy`, judged by its team's rules as
     examples/reference_agent/agent.yaml writes them; with `answered`, people can answer its email. No hooks: its
-    memory is the run's (`minutehand_agent.store`)."""
+    memory is the run's (`minutehand.agent.store`)."""
     mail = {**MAIL, "replies": replies(port, secret)} if answered else dict(MAIL)
     doc = {
         "name": "venue_booker",

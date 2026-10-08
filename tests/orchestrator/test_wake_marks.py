@@ -1,4 +1,4 @@
-"""The agent's next wake marked with `minutehand_agent.wake`: recorded as its own plan, and the moment it is woken."""
+"""The agent's next wake marked with `minutehand.agent.wake`: recorded as its own plan, and the moment it is woken."""
 
 from __future__ import annotations
 

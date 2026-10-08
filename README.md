@@ -11,7 +11,7 @@ from a checkpoint with the prompt, the model, a person or the world changed, and
 Minutehand starts the agent's own command, or reaches one already running, and points it at the fakes through its
 environment: `HTTPS_PROXY`, `NO_PROXY` and a CA bundle. Minutehand owns the agent's time and its memory, so the one
 change to the agent's code is one import, inert in production: what the agent remembers goes through
-`minutehand_agent.store`, and that is what a fork rewinds.
+`minutehand.agent.store`, and that is what a fork rewinds.
 
 ## Install
 
@@ -35,7 +35,7 @@ The example agent is in the repository, so clone it for the example files:
 ```bash
 git clone --depth 1 -b main https://github.com/Alknoma/minutehand
 cd minutehand/examples/follow_up
-python3 -m venv .venv && .venv/bin/pip install slack_sdk minutehand-agent   # its Slack client and `minutehand_agent`
+python3 -m venv .venv && .venv/bin/pip install slack_sdk minutehand   # its Slack client and `minutehand.agent`
 
 minutehand run scenario.yaml --agent agent.yaml -- .venv/bin/python agent.py
 # exits 0: Rosa answers after a day and a half, and the agent tells Owen and finishes
@@ -57,12 +57,10 @@ client in the agent that would go around the proxy.
 
 ## How the agent touches Minutehand
 
-In its code, through one import, `minutehand_agent`, which does nothing unless `MINUTEHAND_ON` is set. It is a
-distribution of its own, the standard library only, installed in the agent's environment (`pip install
-minutehand-agent`), never `minutehand` itself:
+In its code, through one import, `minutehand.agent`, which does nothing unless `MINUTEHAND_ON` is set:
 
 ```python
-from minutehand_agent import store, wake
+from minutehand.agent import store, wake
 
 store.configure(store.SqliteBackend("agent.db"))  # production: your database, through a three-method adapter
 
@@ -96,7 +94,7 @@ replay, or forward to an emulator of your own. `docs/agent-contract.md` lists ev
 Built and tested (`docs/design.md`, "What exists", counts the tests for each part):
 
 - The proxy, the run loop, the store (SQLite, one file per run and its forks), the agent's memory
-  (`minutehand_agent.store`) held by the run, forks from a checkpoint that start from that memory and verify the
+  (`minutehand.agent.store`) held by the run, forks from a checkpoint that start from that memory and verify the
   agent's report, and `minutehand serve` for test suites that open many worlds at once.
 - Providers: Slack, Microsoft Teams and Graph, Asana, Jira, YouTrack, Notion, GitHub, Google Drive with Docs and Slides,
   AWS EventBridge Scheduler and SQS (through moto), and Google Cloud Tasks over its REST transport.

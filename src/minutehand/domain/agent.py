@@ -115,7 +115,7 @@ class Reported(Model):
 
 class Marked(Model):
     """The agent is woken at `wake_url`, and a wake is over when the call returns. Its next wake is the moment it
-    marked with `minutehand_agent.wake` in that wake, or none: nothing else is asked of it."""
+    marked with `minutehand.agent.wake` in that wake, or none: nothing else is asked of it."""
 
     kind: Literal["marked"] = "marked"
     wake_url: str
@@ -194,7 +194,7 @@ class OwnDatabaseForm(StrEnum):
 
 
 class OwnDatabase(Model):
-    """A database the agent keeps state in outside `minutehand_agent.store`, by the variable it reads its location
+    """A database the agent keeps state in outside `minutehand.agent.store`, by the variable it reads its location
     from. Minutehand hands every run, and every fork, a fresh empty SQLite file in that variable, so no run reads
     another's or production's, and notes in the run that it is outside forks: a fork starts with an empty one, not
     the parent's at the checkpoint. Any other database (PostgreSQL, a cloud one) is the team's to provide per run."""
@@ -302,7 +302,7 @@ class AgentUnderTest(Model):
         if isinstance(written, dict) and ("state" in written or "databases" in written):
             raise ValueError(
                 "`state:` hooks and fronted `databases:` are gone: the agent keeps what it remembers in "
-                "`minutehand_agent.store`, which every run and fork holds for it (docs/agent-contract.md); a database "
+                "`minutehand.agent.store`, which every run and fork holds for it (docs/agent-contract.md); a database "
                 "it keeps beside that is named under `own_databases`"
             )
         return written

@@ -1,6 +1,6 @@
 """A Pydantic AI agent that asks a colleague in Slack, remembers when it expects an answer, and follows up once.
 
-The agent is a Pydantic AI `Agent` with typed dependencies, `Memory`, recalled from `minutehand_agent.store` on
+The agent is a Pydantic AI `Agent` with typed dependencies, `Memory`, recalled from `minutehand.agent.store` on
 every wake, event and report and kept back after, three tools that take them through `RunContext[Memory]`, and a
 typed output, `str`. Each wake or Slack event is one
 `agent.run_sync` with the situation as its prompt and the same `Memory` as its deps. The tools write the waits into
@@ -33,12 +33,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from minutehand_agent import store
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
+
+from minutehand.agent import store
 
 OWNER = "owen@example.com"  # who gives the agent its goal
 ASK = "rosa@example.com"  # who knows the answer
@@ -99,7 +100,7 @@ def close_wait(ctx: RunContext[Memory], email: str) -> str:
     return f"closed {email}"
 
 
-# -- what it remembers, in `minutehand_agent.store` ---------------------------------------------------------------
+# -- what it remembers, in `minutehand.agent.store` ---------------------------------------------------------------
 
 # Production keeps the memory in this process (swap in `store.SqliteBackend(path)` to keep it across restarts).
 # Under Minutehand the store is the run's own memory, which a fork starts from as it stood at its checkpoint.

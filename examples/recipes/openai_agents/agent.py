@@ -1,7 +1,7 @@
 """An OpenAI Agents SDK agent that asks a colleague in Slack, remembers when it expects an answer, and follows up once.
 
 The agent is an `Agent` with three `function_tool`s and a typed run context, `Memory`, recalled from
-`minutehand_agent.store` on every wake, event and report and kept back after. Each wake or Slack event is one
+`minutehand.agent.store` on every wake, event and report and kept back after. Each wake or Slack event is one
 `Runner.run` with the situation as its input and that `Memory` as its context. The tools write the waits into it (`remember_wait`, `close_wait`), and the report Minutehand asks for after
 every wake reads it: `next_wake` is the earliest moment a wait is expected by.
 
@@ -33,10 +33,11 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agents import Agent, OpenAIChatCompletionsModel, RunContextWrapper, Runner, function_tool, set_tracing_disabled
-from minutehand_agent import store
 from openai import AsyncOpenAI
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
+
+from minutehand.agent import store
 
 OWNER = "owen@example.com"  # who gives the agent its goal
 ASK = "rosa@example.com"  # who knows the answer
@@ -100,7 +101,7 @@ agent = Agent[Memory](
         ),
     ),
 )
-# -- what it remembers, in `minutehand_agent.store` ---------------------------------------------------------------
+# -- what it remembers, in `minutehand.agent.store` ---------------------------------------------------------------
 
 # Production keeps the memory in this process (swap in `store.SqliteBackend(path)` to keep it across restarts).
 # Under Minutehand the store is the run's own memory, which a fork starts from as it stood at its checkpoint.

@@ -2,7 +2,7 @@
 
 `agent.py` is a LangGraph graph of the usual shape (a chat model with tools bound, a `ToolNode`, `tools_condition`
 between them) behind three endpoints Minutehand calls, with the goal and the waits kept between wakes in
-`minutehand_agent.store`. `../README.md` describes the
+`minutehand.agent.store`. `../README.md` describes the
 agent and the contract all five recipes share.
 
 ## The lines that connect it
@@ -84,5 +84,5 @@ uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml --
 # exits 0: one follow-up two days in, then Owen is told Rosa never answered; no follows_up_when_due finding
 ```
 
-Outside this checkout: `pip install langgraph langchain-openai slack_sdk minutehand-agent` in the agent's Python, and Minutehand
+Outside this checkout: `pip install langgraph langchain-openai slack_sdk minutehand` in the agent's Python, and Minutehand
 installed on its own (`uv tool install .` from a checkout); then `minutehand run …` without `uv run`.

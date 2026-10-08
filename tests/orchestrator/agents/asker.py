@@ -1,8 +1,8 @@
 """A small agent under test, run once per wake by the `Command` driver.
 
 Reads a WakeRequest on stdin, acts on the test providers at $MH_BASE, keeps what it remembers in
-`minutehand_agent.store` (the run's memory under Minutehand; $AGENT_STATE/state.db otherwise), and prints an
-AgentReport. argv[1] picks the behaviour. The standard library and `minutehand_agent` only, so it is a program of
+`minutehand.agent.store` (the run's memory under Minutehand; $AGENT_STATE/state.db otherwise), and prints an
+AgentReport. argv[1] picks the behaviour. The standard library and `minutehand.agent` only, so it is a program of
 its own and not a piece of the test.
 """
 
@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from minutehand_agent import store, wake
+from minutehand.agent import store, wake
 
 BASE = os.environ.get("MH_BASE", "")
 store.configure(store.SqliteBackend(Path(os.environ.get("AGENT_STATE", ".")) / "state.db"))
@@ -129,7 +129,7 @@ def ask_chase_and_close(reason: str, now: datetime, state: dict[str, object]) ->
 
 
 def mark_next(reason: str, now: datetime, state: dict[str, object]) -> None:
-    """START: mark the next wake three hours on with `minutehand_agent.wake`, and report none. DUE: done."""
+    """START: mark the next wake three hours on with `minutehand.agent.wake`, and report none. DUE: done."""
     save(state)
     if reason == "start":
         wake.at(now + timedelta(hours=3))
