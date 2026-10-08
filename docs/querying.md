@@ -432,7 +432,7 @@ The agent's own telemetry, every span it exported (and the model calls recorded 
 
 ## Queries an agent asks
 
-Each runs as written against a run (`tests/query/test_docs_queries.py` runs every one and expects rows). Change a
+Each runs as written against a run: `tests/query/test_docs_queries.py` runs every one on a run written by hand and expects rows, and `tests/architecture/test_read_model_on_real_runs.py` runs every one on real runs of the two examples, expecting rows wherever the run holds the data. Change a
 person's key, a memory key or a host to your own run's.
 
 ### Follow-ups per person, and the gap before each
