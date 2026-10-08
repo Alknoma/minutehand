@@ -72,9 +72,9 @@ that test instead.
 | A created shape holds its own text and fill, apart from the body placeholder | documented | `test_a_shape_keeps_its_own_text_and_fill_apart_from_the_body` | https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request#createshaperequest |
 | A created table's cells hold the text inserted at their `cellLocation`, apart from the body | documented | `test_a_tables_cells_hold_their_own_text_apart_from_the_body` | https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request#createtablerequest |
 
-## Deliberately not enforced (Minutehand is a simulation)
+## What Google would refuse
 
-Google documents these refusals; Minutehand answers the call instead, because it does not enforce credentials. Each
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Google documents these refusals; this stack does not test them and answers the call instead. Each
 test in `test_any_credential.py` fails if the refusal comes back. Who may see what stays world data: another user's
 mailbox is "Delegation denied", an unshared calendar a 404, a file not shared with the caller not found.
 
@@ -212,7 +212,7 @@ test's whose certificate the run's CA signed. The machinery is Drive's `changes.
 
 Google lets "only the same user from the same client" stop a channel a user made
 (https://developers.google.com/workspace/calendar/api/guides/push). Minutehand does not enforce Google's caller and
-credential rules, by a rule of the product, not a reading of Google's: any signed-in caller may stop a channel.
+credential rules (authentication is out of scope, `docs/design.md`): any caller may stop a channel.
 
 ## Gmail and Calendar: refused by name
 

@@ -24,11 +24,11 @@ https://github.com/microsoftgraph/msgraph-metadata, `openapi/v1.0/openapi.yaml` 
 | A path is matched in the forms Graph reads alike: `name('key')` key segments, a drive through `/me/drive`, `/users/{id}/drive` or `/sites/{id}/drive`, a site by `{host}:/{path}:`, an item by path, `delta` with or without `()` | documented | `test_every_published_operation_is_served_or_refused_by_name` | https://learn.microsoft.com/en-us/graph/onedrive-addressing-driveitems |
 | A Graph error is `{"error": {"code", "message", "innerError"}}` | documented | `test_a_team_unknown_is_refused_in_graphs_shape` | https://learn.microsoft.com/en-us/graph/errors |
 
-## Credentials: deliberately not enforced
+## Credentials
 
-Minutehand does not enforce credentials. Any token, credential or client secret works, every sign-in succeeds, and
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Any token, credential or client secret works, every sign-in succeeds, and
 no scope, role or permission grant refuses a call. These checks, each of which the identity platform, Graph or the
-connector does make, were removed:
+connector does make, this stack does not test:
 
 - the token endpoint's wrong client secret (AADSTS7000215), unknown client id (AADSTS700016), app registered in
   another tenant (AADSTS700016), unknown tenant in the path (AADSTS90002) and unknown resource in a scope
@@ -45,8 +45,8 @@ connector does make, were removed:
   `ChannelMessage.Read.All`, `Chat.Read.All`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`): no token
   carries roles and nothing reads them.
 
-What still refuses is the world itself: a user an administrator disabled (AADSTS50057) or removed (AADSTS50034)
-cannot sign in; a user's token reaches only that user's own mailbox, calendar and OneDrive; a bot reaches only the
+What still refuses is the world itself, and stays: a user an administrator disabled (AADSTS50057) or removed
+(AADSTS50034) cannot sign in, a refusal of world data, not of a credential; a user's token reaches only that user's own mailbox, calendar and OneDrive; a bot reaches only the
 conversations it is installed in.
 
 | Claim | Class | Test | Source |

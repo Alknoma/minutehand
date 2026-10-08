@@ -3,7 +3,7 @@
 Each row is a fact about how Asana answers that this provider keeps, the test that pins it, and its source:
 **documented** (Asana's reference or its OpenAPI document says so; the page is linked), **observed** (a recording of
 the real service under `tests/data/asana_rest_1_0/`, or a public report quoting its answer; linked), or
-Minutehand's own (a choice the rules make: credentials not enforced, what is not served refused by name). A case no
+Minutehand's own (a choice the rules make: authentication out of scope, what is not served refused by name). A case no
 page, recording or report gives Asana's answer to is not answered: it raises the shared not-served refusal (501,
 naming the case and saying Asana's answer to it is not documented), as every operation and feature this provider does
 not serve does.
@@ -19,7 +19,7 @@ request".
 
 ## Credentials
 
-Minutehand deliberately does not enforce credentials. Asana answers a call with no token, or a token that is not
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). What Asana would refuse, and this stack does not test, follows. Asana answers a call with no token, or a token that is not
 one, 401 "Not Authorized" (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`); this provider
 answers it. A token the scenario seeded, or `/-/oauth_token` minted, acts as its user; any other token, or none, acts
 as the agent. Removed and never refused: the 401 for a missing or unknown token (and `AsanaSeed.tokens` making the

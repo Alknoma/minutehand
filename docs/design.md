@@ -1837,6 +1837,31 @@ The patch adds an offset to the sandbox's realtime and monotonic clocks, applied
 
 What it took beyond the patch: the release's own sidecar binaries do not match a build of the `go` branch (the sentry and its prewarmer are separate binaries now), so the patched sentry (`runsc/cmd/sentry/sentry_main.go`, absent from the `go` branch) and the prewarmer (`runsc/prewarmer/prewarmer.c`) were built from the same source; `runsc do` needs `--ignore-cgroups` nested in a container, and `iptables` and `sysctl` to reach the network. Then through Minutehand itself (`Contained`, 2026-10-07): a stock Python agent under `runsc do`, asking Rosa in Slack on its first wake and following up only from an in-process `threading.Timer` of 36 hours, with Minutehand's proxy on the sandbox's gateway (192.168.10.3) and the two `Contained` commands wrapping `runsc debug`. Three simulated days took 3 seconds; the follow-up landed 36 hours less 0.42 s after the ask (real time spent inside the first wake), in a wake of its own, with no wake endpoint for it. Two things only the real run showed: `http.server`'s 0.5 s poll is a deadline like any other (a timer that fires and does nothing is withdrawn as a wake, and the period it fired at is learned as that task's housekeeping, so the run is not stopped at every poll; `--deadlines` reports each task's deadline for it), and the sandbox prints fields `Contained` does not read. Not tried: a pending real call holding time still, checkpoint and restore as a fork, and x86-64.
 
+## Authentication is out of scope
+
+Minutehand simulates the services an agent works with; it does not authenticate or authorize anything. Authentication
+workflows are tested with separate tools, outside this stack.
+
+- **Any credential acts.** A token, key, secret or sign-in the world seeded or issued acts as its account, expired or
+  revoked alike; any other credential, or none at all, acts as the account the world names for it
+  (`unknown_credentials_act_as`, or the provider's equivalent default: the agent's account, the scenario's owner or
+  the first seeded user). A token endpoint answers every grant in the vendor's shape.
+- **Nothing on the agent's own calls is checked:** no scope, grant, role, permission, client secret or signature.
+- **Shapes are still the vendor's.** A request missing a parameter the vendor requires, or naming a grant type it
+  does not have, is refused as the vendor refuses it. A push address must be `https://`, because the scheme is part
+  of Google's request shape (`changes.watch`, `events.watch`).
+- **Who sees what is world data, and stays:** membership, sharing, whose mailbox, calendar or drive it is, and an
+  account the directory disabled or does not hold (Microsoft's AADSTS50057 and AADSTS50034).
+- **What a service sends the agent is kept,** since it is the service's request, not a check Minutehand makes: Slack
+  signs its events with the world's signing secret, Graph sends its subscription validation handshake, a Bot
+  Framework push carries its JWT.
+- **The current exception:** a Google push (`changes.watch`, `events.watch`) still verifies the receiver's
+  certificate against the run's trust (`adapters/reaching.py`), so a receiver must serve a certificate the run's CA
+  signed. This is to be removed.
+
+Each provider's `CLAIMS.md` points here and lists what its vendor would refuse, so a reader knows what this stack
+does not test.
+
 ## Known issues / limitations
 
 - **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample is a run of its own with a memory of its own; what the agent keeps outside the store is carried from one sample into the next.
@@ -1846,10 +1871,10 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 - **A fork starts only at a checkpoint the agent did not go on writing its memory after, in the same wake.** An agent that reports IDLE while a process of its own still writes makes that wake's checkpoints not restorable.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork from any checkpoint after the agent first used AWS is refused, naming what it cannot rewind. Re-creating moto's state from the log is not built: queue creation, sends and receives are calls, not log entries.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
-- **Slack's default workspace accepts any token.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`, in which any `xoxb-` or `xoxp-` token acts as the bot; a world that declares workspaces accepts only their tokens.
+- **A Slack token only picks a workspace.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`; in a world that declares several, a token answers in the workspace that declares or minted it, else the first that declares none, else the first. No token is refused.
 - **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called.
 - **A press that means to fill a form waits three real seconds** for the agent to open it with the press's `trigger_id`, as Slack's trigger lives three seconds; an agent slower than that fails the run (`FormNeverOpened`).
-- **Most providers accept any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana accepts any bearer token unless its seed declares tokens; YouTrack and Jira accept any credential or none, a seeded one acting as its user and any other as the agent. Google Workspace and GitHub accept any credential or none: a token the world issued or seeded acts as its user (expired or revoked alike), and anything else as the seed's `unknown_credentials_act_as` (the scenario's owner for Google Workspace, the first seeded user for GitHub); Google's `/token` answers every grant and verifies no signature, and refuses only a request missing a grant's required parameter.
+- **No provider authenticates** (see "Authentication is out of scope"): any credential, or none, acts, a seeded one as its account and any other as the world's default identity; Google's `/token` matches a refresh token or a service account by name and verifies no signature.
 - **No fake's wire details have been verified against the real service.**
 - **A rule cannot read meaning.** It counts facts between moments: a thank-you and a chase under an answered ask are both a message `in_thread`, and two messages minutes apart are close whether or not they ask the same thing. Such a rule is best `severity: review`; telling them apart is a judgement, for a check a model judges (not built) or the team's own Python.
 - **The enum-comparison lint judges a field by its name, not its type** (`docs/lints.md`).

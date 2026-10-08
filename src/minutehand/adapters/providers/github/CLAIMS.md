@@ -11,9 +11,9 @@ a call without one) and is unproven. Tests are in `tests/providers/github/`, fil
 `test_github_vendor_claims_graphql.py` (G), `test_github_vendor_claims_budget.py` (B), `test_github_refusals.py`
 (F), `test_github_coverage.py` (C) and `test_github_world_without_users.py` (W).
 
-Minutehand deliberately does not enforce credentials: every `Authorization`, or none, is accepted, and nothing refuses a call
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Every `Authorization`, or none, is accepted, and nothing refuses a call
 for what a token was or was not issued for. The claims GitHub documents about refusing credentials are listed
-under "Deliberately not enforced" below, with the tests that hold the provider to accepting them.
+under "What GitHub would refuse" below, with the tests that hold the provider to accepting them.
 
 ## Ported
 
@@ -113,9 +113,9 @@ Each needs a credential to record (code search and GraphQL refuse a call without
   is 422 `missing`, a GraphQL repository that does not resolve is `null` with NOT_FOUND, and the missing-query
   message.
 
-## Deliberately not enforced
+## What GitHub would refuse
 
-GitHub documents these refusals; Minutehand accepts the call instead, because it does not enforce credentials.
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). GitHub documents these refusals; this stack does not test them and answers the call instead.
 Each test fails if the refusal comes back.
 
 | GitHub refuses | Source | Minutehand | Test |
