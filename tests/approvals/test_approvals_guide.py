@@ -315,13 +315,13 @@ async def test_the_guides_queries_show_what_the_agent_did_around_each_decision(
     heedless = await play("inbox", "rejected.yaml", tmp_path, monkeypatch, heedless=True)
     silent = await play("inbox", "never_decides.yaml", tmp_path, monkeypatch)
 
-    after = _cli("query", heedless.run_id, "--state", str(state), "--format", "json", query_of("after_a_rejection.sql"))
+    after = _cli("query", heedless.run_id, query_of("after_a_rejection.sql"), "--state", str(state), "--format", "json")
     assert after.returncode == 0, after.stderr
     rows = json.loads(after.stdout)
     assert [r["kind"] for r in rows] == ["stored", "message"], rows
     assert '"approval": "apr-1"' in rows[0]["summary"]
 
-    waiting = _cli("query", silent.run_id, "--state", str(state), "--format", "json", query_of("while_undecided.sql"))
+    waiting = _cli("query", silent.run_id, query_of("while_undecided.sql"), "--state", str(state), "--format", "json")
     assert waiting.returncode == 0, waiting.stderr
     rows = json.loads(waiting.stdout)
     nadias = [r for r in rows if r["approver"] == "nadia"]
