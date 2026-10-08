@@ -17,6 +17,17 @@ manifest, and because the tenant, its bot and its users are one directory every 
 
 ## How it behaves
 
+- **Graph's surface is Microsoft's.** `surface.SERVED` lists the operations of Graph `v1.0`'s published OpenAPI
+  description this provider answers (127 of the 2,103 in the subset kept under `tests/data/microsoft_graph_v1/`);
+  every other call is refused by name, 501 `not_implemented`, before any surface reads it. So is any call whose
+  answer Microsoft does not document (CLAIMS.md, "Refused by name"), and any property of a request body that would
+  otherwise be dropped: what is sent is kept as sent, and Graph generates only what Graph assigns.
+- **Minutehand does not enforce credentials.** Any client id and secret get a token, any tenant is the world's, a
+  code or refresh token is read only for the user it names, and Graph, the connector and SharePoint's
+  pre-authenticated URLs accept any token or none (a call naming nobody is the tenant's application; a connector
+  call, the world's bot). No token carries `roles` and no scope is checked. What the world says still refuses: a
+  disabled or removed user cannot sign in, a user's token reaches only their own mailbox, calendar and OneDrive, a
+  bot only the conversations it is installed in. CLAIMS.md lists every check removed.
 - **Tokens are real RS256 JWTs**, signed with one key derived from a fixed seed (`keys.py`) and published by both
   metadata documents. Graph and the connector read the tenant, app and user from the bearer token. A pushed
   activity carries a token issued by `https://api.botframework.com` for the bot's app id with the `serviceurl`
@@ -42,14 +53,16 @@ manifest, and because the tenant, its bot and its users are one directory every 
   and `/users/{id | userPrincipalName | mail}`, a folder named in any case or by id, as a segment or
   `mailFolders('Inbox')`. A sent message is one copy per mailbox: the sender's in Sent Items, read, and one unread
   in the Inbox of each recipient who is a user of the tenant, each with its own id and all with one
-  `conversationId`. A new message starts a conversation; `reply` and `replyAll` stay in it (from Sent Items, to
-  the message's own recipients, as Outlook replies). The sender's copy is what the run reads: a `MessageSnapshot`
+  `conversationId`. A new message starts a conversation; `reply` and `replyAll` stay in it. A reply goes to the
+  message's `replyTo`, else its sender (from Sent Items, the mailbox itself); a reply to all also to every
+  recipient; a comment with a body is 400 (message-reply, message-replyall). The sender's copy is what the run reads: a `MessageSnapshot`
   of subject and text, its recipients by their scenario email, its conversation as the channel, so an email is an
   ask of each person and a reply in the same conversation is a follow-up of the same ask. Lists take `$top` (10 by
   default), `$skip`, `$select`, `$filter` on `isRead`, the date properties, `from`/`sender` address,
   `conversationId`, `subject`, `id`, `internetMessageId`, `importance`, joined by `and`, and `$orderby` on the
   dates and `subject`; with both, an `$orderby` that does not open the `$filter` is 400 `InefficientFilter`.
-  `Prefer: outlook.body-content-type="text"` answers bodies as text; otherwise a body is HTML. A folder's
+  `Prefer: outlook.body-content-type="text"` answers bodies as text; otherwise a body is HTML; a body is stored as
+  sent either way. A message and an event carry `changeKey` and `@odata.etag` W/"changeKey". A folder's
   `messages/delta` lists the folder, then what changed in it and, as `@removed`, what left it. A user's token
   reaches only their own mailbox (403 `ErrorAccessDenied`); an application's reaches all.
 - **Calendars** (`graph_calendar.py`): `/events`, `/calendar/events`, `/calendarView` and `/calendar/calendarView`
@@ -57,7 +70,7 @@ manifest, and because the tenant, its bot and its users are one directory every 
   item in its organizer's calendar, seen with the same id from each attendee's; `isOrganizer` and
   `responseStatus` are the reading mailbox's. Times are answered in UTC; a `timeZone` sent is UTC or an IANA name.
   An event made with attendees sends a meeting request (`eventMessageRequest`, `meetingMessageType:
-  meetingRequest`) from the organizer, in the event's own conversation, carrying Accept, Tentative and Decline as
+  meetingRequest`) from the organizer carrying the event's body, in the event's own conversation, carrying Accept, Tentative and Decline as
   `MessageSnapshot.actions`: the agent asking each attendee. A change of subject, time or place clears every answer
   and sends a new request; a new attendee gets one of their own. `transactionId` makes a retried POST answer the
   event it already made. `getSchedule` answers each address's items and `availabilityView` (0 free, 1 tentative,
@@ -125,18 +138,17 @@ every pushed activity is.
 
 ## What it does not do
 
-- No `$batch`, `$orderby` beyond a folder's `name`, `lastModifiedDateTime` and `size` and what mail and events
-  list above, `$search`, `$count`, or `ConsistencyLevel`; an unknown query option on Teams or files is refused
-  400; `$search`, `$expand` and `$count` on mail or events are answered 501, as is a `$filter` clause or an `or`
-  they do not read.
-- Graph does not send chat messages (`POST …/messages` on a chat or channel is refused 403); a bot sends through the
-  connector.
-- Mail has no drafts (`POST /messages`, `createReply`, `send`), no `forward`, `move` or `copy`, no attachments, no
-  categories or flags (a `PATCH` of anything but `isRead` is 501), and `sendMail` always saves to Sent Items.
-  A message deleted from Deleted Items is gone, and `delta` does not list it as removed. A reply's text is its
-  comment, with no quoted original. Deletions notify no subscription.
+- Every Graph operation outside `surface.SERVED` is 501 by name: among them `$batch`, sending chat or channel
+  messages through Graph (a bot sends through the connector), drafts (`POST /messages`, `createReply`, `send`),
+  `forward`, `move`, `copy`, attachments, child folders, event `delta`, `instances`, `cancel`, `forward`, other
+  calendars, thumbnails, versions, check-in and check-out. `$orderby` beyond a folder's `name`,
+  `lastModifiedDateTime` and `size` and what mail and events list above, `$search`, `$count`, `ConsistencyLevel`,
+  an unread `$filter` clause or an `or` are 501 too.
+- Mail has no categories or flags (a `PATCH` of anything but `isRead` is 501), and `sendMail` always saves to Sent
+  Items. A message deleted from Deleted Items is gone, and `delta` does not list it as removed. A reply's text is
+  its comment, with no quoted original. Deletions notify no subscription.
 - Calendars have no recurrence, no online meetings, no `findMeetingTimes`, no working hours in `getSchedule`, no
-  `Prefer: outlook.timezone` (answers are UTC) and no Windows time zone names (501). An attendee's copy of an event
+  `Prefer: outlook.timezone` other than UTC and no Windows time zone names (501). An attendee's copy of an event
   is the organizer's one item, so an attendee cannot change or delete it (501); deleting an event sends no
   cancellation.
 - A person writes by email only in reply: `say` and messaging happenings are Teams, and need the agent to declare a
@@ -147,9 +159,9 @@ every pushed activity is.
   from Graph's lists rather than listed with `deletedDateTime`.
 - Converting a file (`?format=pdf`), thumbnails, versions history, Excel and PowerPoint text, and check-in/out are
   not served. Content is held in the store, a whole file per version.
-- A delta token expires after 30 days of the run's clock; Graph publishes no fixed lifetime.
-- Sign-in has no browser: `authorize` answers at once for the user named in `login_hint`. No certificate
-  credentials (`client_assertion`), no on-behalf-of, no device code.
+- A delta token never expires with age (Graph publishes no lifetime); `resyncRequired` is a declarable fault.
+- Sign-in has no browser: `authorize` answers at once for the user named in `login_hint`, and without one is 501.
+  No certificate credentials (`client_assertion`), no on-behalf-of, no device code.
 - Opening the bot's app in Teams pushes nothing, so `PersonOpensAgent` is refused.
 - The Bot Framework's OpenID metadata and keys (`login.botframework.com`) carry no tenant and no credential, so under
   `minutehand serve` a bot fetching them is routed only by a world claiming that host (one at a time) or the default
