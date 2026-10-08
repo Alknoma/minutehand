@@ -21,6 +21,9 @@ Each norm is one sentence. `docs/design.md` is the design; read it in full befor
 ## Implementation
 
 - No TODO comments, placeholders, mock implementations or stubs.
+- Every behaviour of a fake is its vendor's, documented (`CLAIMS.md` cites the page) or observed of the real service (`CLAIMS.md` cites the recorded evidence), and none is invented or chosen because it seems better or is convenient.
+- A fake is scoped from the vendor's API surface, not from guesses about what an agent will call, and refuses by name, never approximates, every method and parameter it does not serve yet.
+- A fake keeps what the agent writes verbatim and returns it verbatim, generating only what the real API itself assigns (ids, etags, timestamps, `kind`, links it computes).
 - Search for an existing pattern before adding a file or class, and change existing code rather than building beside it.
 - Breaking changes are good: no aliases, shims or compatibility wrappers — update every caller.
 - A check is deterministic unless it cannot be; anything that needs judgement answers `FindingKind.REVIEW`, and a check that could not read its input says so in `CheckReport.blocked`.
