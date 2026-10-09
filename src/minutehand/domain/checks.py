@@ -161,7 +161,8 @@ class Effectiveness(Model):
     )
     slowest_reaction: timedelta | None = Field(
         default=None,
-        description="The longest stretch from a wait settling to the agent's next write on it, or to the run's end "
+        description="The longest stretch from a wait settling to the agent's next write anywhere a person could see "
+        "it (a message to anyone, a ticket, an item on another service; not its own memory), or to the run's end "
         "when there was none",
     )
     messages_to_people: int = Field(default=0, ge=0)

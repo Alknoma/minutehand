@@ -1192,7 +1192,8 @@ class Effectiveness(Model):
     )
     slowest_reaction: timedelta | None = Field(
         default=None,
-        description="The longest stretch from a wait settling to the agent's next write on it, or to the run's end "
+        description="The longest stretch from a wait settling to the agent's next write anywhere a person could see "
+        "it (a message to anyone, a ticket, an item on another service; not its own memory), or to the run's end "
         "when there was none",
     )
     messages_to_people: int = Field(default=0, ge=0)
@@ -1206,7 +1207,7 @@ Every number is a count or a stretch of time. What it no longer holds is what wa
 
 What a follow-up is, as a fact (`checks/facts.asks`): an agent write the person could see while the wait was open, a message to them or their delegate, or a change to the ask's thread or ticket. A read is not one: looking at the channel tells nobody anything. One message chasing two waits is one follow-up in `follow_ups_made`.
 
-What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no commitment, so a wake that learned something it kept in its own memory reads as idle. `slowest_reaction` runs to the end of the run when the agent never came back, so a run stopped early makes it shorter.
+What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no commitment, so a wake that learned something it kept in its own memory reads as idle. `slowest_reaction` runs to the end of the run when the agent wrote nothing more, so a run stopped early makes it shorter; and it counts any write after the answer as the reaction, so an agent that went on with something unrelated reads as having reacted (it once counted only writes to the wait's own person or entity, and an agent that heard an answer and at once filed the approval it was for read as 4.8 days slow).
 
 #### The verdict
 

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from minutehand.checks.facts import asks
+from minutehand.checks.facts import asks, writes
 from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
 from minutehand.domain.world import (
@@ -26,10 +26,9 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
     for kind in (ObligationKind.ANSWER_FROM_PERSON, ObligationKind.WORK_WITH_PERSON):
         for ask in asks(view, kind):
             made.update(s for f in ask.follow_ups for s in f.seqs)  # one message chasing two waits is one follow-up
-    when = {e.seq: e.sim_time for e in view.events}
+    written = [w.event for w in writes(view)]
     reactions = [
-        (when[o.first_touch_after_settled] if o.first_touch_after_settled in when else max(ended_at, o.settled_at))
-        - o.settled_at
+        _reaction(o.settled_at, o.opened_by, written, ended_at)
         for o in waits
         if o.settled_at is not None and (o.person is not None or o.entity is not None)
     ]
@@ -57,6 +56,17 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
         idle_wakes=sum(1 for w in view.wakes if w.world_changes == 0 and not w.commitments_changed),
         failed_checks=sum(1 for f in findings if f.kind is FindingKind.FAIL),
     )
+
+
+def _reaction(settled: datetime, opened_by: int, written: list[WorldEvent], ended_at: datetime) -> timedelta:
+    """From a wait settling to the agent's next write anywhere a person could see it: a message to anyone, a ticket,
+    an item filed on another service. The write need not touch the wait's person or entity: an agent that hears an
+    answer and at once files the approval it was for has reacted, though it never writes to that person again. To
+    the run's end when the agent wrote nothing more."""
+    for event in written:
+        if event.seq > opened_by and event.sim_time >= settled:
+            return event.sim_time - settled
+    return max(ended_at, settled) - settled
 
 
 def _burden(view: RunView) -> list[PersonBurden]:
