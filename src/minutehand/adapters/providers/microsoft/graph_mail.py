@@ -63,6 +63,7 @@ from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 10
 PAGE_MAX = 1000
+ATTACHMENT_ORDER = ("name", "size", "lastModifiedDateTime", "contentType")  # enum-lint: exempt Graph's property names
 ATTACHMENT_LIMIT = 3 * 1024 * 1024
 """A file attached by `POST …/attachments` is under 3 MB (message-post-attachments)."""
 MESSAGE_TYPE = "#Microsoft.Graph.Message"
@@ -1157,7 +1158,7 @@ class Mail:
         ordered = query(request, "$orderby")
         if ordered:
             prop, _, direction = ordered.strip().partition(" ")
-            if prop not in ("name", "size", "lastModifiedDateTime", "contentType") or direction.strip().lower() not in (
+            if prop not in ATTACHMENT_ORDER or direction.strip().lower() not in (
                 "",
                 "asc",
                 "desc",

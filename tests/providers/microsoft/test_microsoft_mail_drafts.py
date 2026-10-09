@@ -5,9 +5,9 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
