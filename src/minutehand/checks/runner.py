@@ -36,7 +36,7 @@ from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.ledger import build
 from minutehand.checks.near_miss_name import NearMissName
 from minutehand.domain.agent import Commitment, CommitmentStatus
-from minutehand.domain.assessments import Rule, StoppedBy, merged
+from minutehand.domain.assessments import IntegrityCheck, Rule, StoppedBy, integrity_fails, merged
 from minutehand.domain.checks import (
     AroundProxy,
     Check,
@@ -56,7 +56,7 @@ from minutehand.domain.checks import (
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
-from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario, Silent
+from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario
 from minutehand.domain.world import CallOutcome, EntityRef, Exchange, RecordedCall, WorldEvent
 from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
@@ -75,7 +75,8 @@ class RunResult(Model):
     assessed_by: list[str] = Field(
         default=[],
         description="What judged the run, all of it the team's own: each rule of `assess` by its id, `expectations` "
-        "and `near_miss_name` when the scenario declares them, and each of the agent's own checks; empty: nothing did",
+        "and `near_miss_name` when the scenario declares them, each integrity fact its files say fails the run "
+        "(`fail_on_integrity`), and each of the agent's own checks; empty: nothing did",
     )
     rules_read: list[RuleRead] = Field(
         default=[], description="Each rule of `assess`, with how often it was read and how often it could not be"
@@ -201,21 +202,23 @@ class _Tally:
             blocked=self.blocked,
             notes=self.notes,
             effectiveness=card,
-            verdict=verdict(view, card, stop, self.findings, ended or ended_at(view), assessed=bool(self.assessed_by)),
+            verdict=verdict(view, card, stop, assessed=bool(self.assessed_by)),
             assessed_by=self.assessed_by,
             rules_read=self.rules_read,
         )
 
 
 def assessed_by(view: RunView, own: Sequence[Check] = ()) -> list[str]:
-    """What the team declared to judge the run: its rules, the scenario's expectations and protected names, and the
-    agent's own checks. Minutehand's integrity checks (a call around the proxy, a contract the agent broke) are not
-    an assessment: they say whether the run can be trusted, not how the agent should behave."""
+    """What the team declared to judge the run: its rules, the scenario's expectations and protected names, the
+    integrity facts its files say fail the run, and the agent's own checks. An integrity fact nobody named (a call
+    around the proxy, a contract the agent broke) is not an assessment: it is stated as a review and says whether the
+    run can be trusted, never how the agent should behave."""
     found = [r.id for r in view.rules]
     if view.scenario.expect:
         found.append(Expectations.id)
     if view.scenario.protected_names:
         found.append(NearMissName.id)
+    found += [check.value for check in view.fail_on_integrity]
     return found + [c.id for c in own]
 
 
@@ -234,8 +237,6 @@ def verdict(
     view: RunView,
     card: Effectiveness,
     stop: StopReason | None,
-    findings: list[Finding],
-    ended: datetime,
     *,
     assessed: bool = True,
 ) -> Verdict:
@@ -247,22 +248,12 @@ def verdict(
     else is the team's to say, in its rules (`domain/assessments.py`).
 
     "Open" is read from the world: a wait the world had not settled, or a commitment the agent's last report held
-    open. One reading of the ledger's: once every expectation of the scenario is met, a message to an owner who
-    never answers (`Silent`), sent with or after the last of them, opens a wait nobody will settle; it is the result
-    being reported, and does not keep a run unfinished.
+    open. Nothing else is read into it: a wait on someone who never answers is open, whatever it said.
     """
     commitments = (
         None if view.commitments is None else sum(1 for c in view.commitments if c.status is CommitmentStatus.OPEN)
     )
-    still = [o for o in view.obligations if o.kind is not ObligationKind.DATE and o.settled_at is None]
-    met_by = _all_met_at(view, card, findings)
-    owner = next(p for p in view.scenario.people if p.key == view.scenario.owner)
-    told_after = [
-        o
-        for o in still
-        if met_by is not None and isinstance(owner.reply, Silent) and o.person == owner.key and o.opened_by >= met_by
-    ]
-    open_waits = len(still) - len(told_after)
+    open_waits = sum(1 for o in view.obligations if o.kind is not ObligationKind.DATE and o.settled_at is None)
     open_work = open_waits + (commitments or 0)
     how = _STOPPED[stop] if stop is not None else "how the run stopped was not recorded"
     reasons = unjudged(view, assessed=assessed)
@@ -294,15 +285,7 @@ def verdict(
         )
     elif stop is StopReason.AGENT_DONE or open_work == 0:
         kind = VerdictKind.PASSED
-        if stop is StopReason.AGENT_DONE:
-            left = ""
-        elif told_after:
-            left = (
-                f", with every expectation met; {_count(len(told_after), 'message')} telling the owner, who never "
-                "answers, is not counted as open"
-            )
-        else:
-            left = ", with nothing left open"
+        left = "" if stop is StopReason.AGENT_DONE else ", with nothing left open"
         words = f"Passed: no check failed, and {how}{left}."
     else:
         kind = VerdictKind.UNFINISHED
@@ -325,7 +308,7 @@ def verdict(
 
 NOTHING_ASSESSED = (
     "nothing judged this run, since neither the scenario nor the agent file declares an assessment (`assess`, "
-    "`expect`, `protected_names`, or the agent's own `checks`)"
+    "`expect`, `protected_names`, `fail_on_integrity`, or the agent's own `checks`)"
 )
 
 
@@ -342,19 +325,6 @@ def unjudged(view: RunView, *, assessed: bool = True) -> list[str]:
                 "move the world's clock forward)"
             )
     return reasons
-
-
-def _all_met_at(view: RunView, card: Effectiveness, findings: list[Finding]) -> int | None:
-    """The seq of the last event that met an expectation, once every one of the scenario's is met; else None."""
-    if not view.scenario.expect or card.expectations_met < card.expectations_total:
-        return None
-    seqs = [
-        seq
-        for f in findings
-        if f.check == Expectations.id and f.kind is FindingKind.INFORMATIONAL
-        for seq in f.evidence
-    ]
-    return max(seqs) if seqs else None
 
 
 def _count(n: int, thing: str) -> str:
@@ -425,6 +395,7 @@ def evaluate_run(
     unmatched_calls: list[Exchange] | None = None,
     ended: datetime | None = None,
     rules: Sequence[Rule] | None = None,
+    fail_on_integrity: Sequence[IntegrityCheck] | None = None,
 ) -> RunResult:
     """Build the obligations ledger from the world and the replies, then run every deterministic check and the
     team's rules: `rules`, or the scenario's own when none are given."""
@@ -436,6 +407,9 @@ def evaluate_run(
         commitments=commitments,
         unmatched_calls=unmatched_calls,
         rules=merged([], scenario.assess, scenario.assess_off) if rules is None else rules,
+        fail_on_integrity=(
+            integrity_fails([], scenario.fail_on_integrity) if fail_on_integrity is None else fail_on_integrity
+        ),
         stop=stop,
     )
     return evaluate(view, stop=stop, ended=ended)
@@ -457,6 +431,7 @@ def view_of(
     around_proxy: list[AroundProxy] | None = None,
     uncalled_providers: Sequence[ProviderKey] = (),
     rules: Sequence[Rule] = (),
+    fail_on_integrity: Sequence[IntegrityCheck] = (),
     stop: StopReason | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies that
@@ -477,6 +452,7 @@ def view_of(
         around_proxy=around_proxy,
         uncalled_providers=list(uncalled_providers),
         rules=list(rules),
+        fail_on_integrity=list(fail_on_integrity),
         stopped=_STOPPED_BY[stop] if stop is not None else None,
     )
 

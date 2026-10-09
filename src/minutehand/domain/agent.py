@@ -12,7 +12,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from minutehand.domain.assessments import Rule, refuse_repeated_rules
+from minutehand.domain.assessments import IntegrityCheck, Rule, refuse_repeated_rules
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -280,6 +280,11 @@ class AgentUnderTest(Model):
         description="The team's own rules for judging the agent, over the facts of each run (`docs/assessments.md`). "
         "A scenario may replace one by its id, add its own, or switch one off (`Scenario.assess_off`). Nothing else "
         "judges how the agent behaves",
+    )
+    fail_on_integrity: list[IntegrityCheck] = Field(
+        default=[],
+        description="Integrity facts that fail the run when they are found (`around_proxy`, "
+        "`agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
     )
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"

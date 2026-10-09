@@ -20,6 +20,7 @@ from minutehand.adapters.answering import Guarded
 from minutehand.adapters.providers.notion.manifest import MANIFEST
 from minutehand.adapters.providers.notion.provider import NotionProvider, build
 from minutehand.adapters.providers.notion.seed import object_id
+from minutehand.adapters.providers.notion.wire import API_VERSION
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -267,6 +268,22 @@ def unserved(response: httpx.Response) -> str:
 Call = Callable[[Any], Any]
 
 
+def query_database(client: Client | AsyncClient, database_id: str, **body: Any) -> Any:
+    """`POST /v1/databases/{id}/query` (API version 2022-06-28), through the official client's own `request`:
+    notion-client 3.x keeps no helper for it, since its default version queries data sources instead."""
+    return client.request(path=f"databases/{database_id}/query", method="POST", body=body)
+
+
+def create_database(client: Client | AsyncClient, **body: Any) -> Any:
+    """`POST /v1/databases` with its `properties`, which notion-client 3.x's helper no longer sends."""
+    return client.request(path="databases", method="POST", body=body)
+
+
+def update_database(client: Client | AsyncClient, database_id: str, **body: Any) -> Any:
+    """`PATCH /v1/databases/{id}` with its `properties`, which notion-client 3.x's helper no longer sends."""
+    return client.request(path=f"databases/{database_id}", method="PATCH", body=body)
+
+
 @dataclass
 class Sdk:
     """The official SDK as a service builds it, through the proxy, sync (run off the loop) or async."""
@@ -288,8 +305,18 @@ class Sdk:
     def other(self, token: str) -> tuple[Client, AsyncClient]:
         trust = ssl.create_default_context(cafile=str(self.proxy.ca_cert))
         return (
-            Client(auth=token, client=httpx.Client(proxy=self.proxy.url, verify=trust, trust_env=False)),
-            AsyncClient(auth=token, client=httpx.AsyncClient(proxy=self.proxy.url, verify=trust, trust_env=False)),
+            Client(
+                notion_version=API_VERSION,
+                retry=False,
+                auth=token,
+                client=httpx.Client(proxy=self.proxy.url, verify=trust, trust_env=False),
+            ),
+            AsyncClient(
+                notion_version=API_VERSION,
+                retry=False,
+                auth=token,
+                client=httpx.AsyncClient(proxy=self.proxy.url, verify=trust, trust_env=False),
+            ),
         )
 
     async def as_token(self, token: str, call: Call) -> Any:
@@ -310,9 +337,17 @@ async def through_proxy(tmp_path: Path, world: World, flavour: str) -> AsyncIter
     registry.register(MANIFEST, lambda: world.provider)
     async with Proxy(Routing(registry), world.store, world.clock, confdir=tmp_path / "ca") as proxy:
         trust = ssl.create_default_context(cafile=str(proxy.ca_cert))
-        sync = Client(auth=AGENT_TOKEN, client=httpx.Client(proxy=proxy.url, verify=trust, trust_env=False))
+        sync = Client(
+            notion_version=API_VERSION,
+            retry=False,
+            auth=AGENT_TOKEN,
+            client=httpx.Client(proxy=proxy.url, verify=trust, trust_env=False),
+        )
         asynchronous = AsyncClient(
-            auth=AGENT_TOKEN, client=httpx.AsyncClient(proxy=proxy.url, verify=trust, trust_env=False)
+            notion_version=API_VERSION,
+            retry=False,
+            auth=AGENT_TOKEN,
+            client=httpx.AsyncClient(proxy=proxy.url, verify=trust, trust_env=False),
         )
         try:
             yield Sdk(
