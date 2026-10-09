@@ -169,3 +169,24 @@ def test_explain_of_a_seq_beyond_the_log_is_refused(run: Fixture, capsys: pytest
     code, _, err = run_cli(capsys, "explain", run.run_id, "999", "--state", str(run.state))
     assert code == 2
     assert f"its seqs run from 1 to {run.late_write}" in err
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ["RUN", "SQL", "--format", "json", "--state", "STATE"],
+        ["RUN", "--state", "STATE", "SQL", "--format", "json"],
+        ["--state", "STATE", "RUN", "--format", "json", "SQL"],
+        ["--format", "json", "--state", "STATE", "RUN", "SQL"],
+    ],
+)
+def test_query_takes_its_run_and_sql_in_any_order_among_its_options(
+    run: Fixture, capsys: pytest.CaptureFixture[str], order: list[str]
+) -> None:
+    sql = "SELECT seq FROM messages WHERE is_reply = 1"
+    words = {"RUN": run.run_id, "SQL": sql, "STATE": str(run.state)}
+
+    code, out, err = run_cli(capsys, "query", *(words.get(w, w) for w in order))
+
+    assert code == 0, err
+    assert json.loads(out) == [{"seq": run.answered}]
