@@ -61,7 +61,7 @@ or at a moment of their own. Faults declared there (`rate_limits`), or on an ope
 `DeclaresFaults`: a rate limit on a method and path prefix answers 429 with `Retry-After` the given number of
 times. World keys: `<site>.atlassian.net` and `/ex/jira/{cloudId}/`.
 
-A person's acts are `TicketHappening`s through `ActsOnTickets.act`: `Moves` (the fewest transitions with no
+A person's acts are transitions through `apply` (`ports.transitions`), a `TicketHappening` among them: `Moves` (the fewest transitions with no
 required screen), `Reassigns` (to someone or nobody), `Comments`, `Deletes`, each by the happening's person at the
 run clock's time, recorded as actor PERSON with that person as the changelog's or comment's author.
 

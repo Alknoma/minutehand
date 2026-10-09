@@ -68,7 +68,7 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.transitions import ASSIGNEE, DELETE, REASSIGN, Transition
+from minutehand.domain.transitions import ASSIGNEE, DELETE, FORM, PICKS, REASSIGN, REPLY, TEXT, Transition
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -95,7 +95,6 @@ from minutehand.ports.provider import (
     OwnsSeed,
     Provider,
     PushesEvents,
-    PushesInteractions,
 )
 from minutehand.ports.store import Store
 from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions, TalksToAgent
@@ -649,16 +648,11 @@ class StandingWorld:
         return self._written(before)
 
     async def reply(self, person: str, text: str, *, to: EntityRef) -> WorldEvent:
-        """`person` answers a message: in its thread in a channel, as a new message in a DM."""
-        self._person(person)
-        before = self.store.head()
+        """`person` answers a message the agent sent them, in their own words, now: the transition its provider takes
+        it through (in Slack, the event pushed to the agent)."""
         answer = PersonReply(person=person, in_reply_to=to, text=text, at=self.clock.now())
-        self.store.remember(answer)
         async with self._push(f"{person} replies {text[:40]!r} on {to.provider}"):
-            pushes, target = self._pushes(to.provider), self._target(to.provider)
-            with _refusing():
-                await pushes.deliver(answer, target, self.store, self.clock, secret=self._signing[to.provider])
-        return self._written(before)
+            return await self._answer(answer, REPLY, {TEXT: text})
 
     async def happen_now(self, happening: Happening) -> WorldEvent:
         """`happening`, of any family, done now rather than at its offset: checked as a scenario's would be (its
@@ -685,17 +679,27 @@ class StandingWorld:
     async def press(self, person: str, on: EntityRef, press: Press) -> WorldEvent:
         """`person` uses a control on the message `on` now (a button, a pick, a form filled), pushed to the
         agent's interactivity target the way the provider's service pushes it."""
-        self._person(person)
-        found = self.provider(on.provider)
-        if not isinstance(found, PushesInteractions):
-            raise WorldRefused(f"{on.provider} carries no controls a person can use")
-        before = self.store.head()
+        given: dict[str, str] = {}
+        if press.picks is not None:
+            given[PICKS] = press.picks
+        if press.form:
+            given[FORM] = json.dumps([f.model_dump() for f in press.form])
         answer = PersonReply(person=person, in_reply_to=on, text=press.label, at=self.clock.now(), press=press)
-        self.store.remember(answer)
         async with self._push(f"{person} presses {press.label!r} on {on.provider}"):
-            target = self._target(on.provider)
-            with _refusing():
-                await found.press(answer, target, self.store, self.clock, secret=self._signing[on.provider])
+            return await self._answer(answer, press.action_id, given)
+
+    async def _answer(self, answer: PersonReply, offer: str, given: dict[str, str]) -> WorldEvent:
+        """A person's answer, by hand, taken through the message's provider as any answer is, and kept as said."""
+        who = self._person(answer.person)
+        to = answer.in_reply_to
+        found = self.provider(to.provider)
+        if not isinstance(found, TalksToAgent):
+            raise WorldRefused(f"{to.provider} carries no answers a person pushes to the agent")
+        port = found.talking(self._target(to.provider), self._signing[to.provider])
+        before = self.store.head()
+        with _refusing():
+            await port.apply(to, offer, Actor.PERSON, who, json.dumps(given), self.store, self.clock)
+        self.store.remember(answer)
         return self._written(before)
 
     def declare_faults(self, provider: ProviderKey, faults: str) -> None:

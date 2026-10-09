@@ -163,7 +163,10 @@ async def test_a_push_the_bot_refuses_fails_the_delivery(tenant: Tenant, bot: Bo
 def test_the_provider_holds_to_every_port_its_manifest_claims() -> None:
     from minutehand.adapters.providers.microsoft.manifest import MANIFEST
     from minutehand.adapters.providers.microsoft.provider import build
-    from minutehand.ports.provider import PushesEvents, PushesInteractions
+    from minutehand.application.conversations import LandsAnswers, PushesAnswers, PushesPresses
+    from minutehand.ports.provider import PushesEvents
+    from minutehand.ports.transitions import TalksToAgent
 
     provider = build()
-    assert MANIFEST.pushes_events and isinstance(provider, PushesEvents) and isinstance(provider, PushesInteractions)
+    assert MANIFEST.pushes_events and isinstance(provider, PushesEvents) and isinstance(provider, TalksToAgent)
+    assert isinstance(provider, PushesAnswers | PushesPresses) and isinstance(provider, LandsAnswers)

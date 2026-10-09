@@ -1,7 +1,7 @@
 """The Google Workspace provider: Drive v3, Docs v1, Slides v1, Gmail v1, Calendar v3, Google's sign-in, and what
 the scenario seeds of each.
 
-It pushes no message to the agent the way Slack does, so it is not `PushesEvents`. It is `LandsReplies`: a person's
+It pushes no message to the agent the way Slack does, so it is not `PushesEvents`. It is `LandsAnswers`: a person's
 reply to the agent's email lands in the agent's mailbox, and a guest's answer to its invitation on the event, at
 their moment, where the agent finds them on its next read. Gmail pushes nothing (`users.watch`, which delivers
 through Pub/Sub, answers 501), so a reply email is never heard; a guest's answer is heard when a live

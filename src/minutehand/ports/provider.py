@@ -20,7 +20,6 @@ from minutehand.domain.people import (
     InboundTarget,
     PermissionGrant,
     PersonMessage,
-    PersonReply,
 )
 from minutehand.domain.provider import Manifest, PersonChange
 from minutehand.domain.scenario import (
@@ -101,14 +100,8 @@ class RendersErrors(Protocol):
 
 @runtime_checkable
 class PushesEvents(Protocol):
-    """A provider whose real service calls the agent: Slack events, Teams activities, webhooks."""
-
-    async def deliver(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None:
-        """Record the reply in the world and push it to the agent the way the real service would, signed with
-        `secret`: the value `target.secret` resolved to for this run."""
-        ...
+    """A provider whose real service calls the agent: Slack events, Teams activities, webhooks. A person's answer to
+    one of the agent's messages is a transition (`application.conversations`), not this port's."""
 
     async def say(
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
@@ -123,47 +116,6 @@ class PushesEvents(Protocol):
         """Something a person does unprompted at a moment the scenario sets (posts, edits, deletes, reacts, joins a
         channel, opens the agent's page, runs one of its commands), recorded as actor PERSON and pushed as the real
         service pushes it. A happening this provider has no such thing for is refused loudly."""
-        ...
-
-
-@runtime_checkable
-class PushesInteractions(Protocol):
-    """A provider whose messages carry controls a person can use (Slack's buttons, Teams' card actions), and whose
-    real service tells the agent when one is used."""
-
-    async def press(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None:
-        """The person uses `reply.press` on the message `reply.in_reply_to`: recorded as actor PERSON, pushed to
-        `target`'s interactivity URL signed with `secret`, and the agent's answer applied as the real service applies
-        it. A form the agent opens in answer is filled with `reply.press.form` and submitted the same way. A
-        reply with no press, or a control the message does not carry, is refused loudly."""
-        ...
-
-
-@runtime_checkable
-class LandsReplies(Protocol):
-    """A provider where a person's answer lands where the agent reads it, and nothing is pushed to the agent's inbound
-    target: a reply email in the agent's mailbox, an attendee's response on the agent's calendar event. The agent
-    needs no inbound target for it. It finds the answer on its next read, as it finds a ticket's fate, so its landing
-    wakes nobody, unless the service itself tells the agent of it (`heard`). A provider that also `PushesEvents`
-    lands only the replies `lands` names and pushes the rest."""
-
-    def lands(self, reply: PersonReply, world: Store) -> bool:
-        """Whether `reply` lands here rather than being pushed: it answers something the agent reads by polling (an
-        email in a mailbox, an invitation), not a message the service pushes answers to."""
-        ...
-
-    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool:
-        """Whether landing `reply` tells the agent, by a push of the service's own that the agent asked for (a live
-        Graph subscription on the mailbox it lands in): that push is a wake, as a pushed reply's is."""
-        ...
-
-    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
-        """Write the person's answer to `reply.in_reply_to` as the real service would, recorded as actor PERSON: what
-        they wrote as their message, a control they used (`reply.press`) as its effect, and tell whoever `heard`
-        names. A message no longer there is left alone and nothing is written. A press on a control the message
-        does not carry raises `ValueError`: the replier offered what the provider never showed."""
         ...
 
 
