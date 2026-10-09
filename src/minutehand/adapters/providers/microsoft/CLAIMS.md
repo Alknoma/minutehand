@@ -160,6 +160,15 @@ answering it with; a code with no Graph recording (Exchange's `ErrorFolderNotFou
 | A channel's messages list newest first by the last change to their whole reply chain | documented | `test_channel_messages_list_by_their_reply_chains_last_change` | https://learn.microsoft.com/en-us/graph/api/channel-list-messages |
 | A chat's messages list by `lastModifiedDateTime`, newest first, the documented default | documented | `test_channel_messages_list_by_their_reply_chains_last_change` | https://learn.microsoft.com/en-us/graph/api/chat-list-messages |
 | A message's replies list newest first, as the page's example answer lists them | documented | `test_channel_messages_list_by_their_reply_chains_last_change` | https://learn.microsoft.com/en-us/graph/api/chatmessage-list-replies |
+| A signed-in user posts a message to a chat or a channel with `POST …/messages`; only `body` is required; the answer is 201 with the new `chatMessage`, its `from` the user, its `body` and `importance` (`normal` unless sent) as sent, a body with no `contentType` text | documented | `test_a_message_posted_to_a_chat_is_kept_as_sent_read_back_and_notified`, `test_a_text_body_defaults_to_text_and_pages_with_others` | https://learn.microsoft.com/en-us/graph/api/chatmessage-post |
+| A message's `subject`, `importance`, `mentions` and `attachments` (a card's `content` the string it was sent as, its `id` the one the body names) come back as sent | documented | `test_a_message_posted_to_a_chat_is_kept_as_sent_read_back_and_notified` | https://learn.microsoft.com/en-us/graph/api/chatmessage-post |
+| A reply is `POST /teams/{id}/channels/{id}/messages/{id}/replies`, 201 with the new message, its `replyToId` the message replied to | documented | `test_a_channel_post_and_a_reply_round_trip_and_notify` | https://learn.microsoft.com/en-us/graph/api/chatmessage-post-replies |
+| Application permissions are supported for posting only to import (migration); an application posting with no user is refused by name | documented | `test_what_graph_documents_no_answer_to_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/chatmessage-post |
+| A post notifies a subscription on the chat's or the channel's messages with `changeType` `created` and the resource `chats('{id}')/messages('{id}')`, in a channel `teams('{id}')/channels('{id}')/messages('{id}')` (a reply by its own id: the page shows no other form) | documented | `test_a_message_posted_to_a_chat_is_kept_as_sent_read_back_and_notified`, `test_a_channel_post_and_a_reply_round_trip_and_notify` | https://learn.microsoft.com/en-us/graph/teams-changenotifications-chatmessage |
+| `POST /chats` makes a `oneOnOne` or `group` chat from `members` (each `roles` `owner`, bound by `user@odata.bind`, the caller among them), 201 with the chat; a one-on-one chat that exists is returned, not made again; `topic` only on a group | documented | `test_a_one_on_one_chat_between_two_people_is_made_once_and_a_group_with_its_topic` | https://learn.microsoft.com/en-us/graph/api/chat-post |
+| A chat's members are listed by `GET /chats/{id}/members` | documented | `test_a_one_on_one_chat_between_two_people_is_made_once_and_a_group_with_its_topic` | https://learn.microsoft.com/en-us/graph/api/chat-list-members |
+| `joinedTeams` lists the teams the user is a direct member of, populating `id`, `displayName`, `description`, `isArchived` and `tenantId`; it supports no OData query parameter | documented | `test_joined_teams_and_the_primary_channel` | https://learn.microsoft.com/en-us/graph/api/user-list-joinedteams |
+| `GET /teams/{id}/primaryChannel` is the team's General channel | documented | `test_joined_teams_and_the_primary_channel` | https://learn.microsoft.com/en-us/graph/api/team-get-primarychannel |
 
 ## Answered without a source (tracked, to be sourced or refused)
 
@@ -201,6 +210,14 @@ it and no recording of the real service shows one:
   would hold more than one; a folder the mailbox does not hold; an event ending before it starts; an organizer
   answering their own meeting; a request body that cannot be read (outside files); and every subscription refusal
   but the three documented above.
+
+Also refused by name (Teams posting): a message property this provider would not keep (`hostedContents`, `from`,
+`createdDateTime`, `messageType`, `replyToId`, …), a body content type other than text or html, an importance
+other than normal, high or urgent, a mention of a channel or team, a post by someone who is no member of the chat or
+channel, a reply to a reply, a chat of another type than `group` or `oneOnOne`, with a member of another type or a
+role other than `owner`, a group chat of fewer than three people, a one-on-one chat that is not between two people
+or has a topic, a chat that leaves out its caller, and any query option on `joinedTeams` — Learn gives no answer to
+them.
 
 ## Not carried over
 

@@ -59,6 +59,7 @@ class Surface:
     channel_message: str
     attended: str
     webhook: str
+    people: list[str]
 
     def concrete(self, template: str) -> str:
         """The template with the world's ids in place of its parameters."""
@@ -76,7 +77,9 @@ class Surface:
 async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> AsyncIterator[Surface]:
     d = tenant.directory
     owen = tenant.world.person("owen")
-    assert owen is not None
+    sofia = tenant.world.person("sofia")
+    dania = tenant.world.person("dania")
+    assert owen is not None and sofia is not None and dania is not None
     async with microsoft.http() as http:
         app = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
         bot = bearer(await token(http, tenant, "https://api.botframework.com/.default"))
@@ -161,6 +164,7 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
             channel_message=channel_message,
             attended=attended,
             webhook=webhook.url,
+            people=[owen.user.id, sofia.user.id, dania.user.id],
         )
 
 
@@ -180,6 +184,8 @@ BODIES: dict[str, object] = {
         "start": {"dateTime": "2026-09-16T10:00:00", "timeZone": "UTC"},
         "end": {"dateTime": "2026-09-16T11:00:00", "timeZone": "UTC"},
     },
+    "/messages": {"body": {"content": "Hello"}},
+    "/replies": {"body": {"content": "Hello"}},
     "/getPresencesByUserId": {"ids": ["00000000-0000-0000-0000-000000000000"]},
     "/getSchedule": {
         "schedules": ["owen@example.com"],
@@ -211,10 +217,19 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
         path += "?$orderby=receivedDateTime desc"
     if template == "/sites" and method == "GET":
         path += "?search=*"
-    headers = surface.me if template.startswith("/me") or template == "/chats" else surface.app
+    posting = method == "POST" and template.endswith(("/messages", "/replies")) and not template.startswith("/me")
+    headers = surface.me if template.startswith("/me") or template == "/chats" or posting else surface.app
     content: bytes | None = None
     if method in ("POST", "PATCH", "PUT"):
         sent = next((body for end, body in BODIES.items() if method == "POST" and template.endswith(end)), {})
+        if template == "/chats":
+            sent = {
+                "chatType": "group",
+                "topic": "Review",
+                "members": [
+                    {"roles": ["owner"], "user@odata.bind": f"{GRAPH}/users('{who}')"} for who in surface.people
+                ],
+            }
         if template.startswith("/subscriptions"):
             later = "2026-09-14T09:00:00Z"
             sent = (

@@ -287,6 +287,9 @@ class Activity(Aliased):
     reactionsAdded: list[Reaction] | None = None
     reactionsRemoved: list[Reaction] | None = None
     locale: str | None = None
+    graph: GraphPosted | None = Field(
+        default=None, description="What a Graph `chatMessage` POST carried, as sent, for Graph to answer back"
+    )
 
 
 class SentActivity(Lenient):
@@ -602,6 +605,7 @@ class ChatMessage(Aliased):
     sender: IdentitySet | None = Field(
         default=None, validation_alias=AliasChoices("sender", "from"), serialization_alias="from"
     )
+    importance: Literal["normal", "high", "urgent"] = "normal"
     body: ItemBody
     attachments: list[ChatMessageAttachment] = []
     mentions: list[ChatMessageMention] = []
@@ -615,9 +619,99 @@ class ChatMessage(Aliased):
     )
 
 
-class SentChatMessage(Lenient):
+class GraphPosted(Aliased):
+    """A message sent through Graph's `chatMessage` POST, kept as sent: a bot's activity has no `contentType`,
+    `subject`, `importance` or Graph-shaped mentions and attachments to hold them."""
+
     body: ItemBody
     subject: str | None = None
+    importance: Literal["normal", "high", "urgent"] = "normal"
+    attachments: list[ChatMessageAttachment] = []
+    mentions: list[ChatMessageMention] = []
+
+
+Activity.model_rebuild()
+
+
+class PostedBody(Lenient):
+    contentType: str = "text"
+    content: str
+
+
+class PostedIdentity(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    id: str
+    displayName: str | None = None
+    userIdentityType: str | None = None
+
+
+class PostedMentioned(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    user: PostedIdentity | None = None
+    application: PostedIdentity | None = None
+
+
+class PostedMention(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    id: int
+    mentionText: str
+    mentioned: PostedMentioned
+
+
+class PostedAttachment(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    id: str
+    contentType: str
+    content: str | None = None
+    contentUrl: str | None = None
+    name: str | None = None
+
+
+class PostedChatMessage(Lenient):
+    """`POST …/messages` and `…/replies`: the properties this provider keeps; any other it names is refused by name,
+    never dropped (`model_extra`)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    body: PostedBody
+    subject: str | None = None
+    importance: str = "normal"
+    attachments: list[PostedAttachment] = []
+    mentions: list[PostedMention] = []
+
+
+class PostedMember(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    odata_type: str = Field(
+        default="#microsoft.graph.aadUserConversationMember", validation_alias=AliasChoices("@odata.type", "odata_type")
+    )
+    roles: list[str] = []
+    user_bind: str = Field(validation_alias=AliasChoices("user@odata.bind", "user_bind"))
+
+
+class PostedChat(Lenient):
+    """`POST /chats`."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    chatType: str
+    topic: str | None = None
+    members: list[PostedMember] = []
+
+
+class JoinedTeam(Aliased):
+    """What `joinedTeams` populates of a team: `id`, `displayName`, `description`, `isArchived`, `tenantId`."""
+
+    id: str
+    displayName: str
+    description: str | None = None
+    isArchived: bool = False
+    tenantId: str
 
 
 class ConversationMember(Aliased):
