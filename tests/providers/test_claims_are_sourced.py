@@ -95,7 +95,6 @@ OPEN: dict[str, tuple[str, ...]] = {
         "`completed` must be a JSON boolean",
         "Every case no page, recording or report gives Asana's answer to is refused by name: a parent that is the task or its subtask; a comment of nothing but spaces; a task put in a section of a project it is not in; a custom field setting already on (or not on) the project; teams of a workspace that is not an organization; a write body with no `data` object; a value of the wrong JSON type with no reported words (`name`, `completed`, `projects` as a string, ...); a limit, count or boolean flag out of range; an offset without a limit; an unparseable `due_at`; `workspace`, `memberships` or `parent` written on an update; both `projects` and `memberships` on a create; enum and people values naming nothing; the OAuth code grant",
         "A full record leaves out what Asana's OpenAPI document marks [Opt In] (`num_subtasks`, `dependencies`, `dependents`; a team's `description`; a project membership's `parent` and `project`) until `opt_fields` names it",
-        "A task's `dependencies` and `dependents`, asked for, are empty",
         "A full task holds its custom fields full; a listed custom field is compact, without `resource_subtype` or `precision`",
         "`html_notes` is refused by name, written or read",
         'A new project has one "Untitled section" and no custom fields',
@@ -232,6 +231,7 @@ OPEN: dict[str, tuple[str, ...]] = {
         "A part's bytes are served inline in `body.data`, never as an attachment id.",
     ),
     "jira": (
+        "A day is eight hours and a week five days when `timeSpent` is read and written",
         "A body missing `key`, `name` or the lead is a 400 naming each, keyed `projectKey`, `projectName`, `leadAccountId`",
         "An empty body names every missing field in one 400",
         "With neither a type nor a template, the 400 names `projectTypeKey`",

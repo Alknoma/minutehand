@@ -59,12 +59,26 @@ class Surface:
     channel_message: str
     attended: str
     webhook: str
+    people: list[str]
+    drafts: dict[str, str]
+    event_attachment: str
+    series: str
+    cancellable: str
 
     def concrete(self, template: str) -> str:
         """The template with the world's ids in place of its parameters."""
         path = template
         if template.endswith(("/accept", "/tentativelyAccept", "/decline")):
             path = path.replace("{event-id}", quote(self.attended, safe=":@,!"))
+        if template.endswith("/instances"):
+            path = path.replace("{event-id}", quote(self.series, safe=":@,!~"))
+        if template.endswith("/cancel"):
+            path = path.replace("{event-id}", quote(self.cancellable, safe=":@,!"))
+        bound = re.search(r"/messages/\{message-id\}/(send|move|copy|attachments)", template)
+        if bound is not None:
+            path = path.replace("{message-id}", self.drafts[bound.group(1)]).replace("{mailFolder-id}", "drafts")
+        if "/events/{event-id}/attachments/" in template:
+            path = path.replace("{attachment-id}", self.event_attachment)
         message = self.channel_message if "/channels/" in template else self.chat_message
         path = path.replace("{chatMessage-id}", message).replace("{chatMessage-id1}", message)
         for name, value in self.ids.items():
@@ -76,7 +90,9 @@ class Surface:
 async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> AsyncIterator[Surface]:
     d = tenant.directory
     owen = tenant.world.person("owen")
-    assert owen is not None
+    sofia = tenant.world.person("sofia")
+    dania = tenant.world.person("dania")
+    assert owen is not None and sofia is not None and dania is not None
     async with microsoft.http() as http:
         app = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
         bot = bearer(await token(http, tenant, "https://api.botframework.com/.default"))
@@ -121,8 +137,49 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 headers=me,
             )
         ).json()["id"]
+        series = await http.post(
+            f"{GRAPH}/me/events",
+            json={
+                "subject": "Standup",
+                "start": {"dateTime": "2026-09-15T09:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-09-15T09:15:00", "timeZone": "UTC"},
+                "recurrence": {
+                    "pattern": {"type": "daily", "interval": 1},
+                    "range": {"type": "numbered", "startDate": "2026-09-15", "numberOfOccurrences": 3},
+                },
+            },
+            headers=me,
+        )
+        cancellable = await http.post(
+            f"{GRAPH}/me/events",
+            json={
+                "subject": "Cancelled",
+                "start": {"dateTime": "2026-09-17T10:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-09-17T11:00:00", "timeZone": "UTC"},
+            },
+            headers=me,
+        )
+        event_attachment = await http.post(
+            f"{GRAPH}/me/events/{event}/attachments",
+            json={"@odata.type": "#microsoft.graph.fileAttachment", "name": "menu.txt", "contentBytes": "aGk="},
+            headers=me,
+        )
         listed = await http.get(f"{GRAPH}/me/events", params={"$orderby": "start/dateTime"}, headers=me)
         attended = next(e["id"] for e in listed.json()["value"] if not e["isOrganizer"])
+        drafts: dict[str, str] = {}
+        for kind in ("send", "move", "copy", "attachments"):
+            drafts[kind] = (
+                await http.post(
+                    f"{GRAPH}/me/messages",
+                    json={"subject": kind, "toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]},
+                    headers=me,
+                )
+            ).json()["id"]
+        attached = await http.post(
+            f"{GRAPH}/me/messages/{drafts['attachments']}/attachments",
+            json={"@odata.type": "#microsoft.graph.fileAttachment", "name": "a.txt", "contentBytes": "aGk="},
+            headers=me,
+        )
         expires = (tenant.clock.now() + timedelta(minutes=30)).isoformat()
         subscription = (
             await http.post(
@@ -155,12 +212,18 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 "mailFolder-id": "sentitems",
                 "event-id": event,
                 "subscription-id": subscription,
+                "attachment-id": attached.json()["id"],
                 "q": "Brief",
             },
             chat_message=chat_message,
             channel_message=channel_message,
             attended=attended,
             webhook=webhook.url,
+            people=[owen.user.id, sofia.user.id, dania.user.id],
+            drafts=drafts,
+            event_attachment=event_attachment.json()["id"],
+            series=series.json()["id"],
+            cancellable=cancellable.json()["id"],
         )
 
 
@@ -180,6 +243,13 @@ BODIES: dict[str, object] = {
         "start": {"dateTime": "2026-09-16T10:00:00", "timeZone": "UTC"},
         "end": {"dateTime": "2026-09-16T11:00:00", "timeZone": "UTC"},
     },
+    "/messages": {"body": {"content": "Hello"}},
+    "/replies": {"body": {"content": "Hello"}},
+    "{message-id}/move": {"destinationId": "deleteditems"},
+    "{message-id}/copy": {"destinationId": "deleteditems"},
+    "/forward": {"toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]},
+    "/createForward": {"toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]},
+    "/attachments": {"@odata.type": "#microsoft.graph.fileAttachment", "name": "b.txt", "contentBytes": "aGk="},
     "/getPresencesByUserId": {"ids": ["00000000-0000-0000-0000-000000000000"]},
     "/getSchedule": {
         "schedules": ["owen@example.com"],
@@ -195,6 +265,7 @@ ASKED_AS_DOCUMENTED = {
     "/drives/{drive-id}/items/{driveItem-id}/delta()": "the root: https://learn.microsoft.com/en-us/graph/api/driveitem-delta",
     "/drives/{drive-id}/items/{driveItem-id}/children": "a folder: https://learn.microsoft.com/en-us/graph/api/driveitem-list-children",
     "/me/calendarView": "a window: https://learn.microsoft.com/en-us/graph/api/user-list-calendarview",
+    "/me/calendarView/delta()": "a window: https://learn.microsoft.com/en-us/graph/api/event-delta",
 }
 """Served operations called the way their page documents them, where calling them otherwise is refused by name."""
 
@@ -205,16 +276,31 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
         path = path.replace(f"/items/{surface.ids['driveItem-id']}/", "/items/root/")
     if template.endswith("calendarView"):
         path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z&$orderby=start/dateTime"
+    elif template.endswith("calendarView/delta()"):
+        path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z"
+    elif method == "GET" and template.endswith("/instances"):
+        path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z&$orderby=start/dateTime"
     elif method == "GET" and template.endswith("/events"):
         path += "?$orderby=start/dateTime"
     elif method == "GET" and template.endswith("/messages") and template.startswith(("/me", "/users")):
         path += "?$orderby=receivedDateTime desc"
+    elif method == "GET" and template.endswith("/attachments"):
+        path += "?$orderby=name"
     if template == "/sites" and method == "GET":
         path += "?search=*"
-    headers = surface.me if template.startswith("/me") or template == "/chats" else surface.app
+    posting = method == "POST" and template.endswith(("/messages", "/replies")) and not template.startswith("/me")
+    headers = surface.me if template.startswith("/me") or template == "/chats" or posting else surface.app
     content: bytes | None = None
     if method in ("POST", "PATCH", "PUT"):
         sent = next((body for end, body in BODIES.items() if method == "POST" and template.endswith(end)), {})
+        if template == "/chats":
+            sent = {
+                "chatType": "group",
+                "topic": "Review",
+                "members": [
+                    {"roles": ["owner"], "user@odata.bind": f"{GRAPH}/users('{who}')"} for who in surface.people
+                ],
+            }
         if template.startswith("/subscriptions"):
             later = "2026-09-14T09:00:00Z"
             sent = (

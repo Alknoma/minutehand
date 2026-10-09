@@ -23,9 +23,10 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
+from email.message import Message
 from enum import StrEnum
 from typing import Annotated, Literal, TypeVar
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, unquote
 
 from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, TypeAdapter, model_serializer
 
@@ -192,6 +193,34 @@ class CredentialKind(StrEnum):
     REFRESH = "refresh"
 
 
+class TaskSubtype(StrEnum):
+    """A task's `resource_subtype` (https://developers.asana.com/reference/gettask): `milestone` and `custom` are
+    documented too and refused by name."""
+
+    DEFAULT_TASK = "default_task"
+    APPROVAL = "approval"
+
+
+class ApprovalStatus(StrEnum):
+    """An approval task's `approval_status`: "`pending` translates to false [`completed`] while `approved`,
+    `rejected`, and `changes_requested` translate to true" (`TaskBase.approval_status` in the OpenAPI subset)."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CHANGES_REQUESTED = "changes_requested"
+
+
+class EventAction(StrEnum):
+    """`Event.action` and `Event.change.action` (`EventResponse` in the OpenAPI subset)."""
+
+    CHANGED = "changed"
+    ADDED = "added"
+    REMOVED = "removed"
+    DELETED = "deleted"
+    UNDELETED = "undeleted"
+
+
 class CompletedStatus(Model):
     """A task's state is its `completed` box alone."""
 
@@ -300,6 +329,7 @@ class AsanaTag(Model):
     resource_type: Literal["tag"] = "tag"
     gid: str
     name: str
+    notes: str = ""
     color: str | None = None
     workspace: str
     created_at: str
@@ -335,10 +365,14 @@ class AsanaFieldValue(Model):
 
 class AsanaTask(Model):
     resource_type: Literal["task"] = "task"
+    resource_subtype: TaskSubtype = TaskSubtype.DEFAULT_TASK
     gid: str
     name: str = ""
     notes: str = ""
     completed: bool = False
+    approval_status: ApprovalStatus | None = Field(
+        default=None, description="Held by an approval task only, in step with `completed`"
+    )
     completed_at: str | None = None
     due_on: str | None = None
     due_at: str | None = None
@@ -348,6 +382,8 @@ class AsanaTask(Model):
     parent: str | None = Field(default=None, description="Task gid")
     memberships: list[AsanaMembership] = []
     tags: list[str] = []
+    followers: list[str] = Field(default=[], description="User gids, in the order they were added")
+    dependencies: list[str] = Field(default=[], description="Task gids this task depends on")
     custom_fields: list[AsanaFieldValue] = []
     created_at: str
     modified_at: str
@@ -360,10 +396,93 @@ class AsanaStory(Model):
     task: str
     created_by: str
     created_at: str
+    edited: bool = False
+
+
+class AsanaAttachment(Model):
+    """A file uploaded to a task, its bytes kept exactly as sent (base64 in the record's text)."""
+
+    resource_type: Literal["attachment"] = "attachment"
+    gid: str
+    name: str
+    task: str
+    created_at: str
+    content_type: str
+    content: str = Field(description="The file's bytes, base64")
+    size: int
+
+
+class EventRef(Model):
+    """A resource an event names: its gid and type, its subtype where it has one, and its name as it was."""
+
+    gid: str
+    resource_type: str
+    resource_subtype: str | None = None
+    name: str | None = None
+
+
+class EventChange(Model):
+    field: str
+    action: EventAction
+    new_value: EventRef | None = None
+    added_value: EventRef | None = None
+    removed_value: EventRef | None = None
+
+
+class AsanaEvent(Model):
+    """One event, as `GET /events` and a webhook report it. `scope` is the resources a subscription to which hears of
+    it (itself, and the tasks and projects it bubbles up to: "Change events bubble up")."""
+
+    resource_type: Literal["event"] = "event"
+    gid: str
+    action: EventAction
+    resource: EventRef
+    user: str | None = None
+    parent: EventRef | None = None
+    change: EventChange | None = None
+    created_at: str
+    scope: list[str]
+
+
+class AsanaFilter(Model):
+    """A `WebhookFilter`: an event passes when it matches every part the filter sets."""
+
+    resource_type: str | None = None
+    resource_subtype: str | None = None
+    action: EventAction | None = None
+    fields: list[str] = []
+
+
+class AsanaWebhook(Model):
+    resource_type: Literal["webhook"] = "webhook"
+    gid: str
+    resource: str = Field(description="The gid of the task or project subscribed to")
+    target: str
+    secret: str
+    filters: list[AsanaFilter] = []
+    workspace: str
+    created_by: str
+    created_at: str
+    active: bool = False
+    last_success_at: str | None = None
+    last_failure_at: str | None = None
+    last_failure_content: str | None = None
+    delivery_retry_count: int = 0
+    cursor: str = Field(description="Every event with a gid above this has not been delivered")
 
 
 AnyRecord = (
-    AsanaWorkspace | AsanaUser | AsanaTeam | AsanaProject | AsanaSection | AsanaCustomField | AsanaTag | AsanaCredential
+    AsanaWorkspace
+    | AsanaUser
+    | AsanaTeam
+    | AsanaProject
+    | AsanaSection
+    | AsanaCustomField
+    | AsanaTag
+    | AsanaCredential
+    | AsanaAttachment
+    | AsanaEvent
+    | AsanaWebhook
 )
 Record = Annotated[AnyRecord, Field(discriminator="resource_type")]
 _RECORD: TypeAdapter[AnyRecord] = TypeAdapter(Record)
@@ -394,8 +513,6 @@ _TASK_UNSUPPORTED = (
     "start_on",
     "start_at",
     "assignee_section",
-    "resource_subtype",
-    "approval_status",
     "external",
     "liked",
 )
@@ -562,9 +679,54 @@ def _memberships(fields: Fields) -> list[MembershipIn]:
     return found
 
 
+def _subtype(fields: Fields) -> TaskSubtype:
+    """`resource_subtype`: `default_task` and `approval` are served; `milestone` and `custom`, which the reference
+    documents too, are refused by name."""
+    value = _string(fields, "resource_subtype")
+    if value is None:
+        return TaskSubtype.DEFAULT_TASK
+    try:
+        return TaskSubtype(value)
+    except ValueError as error:
+        raise unsupported(f"resource_subtype `{value}`") from error
+
+
+def _approval(fields: Fields) -> ApprovalStatus | None:
+    value = _string(fields, "approval_status")
+    if value is None:
+        return None
+    try:
+        return ApprovalStatus(value)
+    except ValueError as error:
+        raise unsupported(f"approval_status `{value}`") from error
+
+
+def approval_state(
+    subtype: TaskSubtype, status: ApprovalStatus | None, completed: bool | None, *, was: ApprovalStatus | None = None
+) -> tuple[bool | None, ApprovalStatus | None]:
+    """An approval task's `completed` and `approval_status` after a write that sent `status` and/or `completed`
+    ("This field is kept in sync with `completed`, meaning `pending` translates to false while `approved`,
+    `rejected`, and `changes_requested` translate to true. If you set completed to true, this field will be set to
+    `approved`"): the pair to keep, None where the write set neither. A status on a task that is no approval, and a
+    status that contradicts `completed`, are refused by name."""
+    if subtype is not TaskSubtype.APPROVAL:
+        if status is not None:
+            raise undocumented("an approval_status on a task whose resource_subtype is not approval")
+        return completed, None
+    if status is not None:
+        if completed is not None and completed != (status is not ApprovalStatus.PENDING):
+            raise undocumented(f"approval_status `{status}` together with a contradicting `completed`")
+        return status is not ApprovalStatus.PENDING, status
+    if completed is None:
+        return None, was
+    return completed, ApprovalStatus.APPROVED if completed else ApprovalStatus.PENDING
+
+
 class TaskCreate(Model):
     name: str = ""
     notes: str = ""
+    resource_subtype: TaskSubtype = TaskSubtype.DEFAULT_TASK
+    approval_status: ApprovalStatus | None = None
     completed: bool = False
     due_on: str | None = None
     due_at: str | None = None
@@ -591,10 +753,17 @@ def task_create(fields: Fields, *, parent: str | None = None) -> TaskCreate:
     if not projects and not memberships and workspace is None and under is None:
         # Reported: https://forum.asana.com/t/44096
         raise bad("You should specify one of workspace, parent, projects")
+    subtype = _subtype(fields)
+    sent_completed = _boolean(fields, "completed") if "completed" in fields else None
+    completed, approval = approval_state(subtype, _approval(fields), sent_completed)
+    if subtype is TaskSubtype.APPROVAL and approval is None:
+        completed, approval = False, ApprovalStatus.PENDING
     return TaskCreate(
         name=_string(fields, "name") or "",
         notes=_notes(fields) or "",
-        completed=_boolean(fields, "completed") if "completed" in fields else False,
+        resource_subtype=subtype,
+        approval_status=approval,
+        completed=bool(completed),
         due_on=due_on,
         due_at=due_at,
         assignee=_assignee(fields) if "assignee" in fields else None,
@@ -613,6 +782,7 @@ class TaskUpdate(Model):
     name: str = ""
     notes: str = ""
     completed: bool = False
+    approval_status: ApprovalStatus | None = None
     due_on: str | None = None
     due_at: str | None = None
     assignee: str | None = None
@@ -621,6 +791,8 @@ class TaskUpdate(Model):
 
 def task_update(fields: Fields) -> TaskUpdate:
     _refuse_unsupported(fields, _TASK_UNSUPPORTED)
+    if "resource_subtype" in fields:
+        raise undocumented("resource_subtype written on a task update")
     for fixed in ("projects", "tags"):
         if fixed in fields:
             # Reported: https://forum.asana.com/t/77626, https://stackoverflow.com/questions/42604985
@@ -636,6 +808,8 @@ def task_update(fields: Fields) -> TaskUpdate:
         sent["notes"] = notes
     if "completed" in fields:
         sent["completed"] = _boolean(fields, "completed")
+    if "approval_status" in fields:
+        sent["approval_status"] = _approval(fields)
     due_on, due_at = _due(fields)
     if "due_on" in fields:
         sent["due_on"] = due_on
@@ -763,6 +937,252 @@ def story_create(fields: Fields) -> StoryCreate:
     if not text.strip():
         raise undocumented("a comment of nothing but spaces")
     return StoryCreate(text=text)
+
+
+def followers_in(fields: Fields) -> list[str]:
+    """`followers`: "An array of strings identifying users. These can either be the string "me", an email, or the
+    gid of a user" (`TaskAddFollowersRequest`)."""
+    raw = fields["followers"] if "followers" in fields else None
+    if raw is None:
+        raise bad("followers: Missing input")
+    if not isinstance(raw, list):
+        raise undocumented("followers that are not an array")
+    named: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise undocumented("a follower that is not a string")
+        if not is_user_identifier(item.strip()):
+            raise undocumented(f"a follower `{item}` that is not a gid, an email or `me`")
+        named.append(item.strip())
+    return named
+
+
+class ProjectOp(Model):
+    project: str
+    section: str | None = None
+
+
+def project_op(fields: Fields, *, adding: bool) -> ProjectOp:
+    """`addProject` and `removeProject`. A position (`insert_before`, `insert_after`) is not modelled: tasks are not
+    ordered here, so one is refused by name."""
+    if adding:
+        _refuse_unsupported(fields, ("insert_before", "insert_after"))
+    project = _gid_field(fields, "project")
+    if project is None:
+        raise bad("project: Missing input")
+    return ProjectOp(project=project, section=_gid_field(fields, "section") if adding else None)
+
+
+def dependency_gids(fields: Fields, name: str) -> list[str]:
+    """`dependencies` or `dependents`: "An array of task gids"."""
+    if name not in fields or fields[name] is None:
+        raise bad(f"{name}: Missing input")
+    return _gids(fields, name)
+
+
+def section_update(fields: Fields) -> SectionCreate:
+    """ "at this time, the only field that can be updated is the `name` field" (updateSection); a position is not
+    modelled."""
+    _refuse_unsupported(fields, ("insert_before", "insert_after"))
+    return SectionCreate(name=_required(fields, "name"))
+
+
+class TagUpdate(Model):
+    """Only the fields the caller sent are set; `model_fields_set` says which."""
+
+    name: str = ""
+    color: str | None = None
+    notes: str = ""
+
+
+def tag_update(fields: Fields) -> TagUpdate:
+    sent: dict[str, JsonValue] = {}
+    if "name" in fields:
+        sent["name"] = _required(fields, "name")
+    if "color" in fields:
+        sent["color"] = _string(fields, "color")
+    if "notes" in fields:
+        sent["notes"] = _string(fields, "notes") or ""
+    return TagUpdate.model_validate(sent)
+
+
+class StoryUpdate(Model):
+    text: str
+
+
+def story_update(fields: Fields) -> StoryUpdate:
+    """Only a comment's `text` is served; `html_text`, `is_pinned`, `sticker_name` and `resource_subtype` are
+    refused by name."""
+    _refuse_unsupported(fields, ("html_text", "is_pinned", "sticker_name", "resource_subtype"))
+    return StoryUpdate(text=story_create(fields).text)
+
+
+_PROJECT_UPDATE_OTHERS = (
+    "resource_subtype",
+    "color",
+    "current_status",
+    "current_status_update",
+    "custom_field_settings",
+    "default_access_level",
+    "default_view",
+    "due_date",
+    "due_on",
+    "html_notes",
+    "icon",
+    "members",
+    "minimum_access_level_for_customization",
+    "minimum_access_level_for_sharing",
+    "privacy_setting",
+    "public",
+    "start_on",
+    "custom_fields",
+    "custom_type",
+    "followers",
+    "html_custom_fields",
+    "owner",
+    "team",
+)
+"""The other properties `ProjectUpdateRequest` documents; refused by name when sent."""
+
+
+class ProjectUpdate(Model):
+    """Only the fields the caller sent are set; `model_fields_set` says which."""
+
+    name: str = ""
+    notes: str = ""
+    archived: bool = False
+
+
+def project_update(fields: Fields) -> ProjectUpdate:
+    _refuse_unsupported(fields, _PROJECT_UPDATE_OTHERS)
+    sent: dict[str, JsonValue] = {}
+    if "name" in fields:
+        sent["name"] = _required(fields, "name")
+    if "notes" in fields:
+        sent["notes"] = _string(fields, "notes") or ""
+    if "archived" in fields:
+        sent["archived"] = _boolean(fields, "archived")
+    return ProjectUpdate.model_validate(sent)
+
+
+def _filters(fields: Fields) -> list[AsanaFilter]:
+    raw = fields["filters"] if "filters" in fields else None
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise undocumented("filters that are not an array")
+    found: list[AsanaFilter] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise undocumented("a filter that is not an object")
+        action = _string(item, "action")
+        try:
+            kind = EventAction(action) if action is not None else None
+        except ValueError as error:
+            raise unsupported(f"a filter action `{action}`") from error
+        listed = item["fields"] if "fields" in item else None
+        if listed is not None and (not isinstance(listed, list) or not all(isinstance(f, str) for f in listed)):
+            raise undocumented("filter fields that are not an array of strings")
+        names = [str(f) for f in listed] if isinstance(listed, list) else []
+        if names and kind is not EventAction.CHANGED:
+            # "This field is only valid for `action` of type `changed`" (WebhookFilter.fields)
+            raise undocumented("filter fields on a filter whose action is not `changed`")
+        found.append(
+            AsanaFilter(
+                resource_type=_string(item, "resource_type"),
+                resource_subtype=_string(item, "resource_subtype"),
+                action=kind,
+                fields=names,
+            )
+        )
+    return found
+
+
+class WebhookCreate(Model):
+    resource: str
+    target: str
+    filters: list[AsanaFilter] = []
+
+
+def webhook_create(fields: Fields) -> WebhookCreate:
+    resource = _gid_field(fields, "resource")
+    if resource is None:
+        raise bad("resource: Missing input")
+    target = _string(fields, "target")
+    if target is None or not target.strip():
+        raise bad("target: Missing input")
+    return WebhookCreate(resource=resource, target=target, filters=_filters(fields))
+
+
+def webhook_update(fields: Fields) -> list[AsanaFilter]:
+    """`filters` is the only property `WebhookUpdateRequest` has; they replace those held."""
+    if "filters" not in fields:
+        raise bad("filters: Missing input")
+    return _filters(fields)
+
+
+class AttachmentUpload(Model):
+    parent: str
+    name: str
+    content_type: str
+    content: bytes
+
+
+MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
+"""https://developers.asana.com/reference/createattachmentforobject: "The 100MB size limit on attachments in Asana is
+enforced on this endpoint"."""
+
+
+def attachment_upload(content_type: str, raw: bytes) -> AttachmentUpload:
+    """A `multipart/form-data` body: `parent` and the `file` part, whose bytes are kept exactly. `url`, `name`,
+    `resource_subtype` and `connect_to_app` (the external attachment's) are refused by name. A file name is
+    URL-decoded, as the reference tells a client to encode it."""
+    kind, params = _header(content_type)
+    boundary = params["boundary"] if "boundary" in params else None
+    if kind != "multipart/form-data" or not boundary:
+        raise undocumented("an attachment upload that is not multipart/form-data with a boundary")
+    texts: dict[str, JsonValue] = {}
+    file: tuple[str, str, bytes, str] | None = None
+    delimiter = b"--" + boundary.encode()
+    for piece in raw.split(delimiter)[1:]:
+        if piece.startswith(b"--"):
+            break
+        piece = piece.removeprefix(b"\r\n")
+        head, gap, body = piece.partition(b"\r\n\r\n")
+        if not gap:
+            raise undocumented("a multipart part with no headers")
+        body = body.removesuffix(b"\r\n")
+        message = Message()
+        part_type = "application/octet-stream"
+        for line in head.decode("utf-8", errors="replace").split("\r\n"):
+            name, _, value = line.partition(":")
+            message[name.strip()] = value.strip()
+        disposition = message["content-disposition"] if "content-disposition" in message else ""
+        if "content-type" in message:
+            part_type = str(message["content-type"])
+        field = message.get_param("name", header="content-disposition")
+        if not isinstance(field, str) or not disposition:
+            raise undocumented("a multipart part with no field name")
+        filename = message.get_filename()
+        if filename is not None:
+            file = (field, filename, body, part_type)
+        else:
+            texts[field] = body.decode("utf-8")
+    _refuse_unsupported(texts, ("url", "name", "resource_subtype", "connect_to_app"))
+    parent = texts["parent"] if "parent" in texts else None
+    if not isinstance(parent, str):
+        raise bad("parent: Missing input")
+    if file is None or file[0] != "file":
+        raise bad("file: Missing input")
+    if len(file[2]) > MAX_ATTACHMENT_BYTES:
+        raise undocumented("an attachment over 100MB")
+    return AttachmentUpload(parent=parent, name=unquote(file[1]), content_type=file[3], content=file[2])
+
+
+def _header(value: str) -> tuple[str, dict[str, str]]:
+    message = Message()
+    message["content-type"] = value
+    return message.get_content_type(), {k.lower(): str(v) for k, v in message.get_params(failobj=[])[1:]}
 
 
 def custom_field_value(definition: AsanaCustomField, sent: JsonValue, users: Mapping[str, str]) -> AsanaFieldValue:
@@ -1096,14 +1516,21 @@ class MembershipOut(Model):
 
 
 class TaskRefOut(Model):
-    """A task named by another: its parent or one of its subtasks."""
+    """A task named by another: its parent."""
 
     gid: str
     resource_type: Literal["task"] = "task"
-    resource_subtype: Literal["default_task"] = "default_task"
+    resource_subtype: TaskSubtype = TaskSubtype.DEFAULT_TASK
     name: str
     completed: bool
     permalink_url: str
+
+
+class ResourceRefOut(Model):
+    """A task a dependency field names: "The objects contain only the gid" (`TaskBase.dependencies`)."""
+
+    gid: str
+    resource_type: Literal["task"] = "task"
 
 
 class TaskOut(Model):
@@ -1111,29 +1538,38 @@ class TaskOut(Model):
 
     gid: str
     resource_type: Literal["task"] = "task"
-    resource_subtype: Literal["default_task"] = "default_task"
+    resource_subtype: TaskSubtype = TaskSubtype.DEFAULT_TASK
     name: str
     notes: str
     completed: bool
     completed_at: str | None
+    approval_status: ApprovalStatus | None = Field(
+        default=None, description="*Conditional*: an approval task's only; left out of any other"
+    )
     due_on: str | None
     due_at: str | None
     created_at: str
     modified_at: str
     assignee: UserOut | None
     created_by: UserOut
+    followers: list[UserOut] = []
     parent: TaskRefOut | None
     num_subtasks: int
-    dependencies: list[TaskRefOut] = Field(
-        default=[], description="Always empty: nothing in the world can link tasks (`addDependencies` is not served)"
-    )
-    dependents: list[TaskRefOut] = Field(default=[], description="Always empty, as `dependencies`")
+    dependencies: list[ResourceRefOut] = []
+    dependents: list[ResourceRefOut] = []
     memberships: list[MembershipOut]
     projects: list[ProjectOut]
     tags: list[TagOut]
     custom_fields: list[CustomFieldValueOut]
     workspace: WorkspaceOut
     permalink_url: str
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        dumped = handler(self)
+        if self.approval_status is None:
+            dumped.pop("approval_status", None)
+        return dumped
 
 
 class StoryOut(Model):
@@ -1142,13 +1578,59 @@ class StoryOut(Model):
     resource_subtype: Literal["comment_added"] = "comment_added"
     type: Literal["comment"] = "comment"
     text: str
+    is_edited: bool = False
     created_at: str
     created_by: UserOut
     target: Compact
 
 
+class AttachmentParentOut(Model):
+    """`Attachment.parent`: the task, compact, with who made it."""
+
+    gid: str
+    resource_type: Literal["task"] = "task"
+    resource_subtype: TaskSubtype
+    name: str
+    created_by: UserOut
+
+
+class AttachmentOut(Model):
+    gid: str
+    resource_type: Literal["attachment"] = "attachment"
+    resource_subtype: Literal["asana"] = "asana"
+    host: Literal["asana"] = "asana"
+    name: str
+    created_at: str
+    size: int
+    download_url: str
+    parent: AttachmentParentOut
+
+
+class FilterOut(Model):
+    resource_type: str | None
+    resource_subtype: str | None
+    action: EventAction | None
+    fields: list[str] | None
+
+
+class WebhookOut(Model):
+    gid: str
+    resource_type: Literal["webhook"] = "webhook"
+    active: bool
+    resource: Compact
+    target: str
+    created_at: str
+    last_success_at: str | None
+    last_failure_at: str | None
+    last_failure_content: str | None
+    delivery_retry_count: int
+    filters: list[FilterOut]
+
+
 Representation = (
-    TaskOut
+    AttachmentOut
+    | WebhookOut
+    | TaskOut
     | UserOut
     | WorkspaceOut
     | TeamOut
@@ -1170,6 +1652,8 @@ COMPACT: Mapping[str, tuple[str, ...]] = {
     "section": ("gid", "resource_type", "name"),
     "tag": ("gid", "resource_type", "name"),
     "story": ("gid", "resource_type", "created_at", "created_by", "resource_subtype", "text"),
+    "attachment": ("gid", "resource_type", "name", "resource_subtype"),
+    "webhook": ("gid", "resource_type", "active", "resource", "target"),
     "enum_option": ("gid", "resource_type", "name", "enabled", "color"),
     "custom_field": (
         "gid",
@@ -1239,6 +1723,8 @@ def _known(model: type[Model]) -> frozenset[str]:
 
 KNOWN: Mapping[str, frozenset[str]] = {
     "task": _known(TaskOut) | _known(TaskRefOut),
+    "attachment": _known(AttachmentOut),
+    "webhook": _known(WebhookOut),
     "user": _known(UserOut),
     "workspace": _known(WorkspaceOut),
     "team": _known(TeamOut),
@@ -1308,7 +1794,7 @@ def _compact(value: JsonValue) -> JsonValue:
 
 
 NESTED_FULL: frozenset[tuple[str, str]] = frozenset(
-    {("task", "custom_fields"), ("custom_field_setting", "custom_field")}
+    {("task", "custom_fields"), ("custom_field_setting", "custom_field"), ("webhook", "filters")}
 )
 """The fields of a full record that Asana's OpenAPI document gives as another resource's full record
 (`TaskResponse.custom_fields` is `[CustomFieldResponse]`, `CustomFieldSettingResponse.custom_field` a
@@ -1398,6 +1884,73 @@ def page(
     kept = [(n, query.text(n) or "") for n in query.names() if n != "offset"]
     query_string = "&".join(f"{n}={v}" for n, v in [*kept, ("offset", token)])
     return chosen, NextPage(offset=token, path=f"{path}?{query_string}", uri=f"{API_BASE}{path}?{query_string}")
+
+
+def _event_ref(ref: EventRef, *, named: bool) -> dict[str, JsonValue]:
+    out: dict[str, JsonValue] = {"gid": ref.gid, "resource_type": ref.resource_type}
+    if ref.resource_subtype is not None:
+        out["resource_subtype"] = ref.resource_subtype
+    if named and ref.name is not None:
+        out["name"] = ref.name
+    return out
+
+
+def event_json(event: AsanaEvent, names: Mapping[str, str], *, named: bool) -> dict[str, JsonValue]:
+    """An event as Asana reports it: `user` (null for none), `created_at`, `type` (deprecated: the resource's type),
+    `action`, `resource`, `parent` (null unless added or removed), and `change` when changed. `named` adds the names
+    the compact records `GET /events` answers carry; a webhook's events hold the gid and type only
+    (`EventResponse.change.new_value` in the OpenAPI subset)."""
+    out: dict[str, JsonValue] = {
+        "user": {"gid": event.user, "resource_type": "user"} if event.user is not None else None,
+        "created_at": event.created_at,
+        "type": event.resource.resource_type,
+        "action": event.action.value,
+        "resource": _event_ref(event.resource, named=named),
+        "parent": _event_ref(event.parent, named=named) if event.parent is not None else None,
+    }
+    if event.user is not None and named and event.user in names:
+        out["user"] = {"gid": event.user, "resource_type": "user", "name": names[event.user]}
+    if event.change is not None:
+        change: dict[str, JsonValue] = {"field": event.change.field, "action": event.change.action.value}
+        for key, value in (
+            ("new_value", event.change.new_value),
+            ("added_value", event.change.added_value),
+            ("removed_value", event.change.removed_value),
+        ):
+            if value is not None:
+                change[key] = _event_ref(value, named=named)
+        out["change"] = change
+    return out
+
+
+def events_page(events: Sequence[dict[str, JsonValue]], tree: FieldTree | None, *, sync: str, more: bool) -> bytes:
+    """`GET /events`: `data`, the `sync` token for the next call and `has_more`; `opt_fields` narrows each event to
+    the properties it names."""
+    shown: list[JsonValue] = []
+    for event in events:
+        if tree is None:
+            shown.append(event)
+            continue
+        padded: dict[str, JsonValue] = {"change": None, **event}
+        narrowed = _narrow(padded, tree, "")
+        if isinstance(narrowed, dict) and "change" in narrowed and narrowed["change"] is None:
+            del narrowed["change"]
+        shown.append(narrowed)
+    return json.dumps({"data": shown, "sync": sync, "has_more": more}).encode()
+
+
+def sync_failed(message: str, sync: str) -> bytes:
+    """The 412 for a request with no sync token or an expired one: the errors, and the token to start from
+    (`getEvents` 412 in the OpenAPI subset)."""
+    return json.dumps({"errors": [{"message": message, "help": ERROR_HELP}], "sync": sync}).encode()
+
+
+SYNC_REQUIRED = (
+    "Sync token invalid or too old. If you are attempting to keep resources in sync, you must fetch the full dataset "
+    "for this query now and use the new sync token for the next sync."
+)
+"""The message `getEvents`' 412 gives as its example (OpenAPI subset); it is also the answer to a request with no token,
+which "returns a `412 Precondition Failed` error containing the sync token" (https://developers.asana.com/docs/events)."""
 
 
 def one(item: Representation, tree: FieldTree | None) -> bytes:
