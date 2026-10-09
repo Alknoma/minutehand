@@ -180,7 +180,8 @@ What Minutehand does with it:
 - **On each answer** it checks the answer against the schema the document gives that status. A mismatch is the
   agent's contract having changed, named by field: "the agent's contract changed: listApprovals (openapi.yaml)
   answered 200 with what its API description does not allow: $.items[0].summary: 21 is not of type 'string'". That
-  is the check `agent_contract_changed`.
+  is the check `agent_contract_changed`, stated for review, and a failure only when the agent file or the scenario
+  names it in `fail_on_integrity`.
 
 It is built for inboxes only. How the other declarations would take it up:
 
