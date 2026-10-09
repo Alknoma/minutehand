@@ -11,7 +11,7 @@ from typing import Protocol
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
-from minutehand.domain.assessments import Rule, StoppedBy
+from minutehand.domain.assessments import IntegrityCheck, Rule, StoppedBy
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement
 from minutehand.domain.people import PersonReply
@@ -279,6 +279,18 @@ class RunView(Model):
         "(`domain.assessments.merged`)",
     )
     stopped: StoppedBy | None = Field(default=None, description="How the run stopped; None while it runs, or unknown")
+    fail_on_integrity: list[IntegrityCheck] = Field(
+        default=[],
+        description="The integrity facts the agent file or the scenario says fail the run; any other is stated as "
+        "`review` and never changes the verdict",
+    )
+
+    def integrity(self, check: IntegrityCheck) -> tuple[FindingKind, Severity]:
+        """How a finding of an integrity fact is stated: a failure when the user's files say it fails the run,
+        else something for someone to look at."""
+        if check in self.fail_on_integrity:
+            return FindingKind.FAIL, Severity.ERROR
+        return FindingKind.REVIEW, Severity.WARNING
 
 
 class AroundProxy(Model):

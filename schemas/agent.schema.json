@@ -1323,6 +1323,16 @@
       "title": "InboundTarget",
       "type": "object"
     },
+    "IntegrityCheck": {
+      "description": "A fact about whether a run can be trusted, stated on every run and never judging it: a finding of one fails\nthe run only when the agent file or the scenario names it in `fail_on_integrity`.",
+      "enum": [
+        "around_proxy",
+        "agent_contract_changed",
+        "unmatched_call"
+      ],
+      "title": "IntegrityCheck",
+      "type": "string"
+    },
     "ItemId": {
       "additionalProperties": false,
       "description": "Where an item's id is in its JSON, and how it is made: the one field of an item the API assigns besides\n`stamps`. The item is read and written at `<collection path>/<id>`.",
@@ -3258,6 +3268,15 @@
         "$ref": "#/$defs/ExternalEmulator"
       },
       "title": "Emulators",
+      "type": "array"
+    },
+    "fail_on_integrity": {
+      "default": [],
+      "description": "Integrity facts that fail the run when they are found (`around_proxy`, `agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
+      "items": {
+        "$ref": "#/$defs/IntegrityCheck"
+      },
+      "title": "Fail On Integrity",
       "type": "array"
     },
     "goal": {

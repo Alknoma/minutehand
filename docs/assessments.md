@@ -10,7 +10,9 @@ files:
 - `assess_off:` in a scenario: ids of the agent file's rules this scenario does not judge by.
 
 `expect:` (what must be true of the world at the end) and `protected_names:` are the scenario author's words too, and
-judge the run beside the rules. A team that needs more than the language says writes a check in Python
+judge the run beside the rules. So is `fail_on_integrity:` (agent file or scenario): the run's integrity facts
+(`around_proxy`, `agent_contract_changed`, `unmatched_call`) are stated on every run as `review`, and fail it only when
+named there. A team that needs more than the language says writes a check in Python
 (`checks:` in the agent file), reading the same facts (`minutehand.checks.facts`).
 
 A run whose files declare none of these is not judged: it reports the facts (the scorecard, every wait, every message)

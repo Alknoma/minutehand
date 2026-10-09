@@ -1154,6 +1154,16 @@
       "title": "IdFormat",
       "type": "string"
     },
+    "IntegrityCheck": {
+      "description": "A fact about whether a run can be trusted, stated on every run and never judging it: a finding of one fails\nthe run only when the agent file or the scenario names it in `fail_on_integrity`.",
+      "enum": [
+        "around_proxy",
+        "agent_contract_changed",
+        "unmatched_call"
+      ],
+      "title": "IntegrityCheck",
+      "type": "string"
+    },
     "Intent": {
       "description": "What a person does with the message a step of their script answers. The words are the model's, written from\nthe step's facts, the person's own facts, voice and helpfulness.",
       "enum": [
@@ -4903,6 +4913,15 @@
       "default": "passed",
       "description": "The verdict this scenario is written to reach: every sample's, or, as a rate, the share of its samples that must (`{passed: \">= 0.9\"}`); `minutehand run-all` exits 1 when it is missed",
       "title": "Expect Outcome"
+    },
+    "fail_on_integrity": {
+      "default": [],
+      "description": "Integrity facts that fail the run, besides those the agent file names, when they are found (`around_proxy`, `agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
+      "items": {
+        "$ref": "#/$defs/IntegrityCheck"
+      },
+      "title": "Fail On Integrity",
+      "type": "array"
     },
     "goal": {
       "default": "",

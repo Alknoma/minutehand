@@ -1183,7 +1183,7 @@ A run ends with the facts of it and, when the team declared any, its judgement. 
 | Assessments (`assess:`, `checks/assessments.py`) | Did the agent behave as the team wants | The team's rules, in the agent file and the scenario | Built and tested |
 | Expectations (`expect:`, `checks/expectations.py`) and protected names (`near_miss_name`) | Did the world end up right | The scenario author's words | Built and tested |
 | The agent's own checks (`checks:`) | Anything a rule cannot say, in Python over the same facts | The team's | Built and tested |
-| Integrity (`around_proxy`, `unmatched_call`, `agent_contract_changed`) | Can the run be trusted at all | Minutehand's: about the run, never the agent's behaviour | Built and tested |
+| Integrity (`around_proxy`, `unmatched_call`, `agent_contract_changed`) | Can the run be trusted at all | Minutehand's facts, stated as `REVIEW`; a failure only when the agent file or the scenario names one in `fail_on_integrity` | Built and tested |
 | Patterns (`checks/patterns.py`) | What design fixes it | Named by a rule's `pattern` | 10, each with a page in `docs/patterns/` |
 | Verdict (`Verdict`) | Did what the team declared hold, and did the agent finish | Read from findings and how the run stopped | Built and tested; ends every run and sets the exit code |
 | Stability (`Stability`) | How often, over several samples | | Built: `--samples N` reports "passed k of N"; a sample that did not finish did not pass |
@@ -1225,13 +1225,13 @@ What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no 
 
 #### The verdict
 
-Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). The verdict reads only the findings of what the team declared (its rules, the scenario's expectations and protected names, its own checks), the core's integrity checks, and how the run stopped. It holds no rule of its own about how an agent should behave. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is. `RunResult.assessed_by` records what judged the run.
+Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). The verdict reads only the findings of what the team declared (its rules, the scenario's expectations and protected names, the integrity facts its files name in `fail_on_integrity`, its own checks), and how the run stopped; an integrity fact nobody named is stated as `REVIEW` and never changes it. It holds no rule of its own about how an agent should behave. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is. `RunResult.assessed_by` records what judged the run.
 
 | `VerdictKind` | When | Exit |
 |---|---|---|
 | `ENVIRONMENT_FAILED` | The run stopped `ENVIRONMENT_FAILED`: an external emulator it forwarded to was unavailable (`docs/external-emulators.md`). Not the agent's failure; the checks still run and are listed | 2 |
 | `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
-| `NOT_JUDGED` | No finding failed, and nothing was assessed: neither the scenario nor the agent file declares `assess`, `expect`, `protected_names` or its own `checks` ("Not assessed"; the facts are still reported); or a check that reads wakes had none (a standing world nobody stepped). `Verdict.unjudged` lists each reason; it is never `PASSED` | 5 |
+| `NOT_JUDGED` | No finding failed, and nothing was assessed: neither the scenario nor the agent file declares `assess`, `expect`, `protected_names`, `fail_on_integrity` or its own `checks` ("Not assessed"; the facts are still reported); or a check that reads wakes had none (a standing world nobody stepped). `Verdict.unjudged` lists each reason; it is never `PASSED` | 5 |
 | `PASSED` | No finding failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
 | `UNFINISHED` | No finding failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
 | `TOOL_FAILED` | Minutehand failed answering any call (`CallOutcome.INTERNAL_ERROR`, below): the run says nothing about the agent, whatever the checks found, and the verdict names the first such call | 4 |
@@ -1247,7 +1247,7 @@ Exit 3 is not a failure: a scenario whose point is that nobody answers ends at i
 What the rule gets wrong:
 
 - **It takes `DONE` at the agent's word.** An agent that reports done with a question it asked unanswered passes, unless a rule says otherwise. The verdict once held two rules of its own here (done with an ask never followed up was `UNFINISHED`, and a "follow-up" in the same wake as the ask did not count); both were opinions, and both are now rules a team may write: `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0`, and `each: ask`, `count: {follow_ups: {}, until: ask+PT1H}`, `at_most: 0`.
-- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question. The one exception: once every expectation is met, a message to a `Silent` owner sent with or after the last of them is the result being reported, and keeps nothing open. A silent person other than the owner still leaves the run `UNFINISHED`.
+- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question, the owner's included: a message telling a silent owner the result keeps the run `UNFINISHED` unless the agent reports `DONE` (or the scenario declares `expect_outcome: unfinished`). The verdict once read such a message as "the result being reported" once every expectation was met; that was Minutehand's reading, not the user's, and is gone.
 - **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
 - **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
 
@@ -1261,9 +1261,9 @@ Discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, 
 | `assessments` | One finding per broken bound of each of the team's rules, named by the rule's `id`, with its `severity` and `message`; a note for each rule not read for want of a moment the run never reached | The team's | the rule's `pattern` |
 | `expectations` | `FAIL` per unmet expectation; `INFORMATIONAL` per met one, quoting what met it | The scenario author's | `honest_closure` |
 | `near_miss_name` | `FAIL`: a name the scenario protects written one letter off | The scenario author's | `confirm_names` |
-| `agent_contract_changed` | `FAIL`: the agent's own product answered Minutehand's call against its own API description | The agent's own document | none |
-| `around_proxy` | `FAIL`: the agent's own HTTP client spans name calls to a host a provider claims that the proxy never saw; `REVIEW`: the agent was woken and called none of the providers the run names. Both name the fixes ("Transparent capture") | none: the run's integrity | none |
-| `unmatched_call` | `REVIEW`: a call to a host no provider claims | none: the run's integrity | none |
+| `agent_contract_changed` | `REVIEW` (`FAIL` when named in `fail_on_integrity`): the agent's own product answered Minutehand's call against its own API description | The agent's own document | none |
+| `around_proxy` | `REVIEW` (`FAIL` when named in `fail_on_integrity`): the agent's own HTTP client spans name calls to a host a provider claims that the proxy never saw; `REVIEW` always: the agent was woken and called none of the providers the run names. Both name the fixes ("Transparent capture") | none: the run's integrity | none |
+| `unmatched_call` | `REVIEW` (`FAIL` when named in `fail_on_integrity`): a call to a host no provider claims | none: the run's integrity | none |
 
 Not built:
 

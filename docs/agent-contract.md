@@ -124,6 +124,7 @@ in TypeScript.
 | `assess` | agent file | The team's rules, for every scenario it runs (`docs/assessments.md`) |
 | `assess` | scenario | Rules for this situation; one with the id of an agent file's rule replaces it |
 | `assess_off` | scenario | Ids of the agent file's rules this scenario does not judge by; an id no rule has is refused |
+| `fail_on_integrity` | agent file, scenario | Integrity facts that fail the run when found: `around_proxy`, `agent_contract_changed`, `unmatched_call` (the scenario's are added to the agent file's). Unnamed, each is stated as `review` and never changes the verdict |
 | `expect` | scenario | What must be true of the world at the end |
 | `expect_outcome` | scenario | The verdict the scenario is written to reach: `passed` (default), `failed`, `unfinished`, `not_judged`. Read by `minutehand run-all`, which exits 1 when a run's verdict differs |
 | `checks` | agent file | Python checks of the team's own (above) |

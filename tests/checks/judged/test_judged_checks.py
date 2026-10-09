@@ -16,9 +16,7 @@ from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.telemetry.otel import OtelTelemetry
 from minutehand.checks.judged.asked_about import ASKED_ABOUT_PROMPT_VERSION, AskedAboutVerdict
 from minutehand.checks.runner import NO_MODEL, RunResult, discover, discover_judged, evaluate, evaluate_judged
-from minutehand.domain.checks import FindingKind, Severity
-from minutehand.domain.conversation import Judgement
-from minutehand.domain.run import StopReason
+from minutehand.domain.checks import FindingKind
 from minutehand.domain.scenario import Expectation, PersonAsked
 from tests.checks.world import Log, person, scenario, view
 from tests.model.fake_completions import Answer, FakeCompletions, Received, fake_completions
@@ -150,9 +148,7 @@ async def test_a_judged_finding_is_exported_with_its_model_and_prompt_version() 
     assert all(a is not None and "minutehand.judge.model" not in a for a in unjudged)
 
 
-@pytest.mark.parametrize(
-    "bad", ['{"asks_about": true}', '{"asks_about": "maybe", "rationale": ""}']
-)
+@pytest.mark.parametrize("bad", ['{"asks_about": true}', '{"asks_about": "maybe", "rationale": ""}'])
 async def test_a_verdict_that_does_not_validate_is_asked_for_again(bad: str) -> None:
     def once_bad(received: Received) -> str | AskedAboutVerdict:
         return bad if len(fake.received) == 1 else AskedAboutVerdict(asks_about=True, rationale="ok")
