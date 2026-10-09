@@ -19,7 +19,7 @@ from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import DispatchFault, Model, TicketState
-from minutehand.domain.transitions import Transition
+from minutehand.domain.transitions import Transition, moves
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -29,7 +29,6 @@ from minutehand.domain.world import (
     RecordedCall,
     Snapshot,
     TicketSnapshot,
-    TransitionSnapshot,
     WorldEvent,
 )
 
@@ -346,13 +345,15 @@ class Moved(Model):
 
 
 def transitions(view: RunView) -> list[Moved]:
-    """Every transition the run recorded, by anyone, in order."""
+    """Every move in the run, by anyone, in order (`domain.transitions.moves`): each recorded transition, and each
+    other write to an item in the world as the move it made."""
+    by_seq = {e.seq: e for e in view.events}
     been: dict[tuple[str, str, str], list[str]] = {}
     found: list[Moved] = []
-    for event in view.events:
-        if not isinstance(event.after, TransitionSnapshot):
+    for moved in moves(view.events):
+        if moved.seq is None:
             continue
-        moved = Transition.of(event)
+        event = by_seq[moved.seq]
         key = (moved.item.provider, moved.item.kind.value, moved.item.external_id)
         states = been.setdefault(key, [])
         if moved.from_state is not None and moved.from_state not in states:

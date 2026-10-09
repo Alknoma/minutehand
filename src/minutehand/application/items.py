@@ -11,6 +11,7 @@ from minutehand.domain.agent import AgentUnderTest, Polled
 from minutehand.domain.items import BUILT_IN, ItemKind, ProvidedTypes, TypedItem, read_as
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
+from minutehand.domain.transitions import move_of
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -48,9 +49,13 @@ def typed_items(
             touched.setdefault(event.entity, []).append(event.seq)
     named = [(c.exchange.path, c.last_seq) for c in calls if c.exchange.inbox_call is None]
     found: list[TypedItem] = []
+    states: dict[EntityRef, str] = {}
     for event in events:
         if event.operation not in WRITES or (event.after is None and event.operation is not Operation.DELETE):
             continue  # a read, or a write the log keeps no snapshot of (a copy in another mailbox)
+        moved = move_of(event, states.get(event.entity))
+        if moved is not None:
+            states[moved.item] = moved.to_state
         after = event.after
         key = event.entity.provider
         typed: TypedItem | None = None
@@ -68,6 +73,8 @@ def typed_items(
             if len(kinds) == 1:
                 typed = read_as(event, kinds[0].kind)
         if typed is not None:
+            if moved is not None:
+                typed = typed.model_copy(update={"move": moved})  # the move from the state the item's last write left
             if typed.actor is Actor.AGENT:
                 seen = [s for s in touched.get(typed.item, []) if s < event.seq]
                 seen += [head for path, head in named if typed.item.external_id in path and head < event.seq]

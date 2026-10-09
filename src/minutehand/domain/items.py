@@ -30,6 +30,7 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.model import Model
 from minutehand.domain.scenario import WorkingHours
+from minutehand.domain.transitions import DELETED, Transition, move_of
 from minutehand.domain.world import (
     Actor,
     DocumentSnapshot,
@@ -150,17 +151,12 @@ class Assessed(Model):
 
 
 class TypedItem(Model):
-    """One event of the world, read as an item of its kind: what an item check and the reviewer read of it. Its
-    provider reads its own bodies to fill what its snapshot does not carry (a calendar event's times)."""
+    """One write of the world, read as an item of its kind: the move it made (`Transition`, the one record of every
+    move by anyone) and what its kind adds to it, which an item check and the reviewer read. Its provider reads its own
+    bodies to fill what its snapshot does not carry (a calendar event's times)."""
 
-    seq: int = Field(description="WorldEvent.seq")
+    move: Transition = Field(description="The write, as the move of its item's state it is (`transitions.move_of`)")
     kind: ItemKind
-    provider: str
-    item: EntityRef = Field(description="The item: the message, ticket, document or event itself")
-    actor: Actor
-    operation: Operation
-    at: AwareDatetime = Field(description="Simulated time of the event")
-    wake: int = Field(default=0, ge=0, description="The wake it happened in; 0 is setup")
     last_read: int | None = Field(
         default=None,
         description="For the agent's write: the seq of its last read, write or call naming this item before it, so "
@@ -177,6 +173,41 @@ class TypedItem(Model):
         description="A calendar event changed by this write: whether its attendees were sent word of it; None when "
         "the provider cannot say",
     )
+
+    @property
+    def seq(self) -> int:
+        """The event the write is."""
+        if self.move.seq is None:
+            raise ValueError("an item read from the log has the seq of its event")
+        return self.move.seq
+
+    @property
+    def provider(self) -> str:
+        return self.move.provider
+
+    @property
+    def item(self) -> EntityRef:
+        """The item: the message, ticket, document, event or request itself."""
+        return self.move.item
+
+    @property
+    def actor(self) -> Actor:
+        return self.move.by
+
+    @property
+    def at(self) -> datetime:
+        return self.move.at
+
+    @property
+    def wake(self) -> int:
+        return self.move.wake
+
+    @property
+    def operation(self) -> Operation:
+        """What the move did to the item: made it, changed it, or deleted it."""
+        if self.move.to_state == DELETED:
+            return Operation.DELETE
+        return Operation.CREATE if self.move.from_state is None else Operation.UPDATE
 
 
 # -- the item types every provider's manifest picks from ---------------------------------------------------------
@@ -307,7 +338,7 @@ def stretch_in_hours(starts: datetime, ends: datetime, hours: WorkingHours) -> b
     return local_start.date() == local_end.date() and in_working_hours(last, hours)
 
 
-def read_as(event: WorldEvent, kind: ItemKind) -> TypedItem:
+def read_as(event: WorldEvent, kind: ItemKind, was: str | None = None) -> TypedItem:
     """The event read as an item of `kind` from what its snapshot says: its words, whom it is to, its conversation.
     A provider that knows more of its own items (a calendar event's times) reads its body and adds it."""
     after = event.after
@@ -315,7 +346,6 @@ def read_as(event: WorldEvent, kind: ItemKind) -> TypedItem:
     people: list[str] = []
     conversation: str | None = None
     thread_of: str | None = None
-    item = event.entity
     if isinstance(after, MessageSnapshot):
         text, people, conversation, thread_of = after.text, list(after.recipient_emails), after.channel, after.thread_of
     elif isinstance(after, TicketSnapshot):
@@ -331,18 +361,14 @@ def read_as(event: WorldEvent, kind: ItemKind) -> TypedItem:
         conversation = f"{after.host} {after.collection}"
     elif isinstance(after, TransitionSnapshot):
         text = f"{after.name}: {after.from_state or '(new)'} -> {after.to_state}\n{after.content}"
-        item = after.item
     elif isinstance(after, ServiceEventSnapshot):
         text = after.content
+    move = move_of(event, was)
+    if move is None:
+        raise ValueError(f"event {event.seq} is no write")
     return TypedItem(
-        seq=event.seq,
+        move=move,
         kind=kind,
-        provider=event.entity.provider,
-        item=item,
-        actor=event.actor,
-        operation=event.operation,
-        at=event.sim_time,
-        wake=event.wake,
         text=text,
         people=people,
         conversation=conversation,

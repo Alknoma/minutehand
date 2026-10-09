@@ -28,6 +28,7 @@ from minutehand.domain.items import (
 from minutehand.domain.provider import Manifest, Tier
 from minutehand.domain.scenario import Absence, Person, Scenario, Silent, WorkingHours
 from minutehand.domain.services import Machine, MachineTransition, Service
+from minutehand.domain.transitions import DELETED, EXISTS, Transition
 from minutehand.domain.world import (
     Actor,
     AnsweredBy,
@@ -219,13 +220,18 @@ def _event(
     operation: Operation = Operation.CREATE,
 ) -> TypedItem:
     return TypedItem(
-        seq=seq,
+        move=Transition(
+            provider="calendar",
+            item=EntityRef(provider="calendar", kind=EntityKind.MESSAGE, external_id=item),
+            name=operation.value,
+            from_state=None if operation is Operation.CREATE else EXISTS,
+            to_state=DELETED if operation is Operation.DELETE else EXISTS,
+            by=actor,
+            who=None,
+            at=at(hours),
+            seq=seq,
+        ),
         kind=ItemKind.CALENDAR_EVENT,
-        provider="calendar",
-        item=EntityRef(provider="calendar", kind=EntityKind.MESSAGE, external_id=item),
-        actor=actor,
-        operation=operation,
-        at=at(hours),
         people=[p.email for p in people],
         starts=at(starts),
         ends=at(ends),
@@ -402,7 +408,8 @@ def test_seed_4_chasing_sam_three_times_in_two_and_a_half_hours_is_found_and_a_r
         e for e in run.events if isinstance(e.after, MessageSnapshot) and e.after.text.startswith("Thanks Sam")
     )
     again = thanks.model_copy(update={"seq": max(e.seq for e in run.events) + 1})
-    typed = next(t for t in run.typed if t.seq == thanks.seq).model_copy(update={"seq": again.seq})
+    first = next(t for t in run.typed if t.seq == thanks.seq)
+    typed = first.model_copy(update={"move": first.move.model_copy(update={"seq": again.seq})})
     twice = run.model_copy(update={"events": [*run.events, again], "typed": [*run.typed, typed]})
     [duplicate] = [f for f in _found(twice) if f.check == "duplicate"]
     assert duplicate.evidence == [thanks.seq, again.seq] and duplicate.kind is FindingKind.FAIL

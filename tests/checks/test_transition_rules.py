@@ -9,7 +9,8 @@ from pydantic import ValidationError
 from minutehand.checks.assessments import Assessments
 from minutehand.checks.facts import transitions
 from minutehand.domain.checks import Finding, RunView
-from minutehand.domain.world import Actor, EntityKind
+from minutehand.domain.scenario import TicketState
+from minutehand.domain.world import Actor, EntityKind, Operation
 from tests.checks.world import Log, at, person, rules, scenario, view
 
 OWNER, SOFIA = person("owner"), person("sofia")
@@ -136,3 +137,22 @@ def test_who_and_by_pick_whose_moves_are_counted() -> None:
 def test_a_transition_shape_on_a_rule_not_read_for_transitions_is_refused(written: str) -> None:
     with pytest.raises(ValidationError, match="each: transition"):
         rules(written)
+
+
+TICKET_CLOSED_BY_THE_AGENT = """
+- id: never_closes_a_ticket_itself
+  count: {transitions: {provider: [tracker], to: [done], by: [agent]}}
+  at_most: 0
+"""
+
+
+def test_a_rule_counts_the_agents_own_writes_as_the_moves_they_are() -> None:
+    log = Log()
+    log.ticket("Renew the lease", None, 1, external_id="t1")
+    closed = log.ticket(
+        "Renew the lease", None, 2, external_id="t1", operation=Operation.UPDATE, state=TicketState.DONE
+    )
+
+    [finding] = found(view(scenario(OWNER), log), TICKET_CLOSED_BY_THE_AGENT)
+
+    assert finding.evidence == [closed.seq], "the agent closing the ticket through its API is a move to done"

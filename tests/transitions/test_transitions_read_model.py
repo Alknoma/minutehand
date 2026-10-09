@@ -48,10 +48,14 @@ async def test_the_views_hold_each_move_and_each_item_held_pending(tmp_path: Pat
     moves = query(
         db, "SELECT provider, item_kind, name, from_state, to_state, actor, who, content, at FROM transitions"
     )
+    # The comment Tomas left is an item of its own, written by him; his move of the ticket is the provider's own
+    # transition, standing for the ticket's update at the same moment. The world as the scenario set it up is no move.
     assert [list(r) for r in moves.rows] == [
+        ["jira", "comment", "create", None, "exists", "person", None, moves.rows[0][7], "2026-08-24T12:50:03.000Z"],
         ["jira", "ticket", "Start work", "To Do", "In Progress", "person", "tomas", json.dumps({"comment": "On it."}),
-         "2026-08-24T12:50:03.000Z"]
+         "2026-08-24T12:50:03.000Z"],
     ]  # fmt: skip
+    assert "On it." in str(moves.rows[0][7])
     items = query(
         db, "SELECT person, nth, state, status, due_at, take, drawn_from, closed_at FROM items ORDER BY person"
     )

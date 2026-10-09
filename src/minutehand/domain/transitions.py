@@ -9,6 +9,7 @@ it; the team's rules judge it (`count: {transitions: ...}`, `each: transition`).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import datetime
 
@@ -20,10 +21,15 @@ from minutehand.domain.world import (
     Actor,
     Change,
     ControlKind,
+    DocumentSnapshot,
     EntityKind,
     EntityRef,
     MessageSnapshot,
     Operation,
+    RecordSnapshot,
+    ServiceEventSnapshot,
+    StoredSnapshot,
+    TicketSnapshot,
     TransitionSnapshot,
     WorldEvent,
 )
@@ -38,6 +44,26 @@ AUTOMATIC_REPLY = "automatic reply"
 """A person's automatic reply while away: no answer, so the conversation still awaits them. Never offered."""
 TEXT = "text"
 """What a conversation's answer carries: the words written back, or what a form holds."""
+EXISTS = "exists"
+"""The state of an item with no state of its own (a message, a document, a stored record) once it is written."""
+DELETED = "deleted"
+"""The state of any item once it is deleted."""
+WORLD_ITEMS = frozenset(
+    {
+        EntityKind.MESSAGE,
+        EntityKind.TICKET,
+        EntityKind.COMMENT,
+        EntityKind.DOCUMENT,
+        EntityKind.CHANNEL,
+        EntityKind.RECORD,
+        EntityKind.INBOX_ITEM,
+        EntityKind.STORED,
+        EntityKind.SERVICE_EVENT,
+    }
+)
+"""The kinds of entity that are items in the world, whose writes are moves. Not: the run's own bookkeeping (what is
+due, what is pending on a person, a declared service's records and its item as each transition left it, which the
+transition itself records), the agent's own memory and next wake, files on its machine, its tool calls, and pushes."""
 PICKS = "picks"
 """What a control that picks a person carries: the person's key."""
 FORM = "form"
@@ -127,6 +153,7 @@ class Transition(Model):
     content: str = Field(default="{}", description="What it carried, as a JSON object: a comment, the reasons")
     at: AwareDatetime
     seq: int | None = Field(default=None, description="The event it was recorded as; None before it is")
+    wake: int = Field(default=0, ge=0, description="The wake it was recorded in; 0 is setup, or not yet recorded")
 
     @classmethod
     def of(cls, event: WorldEvent) -> Transition:
@@ -145,6 +172,7 @@ class Transition(Model):
             content=after.content,
             at=event.sim_time,
             seq=event.seq,
+            wake=event.wake,
         )
 
 
@@ -324,3 +352,98 @@ def ticket_move(action: Moves | Reassigns | Comments | Deletes, emails: dict[str
     if isinstance(action, Comments):
         return COMMENT, {COMMENT: action.text}
     return DELETE, {}
+
+
+def written_state(event: WorldEvent) -> str | None:
+    """The state a write leaves its item in, in the provider's words where its snapshot has them (a ticket's state),
+    else `EXISTS`, or `DELETED`; None for a read or a write the log keeps no snapshot of."""
+    if event.operation is Operation.DELETE:
+        return DELETED
+    after = event.after
+    if event.operation not in (Operation.CREATE, Operation.UPDATE) or after is None:
+        return None
+    if isinstance(after, TransitionSnapshot):
+        return after.to_state
+    if isinstance(after, TicketSnapshot):
+        return after.state.value
+    return EXISTS
+
+
+def _carried(event: WorldEvent) -> str:
+    """What a write carried, as a JSON object of its snapshot's own words."""
+    after = event.after
+    said: dict[str, object]
+    if isinstance(after, MessageSnapshot):
+        said = {
+            "text": after.text,
+            "channel": after.channel,
+            "to": after.recipient_emails,
+            "thread_of": after.thread_of,
+        }
+    elif isinstance(after, TicketSnapshot):
+        said = {"title": after.title, "body": after.body, "project": after.project, "assignee": after.assignee_email}
+    elif isinstance(after, DocumentSnapshot):
+        said = {"title": after.title, "text": after.text}
+    elif isinstance(after, RecordSnapshot):
+        said = {"resource": after.resource, "text": after.text}
+    elif isinstance(after, StoredSnapshot):
+        said = {"collection": after.collection, "id": after.id, "item": after.item}
+    elif isinstance(after, ServiceEventSnapshot):
+        said = {"event": after.event.value, "item": after.item, "content": after.content}
+    else:
+        said = {}
+    return json.dumps({k: v for k, v in said.items() if v not in (None, "", [])}, ensure_ascii=False)
+
+
+def move_of(event: WorldEvent, was: str | None) -> Transition | None:
+    """Any write in the log read as the move of its item's state it is: a recorded transition as recorded, and every
+    other write (a message posted, a ticket edited, a document changed, a record stored) as its item going from `was`,
+    the state the item's last write left it in (None: it did not exist), to the state this write leaves it in, named
+    by the write's operation and carrying its snapshot's words. None for a read, or a write the log keeps no
+    snapshot of."""
+    if isinstance(event.after, TransitionSnapshot):
+        return Transition.of(event)
+    if event.entity.kind not in WORLD_ITEMS:
+        return None
+    to = written_state(event)
+    if to is None:
+        return None
+    if isinstance(event.after, ServiceEventSnapshot) and event.operation is not Operation.DELETE:
+        to = was or EXISTS  # a write to a declared service that moves no item leaves its state as it was
+    return Transition(
+        provider=event.entity.provider,
+        item=event.entity,
+        name=event.operation.value,
+        from_state=was,
+        to_state=to,
+        by=event.actor,
+        who=None,
+        content=_carried(event),
+        at=event.sim_time,
+        seq=event.seq,
+        wake=event.wake,
+    )
+
+
+def moves(events: Sequence[WorldEvent]) -> list[Transition]:
+    """Every move in `events`, in order: each write read as one (`move_of`) from the state its item's previous write
+    left it in. Not moves, though the state they leave is kept: the scenario setting the world up before the first
+    wake, and a write to an item its provider also recorded as a transition by the same actor at the same moment,
+    which the transition, in the provider's own words, stands for."""
+    recorded = {(e.after.item, e.sim_time, e.actor) for e in events if isinstance(e.after, TransitionSnapshot)}
+    state: dict[EntityRef, str] = {}
+    found: list[Transition] = []
+    for event in events:
+        if isinstance(event.after, TransitionSnapshot):
+            move = Transition.of(event)
+        else:
+            move = move_of(event, state.get(event.entity))
+        if move is None:
+            continue
+        covered = not isinstance(event.after, TransitionSnapshot) and (move.item, move.at, move.by) in recorded
+        if not covered:
+            state[move.item] = move.to_state
+        if covered or (event.wake == 0 and event.actor is Actor.SCENARIO):
+            continue
+        found.append(move)
+    return found
