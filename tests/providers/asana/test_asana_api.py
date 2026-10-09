@@ -149,7 +149,7 @@ async def test_a_deleted_task_is_gone_everywhere(workspace: Workspace, client: h
     assert body(await client.delete(f"/tasks/{made['gid']}")) == {"data": {}}
     assert (await client.get(f"/tasks/{made['gid']}")).status_code == 404
     assert made["gid"] not in [t["gid"] for t in items(await client.get(f"/projects/{VENUE}/tasks"))]
-    last = workspace.store.events()[-2]
+    last = next(e for e in reversed(workspace.store.events()) if e.operation is Operation.DELETE)
     assert (last.operation, last.actor, last.entity.external_id) == (Operation.DELETE, Actor.AGENT, made["gid"])
 
 

@@ -36,6 +36,14 @@ BODIES: dict[tuple[str, str], type[wire.Request]] = {
     ("POST", "/rest/api/3/issue/{issueIdOrKey}/comment"): wire.CommentIn,
     ("POST", "/rest/api/3/issueLink"): wire.LinkIn,
     ("POST", "/rest/agile/1.0/sprint/{sprintId}/issue"): wire.SprintIssuesIn,
+    ("PUT", "/rest/api/3/issue/{issueIdOrKey}/comment/{id}"): wire.CommentIn,
+    ("POST", "/rest/api/3/issue/{issueIdOrKey}/worklog"): wire.WorklogIn,
+    ("PUT", "/rest/api/3/issue/{issueIdOrKey}/worklog/{id}"): wire.WorklogIn,
+    ("DELETE", "/rest/api/3/issue/{issueIdOrKey}/worklog"): wire.WorklogIdsIn,
+    ("POST", "/rest/api/3/issue/{issueIdOrKey}/remotelink"): wire.RemoteLinkIn,
+    ("PUT", "/rest/api/3/issue/{issueIdOrKey}/remotelink/{linkId}"): wire.RemoteLinkIn,
+    ("POST", "/rest/api/3/component"): wire.ComponentIn,
+    ("POST", "/rest/api/3/version"): wire.VersionIn,
 }
 """Each served operation that takes a body, and the model it is read into. `POST /search` is answered 410 before
 its body is read."""
@@ -61,7 +69,7 @@ def test_every_operation_of_the_subset_is_served_or_refused_by_name_and_none_is_
         "neither": sorted(OPERATIONS - served - refused_here),
         "not in the reference": sorted((served | refused_here) - OPERATIONS),
     }
-    assert (len(served), len(refused_here), len(OPERATIONS)) == (45, 167, 212)
+    assert (len(served), len(refused_here), len(OPERATIONS)) == (76, 155, 231)
 
 
 def test_every_documented_query_parameter_of_a_served_operation_is_read_or_refused(site: Site) -> None:

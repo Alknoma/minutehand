@@ -271,6 +271,62 @@
     "summary": "Set comment property"
    }
   },
+  "/rest/api/3/component": {
+   "GET": {
+    "operationId": "findComponentsForProjects",
+    "summary": "Find components for projects",
+    "query": [
+     "projectIdsOrKeys",
+     "startAt",
+     "maxResults",
+     "orderBy",
+     "query"
+    ]
+   },
+   "POST": {
+    "operationId": "createComponent",
+    "summary": "Create component",
+    "body": [
+     "assigneeType",
+     "description",
+     "leadAccountId",
+     "leadUserName",
+     "name",
+     "project"
+    ]
+   }
+  },
+  "/rest/api/3/component/{id}": {
+   "DELETE": {
+    "operationId": "deleteComponent",
+    "summary": "Delete component",
+    "query": [
+     "moveIssuesTo"
+    ]
+   },
+   "GET": {
+    "operationId": "getComponent",
+    "summary": "Get component"
+   },
+   "PUT": {
+    "operationId": "updateComponent",
+    "summary": "Update component",
+    "body": [
+     "assigneeType",
+     "description",
+     "leadAccountId",
+     "leadUserName",
+     "name",
+     "project"
+    ]
+   }
+  },
+  "/rest/api/3/component/{id}/relatedIssueCounts": {
+   "GET": {
+    "operationId": "getComponentRelatedIssues",
+    "summary": "Get component issues count"
+   }
+  },
   "/rest/api/3/field": {
    "GET": {
     "operationId": "getFields",
@@ -1946,6 +2002,129 @@
     ]
    }
   },
+  "/rest/api/3/version": {
+   "POST": {
+    "operationId": "createVersion",
+    "summary": "Create version",
+    "body": [
+     "archived",
+     "description",
+     "driver",
+     "expand",
+     "moveUnfixedIssuesTo",
+     "name",
+     "project",
+     "projectId",
+     "releaseDate",
+     "released",
+     "startDate"
+    ]
+   }
+  },
+  "/rest/api/3/version/{id}": {
+   "DELETE": {
+    "operationId": "deleteVersion",
+    "summary": "Delete version",
+    "query": [
+     "moveFixIssuesTo",
+     "moveAffectedIssuesTo"
+    ],
+    "deprecated": true
+   },
+   "GET": {
+    "operationId": "getVersion",
+    "summary": "Get version",
+    "query": [
+     "expand"
+    ]
+   },
+   "PUT": {
+    "operationId": "updateVersion",
+    "summary": "Update version",
+    "body": [
+     "archived",
+     "description",
+     "driver",
+     "expand",
+     "moveUnfixedIssuesTo",
+     "name",
+     "project",
+     "projectId",
+     "releaseDate",
+     "released",
+     "startDate"
+    ]
+   }
+  },
+  "/rest/api/3/version/{id}/mergeto/{moveIssuesTo}": {
+   "PUT": {
+    "operationId": "mergeVersions",
+    "summary": "Merge versions"
+   }
+  },
+  "/rest/api/3/version/{id}/move": {
+   "POST": {
+    "operationId": "moveVersion",
+    "summary": "Move version",
+    "body": [
+     "after",
+     "position"
+    ]
+   }
+  },
+  "/rest/api/3/version/{id}/relatedIssueCounts": {
+   "GET": {
+    "operationId": "getVersionRelatedIssues",
+    "summary": "Get version's related issues count"
+   }
+  },
+  "/rest/api/3/version/{id}/relatedwork": {
+   "GET": {
+    "operationId": "getRelatedWork",
+    "summary": "Get related work"
+   },
+   "POST": {
+    "operationId": "createRelatedWork",
+    "summary": "Create related work",
+    "body": [
+     "category",
+     "title",
+     "url"
+    ]
+   },
+   "PUT": {
+    "operationId": "updateRelatedWork",
+    "summary": "Update related work",
+    "body": [
+     "category",
+     "title",
+     "url"
+    ]
+   }
+  },
+  "/rest/api/3/version/{id}/removeAndSwap": {
+   "POST": {
+    "operationId": "deleteAndReplaceVersion",
+    "summary": "Delete and replace version",
+    "body": [
+     "customFieldReplacementList",
+     "moveAffectedIssuesTo",
+     "moveFixIssuesTo"
+    ]
+   }
+  },
+  "/rest/api/3/version/{id}/unresolvedIssueCount": {
+   "GET": {
+    "operationId": "getVersionUnresolvedIssues",
+    "summary": "Get version's unresolved issues count"
+   }
+  },
+  "/rest/api/3/version/{versionId}/relatedwork/{relatedWorkId}": {
+   "DELETE": {
+    "operationId": "deleteRelatedWork",
+    "summary": "Delete related work"
+   }
+  },
   "/rest/api/3/worklog/deleted": {
    "GET": {
     "operationId": "getIdsOfWorklogsDeletedSince",
@@ -1977,5 +2156,25 @@
     ]
    }
   }
+ },
+ "added": {
+  "fetched": "2026-10-09",
+  "source": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+  "version": "1001.0.0-SNAPSHOT-0c0db68a171663452b321ade8630cf9c8cada05d",
+  "selection": "Every path of the platform v3 spec whose first segment after /rest/api/3/ is component or version (project components and versions), cut as the rest of this file is.",
+  "paths": [
+   "/rest/api/3/component",
+   "/rest/api/3/component/{id}",
+   "/rest/api/3/component/{id}/relatedIssueCounts",
+   "/rest/api/3/version",
+   "/rest/api/3/version/{id}",
+   "/rest/api/3/version/{id}/mergeto/{moveIssuesTo}",
+   "/rest/api/3/version/{id}/move",
+   "/rest/api/3/version/{id}/relatedIssueCounts",
+   "/rest/api/3/version/{id}/relatedwork",
+   "/rest/api/3/version/{id}/removeAndSwap",
+   "/rest/api/3/version/{id}/unresolvedIssueCount",
+   "/rest/api/3/version/{versionId}/relatedwork/{relatedWorkId}"
+  ]
  }
 }

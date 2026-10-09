@@ -15,7 +15,10 @@ error message here is this provider's own wording in Jira's shapes.
 Issues: create (`fields`, screen-checked per issue type), get (`fields`, `expand=changelog,names`), edit
 (`fields`, and `update` for labels and `set`), delete (`deleteSubtasks`), assignee, transitions (list with
 `expand=transitions.fields`, do with screen fields and an `update.comment`), comments (ADF in, ADF out, plain text
-in the world's snapshot), changelog, links and link types. Search: `/search/jql` (GET and POST, `nextPageToken`,
+in the world's snapshot; read, updated and deleted by id), changelog, links and link types, worklogs (add, list, get,
+update, delete, bulk delete, with `adjustEstimate` moving the remaining estimate), attachments (a multipart upload,
+metadata, content with `Range` and the redirect, delete), watchers, remote links, edit metadata, and project
+components and versions (create, get, list). Search: `/search/jql` (GET and POST, `nextPageToken`,
 fields `*all`/`*navigable`/`-x`), `/search/approximate-count`; the retired `/search` answers 410. Projects:
 search, get, create, statuses per issue type, roles and adding role members, `createmeta` issue types and
 fields. Site objects: `field`, `status`, `statuscategory`, `priority`, `issuetype`, `resolution`. Users: `myself`,
@@ -52,8 +55,8 @@ agent. Project roles (Administrators, Member, Viewer) say only who belongs to a 
 project is a 404, and anyone in a project may do anything there. `CLAIMS.md` lists every check removed.
 
 **Surface.** `tests/data/vendor_surface/jira.json` is the subset of Atlassian's OpenAPI descriptions for the
-resources this fake claims (212 operations, fetched 2026-10-08): 45 are served, 167 are refused by name with a
-501 (`surface.py`), as is every documented parameter or body property a served operation does not act on.
+resources this fake claims (231 operations, fetched 2026-10-08, the paths under `/component` and `/version` on
+2026-10-09): 76 are served, 155 are refused by name with a 501 (`surface.py`), as is every documented parameter or body property a served operation does not act on.
 `CLAIMS.md` cites the source of every behaviour.
 
 Seeding: `seed.JiraSeed`, the scenario's `provider_seeds` entry for `jira`, naming a seeded ticket by its `key`
@@ -73,8 +76,13 @@ the transitions offered are those `GET /issue/{key}/transitions` lists from its 
 the person's move goes through the same path as `POST /issue/{key}/transitions` (`Desk.transition`), its comment as
 `update.comment`, authored by them. A transition whose screen requires a field is not offered to a person: the
 engine writes free text only. The agent's own transitions and creates (the workflow's initial `Create`) and every
-move a person makes are recorded as transitions beside the issue's versions. No webhook is served, so a person's
-move never wakes the agent: it finds it on its next read.
+move a person makes are recorded as transitions beside the issue's versions.
+
+**Webhooks.** `JiraSeed.webhooks` sets up admin webhooks (`url`, `events`, `jql`, `secret`) as Jira administration
+would. Each is POSTed `jira:issue_created`, `jira:issue_updated` and `comment_created` (`webhooks.py`): after the
+agent's own calls are answered, and when a person's transition is applied. The app is `DeliversInBackground`, so a
+standing world waits on a delivery in flight. A person's move wakes the agent (`heard_of`) when some webhook is
+sent `jira:issue_updated` for the issue; otherwise it finds the move on its next read.
 
 ## While a world is open (`minutehand serve`)
 
@@ -86,8 +94,8 @@ move never wakes the agent: it finds it on its next read.
 
 ## What it does not do
 
-- Everything `surface.UNSERVED` names (501), and API v2 (`/rest/api/2`), webhooks, issue security, groups,
-  filters, dashboards (501, naming the path). Components and versions read as empty lists. The old
+- Everything `surface.UNSERVED` names (501), and API v2 (`/rest/api/2`), webhook registration by REST, issue security, groups,
+  filters, dashboards (501, naming the path). The old
   `/rest/api/3/search` answers 410, as Jira does.
 - Writing `timetracking`, ranking, epics' own endpoints, sprint create or edit, board configuration.
 - The browser half of the authorization-code flow (any code is traded for tokens), scopes (every token holds
