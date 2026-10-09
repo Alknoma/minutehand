@@ -47,6 +47,7 @@ from minutehand.adapters.emulator import answers
 from minutehand.adapters.proxy import capture, connect, credentials, mcp, redact, stored
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
+from minutehand.adapters.proxy.held import Held
 from minutehand.adapters.proxy.hosts import loopback_name
 from minutehand.adapters.proxy.local import CALL_HEADER, GRPC_NOT_INSTALLED, LocalServers
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
@@ -99,7 +100,15 @@ from minutehand.domain.world import (
     TunnelRoute,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope, ServesGrpc, ServesSockets
+from minutehand.ports.provider import (
+    ASGIApp,
+    HeldCalls,
+    Message,
+    RendersErrors,
+    Scope,
+    ServesGrpc,
+    ServesSockets,
+)
 from minutehand.ports.services import AnswersServices, Call
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -530,17 +539,29 @@ class ProxyAddon:
         burst.world.store.attach(exchange, first_seq=head + 1, last_seq=head, began=burst.began)
 
     def mount(
-        self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario | None = None,
+        holds: HeldCalls | None = None,
     ) -> None:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
         its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
         and seeded then with `scenario`'s people and things, unless `world` already holds anything of it. A burst
         in progress on a relayed tunnel is written to the run it began in first, and the gRPC and WebSocket
-        servers of the run before are stopped."""
+        servers of the run before are stopped. `holds` holds a call that waits on the world (`held`)."""
         self.flush()
         self._close_local(None)
         self.worlds = one_run(
-            world, clock, apps, scenario=scenario, provider=self.routing.registry.provider, capturing=self.capturing
+            world,
+            clock,
+            apps,
+            scenario=scenario,
+            provider=self.routing.registry.provider,
+            capturing=self.capturing,
+            holds=holds,
         )
 
     def route(self, worlds: Worlds) -> None:
@@ -857,32 +878,70 @@ class ProxyAddon:
         """Answer from the provider's app, guarded (`adapters.answering`): whatever building the app or answering
         lets out becomes the agent's answer, and how the call was answered is recorded on it. A call the provider
         says it does not serve (`NotServed`) on a host the world also declares (`falls_to`) is not answered here:
-        False, and the declaration answers it."""
-        async with world.lock:
-            first = world.store.head() + 1
-            original = flow.request.path
-            outcome = Outcome()
+        False, and the declaration answers it. A call the provider says waits on the world is held out of the
+        world's lock and answered afresh at each look (`held`); it is recorded once, as it is answered."""
+        waits = world.waits
+        waits.began(fresh=True)
+        held: Held | None = None
+        try:
+            while True:
+                async with world.lock:
+                    first = world.store.head() + 1
+                    original = flow.request.path
+                    outcome = Outcome(
+                        holds=waits.holds is not None,
+                        over=held is not None and held.ended_by(world.clock.now()),
+                    )
 
-            async def built(
-                scope: Scope, receive: Callable[[], Awaitable[Message]], send: Callable[[Message], Awaitable[None]]
-            ) -> None:
-                nonlocal first
-                app = world.app_for(manifest)
-                first = world.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
-                await app(scope, receive, send)
+                    async def built(
+                        scope: Scope,
+                        receive: Callable[[], Awaitable[Message]],
+                        send: Callable[[Message], Awaitable[None]],
+                    ) -> None:
+                        nonlocal first
+                        app = world.app_for(manifest)
+                        # what seeding a provider on its first call wrote is not this call's
+                        first = world.store.head() + 1
+                        await app(scope, receive, send)
 
-            token = OUTCOME.set(outcome)
-            try:
-                flow.request.path = strip_prefix(original, manifest.path_prefix)
-                guarded = Guarded(built, self._renders(manifest), provider=manifest.key, clock=world.clock)
-                await asgiapp.serve(_path_decoded(guarded), flow)
-            finally:
-                OUTCOME.reset(token)
-                flow.request.path = original
-            if outcome.not_served and falls_to is not None:
-                flow.response = None
-                return False
-            exchange = self._record(world, flow, host, original, first, manifest.key, answered_by=outcome)
+                    token = OUTCOME.set(outcome)
+                    try:
+                        flow.request.path = strip_prefix(original, manifest.path_prefix)
+                        guarded = Guarded(built, self._renders(manifest), provider=manifest.key, clock=world.clock)
+                        await asgiapp.serve(_path_decoded(guarded), flow)
+                    finally:
+                        OUTCOME.reset(token)
+                        flow.request.path = original
+                    if outcome.waiting is not None and waits.holds is not None:
+                        flow.response = None
+                        if held is None:
+                            held = Held(ref=flow.id, until=outcome.waiting.until, waits=waits)
+                            waits.held[held.ref] = held
+                        again = outcome.waiting.again
+                        at = again if again is not None and again < held.until else held.until
+                        waits.holds.hold(held.ref, at, ends=at == held.until, look=held.look)
+                    else:
+                        if outcome.not_served and falls_to is not None:
+                            flow.response = None
+                            if held is not None:
+                                self._let_go(held)
+                            return False
+                        exchange = self._record(world, flow, host, original, first, manifest.key, answered_by=outcome)
+                        if held is not None:
+                            self._let_go(held)  # after the record, whose events end where the answer's do
+                        break
+                assert held is not None
+                held.looked.set()
+                waits.ended()
+                await held.turn.wait()
+                held.turn.clear()
+                waits.began(fresh=False)
+        finally:
+            waits.ended()
+            if held is not None:
+                held.looked.set()
+        if held is None:
+            waits.stir()  # what this call changed may answer a call held in the world
         response = flow.response
         minted = (
             credentials.minted(
@@ -894,6 +953,16 @@ class ProxyAddon:
         )
         self.worlds.answered(world, exchange, minted)
         return True
+
+    @staticmethod
+    def _let_go(held: Held) -> None:
+        """A held call is being answered now: no longer held, and the run is told."""
+        waits = held.waits
+        del waits.held[held.ref]
+        held.answered = True
+        waits.arrived.clear()
+        if waits.holds is not None:
+            waits.holds.answered(held.ref)
 
     def _renders(self, manifest: Manifest) -> RendersErrors:
         """The provider's error shape; the plain one when it has none, or cannot be built (which the guard then

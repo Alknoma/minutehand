@@ -85,7 +85,7 @@ import sys
 import tempfile
 import textwrap
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 
@@ -178,8 +178,31 @@ class LibraryAction(StrEnum):
     NEW = "new"
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="minutehand", description="Simulated days for a proactive agent.")
+class _Parser(argparse.ArgumentParser):
+    """The command line's parser, which takes a command's positionals anywhere among its options.
+
+    argparse matches positionals greedily in the run of words before the first option, so `query RUN --state X SQL`
+    gives `sql` nothing and refuses SQL as unrecognized on Python before 3.12.7 (CI's 3.12.3, Ubuntu 24.04's own),
+    and `rm A --state X B` on every version. A command left with such words is read again on its own, intermixed,
+    which places each positional wherever it was written."""
+
+    commands: Mapping[str, argparse.ArgumentParser]
+
+    def parse_anywhere(self, args: list[str]) -> argparse.Namespace:
+        parsed, left = self.parse_known_args(args)
+        if not left:
+            return parsed
+        command: str = parsed.command
+        words = args[args.index(command) + 1 :]
+        try:
+            own = self.commands[command].parse_intermixed_args(words)
+        except TypeError:  # a command whose arguments cannot be intermixed: refused as argparse refuses them
+            self.error(f"unrecognized arguments: {' '.join(left)}")
+        return argparse.Namespace(**{**vars(parsed), **vars(own)})
+
+
+def _parser() -> _Parser:
+    parser = _Parser(prog="minutehand", description="Simulated days for a proactive agent.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {minutehand.__version__}")
     parser.add_argument(
         DEBUG,
@@ -187,6 +210,7 @@ def _parser() -> argparse.ArgumentParser:
         help="on an internal error, print its traceback as well (anywhere before --, with any command)",
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    parser.commands = commands.choices
 
     def state(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
@@ -562,7 +586,7 @@ def _main(args_in: list[str]) -> int:
         if not command:
             print("minutehand: nothing follows --; give the agent's command or leave -- out", file=sys.stderr)
             return 2
-    args = _parser().parse_args(args_in)
+    args = _parser().parse_anywhere(args_in)
     if args.command == "mcp-relay":
         if not command:
             print("minutehand mcp-relay: give the MCP server's command after --", file=sys.stderr)
@@ -958,7 +982,7 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
 
 
 def _run_all(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
-    load_agent(args.agent)  # refused here, once, rather than once per scenario
+    run_all.checked_agent(args.agent)
     batch = asyncio.run(
         run_all.play_all(
             args.folder,

@@ -143,6 +143,14 @@ def keep_waking(reason: str, now: datetime, state: dict[str, object]) -> None:
     report("idle", now + timedelta(hours=1))
 
 
+def keep_polling(reason: str, now: datetime, state: dict[str, object]) -> None:
+    """Every wake: read its state four times more, as a worker polling it would, write it, and wake in an hour."""
+    for _ in range(4):
+        load()
+    save(state)
+    report("idle", now + timedelta(hours=1))
+
+
 def keep_writing(reason: str, now: datetime, state: dict[str, object]) -> None:
     """Every wake: tell tom how things stand, and wake again in two hours. No guard against a repeated wake."""
     call("POST", "/testchat/messages", {"to": "tom@example.com", "text": f"Status at {now.isoformat()}"})
@@ -262,6 +270,7 @@ BEHAVIOURS = {
         remember_late,
         mark_next,
         keep_waking,
+        keep_polling,
         keep_writing,
         tidy,
         book,

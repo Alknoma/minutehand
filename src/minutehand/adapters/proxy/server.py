@@ -36,7 +36,7 @@ from minutehand.application.traffic import SeenCall
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp
+from minutehand.ports.provider import ASGIApp, HeldCalls
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -107,11 +107,17 @@ class Proxy:
         return self._confdir / BUNDLE
 
     def mount(
-        self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario | None = None,
+        holds: HeldCalls | None = None,
     ) -> None:
-        """`application.orchestrator.Mounts`: the run the proxy now answers and records for, and the scenario a
-        provider first called mid-run is seeded with."""
-        self.addon.mount(world, clock, apps, scenario=scenario)
+        """`application.orchestrator.Mounts`: the run the proxy now answers and records for, the scenario a
+        provider first called mid-run is seeded with, and what holds a call that waits on that run's world."""
+        self.addon.mount(world, clock, apps, scenario=scenario, holds=holds)
 
     def flush(self) -> None:
         """`application.orchestrator.Mounts`: every burst in progress on a tunnel it relays, recorded now."""

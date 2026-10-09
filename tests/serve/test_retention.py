@@ -28,17 +28,43 @@ def test_a_closed_world_is_a_run_findings_reads_and_only_the_newest_are_kept(tmp
     assert session.scenario_of(tmp_path, opened[2]).owner == "owen"
 
 
+def _left_by_a_crash(state: Path, world_id: str) -> None:
+    with sqlite3.connect(state / "runs" / world_id / "world.db") as db:
+        db.execute("INSERT INTO content VALUES(?, 15, 'raw', ?)", (CRASHED, b"left by a crash"))
+
+
+def _held(state: Path, world_id: str) -> int:
+    with sqlite3.connect(state / "runs" / world_id / "world.db") as db:
+        found: tuple[int] = db.execute("SELECT COUNT(*) FROM content WHERE hash=?", (CRASHED,)).fetchone()
+    return found[0]
+
+
+CRASHED = b"\x01" * 32
+
+
 def test_retention_sweeps_the_worlds_it_keeps_of_what_nothing_refers_to(tmp_path: Path) -> None:
-    """Closing a world runs the same sweep as `minutehand gc`: a stored body left unreferenced in a world still kept,
-    as a crash would leave it, is gone after the next close."""
+    """The first close of a server runs the same sweep as `minutehand gc`: a stored body left unreferenced in a world
+    still kept, as a crash of the server before would leave it, is gone after it."""
     options = ServeOptions(proxy_port=0, control_port=0, telemetry_port=0, keep=5)
     with serve_in_background(tmp_path, options) as url, MinutehandClient(url) as client:
         kept = client.create_world(spec("xoxb-kept-a")).world_id
         client.close_world(kept)
-        with sqlite3.connect(tmp_path / "runs" / kept / "world.db") as db:
-            db.execute("INSERT INTO content VALUES(?, 15, 'raw', ?)", (b"\x01" * 32, b"left by a crash"))
+    _left_by_a_crash(tmp_path, kept)
+    with serve_in_background(tmp_path, options) as url, MinutehandClient(url) as client:
         closed = client.create_world(spec("xoxb-kept-b")).world_id
         client.close_world(closed)
-    with sqlite3.connect(tmp_path / "runs" / kept / "world.db") as db:
-        assert db.execute("SELECT COUNT(*) FROM content WHERE hash=?", (b"\x01" * 32,)).fetchone() == (0,)
+    assert _held(tmp_path, kept) == 0
     assert [o.record.run_id for o in session.runs(tmp_path)] == [kept, closed]
+
+
+def test_a_close_sweeps_no_world_this_server_swept_since_it_closed(tmp_path: Path) -> None:
+    """Nothing writes a closed world's file again, so a close leaves alone each one the server has swept since it
+    closed: sweeping all `keep` of them at every close made a close cost a store opened per world kept."""
+    options = ServeOptions(proxy_port=0, control_port=0, telemetry_port=0, keep=5)
+    with serve_in_background(tmp_path, options) as url, MinutehandClient(url) as client:
+        kept = client.create_world(spec("xoxb-kept-a")).world_id
+        client.close_world(kept)
+        client.close_world(client.create_world(spec("xoxb-kept-b")).world_id)
+        _left_by_a_crash(tmp_path, kept)
+        client.close_world(client.create_world(spec("xoxb-kept-c")).world_id)
+        assert _held(tmp_path, kept) == 1

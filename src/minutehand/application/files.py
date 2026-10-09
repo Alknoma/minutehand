@@ -60,10 +60,12 @@ def load_scenario(path: Path) -> WrittenScenario:
     return with_documents_from(path, _load(path, WrittenScenario, called="Scenario"))
 
 
-def load_agent(path: Path) -> AgentUnderTest:
+def load_agent(path: Path, *, text: str | None = None) -> AgentUnderTest:
     """An agent file, its `checks` made absolute from the file's own folder, so a fork that reads the agent back
-    from its run's folder finds them."""
-    return _with_checks_from(path, _load(path, AgentUnderTest))
+    from its run's folder finds them. `text`, when given, is read in place of the file's own (the file as `run-all`
+    fills it), and the file still names it and places its relative paths."""
+    raw = _read(path, AgentUnderTest) if text is None else _parsed(path, text, AgentUnderTest)
+    return _with_checks_from(path, _validate(path, raw, AgentUnderTest))
 
 
 def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
@@ -127,6 +129,10 @@ def _read(path: Path, model: type[BaseModel], *, called: str | None = None) -> o
         text = path.read_text(encoding="utf-8")
     except OSError as e:
         raise FileRefused(f"{path}: cannot be read: {e.strerror}") from e
+    return _parsed(path, text, model, called=called)
+
+
+def _parsed(path: Path, text: str, model: type[BaseModel], *, called: str | None = None) -> object:
     suffix = path.suffix.lower()
     try:
         if suffix in (".yaml", ".yml"):
