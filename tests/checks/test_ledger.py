@@ -11,7 +11,7 @@ from minutehand.checks.ledger import build
 from minutehand.checks.runner import evaluate_run
 from minutehand.domain.checks import ObligationKind
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Absence, DelayRange, Silent, TicketFate, TicketState
+from minutehand.domain.scenario import Absence, DelayRange, Silent, Take, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
 from tests.checks.world import START, Log, at, person, reply, rules, scenario
 
@@ -111,8 +111,8 @@ def test_a_handed_off_ticket_waits_for_its_fate_and_settles_only_when_the_person
         state=TicketState.DONE,
         external_id="T1",
     )
-    fate = TicketFate(assignee="sofia", becomes=TicketState.DONE, after=timedelta(days=3))
-    [o] = build(scenario(SOFIA, fates=[fate]), log.events, [])
+    finishing = SOFIA.model_copy(update={"takes": [Take(take="done", after=timedelta(days=3))]})
+    [o] = build(scenario(finishing), log.events, [])
     assert o.kind is ObligationKind.WORK_WITH_PERSON and o.opened_by == filed.seq
     assert o.expected_by == at(72) and o.settled_at == at(20)
 

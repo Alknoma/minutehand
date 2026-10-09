@@ -29,9 +29,9 @@ from minutehand.domain.scenario import (
     Relayed,
     Scenario,
     Scripted,
-    ScriptedPress,
     ScriptedReply,
     SignIn,
+    Take,
 )
 from minutehand.domain.world import Actor, InteractionSnapshot, MessageSnapshot
 from tests.e2e.support import OWNER, SOFIA, T0, free_port, messages, world
@@ -45,10 +45,7 @@ DELAY = timedelta(hours=3, minutes=10)
 
 
 def scenario() -> Scenario:
-    sofia = [
-        ScriptedReply(to_ask=1, verbatim="Yes, 40k a year."),
-        ScriptedReply(to_ask=2, press=ScriptedPress(label="Yes")),
-    ]
+    sofia = [ScriptedReply(to_ask=1, verbatim="Yes, 40k a year.")]
     return Scenario(
         name="partner_pricing_by_mail",
         goal="The partner pricing is confirmed with Sofia, and she signs it off on a call.",
@@ -68,6 +65,7 @@ def scenario() -> Scenario:
                 name="Sofia Romano",
                 email=SOFIA,
                 reply=Scripted(then=AfterScript.SILENT, delay=DelayRange(shortest=DELAY, longest=DELAY), replies=sofia),
+                takes=[Take(nth=2, take="Yes")],  # her second item: the invitation, answered Yes
             ),
         ],
         sign_ins=[SignIn(provider="google_workspace", credential=REFRESH, person="assistant")],

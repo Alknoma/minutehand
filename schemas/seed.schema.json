@@ -1544,6 +1544,15 @@
       "additionalProperties": false,
       "description": "Messages the agent sent.",
       "properties": {
+        "conveys": {
+          "default": [],
+          "description": "Each phrase must be conveyed by the text, in whatever words, as a model judges it: the team's own phrase, or `{ask.facts}`, `{ask.answer}` as for `holding`. A rule with it is judged: read only when a judge model is configured, its findings for review",
+          "items": {
+            "type": "string"
+          },
+          "title": "Conveys",
+          "type": "array"
+        },
         "holding": {
           "default": [],
           "description": "Each phrase must be in the text, in any case; `{ask.facts}`, alone as a phrase, is each fact the answer's script step carried (else the answer itself), `{ask.answer}` the answer in the person's words, and `{person.key}`, `{person.name}` the person the rule is read for",
@@ -1856,7 +1865,7 @@
         },
         "takes": {
           "default": [],
-          "description": "Transitions this person is pinned to take on items pending on them in a provider the people engine plays (`Scenario.transitions_on`); without one, a model picks among the legal ones",
+          "description": "What this person is pinned to do on items waiting on them: a ticket moved, a control used, a decision made, an invitation answered (`docs/design-transitions.md`); without one their script answers in words, or a model picks among what is offered",
           "items": {
             "$ref": "#/$defs/Take"
           },
@@ -2742,6 +2751,7 @@
           "$ref": "#/$defs/Where",
           "default": {
             "by": [],
+            "first": false,
             "name": [],
             "person": [],
             "person_not": [],
@@ -2761,22 +2771,6 @@
       "additionalProperties": false,
       "description": "A plan of what this person knows, decides and does, step by step, in answer to the agent's messages. The\nwords are a model's, written from each step's facts in the person's voice, unless a step is `verbatim`.\n\nA message whose number has no step, before the last step, gets no answer: the script says so. Once the steps\nare used, the person keeps conversing (`then: answers`, the default), a model writing from their facts, until\nthe run ends; `then: silent` is the author's word that they say nothing more.",
       "properties": {
-        "decisions": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/ScriptedDecision"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "What they decide on items waiting on them in the agent's own product, after their delay like a reply. None says nothing: with `then: answers` a model decides every item, and with `then: silent` a run whose agent declares an inbox they can receive items in is refused. `[]` leaves every item to `then`",
-          "title": "Decisions"
-        },
         "delay": {
           "$ref": "#/$defs/DelayRange",
           "default": {
@@ -2814,18 +2808,6 @@
           "description": "None uses the run's default model",
           "title": "Model"
         },
-        "presses_every": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ScriptedPress"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "On every message the agent sends them that carries a control reading this label (an approval card's Approve), they press it after their delay, however many there are; a scripted reply to that ask is used instead when there is one"
-        },
         "replies": {
           "default": [],
           "items": {
@@ -2862,121 +2844,9 @@
       "title": "Scripted",
       "type": "object"
     },
-    "ScriptedDecision": {
-      "additionalProperties": false,
-      "description": "What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth\nsuch item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins\nover one for every item. What they give with it (a reason, an answer) is written by a model from `facts`,\nunless `inputs` fixes the words.",
-      "properties": {
-        "decision": {
-          "description": "The name of one of the inbox's decisions",
-          "pattern": "^[a-z][a-z0-9_]*$",
-          "title": "Decision",
-          "type": "string"
-        },
-        "facts": {
-          "default": [],
-          "description": "Why they decide so, as facts the model writes each input from",
-          "items": {
-            "type": "string"
-          },
-          "title": "Facts",
-          "type": "array"
-        },
-        "inbox": {
-          "anyOf": [
-            {
-              "pattern": "^[a-z][a-z0-9_]*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The inbox's `name`; None: any. With one, `to_item` counts that inbox's items only",
-          "title": "Inbox"
-        },
-        "inputs": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {},
-          "description": "Each input the decision takes, by its name, in exact words: no model for those",
-          "title": "Inputs",
-          "type": "object"
-        },
-        "to_item": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The nth item waiting on them, from 1; None: every one",
-          "title": "To Item"
-        },
-        "within": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Window"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "When this decision is made, in place of the person's own `reply_within` or delay"
-        }
-      },
-      "required": [
-        "decision"
-      ],
-      "title": "ScriptedDecision",
-      "type": "object"
-    },
-    "ScriptedPress": {
-      "additionalProperties": false,
-      "description": "Use a control on the message being answered instead of writing back: the one whose label reads `label`, as\nthe person sees it, in any case. When the agent answers the press by opening a form, the person fills it with\n`form` and submits it.",
-      "properties": {
-        "form": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/FormInput"
-          },
-          "title": "Form",
-          "type": "array"
-        },
-        "label": {
-          "minLength": 1,
-          "title": "Label",
-          "type": "string"
-        },
-        "picks": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Person.key chosen, when the control picks a person",
-          "title": "Picks"
-        }
-      },
-      "required": [
-        "label"
-      ],
-      "title": "ScriptedPress",
-      "type": "object"
-    },
     "ScriptedReply": {
       "additionalProperties": false,
-      "description": "One step of a person's script: what they know, decide or do in answer to the nth message they receive.\n\nBy default the words are a model's, written from `facts` (what this reply carries) and `intent`, in the\nperson's voice; the step fixes what is said, never how. `verbatim` is the rare exact string, for a test that\nneeds those words and no others. `press` uses a control on the message instead of writing back.",
+      "description": "One step of a person's script: what they know, decide or do in answer to the nth message they receive.\n\nBy default the words are a model's, written from `facts` (what this reply carries) and `intent`, in the\nperson's voice; the step fixes what is said, never how. `verbatim` is the rare exact string, for a test that\nneeds those words and no others. A step never uses a control on the message: that is a take (`Person.takes`).",
       "properties": {
         "facts": {
           "default": [],
@@ -2990,17 +2860,6 @@
         "intent": {
           "$ref": "#/$defs/Intent",
           "default": "answer"
-        },
-        "press": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ScriptedPress"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
         },
         "to_ask": {
           "minimum": 1,
@@ -3903,7 +3762,7 @@
     },
     "Take": {
       "additionalProperties": false,
-      "description": "A transition a person is pinned to take on an item pending on them in a provider the people engine plays\n(`Scenario.transitions_on`, docs/design-transitions.md), instead of the one a model picks; and, with `after`,\nwhen. The words it carries are a model's from `facts`, or exactly `verbatim`.",
+      "description": "What a person is pinned to do on an item waiting on them (`docs/design-transitions.md`): the offer they take,\ninstead of the one their script or a model would, and, with `after` or `within`, when. The words it carries are\nexactly `verbatim` and `fields`, or a model's from `facts`.",
       "properties": {
         "after": {
           "anyOf": [
@@ -3916,7 +3775,7 @@
             }
           ],
           "default": null,
-          "description": "Exactly this long after the item became pending on them; None: drawn as their answers are",
+          "description": "Exactly this long after the item began to wait on them; None: drawn as their answers are",
           "title": "After"
         },
         "facts": {
@@ -3926,6 +3785,24 @@
             "type": "string"
           },
           "title": "Facts",
+          "type": "array"
+        },
+        "fields": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Exact values of the offer's fields, by name: a decision's inputs, `picks` for a control that picks a person (their key). No model writes them",
+          "title": "Fields",
+          "type": "object"
+        },
+        "form": {
+          "default": [],
+          "description": "What they type into the form the control they use opens",
+          "items": {
+            "$ref": "#/$defs/FormInput"
+          },
+          "title": "Form",
           "type": "array"
         },
         "nth": {
@@ -3939,16 +3816,25 @@
             }
           ],
           "default": null,
-          "description": "The nth item pending on them in that provider, from 1; None: every one",
+          "description": "The nth item waiting on them there, from 1, in the order asked; None: every one",
           "title": "Nth"
         },
         "provider": {
-          "pattern": "^[a-z][a-z0-9_]*$",
-          "title": "Provider",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The provider the item is in: a ticket tracker, a messaging service, an inbox of the agent's own product (its `name`), a declared service. None: any, `nth` counting their asks (messages, invitations, items in the agent's product) across every provider, in the order asked",
+          "title": "Provider"
         },
         "take": {
-          "description": "The offer, by its name or the state it reaches, in any case: 'Done', 'declined'",
+          "description": "The offer, in any case: by its name, the state it reaches, the label the person sees, or for a ticket what that state means (open, done, cancelled): 'Done', 'declined', 'Approve', 'done', 'delete'",
           "minLength": 1,
           "title": "Take",
           "type": "string"
@@ -3964,12 +3850,23 @@
             }
           ],
           "default": null,
-          "description": "Exact words for the offer's text (its comment); no model is called",
+          "description": "Exact words for the offer's text (a reply, a comment): no model",
           "title": "Verbatim"
+        },
+        "within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Drawn within this of their available time, in place of their own `reply_within` or delay"
         }
       },
       "required": [
-        "provider",
         "take"
       ],
       "title": "Take",
@@ -4107,49 +4004,9 @@
       "title": "TicketDeleted",
       "type": "object"
     },
-    "TicketFate": {
-      "additionalProperties": false,
-      "description": "What happens to a ticket the agent hands to a person: it reaches a state, or its assignee deletes it.",
-      "properties": {
-        "after": {
-          "format": "duration",
-          "title": "After",
-          "type": "string"
-        },
-        "assignee": {
-          "description": "Person.key",
-          "title": "Assignee",
-          "type": "string"
-        },
-        "becomes": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TicketState"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The state it reaches; None when it is deleted"
-        },
-        "deleted": {
-          "default": false,
-          "description": "Its assignee deletes it instead, through `DeletesTickets`",
-          "title": "Deleted",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "assignee",
-        "after"
-      ],
-      "title": "TicketFate",
-      "type": "object"
-    },
     "TicketHappening": {
       "additionalProperties": false,
-      "description": "A person acts on a seeded ticket at a moment, with no agent involved: the agent finds it on its next read.\n\nIt lands on the run's clock through the provider that holds the ticket (`ports.provider.ActsOnTickets`),\nrecorded as that person's change, and wakes nobody, as a ticket fate does not. A ticket already deleted by\nthen is left alone.",
+      "description": "A person acts on a seeded ticket at a moment, with no agent involved: the agent finds it on its next read.\n\nIt lands on the run's clock as that person's transition of the ticket, through the provider that holds it\n(`ports.transitions`), and wakes nobody. A ticket already deleted by then is left alone.",
       "properties": {
         "action": {
           "discriminator": {
@@ -4581,6 +4438,12 @@
           "title": "By",
           "type": "array"
         },
+        "first": {
+          "default": false,
+          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run (the first approval of an operation two people could approve), or, when none was made, the run's end in its place",
+          "title": "First",
+          "type": "boolean"
+        },
         "name": {
           "default": [],
           "description": "For `each: transition`: named these by the provider only",
@@ -4697,19 +4560,6 @@
       "additionalProperties": false,
       "description": "Every change the agent made to the world: what it created, updated or deleted.",
       "properties": {
-        "gated": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "True: a call carrying an operation an item in the agent's own product held back (`gates`), made while that item was pending, turned down, or taken back undecided",
-          "title": "Gated"
-        },
         "in_repeated_wake": {
           "anyOf": [
             {
@@ -5104,14 +4954,6 @@
       "default": null,
       "description": "None: the moment the run starts",
       "title": "Starts At"
-    },
-    "ticket_fates": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/TicketFate"
-      },
-      "title": "Ticket Fates",
-      "type": "array"
     },
     "tickets": {
       "default": [],

@@ -178,7 +178,7 @@ def test_scenarios_show_says_what_one_is_for(capsys: pytest.CaptureFixture[str])
     assert (
         "rules: acts_only_once_approved, follows_up_when_due, not_done_while_waiting (in the scenario's `assess`" in out
     )
-    assert "takes: --goal --owner --ask --other --answer --credential-env" in out
+    assert "takes: --goal --owner --ask --other --answer --tell --credential-env" in out
 
 
 def test_scenarios_new_all_writes_every_scenario(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

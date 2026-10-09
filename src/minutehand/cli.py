@@ -121,6 +121,7 @@ from minutehand.application.files import (
 from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
 from minutehand.application.library import NotInLibrary, entries, entry, write
+from minutehand.application.migrate import MigrationRefused, migrate
 from minutehand.application.outbound import described, emulator_described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
@@ -458,6 +459,13 @@ def _parser() -> argparse.ArgumentParser:
     checking.add_argument(
         "--kind", choices=[k.value for k in FileKind], default=None, help="default: from what it holds"
     )
+    migrating = commands.add_parser(
+        "migrate",
+        help="rewrite a scenario's retired keys (ticket_fates, press, presses_every, decisions) as takes; comments in "
+        "what it rewrites are not kept",
+    )
+    migrating.add_argument("file", type=Path)
+    migrating.add_argument("--write", action="store_true", help="write it back to the file; default: print it")
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
     priced(view)
@@ -575,6 +583,8 @@ def _main(args_in: list[str]) -> int:
         return _validate(args.files, FileKind(args.kind) if args.kind else None)
     if args.command == "scenarios":
         return _scenarios(args)
+    if args.command == "migrate":
+        return _migrate(args.file, write=args.write)
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
     if command is not None and args.command not in ("run", "fork", "run-all"):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
@@ -617,6 +627,34 @@ def _schema(kind: str) -> int:
     """The JSON Schema of one kind of file, or the OpenAPI document of what an agent may implement, on stdout."""
     found = agent_api.document() if kind == AGENT_API else schema(FileKind(kind))
     print(json.dumps(found, indent=2, sort_keys=True))
+    return 0
+
+
+def _migrate(path: Path, *, write: bool) -> int:
+    """The scenario at `path` with its retired keys rewritten (`application.migrate`): printed, or with `write` put
+    back in the file; each change is said on stderr. Exit 2 when it cannot be rewritten."""
+    text = path.read_text(encoding="utf-8")
+    loaded = yaml.safe_load(text)
+    if not isinstance(loaded, dict):
+        print(f"minutehand migrate: {path} holds no scenario", file=sys.stderr)
+        return 2
+    try:
+        done = migrate(loaded)
+    except MigrationRefused as e:
+        print(f"minutehand migrate: {path}: {e}", file=sys.stderr)
+        return 2
+    for note in done.notes:
+        print(f"{path}: {note}", file=sys.stderr)
+    if not done.changed:
+        print(f"{path}: nothing to migrate", file=sys.stderr)
+        return 0
+    header = [line for line in text.splitlines()[:1] if line.startswith("# yaml-language-server")]
+    body = yaml.safe_dump(done.document, sort_keys=False, allow_unicode=True).rstrip()
+    rewritten = "\n".join([*header, body]) + "\n"
+    if write:
+        path.write_text(rewritten, encoding="utf-8")
+    else:
+        print(rewritten, end="")
     return 0
 
 

@@ -13,7 +13,7 @@ from tests.orchestrator.rig import T0, Rig, scenario
 
 
 async def test_a_marked_next_wake_is_the_moment_the_agent_is_woken(rig: Rig) -> None:
-    record, store, _ = await rig.run(scenario(ticket_fates=[]), rig.agent("mark_next"))
+    record, store, _ = await rig.run(scenario(tom_finishes=False), rig.agent("mark_next"))
     assert record.stop is StopReason.AGENT_DONE
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=3)]
     [marked] = [e for e in store.events() if e.entity.kind is EntityKind.NEXT_WAKE]
@@ -30,6 +30,6 @@ def test_a_marked_agent_is_woken_at_its_url_and_its_wake_ends_when_the_call_retu
 
 async def test_each_wake_counts_its_memory_reads_and_writes_and_none_of_them_changes_the_world(rig: Rig) -> None:
     """`keep_waking` touches nothing but its memory: a get and a put per wake."""
-    scn = scenario(ticket_fates=[], max_wakes=3)
+    scn = scenario(tom_finishes=False, max_wakes=3)
     record, _, _ = await rig.run(scn, rig.agent("keep_waking"))
     assert [(w.memory_reads, w.memory_writes, w.world_changes) for w in record.wakes] == [(1, 1, 0)] * 3

@@ -54,7 +54,9 @@ async def test_one_run_plays_a_ticket_happening_on_asana_and_youtrack_a_document
     assert record.stop is StopReason.NOTHING_PENDING
     every = [e for e in store.events() if e.actor is Actor.PERSON]
     moves = [(e.sim_time - START, e.entity.provider) for e in every if e.entity.kind is EntityKind.TRANSITION]
-    assert moves == [(timedelta(days=1), "asana")], "the section move is a transition too"
+    assert moves == [(timedelta(days=1), "asana"), (timedelta(days=2), "youtrack")], (
+        "every ticket happening is a transition: the section move, and the comment"
+    )
     by_person = [e for e in every if e.entity.kind is not EntityKind.TRANSITION]
     acted = [(e.sim_time - START, e.entity.provider, e.entity.kind, e.operation) for e in by_person]
     assert acted == [

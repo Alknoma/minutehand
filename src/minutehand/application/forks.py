@@ -205,8 +205,6 @@ def behaviour(reply: ReplyBehaviour) -> str:
     if isinstance(reply, Scripted):
         steps = len(reply.replies)
         said = f"follows a script of {steps} step{'' if steps == 1 else 's'} {delay}"
-        if reply.presses_every is not None:
-            said += f", and presses {_quoted(reply.presses_every.label)} on every message that offers it"
         then = "goes on conversing" if reply.then is AfterScript.ANSWERS else "says nothing more"
         return f"{said}; once it is used, {then}"
     assert isinstance(reply, Answers)

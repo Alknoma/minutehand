@@ -69,15 +69,15 @@ A moment is an anchor and an optional ISO 8601 offset: `ask+P1D`, `deadline-PT2H
 | `ask` | when the ask or hand-off was made |
 | `answer` | when it was answered, or the work finished |
 | `closed` | `answer`, or `end` when it never was |
-| `due` | when the scenario says the person would have answered by: the longest delay of their `reply`, or a ticket's fate |
+| `due` | when the scenario says the person would have answered by: the longest delay of their `reply`, or the moment their take on a ticket sets |
 | `moment` | each of the rule's own `at` |
 | `all_answered` | when the last of the run's asks was answered |
 | `transition` | when the transition the rule is read for was made |
 
 A rule is not read for a thing when a moment it names is not there (an answer never given, a scenario without a
 deadline, `all_answered` while an ask is open) or comes after the run's end, and when it counts what the run did not
-record: `planned_wakes` of a run that kept no table (a captured run, a standing world), or `writes: {gated: ...}` when
-items were asked of people and none says what it holds back. The run's notes say how many times each
+record: `planned_wakes` of a run that kept no table (a captured run, a standing world). A rule with `conveys` is read
+only by the judged check `conveys`, with a judge model; without one it is not read, and a note says so. The run's notes say how many times each
 rule went unread, so a rule never passes by being skipped unseen.
 
 ### `when`: whether to read it at all
@@ -96,7 +96,7 @@ rule went unread, so a rule never passes by being skipped unseen.
 |---|---|---|
 | `follow_ups` | a write of the agent's the person could see on the ask while it was open: a message to them or their delegate, a change to the ask's thread or ticket (an `ask` or `handoff` rule only) | none |
 | `touches` | any write of the agent's on the ask's person, thread or ticket, answered or not: after `answer`, the agent coming back to it (`ask` or `handoff` only) | none |
-| `messages` | a message the agent sent | `to`, `to_not` (person keys, `owner`, or `person`: the one the rule is read for), `in_thread` (under the ask's own message), `holding` (phrases, any case; `{ask.facts}`, a phrase of its own, is each fact the answer's script step carried, which a model put in the person's words, so a relay is read by the fact and never the wording (else the answer itself); `{ask.answer}` is the answer as the person worded it, `{person.key}` and `{person.name}` the person), `to_away` (to someone away then while a delegate covered; the message an absence starts with, which their automatic reply answers, is not) |
+| `messages` | a message the agent sent | `to`, `to_not` (person keys, `owner`, or `person`: the one the rule is read for), `in_thread` (under the ask's own message), `holding` (phrases, any case; `{ask.facts}`, a phrase of its own, is each fact the answer carried: what its script step or take gave a model to put in the person's words, or each input of a decision as given, so a relay is read by the fact and never the wording (else the answer itself); `{ask.answer}` is the answer as the person worded it, or a decision's inputs, `{person.key}` and `{person.name}` the person), `conveys` (phrases, the same placeholders, each of which a judge model must find the message conveys in any words: the rule is judged, read only with a judge model, its findings for review), `to_away` (to someone away then while a delegate covered; the message an absence starts with, which their automatic reply answers, is not) |
 | `writes` | any change the agent made to the world | `things`, `things_not` (`message`, `ticket`, `comment`, `document`, `record`, `inbox_item`, `file`, `tool_call`, `stored`), `operations` (`create`, `update`, `delete`), `repeats_open_ticket` (a ticket filed with the title of one still open in the project), `in_repeated_wake` (in the second delivery of one wake), `gated` (going ahead with an operation an item in the agent's product held back, while pending, turned down or taken back) |
 | `wakes` | a wake of the agent's | `changed_world`, `changed_commitments` |
 | `planned_wakes` | a wake the agent asked for itself (reported, booked, its rhythm, its timer), at the moment it was due | none |
@@ -217,7 +217,7 @@ change or leave out. The library scenarios (`minutehand scenarios new`) are writ
 | `idle_wake` | `count: {wakes: {changed_world: false, changed_commitments: false}}`, `at_most: 0`, `severity: review` |
 | `acted_on_repeated_wake` | `count: {writes: {in_repeated_wake: true}}`, `at_most: 0`, `severity: review` |
 | `acted_after_deadline` | `count: {writes: {things_not: [message]}, since: deadline+PT1S}`, `at_most: 0` |
-| `acted_without_approval` | `count: {writes: {gated: true}}`, `at_most: 0` |
+| `acted_without_approval` | `each: ask`, `count: {messages: {to: [owner], holding: [<the operation>]}, until: closed-PT1S}`, `at_most: 0`; and `each: transition`, `where: {name: [reject], by: [person]}`, the same count `since: transition` |
 | `duplicate_ticket` | `count: {writes: {repeats_open_ticket: true}}`, `at_most: 0` |
 | `repeated_message` | `each: person`, `count: {messages: {to: [person]}}`, `gap_at_least: PT5M`, `severity: review` |
 | `planned_past_due` | `each: ask`, `when: {open_at: due}`, `count: {planned_wakes: {}, since: due-PT1H, until: due+PT1H}`, `at_least: 1`, `severity: review` |

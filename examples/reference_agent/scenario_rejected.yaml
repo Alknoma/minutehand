@@ -23,6 +23,6 @@ people:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}
       replies: []
-      decisions: [{decision: reject, facts: ["We already hold a room at the office that day."]}]
+    takes: [{take: reject, facts: ["We already hold a room at the office that day."]}]
 expect:
   - {kind: person_asked, person: rosa, by: PT1H}

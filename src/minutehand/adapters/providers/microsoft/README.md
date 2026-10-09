@@ -96,11 +96,11 @@ manifest, and because the tenant, its bot and its users are one directory every 
 
 ## People
 
-**By email and on invitations.** A reply to a message in a mailbox lands (`LandsReplies.land`): an email from the
+**By email and on invitations.** A reply to a message in a mailbox lands (`LandsAnswers.land`): an email from the
 person to whoever sent it, `RE:` its subject, in its conversation, landing in that mailbox's Inbox at its moment and
 notified to a subscription on it; nothing is pushed to the bot, so an agent that talks to people only by email
 declares no Microsoft inbound target. The landing wakes the agent when a live subscription watches a mailbox (or, for
-an invitation's answer, a calendar) it lands in (`LandsReplies.heard`); otherwise the agent finds it on its next
+an invitation's answer, a calendar) it lands in (`LandsAnswers.heard`); otherwise the agent finds it on its next
 poll, as a Gmail reply is found. A press (`Scripted` `press: {label: Accept}`, or
 `Tentative`, `Decline`) on a meeting request sets the person's `responseStatus` on the event, recorded as their
 press (`InteractionSnapshot`) and their change to the event, and sends the organizer `Accepted: …` (a response

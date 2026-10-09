@@ -138,9 +138,11 @@ def test_a_task_the_agent_hands_to_a_person_whose_fate_is_deletion_is_gone_once_
     served: Served,
 ) -> None:
     seed, claims = _asana_world("asana-fate")
-    seed = Seed.model_validate(
-        {**seed.model_dump(mode="json"), "ticket_fates": [{"assignee": "sofia", "deleted": True, "after": "PT1H"}]}
-    )
+    body = seed.model_dump(mode="json")
+    for person in body["people"]:
+        if person["key"] == "sofia":
+            person["takes"] = [{"take": "delete", "after": "PT1H"}]  # every ticket handed to her, deleted an hour on
+    seed = Seed.model_validate(body)
     with _world(served, seed, claims, scripted=True) as world, _asana(served, "asana-fate") as http:
         project = next(
             s.entity.external_id
@@ -155,7 +157,7 @@ def test_a_task_the_agent_hands_to_a_person_whose_fate_is_deletion_is_gone_once_
         gid = made.json()["data"]["gid"]
         assert http.get(f"{ASANA}/tasks/{gid}").status_code == 200
         advanced = world.advance(timedelta(hours=2))
-        assert any("deletes" in f.what for f in advanced.fired), advanced
+        assert any("takes 'delete'" in f.what for f in advanced.fired), advanced
         assert http.get(f"{ASANA}/tasks/{gid}").status_code == 404
         deleted = [e for e in world.events(provider="asana", operation=Operation.DELETE) if e.entity.external_id == gid]
         assert [e.actor for e in deleted] == [Actor.PERSON]

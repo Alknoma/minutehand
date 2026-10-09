@@ -36,7 +36,7 @@ async def test_the_agents_own_timer_is_its_next_wake_and_the_sandbox_clock_moves
 ) -> None:
     state = tmp_path / "sandbox.json"
     agent = rig.agent("ask_silent", extra=[sandbox(rig, state, 36)])
-    record, store, _ = await rig.run(scenario(ticket_fates=[], deadline_after=timedelta(days=3)), agent)
+    record, store, _ = await rig.run(scenario(tom_finishes=False, deadline_after=timedelta(days=3)), agent)
 
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=36)]
     assert record.wakes[1].world_changes == 1, "the timer's follow-up is the agent's change in that wake"
@@ -60,7 +60,7 @@ async def test_a_contained_run_is_scored_with_its_timer_read_as_the_agents_own_p
     from tests.support.rules import rules
 
     agent = rig.agent("ask_silent", extra=[sandbox(rig, tmp_path / "sandbox.json", 100)])
-    scn = scenario(ticket_fates=[], deadline_after=timedelta(days=5))
+    scn = scenario(tom_finishes=False, deadline_after=timedelta(days=5))
     record, store, _ = await rig.run(scn, agent)
 
     late = rules(
@@ -79,7 +79,7 @@ async def test_a_timer_that_does_nothing_is_no_wake_and_the_one_that_acts_is(rig
     held = json.loads(state.read_text())
     held["quiet_timers"] = [h * HOUR_NS for h in (1, 2, 3)]  # a runtime's housekeeping: they fire and do nothing
     state.write_text(json.dumps(held))
-    record, _, _ = await rig.run(scenario(ticket_fates=[], deadline_after=timedelta(days=3)), agent)
+    record, _, _ = await rig.run(scenario(tom_finishes=False, deadline_after=timedelta(days=3)), agent)
 
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=36)]
     assert [w.index for w in record.wakes] == [1, 2], "the housekeeping took no wake's number"
@@ -91,7 +91,7 @@ async def test_a_runtimes_periodic_wake_is_learned_and_not_stopped_at_again(rig:
     held = json.loads(state.read_text())
     held["poll_ns"] = HOUR_NS // 2  # an HTTP server's poll, every half hour of the sandbox's clock
     state.write_text(json.dumps(held))
-    record, _, _ = await rig.run(scenario(ticket_fates=[], deadline_after=timedelta(days=3)), agent)
+    record, _, _ = await rig.run(scenario(tom_finishes=False, deadline_after=timedelta(days=3)), agent)
 
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=36)]
     advances = json.loads(state.read_text())["advances"]

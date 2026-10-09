@@ -426,13 +426,13 @@ def create_app(serving: Serving) -> Starlette:
         elif isinstance(asked, Reply):
             event = await live.reply(asked.person, asked.text, to=asked.to)
         elif isinstance(asked, MoveTicket):
-            event = live.move_ticket(asked.ticket, asked.to)
+            event = await live.move_ticket(asked.ticket, asked.to)
         elif isinstance(asked, EditTicket):
-            event = live.edit_ticket(asked.ticket, state=asked.state, assignee=asked.assignee)
+            event = await live.edit_ticket(asked.ticket, state=asked.state, assignee=asked.assignee)
         elif isinstance(asked, Happen):
             event = await live.happen_now(asked.happening)
         elif isinstance(asked, DeleteTicket):
-            event = live.delete_ticket(asked.ticket)
+            event = await live.delete_ticket(asked.ticket)
         else:
             assert isinstance(asked, PressControl)
             event = await live.press(asked.person, asked.on, asked.press)
@@ -546,7 +546,6 @@ def create_app(serving: Serving) -> Starlette:
                 person=item.person,
                 summary=item.summary,
                 decisions=item.decisions,
-                gates=item.gates,
                 seen_at=seen,
             )
             for ref, item, seen in live.pending_items()

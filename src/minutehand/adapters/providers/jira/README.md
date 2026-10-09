@@ -63,7 +63,7 @@ or at a moment of their own. Faults declared there (`rate_limits`), or on an ope
 `DeclaresFaults`: a rate limit on a method and path prefix answers 429 with `Retry-After` the given number of
 times. World keys: `<site>.atlassian.net` and `/ex/jira/{cloudId}/`.
 
-A person's acts are `TicketHappening`s through `ActsOnTickets.act`: `Moves` (the fewest transitions with no
+A person's acts are transitions through `apply` (`ports.transitions`), a `TicketHappening` among them: `Moves` (the fewest transitions with no
 required screen), `Reassigns` (to someone or nobody), `Comments`, `Deletes`, each by the happening's person at the
 run clock's time, recorded as actor PERSON with that person as the changelog's or comment's author.
 
@@ -78,7 +78,7 @@ move never wakes the agent: it finds it on its next read.
 
 ## While a world is open (`minutehand serve`)
 
-- A person deletes an issue (`OpenWorld.delete_ticket`, or a `TicketFate` with `deleted: true`): the issue, its
+- A person deletes an issue (`OpenWorld.delete_ticket`, or a take of `delete`): the issue, its
   subtasks and the links naming them go, as actor PERSON, and the API answers 404 for it.
 - An account is deactivated or reactivated (`OpenWorld.deactivate_person` / `reactivate_person`): it reads
   `active: false` and is not assignable (400); its credentials still act as it, since none is checked. Removing an account is

@@ -13,19 +13,12 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import AgentReport, Commitment, WakeReason
 from minutehand.domain.clock import Due
-from minutehand.domain.scenario import Model, ProviderKey, TicketState
+from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.store import Store
 
 CHECKPOINT = EntityRef(provider="minutehand", kind=EntityKind.RECORD, external_id="checkpoint")
 """The one entity the run loop writes. Actor SCENARIO, so no check counts it as the agent's work."""
-
-
-class PendingFate(Model):
-    kind: Literal["fate"] = "fate"
-    due: Due
-    ticket: EntityRef
-    becomes: TicketState | None = Field(description="None: its assignee deletes it")
 
 
 class PendingHappening(Model):
@@ -105,8 +98,7 @@ class PendingBooking(Model):
 
 
 Pending = Annotated[
-    PendingFate
-    | PendingHappening
+    PendingHappening
     | PendingWake
     | PendingDirection
     | PendingBooking
