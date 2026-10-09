@@ -1220,6 +1220,7 @@ Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `test
 | `PASSED` | No finding failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
 | `UNFINISHED` | No finding failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
 | `TOOL_FAILED` | Minutehand failed answering any call (`CallOutcome.INTERNAL_ERROR`, below): the run says nothing about the agent, whatever the checks found, and the verdict names the first such call | 4 |
+| `SIMULATION_INCOMPLETE` | Neither of the two above, and the simulated world did not play as its files declare: an incomplete kind of the run's health ("The simulation's health", below). The agent is still judged on what did happen: that verdict's kind is kept in `Verdict.on_what_happened` and its sentence follows "on what did happen:" in the words, so a failure is never hidden by it | 6 |
 
 ```
 run 5c1e0a9f2b77: partner_pricing
@@ -1236,6 +1237,34 @@ What the rule gets wrong:
 - **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
 - **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
 
+
+#### The simulation's health
+
+Built and tested (`checks/health.py`, `tests/checks/test_health.py`, `tests/services/test_service_health.py`). Always
+read, over every run and fork; facts about the simulated world, never about the agent, and kept apart from the
+agent's findings (`RunResult.simulation`, a list of `HealthFinding`: kind, whether it makes the run incomplete, one
+sentence, the person, the entity, since when, the seqs). The report prints them under `simulation`, the run's notes
+repeat each as `simulation: ...`, the read model holds them in `simulation_health`, and the viewer shows them beside
+the verdict.
+
+| `HealthKind` | Makes the run `SIMULATION_INCOMPLETE` | When |
+|---|---|---|
+| `responder_never_acts` | yes | An item of a declared service waited on a responder whose script ends in silence (`then: silent`) with no `takes` for the service: declared to respond, they never can (`application/people._picks`). A responder who never decides is declared `{kind: silent}`, or the service lists none (`docs/services.md`) |
+| `waits_on_nobody` | yes | An item of a declared service sat in a state only a person moves it out of, responders declared, and the engine held it pending on nobody |
+| `owed_unbooked` | yes | Someone owes a move or an answer (they speak for themselves, or a take pins it) with no moment booked, or a moment booked that the table of what is due never held |
+| `model_failed` | yes | A people model call failed and no later call with the same context answered it, or a move is still owed with a model's failure on it |
+| `push_failed` | yes | An event the world pushed to the agent (a Slack event, a declared service's push) was never taken, after every retry its service makes |
+| `waits_by_declaration` | no | An item waited on someone the files declare never acts: a `Silent` person, or a script that ends in silence where no service names them a responder |
+| `never_exercised` | no | A declared service, `store` collection or person nothing in the run touched |
+| `step_never_fired` | no | A scripted step whose ask never came |
+
+Precedence: `ENVIRONMENT_FAILED` and `TOOL_FAILED` stand, since such a run says nothing either way; otherwise an
+incomplete world outranks every other kind, and `minutehand run-all` and samples order it after those two and
+before `FAILED`. `expect_outcome: simulation_incomplete` is a scenario written to show one. `minutehand validate`
+warns of every service responder who never acts before any run.
+
+What it gets wrong: coverage counts a person touched by any message to them or any item pending on them, so a
+person only copied on a group message counts as exercised; a collection read and never written counts as unused.
 
 #### The checks left in the core
 

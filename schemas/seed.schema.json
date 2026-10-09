@@ -943,7 +943,8 @@
         "passed",
         "failed",
         "unfinished",
-        "not_judged"
+        "not_judged",
+        "simulation_incomplete"
       ],
       "title": "ExpectedOutcome",
       "type": "string"
@@ -1691,6 +1692,17 @@
           "default": null
         },
         "passed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "simulation_incomplete": {
           "anyOf": [
             {
               "$ref": "#/$defs/Rate"

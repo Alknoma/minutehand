@@ -53,6 +53,7 @@ _EXPECTED = {
     ExpectedOutcome.FAILED: VerdictKind.FAILED,
     ExpectedOutcome.UNFINISHED: VerdictKind.UNFINISHED,
     ExpectedOutcome.NOT_JUDGED: VerdictKind.NOT_JUDGED,
+    ExpectedOutcome.SIMULATION_INCOMPLETE: VerdictKind.SIMULATION_INCOMPLETE,
 }
 
 

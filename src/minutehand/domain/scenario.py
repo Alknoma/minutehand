@@ -906,6 +906,7 @@ class ExpectedOutcome(StrEnum):
     FAILED = "failed"
     UNFINISHED = "unfinished"
     NOT_JUDGED = "not_judged"
+    SIMULATION_INCOMPLETE = "simulation_incomplete"
 
 
 _RATE = re.compile(r"^\s*(?P<op>>=|<=|==|>|<)\s*(?P<value>[0-9]*\.?[0-9]+)\s*$")
@@ -960,11 +961,15 @@ class OutcomeRate(Model):
     failed: Rate | None = None
     unfinished: Rate | None = None
     not_judged: Rate | None = None
+    simulation_incomplete: Rate | None = None
 
     @model_validator(mode="after")
     def _one(self) -> Self:
         if len(self.named()) != 1:
-            raise ValueError("an outcome rate names exactly one verdict: passed, failed, unfinished or not_judged")
+            raise ValueError(
+                "an outcome rate names exactly one verdict: passed, failed, unfinished, not_judged or "
+                "simulation_incomplete"
+            )
         return self
 
     def named(self) -> list[tuple[ExpectedOutcome, Rate]]:
@@ -973,6 +978,7 @@ class OutcomeRate(Model):
             (ExpectedOutcome.FAILED, self.failed),
             (ExpectedOutcome.UNFINISHED, self.unfinished),
             (ExpectedOutcome.NOT_JUDGED, self.not_judged),
+            (ExpectedOutcome.SIMULATION_INCOMPLETE, self.simulation_incomplete),
         ]
         return [(outcome, rate) for outcome, rate in said if rate is not None]
 
