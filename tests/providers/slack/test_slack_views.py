@@ -16,12 +16,12 @@ from starlette.responses import JSONResponse, Response
 from minutehand.adapters.providers.slack import interactive, state, wire
 from minutehand.adapters.providers.slack.app import open_stack
 from minutehand.adapters.providers.slack.interactive import DeliveryRefused
-from minutehand.domain.scenario import FormInput, ScriptedPress
+from minutehand.domain.scenario import FormInput
 from minutehand.domain.world import Actor, EntityKind, Operation
 from tests.providers.slack.intercepted import SECRET, AgentEndpoint, Intercepted, Received, data
 from tests.providers.slack.slack_workspace import START, Workspace
 from tests.providers.slack.test_slack_conversations import not_served, refusal
-from tests.providers.slack.test_slack_interactions import REJECT_MODAL, card_to_tomas, decided, tomas
+from tests.providers.slack.test_slack_interactions import REJECT_MODAL, card_to_tomas, tomas_presses
 
 IRIS = state.user_id("iris")
 
@@ -304,7 +304,7 @@ async def stacked_by_a_submission(
 
     agent.answer = answer
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="Reject", form=[FormInput(value="no")])), asked, workspace)
+    reply = tomas_presses(asked, "Reject", form=[FormInput(value="no")])
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
     everything = workspace.slack.bodies(EntityKind.RECORD, state.VIEWS, wire.OpenView)
     [root] = [v.view.id for v in everything if v.view.previous_view_id is None]
@@ -406,7 +406,7 @@ async def test_a_trigger_from_a_submission_pushes_a_view(
 
     agent.answer = answer
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="Reject", form=[FormInput(value="no")])), asked, workspace)
+    reply = tomas_presses(asked, "Reject", form=[FormInput(value="no")])
 
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
 

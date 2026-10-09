@@ -4,7 +4,7 @@
 overrides:
   - kind: person_change
     person: nadia
+    takes: [{take: approve}]
     reply:
       kind: scripted
-      decisions: [{decision: approve}]
       then: silent

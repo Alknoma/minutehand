@@ -199,15 +199,17 @@ The clock of a world stands still. Nothing fires on its own.
   `reply` answers a message (in its thread in a channel, a new message in a DM); both are recorded as actor
   `PERSON` and pushed to the world's inbound target, signed with its secret, exactly as the run loop pushes them.
   `move_ticket` is the assignee completing, cancelling or reopening a ticket (actor `PERSON`); `edit_ticket`
-  reassigns it or sets its state from outside (actor `SCENARIO`). A world with scripted people off ignores the
-  seed's scripts, fates and directions however far the clock moves.
+  reassigns it or sets its state from outside (actor `SCENARIO`); each is a transition through the provider's own
+  code path. A world with scripted people off ignores the seed's scripts, takes and directions however far the
+  clock moves.
 - **`scripted_people: true`**: the world's people are as complete as a run's. Each message the agent sends a
   person is answered as in a run (`docs/design.md`, "People"): a step of their script, its words written by a model
   from the step's facts and intent; once the script is used, or with no script (`Answers`), the model converses from
   their facts, voice and helpfulness; `verbatim` steps and controls need no model; `then: silent` and `Silent` say
   nothing. The moment is drawn as a run draws it, from the seed, the person and the ask, inside their working hours
   and outside their absences; a person away while a delegate covers sends their automatic reply at once. Each ticket
-  handed to a person with a `TicketFate` meets it and the owner's directions are said. It is all the people
+  handed to a person is moved as their take on it says (`Person.takes`), or as a model picks where the seed plays
+  that tracker (`transitions_on`), and the owner's directions are said. It is all the people
   engine's, as in a run (`docs/design-transitions.md`): an answer is planned and its words written when the world
   first sees the ask, through the same model port and prompt versions as a run, and nothing is said until the clock
   passes its moment on `advance` (or `inboxes/due` for a decision); then it is delivered as the provider delivers
@@ -244,9 +246,9 @@ The clock of a world stands still. Nothing fires on its own.
 its own page), as an agent file does (`docs/inboxes.md`); a person's `credential` is read from the server's own
 environment. The inboxes are read as each person at a step's end, on `advance` and on `checks`: a new item is the
 agent asking that person, recorded in the world. With scripted people on, each person's decision is owed like a
-reply and made when the clock passes it: a script's decision as it says, what it gives (a reason) written by the
-model from its facts unless `inputs` fixes the words, and, with no script or once it is used, the decision the model
-makes from the person's facts (`person-decision/2`). `inboxes/read` lists each with its moment; its `decision` is
+reply and made when the clock passes it: a take's decision as it says, what it gives (a reason) written by the
+model from its facts unless `fields` fixes the words, and, with no take, the decision the model picks from the
+person's facts (`person-transition/1`). `inboxes/read` lists each with its moment; its `decision` is
 null until a model makes it. A harness that keeps its own clock asks `inboxes/read` for the
 earliest decision due, marks its next step there, and has it made with `inboxes/due`; one that keeps its own timing
 has a person decide now with `inboxes/decide`. `OpenWorld.inboxes()`, `.perform_due()`, `.decide()` (and the same on
@@ -307,7 +309,7 @@ says what the test did and when.
   or withheld for a person on a project, after which the next call that needs it is answered accordingly.
 - **A ticket deleted** (`act` `delete_ticket`; `OpenWorld.delete_ticket()`): by its assignee, or the owner when
   unassigned, one the agent filed or one seeded; afterwards the service answers for it as for one that never
-  was. A `TicketFate` with `deleted: true` does the same when the clock passes it, in a run and in a world.
+  was. A take of `delete` on the assignee does the same when the clock passes it, in a run and in a world.
 - **Switches** the emulators exposed (a page size, a tree cut short, a send answered without an id) are typed
   faults and settings of the provider's own seed, declared through `provider-faults` like any fault.
 - **Reset** (`POST /reset`; `OpenWorld.reset()`): back to the seed the world was opened with, in place: the same

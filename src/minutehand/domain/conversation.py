@@ -45,7 +45,6 @@ class Wrote(StrEnum):
     """What a model wrote for a person."""
 
     REPLY = "reply"  # their words back to a message
-    DECISION = "decision"  # their decision on an item in the agent's own product, and what they give with it
     SUMMARY = "summary"  # what they saw before the turns they are shown word for word
     TRANSITION = "transition"  # the transition they take on an item pending on them, and what it carries
     SERVICE_MACHINE = "service_machine"  # the states and transitions of a declared service's items, proposed once

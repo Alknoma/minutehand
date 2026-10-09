@@ -80,20 +80,17 @@ def approvals(port: int) -> dict[str, object]:
             "id": "$.id",
             "summary": "$.summary",
             "decisions": "$.actions",
-            "gates": "$.operation",
             "paging": {"next": "$.next", "param": "cursor"},
         },
         "decisions": [
             {
                 "name": "approve",
                 "reads": "approved",
-                "permits": True,
                 "request": {"kind": "template", "method": "POST", "url": decide, "body": {"decision": "approve"}},
             },
             {
                 "name": "reject",
                 "reads": "rejected",
-                "permits": False,
                 "request": {
                     "kind": "template",
                     "method": "POST",

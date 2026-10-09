@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 
 from minutehand.application.moments import (
     automatic_reply,
@@ -52,18 +52,22 @@ from minutehand.application.moments import (
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier import HELPFULNESS, PeopleReplier, believed_part, bulleted, voice_rule, who_is
 from minutehand.domain.clock import Drawn, DrawnFrom
-from minutehand.domain.conversation import ModelMessage, Speaker, Wrote
+from minutehand.domain.conversation import ModelMessage, Provenance, Speaker, Wrote
+from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.people import Decides, PersonReply, Plan, Press, Writing
 from minutehand.domain.scenario import (
     AfterScript,
     Answers,
+    FormInput,
     Model,
+    Moves,
     Person,
     ProviderKey,
     Scenario,
     Scripted,
     Silent,
     Take,
+    TicketHappening,
 )
 from minutehand.domain.transitions import (
     AUTOMATIC_REPLY,
@@ -75,6 +79,7 @@ from minutehand.domain.transitions import (
     Transition,
     Waiting,
     item_parent,
+    ticket_move,
 )
 from minutehand.domain.world import (
     Actor,
@@ -93,7 +98,7 @@ from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.model import ModelFailed
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
-from minutehand.ports.transitions import ProvidesTransitions, SteersPeople
+from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions, SteersPeople
 
 TRANSITION_PROMPT_VERSION = "person-transition/1"
 """Changes whenever TRANSITION_PROMPT or what the person is shown changes a word."""
@@ -181,8 +186,6 @@ class Held:
 def needs_model(scenario: Scenario) -> list[str]:
     """Each person on a provider the engine plays whose moves a model writes, and why: refused before anything runs
     when no model is configured."""
-    if not scenario.played():
-        return []
     found: list[str] = []
     for person in scenario.people:
         written = [t for t in person.takes if t.facts]
@@ -220,6 +223,7 @@ class People:
         ports: Mapping[ProviderKey, object],
         replier: Replier,
         model: LanguageModel | None,
+        pins: Sequence[ReplyAt] = (),
     ) -> None:
         needing = needs_model(scenario)
         if needing and model is None:
@@ -232,8 +236,16 @@ class People:
         self._replier = replier
         self._words = PeopleReplier(scenario, model) if model is not None else None
         self._people = {p.key: p for p in scenario.people}
+        self._item_pins = {(p.person, p.provider, p.to_ask): p.after for p in pins if p.provider is not None}
         for key in scenario.played():
             self.port(key)
+        for person in scenario.people:
+            for take in person.takes:
+                if take.provider is not None and take.provider not in self._ports:
+                    raise RunRefused(
+                        f"{person.key} takes {take.take!r} on {take.provider}, which nobody can act through in this "
+                        f"run: {', '.join(sorted(self._ports)) or 'none'}"
+                    )
 
     @property
     def scenario(self) -> Scenario:
@@ -285,16 +297,19 @@ class People:
                     if h.pending.item not in here:
                         self._close(world, h, PendingStatus.GONE)
                         gone.append(h.ref)
-                mine = [h for h in held if h.pending.item.provider == key]
                 for item in waiting:
                     if item.conversation:
                         asks.append((key, item))
-                    elif key in played:
-                        made = self._pend(person, item, mine, world, clock)
+                    elif (
+                        key in played
+                        or self._pins(person, port, item.item, held, world, conversation=False) is not None
+                    ):
+                        made = self._pend(person, item, held, world, clock)
                         if made is not None:
                             booked.append(made)
             if asks:
                 await self._converse(person, asks, events, world, clock, booked, moved)
+            moved += self._items_reminded(person, events, world, clock)
         return Looked(booked=booked, gone=gone, moved=moved)
 
     async def _converse(
@@ -333,7 +348,15 @@ class People:
             opened = created[ask.item] if ask.item in created else asked
             history = [e for e in events if e.seq <= asked.seq]
             automatic = automatic_reply(self._scenario, person, opened, history, world.replies())
-            if automatic is not None:
+            port = self.port(key)
+            noted = ask.item.kind is not EntityKind.INBOX_ITEM or any(
+                o.note for o in port.legal(ask.item, Actor.PERSON, person, world)
+            )
+            waiting = any(
+                h.pending.take == AUTOMATIC_REPLY and h.pending.status is PendingStatus.PENDING
+                for h in self.held(person.key, world)
+            )  # one already on its way: once per absence
+            if automatic is not None and noted and not waiting:
                 booked.append(self._automatic(person, ask, automatic, asked, world, clock))
             owed = self._owed(world)
             reminded = (
@@ -357,17 +380,14 @@ class People:
                     if later is not None:
                         moved.append(later)
                     continue
-            mine = [
-                h
-                for h in self.held(person.key, world)
-                if h.pending.item.provider == key and h.pending.take != AUTOMATIC_REPLY
-            ]
-            nth = len(list(dict.fromkeys(h.pending.item for h in mine))) + 1
-            if pinned_take(person, key, nth) is not None or key in self._scenario.transitions_on:
-                made = self._pend(person, ask, mine, world, clock)
+            everyone = self.held(person.key, world)
+            picked = key in self._scenario.transitions_on or ask.item.kind is EntityKind.INBOX_ITEM
+            if picked or self._pins(person, self.port(key), ask.item, everyone, world, conversation=True) is not None:
+                made = self._pend(person, ask, everyone, world, clock)
                 if made is not None:
                     booked.append(made)
                 continue
+            nth, _ = _places(everyone, ask.item, True)
             booked_now = await self._ask(person, ask, asked, history, owed, nth, world, clock)
             if booked_now is not None:
                 booked.append(booked_now)
@@ -491,6 +511,48 @@ class People:
         self._write(world, owing.ref, changed, Operation.UPDATE)
         return Booking(pending=owing.ref, person=person.key, item=p.item, at=due, drawn=sooner_drawn, conversation=True)
 
+    def _items_reminded(self, person: Person, events: list[WorldEvent], world: Store, clock: Clock) -> list[Booking]:
+        """Each message the agent sent a person who owes a decision in its own product, sent after the decision began
+        to wait on them, reminds them of it: the decision moves sooner when their `reminded` draws it so (a moment
+        pinned stays), and the message is kept on the record as a follow-up, read once."""
+        found: list[Booking] = []
+        if person.reminded is None:
+            return found
+        sent = [
+            e
+            for e in events
+            if e.actor is Actor.AGENT
+            and e.operation is Operation.CREATE
+            and isinstance(e.after, MessageSnapshot)
+            and person.email in e.after.recipient_emails
+        ]
+        for h in self.held(person.key, world):
+            p = h.pending
+            if p.status is not PendingStatus.PENDING or p.item.kind is not EntityKind.INBOX_ITEM or p.asked is not None:
+                continue
+            began = next((e.seq for e in events if e.entity == h.ref), None)
+            if began is None:
+                continue  # it began to wait in this very look: nothing has reminded them of it yet
+            moment: Booking | None = None
+            for message in [m for m in sent if m.seq > began and m.entity.external_id not in p.follow_ups]:
+                p = p.model_copy(update={"follow_ups": [*p.follow_ups, message.entity.external_id]})
+                pinned = p.drawn is not None and p.drawn.source is DrawnFrom.PINNED
+                drawn = (
+                    sooner(self._scenario, person, message, [e for e in events if e.seq <= message.seq], p.due_at)
+                    if p.due_at is not None and not pinned
+                    else None
+                )
+                if drawn is not None:
+                    p = p.model_copy(update={"due_at": max(drawn.lands_at, clock.now()), "drawn": drawn})
+                    moment = Booking(
+                        pending=h.ref, person=person.key, item=p.item, at=p.due_at, drawn=drawn, conversation=True
+                    )
+            if p != h.pending:
+                self._write(world, h.ref, p, Operation.UPDATE)
+            if moment is not None:
+                found.append(moment)
+        return found
+
     async def _replanned(
         self, person: Person, held: Held, asked: WorldEvent, history: list[WorldEvent], world: Store, clock: Clock
     ) -> Booking:
@@ -530,12 +592,40 @@ class People:
             person = self._people[key]
             for h in self.held(key, world):
                 p = h.pending
-                if not p.conversation or p.status is not PendingStatus.PENDING or p.item not in latest:
+                if p.status is not PendingStatus.PENDING or p.take == AUTOMATIC_REPLY:
+                    continue
+                if p.asked is None:
+                    moved.append(self._repended(person, h, world, clock))
+                    continue
+                if p.item not in latest:
                     continue
                 asked = latest[p.item]
                 history = [e for e in events if e.seq <= asked.seq]
                 moved.append(await self._replanned(person, h, asked, history, world, clock))
         return moved
+
+    def _pins(
+        self,
+        person: Person,
+        port: ProvidesTransitions,
+        item: EntityRef,
+        held: list[Held],
+        world: Store,
+        *,
+        conversation: bool,
+    ) -> int | None:
+        """Which of `person`'s takes pins `item`, by its place in `Person.takes` (`pinned`). A take for every item
+        in any provider that the item does not offer pins nothing there: the person answers it, or leaves it, as they
+        otherwise would. One naming the provider holds there, offered or not."""
+        nth, nth_any = _places(held, item, conversation)
+        found = pinned(person, item.provider, nth, nth_any)
+        if found is None:
+            return None
+        take = person.takes[found]
+        anywhere = take.provider is None and take.nth is None
+        if anywhere and _matching(take.take, port.legal(item, Actor.PERSON, person, world)) is None:
+            return None
+        return found
 
     def _ref(self, person: Person, item: EntityRef, world: Store) -> EntityRef:
         return EntityRef(
@@ -545,37 +635,24 @@ class People:
         )
 
     def _pend(self, person: Person, item: Waiting, held: list[Held], world: Store, clock: Clock) -> Booking | None:
-        """An item that is no ask in words, or one a take pins: booked at the pinned moment or as their answers are
-        drawn, and moved by a pin or a model's pick."""
-        mine = [h for h in held if h.pending.item == item.item]
+        """An item the person moves rather than answers in words (a ticket, an invitation or a message where the
+        scenario plays the provider, an item of the agent's own product), or one a take pins: booked at the pinned
+        moment or as their answers are drawn, and moved by the pin or a model's pick. `held` is everything held on
+        them, in every provider."""
+        mine = [h for h in held if h.pending.item == item.item and h.pending.take != AUTOMATIC_REPLY]
         if any(h.pending.status is PendingStatus.PENDING for h in mine):
             return None
         turn = last_turn(world, item.item, person.key)
         if any(h.pending.status is PendingStatus.ACTED and h.pending.turn == turn for h in mine):
             return None
-        items = list(dict.fromkeys(h.pending.item for h in held))
-        nth = items.index(item.item) + 1 if item.item in items else len(items) + 1
-        take = pinned_take(person, item.item.provider, nth)
-        port = self.port(item.item.provider)
-        within = port.within(item.item, world) if isinstance(port, SteersPeople) else None
+        nth, _ = _places(held, item.item, item.conversation)
+        found = self._pins(
+            person, self.port(item.item.provider), item.item, held, world, conversation=item.conversation
+        )
+        take = person.takes[found] if found is not None else None
         asked = next((e for e in world.events() if e.entity == item.item), None) if item.conversation else None
-        now = clock.now()
-        drawn: Drawn | None = None
-        if take is not None and take.after is not None:
-            drawn = pinned_at(self._scenario, now, take.after)
-        elif take is not None or _picks(person):
-            behaviour = person.reply
-            assert isinstance(behaviour, Answers | Scripted)
-            sent = messages_to(person, world.events())
-            drawn = draw_for(
-                self._scenario,
-                person,
-                item.item,
-                asked.sim_time if asked is not None else now,
-                first_asked=sent[0].sim_time if sent else now,
-                within=within,
-                delay=behaviour.delay,
-            )
+        began = asked.sim_time if asked is not None else clock.now()
+        drawn = self._drawn(person, item.item, nth, take, began, world)
         pending = PendingSnapshot(
             person=person.key,
             item=item.item,
@@ -585,6 +662,7 @@ class People:
             status=PendingStatus.PENDING,
             due_at=drawn.lands_at if drawn is not None else None,
             take=take.take if take is not None else None,
+            pinned=found,
             drawn=drawn,
             conversation=item.conversation,
         )
@@ -597,6 +675,61 @@ class People:
             at=pending.due_at,
             drawn=drawn,
             conversation=item.conversation,
+        )
+
+    def _drawn(
+        self, person: Person, item: EntityRef, nth: int, take: Take | None, began: datetime, world: Store
+    ) -> Drawn | None:
+        """When the person acts on `item`, their nth in its provider, which began to wait on them at `began`: exactly
+        as a fork pins it (`ReplyAt` with `provider`), or `after` it when a take says, else drawn as their answers are
+        (within the take's window, or the provider's), or never for someone who neither is pinned nor picks."""
+        if (person.key, item.provider, nth) in self._item_pins:
+            return pinned_at(self._scenario, began, self._item_pins[(person.key, item.provider, nth)])
+        if take is not None and take.after is not None:
+            return pinned_at(self._scenario, began, take.after)
+        if take is None and not _picks(person):
+            return None
+        port = self.port(item.provider)
+        within = take.within if take is not None and take.within is not None else None
+        if within is None and isinstance(port, SteersPeople):
+            within = port.within(item, world)
+        behaviour = person.reply
+        assert isinstance(behaviour, Answers | Scripted)
+        sent = messages_to(person, world.events())
+        return draw_for(
+            self._scenario,
+            person,
+            item,
+            began,
+            first_asked=sent[0].sim_time if sent else began,
+            within=within,
+            delay=behaviour.delay,
+        )
+
+    def _repended(self, person: Person, held: Held, world: Store, clock: Clock) -> Booking:
+        """An item a person moves, pinned and drawn again under the scenario as it stands (a fork that changed them):
+        from the moment it began to wait on them, or the fork's when that is already past."""
+        everyone = self.held(person.key, world)
+        p = held.pending
+        found = self._pins(person, self.port(p.item.provider), p.item, everyone, world, conversation=p.conversation)
+        take = person.takes[found] if found is not None else None
+        began = next(e.sim_time for e in world.events() if e.entity == held.ref)
+        drawn = self._drawn(person, p.item, p.nth, take, began, world)
+        due = max(drawn.lands_at, clock.now()) if drawn is not None else None
+        changed = p.model_copy(
+            update={"pinned": found, "take": take.take if take is not None else None, "drawn": drawn, "due_at": due}
+        )
+        self._write(world, held.ref, changed, Operation.UPDATE)
+        return Booking(
+            pending=held.ref, person=person.key, item=p.item, at=due, drawn=drawn, conversation=p.conversation
+        )
+
+    async def happen(self, happening: TicketHappening, world: Store, clock: Clock) -> Transition | None:
+        """A person does something to a seeded ticket by themselves, at the scenario's moment: the move, comment,
+        reassignment or deletion its action names, through the provider's `apply` like any other transition. Nothing
+        when the ticket is gone, or already where the move would take it."""
+        return await happen(
+            self._scenario, self.port(self._scenario.happening_ticket(happening).provider), happening, world, clock
         )
 
     # -- acting ---------------------------------------------------------------------------------------------------
@@ -625,7 +758,7 @@ class People:
             return Acted(transition=None)
         if snap.conversation and (snap.plan is not None or snap.answer is not None):
             return await self._answer(held, person, port, world, clock)
-        take = pinned_take(person, snap.item.provider, snap.nth)
+        take = person.takes[snap.pinned] if snap.pinned is not None else None
         steers = port if isinstance(port, SteersPeople) else None
         failure: str | None = None
         for _ in range(2):
@@ -636,7 +769,7 @@ class People:
             try:
                 drawn = steers.drawn(snap.item, offers, world) if steers is not None and take is None else None
                 leaning = steers.leaning(snap.item, world) if steers is not None else None
-                offer, content = await self._choose(person, waiting, offers, take, drawn, leaning, world, clock)
+                offer, content, model = await self._choose(person, waiting, offers, take, drawn, leaning, world, clock)
             except ModelFailed as e:
                 failure = str(e)
                 break
@@ -649,7 +782,8 @@ class People:
                 failure = f"{snap.item.provider} refused {offer.name!r}: {e}"
                 continue  # the item moved under them: asked again from what it offers now
             if snap.conversation:
-                world.remember(_said(person, snap.item, offer.name, content, world, clock))
+                written = Provenance(model=model, prompt_version=TRANSITION_PROMPT_VERSION) if model else None
+                world.remember(_said(person, snap.item, offer.name, content, take, written, world, clock))
             self._close(world, held, PendingStatus.ACTED, transition=transition.seq)
             return Acted(transition=transition)
         assert failure is not None
@@ -661,7 +795,9 @@ class People:
         ready once its words are written (`_worded`), and they are written now if a model failed to before. One that,
         read now, needs no answer is passed; one a model fails to write again is still owed, its failure kept."""
         snap = self._read(pending, world)
-        if snap.status is not PendingStatus.PENDING or snap.plan is None or snap.answer is not None:
+        if snap.status is not PendingStatus.PENDING or snap.plan is None:
+            return Ready.READY
+        if snap.answer is not None and not self._learned(snap, clock):
             return Ready.READY
         asked = _latest(world.events(), snap.item)
         if asked is None:
@@ -671,6 +807,15 @@ class People:
         if worded.status is PendingStatus.PASSED:
             return Ready.PASSED
         return Ready.READY if worded.answer is not None else Ready.FAILED
+
+    def _learned(self, pending: PendingSnapshot, clock: Clock) -> bool:
+        """Whether what the person knows changed (`Person.fact_changes`) between their answer's words and now: the
+        words are written again, from what they know as they send it."""
+        if pending.worded_at is None:
+            return False
+        person = self._people[pending.person]
+        changes = [self._scenario.starts_at + c.after for c in person.fact_changes]
+        return any(pending.worded_at < at <= clock.now() for at in changes)
 
     async def _answer(self, held: Held, person: Person, port: ProvidesTransitions, world: Store, clock: Clock) -> Acted:
         """The person's answer to an ask they owe, its words written (`ready`), delivered by its provider and kept
@@ -713,7 +858,7 @@ class People:
             return pending.model_copy(update={"failure": str(e)})
         if reply is None:
             return pending.model_copy(update={"status": PendingStatus.PASSED, "failure": None, "answer": None})
-        return pending.model_copy(update={"answer": reply.model_dump_json(), "failure": None})
+        return pending.model_copy(update={"answer": reply.model_dump_json(), "failure": None, "worded_at": clock.now()})
 
     async def _choose(
         self,
@@ -725,25 +870,27 @@ class People:
         leaning: str | None,
         world: Store,
         clock: Clock,
-    ) -> tuple[Offer, str]:
+    ) -> tuple[Offer, str, str | None]:
         """The offer the person takes and what it carries, as a JSON object: a pinned one, one the provider's own
-        odds drew (its words a model's), or the model's pick."""
+        odds drew (its words a model's), or the model's pick; and the model that wrote any of it."""
         pinned: Offer | None = drawn
-        if take is not None:
-            pinned = _matching(take.take, offers)
-            if pinned is None:
-                raise _Unpinnable(
-                    f"{person.key} is pinned to take {take.take!r}, which is not offered: "
-                    + ", ".join(repr(o.name) for o in offers)
-                )
-            if take.verbatim is not None:
-                text = next((f for f in pinned.fields), None)
-                if text is None:
-                    raise _Unpinnable(f"{take.take!r} takes no words, and {person.key}'s take gives `verbatim` ones")
-                return pinned, json.dumps({text.name: take.verbatim})
-            if not take.facts:
-                return pinned, "{}"
-        return await self._written(person, waiting, offers, take, pinned, leaning, world, clock)
+        if take is None:
+            offers = [o for o in offers if o.unprompted]
+            if not offers:
+                raise _Unpinnable(f"nothing {person.key} would do unprompted is offered")
+            return await self._written(person, waiting, offers, None, pinned, leaning, world, clock)
+        pinned = _matching(take.take, offers)
+        if pinned is None:
+            raise _Unpinnable(
+                f"{person.key} is pinned to take {take.take!r}, which is not offered: "
+                + ", ".join(repr(o.name) for o in offers)
+            )
+        exact = _exact(take, pinned, person)
+        if not take.facts:
+            return pinned, json.dumps(exact), None
+        offer, content, model = await self._written(person, waiting, offers, take, pinned, leaning, world, clock)
+        written: dict[str, str] = json.loads(content)
+        return offer, json.dumps({**written, **exact}), model
 
     async def _written(
         self,
@@ -755,7 +902,7 @@ class People:
         leaning: str | None,
         world: Store,
         clock: Clock,
-    ) -> tuple[Offer, str]:
+    ) -> tuple[Offer, str, str]:
         if self._words is None:
             raise RunRefused(f"a model writes what {person.key} does, and no model is configured")
         behaviour = person.reply
@@ -794,7 +941,7 @@ class People:
                 except ValueError as e:
                     why = f"{e}."
             if why is None and offer is not None:
-                return offer, json.dumps({k: v for k, v in given.items() if v.strip()})
+                return offer, json.dumps({k: v for k, v in given.items() if v.strip()}), written.model
             if attempt == 0:
                 messages = [
                     *messages,
@@ -853,12 +1000,31 @@ def _offer_of(reply: PersonReply) -> tuple[str, str]:
     return REPLY, json.dumps({TEXT: reply.text})
 
 
-def _said(person: Person, item: EntityRef, offer: str, content: str, world: Store, clock: Clock) -> PersonReply:
-    """A pinned answer to a conversation as the run keeps it: its words, the control it used, the decision it made."""
+def _said(
+    person: Person,
+    item: EntityRef,
+    offer: str,
+    content: str,
+    take: Take | None,
+    written_by: Provenance | None,
+    world: Store,
+    clock: Clock,
+) -> PersonReply:
+    """An answer the engine picked or a take pinned, as the run keeps it said: its words, the control it used and what
+    its form held, the decision it made, and its take's facts (a rule reads a decision's answer from its inputs,
+    `checks.facts`). Its words are the take's exact ones, a model's from the take's facts, or a model's pick."""
     given: dict[str, str] = json.loads(content)
+    writing = Writing.CONVERSING if take is None else Writing.VERBATIM if not take.facts else Writing.SCRIPT
+    facts = list(take.facts) if take is not None else []
     if offer == REPLY:
         return PersonReply(
-            person=person.key, in_reply_to=item, text=given[TEXT], at=clock.now(), writing=Writing.SCRIPT
+            person=person.key,
+            in_reply_to=item,
+            text=given[TEXT],
+            at=clock.now(),
+            writing=writing,
+            facts=facts,
+            written_by=written_by,
         )
     if item.kind is EntityKind.INBOX_ITEM:
         return PersonReply(
@@ -867,25 +1033,35 @@ def _said(person: Person, item: EntityRef, offer: str, content: str, world: Stor
             text=decision_text(offer, given),
             at=clock.now(),
             decides=Decides(decision=offer, inputs=given),
-            writing=Writing.SCRIPT,
+            writing=writing,
+            facts=facts,
+            written_by=written_by,
         )
     shown = next((e.after for e in reversed(world.events()) if e.entity == item and e.after is not None), None)
     control = (
         next((a for a in shown.actions if a.action_id == offer), None) if isinstance(shown, MessageSnapshot) else None
     )
+    form = _FORM_INPUTS.validate_json(given[FORM]) if FORM in given and given[FORM].strip() else []
+    text = given[TEXT] if TEXT in given else "\n".join(f.value for f in form) or (control.label if control else offer)
     return PersonReply(
         person=person.key,
         in_reply_to=item,
-        text=given[TEXT] if TEXT in given else offer,
+        text=text,
         at=clock.now(),
         press=Press(
             action_id=offer,
             label=control.label if control is not None else offer,
             value=control.value if control is not None else None,
             picks=given[PICKS] if PICKS in given else None,
+            form=form,
         ),
-        writing=Writing.SCRIPT,
+        writing=writing,
+        facts=facts,
+        written_by=written_by,
     )
+
+
+_FORM_INPUTS: TypeAdapter[list[FormInput]] = TypeAdapter(list[FormInput])
 
 
 def _latest(events: list[WorldEvent], item: EntityRef) -> WorldEvent | None:
@@ -908,20 +1084,104 @@ class _Unpinnable(Exception):
     """A pinned transition the item does not offer: the person cannot take what is not there."""
 
 
-def pinned_take(person: Person, provider: ProviderKey, nth: int) -> Take | None:
-    """The transition the scenario pins for the nth item pending on `person` in `provider`: one for that item wins
-    over one for every item."""
-    mine = [t for t in person.takes if t.provider == provider]
-    return next((t for t in mine if t.nth == nth), None) or next((t for t in mine if t.nth is None), None)
+async def happen(
+    scenario: Scenario, port: ProvidesTransitions, happening: TicketHappening, world: Store, clock: Clock
+) -> Transition | None:
+    """`People.happen` for one provider: a ticket happening landed through `port`'s `apply`. Nothing when the ticket
+    is gone, or already where the move would take it."""
+    seeded = scenario.happening_ticket(happening)
+    if not isinstance(port, HoldsSeeded):
+        raise RunRefused(f"a happening acts on a seeded {seeded.provider} ticket, and {seeded.provider} holds none")
+    item = port.seeded(scenario, seeded, world)
+    if item is None:
+        return None
+    person = next(p for p in scenario.people if p.key == happening.person)
+    name, given = ticket_move(happening.action, {p.key: p.email for p in scenario.people})
+    if isinstance(happening.action, Moves) and _matching(name, port.legal(item, Actor.PERSON, person, world)) is None:
+        return None  # already where it would go
+    return await move(port, item, name, Actor.PERSON, person, given, world, clock)
+
+
+async def move(
+    port: ProvidesTransitions,
+    item: EntityRef,
+    said: str,
+    by: Actor,
+    who: Person | None,
+    given: Mapping[str, str],
+    world: Store,
+    clock: Clock,
+) -> Transition:
+    """One move made outright, by a person or the scenario: the offer `said` names (by its name, the state it
+    reaches, its label, or what a ticket's state means), carrying `given`. Refused when nothing offered is it."""
+    offer = _matching(said, port.legal(item, by, who, world))
+    if offer is None:
+        raise ValueError(f"{item.provider} {item.external_id} offers no {said!r} now")
+    return await port.apply(item, offer.name, by, who, json.dumps(dict(given)), world, clock)
+
+
+def pinned(person: Person, provider: ProviderKey, nth: int, nth_any: int | None) -> int | None:
+    """Which of `person`'s takes pins the item that is their nth in `provider` and their `nth_any` of all, by its
+    place in `Person.takes`: one naming the provider and the item wins, then one naming the provider for every item,
+    then one naming the item among all their asks (`nth_any`, None for anything but an ask), then one for every item
+    anywhere."""
+    for wanted in (
+        (provider, nth),
+        (provider, None),
+        *([(None, nth_any)] if nth_any is not None else []),
+        (None, None),
+    ):
+        found = next((n for n, t in enumerate(person.takes) if (t.provider, t.nth) == wanted), None)
+        if found is not None:
+            return found
+    return None
 
 
 def _matching(said: str, offers: Sequence[Offer], *, exact: bool = False) -> Offer | None:
-    """The offer `said` names: by its name, else (unless `exact`) by the state it reaches, in any case."""
+    """The offer `said` names, in any case: by its name, else (unless `exact`) by the state it reaches, the label the
+    person sees on it, or what a ticket's state means."""
     wanted = said.strip().casefold()
     by_name = next((o for o in offers if o.name.casefold() == wanted), None)
     if by_name is not None or exact:
         return by_name
-    return next((o for o in offers if o.to_state.casefold() == wanted), None)
+    for read in (
+        lambda o: o.to_state,
+        lambda o: o.label,
+        lambda o: o.means.value if o.means is not None else None,
+    ):
+        found = next((o for o in offers if (read(o) or "").casefold() == wanted), None)
+        if found is not None:
+            return found
+    return None
+
+
+def _exact(take: Take, offer: Offer, person: Person) -> dict[str, str]:
+    """What a take fixes of what its offer carries: its `fields`, the form it types, and its `verbatim` words in the
+    offer's text (the first field it does not otherwise fix)."""
+    exact = dict(take.fields)
+    if take.form:
+        exact[FORM] = json.dumps([f.model_dump() for f in take.form])
+    if take.verbatim is not None:
+        text = next((f for f in offer.fields if f.name not in exact and f.name not in (FORM, PICKS)), None)
+        if text is None:
+            raise _Unpinnable(f"{take.take!r} takes no words, and {person.key}'s take gives `verbatim` ones")
+        exact[text.name] = take.verbatim
+    return exact
+
+
+def _places(held: list[Held], item: EntityRef, conversation: bool) -> tuple[int, int | None]:
+    """Where `item` stands among the items held on a person, from 1, in the order each began to wait: among those in
+    its provider, and, for an ask (`conversation`), among every ask of theirs in any provider (None for anything
+    else: a ticket is counted only in its own provider). One not yet held comes after every one."""
+    every = list(dict.fromkeys(h.pending.item for h in held if h.pending.take != AUTOMATIC_REPLY))
+    here = [i for i in every if i.provider == item.provider]
+    nth = here.index(item) + 1 if item in here else len(here) + 1
+    if not conversation:
+        return nth, None
+    asks = list(
+        dict.fromkeys(h.pending.item for h in held if h.pending.take != AUTOMATIC_REPLY and h.pending.conversation)
+    )
+    return nth, asks.index(item) + 1 if item in asks else len(asks) + 1
 
 
 def last_turn(world: Store, item: EntityRef, person: str) -> int:

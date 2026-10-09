@@ -24,13 +24,13 @@ from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage
 from minutehand.domain.errors import NotServed
 from minutehand.domain.people import Delivery, InboundTarget, PersonMessage
-from minutehand.domain.scenario import FormInput, PersonCommands, ScriptedPress
+from minutehand.domain.scenario import FormInput, PersonCommands
 from minutehand.domain.world import Actor, CallOutcome, EntityKind, FrameSender, RecordedCall, RecordSnapshot
 from minutehand.ports.provider import ServesSockets
 from minutehand.session import _services
 from tests.providers.google_workspace.proxied import Client, client_environment
 from tests.providers.slack.slack_workspace import SCENARIO, START, TOKEN, Workspace, form
-from tests.providers.slack.test_slack_interactions import CARD, REJECT_MODAL, decided, tomas
+from tests.providers.slack.test_slack_interactions import CARD, REJECT_MODAL, tomas_presses
 
 pytestmark = pytest.mark.timeout(90)
 
@@ -333,7 +333,7 @@ async def press_with_a_form(
         client, "chat.postMessage", channel=workspace.dm("tomas"), text="Approval", blocks=json.dumps(CARD)
     )
     [asked] = [e for e in workspace.store.events() if e.entity == state.message_ref(str(posted["ts"]))]
-    reply = await decided(tomas(ScriptedPress(label="Reject", form=[FormInput(value="Too dear")])), asked, workspace)
+    reply = tomas_presses(asked, "Reject", form=[FormInput(value="Too dear")])
     await workspace.provider.press(reply, SOCKET, workspace.store, workspace.clock, secret="unused")
     return agent
 

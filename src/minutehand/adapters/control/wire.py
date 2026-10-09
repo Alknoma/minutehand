@@ -576,7 +576,6 @@ class PendingItemView(Model):
     person: str | None = Field(description="Person.key it waits on")
     summary: str
     decisions: list[str]
-    gates: str | None = None
     seen_at: AwareDatetime = Field(description="When it was first seen, simulated")
 
 

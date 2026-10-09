@@ -57,8 +57,8 @@ def _spec() -> CreateWorld:
                         "kind": "scripted",
                         "delay": {"shortest": "PT2H", "longest": "PT2H"},
                         "replies": [],
-                        "decisions": [{"decision": "approve"}],
                     },
+                    "takes": [{"take": "approve"}],
                 },
             ],
         }

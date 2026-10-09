@@ -21,7 +21,6 @@ from minutehand.application.checkpoint import (
     Pending,
     PendingBooking,
     PendingDirection,
-    PendingFate,
     PendingHappening,
     PendingMachine,
     PendingService,
@@ -32,7 +31,7 @@ from minutehand.application.checkpoint import (
     write_checkpoint,
 )
 from minutehand.application.dues import Dues
-from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_undecided
+from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_untakeable
 from minutehand.application.machine import record_machine, run_machine
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import Booking, People, Ready
@@ -55,17 +54,16 @@ from minutehand.domain.agent import (
 )
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
+from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.people import InboundTarget, PersonMessage
-from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason, wake_limit
-from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
+from minutehand.domain.scenario import DocumentHappening, Happening, ProviderKey, Scenario, TicketHappening
 from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
     NextWakeSnapshot,
     Operation,
-    TicketSnapshot,
     WorldEvent,
 )
 from minutehand.ports.agent import AgentDriver, TakesReplies
@@ -73,14 +71,10 @@ from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
-    ActsOnTickets,
     ASGIApp,
     BooksWakes,
     ChangesDocuments,
     ConfirmsDelivery,
-    DeletesTickets,
-    EditsTickets,
-    HoldsTickets,
     ListensForAgent,
     NotifiesChanges,
     Provider,
@@ -88,7 +82,7 @@ from minutehand.ports.provider import (
 )
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
-from minutehand.ports.transitions import TalksToAgent
+from minutehand.ports.transitions import HoldsSeeded, TalksToAgent
 
 _NOT_CHANGES = frozenset({Operation.READ, Operation.SEARCH})
 _NOT_THE_WORLD = frozenset({EntityKind.MEMORY, EntityKind.NEXT_WAKE})
@@ -143,8 +137,6 @@ class Services:
 
     providers: Sequence[Provider]
     pushes: Mapping[ProviderKey, PushesEvents] = field(default_factory=dict)
-    tickets: Mapping[ProviderKey, HoldsTickets] = field(default_factory=dict)
-    editors: Mapping[ProviderKey, EditsTickets] = field(default_factory=dict)
     schedulers: Mapping[ProviderKey, BooksWakes] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -154,8 +146,6 @@ class Services:
         known = set(keys)
         for role, mapping in (
             ("pushes", self.pushes),
-            ("tickets", self.tickets),
-            ("editors", self.editors),
             ("schedulers", self.schedulers),
         ):
             stray = sorted(set(mapping) - known)
@@ -243,14 +233,14 @@ class Orchestrator:
         outside: OutsideState | None = None,
         model: LanguageModel | None = None,
         desk: ServiceDesk | None = None,
+        pins: Sequence[ReplyAt] = (),
     ) -> None:
-        refuse_fates_beside_the_engine(scenario, [p.manifest for p in services.providers])
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
         if inboxes is not None:
             reaches = list(inboxes.reaches.values())
             refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
-            refuse_undecided(scenario, reaches)
+            refuse_untakeable(scenario, reaches)
         if any(isinstance(w, Booked) for w in agent.wakes) and not any(
             p.manifest.books_wakes for p in services.providers
         ):
@@ -289,6 +279,7 @@ class Orchestrator:
             transition_ports(services, agent, signing or {}, channels or {}, inboxes, desk, scenario),
             replier,
             model,
+            pins,
         )
         self._untaken: list[EntityRef] = []
         self._retried: list[EntityRef] = []
@@ -303,7 +294,6 @@ class Orchestrator:
         self._timer_tasks: set[int] = set()
         self._timer_ns = -1
         self._watcher = Watcher(agent.watches)
-        self._fated: list[EntityRef] = []
         self._commitments: list[Commitment] | None = None
         self._failure: str | None = None
         self._seen = 0
@@ -391,7 +381,6 @@ class Orchestrator:
         if held < checkpoint.replies:
             raise RunRefused(f"the checkpoint counts {checkpoint.replies} replies; the store holds {held}")
         self._dues.resume(list(checkpoint.pending))
-        self._fated = list(checkpoint.fated)
         self._untaken = list(checkpoint.untaken)
         self._commitments = checkpoint.commitments
         self._last_report = checkpoint.agent.report
@@ -524,7 +513,7 @@ class Orchestrator:
             fired = await self._ready([p for p in fired if not isinstance(p, PendingMachine)])
             if not fired:
                 continue
-            if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
+            if all(self._unheard(p) for p in fired):
                 await self._release()
                 await self._fire(fired)
                 watched = self._watched(fired)
@@ -623,7 +612,6 @@ class Orchestrator:
                 wake=self._clock.wake(),
                 now=self._clock.now(),
                 replies=len(self._store.replies()),
-                fated=self._fated,
                 untaken=self._untaken,
                 commitments=self._commitments,
                 pending=self._dues.items,
@@ -643,13 +631,6 @@ class Orchestrator:
             if isinstance(item, PendingService):
                 assert self._desk is not None
                 await self._desk.fire(item, self._store, self._clock)
-        for item in fired:
-            if not isinstance(item, PendingFate):
-                continue
-            if item.becomes is None:
-                self._deletes(item.ticket.provider).delete_ticket(item.ticket, self._store, self._clock)
-            else:
-                self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
         for item in fired:
             if isinstance(item, PendingHappening):
                 await self._happen(self._scenario.happenings[item.happening])
@@ -686,12 +667,11 @@ class Orchestrator:
         return True
 
     async def _happen(self, happening: Happening) -> None:
-        """What a person does by themselves lands through the port its family has: a ticket happening through the
-        ticket provider's `ActsOnTickets`, a document happening through the document provider's `ChangesDocuments`,
-        a messaging happening pushed through `PushesEvents`."""
+        """What a person does by themselves: a ticket happening is a transition through the ticket's provider, as any
+        person's move is (`People.happen`); a document happening lands through the document provider's
+        `ChangesDocuments`, a messaging happening is pushed through `PushesEvents`."""
         if isinstance(happening, TicketHappening):
-            provider = self._scenario.happening_ticket(happening).provider
-            self._acts(provider).act(happening, self._scenario, self._store, self._clock)
+            await self._engine.happen(happening, self._store, self._clock)
             return
         if isinstance(happening, DocumentHappening):
             provider = self._scenario.happening_document(happening).provider
@@ -954,16 +934,6 @@ class Orchestrator:
                 for owed in self._desk.bookings(event, self._store):
                     self._dues.enter(owed)
         await self._transitions(retry=retry)
-        for event in new:
-            after = event.after
-            if (
-                event.actor is Actor.AGENT
-                and event.operation in (Operation.CREATE, Operation.UPDATE)
-                and isinstance(after, TicketSnapshot)
-                and after.assignee_email in self._people
-                and event.entity not in self._fated
-            ):
-                self._fate(self._people[after.assignee_email], event)
 
     async def _transitions(self, *, retry: bool) -> None:
         """What waits on people, looked at now: each new item booked at its person's moment, each one whose moment
@@ -1012,29 +982,6 @@ class Orchestrator:
             message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
         )
 
-    def _fate(self, person: Person, assigned: WorldEvent) -> None:
-        fate = next((f for f in self._scenario.ticket_fates if f.assignee == person.key), None)
-        if fate is None:
-            return
-
-        if fate.deleted:
-            self._deletes(assigned.entity.provider)
-        else:
-            self._tickets(assigned.entity.provider)
-        self._fated.append(assigned.entity)
-        ticket = assigned.entity
-        self._dues.enter(
-            PendingFate(
-                due=Due(
-                    at=assigned.sim_time + fate.after,
-                    kind=DueKind.TICKET_FATE,
-                    ref=f"fate:{ticket.provider}:{ticket.external_id}",
-                ),
-                ticket=ticket,
-                becomes=fate.becomes,
-            )
-        )
-
     def _checkpoint(self) -> None:
         write_checkpoint(
             self._store,
@@ -1042,7 +989,6 @@ class Orchestrator:
                 wake=self._clock.wake(),
                 now=self._clock.now(),
                 replies=len(self._store.replies()),
-                fated=self._fated,
                 untaken=self._untaken,
                 commitments=self._commitments,
                 pending=self._dues.items,
@@ -1096,22 +1042,11 @@ class Orchestrator:
         for changer in watched:
             await changer.notify(self._store, self._clock)
 
-    def _tickets(self, provider: ProviderKey) -> HoldsTickets:
-        if provider not in self._services.tickets:
-            raise RunRefused(f"a ticket fate is due on {provider}, which holds no tickets a person can move")
-        return self._services.tickets[provider]
 
-    def _deletes(self, provider: ProviderKey) -> DeletesTickets:
-        found = next((p for p in self._services.providers if p.manifest.key == provider), None)
-        if not isinstance(found, DeletesTickets):
-            raise RunRefused(f"a ticket fate deletes a {provider} ticket, and {provider} cannot delete one")
-        return found
-
-    def _acts(self, provider: ProviderKey) -> ActsOnTickets:
-        found = next((p for p in self._services.providers if p.manifest.key == provider), None)
-        if not isinstance(found, ActsOnTickets):
-            raise RunRefused(f"a happening acts on a seeded {provider} ticket, and {provider} cannot act on one")
-        return found
+def acting(provider: object) -> object:
+    """What people act through on `provider`: itself, or, for one that pushes their answers to an agent, its
+    transitions as they would be taken for any agent (`TalksToAgent`)."""
+    return provider.talking(None, None) if isinstance(provider, TalksToAgent) else provider
 
 
 def booked_due(booked: Booking, now: datetime) -> PendingTransition | None:
@@ -1159,29 +1094,16 @@ def transition_ports(
     return ports
 
 
-def refuse_fates_beside_the_engine(scenario: Scenario, manifests: Sequence[Manifest]) -> None:
-    """A ticket fate decides what becomes of a ticket assigned to a person; where the people engine plays a provider
-    that holds tickets, the engine decides it. Both at once is refused: pin the move with `takes` instead."""
-    if not scenario.ticket_fates:
-        return
-    played = [m.key for m in manifests if m.key in scenario.transitions_on and EntityKind.TICKET in m.kinds]
-    if played:
-        raise RunRefused(
-            f"the scenario has ticket fates and the people engine plays {', '.join(played)}, whose tickets the "
-            "engine moves: pin a person's move with `takes` instead of a fate"
-        )
-
-
 def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, services: Services) -> None:
     """Every happening lands through a port its provider has, checked before anything is seeded: a ticket happening
-    needs the ticket's provider in the run implementing `ActsOnTickets`, a document happening the document's provider
+    needs the ticket's provider in the run holding seeded tickets (`HoldsSeeded`), a document happening the document's provider
     implementing `ChangesDocuments`; a messaging happening needs its provider
     pushing events and the agent declaring an inbound target for it."""
     for n, happening in enumerate(scenario.happenings, start=1):
         provider = scenario.happening_provider(happening)
         found = next((p for p in services.providers if p.manifest.key == provider), None)
         if isinstance(happening, TicketHappening):
-            if isinstance(found, ActsOnTickets):
+            if isinstance(acting(found), HoldsSeeded):
                 continue
             why = "is not in this run" if found is None else "has no tickets a person can act on"
             what = f"{happening.person} {happening.action.kind} the seeded ticket {happening.ticket!r}"
