@@ -1,16 +1,21 @@
 """The agent's memory, held by the run: `minutehand.agent.store`'s calls answered from the world's log, and what a
 run can say about it (`domain.memory`).
 
-A write is an entity version (`EntityKind.MEMORY`, actor AGENT) and a read an event with none, both in the wake and
-at the simulated moment they were made. The memory as of a seq is the latest version of each key at or below it, so
-a fork, sharing its parent's log up to its checkpoint, reads exactly the memory its parent had there; nothing is
-copied or replayed. `digest` is that memory as one hash, kept in every checkpoint and compared once a fork exists.
+A write is an entity version (`EntityKind.MEMORY`, actor AGENT), in the wake and at the simulated moment it was
+made. A read is counted in its wake (`Reads`, `WakeRecord.memory_reads`) and kept in the log as an event with no
+version only when it is the first of its key in the wake or finds something new: an agent polling its memory would
+otherwise fill the log with reads, as many as the machine's speed allowed, and move the ids a provider derives from
+the log's seq. The memory as of a seq is the latest
+version of each key at or below it, so a fork, sharing its parent's log up to its checkpoint, reads exactly the
+memory its parent had there; nothing is copied or replayed. `digest` is that memory as one hash, kept in every
+checkpoint and compared once a fork exists.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Sequence
 
 from pydantic import JsonValue
@@ -96,34 +101,70 @@ def edit(store: Store, put: Sequence[SeededMemory], delete: Sequence[tuple[str, 
     store.apply_all(changes)
 
 
-def recall(store: Store, call: MemoryGet) -> Found:
-    """One key's value, as the run stands, recorded as the agent's read."""
-    found = store.get(ref(call.collection, call.key))
-    store.apply(
-        Change(
-            entity=ref(call.collection, call.key),
-            operation=Operation.READ,
-            actor=Actor.AGENT,
-            after=MemorySnapshot(collection=call.collection, key=call.key),
-        )
-    )
-    if found is None:
-        return Found(found=False)
-    return Found(found=True, value=_value(found.body))
+class Reads:
+    """The agent's reads of its memory in one run: every one counted in the wake it was made in, and kept in the log
+    only when it is the first of its key (a get) or prefix (a listing) in that wake, or finds something other than
+    the last one kept did. A read not kept found what the log already says was found, so a worker that lists its
+    queue every 50 ms keeps a listing each time the queue changes, not twenty a second, and how many reads are kept
+    no longer depends on how fast the machine ran."""
 
+    def __init__(self) -> None:
+        self._counted: Counter[int] = Counter()
+        self._found: dict[tuple[Operation, str, str], str | None] = {}
+        """What the last read kept of each key or prefix in `_wake` found: its value's text, or None."""
+        self._wake = -1
 
-def listing(store: Store, call: MemoryList) -> Listed:
-    """Every key under a prefix, ordered by key, recorded as the agent's search."""
-    items = [Item(key=key, value=_value(body)) for key, body in held(store, call.collection, call.prefix)]
-    store.apply(
-        Change(
-            entity=ref(call.collection, call.prefix or "*"),
-            operation=Operation.SEARCH,
-            actor=Actor.AGENT,
-            after=MemorySnapshot(collection=call.collection, key=call.prefix, listing=True),
+    def count(self, wake: int) -> int:
+        """Every get and listing of the memory made in `wake`, kept or not."""
+        return self._counted[wake]
+
+    def recall(self, store: Store, wake: int, call: MemoryGet) -> Found:
+        """One key's value, as the run stands, counted as the agent's read."""
+        found = store.get(ref(call.collection, call.key))
+        self._read(
+            store,
+            wake,
+            (Operation.READ, call.collection, call.key),
+            found.body if found is not None else None,
+            Change(
+                entity=ref(call.collection, call.key),
+                operation=Operation.READ,
+                actor=Actor.AGENT,
+                after=MemorySnapshot(collection=call.collection, key=call.key),
+            ),
         )
-    )
-    return Listed(items=items)
+        if found is None:
+            return Found(found=False)
+        return Found(found=True, value=_value(found.body))
+
+    def listing(self, store: Store, wake: int, call: MemoryList) -> Listed:
+        """Every key under a prefix, ordered by key, counted as the agent's search."""
+        found = held(store, call.collection, call.prefix)
+        self._read(
+            store,
+            wake,
+            (Operation.SEARCH, call.collection, call.prefix),
+            json.dumps(found),
+            Change(
+                entity=ref(call.collection, call.prefix or "*"),
+                operation=Operation.SEARCH,
+                actor=Actor.AGENT,
+                after=MemorySnapshot(collection=call.collection, key=call.prefix, listing=True),
+            ),
+        )
+        return Listed(items=[Item(key=key, value=_value(body)) for key, body in found])
+
+    def _read(
+        self, store: Store, wake: int, read: tuple[Operation, str, str], found: str | None, change: Change
+    ) -> None:
+        self._counted[wake] += 1
+        if wake != self._wake:
+            self._wake = wake
+            self._found.clear()
+        if read in self._found and self._found[read] == found:
+            return
+        store.apply(change)
+        self._found[read] = found
 
 
 def remember(store: Store, call: MemoryWrite) -> Written:

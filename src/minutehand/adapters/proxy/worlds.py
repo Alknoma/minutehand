@@ -13,11 +13,12 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from minutehand.adapters.proxy.capture import Capturing
+from minutehand.adapters.proxy.held import Waits
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import Exchange
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Provider
+from minutehand.ports.provider import ASGIApp, HeldCalls, Provider
 from minutehand.ports.store import Store
 
 
@@ -40,6 +41,8 @@ class Mounted:
     """When a call routed to this world was last seen beginning or ending, as `time.monotonic()`; None: never."""
     last: str | None = None
     """That call, for a person (`GET slack.com/api/auth.test`)."""
+    waits: Waits = field(default_factory=Waits)
+    """The calls held in this world until it can answer them (`adapters.proxy.held`)."""
 
 
 class Worlds(Protocol):
@@ -104,11 +107,12 @@ def one_run(
     scenario: Scenario | None,
     provider: Callable[[Manifest], Provider],
     capturing: Capturing | None = None,
+    holds: HeldCalls | None = None,
 ) -> One:
     """The world of one run: each of `apps` answers its provider's hosts; a provider claimed and not mounted is
     built on its first call over `store`, and seeded then with `scenario`'s people and things, unless the world
     already holds anything of it. `capturing` is what the run captures of the hosts nobody claims, its sends
-    read against `scenario`'s people."""
+    read against `scenario`'s people. `holds` holds a call that waits on the world until the run's clock answers it."""
     built = dict(apps)
 
     def app_for(manifest: Manifest) -> ASGIApp:
@@ -126,4 +130,16 @@ def one_run(
     captures = capturing or Capturing()
     if scenario is not None:
         captures = captures.for_people(scenario.people)
-    return One(Mounted(store=store, clock=clock, app_for=app_for, provider_for=provider_for, capturing=captures))
+    waits = Waits(holds=holds)
+    if holds is not None:
+        holds.answering(waits.quiet)
+    return One(
+        Mounted(
+            store=store,
+            clock=clock,
+            app_for=app_for,
+            provider_for=provider_for,
+            capturing=captures,
+            waits=waits,
+        )
+    )

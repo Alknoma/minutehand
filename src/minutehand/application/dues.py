@@ -16,6 +16,7 @@ from pydantic import Field
 from minutehand.application.checkpoint import (
     Pending,
     PendingBooking,
+    PendingCall,
     PendingDirection,
     PendingHappening,
     PendingMachine,
@@ -47,6 +48,8 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.REPLY if pending.due.kind is DueKind.PERSON_REPLY else DueSource.TRANSITION
     if isinstance(pending, PendingService):
         return DueSource.SERVICE
+    if isinstance(pending, PendingCall):
+        return DueSource.CALL
     assert isinstance(pending, PendingDirection)
     return DueSource.DIRECTION
 
