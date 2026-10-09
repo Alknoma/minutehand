@@ -194,3 +194,15 @@ def test_query_takes_its_run_and_sql_in_any_order_among_its_options(
 
     assert code == 0, err
     assert json.loads(out) == [{"seq": run.answered}]
+
+
+def test_findings_prints_which_rules_were_read_and_the_runs_notes(
+    run: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, out, _ = run_cli(capsys, "findings", run.run_id, "--state", str(run.state))
+    lines = out.splitlines()
+    rules = lines.index("rules read")
+    assert lines[rules + 1] == "  follows_up_when_due: read 1 time, unread 1, 1 finding"
+    notes = lines.index("notes")
+    assert lines[notes + 1].startswith("  assessments: rule follows_up_when_due was not read 1 time")
+    assert rules < notes < lines.index("scorecard")

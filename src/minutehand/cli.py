@@ -134,7 +134,7 @@ from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.assessments import merged, refuse_unknown_people
-from minutehand.domain.checks import Effectiveness, Finding, FindingKind
+from minutehand.domain.checks import Effectiveness, Finding, FindingKind, RuleRead
 from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.prices import Prices
@@ -1306,12 +1306,28 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
     if result.blocked:
         lines.append(f"\nblocked: {len(result.blocked)} check(s) could not read their input and did not run")
         lines += [f"  {b}" for b in result.blocked]
+    if result.rules_read:
+        lines.append("\nrules read")
+        lines += [_rule_read(r, result.findings) for r in result.rules_read]
+    if result.notes:
+        lines.append("\nnotes")
+        lines += [f"  {note}" for note in result.notes]
     lines.append("\nscorecard")
     lines += [f"  {line}" for line in _scorecard(result.effectiveness)]
     if points:
         lines.append("\ncheckpoints")
         lines += [f"  seq {p.seq}, after wake {p.wake}: {_point(p)}" for p in points]
     return "\n".join(lines)
+
+
+def _rule_read(read: RuleRead, findings: list[Finding]) -> str:
+    """One of the team's rules: how often it was read, how often it could not be, and how often it broke."""
+    broke = sum(1 for f in findings if f.check == read.rule)
+    said = f"  {read.rule}: read {read.read} time{'' if read.read == 1 else 's'}"
+    said += f", unread {read.unread}" if read.unread else ""
+    if broke:
+        return said + f", {broke} finding{'' if broke == 1 else 's'}"
+    return said + (", held" if read.read else "")
 
 
 def _point(point: ForkPoint) -> str:
