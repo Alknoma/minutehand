@@ -559,8 +559,8 @@ overrides:
 ```
 
 ```bash
-minutehand checkpoints <run>                      # seq 13, after wake 1: the request is up, nobody has decided
-minutehand fork <run> --at 13 --changes flip_to_approve.yaml -- env APPROVAL_VIA=inbox python ../agent.py
+minutehand checkpoints <run>                      # seq 9, after wake 1: the request is up, nobody has decided
+minutehand fork <run> --at 9 --changes flip_to_approve.yaml -- env APPROVAL_VIA=inbox python ../agent.py
 ```
 
 The flipped fork passes with the order placed; the edited one fails `acts_only_once_approved`. Each fork's account
@@ -693,11 +693,7 @@ What is awkward, unserved or needs a workaround today, each from the code or a r
 13. **A ticket fate is a state, with no reason.** It reaches `open`, `done` or `cancelled` (a named status such as
     "Approved" only through a seeded Jira workflow), wakes nobody, and only the first fate for an assignee applies.
     Jira webhooks are refused.
-14. **`run-all` and an inbox cannot take a port per run.** `run-all` reads the agent file before it fills
-    `{run.port}`, and an inbox's URLs may name only their own placeholders, so `{run.port}` there is refused. Run
-    such an agent with `--jobs 1` on one fixed port, as `decision_timing.yaml` says
-    (`test_run_port_in_an_inbox_url_is_refused_by_run_all`).
-15. **`{ask.facts}` is matched as text.** Each fact must appear in the requester's message as written; an agent, or a
+14. **`{ask.facts}` is matched as text.** Each fact must appear in the requester's message as written; an agent, or a
     model behind it, that rewords a reason fails the rule. Script short facts the agent passes on whole.
 
 ## Where it is tested

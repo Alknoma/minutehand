@@ -257,7 +257,8 @@ async def test_the_two_forks_of_a_rejected_run(tmp_path: Path, monkeypatch: pyte
     parent = await play("inbox", "rejected.yaml", tmp_path, monkeypatch)
     assert parent.verdict is VerdictKind.PASSED and parent.orders == []
     state = tmp_path / "state"
-    before_the_decision = 13  # the checkpoint after wake 1: the request is up, Nadia has not decided
+    # the checkpoint after wake 1: the request is up, Nadia has not decided
+    before_the_decision = next(p.seq for p in session.fork_points(state, parent.run_id) if p.wake == 1)
 
     outcomes: dict[str, Played] = {}
     for name in sorted(FORKS):
@@ -286,16 +287,16 @@ def _cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([str(MINUTEHAND), *args], capture_output=True, text=True, env=env, timeout=200)
 
 
-def test_samples_over_decision_timing_meet_their_expected_rate(tmp_path: Path) -> None:
+def test_samples_over_decision_timing_meet_their_expected_rate_each_on_a_port_of_its_own(tmp_path: Path) -> None:
+    """The agent file names `{run.port}` in its wake URLs and in its inbox's, so the samples run side by side."""
     folder = tmp_path / "timing"
     folder.mkdir()
     (folder / "decision_timing.yaml").write_text((EXAMPLES / "inbox" / "timing" / "decision_timing.yaml").read_text())
-    port = free_port()  # one port, runs one at a time: an inbox's URLs may not name {run.port} (the guide's gaps)
     agent = tmp_path / "agent.yaml"
-    agent.write_text((EXAMPLES / "inbox" / "agent.yaml").read_text().replace(PORT, f"127.0.0.1:{port}"))
-    command = ["env", f"PORT={port}", "APPROVAL_VIA=inbox", sys.executable, str(AGENT)]
+    agent.write_text((EXAMPLES / "inbox" / "agent.yaml").read_text().replace(PORT, "127.0.0.1:{run.port}"))
+    command = ["env", "PORT={run.port}", "APPROVAL_VIA=inbox", sys.executable, str(AGENT)]
 
-    ran = _cli("run-all", str(folder), "--agent", str(agent), "--jobs", "1", "--samples", "4", "--seed", "7",
+    ran = _cli("run-all", str(folder), "--agent", str(agent), "--jobs", "4", "--samples", "4", "--seed", "7",
                "--state", str(tmp_path / "state"), "--json", "--", *command)  # fmt: skip
 
     assert ran.returncode == 0, ran.stdout + ran.stderr
@@ -337,18 +338,3 @@ async def test_a_budget_cut_while_her_answer_is_owed_does_not_change_it(
 
     assert played.verdict is VerdictKind.PASSED, played.failed
     assert len(played.orders) == 1, "she approved the full order, from what she knew when asked"
-
-
-def test_run_port_in_an_inbox_url_is_refused_by_run_all(tmp_path: Path) -> None:
-    """A gap the guide states: `run-all` reads the agent file before it fills `{run.port}`, and an inbox's URLs may
-    name only their own placeholders, so an agent with an inbox cannot take a port per run."""
-    folder = tmp_path / "timing"
-    folder.mkdir()
-    (folder / "decision_timing.yaml").write_text((EXAMPLES / "inbox" / "timing" / "decision_timing.yaml").read_text())
-    agent = tmp_path / "agent.yaml"
-    agent.write_text((EXAMPLES / "inbox" / "agent.yaml").read_text().replace(PORT, "127.0.0.1:{run.port}"))
-
-    ran = _cli("run-all", str(folder), "--agent", str(agent), "--state", str(tmp_path / "state"), "--", "true")
-
-    assert ran.returncode == 2, ran.stdout + ran.stderr
-    assert "the list's request's url names {run.port}" in ran.stderr
