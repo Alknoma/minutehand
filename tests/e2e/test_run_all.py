@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
+from minutehand import cli
 from minutehand.domain.run import VerdictKind
 from minutehand.run_all import Batch, batches, free_port
 from minutehand.session import Played, reading
@@ -93,6 +96,45 @@ def test_run_all_exits_1_when_a_verdict_differs_from_the_one_its_scenario_expect
     assert ran.returncode == 1, ran.stdout + ran.stderr
     assert "  DIFFERS offsite_venue_silent" in ran.stdout
     assert "differs from what it expects: offsite_venue_silent" in ran.stdout
+
+
+def _templated_agent(folder: Path, *, also: str = "") -> Path:
+    """The reference agent's file with every port it names, its inbox's among them, written as `{run.port}`."""
+    text = (ROOT / "examples" / "reference_agent" / "agent.yaml").read_text()
+    for port in sorted(set(re.findall(r"127\.0\.0\.1:(\d+)", text))):
+        text = text.replace(f"127.0.0.1:{port}", "127.0.0.1:{run.port}")
+    agent = folder / "agent.yaml"
+    agent.write_text(text + also)
+    return agent
+
+
+def test_run_all_reads_an_agent_file_whose_inbox_urls_name_the_run_port(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder = tmp_path / "scenarios"
+    folder.mkdir()
+    agent = _templated_agent(folder)
+    assert "/approvals?approver=" in agent.read_text() and "{run.port}/approvals" in agent.read_text()
+
+    exited = cli.main(["run-all", str(folder), "--agent", str(agent), "--state", str(tmp_path / "state")])
+
+    said = capsys.readouterr().err
+    assert "holds no scenario file" in said, f"the agent file was read past its placeholders: {said}"
+    assert exited == 2
+
+
+def test_run_all_still_refuses_an_agent_file_that_is_wrong_besides_its_placeholders(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder = tmp_path / "scenarios"
+    folder.mkdir()
+    agent = _templated_agent(folder, also="unknown_field: true\n")
+
+    exited = cli.main(["run-all", str(folder), "--agent", str(agent), "--state", str(tmp_path / "state")])
+
+    said = capsys.readouterr().err
+    assert "unknown_field" in said and "holds no scenario file" not in said
+    assert exited == 2
 
 
 def test_run_and_findings_print_one_json_shape(tmp_path: Path) -> None:

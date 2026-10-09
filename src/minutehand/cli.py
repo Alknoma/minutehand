@@ -920,7 +920,7 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
 
 
 def _run_all(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
-    load_agent(args.agent)  # refused here, once, rather than once per scenario
+    run_all.checked_agent(args.agent)
     batch = asyncio.run(
         run_all.play_all(
             args.folder,
