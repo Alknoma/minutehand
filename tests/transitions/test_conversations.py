@@ -353,3 +353,21 @@ async def test_gap_8_an_answer_owed_when_what_they_know_changes_says_what_they_k
     # Mutation: keeping the words written when she was asked sends 40k.
     [said] = pushes.delivered
     assert said.text.startswith("The partner price is 45k")
+
+
+async def test_a_take_for_every_item_that_a_message_does_not_offer_leaves_it_to_be_answered(tmp_path: Path) -> None:
+    store, clock = _store(tmp_path)
+    _sent(store, "m1", "Can you confirm the pricing?")
+    everywhere = Take(take="done", after=timedelta(hours=1))
+    base = scenario(tom_finishes=False)
+    people = [p.model_copy(update={"takes": [everywhere]}) if p.key == "sofia" else p for p in base.people]
+    engine = people_engine(
+        base.model_copy(update={"people": people}), {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None
+    )
+
+    [booked] = (await engine.look(store, clock)).booked
+
+    # A message offers no "done": the take pins nothing on it, and her script answers it when it plans to.
+    # Mutation: a take for every item pinning one that does not offer it books her at an hour, to a take refused.
+    assert booked.at == T0 + timedelta(hours=36)
+    assert engine.pending(booked.pending, store).pinned is None

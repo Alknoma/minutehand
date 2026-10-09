@@ -306,3 +306,27 @@ async def test_gap_15_a_decisions_answer_is_what_it_carries_and_a_judged_rule_re
     judged = await _judged(scn, unsaid.store, unsaid.record)
     [missed] = [f for f in judged.findings if f.check == "conveys_why"]
     assert missed.kind is FindingKind.REVIEW and missed.judged is not None
+
+
+async def test_gap_15_each_input_a_decision_carries_is_a_fact_of_its_own(tmp_path: Path, product: Product) -> None:
+    declared = inbox(product)
+    reject = declared.decisions[1]
+    two = reject.model_copy(
+        update={
+            "request": reject.request.model_copy(
+                update={"body": {"decision": "reject", "reason": "{input.reason}", "instead": "{input.instead}"}}
+            ),
+            "inputs": [*reject.inputs, reject.inputs[0].model_copy(update={"name": "instead"})],
+        }
+    )
+    declared = declared.model_copy(update={"decisions": [declared.decisions[0], two]})
+    rejecting = deciding(Take(take="reject", fields={"reason": REASON, "instead": "Book the train"}, facts=[]))
+    scn = _judged_by(scenario(rejecting), TOLD_WHY)
+    told = f"Turned down ({REASON}); she asks you to book the train instead."
+
+    played = await play(tmp_path, scn, declared, _telling(product, told))
+
+    # Each input is a fact the message must hold, wherever it says it. Mutation: facts read only as the decision's
+    # one answer ("reason; instead", joined) are in no message.
+    assert checks_named(played.result, "tells_owen_why") == []
+    assert checks_named(played.result, "tells_owen_her_answer") == ["Owen was not told her answer"]

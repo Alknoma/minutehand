@@ -120,3 +120,46 @@ async def test_an_asana_task_assigned_and_open_is_pending_and_a_pinned_move_land
     task = next(t for t in world.tasks() if t.name == "Book the freight lift")
     assert world.state_of(task) is TicketState.DONE
     assert (await engine.look(store, clock)).booked == [], "done: it no longer waits on them"
+
+
+async def test_a_person_a_model_plays_never_deletes_a_youtrack_issue_unprompted(tmp_path: Path) -> None:
+    clock = RunClock(YOUTRACK_START)
+    store = SqliteStore(tmp_path / "w.db", "w", clock)
+    provider = youtrack()
+    people = [
+        p.model_copy(update={"facts": ["this issue should be deleted"]}) if p.key == "tomas" else p
+        for p in YOUTRACK.people
+    ]
+    scenario = YOUTRACK.model_copy(update={"transitions_on": ["youtrack"], "people": people})
+    provider.seed(scenario, store)
+    engine = people_engine(scenario, {"youtrack": provider}, people_model())
+    [booked] = (await engine.look(store, clock)).booked
+
+    clock.jump(booked.at)
+    await engine.act(booked.pending, store, clock)
+
+    # His facts name a delete, which only a take can do; the model picks among the states, the first.
+    # Mutation: offering the model every offer, delete among them, deletes the issue.
+    [moved] = _moves(store)
+    assert (moved.name, moved.who) == ("In Progress", "tomas")
+
+
+async def test_a_take_on_a_persons_nth_ask_anywhere_never_pins_a_ticket(tmp_path: Path) -> None:
+    clock = RunClock(YOUTRACK_START)
+    store = SqliteStore(tmp_path / "w.db", "w", clock)
+    provider = youtrack()
+    asked_first = Take(take="Won't fix", nth=1, after=timedelta(hours=2))
+    people = [p.model_copy(update={"takes": [asked_first]}) if p.key == "tomas" else p for p in YOUTRACK.people]
+    scenario = YOUTRACK.model_copy(update={"transitions_on": ["youtrack"], "people": people})
+    provider.seed(scenario, store)
+    engine = people_engine(scenario, {"youtrack": provider}, people_model())
+    [booked] = (await engine.look(store, clock)).booked
+
+    clock.jump(booked.at)
+    await engine.act(booked.pending, store, clock)
+
+    # A take naming no provider counts only asks, messages a person can answer: the issue is no ask, and the model
+    # moves it. Mutation: counting tickets among asks pins the issue, his first item, to "Won't fix".
+    [moved] = _moves(store)
+    assert moved.name == "In Progress"
+    assert engine.pending(booked.pending, store).pinned is None
