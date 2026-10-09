@@ -40,6 +40,7 @@ from minutehand.adapters.providers.github.answers import (
     paged,
     param,
 )
+from minutehand.adapters.providers.github.commits import Commits
 from minutehand.adapters.providers.github.pulls import Pulls
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.adapters.providers.github.tracker import Tracker
@@ -108,6 +109,7 @@ class GitHubApi:
         self.clock = clock
         self.tracker = Tracker(self)
         self.pulls = Pulls(self)
+        self.commits_made = Commits(self)
 
     # ------------------------------------------------------------------ the gate
 
@@ -804,6 +806,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
     api = GitHubApi(store, clock)
     tracker = api.tracker
     pulls = api.pulls
+    made = api.commits_made
     table: list[tuple[str, str, Handler]] = [
         ("/user", "GET", api.user),
         ("/user/repos", "GET", api.user_repos),
@@ -813,6 +816,8 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/repos/{owner}/{repo}/contents", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/{path:path}", "GET", api.contents),
+        ("/repos/{owner}/{repo}/contents/{path:path}", "PUT", made.put),
+        ("/repos/{owner}/{repo}/contents/{path:path}", "DELETE", made.delete),
         ("/repos/{owner}/{repo}/git/blobs/{sha}", "GET", api.blob),
         ("/repos/{owner}/{repo}/git/trees/{tree:path}", "GET", api.tree),
         ("/repos/{owner}/{repo}/commits", "GET", api.commits),

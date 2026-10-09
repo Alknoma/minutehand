@@ -139,30 +139,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known("github", Property.SEEDED, "sign_in", "NotImplementedError: GitHubDriver has no sign-in"),
     Known(
-        "github",
-        Property.STATE,
-        "a_world_reopened_answers_as_in_a_fresh_server",
-        'VendorRefused: create or update file contents: 501 {"message":"minutehand\'s github fake does not implement PUT /repos/launch-team/notes/contents/…: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.STATE,
-        "concurrent_worlds_never_see_each_other",
-        '[VendorRefused(\'create or update file contents: 501 {"message":"minutehand\\\'s github fake does not implement PUT /repo...calls this provider serves (its README\\\'s table)","documentation_url":"https://docs.github.com/rest","status":"501"}\')]',
-    ),
-    Known(
-        "github",
-        Property.STATE,
-        "reset_returns_the_seeded_answers",
-        'VendorRefused: create or update file contents: 501 {"message":"minutehand\'s github fake does not implement PUT /repos/launch-team/notes/contents/…: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.TIME,
-        "new_things_carry_the_worlds_clock",
-        'VendorRefused: create or update file contents: 501 {"message":"minutehand\'s github fake does not implement PUT /repos/launch-team/notes/contents/…: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
         "google_workspace",
         Property.FAMILY,
         "documents",

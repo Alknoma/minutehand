@@ -11,7 +11,8 @@ a call without one) and is unproven. Tests are in `tests/providers/github/`, fil
 `test_github_vendor_claims_graphql.py` (G), `test_github_vendor_claims_budget.py` (B), `test_github_refusals.py`
 (F), `test_github_coverage.py` (C), `test_github_world_without_users.py` (W), and, for what the agent writes,
 `test_github_issues.py` (I), `test_github_comments_and_labels.py` (K), `test_github_tracker_seed.py` (E),
-`test_github_pulls.py` (P), `test_github_reviews.py` (V), `test_github_diffs.py` (D) and
+`test_github_pulls.py` (P), `test_github_reviews.py` (V), `test_github_diffs.py` (D),
+`test_github_contents_write.py` (W2) and
 `tests/transitions/test_github_people.py` (T). **Observed** means the same of a capture committed under `tests/data/`:
 `tests/data/github_rest/observed-2026-10-09.json` holds read-only exchanges with public repositories, trimmed to what
 a claim rests on and holding no login or free text of anyone.
@@ -196,6 +197,23 @@ asking changes of one's own pull request; a comment on several lines (`start_lin
 (`subject_type: file`), on a file the pull request does not change, on a line its diff does not show, or on a commit
 other than the head.
 
+## Committing a file
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| Creating a file answers 201, replacing one 200, each with the `content` (`name`, `path`, `sha`, `size`, `url`, `html_url`, `git_url`, `download_url`, `type`, `_links`) and the `commit` (`sha`, `message`, `author`, `committer`, `tree`, `parents`, `html_url`); the bytes and the message are kept as sent | documented | W2 `test_a_file_is_committed_and_read_back_as_written`, W2 `test_every_byte_comes_back` | https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents |
+| `committer` defaults to the authenticated user and `author` to the committer (or the user); both take a `name`, an `email` and a `date`, and omitting a name or an email is 422 | documented | W2 `test_a_commit_is_by_the_user_who_asks_at_the_runs_moment`, W2 `test_the_author_and_the_committer_the_request_names_are_the_commits`, W2 `test_an_author_or_committer_missing_a_name_or_an_email_is_422` | https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents |
+| `sha` is required to update a file; one that is not the file's is 409; the reference gives no message for either refusal, so a missing one is 422 "Invalid request" and 409 is named "Conflict" | documented | W2 `test_a_file_is_replaced_with_the_sha_it_replaces` | https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents |
+| Deleting a file takes `message` and `sha`, answers 200 with the commit and no `content`; a wrong `sha` is 409 and a file that is not there 404 | documented | W2 `test_a_file_is_deleted_with_its_sha` | https://docs.github.com/en/rest/repos/contents#delete-a-file |
+| `branch` is "The branch name. Default: the repository's default branch."; one that does not exist is 404; a commit moves only the branch it is made on, a branch that followed the head being left behind | documented | W2 `test_a_commit_to_a_branch_that_followed_the_head_leaves_it_behind`, W2 `test_a_branch_that_does_not_exist_is_404`, W2 `test_a_commit_to_a_branch_of_its_own_adds_to_the_pull_request_from_it` | https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents |
+| A pull request follows its head branch while it is open | documented | W2 `test_a_commit_to_a_branch_of_its_own_adds_to_the_pull_request_from_it`, P `test_a_closed_pull_request_keeps_its_head_when_the_branch_moves_on` | https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request |
+
+### Refused by name
+
+A commit by a user without push access (the reference lists no status for it); to an empty repository (the reference does
+not say it makes the branch); with `content` that is not base64; with a `sha` for a path that holds no file; giving a file
+the bytes it has; to a path that is a directory, or under a file.
+
 ## `HEAD` as a ref
 
 Each place the fake accepts a ref or a SHA, and what GitHub's public reference says of `HEAD` there. Tests in
@@ -250,7 +268,7 @@ organization is a 404 (F `test_a_private_repository_without_access_is_not_found`
 
 Every operation of `tests/providers/github/openapi/api.github.com.subset.json` that is not served is answered 501,
 "minutehand's github fake does not implement <METHOD> <path>" (C `test_every_operation_the_provider_does_not_serve_is_refused_by_name`;
-169 operations, 46 served, 123 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
+169 operations, 48 served, 121 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
 is any other path. `X-GitHub-Api-Version: 2026-03-10`, which GitHub answers (recorded), is refused by name the same
 way (F `test_an_api_version_github_serves_and_this_provider_does_not_is_refused_by_name`).
 

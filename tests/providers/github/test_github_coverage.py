@@ -108,6 +108,12 @@ SERVED: dict[tuple[str, str], Call] = {
         f"{LEDGER}/pulls/4/reviews/{REVIEW}/comments"
     ),
     ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/comments"): Call(f"{LEDGER}/pulls/4/comments"),
+    ("PUT", "/repos/{owner}/{repo}/contents/{path}"): Call(
+        f"{LEDGER}/contents/docs/new.md", {"message": "Add it", "content": "eA=="}, 201
+    ),
+    ("DELETE", "/repos/{owner}/{repo}/contents/{path}"): Call(
+        f"{LEDGER}/contents/README.md", {"message": "Drop it", "sha": "{readme}"}
+    ),
     ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/comments"): Call(
         f"{LEDGER}/pulls/4/comments",
         {"body": "Why?", "commit_id": "{head}", "path": "services/billing/config.py", "line": 1, "side": "RIGHT"},
@@ -207,8 +213,8 @@ def seeded() -> GitHubSeed:
 
 
 def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
-    """The counts the provider's README states: 169 operations, 46 served, 123 refused by name."""
-    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 46, 123)
+    """The counts the provider's README states: 169 operations, 48 served, 121 refused by name."""
+    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 48, 121)
     assert set(SERVED) <= set(OPERATIONS), set(SERVED) - set(OPERATIONS)
 
 
@@ -222,7 +228,7 @@ async def test_a_served_operation_answers_every_field_the_description_requires(
         head = (await http.get(f"{LEDGER}/pulls/4")).json()["head"]["sha"]
         for earlier in call.before:
             assert (await _call(http, "PUT", earlier.url, earlier.json)).status_code == earlier.status
-        answered = await _call(http, method, call.url.replace("{readme}", readme), _filled(call.json, head))
+        answered = await _call(http, method, call.url.replace("{readme}", readme), _filled(call.json, head, readme))
     assert answered.status_code == call.status, answered.text
     schema = _success_schema(method, path)
     if call.status == 204:
@@ -233,10 +239,10 @@ async def test_a_served_operation_answers_every_field_the_description_requires(
     assert gaps == [], " ".join(gaps)
 
 
-def _filled(sent: object, head: str) -> object:
+def _filled(sent: object, head: str, readme: str) -> object:
     if isinstance(sent, dict):
-        return {k: _filled(v, head) for k, v in sent.items()}
-    return head if sent == "{head}" else sent
+        return {k: _filled(v, head, readme) for k, v in sent.items()}
+    return {"{head}": head, "{readme}": readme}.get(sent, sent) if isinstance(sent, str) else sent
 
 
 async def test_every_operation_the_provider_does_not_serve_is_refused_by_name(hub: Hub) -> None:
