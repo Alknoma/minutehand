@@ -12,18 +12,17 @@ from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.checks.ledger import Away, absences, carries, recipients
+from minutehand.checks.ledger import Away, absences, recipients
 from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
+from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import DispatchFault, Model, TicketState
 from minutehand.domain.transitions import Transition
 from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
-    InboxItemSnapshot,
-    ItemStatus,
     MessageSnapshot,
     Operation,
     Snapshot,
@@ -50,9 +49,14 @@ class Ask(Model):
     obligation: Obligation
     follow_ups: list[Fact] = Field(description="The agent's writes the person could see while it was open, in order")
     touches: list[Fact] = Field(description="Every write of the agent's on the person, the thread or the ticket")
-    answer: str | None = Field(default=None, description="What the person answered, when they did by a reply")
+    answer: str | None = Field(
+        default=None,
+        description="What the person answered: their words; for a decision, its inputs as given, else its name",
+    )
     answer_facts: list[str] = Field(
-        default=[], description="The facts the answer's script step carried, which a model put in the person's words"
+        default=[],
+        description="What the answer carried: a decision's inputs as given, or the facts its script step carried, "
+        "which a model put in the person's words",
     )
 
     @property
@@ -151,17 +155,31 @@ def _touches(view: RunView, o: Obligation, candidates: list[WorldEvent]) -> list
 
 
 def _answer(view: RunView, o: Obligation) -> str | None:
-    if o.settled_at is None or o.person is None:
+    """What the person answered: their words; for a decision, what it carries (its inputs as given), else its name."""
+    said = _said(view, o)
+    if said is None:
         return None
-    said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
-    return said[0].text if said else None
+    if said.decides is not None:
+        given = [v for v in said.decides.inputs.values() if v.strip()]
+        return "; ".join(given) if given else said.decides.decision
+    return said.text
 
 
 def _answer_facts(view: RunView, o: Obligation) -> list[str]:
-    if o.settled_at is None or o.person is None:
+    """What the answer carried: a decision's inputs as given, else the facts its words were written from."""
+    said = _said(view, o)
+    if said is None:
         return []
+    if said.decides is not None:
+        return [v for v in said.decides.inputs.values() if v.strip()]
+    return list(said.facts)
+
+
+def _said(view: RunView, o: Obligation) -> PersonReply | None:
+    if o.settled_at is None or o.person is None:
+        return None
     said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
-    return list(said[0].facts) if said else []
+    return said[0] if said else None
 
 
 def unchanged(events: list[WorldEvent]) -> frozenset[int]:
@@ -218,11 +236,6 @@ class Written(Model):
         default=False, description="A ticket created with the title of one still open in the same project"
     )
     in_repeated_wake: bool = Field(default=False, description="Written in the second delivery of one wake")
-    gated: bool = Field(
-        default=False,
-        description="A call carrying an operation an item held back, made while the item was pending, turned down, "
-        "or taken back",
-    )
 
 
 _NOT_WRITES = frozenset(
@@ -243,13 +256,11 @@ def writes(view: RunView) -> list[Written]:
     invisible = unchanged(view.events)
     repeated = repeated_wakes(view)
     duplicates = _duplicates(view.events)
-    gated = _gated(view.events)
     return [
         Written(
             event=e,
             repeats_open_ticket=e.seq in duplicates,
             in_repeated_wake=e.wake in repeated,
-            gated=e.seq in gated,
         )
         for e in view.events
         if e.actor is Actor.AGENT
@@ -279,50 +290,6 @@ def _duplicates(events: list[WorldEvent]) -> set[int]:
         else:
             live[key] = event
     return found
-
-
-def _gated(events: list[WorldEvent]) -> set[int]:
-    """The agent's first write carrying each item's gated operation, when the item as it stood then forbade it."""
-    found: set[int] = set()
-    for opening in events:
-        item = opening.after
-        if not (
-            opening.actor is Actor.AGENT
-            and opening.operation is Operation.CREATE
-            and isinstance(item, InboxItemSnapshot)
-            and item.gates
-        ):
-            continue
-        act = next(
-            (
-                e
-                for e in events
-                if e.actor is Actor.AGENT
-                and e.operation in VISIBLE
-                and e.entity != opening.entity
-                and carries(e, item.gates)
-            ),
-            None,
-        )
-        if act is None:
-            continue
-        stood = next((e.after for e in reversed(events) if e.seq < act.seq and e.entity == opening.entity), item)
-        if isinstance(stood, InboxItemSnapshot) and (
-            stood.status in (ItemStatus.PENDING, ItemStatus.WITHDRAWN) or stood.permits is False
-        ):
-            found.add(act.seq)
-    return found
-
-
-def gates_declared(view: RunView) -> bool:
-    """Whether the run can say what went ahead unapproved: no item was asked of anyone, or one says what it holds
-    back (`pending.gates` of its inbox)."""
-    items = [
-        e.after
-        for e in view.events
-        if e.actor is Actor.AGENT and e.operation is Operation.CREATE and isinstance(e.after, InboxItemSnapshot)
-    ]
-    return not items or any(isinstance(i, InboxItemSnapshot) and i.gates for i in items)
 
 
 def repeated_wakes(view: RunView) -> set[int]:

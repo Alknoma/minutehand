@@ -26,6 +26,7 @@ from tests.providers.youtrack.caller_world import (
     seeded,
 )
 from tests.providers.youtrack.youtrack_instance import START, Instance, entities, entity, named, proxied, refusal
+from tests.support.tickets import acted
 
 DAY = 86_400_000
 START_MS = 1787568603000
@@ -33,17 +34,17 @@ FEED = "IssueCreatedCategory,CustomFieldCategory,CommentsCategory"
 FEED_FIELDS = "$type,timestamp,author(login),field(name),added(name,login,text),removed(name,login)"
 
 
-def act(team: Instance, by: str, after: timedelta, action: Moves | Reassigns | Comments | Deletes) -> None:
+async def act(team: Instance, by: str, after: timedelta, action: Moves | Reassigns | Comments | Deletes) -> None:
     team.clock.jump(START + after)
     happening = TicketHappening(person=by, ticket="Write the release notes", after=after, action=action)
-    team.provider.act(happening, SCENARIO, team.store, team.clock)
+    await acted(team.provider, happening, SCENARIO, team.store, team.clock)
 
 
 # --------------------------------------------------------------------------- people acting
 
 
 async def test_a_person_moves_a_seeded_issue_and_the_feed_names_them(yt: httpx.AsyncClient, team: Instance) -> None:
-    act(team, "tomas", timedelta(days=2), Moves(to=TicketState.DONE))
+    await act(team, "tomas", timedelta(days=2), Moves(to=TicketState.DONE))
 
     read = entity(
         await yt.get(
@@ -71,8 +72,8 @@ async def test_a_person_moves_a_seeded_issue_and_the_feed_names_them(yt: httpx.A
 
 
 async def test_a_person_reassigns_and_comments_as_themselves(yt: httpx.AsyncClient, team: Instance) -> None:
-    act(team, "iris", timedelta(hours=5), Reassigns(to="noor"))
-    act(team, "noor", timedelta(hours=6), Comments(text="Picking this up"))
+    await act(team, "iris", timedelta(hours=5), Reassigns(to="noor"))
+    await act(team, "noor", timedelta(hours=6), Comments(text="Picking this up"))
 
     comments = entities(await yt.get("/api/issues/LAUNCH-1/comments", params={"fields": "text,created,author(login)"}))
     feed = entities(await yt.get("/api/issues/LAUNCH-1/activities", params={"categories": FEED, "fields": FEED_FIELDS}))
@@ -94,14 +95,16 @@ async def test_a_person_reassigns_and_comments_as_themselves(yt: httpx.AsyncClie
     people = [e for e in team.store.events() if e.actor is Actor.PERSON]
     assert [(e.operation, e.entity.kind) for e in people] == [
         (Operation.UPDATE, EntityKind.TICKET),
+        (Operation.CREATE, EntityKind.TRANSITION),
         (Operation.CREATE, EntityKind.COMMENT),
-    ]
+        (Operation.CREATE, EntityKind.TRANSITION),
+    ], "each act is recorded once as the transition it is: the reassignment, the comment"
 
 
 async def test_a_person_deletes_a_seeded_issue_and_it_is_gone_404_and_a_later_act_finds_nothing(
     yt: httpx.AsyncClient, team: Instance
 ) -> None:
-    act(team, "iris", timedelta(days=1), Deletes())
+    await act(team, "iris", timedelta(days=1), Deletes())
 
     refusal(await yt.get("/api/issues/LAUNCH-1", params={"fields": "id"}), 404)
     children = entity(await yt.get("/api/issues/LAUNCH-3", params={"fields": "links(id,issues(idReadable))"}))
@@ -112,7 +115,7 @@ async def test_a_person_deletes_a_seeded_issue_and_it_is_gone_404_and_a_later_ac
     assert [(e.operation, e.sim_time) for e in unlinked] == [(Operation.UPDATE, START + timedelta(days=1))]
     assert team.youtrack.links() == []
     written = len(team.store.events())
-    act(team, "tomas", timedelta(days=2), Moves(to=TicketState.DONE))
+    await act(team, "tomas", timedelta(days=2), Moves(to=TicketState.DONE))
     assert len(team.store.events()) == written, "a happening on a deleted issue is left alone"
 
 

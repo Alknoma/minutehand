@@ -13,8 +13,8 @@ people:
     reply:
       kind: scripted
       delay: {shortest: PT2H, longest: PT2H}
-      replies: [{to_ask: 1, press: {label: Approve}}]
       then: silent
+    takes: [{nth: 1, take: Approve}]
 tickets:
   - {key: venue, provider: jira, project: Launch, title: Book the venue, assignee: nadia, labels: [launch]}
 documents:

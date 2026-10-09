@@ -4,8 +4,8 @@
 stands still until whoever opened it moves it (`advance`), and only then do the things the world owes fall
 due, in order: what people do by themselves (the scenario's happenings, of every family, whether or not
 scripted people speak), what a scripted person does about what waits on them (an answer to a message the agent
-sent them, a decision in its product, a move on a ticket; the people engine's, as in a run), a ticket's fate,
-the owner's directions. With `scripted` off, nobody answers but the test, which speaks for people itself (`say`,
+sent them, a decision in its product, a move on a ticket; the people engine's, as in a run), the owner's
+directions. With `scripted` off, nobody answers but the test, which speaks for people itself (`say`,
 `reply`, `move_ticket`, `edit_ticket`).
 
 A world is read the way a finished run is: its log, its calls, and the same checks over it as of now.
@@ -26,11 +26,11 @@ from pydantic import ValidationError
 
 from minutehand.application.checkpoint import PendingService
 from minutehand.application.further_seed import Scratch, land
-from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_undecided
+from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_untakeable
 from minutehand.application.model_calls import per_wake
 from minutehand.application.moments import decision_text
-from minutehand.application.orchestrator import refuse_fates_beside_the_engine
-from minutehand.application.people import Booking, People, needs_model
+from minutehand.application.orchestrator import acting
+from minutehand.application.people import Booking, People, happen, move, needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.run_clock import RunClock
@@ -50,7 +50,6 @@ from minutehand.domain.people import (
     PersonReply,
     Plan,
     Press,
-    Writing,
 )
 from minutehand.domain.provider import Manifest, PersonChange, merged_seed
 from minutehand.domain.run import StopReason
@@ -69,7 +68,7 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.transitions import Transition
+from minutehand.domain.transitions import ASSIGNEE, DELETE, FORM, PICKS, REASSIGN, REPLY, TEXT, Transition
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -84,26 +83,21 @@ from minutehand.domain.world import (
 )
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
-    ActsOnTickets,
     ASGIApp,
     BooksWakes,
     ChangesDocuments,
     ChangesPeople,
     DeclaresFaults,
-    DeletesTickets,
     DeliversInBackground,
-    EditsTickets,
     GrantsPermissions,
-    HoldsTickets,
     MintsInboundCredentials,
     NotifiesChanges,
     OwnsSeed,
     Provider,
     PushesEvents,
-    PushesInteractions,
 )
 from minutehand.ports.store import Store
-from minutehand.ports.transitions import TalksToAgent
+from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions, TalksToAgent
 
 TRANSITION = "transition"
 """How an owed move of a person's is written, as `OwedByPerson.writing` says it: the people engine's."""
@@ -175,7 +169,6 @@ class _Owed:
     at: datetime
     what: str
     failed: str | None = None
-    fate: tuple[EntityRef, TicketState | None] | None = None
     direction: str | None = None
     happening: Happening | None = None
     service: PendingService | None = None
@@ -214,8 +207,7 @@ class StandingWorld:
     ) -> None:
         """`provider` builds a provider by key; it is seeded into this world the first time it is had.
         `signing` is the secret each inbound target's events are signed with. `scripted` lets the scenario's
-        people answer and decide, its tickets meet their fates and its directions be said, as the clock passes
-        each. `model` writes what people say, as in a run; a world whose people speak in a model's words with no
+        people answer, decide and move what waits on them, and its directions be said, as the clock passes each. `model` writes what people say, as in a run; a world whose people speak in a model's words with no
         model is refused, naming them."""
         if scripted:
             needing = unspoken(scenario, [r.declared for r in inboxes.reaches.values()] if inboxes else [])
@@ -225,7 +217,7 @@ class StandingWorld:
         if inboxes is not None:
             try:
                 if scripted:
-                    refuse_undecided(scenario, list(inboxes.reaches.values()))
+                    refuse_untakeable(scenario, list(inboxes.reaches.values()))
                 refuse_clashing(list(inboxes.reaches.values()), [t.provider for t in inbound])
             except RunRefused as e:
                 raise WorldRefused(str(e)) from e
@@ -250,7 +242,6 @@ class StandingWorld:
         self._engine: People | None = None
         self._named: list[ProviderKey] = []
         self._owed: list[_Owed] = []
-        self._fated: set[EntityRef] = set()
         self._seen = 0
         self._acted: list[Happening] = []
         self._pushing: dict[int, str] = {}
@@ -273,10 +264,6 @@ class StandingWorld:
             self.provider(key)
         self._named = list(named)
         if self.scripted:
-            try:
-                refuse_fates_beside_the_engine(self.scenario, [self.provider(k).manifest for k in named])
-            except RunRefused as e:
-                raise WorldRefused(str(e)) from e
             self._engine = self._engine_for(self.scenario)
         for n, happening in enumerate(self.scenario.happenings, start=1):
             self._lands(happening, n)
@@ -466,15 +453,14 @@ class StandingWorld:
 
     def due_decisions(self) -> list[tuple[datetime, str, EntityRef, Decides | None]]:
         """Every decision people owe, earliest first, with when it falls due, whose it is, the item, and the
-        decision when it is known before its moment (a script's exact one); None: a model writes it then."""
+        decision when it is known before its moment (a take's, every input exact); None: a model picks it then."""
         found: list[tuple[datetime, str, EntityRef, Decides | None]] = []
         for o, held in self._deciding():
-            plan = Plan.model_validate_json(held.plan) if held.plan is not None else None
-            known = (
-                Decides(decision=plan.decision.decision, inputs=plan.decision.inputs)
-                if plan is not None and plan.decision is not None and plan.writing is Writing.VERBATIM
-                else None
+            person = self._person(held.person)
+            take = next(
+                (t for t in person.takes if t.take == held.take and t.provider in (None, held.item.provider)), None
             )
+            known = Decides(decision=take.take, inputs=take.fields) if take is not None and not take.facts else None
             found.append((o.at, held.person, held.item, known))
         return found
 
@@ -556,8 +542,7 @@ class StandingWorld:
 
     async def observe(self) -> None:
         """Read what the agent did since the last look and schedule what the world owes back: a declared service's
-        own moves, what people do about what waits on them now (the people engine's), and the fate of each ticket it
-        handed to a person who has one."""
+        own moves, and what people do about what waits on them now (the people engine's)."""
         new = self.store.events(since=self._seen)
         if new:
             self._seen = new[-1].seq
@@ -569,15 +554,11 @@ class StandingWorld:
         if self._engine is None:
             return
         await self._transitions(self._engine)
-        for event in new:
-            after = event.after
-            if (
-                event.actor is Actor.AGENT
-                and event.operation in (Operation.CREATE, Operation.UPDATE)
-                and isinstance(after, TicketSnapshot)
-                and after.assignee_email in self._people
-            ):
-                self._fate(self._people[after.assignee_email], event)
+
+    def _doing(self, engine: People, booked: Booking) -> str:
+        """What a person's owed move is, as its owed line says it: the take pinned, or a move of their own pick."""
+        take = engine.pending(booked.pending, self.store).take
+        return f"takes {take!r} on" if take is not None else "acts on"
 
     def _writing(self, engine: People, booked: Booking) -> str:
         """How the words of an answer are written, as its owed line says it: its plan's, or the engine's pick."""
@@ -599,27 +580,9 @@ class StandingWorld:
                 if kind is EntityKind.INBOX_ITEM
                 else f"{booked.person}'s reply ({self._writing(engine, booked)})"
                 if booked.conversation
-                else f"{booked.person} acts on {booked.item.provider} {booked.item.external_id}"
+                else f"{booked.person} {self._doing(engine, booked)} {booked.item.provider} {booked.item.external_id}"
             )
             self._owed.append(_Owed(at=max(booked.at, self.clock.now()), what=what, transition=booked.pending))
-
-    def _fate(self, person: Person, assigned: WorldEvent) -> None:
-        fate = next((f for f in self.scenario.ticket_fates if f.assignee == person.key), None)
-        if fate is None or assigned.entity in self._fated:
-            return
-        self._fated.add(assigned.entity)
-        self._owed.append(
-            _Owed(
-                at=assigned.sim_time + fate.after,
-                what=f"{person.key} "
-                + (
-                    f"moves {assigned.entity.external_id} to {fate.becomes.value}"
-                    if fate.becomes is not None
-                    else f"deletes {assigned.entity.external_id}"
-                ),
-                fate=(assigned.entity, fate.becomes),
-            )
-        )
 
     async def _fire(self, owed: _Owed) -> bool:
         """Carry out one thing owed; False when a person's words could not be written, and they still owe them."""
@@ -634,12 +597,6 @@ class StandingWorld:
             return acted.failure is None
         if owed.happening is not None:
             await self._happen(owed.happening)
-        elif owed.fate is not None:
-            ticket, becomes = owed.fate
-            if becomes is None:
-                self._deletes(ticket.provider).delete_ticket(ticket, self.store, self.clock)
-            else:
-                self._holds(ticket.provider).transition(ticket, becomes, self.store, self.clock)
         elif owed.direction is not None:
             await self.say(self.scenario.owner, owed.direction, provider=self._only_inbound())
         return True
@@ -649,7 +606,7 @@ class StandingWorld:
         provider = self.scenario.happening_provider(happening)
         found = self.provider(provider)
         if isinstance(happening, TicketHappening):
-            port, ok = "ActsOnTickets", isinstance(found, ActsOnTickets)
+            port, ok = "seeded tickets a person can act on", isinstance(acting(found), HoldsSeeded)
         elif isinstance(happening, DocumentHappening):
             port, ok = "ChangesDocuments", isinstance(found, ChangesDocuments)
         else:
@@ -664,8 +621,9 @@ class StandingWorld:
         provider = self.scenario.happening_provider(happening)
         found = self.provider(provider)
         if isinstance(happening, TicketHappening):
-            assert isinstance(found, ActsOnTickets)
-            found.act(happening, self.scenario, self.store, self.clock)
+            port = acting(found)
+            assert isinstance(port, ProvidesTransitions)
+            await happen(self.scenario, port, happening, self.store, self.clock)
         elif isinstance(happening, DocumentHappening):
             assert isinstance(found, ChangesDocuments)
             found.change(happening, self.scenario, self.store, self.clock)
@@ -690,16 +648,11 @@ class StandingWorld:
         return self._written(before)
 
     async def reply(self, person: str, text: str, *, to: EntityRef) -> WorldEvent:
-        """`person` answers a message: in its thread in a channel, as a new message in a DM."""
-        self._person(person)
-        before = self.store.head()
+        """`person` answers a message the agent sent them, in their own words, now: the transition its provider takes
+        it through (in Slack, the event pushed to the agent)."""
         answer = PersonReply(person=person, in_reply_to=to, text=text, at=self.clock.now())
-        self.store.remember(answer)
         async with self._push(f"{person} replies {text[:40]!r} on {to.provider}"):
-            pushes, target = self._pushes(to.provider), self._target(to.provider)
-            with _refusing():
-                await pushes.deliver(answer, target, self.store, self.clock, secret=self._signing[to.provider])
-        return self._written(before)
+            return await self._answer(answer, REPLY, {TEXT: text})
 
     async def happen_now(self, happening: Happening) -> WorldEvent:
         """`happening`, of any family, done now rather than at its offset: checked as a scenario's would be (its
@@ -726,17 +679,27 @@ class StandingWorld:
     async def press(self, person: str, on: EntityRef, press: Press) -> WorldEvent:
         """`person` uses a control on the message `on` now (a button, a pick, a form filled), pushed to the
         agent's interactivity target the way the provider's service pushes it."""
-        self._person(person)
-        found = self.provider(on.provider)
-        if not isinstance(found, PushesInteractions):
-            raise WorldRefused(f"{on.provider} carries no controls a person can use")
-        before = self.store.head()
+        given: dict[str, str] = {}
+        if press.picks is not None:
+            given[PICKS] = press.picks
+        if press.form:
+            given[FORM] = json.dumps([f.model_dump() for f in press.form])
         answer = PersonReply(person=person, in_reply_to=on, text=press.label, at=self.clock.now(), press=press)
-        self.store.remember(answer)
         async with self._push(f"{person} presses {press.label!r} on {on.provider}"):
-            target = self._target(on.provider)
-            with _refusing():
-                await found.press(answer, target, self.store, self.clock, secret=self._signing[on.provider])
+            return await self._answer(answer, press.action_id, given)
+
+    async def _answer(self, answer: PersonReply, offer: str, given: dict[str, str]) -> WorldEvent:
+        """A person's answer, by hand, taken through the message's provider as any answer is, and kept as said."""
+        who = self._person(answer.person)
+        to = answer.in_reply_to
+        found = self.provider(to.provider)
+        if not isinstance(found, TalksToAgent):
+            raise WorldRefused(f"{to.provider} carries no answers a person pushes to the agent")
+        port = found.talking(self._target(to.provider), self._signing[to.provider])
+        before = self.store.head()
+        with _refusing():
+            await port.apply(to, offer, Actor.PERSON, who, json.dumps(given), self.store, self.clock)
+        self.store.remember(answer)
         return self._written(before)
 
     def declare_faults(self, provider: ProviderKey, faults: str) -> None:
@@ -750,20 +713,15 @@ class StandingWorld:
             except ValueError as e:
                 raise WorldRefused(f"{provider} cannot declare these faults: {e}") from e
 
-    def delete_ticket(self, ticket: EntityRef) -> WorldEvent:
-        """A person deletes the ticket now: one the agent filed, or one seeded."""
+    async def delete_ticket(self, ticket: EntityRef) -> WorldEvent:
+        """A person deletes the ticket now, one the agent filed or one seeded: its assignee, or the owner when it has
+        none, through its provider."""
+        port = self._tickets(ticket.provider)
         before = self.store.head()
-        deletes = self._deletes(ticket.provider)
-        try:
-            deletes.delete_ticket(ticket, self.store, self.clock)
-        except LookupError as e:
-            if isinstance(e, (KeyError, IndexError)):
-                raise
-            raise WorldRefused(str(e.args[0]) if e.args else str(e)) from e
-        except ValueError as e:
-            if isinstance(e, ValidationError):
-                raise
-            raise WorldRefused(str(e)) from e
+        with _refusing():
+            port.legal(ticket, Actor.PERSON, None, self.store)  # the provider's own word on a ticket that is not there
+            who = self._assignee(ticket) or self._person(self.scenario.owner)
+            await move(port, ticket, DELETE, Actor.PERSON, who, {}, self.store, self.clock)
         return self._written(before)
 
     # -- the world changed from outside, while open ---------------------------------------------------------------
@@ -870,23 +828,30 @@ class StandingWorld:
             except ValueError as e:
                 raise WorldRefused(f"{provider} cannot sign that: {e}") from e
 
-    def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
-        """The ticket's assignee moves it, as actor PERSON."""
+    async def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
+        """The ticket's assignee moves it to a state that means `to`, as actor PERSON, through its provider."""
         before = self.store.head()
-        holds = self._holds(ticket.provider)
+        port = self._tickets(ticket.provider)
         with _refusing():
-            holds.transition(ticket, to, self.store, self.clock)
+            port.legal(ticket, Actor.PERSON, None, self.store)  # the provider's own word on a ticket that is not there
+        assignee = self._assignee(ticket)
+        if assignee is None:
+            raise WorldRefused(f"{ticket.provider} {ticket.external_id} has no assignee to move it")
+        with _refusing():
+            await move(port, ticket, to.value, Actor.PERSON, assignee, {}, self.store, self.clock)
         return self._written(before)
 
-    def edit_ticket(self, ticket: EntityRef, *, state: TicketState | None, assignee: str | None) -> WorldEvent:
-        """The ticket is rewritten from outside the agent (reassigned, reopened), as actor SCENARIO."""
+    async def edit_ticket(self, ticket: EntityRef, *, state: TicketState | None, assignee: str | None) -> WorldEvent:
+        """The ticket is rewritten from outside the agent (reassigned, its state set past any workflow), as actor
+        SCENARIO, through its provider."""
+        port = self._tickets(ticket.provider)
         email = self._person(assignee).email if assignee is not None else None
-        provider = self.provider(ticket.provider)
-        if not isinstance(provider, EditsTickets):
-            raise WorldRefused(f"{ticket.provider} holds no tickets that can be rewritten")
         before = self.store.head()
         with _refusing():
-            provider.edit(ticket, state=state, assignee_email=email, world=self.store, clock=self.clock)
+            if state is not None:
+                await move(port, ticket, state.value, Actor.SCENARIO, None, {}, self.store, self.clock)
+            if email is not None:
+                await move(port, ticket, REASSIGN, Actor.SCENARIO, None, {ASSIGNEE: email}, self.store, self.clock)
         return self._written(before)
 
     # -- reading ------------------------------------------------------------------------------------------------
@@ -932,17 +897,26 @@ class StandingWorld:
             )
         return next(iter(self._inbound))
 
-    def _deletes(self, provider: ProviderKey) -> DeletesTickets:
+    def _tickets(self, provider: ProviderKey) -> ProvidesTransitions:
         found = self.provider(provider)
-        if not isinstance(found, DeletesTickets):
-            raise Unsupported(f"{provider} holds no tickets a person can delete")
-        return found
+        port = acting(found)
+        if not isinstance(port, ProvidesTransitions) or EntityKind.TICKET not in found.manifest.kinds:
+            raise Unsupported(f"{provider} holds no tickets a person can act on")
+        return port
 
-    def _holds(self, provider: ProviderKey) -> HoldsTickets:
-        found = self.provider(provider)
-        if not isinstance(found, HoldsTickets):
-            raise WorldRefused(f"{provider} holds no tickets a person can move")
-        return found
+    def _assignee(self, ticket: EntityRef) -> Person | None:
+        """Who the ticket is assigned to now, as the world last recorded it."""
+        stood = next(
+            (
+                e.after
+                for e in reversed(self.store.events())
+                if e.entity == ticket and isinstance(e.after, TicketSnapshot)
+            ),
+            None,
+        )
+        if stood is None:
+            return None
+        return next((p for p in self.scenario.people if p.email == stood.assignee_email), None)
 
 
 def score(

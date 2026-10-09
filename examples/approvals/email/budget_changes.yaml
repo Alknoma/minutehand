@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
 # The budget is cut twelve hours after Nadia is asked, while her answer is still owed. What she knows changes from
-# then on; the answer she owes does not: it was written from what she knew when asked, so she approves the full
-# order. Only what she is asked after the change is answered from the new facts.
+# then on, and the answer she owes is worded again, as she sends it, from what she knows then; what it says is her
+# script's step, so she still approves the full order. A team that wants her to approve less scripts that.
 name: email_budget_changes
 goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
 owner: owen

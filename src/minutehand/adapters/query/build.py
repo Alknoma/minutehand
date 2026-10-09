@@ -764,7 +764,7 @@ def _replies(
                     for n, p in enumerate(person_calls, start=1)
                     if p.person == r.person
                     and p.asked == r.in_reply_to
-                    and p.wrote in (Wrote.REPLY, Wrote.DECISION)
+                    and p.wrote in (Wrote.REPLY, Wrote.TRANSITION)
                     and p.answer is not None
                 ),
                 None,

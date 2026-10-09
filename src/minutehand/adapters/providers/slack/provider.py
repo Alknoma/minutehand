@@ -122,6 +122,6 @@ def _declare(faults: str, world: Store, clock: Clock) -> None:
 
 
 def build() -> SlackProvider:
-    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `ServesSockets`, `DeclaresFaults`,
+    """A `Provider` that also `PushesEvents`, `PushesPresses`, `ServesSockets`, `DeclaresFaults`,
     `ChangesPeople` and `MintsInboundCredentials`; the tests hold it to each."""
     return SlackProvider()

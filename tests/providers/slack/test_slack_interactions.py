@@ -5,7 +5,6 @@ the world log holds each step, the person's press as theirs."""
 from __future__ import annotations
 
 import json
-from datetime import timedelta
 
 import pytest
 from slack_sdk.errors import SlackApiError
@@ -13,17 +12,11 @@ from starlette.responses import JSONResponse, Response
 
 from minutehand.adapters.providers.slack import interactive, state
 from minutehand.adapters.providers.slack.interactive import FormNeverOpened
-from minutehand.application.replier import PeopleReplier
 from minutehand.domain.people import PersonReply, Press
 from minutehand.domain.scenario import (
-    AfterScript,
-    DelayRange,
     FormInput,
-    Person,
-    Scripted,
-    ScriptedPress,
-    ScriptedReply,
 )
+from minutehand.domain.transitions import FORM, PICKS, answered, message_offers
 from minutehand.domain.world import (
     Actor,
     InteractionKind,
@@ -34,8 +27,7 @@ from minutehand.domain.world import (
     WorldEvent,
 )
 from tests.providers.slack.intercepted import SECRET, AgentEndpoint, Intercepted, Received, data
-from tests.providers.slack.slack_workspace import SCENARIO, Workspace
-from tests.support.people import people_model
+from tests.providers.slack.slack_workspace import Workspace
 
 CARD = [
     {"type": "section", "text": {"type": "mrkdwn", "text": "*Send the contract to Acme?*"}},
@@ -88,19 +80,6 @@ REJECT_MODAL = {
 }
 
 
-def tomas(press: ScriptedPress) -> Person:
-    return Person(
-        key="tomas",
-        name="Tomas Brandt",
-        email="tomas@example.com",
-        reply=Scripted(
-            then=AfterScript.SILENT,
-            delay=DelayRange(shortest=timedelta(0), longest=timedelta(0)),
-            replies=[ScriptedReply(to_ask=1, press=press)],
-        ),
-    )
-
-
 async def card_to_tomas(slack: Intercepted, workspace: Workspace) -> WorldEvent:
     sdk = slack.asynchronous()
     dm = data(await sdk.conversations_open(users=[state.user_id("tomas")]))["channel"]["id"]
@@ -109,13 +88,18 @@ async def card_to_tomas(slack: Intercepted, workspace: Workspace) -> WorldEvent:
     return event
 
 
-async def decided(person: Person, asked: WorldEvent, workspace: Workspace) -> PersonReply:
-    scenario = SCENARIO.model_copy(update={"people": [p for p in SCENARIO.people if p.key != "tomas"] + [person]})
-    reply = await PeopleReplier(scenario, people_model()).decide(
-        person, asked, workspace.store.events(), workspace.clock
-    )
-    assert reply is not None and reply.press is not None
-    return reply
+def tomas_presses(
+    asked: WorldEvent, label: str, *, form: list[FormInput] | None = None, picks: str | None = None
+) -> PersonReply:
+    """Tomas's use of the control reading `label`, in any case, as a take of it delivers it (`answered`)."""
+    assert isinstance(asked.after, MessageSnapshot)
+    offer = next(o for o in message_offers(asked.after) if (o.label or "").casefold() == label.casefold())
+    given: dict[str, str] = {}
+    if form:
+        given[FORM] = json.dumps([f.model_dump() for f in form])
+    if picks is not None:
+        given[PICKS] = picks
+    return answered(asked.entity, asked.after, offer.name, "tomas", json.dumps(given), asked.sim_time)
 
 
 def interactions(workspace: Workspace) -> list[InteractionSnapshot]:
@@ -137,7 +121,7 @@ async def test_accept_reaches_the_agent_signed_and_the_card_is_replaced_by_its_r
 
     agent.answer = answer
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="accept")), asked, workspace)
+    reply = tomas_presses(asked, "accept")
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
 
     assert agent.forged == [] and len(agent.received) == 1
@@ -188,7 +172,7 @@ async def test_reject_with_a_reason_fills_and_submits_the_modal_the_agent_opens(
     agent.answer = answer
     asked = await card_to_tomas(slack, workspace)
     reason = "The price went up; hold it."
-    reply = await decided(tomas(ScriptedPress(label="Reject", form=[FormInput(value=reason)])), asked, workspace)
+    reply = tomas_presses(asked, "Reject", form=[FormInput(value=reason)])
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
 
     assert reply.text == reason
@@ -228,11 +212,7 @@ async def test_a_submission_answered_with_errors_leaves_the_modal_open_with_them
 
     agent.answer = answer
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(
-        tomas(ScriptedPress(label="Reject", form=[FormInput(input_id="rejection_reason_input", value="no")])),
-        asked,
-        workspace,
-    )
+    reply = tomas_presses(asked, "Reject", form=[FormInput(input_id="rejection_reason_input", value="no")])
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
 
     from minutehand.adapters.providers.slack import wire
@@ -258,7 +238,7 @@ async def test_a_submission_answered_with_an_update_shows_the_next_view(
 
     agent.answer = answer
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="Reject", form=[FormInput(value="no")])), asked, workspace)
+    reply = tomas_presses(asked, "Reject", form=[FormInput(value="no")])
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
 
     last = [e for e in workspace.store.events() if isinstance(e.after, RecordSnapshot) and e.after.resource == "views"][
@@ -271,7 +251,7 @@ async def test_a_person_picker_sends_who_was_picked(
     slack: Intercepted, workspace: Workspace, agent: AgentEndpoint
 ) -> None:
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="Assign to", picks="noor")), asked, workspace)
+    reply = tomas_presses(asked, "Assign to", picks="noor")
     await workspace.provider.press(
         reply, agent.target(interactivity=agent.url), workspace.store, workspace.clock, secret=SECRET
     )
@@ -286,7 +266,7 @@ async def test_a_press_meant_for_a_form_the_agent_never_opens_fails_the_agent(
 ) -> None:
     monkeypatch.setattr(interactive, "FORM_WAIT", 0.3)
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="Reject", form=[FormInput(value="no")])), asked, workspace)
+    reply = tomas_presses(asked, "Reject", form=[FormInput(value="no")])
     with pytest.raises(FormNeverOpened):
         await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
 
@@ -307,28 +287,11 @@ async def test_a_press_on_a_control_the_message_does_not_carry_is_refused(
     assert agent.received == []
 
 
-async def test_a_scripted_press_on_a_label_the_message_lacks_is_no_reply(
-    slack: Intercepted, workspace: Workspace
-) -> None:
-    asked = await card_to_tomas(slack, workspace)
-    person = tomas(ScriptedPress(label="Approve all 3"))
-    scenario = SCENARIO.model_copy(update={"people": [*SCENARIO.people[:1], person, SCENARIO.people[2]]})
-    assert (
-        await PeopleReplier(scenario, people_model()).decide(person, asked, workspace.store.events(), workspace.clock)
-        is None
-    )
-    assert isinstance(asked.after, MessageSnapshot) and [a.label for a in asked.after.actions] == [
-        "Accept",
-        "Reject",
-        "Assign to",
-    ]
-
-
 async def test_a_response_url_answers_five_times_and_then_refuses(
     slack: Intercepted, workspace: Workspace, agent: AgentEndpoint
 ) -> None:
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="Accept")), asked, workspace)
+    reply = tomas_presses(asked, "Accept")
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
     url = agent.received[0].payload["response_url"]
     async with slack.http() as http:
@@ -347,7 +310,7 @@ async def test_a_response_url_answers_five_times_and_then_refuses(
 
 async def test_delete_original_removes_the_card(slack: Intercepted, workspace: Workspace, agent: AgentEndpoint) -> None:
     asked = await card_to_tomas(slack, workspace)
-    reply = await decided(tomas(ScriptedPress(label="Accept")), asked, workspace)
+    reply = tomas_presses(asked, "Accept")
     await workspace.provider.press(reply, agent.target(), workspace.store, workspace.clock, secret=SECRET)
     async with slack.http() as http:
         await http.post(agent.received[0].payload["response_url"], json={"delete_original": True})

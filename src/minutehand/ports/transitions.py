@@ -13,8 +13,8 @@ from typing import Protocol, runtime_checkable
 
 from minutehand.domain.common import Window
 from minutehand.domain.people import InboundTarget
-from minutehand.domain.scenario import Person
-from minutehand.domain.transitions import Offer, Transition, Waiting
+from minutehand.domain.scenario import Person, Scenario, SeededTicket
+from minutehand.domain.transitions import Offer, Transition, Waiting, transition_change
 from minutehand.domain.world import Actor, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -79,3 +79,20 @@ class TalksToAgent(Protocol):
         """This provider's transitions, a person's answer pushed to `target` signed with `secret`; None for an
         agent that declares no inbound target here, to whom nothing is pushed (an answer pushed is refused)."""
         ...
+
+
+@runtime_checkable
+class HoldsSeeded(Protocol):
+    """A provider holding the tickets a scenario seeds: what a person does to one by themselves (a `TicketHappening`)
+    is a transition of the item seeded from it, taken through `apply` like any other."""
+
+    def seeded(self, scenario: Scenario, ticket: SeededTicket, world: Store) -> EntityRef | None:
+        """The item seeded from `ticket`, while it is there; None once it is gone (the agent deleted it)."""
+        ...
+
+
+def record(world: Store, moved: Transition) -> Transition:
+    """`moved` recorded once in the log, as every provider records a move it makes outside its own history (a
+    comment, a reassignment, a deletion): answered with its seq."""
+    recorded = world.apply(transition_change(moved, at_seq=world.head() + 1))
+    return moved.model_copy(update={"seq": recorded.seq})
