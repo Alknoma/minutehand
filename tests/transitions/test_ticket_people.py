@@ -134,6 +134,7 @@ async def test_a_person_a_model_plays_never_deletes_a_youtrack_issue_unprompted(
     provider.seed(scenario, store)
     engine = people_engine(scenario, {"youtrack": provider}, people_model())
     [booked] = (await engine.look(store, clock)).booked
+    assert booked.at is not None
 
     clock.jump(booked.at)
     await engine.act(booked.pending, store, clock)
@@ -154,6 +155,7 @@ async def test_a_take_on_a_persons_nth_ask_anywhere_never_pins_a_ticket(tmp_path
     provider.seed(scenario, store)
     engine = people_engine(scenario, {"youtrack": provider}, people_model())
     [booked] = (await engine.look(store, clock)).booked
+    assert booked.at is not None
 
     clock.jump(booked.at)
     await engine.act(booked.pending, store, clock)

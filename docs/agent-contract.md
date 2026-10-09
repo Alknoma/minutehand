@@ -237,8 +237,8 @@ Each line is a name or shape that disagrees with this page. None is renamed in t
 5. **The dotted path syntax and its two readers** (`capture.values_at`, the emulator's) should become
    `domain/jsonpath.py`, with paths written `$.personalizations[*].to[*].email`.
 6. **`BodyPath` is declared twice**, in `domain/outbound.py` and `domain/emulator.py`.
-7. **`Scripted.replies[].to_ask` counts messages, while `decisions[].to_item` counts items.** Both are "the nth
-   ask".
+7. **`Scripted.replies[].to_ask` counts asks, while `Take.nth` counts items in a provider, or asks when it names
+   none.** Both are "the nth ask".
 8. **Only the agent file is versioned.** A scenario and a seed carry no version.
 9. **`application/restore.py` and `restore.json` say "restore"** for a fork's start, where nothing is restored: the
    memory is read from the log, and the agent's report compared.

@@ -76,7 +76,7 @@ move never wakes the agent: it finds it on its next read.
 
 ## While a world is open (`minutehand serve`)
 
-- A person deletes an issue (`OpenWorld.delete_ticket`, or a `TicketFate` with `deleted: true`): the issue, its
+- A person deletes an issue (`OpenWorld.delete_ticket`, or a take of `delete`): the issue, its
   subtasks and the links naming them go, as actor PERSON, and the API answers 404 for it.
 - An account is deactivated or reactivated (`OpenWorld.deactivate_person` / `reactivate_person`): it reads
   `active: false` and is not assignable (400); its credentials still act as it, since none is checked. Removing an account is
