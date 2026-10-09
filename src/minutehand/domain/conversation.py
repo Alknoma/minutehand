@@ -100,3 +100,12 @@ class PersonCall(Model):
     replayed: bool = Field(default=False, description="Answered from the world's record: no model was called")
     sim_time: AwareDatetime
     wake: int = Field(ge=0)
+
+
+class FactCheck(Model):
+    """Whether a person's reply stays inside what they know: a model's reading, before the reply is sent
+    (`Wrote.FACT_CHECK`). A reply still found outside it once written again is a fact of the simulation's health."""
+
+    supported: bool = Field(description="Whether everything the reply states is supported by what is shown")
+    unsupported: list[str] = Field(description="Each statement nothing shown supports, quoted from the reply")
+    rationale: str = Field(description="Why, in one or two sentences")

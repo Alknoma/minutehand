@@ -179,7 +179,7 @@ def test_the_examples_wakes_dispatch_and_replies(follow_up: Played) -> None:
         "writing": "script",
         "written_by": "model",
         "model": PEOPLE_MODEL,
-        "prompt_version": "person-step/1",
+        "prompt_version": "person-step/2",
         "text": ROSA_SAYS,
     }
     assert (json.loads(str(reply["facts"])), reply["answers_seq"], reply["seq"]) == (

@@ -66,3 +66,15 @@ def test_a_run_that_recorded_no_calls_leaves_a_calls_rule_unread() -> None:
 def test_a_status_that_is_no_status_is_refused() -> None:
     with pytest.raises(ValueError, match="is a status"):
         Calls(status=["4x"])
+
+
+def test_refused_tells_the_resubmit_that_was_taken_from_the_one_that_was_refused() -> None:
+    written = """
+        - id: resubmits
+          count: {calls: {route: ["/v1/requests/{id}/resubmit"], refused: REFUSED}}
+          at_most: 0
+          message: "{rule.count}"
+        """
+    assert _read(written.replace("REFUSED", "true")) == ["1"]
+    assert _read(written.replace("REFUSED", "false")) == ["1"]
+    assert _read(written.replace(", refused: REFUSED", "")) == ["2"]

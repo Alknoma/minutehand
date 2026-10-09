@@ -40,10 +40,22 @@ def people_environment() -> dict[str, str]:
 
 
 def people_requests() -> list[dict[str, object]]:
-    """Every request the stand-in was sent for a person, in order, as bodies."""
+    """Every request the stand-in was sent to write for a person, in order, as bodies: the checks of their replies
+    against what they know are `fact_checks()`."""
     _, served = _served()
     with served.lock:
-        return [body for path, body in served.received if fake_model.people_schema(body) is not None]
+        return [
+            body
+            for path, body in served.received
+            if fake_model.people_schema(body) not in (None, "FactCheck", "ItemReview")
+        ]
+
+
+def fact_checks() -> list[dict[str, object]]:
+    """Every check of a person's reply against what they know the stand-in was sent, in order, as bodies."""
+    _, served = _served()
+    with served.lock:
+        return [body for path, body in served.received if fake_model.people_schema(body) == "FactCheck"]
 
 
 def people_engine(scenario: Scenario, ports: Mapping[ProviderKey, object], model: LanguageModel | None) -> People:

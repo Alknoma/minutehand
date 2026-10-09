@@ -110,6 +110,11 @@ class FakeCompletions:
     rule: Rule
     received: list[Received] = field(default_factory=list)
     base_url: str = ""
+    checks_facts: bool = False
+    """Whether `rule` answers the check of a person's reply against what they know (`FactCheck`). Unless it does,
+    every such check finds the reply inside what the person knows, and is kept in `checked` rather than `received`,
+    so a rule written for what people say need not know of it."""
+    checked: list[Received] = field(default_factory=list)
 
     def for_schema(self, name: str) -> list[Received]:
         return [r for r in self.received if r.schema_name == name]
@@ -121,6 +126,10 @@ class FakeCompletions:
         assert isinstance(body, dict)
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
         received = Received(authorization=authorization, body=body)
+        if received.schema_name == "FactCheck" and not self.checks_facts:
+            self.checked.append(received)
+            supported = '{"supported": true, "unsupported": [], "rationale": "It says only what they know."}'
+            return JSONResponse(completion(supported, received.model))
         self.received.append(received)
         answered = self.rule(received)
         if isinstance(answered, Answer):
@@ -133,8 +142,8 @@ class FakeCompletions:
 
 
 @asynccontextmanager
-async def fake_completions(rule: Rule) -> AsyncIterator[FakeCompletions]:
-    fake = FakeCompletions(rule=rule)
+async def fake_completions(rule: Rule, *, checks_facts: bool = False) -> AsyncIterator[FakeCompletions]:
+    fake = FakeCompletions(rule=rule, checks_facts=checks_facts)
     async with serving(fake.app()) as base:
         fake.base_url = f"{base}/v1"
         yield fake

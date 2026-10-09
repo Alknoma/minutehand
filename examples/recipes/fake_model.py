@@ -41,6 +41,8 @@ model-written people needs no real model either. The rules read the prompt Minut
                         when they know something, from their facts: a ticket's move, an invitation's answer, a
                         decision in the agent's own product
     a summary           how many earlier messages there were
+    a fact check        whether a person's reply stays inside what they know: a go-ahead or approval that
+                        nothing they know gives is not theirs to give
     a review            the shared reviewer of the agent's effects (`ItemReview`): an amount the effect carries
                         that nothing the agent was given holds is an invented fact; a record stored, or a ticket or
                         document written, while a declared service's item waits on a person is acting before the
@@ -133,7 +135,7 @@ def decide(situation: str) -> list[Call]:
 
 PEOPLE = ("WrittenStep", "WrittenReply", "WrittenTransition", "WrittenSummary")
 SERVICES = ("WrittenMachine", "WrittenRoute", "WrittenAnswer")
-JUDGES = ("ItemReview",)
+JUDGES = ("ItemReview", "FactCheck")
 
 
 def _bullets(text: str, heading: str) -> list[str]:
@@ -419,6 +421,27 @@ def review_answer(shown: str) -> dict[str, object]:
     return {"issues": issues}
 
 
+_GRANTS = re.compile(
+    r"good to (?:go|proceed)|go ahead|(?:is|are|it's|it is) approved|no need to wait|you can proceed|proceed with",
+    re.IGNORECASE,
+)
+
+
+def fact_check_answer(shown: str) -> dict[str, object]:
+    """Whether a person's reply stays inside what they know: a go-ahead, an approval or a "no need to wait" that
+    neither what they know nor what the reply was meant to say gives is a decision they do not have."""
+    given, _, reply = shown.partition("Their reply:\n")
+    known = given.split("The conversation:", 1)[0]
+    granted = [m.group(0) for m in _GRANTS.finditer(reply) if not _GRANTS.search(known)]
+    if granted:
+        return {
+            "supported": False,
+            "unsupported": granted,
+            "rationale": "It gives a go-ahead nothing they know gives them to give.",
+        }
+    return {"supported": True, "unsupported": [], "rationale": "It says only what they know."}
+
+
 def people_completion(body: dict[str, object], schema: str, number: int) -> dict[str, object]:
     messages = body["messages"]
     assert isinstance(messages, list)
@@ -426,6 +449,8 @@ def people_completion(body: dict[str, object], schema: str, number: int) -> dict
     shown = _text(messages[-1]["content"])
     if schema == "ItemReview":
         answered = review_answer(shown)
+    elif schema == "FactCheck":
+        answered = fact_check_answer(shown)
     elif schema in SERVICES:
         answered = service_answer(schema, system, _text(messages[1]["content"]))
     elif schema == "WrittenTransition":

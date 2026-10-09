@@ -69,6 +69,7 @@ class HealthKind(StrEnum):
     OWED_UNBOOKED = "owed_unbooked"  # a reply or decision someone owes, with no moment booked for it
     MODEL_FAILED = "model_failed"  # a people model call that failed and was never answered after
     PUSH_FAILED = "push_failed"  # an event the world pushed that never reached the agent, retries and all
+    BEYOND_FACTS = "beyond_facts"  # a person's model-written reply said what nothing they know supports
     WAITS_BY_DECLARATION = "waits_by_declaration"  # an item pending on someone the files declare never acts
     NEVER_EXERCISED = "never_exercised"  # a declared service, collection or person nothing in the run touched
     STEP_NEVER_FIRED = "step_never_fired"  # a scripted step whose ask never came
@@ -81,6 +82,7 @@ INCOMPLETE = frozenset(
         HealthKind.OWED_UNBOOKED,
         HealthKind.MODEL_FAILED,
         HealthKind.PUSH_FAILED,
+        HealthKind.BEYOND_FACTS,
     }
 )
 """The kinds that mean the world did not play what its files declare, so the run is `SIMULATION_INCOMPLETE`. The

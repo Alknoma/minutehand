@@ -19,6 +19,7 @@ Which is which, and why:
 | `owed_unbooked` | yes | Someone owes a move or an answer (they speak for themselves, or a take pins it) and no moment was booked, or a moment was booked and the run's table of what is due never held it |
 | `model_failed` | yes | A people model call failed and no later call with the same context answered, or a move is still owed with a model's failure on it |
 | `push_failed` | yes | An event the world pushed to the agent (a Slack event, a declared service's push) was not taken, after every retry its service makes |
+| `beyond_facts` | yes | A person's reply a model wrote said what nothing they know, were meant to say or heard supports (a go-ahead, a decision, a fact never given), and written again once it still did: the person stepped outside what the scenario declares of them |
 | `waits_by_declaration` | no | An item waited on someone the files declare never acts: a `Silent` person, or one whose script ends in silence where no service declares them a responder |
 | `never_exercised` | no | A declared service, `store` collection or person nothing in the run touched |
 | `step_never_fired` | no | A scripted step whose ask never came |
@@ -34,6 +35,7 @@ from minutehand.checks.facts import ended_at
 from minutehand.domain.assessments import StoppedBy
 from minutehand.domain.checks import INCOMPLETE, HealthFinding, HealthKind, RunView
 from minutehand.domain.clock import DueKind
+from minutehand.domain.conversation import FactCheck, PersonCall, Wrote
 from minutehand.domain.people import Plan
 from minutehand.domain.scenario import AfterScript, Answers, Person, Scenario, Scripted, Silent, WrittenScenario
 from minutehand.domain.services import Machine, Trigger
@@ -85,11 +87,36 @@ def health(view: RunView) -> list[HealthFinding]:
         *_waits_on_nobody(view),
         *_model_failures(view),
         *_pushes(view),
+        *_beyond_facts(view),
         *_never_exercised(view),
         *_steps(view),
     ]
     order = list(HealthKind)
     return sorted(found, key=lambda f: order.index(f.kind))
+
+
+def _beyond_facts(view: RunView) -> Iterator[HealthFinding]:
+    """Each reply whose last check against what the person knows (`Wrote.FACT_CHECK`) found it outside it."""
+    last: dict[tuple[str, str], PersonCall] = {}
+    for call in view.person_calls:
+        if call.wrote is Wrote.FACT_CHECK and call.person is not None and call.asked is not None and call.answer:
+            last[(call.person, call.asked.external_id)] = call
+    for call in last.values():
+        assert call.answer is not None and call.person is not None and call.asked is not None
+        checked = FactCheck.model_validate_json(call.answer)
+        if checked.supported:
+            continue
+        asked = next((e.seq for e in view.events if e.entity == call.asked), None)
+        said = "; ".join(f'"{u}"' for u in checked.unsupported) or checked.rationale
+        yield _found(
+            HealthKind.BEYOND_FACTS,
+            f"{call.person}'s reply said {said}, which nothing they know supports, and written again it still did: "
+            "the person stepped outside what the scenario declares of them",
+            person=call.person,
+            entity=call.asked,
+            since=call.sim_time,
+            evidence=[asked] if asked is not None else [],
+        )
 
 
 def _speaks(person: Person) -> bool:

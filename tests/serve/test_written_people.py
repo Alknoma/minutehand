@@ -87,8 +87,9 @@ def test_a_person_a_model_writes_for_answers_only_once_advance_passes_their_mome
             assert receiver.texts() == [SAID]
             view = written.client.world(world.world_id)
             assert view.people_owe == []
-            [call] = view.person_calls
-            assert call.wrote is Wrote.REPLY and call.model == "people-fake" and call.prompt_version == "person-reply/3"
+            call, checked = view.person_calls
+            assert call.wrote is Wrote.REPLY and call.model == "people-fake" and call.prompt_version == "person-reply/4"
+            assert checked.wrote is Wrote.FACT_CHECK and checked.prompt_version == "person-fact-check/1"
             assert call.input_tokens and call.output_tokens and not call.replayed
         finally:
             written.client.close_world(world.world_id)
