@@ -18,7 +18,8 @@ from minutehand.domain.checks import FindingKind, RunView
 from minutehand.domain.conversation import SIDE, Side, Wrote
 from minutehand.domain.items import CALENDAR_EVENT, EMAIL, AssessedKind, ItemKind, ProvidedTypes, TypedItem
 from minutehand.domain.scenario import PersonAsked
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
+from minutehand.domain.transitions import EXISTS, Transition
+from minutehand.domain.world import Actor, EntityKind, EntityRef
 from minutehand.ports.model import JudgedCheck
 from tests.checks.world import Log, at, person, scenario, view
 from tests.model.fake_completions import Received, fake_completions
@@ -76,13 +77,18 @@ def test_each_kind_of_item_brings_its_own_instruction_to_the_reviewer() -> None:
     built = view(scenario(person("owner"), tom), log)
     for declared, opening in ((EMAIL, "An email:"), (CALENDAR_EVENT, "A calendar event:")):
         effect = TypedItem(
-            seq=sent.seq,
+            move=Transition(
+                provider="chat",
+                item=EntityRef(provider="chat", kind=EntityKind.MESSAGE, external_id="m1"),
+                name="create",
+                from_state=None,
+                to_state=EXISTS,
+                by=Actor.AGENT,
+                who=None,
+                at=at(1),
+                seq=sent.seq,
+            ),
             kind=declared.kind,
-            provider="chat",
-            item=EntityRef(provider="chat", kind=EntityKind.MESSAGE, external_id="m1"),
-            actor=Actor.AGENT,
-            operation=Operation.CREATE,
-            at=at(1),
             text="Meeting moved to Friday.",
             people=[tom.email],
             starts=at(48) if declared is CALENDAR_EVENT else None,

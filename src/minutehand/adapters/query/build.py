@@ -46,6 +46,7 @@ from minutehand.domain.telemetry import (
     StoredSpan,
     StringValue,
 )
+from minutehand.domain.transitions import moves
 from minutehand.domain.world import (
     Actor,
     AnsweredBy,
@@ -61,7 +62,6 @@ from minutehand.domain.world import (
     PushSnapshot,
     RecordedCall,
     StoredSnapshot,
-    TransitionSnapshot,
     WorldEvent,
 )
 
@@ -302,22 +302,21 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
         "transitions",
         [
             {
-                "seq": e.seq,
-                "at": at(e.sim_time),
-                "wake": e.wake,
-                "provider": e.entity.provider,
-                "item_kind": e.after.item.kind.value,
-                "item_id": e.after.item.external_id,
-                "name": e.after.name,
-                "from_state": e.after.from_state,
-                "to_state": e.after.to_state,
-                "actor": e.actor.value,
-                "who": e.after.who,
-                "content": e.after.content,
-                "call_id": call_of[e.seq] if e.seq in call_of else None,
+                "seq": m.seq,
+                "at": at(m.at),
+                "wake": m.wake,
+                "provider": m.provider,
+                "item_kind": m.item.kind.value,
+                "item_id": m.item.external_id,
+                "name": m.name,
+                "from_state": m.from_state,
+                "to_state": m.to_state,
+                "actor": m.by.value,
+                "who": m.who,
+                "content": m.content,
+                "call_id": call_of[m.seq] if m.seq in call_of else None,
             }
-            for e in events
-            if isinstance(e.after, TransitionSnapshot)
+            for m in moves(events)
         ],
     )
     tables.put("items", _items(events))
