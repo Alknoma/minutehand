@@ -1784,13 +1784,13 @@ Ten, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/pattern
 
 ### Checks that need a model
 
-Designed, not built. "Does this ticket make sense to the person it was assigned to" cannot be computed. A judged check implements the same `Check` protocol and returns the same `Finding`, with three differences:
+Built for one thing the user writes: `asked_about` (`checks/judged/`), which reads a scenario's `PersonAsked.about` and runs only under `--judge`. No judged check runs on Minutehand's own initiative: a check that judged every ticket the agent filed for clarity (`ticket_is_actionable`) was removed, since nothing judges a run from Minutehand's side unless the user wrote it. A judged check returns the same `Finding`, with three differences:
 
-- `FindingKind.REVIEW` unless the scenario sets a pass rate over several samples.
+- `FindingKind.REVIEW`.
 - The model, its prompt version and its rationale are recorded with the finding.
-- It runs after the deterministic checks and only on entities they passed, so a ticket already failed for a wrong name is not judged for clarity.
+- It runs after the deterministic checks and only on entities they passed.
 
-Every finding, judged or not, becomes one OpenTelemetry log record in the trace of the entity it is about, so "tickets judged unclear, by scenario, across ten thousand runs" is a query in whatever store receives the telemetry.
+Every finding, judged or not, becomes one OpenTelemetry log record in the trace of the entity it is about, so "asks judged off-topic, by scenario, across ten thousand runs" is a query in whatever store receives the telemetry.
 
 ## Build tracks
 
