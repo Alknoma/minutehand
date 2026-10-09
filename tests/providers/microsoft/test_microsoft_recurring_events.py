@@ -124,6 +124,25 @@ async def test_every_other_week_from_a_first_day_and_a_numbered_range_and_a_dail
     found = await calendar.instances(biweekly["id"], "2026-09-01T00:00:00Z", "2027-01-01T00:00:00Z")
     assert _days(found) == ["2026-09-14", "2026-09-18", "2026-09-28"]
     assert biweekly["recurrence"]["range"]["numberOfOccurrences"] == 3
+    for first, expected in (
+        ("monday", ["2026-09-14", "2026-09-20", "2026-09-28", "2026-10-04"]),
+        ("sunday", ["2026-09-14", "2026-09-27", "2026-09-28", "2026-10-11"]),
+    ):
+        weeks = (
+            await calendar.make(
+                recurrence={
+                    "pattern": {
+                        "type": "weekly",
+                        "interval": 2,
+                        "daysOfWeek": ["sunday", "monday"],
+                        "firstDayOfWeek": first,
+                    },
+                    "range": {"type": "numbered", "startDate": "2026-09-14", "numberOfOccurrences": 4},
+                }
+            )
+        ).json()
+        found = await calendar.instances(weeks["id"], "2026-09-01T00:00:00Z", "2027-01-01T00:00:00Z")
+        assert _days(found) == expected, f"weeks start on {first}"
     daily = (
         await calendar.make(
             recurrence={

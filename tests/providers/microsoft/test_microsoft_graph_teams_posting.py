@@ -11,6 +11,8 @@ from datetime import timedelta
 import httpx
 import pytest
 
+from minutehand.adapters.providers.microsoft.state import TEAMS, team_ref
+from minutehand.domain.world import Actor, Operation
 from tests.providers.microsoft.outlook import signed_in
 from tests.providers.microsoft.tenant import GRAPH, Intercepted, Tenant, Webhook, bearer, token
 
@@ -225,6 +227,13 @@ async def test_a_one_on_one_chat_between_two_people_is_made_once_and_a_group_wit
         f"{GRAPH}/chats", json={"chatType": "oneOnOne", "members": members(sofia, owen)}, headers=posting.sofia
     )
     assert again.status_code == 201 and again.json()["id"] == chat["id"], "chat-post: an existing one is returned"
+    assert [c.id for c in posting.tenant.world.conversations()].count(chat["id"]) == 1
+    before = posting.tenant.store.head()
+    await posting.http.post(
+        f"{GRAPH}/chats", json={"chatType": "oneOnOne", "members": members(owen, sofia)}, headers=posting.owen
+    )
+    written = [e for e in posting.tenant.store.events(since=before) if e.operation is not Operation.READ]
+    assert written == [], "a one-on-one chat that exists writes nothing"
     group = await posting.http.post(
         f"{GRAPH}/chats",
         json={"chatType": "group", "topic": "Vendor review", "members": members(owen, sofia, dania)},
@@ -258,13 +267,20 @@ async def test_a_one_on_one_chat_between_two_people_is_made_once_and_a_group_wit
 
 
 async def test_joined_teams_and_the_primary_channel(posting: Posting) -> None:
+    world = posting.tenant.world
+    held = world.team(posting.team)
+    assert held is not None
+    elsewhere = held.model_copy(
+        update={"id": "other-team", "display_name": "Elsewhere", "members": [posting.user("sofia")]}
+    )
+    world.write(team_ref(elsewhere.id), elsewhere, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=TEAMS)
     mine = await posting.http.get(f"{GRAPH}/me/joinedTeams", headers=posting.owen)
     assert mine.status_code == 200
     [team] = mine.json()["value"]
     assert team["id"] == posting.team and set(team) == {"id", "displayName", "isArchived", "tenantId"}
     assert team["isArchived"] is False and mine.json()["@odata.context"] == f"{GRAPH}/$metadata#teams"
     other = await posting.http.get(f"{GRAPH}/users/{posting.user('sofia')}/joinedTeams", headers=posting.app)
-    assert [t["id"] for t in other.json()["value"]] == [posting.team]
+    assert sorted(t["id"] for t in other.json()["value"]) == sorted([posting.team, "other-team"])
     optioned = await posting.http.get(f"{GRAPH}/me/joinedTeams", params={"$top": "1"}, headers=posting.owen)
     assert optioned.status_code == 501, "user-list-joinedteams: no OData query parameter is supported"
     primary = await posting.http.get(f"{GRAPH}/teams/{posting.team}/primaryChannel", headers=posting.app)
