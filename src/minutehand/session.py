@@ -120,7 +120,7 @@ from minutehand.domain.agent import (
     Polled,
     Reported,
 )
-from minutehand.domain.assessments import Rule, merged, refuse_unknown_people
+from minutehand.domain.assessments import IntegrityCheck, Rule, integrity_fails, merged, refuse_unknown_people
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, Stability, WakeRecord
 from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.emulator import EmulatorChange
@@ -285,6 +285,7 @@ async def play(
                 judging=judge,
                 own=own_checks,
                 rules=rules,
+                fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
                 claims=_claims(registry, services),
             )
             scorer.receiver = proxy.receiver
@@ -384,6 +385,7 @@ async def fork(
         judging=judge,
         own=own_checks,
         rules=rules,
+        fail_on_integrity=integrity_fails(agent.fail_on_integrity, changed.fail_on_integrity),
         claims=_claims(registry, services),
     )
     signing = signing_for(agent, changed.people)
@@ -950,10 +952,12 @@ class _Judge:
         judging: bool,
         own: Sequence[Check] = (),
         rules: Sequence[Rule] = (),
+        fail_on_integrity: Sequence[IntegrityCheck] = (),
         claims: _Claims | None = None,
     ) -> None:
         self._claims = claims
         self._rules = list(rules)
+        self._fail_on_integrity = list(fail_on_integrity)
         self._scenario = scenario
         self._own = list(own)
         self._model = model
@@ -986,6 +990,7 @@ class _Judge:
                 uncalled_providers(claims.named, calls, woken=bool(record.wakes)) if claims is not None else []
             ),
             rules=self._rules,
+            fail_on_integrity=self._fail_on_integrity,
             stop=record.stop,
         )
         result = (

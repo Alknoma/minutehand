@@ -459,7 +459,11 @@ say(
     assert not DriveWorld(google.store).channels(), "nothing was opened"
 
 
-async def test_a_receiver_whose_certificate_the_run_does_not_trust_is_not_reached(tmp_path: Path) -> None:
+async def test_a_receiver_whose_certificate_the_run_does_not_trust_is_still_told_sync_then_exists(
+    tmp_path: Path,
+) -> None:
+    """Minutehand does no transport authentication: a receiver serving a certificate no CA of the run signed (here a
+    stranger CA's) is told as any other is."""
     async with serving(tmp_path, SCENARIO) as google:
         (tmp_path / "stranger").mkdir()
         _, cert, key = _certificates(tmp_path / "stranger")
@@ -469,15 +473,17 @@ async def test_a_receiver_whose_certificate_the_run_does_not_trust_is_not_reache
                 f"""
 calendar.events().watch(calendarId="primary", body={{
     "id": "agenda-1", "type": "web_hook", "address": {receiver.base + "/ok"!r}}}).execute()
+calendar.events().insert(calendarId="primary", body={{"summary": "Acme",
+    "start": {{"dateTime": "2026-09-15T10:00:00Z"}}, "end": {{"dateTime": "2026-09-15T10:30:00Z"}}}}).execute()
 say(done=True)
 """,
             )
             await client.heard()
             await client.finished()
-            await until_recorded(google, 1)
-    [told] = DriveWorld(google.store).deliveries()
-    assert told.status is None and told.failure is not None and "certificate" in told.failure.lower()
-    assert not receiver.heard
+            await receiver.until(2)
+    states = [h.headers["x-goog-resource-state"] for h in receiver.heard]
+    assert states[:2] == ["sync", "exists"], states
+    assert all(d.failure is None for d in DriveWorld(google.store).deliveries())
 
 
 async def test_a_watch_on_a_secondary_calendar_is_told_of_its_events_and_names_it_encoded(tmp_path: Path) -> None:

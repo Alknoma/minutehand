@@ -1009,11 +1009,7 @@ class JiraApi:
         return query
 
     def _found(self, call: Call, text: str) -> list[wire.StoredIssue]:
-        try:
-            query = self._query(text)
-        except jql.Unmatched:
-            self._world.saw(state.site_ref(), Operation.SEARCH)
-            return []
+        query = self._query(text)
         context = search.Context(self._desk, call.account, self._now())
         visible = [
             i

@@ -29,8 +29,10 @@ JQL (`jql.py`, `search.py`): `AND`/`OR`/`NOT`, parentheses, `= != ~ !~ > >= < <=
 quoted values with escapes, `ORDER BY` several fields, `currentUser()`, `now()`, `startOfDay()`, `endOfDay()`,
 `startOfWeek()`, `startOfMonth()`, `openSprints()`, `closedSprints()`, relative dates (`-7d`, `2w`, `-4h`),
 `endOfWeek()`, `endOfMonth()`, `startOfYear()`, `endOfYear()`, `futureSprints()`, `resolution = Unresolved`,
-custom fields as `cf[n]` or by name. A query that is not JQL, and one with no restriction, is a 400; JQL Atlassian
-documents that this fake does not serve is a 501 naming it.
+custom fields as `cf[n]` or by name. A query that is not JQL, one with no restriction, and one naming a field,
+value, project, issue, function, date or `ORDER BY` field the site has not got (or an operator its field does not
+take) is a 400 in the words Jira gives a signed-in caller; JQL Atlassian documents that this fake does not serve is
+a 501 naming it.
 
 Workflows are per project: statuses with a category (`new`, `indeterminate`, `done`) and transitions with ids,
 sources and screens. Entering a done status sets `resolution` (the transition's screen value, else Done, or

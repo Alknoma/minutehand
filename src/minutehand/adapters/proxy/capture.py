@@ -266,10 +266,18 @@ def query_of(path: str, ignore: Sequence[str]) -> str:
     return urlencode(sorted((k, v) for k, v in pairs if k.lower() not in dropped))
 
 
+def redacted_paths(declaration: Declaration | None) -> list[str]:
+    """The body fields the declaration asks its record to keep as [redacted]; none for a `store`, which keeps every
+    field verbatim."""
+    if declaration is None or isinstance(declaration, DeclaredStore):
+        return []
+    return declaration.redact
+
+
 def query_keys(declaration: Declaration) -> frozenset[str]:
     """The query parameters redacted on this host: every credential name, and each declared field that is a
     plain name."""
-    plain = {p.lower().replace("-", "_") for p in declaration.redact if "." not in p and "[" not in p}
+    plain = {p.lower().replace("-", "_") for p in redacted_paths(declaration) if "." not in p and "[" not in p}
     return redact.CAPTURED_QUERY_KEYS | plain
 
 

@@ -145,7 +145,8 @@ once the script has run, and times out before it.
 Without transparent capture, a client that ignores the proxy reaches the real service and Minutehand sees nothing. The
 `around_proxy` check says so when it can:
 
-- **Fails the run** when the agent's own OpenTelemetry names an HTTP call to a host a provider claims (`url.full`,
+- **States it for review** (and fails the run when the agent file or the scenario names `around_proxy` in
+  `fail_on_integrity`) when the agent's own OpenTelemetry names an HTTP call to a host a provider claims (`url.full`,
   `http.url`, `server.address` or `net.peer.name` on a span with an HTTP method) that the proxy never recorded. A span
   is matched to the proxy's record by the `traceparent` the call carried; spans left over are counted against the
   host's records that carried none.

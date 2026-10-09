@@ -15,6 +15,7 @@ from notion_client import APIResponseError, Client
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
 from minutehand.adapters.providers.notion.seed import object_id
+from minutehand.adapters.providers.notion.wire import API_VERSION
 from minutehand.domain.scenario import Seed
 from minutehand.domain.world import Actor, DocumentSnapshot, Operation
 from minutehand.testing.background import serve_in_background
@@ -62,7 +63,12 @@ def served(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Minutehan
 
 def _client(environment: dict[str, str], token: str) -> Client:
     trust = ssl.create_default_context(cafile=environment["SSL_CERT_FILE"])
-    return Client(auth=token, client=httpx.Client(proxy=environment["HTTPS_PROXY"], verify=trust, trust_env=False))
+    return Client(
+        notion_version=API_VERSION,
+        retry=False,
+        auth=token,
+        client=httpx.Client(proxy=environment["HTTPS_PROXY"], verify=trust, trust_env=False),
+    )
 
 
 def _answered(found: object) -> dict[str, Any]:

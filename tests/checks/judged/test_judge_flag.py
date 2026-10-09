@@ -16,7 +16,7 @@ from minutehand.domain.scenario import Silent
 from tests.e2e.support import agent_under_test, scenario
 
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
-JUDGED_BLOCKED = ("asked_about: no model is configured", "ticket_is_actionable: no model is configured")
+JUDGED_BLOCKED = ("asked_about: no model is configured",)
 
 
 def _without_a_model() -> dict[str, str]:
@@ -53,4 +53,4 @@ def test_judged_checks_are_blocked_without_a_model_only_when_asked_for(
     )
 
     assert ran.returncode == 1, ran.stderr
-    assert [line in ran.stdout for line in JUDGED_BLOCKED] == [judge, judge]
+    assert [line in ran.stdout for line in JUDGED_BLOCKED] == [judge]

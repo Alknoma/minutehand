@@ -944,6 +944,7 @@ def score(
         broken_calls=broken(calls),
         contract_breaks=contract_breaks(calls),
         rules=merged([], scenario.assess, scenario.assess_off),
+        fail_on_integrity=scenario.fail_on_integrity,
         stop=stop,
     )
     return evaluate(view, stop=stop, ended=ended)
