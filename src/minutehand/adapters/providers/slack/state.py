@@ -7,13 +7,16 @@
 | membership  | RECORD   | `<channel>.<user>`          | the channel |
 | message     | MESSAGE  | its `ts`, unique in the run | the channel |
 | file        | DOCUMENT | file id                     | the team |
-| file content | RECORD  | `content.<file>`            | `files` |
+| file content (its bytes, base64) | RECORD | `content.<file>` | `files` |
 | a scenario post's key | RECORD | `post.<key>`        | `posts` |
 | view (modal, Home tab) | RECORD | `view.<id>`         | `views` |
 | trigger_id  | RECORD   | `trigger.<id>`              | `triggers` |
 | response_url | RECORD  | `hook.<id>`                 | `hooks` |
 | a person's press or submission | RECORD | `interaction.<trigger_id>` | `interactions` |
 | a slash command | RECORD | `command.<trigger_id>`    | `commands` |
+| a scheduled message | RECORD | `scheduled.<id>` | `scheduled` |
+| a file's upload ticket | RECORD | `upload.<file>` | `uploads` |
+| a pinned message | RECORD | `pin.<channel>.<ts>` | `pins.<channel>` |
 | the app's install | RECORD | `install`               | `app` |
 | a fault     | RECORD   | `fault.<position>`          | `faults` |
 | a workspace the app is in | RECORD | `workspace.<team>` | `workspaces` |

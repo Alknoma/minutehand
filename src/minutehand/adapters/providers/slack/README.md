@@ -16,13 +16,16 @@ Hosts: `slack.com` and `*.slack.com` (the Web API at `/api/<method>`, `files.sla
 | `auth.test` | the workspace the token is for: its team id, name, bot user and bot id |
 | `users.list`, `users.info`, `users.lookupByEmail` | the workspace's members; an absent person's status set (below) |
 | `users.profile.get`, `users.getPresence`, `dnd.info` | a person's status, presence and do-not-disturb |
-| `conversations.list/info/open/members/history/replies` | channels, IMs and group DMs of the workspace |
-| `chat.postMessage/postEphemeral/update/delete`, `reactions.add` | as Slack keeps them |
-| `views.open/update/publish` | modals opened with a press's `trigger_id`, the Home tab |
+| `conversations.list/info/open/members/history/replies`, `users.conversations` | channels, IMs and group DMs of the workspace |
+| `conversations.create/join/invite/kick/leave/archive/unarchive/rename/setTopic/setPurpose` | the agent makes and changes channels, with Slack's errors |
+| `chat.postMessage/postEphemeral/update/delete`, `chat.getPermalink`, `reactions.add/remove/get/list`, `pins.add/remove/list` | as Slack keeps them |
+| `chat.scheduleMessage`, `chat.scheduledMessages.list`, `chat.deleteScheduledMessage` | posted at `post_at` on the run's clock (`Manifest.books_work`) |
+| `files.getUploadURLExternal`, the POST to its upload URL, `files.completeUploadExternal`, `files.info/list/delete` | `files_upload_v2`; the bytes kept as sent |
+| `views.open/update/push/publish` | modals opened with a press's `trigger_id`, stacked up to three views, the Home tab |
 | `oauth.v2.access` | the install's code exchanged for a bot token of the workspace it is for |
 | `apps.connections.open` | a `wss://wss-primary.slack.com/link/?ticket=…` URL |
 
-Every other method Slack lists (370 of them) is refused 501 `not_implemented`, naming the method (`methods.py`), and
+Every other method Slack lists (343 of them) is refused 501 `not_implemented`, naming the method (`methods.py`), and
 an argument of a served method the fake does not model is refused the same way, naming the argument
 (`app.UNSERVED_ARGUMENTS`). `CLAIMS.md` gives the source of every behaviour, and the credential checks Slack makes
 that this fake deliberately does not: any token, or none, is answered.
@@ -30,14 +33,17 @@ that this fake deliberately does not: any token, or none, is answered.
 Pushed to the app (`PushesEvents`, `PushesInteractions`), signed with the world's signing secret: messages in a DM,
 a channel or a thread, `app_mention`, `message_changed`, `message_deleted`, `reaction_added`,
 `member_joined_channel` (a person joining, the bot being added), `app_home_opened`, slash commands, `block_actions`
-and `view_submission`. `credential` (`MintsInboundCredentials`) signs a request a test builds itself:
+and `view_submission`. What the agent's own calls cause is pushed after the call is answered (`pushing.py`,
+`ListensForAgent`): `channel_created`, `member_joined_channel`, `member_left_channel`, `channel_rename`,
+`channel_archive`, `reaction_removed`, `file_shared`, `file_deleted`. `credential` (`MintsInboundCredentials`) signs a request a test builds itself:
 `X-Slack-Request-Timestamp` and `X-Slack-Signature` for a given body and timestamp.
 
 Socket Mode (`ServesSockets`, `socket_mode.py`): an agent whose Slack target says `delivery: socket_mode` names no
 URL. It opens the URL `apps.connections.open` handed it through the proxy, which sends the upgrade to the provider's
 socket server; every connection is let in, whatever ticket it carries, and told `hello`. Every event above that is
-pushed to a request URL goes instead on the agent's newest connection as an `events_api` envelope, and the push waits
-for its acknowledgement: unacknowledged for three seconds it is sent again as a new envelope with `retry_attempt`
+pushed to a request URL goes instead on the agent's newest connection as an `events_api` envelope (a press and a
+submission as an `interactive` envelope whose acknowledgement may carry the answer to the submission), and the push
+waits for its acknowledgement: unacknowledged for three seconds it is sent again as a new envelope with `retry_attempt`
 counted up, three times, and then fails the agent; an event due with no connection open for 30 seconds fails it
 too. Every message either way is recorded by the proxy
 (`Exchange.frame`).
@@ -90,13 +96,13 @@ not give is written into the status.
 - Opening the Home tab writes only a read, so `act` with `opens_agent` is pushed and then answered 409 by the control
   API ("recorded nothing").
 - No user tokens of their own: any token acts as the bot, a declared Slack sign-in included.
-- Over Socket Mode only `events_api` envelopes: a press or a slash command (`interactive`, `slash_commands`) on a
-  socket-mode target is refused, and no envelope carries a response payload. Slack never asks the agent to reconnect
+- Over Socket Mode a slash command (`slash_commands`) on a socket-mode target is refused. Slack never asks the agent to
+  reconnect
   (`disconnect`), and a connection is not routed to its world in `minutehand serve` (the upgrade carries no
   credential), only under `minutehand run`.
 - The app's own `chat.postMessage`, `chat.update` and `chat.delete` push no event back to it.
-- The methods most worth serving next, by how prominently Slack's guides and SDKs feature them:
-  `chat.scheduleMessage`, `conversations.join`, `conversations.create`, `conversations.invite`, `views.push`,
-  `files.getUploadURLExternal` with `files.completeUploadExternal` (`files_upload_v2`), `reactions.remove`,
-  `chat.getPermalink`, `users.conversations`, `conversations.setTopic`, and for agents `assistant.threads.setStatus`
-  and `chat.startStream`/`appendStream`/`stopStream`.
+- The methods most worth serving next, by how prominently Slack's guides and SDKs feature them: `bookmarks.*`, and
+  for agents `assistant.threads.setStatus` and `chat.startStream`/`appendStream`/`stopStream`.
+- A modal's stack takes a trigger from a `view_submission`; a button inside a modal is not a press the scenario can play,
+  so `views.push` is tried with the trigger a submission hands the agent.
+- A scheduled message posts in a run; in `minutehand serve` no booking fires, so it is listed and never posted.

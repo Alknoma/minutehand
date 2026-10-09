@@ -127,6 +127,7 @@ UNSERVED_ARGUMENTS: dict[str, dict[str, frozenset[str]]] = {
     "conversations.info": {"include_locale": _OFF},
     "conversations.open": {"prevent_creation": _OFF},
     "views.open": {"interactivity_pointer": _ABSENT},
+    "views.push": {"interactivity_pointer": _ABSENT},
     "views.publish": {"interactivity_pointer": _ABSENT},
     "oauth.v2.access": {
         "grant_type": frozenset({"", "authorization_code"}),
@@ -213,6 +214,7 @@ class SlackApi(FileCalls):
             "pins.list": self.pins_list,
             "views.open": self.views_open,
             "views.update": self.views_update,
+            "views.push": self.views_push,
             "views.publish": self.views_publish,
             "oauth.v2.access": self.oauth_v2_access,
             "apps.connections.open": self.apps_connections_open,
@@ -901,9 +903,74 @@ class SlackApi(FileCalls):
             raise wire.Refusal("invalid_arguments")
         wire.check_view(args.view)
         self._refuse_taken_external_id(args.view.external_id, found.view.id)
-        shown = self._view(found.view.id, args.view, root=found.view.root_view_id, version=self._version(found))
+        shown = self._view(
+            found.view.id,
+            args.view,
+            root=found.view.root_view_id,
+            version=self._version(found),
+            previous=found.view.previous_view_id,
+        )
+        shown = shown.model_copy(update={"state": self._kept_state(found.view, shown)})
         self._write_view(found.model_copy(update={"view": shown, "errors": {}}), Operation.UPDATE)
         return wire.ViewAnswered(view=shown)
+
+    @staticmethod
+    def _kept_state(was: wire.SlackView, now: wire.SlackView) -> wire.ViewState:
+        """ "Data entered or selected in `input` blocks can be preserved while updating views": it is, for each input
+        element the new view holds with the same `block_id` and `action_id`
+        (https://docs.slack.dev/reference/methods/views.update)."""
+        values = {
+            f.block_id: {f.action_id: was.state.values[f.block_id][f.action_id]}
+            for f in wire.inputs(now.blocks)
+            if f.block_id in was.state.values and f.action_id in was.state.values[f.block_id]
+        }
+        return wire.ViewState(values=values)
+
+    def views_push(self, presented: wire.Presented) -> wire.Ok:
+        """A view pushed onto the stack of the modal the interaction was in, with the `trigger_id` of an interaction
+        within it: once, within three seconds, and while the stack holds fewer than three views."""
+        args = wire.read_args(wire.ViewsPushArgs, presented)
+        if args.view is None or not args.trigger_id:
+            raise wire.Refusal("invalid_arguments")
+        trigger = self._world.body(state.trigger_ref(args.trigger_id), wire.SlackTrigger)
+        if trigger is None:
+            raise wire.Refusal("invalid_trigger_id")
+        if trigger.view is not None:
+            raise wire.Refusal("exchanged_trigger_id")
+        if self._now() > trigger.issued + _TRIGGER_LIFETIME:
+            raise wire.Refusal("expired_trigger_id")
+        if trigger.in_view is None:
+            raise NotServed(
+                "views.push with a trigger_id from an interaction that was not in a modal: its page says it comes "
+                "from one and gives no error for another"
+            )
+        below = self._world.body(state.view_ref(trigger.in_view), wire.OpenView)
+        if below is None or not below.open:
+            raise wire.Refusal("not_found")
+        if args.view.type != "modal":  # enum-lint: exempt Slack's own view type on the wire
+            raise wire.Refusal("invalid_arguments")
+        wire.check_view(args.view)
+        stack = self._stack(below.view.root_view_id)
+        if len(stack) >= wire.MAX_STACK:
+            raise wire.Refusal("push_limit_reached")
+        if stack[-1].view.id != below.view.id:
+            raise NotServed("views.push from a view that is not the top of its stack, which its page does not speak of")
+        self._refuse_taken_external_id(args.view.external_id, None)
+        view_id = state.view_id(self._world.next_seq())
+        shown = self._view(view_id, args.view, root=below.view.root_view_id, version=0, previous=below.view.id)
+        self._world.write(
+            state.trigger_ref(trigger.id),
+            trigger.model_copy(update={"view": view_id}),
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            parent=state.TRIGGERS,
+        )
+        self._write_view(wire.OpenView(view=shown, user=below.user, trigger_id=trigger.id), Operation.CREATE)
+        return wire.ViewAnswered(view=shown)
+
+    def _stack(self, root: str) -> list[wire.OpenView]:
+        """The open views of one modal, bottom first."""
+        return open_stack(self._world, root)
 
     def views_publish(self, presented: wire.Presented) -> wire.Ok:
         """A member's Home tab: one per member, replaced by every publish."""
@@ -925,7 +992,9 @@ class SlackApi(FileCalls):
         )
         return wire.ViewAnswered(view=shown)
 
-    def _view(self, view_id: str, spec: wire.ViewSpec, *, root: str, version: int) -> wire.SlackView:
+    def _view(
+        self, view_id: str, spec: wire.ViewSpec, *, root: str, version: int, previous: str | None = None
+    ) -> wire.SlackView:
         blocks = wire.with_ids(spec.blocks, view_id) or []
         return wire.SlackView(
             id=view_id,
@@ -943,6 +1012,7 @@ class SlackApi(FileCalls):
             clear_on_close=spec.clear_on_close,
             notify_on_close=spec.notify_on_close,
             submit_disabled=spec.submit_disabled,
+            previous_view_id=previous,
             root_view_id=root,
             app_id=self._world.team.app_id,
             app_installed_team_id=self._world.team.id,
@@ -1116,6 +1186,20 @@ class SlackApi(FileCalls):
 
 
 _NOT_FOUND = "<!DOCTYPE html><html><head><title>Not found | Slack</title></head><body></body></html>"
+
+
+def open_stack(world: SlackWorld, root: str) -> list[wire.OpenView]:
+    """The open views of the modal whose first view is `root`, bottom first: each was pushed onto the one before."""
+    open_ones = [
+        v for v in world.bodies(EntityKind.RECORD, state.VIEWS, wire.OpenView) if v.open and v.view.root_view_id == root
+    ]
+    stack = [v for v in open_ones if v.view.previous_view_id is None]
+    while stack:
+        above = next((v for v in open_ones if v.view.previous_view_id == stack[-1].view.id), None)
+        if above is None:
+            break
+        stack.append(above)
+    return stack
 
 
 def write_view(world: SlackWorld, shown: wire.OpenView, operation: Operation, actor: Actor) -> None:

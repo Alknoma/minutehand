@@ -26,7 +26,7 @@ from urllib.parse import parse_qsl, urlencode
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 TRUNCATED_AT = 40_000
@@ -373,7 +373,10 @@ class SlackTrigger(Model):
     issued: int = Field(description="Simulated seconds since the epoch")
     on_channel: str | None = None
     on_message: str | None = None
-    view: str | None = Field(default=None, description="The view opened with it; set once used")
+    view: str | None = Field(default=None, description="The view opened or pushed with it; set once used")
+    in_view: str | None = Field(
+        default=None, description="The view the interaction that issued it was in, when it was in one"
+    )
 
 
 class SlackHook(Model):
@@ -782,6 +785,13 @@ class ViewsUpdateArgs(Model):
     _parse_view = field_validator("view", mode="before")(_view_from_form)
 
 
+class ViewsPushArgs(Model):
+    trigger_id: str = ""
+    view: ViewSpec | None = None
+
+    _parse_view = field_validator("view", mode="before")(_view_from_form)
+
+
 class ViewsPublishArgs(Model):
     user_id: str = ""
     hash: str = ""
@@ -798,6 +808,13 @@ class OAuthArgs(Model):
     grant_type: str = ""
 
 
+MAX_VIEW_BYTES = 250_000
+"""`view_too_large`: "greater than 250kb" (https://docs.slack.dev/reference/methods/views.update), taken as 250,000
+bytes at the least."""
+UNSURE_VIEW_BYTES = 256_000
+"""Between 250,000 and 256,000 bytes a view is too large only if "kb" is 1,000 bytes, which no page says."""
+MAX_STACK = 3
+"""A modal "can hold up to 3 views at a time in a view stack" (https://docs.slack.dev/surfaces/modals)."""
 MAX_VIEW_BLOCKS = 100
 MAX_TITLE_CHARS = 24
 MAX_METADATA_CHARS = 3000
@@ -805,6 +822,11 @@ MAX_METADATA_CHARS = 3000
 
 def check_view(view: ViewSpec) -> None:
     """Refuse what Slack refuses about a view, with Slack's own code."""
+    size = len(view.model_dump_json().encode())
+    if size > UNSURE_VIEW_BYTES:
+        raise Refusal("view_too_large")
+    if size > MAX_VIEW_BYTES:
+        raise NotServed(f"a view of {size} bytes, which is too large only if a kilobyte is 1,000 bytes: no page says")
     if view.type == "modal" and view.title is None:  # enum-lint: exempt Slack's own view type on the wire
         raise Refusal("invalid_arguments")
     if view.title is not None and len(view.title.text) > MAX_TITLE_CHARS:
@@ -1641,14 +1663,16 @@ class SocketEnvelope(Model):
     retry_attempt: int = 0
 
 
-def envelope_body(envelope: SocketEnvelope) -> str:
+def envelope_body(envelope: SocketEnvelope | InteractiveEnvelope) -> str:
     return envelope.model_dump_json(exclude_none=True)
 
 
 class SocketAck(_Foreign):
-    """What the app sends back on its connection to acknowledge an envelope; anything else it carries is its own."""
+    """What the app sends back on its connection to acknowledge an envelope; anything else it carries is its own. Its
+    `payload` is the answer to an interaction that accepts one (a `response_action` of a `view_submission`)."""
 
     envelope_id: str
+    payload: JsonValue = None
 
 
 class UrlVerification(Model):
@@ -1731,6 +1755,17 @@ class ViewSubmission(Model):
     view: SlackView
     response_urls: list[str] = []
     is_enterprise_install: bool = False
+
+
+class InteractiveEnvelope(Model):
+    """An interaction as Socket Mode carries it: `type` `interactive`, the payload as the HTTP post would carry it, and
+    `accepts_response_payload` true, so the app's acknowledgement may hold the answer to a `view_submission`
+    (https://docs.slack.dev/apis/events-api/using-socket-mode, "Using interactive features")."""
+
+    envelope_id: str
+    payload: BlockActions | ViewSubmission
+    type: Literal["interactive"] = "interactive"
+    accepts_response_payload: bool = True
 
 
 def payload_form(payload: BlockActions | ViewSubmission) -> bytes:

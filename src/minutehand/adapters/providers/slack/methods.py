@@ -346,7 +346,6 @@ UNSERVED: frozenset[str] = frozenset(
         "users.setActive",
         "users.setPhoto",
         "users.setPresence",
-        "views.push",
         "workflows.featured.add",
         "workflows.featured.list",
         "workflows.featured.remove",

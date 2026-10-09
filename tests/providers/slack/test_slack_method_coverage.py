@@ -6,8 +6,8 @@ Three vendor sources, each read here as the vendor published it (`data/README.md
 taken): Slack's methods index (https://docs.slack.dev/reference/methods), Slack's OpenAPI description of the Web API
 (github.com/slackapi/slack-api-specs, archived in 2021), and the methods the pinned `slack_sdk`'s `WebClient` calls.
 
-At this commit: 393 methods in all (340 in the index, 174 in the OpenAPI file, 330 in `slack_sdk`); 49 served and
-344 refused by name.
+At this commit: 393 methods in all (340 in the index, 174 in the OpenAPI file, 330 in `slack_sdk`); 50 served and
+343 refused by name.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def test_every_web_api_method_is_served_or_refused_by_name(workspace: Workspace)
     assert answered & UNSERVED == set(), "a method both served and refused"
     assert UNSERVED - listed == set(), "a refused name no Slack source lists"
     assert answered - listed == set(), "a served name no Slack source lists"
-    assert (len(listed), len(answered), len(UNSERVED)) == (393, 49, 344)
+    assert (len(listed), len(answered), len(UNSERVED)) == (393, 50, 343)
 
 
 async def test_every_unserved_method_is_refused_501_naming_it_through_the_sdk(

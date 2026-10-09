@@ -11,7 +11,7 @@ in `tests/providers/slack/data/observed/` (where and how it was taken: `tests/pr
 
 Every Web API method Slack lists is either served or refused 501 `not_implemented`, the method named
 (`methods.UNSERVED`; `test_slack_method_coverage.py`). The list is the union of Slack's methods index, Slack's OpenAPI
-file and the pinned `slack_sdk`'s `WebClient`: 393 methods, 49 served, 344 refused by name. A name none of them
+file and the pinned `slack_sdk`'s `WebClient`: 393 methods, 50 served, 343 refused by name. A name none of them
 lists is `unknown_method`, as Slack answers it.
 
 | Claim | Class | Test | Source |
@@ -131,6 +131,13 @@ check Slack makes and this stack does not test:
 | `files.delete` deletes a file the app uploaded, which then answers `file_deleted` to `files.info` and `files.delete`, is not listed and its `url_private` is not found, and sends `file_deleted` (`file_id`, `event_ts`); another's file is `cant_delete_file`, one the app cannot see `file_not_found` | documented | `test_slack_files.py::test_a_deleted_file_is_gone_from_info_list_and_its_url_and_deleting_twice_says_so`, `::test_a_file_someone_else_uploaded_cannot_be_deleted` | https://docs.slack.dev/reference/methods/files.delete, https://docs.slack.dev/reference/events/file_deleted |
 | `file_shared` (`channel_id`, `file_id`, `user_id`, `file.id`, `event_ts`) reaches the agent for each file shared in each conversation by its own call | documented | `test_slack_files.py::test_a_file_shared_in_several_channels_is_one_message_each_and_a_file_shared_event_each` | https://docs.slack.dev/reference/events/file_shared |
 | `files.info`'s legacy `count` and `page` off their defaults, `files.list`'s `show_files_hidden_by_limit` and a `channel` the workspace does not have are refused 501 by name: the world holds no file comment and no tombstone, and the page gives no error for the channel | documented | `test_slack_files.py::test_the_legacy_paging_of_files_info_is_refused_by_name_off_its_default`, `::test_files_list_refuses_a_type_slack_does_not_list_and_a_user_who_is_no_member` | https://docs.slack.dev/reference/methods/files.info, https://docs.slack.dev/reference/methods/files.list |
+| `views.push` adds a view to the top of the stack of the modal the interaction was in (`root_view_id`, `previous_view_id`), with the `trigger_id` of an interaction within the modal, a view submission among them; the trigger is `exchanged_trigger_id` once used, `expired_trigger_id` after three seconds, `invalid_trigger_id` unknown, `not_found` for a view that is closed; also `duplicate_external_id`, `invalid_arguments` for a view that is not a modal | documented | `test_slack_views.py::test_a_pushed_view_goes_on_top_of_the_view_the_interaction_was_in`, `::test_a_trigger_pushes_once`, `::test_a_trigger_older_than_three_seconds_is_refused_expired_trigger_id`, `::test_a_push_onto_a_view_that_was_closed_is_refused_not_found`, `::test_a_pushed_view_cannot_take_an_external_id_in_use_or_be_a_home_tab`, `::test_a_trigger_from_a_submission_pushes_a_view` | https://docs.slack.dev/reference/methods/views.push, https://docs.slack.dev/surfaces/modals |
+| A modal holds three views; a fourth push is `push_limit_reached`, and a `response_action` `push` past three fails the agent's answer | documented | `test_slack_views.py::test_a_modal_holds_three_views_and_a_fourth_is_push_limit_reached`, `::test_a_push_onto_a_full_stack_in_answer_to_a_submission_fails_the_agent` | https://docs.slack.dev/reference/methods/views.push, https://docs.slack.dev/surfaces/modals |
+| A `response_action` `push` stacks a view on the submitted one; an empty answer closes only the submitted view; `clear` closes every view of the stack | documented | `test_slack_views.py::test_a_push_in_answer_to_a_submission_stacks_a_view_on_the_submitted_one`, `::test_an_empty_answer_closes_only_the_submitted_view_and_the_one_below_is_shown_again`, `::test_clearing_closes_every_view_of_the_stack` | https://docs.slack.dev/surfaces/modals ("Closing a view", "Add a new view via response_action") |
+| `views.update` of a pushed view keeps its place in the stack, and keeps what was entered in each input the new view holds again with the same `block_id` and `action_id` | documented | `test_slack_views.py::test_a_pushed_view_can_be_updated_and_keeps_its_place_in_the_stack`, `::test_an_update_keeps_what_was_entered_in_the_inputs_it_holds_again` | https://docs.slack.dev/reference/methods/views.update |
+| A view of more than 250kb is `view_too_large` (`views.open`, `.update`, `.push`, `.publish`); one between 250,000 and 256,000 bytes is refused 501, since the page does not say what a kilobyte is | documented | `test_slack_views.py::test_a_view_of_more_than_two_hundred_and_fifty_kilobytes_is_too_large` | https://docs.slack.dev/reference/methods/views.update, https://docs.slack.dev/reference/methods/views.push |
+| A `views.push` with a trigger from an interaction outside a modal, from a view that is not the top of its stack, or with `interactivity_pointer`, is refused 501 by name: the page names no error for them | documented | `test_slack_views.py::test_a_push_from_an_interaction_outside_a_modal_or_from_a_view_below_the_top_is_refused_by_name`, `::test_an_interactivity_pointer_is_refused_by_name` | https://docs.slack.dev/reference/methods/views.push |
+| Over Socket Mode a press and a submission are `interactive` envelopes (`payload`, `envelope_id`, `type`, `accepts_response_payload` true) whose acknowledgement may carry the `payload` that answers a `view_submission`; a slash command is refused 501 by name | documented | `test_slack_socket_mode.py::test_a_press_and_its_submission_reach_a_socket_mode_agent_as_interactive_envelopes_it_answers`, `::test_an_acknowledgement_with_no_answer_closes_the_submitted_view`, `::test_a_slash_command_over_socket_mode_is_still_refused_by_name` | https://docs.slack.dev/apis/events-api/using-socket-mode |
 
 ## Where Slack's reference and this fake knowingly differ
 
@@ -138,9 +145,9 @@ check Slack makes and this stack does not test:
   mutate", https://docs.slack.dev/reference/methods/chat.postMessage). The fake keeps what the agent sent.
 - **A member id as `channel`.** The `chat.postMessage` page says three things: that it opens the bot's 1:1 DM, that
   it lands in the person's App Home, and that it lands in their DM with Slackbot. This fake does the first.
-- **The app's own writes as events.** `message_changed` "is sent when a message … is edited using the chat.update
-  API method". The fake pushes events only for what people do, never for the agent's own `chat.postMessage`,
-  `chat.update` or `chat.delete`.
+- **The app's own message writes as events.** `message_changed` "is sent when a message … is edited using the chat.update
+  API method". The fake pushes no event for the agent's own `chat.postMessage`, `chat.update` or `chat.delete`, or for a
+  scheduled message when it posts; it does push the events of its conversation, reaction and file calls (above).
 - **Retries are not spaced out.** Slack retries a request URL "nearly immediately", then after one and five minutes
   (https://docs.slack.dev/apis/events-api); no simulated time passes while the agent is being called, so the retries
   here follow each other.
@@ -163,3 +170,5 @@ check Slack makes and this stack does not test:
   bytes uploaded, which must be the `length` asked for.
 - **Deleting a file** leaves the messages that shared it as they were; no page says what Slack does to them. The
   events `file_created`, `file_public` and `file_change` are not sent.
+- **A button inside a modal** is not a press a scenario can play, so the trigger `views.push` wants comes from a
+  `view_submission`; the page names no other source than "an interaction within the existing modal".
