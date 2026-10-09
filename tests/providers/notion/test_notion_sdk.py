@@ -11,7 +11,7 @@ import pytest
 from notion_client import APIResponseError
 
 from minutehand.domain.world import Actor, EntityKind, Operation
-from tests.providers.notion.notion_world import START, Sdk, ids
+from tests.providers.notion.notion_world import START, Sdk, create_database, ids, query_database, update_database
 
 
 def _titles(results: list[Any]) -> list[str]:
@@ -328,7 +328,7 @@ FILTERS: list[tuple[str, dict[str, Any], list[str]]] = [
 async def test_databases_query_by_filter_shape(
     sdk: Sdk, shape: str, found: dict[str, Any], expected: list[str]
 ) -> None:
-    rows = await sdk(lambda c: c.databases.query(ids("projects"), filter=found))
+    rows = await sdk(lambda c: query_database(c, ids("projects"), filter=found))
     assert sorted(_titles(rows["results"])) == expected
 
 
@@ -336,24 +336,25 @@ async def test_databases_query_by_people(sdk: Sdk) -> None:
     users = (await sdk(lambda c: c.users.list()))["results"]
     dov = next(u["id"] for u in users if u["type"] == "person" and u["person"]["email"] == "dov@example.com")
     rows = await sdk(
-        lambda c: c.databases.query(ids("projects"), filter={"property": "Owner", "people": {"contains": dov}})
+        lambda c: query_database(c, ids("projects"), filter={"property": "Owner", "people": {"contains": dov}})
     )
     assert _titles(rows["results"]) == ["Security audit"]
 
 
 async def test_databases_query_sorts_and_paginates(sdk: Sdk) -> None:
     by_status = await sdk(
-        lambda c: c.databases.query(ids("projects"), sorts=[{"property": "Status", "direction": "ascending"}])
+        lambda c: query_database(c, ids("projects"), sorts=[{"property": "Status", "direction": "ascending"}])
     )
     assert _titles(by_status["results"]) == ["Security audit", "Launch site"]
     by_estimate = await sdk(
-        lambda c: c.databases.query(
-            ids("projects"), sorts=[{"property": "Estimate", "direction": "descending"}], page_size=1
+        lambda c: query_database(
+            c, ids("projects"), sorts=[{"property": "Estimate", "direction": "descending"}], page_size=1
         )
     )
     assert _titles(by_estimate["results"]) == ["Launch site"] and by_estimate["has_more"] is True
     rest = await sdk(
-        lambda c: c.databases.query(
+        lambda c: query_database(
+            c,
             ids("projects"),
             sorts=[{"property": "Estimate", "direction": "descending"}],
             start_cursor=by_estimate["next_cursor"],
@@ -364,7 +365,8 @@ async def test_databases_query_sorts_and_paginates(sdk: Sdk) -> None:
 
 async def test_databases_create_and_update_the_schema(sdk: Sdk) -> None:
     made = await sdk(
-        lambda c: c.databases.create(
+        lambda c: create_database(
+            c,
             parent={"type": "page_id", "page_id": ids("handbook")},
             title=[{"type": "text", "text": {"content": "Risks"}}],
             properties={
@@ -376,7 +378,8 @@ async def test_databases_create_and_update_the_schema(sdk: Sdk) -> None:
     )
     assert sorted(made["properties"]) == ["Level", "Owner", "Risk"]
     changed = await sdk(
-        lambda c: c.databases.update(
+        lambda c: update_database(
+            c,
             made["id"],
             title=[{"text": {"content": "Risk register"}}],
             properties={"Level": {"name": "Severity"}, "Owner": None, "Reviewed": {"checkbox": {}}},
