@@ -755,7 +755,7 @@ The rule: what goes in is what comes out, and the record is exactly that. Every 
 
 #### Housekeeping
 
-`minutehand runs` shows each run's size on disk in two parts that do not overlap: its rows and the stored bodies only it refers to. `minutehand checkpoints <run>` lists each checkpoint and whether a fork can start at it. `minutehand gc` sweeps every world file under the state directory of stored bodies nothing refers to and prints what it freed. A standing server's retention of closed worlds is the same function (`session.collect`): it removes the directories of worlds beyond `keep`, then sweeps the rest. `minutehand rm <run>...` removes runs with every fork of each.
+`minutehand runs` shows each run's size on disk in two parts that do not overlap: its rows and the stored bodies only it refers to. `minutehand checkpoints <run>` lists each checkpoint and whether a fork can start at it. `minutehand gc` sweeps every world file under the state directory of stored bodies nothing refers to and prints what it freed. A standing server's retention of closed worlds is the same function (`session.collect`): it removes the directories of worlds beyond `keep`, then sweeps the rest, but a closed world's file it has swept since the world closed, which nothing writes again (sweeping all `keep` at every close made each close open as many stores as worlds were kept, and closing 350 worlds took five times as long). `minutehand rm <run>...` removes runs with every fork of each.
 
 ### One container
 

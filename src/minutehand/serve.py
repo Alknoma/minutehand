@@ -29,7 +29,9 @@ Each world is a run in the state directory, so `minutehand findings`, `view` and
     <state>/runs/<lobby_id>/world.db       the calls no world claimed, and spans of traces none carried
 
 Closing a world keeps the last `keep` closed worlds and removes the directories of older ones, then sweeps every
-world file left of bodies and snapshot files nothing refers to (`session.collect`, which `minutehand gc` runs too).
+world file left of bodies and snapshot files nothing refers to (`session.collect`, which `minutehand gc` runs too),
+but a closed world's file this server has swept since it closed: nothing writes it again, and sweeping each of the
+`keep` again at every close made a close cost as many store opens as worlds were kept.
 A world still open when the server stops is closed then.
 """
 
@@ -297,6 +299,9 @@ class Standing:
         self._registry = registry
         self.routing = routing or Routing(registry)
         self._keep = keep
+        self._swept: frozenset[str] = frozenset()
+        """The directories of closed worlds the last retention swept, which nothing has written since (a closed
+        case still taking its services' spans is not one)."""
         self._manifests = {m.key: m for m in registry.manifests}
         self.worlds: dict[str, World] = {}
         self._tokens: dict[str, str] = {}
@@ -988,7 +993,10 @@ class Standing:
         closed.sort(key=lambda found: (found[0] / RECORD).stat().st_mtime_ns)
         old = closed[: max(0, len(closed) - self._keep)]
         still = {c.case_id for c in self._ended}
-        return collect(self._state, remove=[n for d, names in old if d.name not in still for n in names])
+        removed = [n for d, names in old if d.name not in still for n in names]
+        collected = collect(self._state, remove=removed, settled=self._swept)
+        self._swept = frozenset(n for d, names in closed if d.name not in still for n in names if n not in removed)
+        return collected
 
     # -- faults -------------------------------------------------------------------------------------------------
 

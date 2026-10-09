@@ -33,7 +33,7 @@ import secrets
 import shutil
 import signal
 import sqlite3
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -660,10 +660,10 @@ class Collected(Model):
     skipped: list[str] = Field(default=[], description="World files that could not be swept, and why")
 
 
-def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
+def collect(state: Path, *, remove: Sequence[str] = (), settled: Collection[str] = ()) -> Collected:
     """Remove the run directories named in `remove`, then sweep every world file left under `state` of the stored
-    bodies nothing refers to. `minutehand gc`, `minutehand rm`, and a standing server's retention of closed worlds,
-    are this."""
+    bodies nothing refers to, but those of the directories in `settled`: swept already, and written by nothing
+    since. `minutehand gc`, `minutehand rm`, and a standing server's retention of closed worlds, are this."""
     removed_bytes = 0
     for run_id in remove:
         directory = run_dir(state, run_id)
@@ -674,6 +674,8 @@ def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
     skipped: list[str] = []
     base = state / RUNS
     for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        if directory.name in settled:
+            continue
         path = directory / WORLD
         roots = [run for run, parent, _ in _ReadOnlyStore.runs_in(path) if parent is None] if path.is_file() else []
         if not roots:
